@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+- **The contributor paste line now tells the agent to upgrade BenchFlow
+  first.** `CONTRIBUTOR_PROMPT` (and its verbatim copies in `README.md`,
+  `docs/traj-upload.md`, and the `benchflow-traj-upload` skill evals) says to
+  run `uv tool install --python 3.12 --upgrade --force benchflow` before
+  reading the skill, so agents that skim the skill or hit a stale copy still
+  install the latest CLI. The line also names OpenCode and Cursor sessions
+  and the re:Agent hackathon 72-hour window, and the skill's Discover step
+  gains best-effort Cursor (`~/.cursor/projects/*/agent-transcripts/`) and
+  OpenCode (`~/.local/share/opencode/opencode.db`, `opencode db path`)
+  locations plus a prefer-recent-matching-sessions note. Follow-up to the
+  version precondition from #1013/#1014.
+
 ## 0.7.1 — 2026-08-16
 
 ### Added
@@ -16,17 +29,6 @@
   the latest BenchFlow (0.7.1+) before using the trajectory-upload flow.
 
 ### Changed
-- **The contributor paste line now tells the agent to upgrade BenchFlow
-  first.** `CONTRIBUTOR_PROMPT` (and its verbatim copies in `README.md`,
-  `docs/traj-upload.md`, and the `benchflow-traj-upload` skill evals) says to
-  run `uv tool install --python 3.12 --upgrade --force benchflow` before
-  reading the skill, so agents that skim the skill or hit a stale copy still
-  install the latest CLI. The line also names OpenCode and Cursor sessions
-  and the re:Agent hackathon 72-hour window, and the skill's Discover step
-  gains best-effort Cursor (`~/.cursor/projects/*/agent-transcripts/`) and
-  OpenCode (`~/.local/share/opencode/opencode.db`, `opencode db path`)
-  locations plus a prefer-recent-matching-sessions note. Follow-up to the
-  version precondition from #1013/#1014.
 - **Trajectory contribution is a copy-paste line, plus optional setup.**
   Contributors paste one line into their agent; the agent reads
   `benchflow-traj-upload`, opens the viewer, then uploads. Optional setup is
