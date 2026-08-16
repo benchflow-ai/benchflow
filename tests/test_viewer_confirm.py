@@ -1,5 +1,9 @@
 """Tests for the trajectory viewer's --confirm flow (in-browser approve/reject).
 
+Guards the feature shipped in PR #1021: --confirm must add the decision bar +
+/decision endpoint and the DECISION stdout/exit-code contract, while plain
+mode stays byte-for-byte the pre-#1021 viewer.
+
 The eval-prize contributor loop is agent-driven: the agent serves the viewer,
 the human clicks **Approve & submit** or **Not this one**, and the process
 reports the decision via a machine-readable ``DECISION:`` stdout line plus the
