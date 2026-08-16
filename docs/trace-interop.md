@@ -590,12 +590,15 @@ Three design choices carry most of the weight:
 
 ### 8.3 Planned mapping
 
-**`ACP → IR`** (Slice C,
-[`ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)) **and
-`IR → ATIF`** (Slice D,
-[`ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py)) **are
-implemented**, both unwired and still provisional. `ATIF → IR` and the OTel
-direction are not.
+**`ACP → IR`** ([`ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)),
+**`IR → ATIF`** ([`ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py))
+and **`ATIF → IR`**
+([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py)) **are
+implemented**, all unwired and still provisional. The OTel direction is not, and
+stays blocked on open question 2.
+
+With both ATIF edges in place the loop `ACP → IR → ATIF → IR′` closes, and §8.10
+reports what it measures.
 
 #### ACP-session capture events → IR
 
@@ -777,6 +780,67 @@ to show the hub is reachable from OTel, not as a design to implement as-is.
 Which direction is wanted — receiver, emitter, or both — is **open question 5**
 and stays open. The IR is symmetric on purpose so the answer does not invalidate
 it.
+
+#### ATIF → IR
+
+**Implemented** ([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py)),
+unwired. Asserted by `tests/trajectories/test_ir_from_atif.py` against documents
+from *both* writers — the direct exporter and the hub — plus malformed input.
+
+This edge reads a document that is itself the output of a lossy conversion, and
+it is built on one rule: **read what the document says, never what it probably
+meant.** Several values in an ATIF document were fabricated by the converter that
+wrote it, and nothing in the document marks them as such. Reading them back as
+absences would be guessing which ones were invented — a guess that happens to be
+right is still a guess, and it would make the round trip below report a
+preservation that did not happen.
+
+| ATIF | IR | Class | Loss recorded |
+|---|---|---|---|
+| `session_id` | `session_id` | preserved | — |
+| `schema_version` | `extensions.schema_version` | preserved | — no IR field names a source format's version |
+| unknown document key | `extensions` | preserved | — |
+| `agent.name` / `.version` / `.model_name` | `agent.agent_name` / `.agent_version` / `.model` | preserved | — **including the literal `"unknown"`**, see below |
+| step order | `events[].index`, dense from 0 | preserved | — |
+| `step.source` | `role` **and** `source_type` verbatim | preserved | — |
+| `step.source` outside the vocabulary | `kind=unknown`, `source_type` verbatim | preserved | — every exporter drops these today |
+| `step.message` | `text`, **including `""`** | preserved | — |
+| `step.reasoning_content` | `reasoning` + `reasoning_segments=[joined]` | normalized | — one step is one segment; the boundaries are already gone |
+| `step_id` | `events[].extensions.step_id` | preserved | — not mapped onto `index`, which invariant 2 makes a dense position |
+| `tool_calls[].tool_call_id` | `tool_call.call_id` | preserved | — |
+| `tool_calls[].function_name` | `tool_call.name` + `name_semantics="function_name"` | preserved | — the ACP-kind semantics is not in the document to recover |
+| `tool_calls[].arguments` | `arguments`, **verbatim including `{}`** | preserved | — see below |
+| `tool_calls[].extra.title` / `.status` | `title` / `status` | preserved | — |
+| `.extra.status` outside the vocabulary | `unknown`, original in `extensions` | normalized | `events[i].tool_call.status` |
+| `observation.results[].content` | `ContentBlock(kind=text)`, `raw=None` | preserved | — the source block is not in the document |
+| a result matching no call in the step | `extensions.unmatched_observation_results` | normalized | `steps[i].observation.results`, **source space** |
+| `step.metrics` | `extensions.metrics`, uninterpreted | normalized | `events[i].usage` — no ATIF schema is vendored here to map it |
+| a step with *n* tool calls | *n* IR events | normalized | `steps[i]`, **source space** |
+| `final_metrics.total_prompt/completion/cached_tokens`, `total_cost_usd` | `usage.input/output/cache_read_tokens`, `.cost_usd` | preserved | — |
+| `final_metrics.total_steps` | *(no IR field)* | dropped | `final_metrics.total_steps`, **source space** |
+| other `final_metrics` keys | *(no IR field)* | dropped | `final_metrics`, **source space** |
+| a non-object step | *(no IR event)* | dropped | `steps[i]`, **source space** |
+| non-string where ATIF specifies a string | coerced with `str()` | normalized | the field, hub space |
+| *(none)* | `trace_id`, `started_at`, `finished_at`, `agent.provider`, `outcome`, `events[].started_at`/`.finished_at`/`.outcome`/`.usage`, `events[].tool_call.started_at`/`.finished_at`/`.content[].raw`, the five unmapped `usage` fields | **unsupported** | one record each |
+
+**Everything ATIF does not carry is `UNSUPPORTED`, never `DROPPED`.** There is
+nothing in the document to drop, and the distinction is what says where a fix
+would have to land — the same line `ACP → IR` draws, which is what makes the two
+inbound reports comparable. Every `DROPPED` record in this direction addresses
+the source document, in the source path space.
+
+**Three values are deliberately read as observed, and this is the whole point of
+the edge.** `agent.version: "unknown"` is what `ir_to_atif` writes when the trace
+has no version *and* a legal observed value; `arguments: {}` is what it writes
+for every ACP-derived call; `message: ""` is what it writes on a step carrying
+only a tool call. All three come back as observations. §8.10 measures what that
+costs.
+
+**One shape is deliberately not undone.** A step with both `message` and
+`reasoning_content` becomes **one** event carrying both, not a reasoning event
+followed by a message event: the blank-line join that produced it is not
+injective (§5 loss #10), so splitting it would invent a boundary. The fusion is
+reported by the event count instead.
 
 ### 8.4 A worked example
 
@@ -1021,21 +1085,23 @@ here.
 ### 8.7 Status
 
 - **Implemented:** the IR types, the loss model with its path spaces, the
-  invariants, the validation suite, this section, the `ACP → IR` converter and
-  the `IR → ATIF` converter, each with its loss report.
-- **Not implemented, deliberately:** `ATIF → IR`, any OTel work, any wiring into
-  a run path, any on-disk artifact, any capture-layer enrichment.
+  invariants, the validation suite, this section, all three converters —
+  `ACP → IR`, `IR → ATIF`, `ATIF → IR` — each with its loss report, and the
+  round-trip measurement over them (§8.10).
+- **Not implemented, deliberately:** any OTel work, any wiring into a run path,
+  any on-disk artifact, any capture-layer enrichment.
 - **Unchanged:** every existing format, exporter, artifact and code path.
   `export_atif.py` in particular is untouched and remains the only writer of
   `trainer/atif.json`.
 
 The isolation property is unchanged in substance and restated at a new boundary:
-`ir.py`, `ir_from_acp.py` and `ir_to_atif.py` form a closed family that may
-import each other, and `test_only_the_ir_family_imports_the_ir` asserts that
-nothing else in `src/benchflow` imports any of them. Each converter imports one
-benchflow module — the IR — and reads or writes its own format as data; in
-particular `ir_to_atif` does not import `export_atif`, and pins the shared schema
-version by test instead.
+`ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py` and
+`ir_round_trip.py` form a closed family that may import each other, and
+`test_only_the_ir_family_imports_the_ir` asserts that nothing else in
+`src/benchflow` imports any of them. Each converter imports one benchflow module
+— the IR — and reads or writes its own format as data; in particular
+`ir_to_atif` does not import `export_atif`, and pins the shared schema version by
+test instead.
 
 ### 8.8 What the first converter showed
 
@@ -1090,3 +1156,102 @@ declare an absence, and it settled three things the inbound edge could not:
   `PathSpace` into existence (§8.2, choice 5). A prompt-derived step has no IR
   antecedent at all, so it cannot be addressed in the hub vocabulary — and
   before this edge, `LossRecord` had no way to say so.
+
+### 8.10 What the round trip measures
+
+With both ATIF edges implemented the loop `ACP → IR → ATIF → IR′` closes, and
+the question it answers is a harder one than parity: **how much of a trace is
+still there after a trip through the interchange format?**
+[`ir_round_trip.py`](../src/benchflow/trajectories/ir_round_trip.py) answers it
+as a measurement. It compares the two *traces* and never reads the loss reports,
+so a converter that lost something without declaring it is caught rather than
+confirmed.
+
+#### Why not a percentage
+
+A single number would merge two things that have nothing to do with each other,
+so the report crosses an **observed** axis with a **declared** one:
+
+| observed (`RoundTripOutcome`) | meaning |
+|---|---|
+| `preserved` | same values, same count |
+| `transformed` | values on both sides, not the same ones — `matched=0` means *replaced* |
+| `lost` | values in, none out |
+| `fabricated` | none in, values out |
+
+| declared (`Representability`) | meaning |
+|---|---|
+| `representable` | ATIF has a slot — a loss here is a gap in **our** edge, and fixable |
+| `non_representable` | ATIF has no slot — a loss here is a cost of the **format** |
+
+The declared half is a table with one entry per IR field, and a test derives the
+field list from the models, so a new IR field cannot reach the round trip
+without a disposition. Comparison is by canonical path — `events[0].text` and
+`events[7].text` are one path with two values — because after a conversion that
+fuses and drops events there is no recoverable correspondence between event *i*
+and event *j*, and inventing an alignment would be the same guessing §8.3's
+inbound edge refuses.
+
+#### Measured on the two real rollouts of §5.2
+
+**FACT — machine measurement, not a human E2E.** The rollouts themselves are
+real and were verified by hand when they were captured; the loop below was run
+over their `acp_trajectory.jsonl` by the harness. `with prompts` reproduces what
+a real export does, and its document is byte-identical to the `trainer/atif.json`
+each rollout actually wrote.
+
+| | H1 fields | H2 fields | H1 values | H2 values |
+|---|---|---|---|---|
+| `preserved` | 15 | 15 | 35 of 46 | 25 of 37 |
+| `transformed` | 5 | 5 | | |
+| `lost` (fixable) | **0** | **0** | | |
+| `non_representable` | 1 | 6 | | |
+| `fabricated` | 4 | 4 | | |
+
+H1 is a 5-event tool-use rollout; H2 is 4 events ending in a real wall-clock
+timeout. Three results, in the order they matter:
+
+- **Nothing representable is lost.** Every value the loop drops is dropped
+  because ATIF has nowhere to put it. There is no gap in our own edges to close,
+  so the remaining loss is a property of the format and not of this
+  implementation. `test_nothing_representable_is_lost_on_a_captured_rollout`
+  pins it, and a failure there would name a converter bug.
+- **The trace comes back with *more* values than it left with** — 46 in, 56 out
+  for H1 — while having lost information. Four fields are fabricated on every
+  run: `agent.agent_version` (`"unknown"`), `events[].tool_call.arguments`
+  (`{}`), `events[].extensions.step_id`, and `extensions.schema_version`. The
+  first two are the ones that matter: on the way out `ir_to_atif` declares both
+  `SYNTHESIZED`, and on the way back nothing in the document marks them as
+  invented, so the reconstructed trace asserts — with the full authority of the
+  tri-state contract of §8.2 — that the agent's version was observed to be
+  `"unknown"` and that every tool was observed to be called with no arguments.
+  **The information was not lost so much as overwritten with a plausible value
+  of the same shape.** A consumer reading only the second trace cannot tell.
+  With `prompts` the same laundering happens one level up: steps that are not
+  trace data at all return as captured user messages, and the event count grows
+  by exactly the number of prompts.
+- **A timeout costs six fields.** H2 differs from H1 only in ending in a
+  timeout, and that single fact takes with it `events[].outcome`,
+  `outcome.status`, the three `agent_timeout` extension fields and the event
+  itself — §5 loss #4, measured rather than asserted. The IR made all of it
+  representable; the trip through ATIF makes the run look like one that simply
+  ended.
+
+`transformed` with `matched=0` is worth reading as its own category:
+`events[].source_type` and `events[].tool_call.name_semantics` are not degraded,
+they are **replaced** — ATIF's step `source` and its `function_name` slot sit
+down where the ACP type string and the `acp_kind` semantics used to be.
+
+#### What this does and does not argue
+
+It argues for the hub in the one way an assertion cannot: the pair of loss
+reports carries exactly the facts the second trace has lost the ability to
+state, and the measurement shows there is no third place to get them from. It
+does **not** argue that the round trip is safe, or that ATIF should be used as a
+storage format — the opposite, if anything.
+
+**Not measured, and not claimed:** oracle rollouts and non-text content blocks
+appear only in constructed test input, never in a captured rollout here; no
+artifact on hand carries a non-null cost, so `usage.cost_usd` round-trips in
+tests only; and the loop has been run over two rollouts from one agent, which is
+a demonstration, not a survey.

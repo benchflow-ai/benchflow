@@ -544,7 +544,13 @@ def test_the_oracle_record_has_its_own_kind_and_role():
 # ---------------------------------------------------------------------------
 
 
-IR_FAMILY = ("ir", "ir_from_acp", "ir_to_atif", "ir_from_atif")
+IR_FAMILY = (
+    "ir",
+    "ir_from_acp",
+    "ir_to_atif",
+    "ir_from_atif",
+    "ir_round_trip",
+)
 """The unwired modules of the proposal: the IR and its converters.
 
 They may import each other — a converter that could not import the IR would be
