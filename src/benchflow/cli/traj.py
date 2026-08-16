@@ -59,6 +59,67 @@ CONTRIBUTOR_PROMPT = (
     "and follow it: find a session, open the viewer, upload only after I review it."
 )
 
+UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
+
+
+def _fetch_latest_version() -> str | None:
+    """Return the latest release on PyPI, or ``None`` when unavailable.
+
+    Module-level so tests monkeypatch it and never touch the network.
+    """
+    import logging
+
+    import httpx
+
+    # The CLI configures INFO logging; keep httpx's "HTTP Request" line for
+    # this background check out of the user's terminal.
+    logger = logging.getLogger("httpx")
+    previous_level = logger.level
+    logger.setLevel(logging.WARNING)
+    try:
+        response = httpx.get("https://pypi.org/pypi/benchflow/json", timeout=2.0)
+        response.raise_for_status()
+        version = response.json()["info"]["version"]
+    finally:
+        logger.setLevel(previous_level)
+    return version if isinstance(version, str) else None
+
+
+def _installed_version() -> str | None:
+    import importlib.metadata
+
+    try:
+        return importlib.metadata.version("benchflow")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _maybe_print_update_hint() -> None:
+    """Print a one-line upgrade hint when a newer release exists on PyPI.
+
+    Best-effort only: any network, parse, or metadata failure is silent and
+    never blocks the command. ``BENCHFLOW_SKIP_UPDATE_CHECK`` disables the
+    check entirely (the test suite sets it for hermeticity).
+    """
+    if os.environ.get("BENCHFLOW_SKIP_UPDATE_CHECK"):
+        return
+    try:
+        installed = _installed_version()
+        latest = _fetch_latest_version()
+        if installed is None or latest is None:
+            return
+        from packaging.version import Version
+
+        # Compare release tuples so a dev/prerelease of a newer (or equal)
+        # base — e.g. 0.7.1.dev0 against PyPI 0.7.0 — never counts as
+        # outdated.
+        if Version(installed).release >= Version(latest).release:
+            return
+    except Exception:
+        return
+    # Plain print keeps the hint one physical line (no Rich wrapping).
+    print(f"A newer BenchFlow ({latest}) is available — run: {UPGRADE_COMMAND}")
+
 
 @dataclass(frozen=True)
 class _UploadOptions:
@@ -110,6 +171,7 @@ def register_traj(app: typer.Typer) -> None:
         ] = False,
     ) -> None:
         """Install the submit skill, or print the line to paste into an agent."""
+        _maybe_print_update_hint()
         if prompt_only:
             _print_contributor_prompt()
             return
@@ -184,6 +246,7 @@ def register_traj(app: typer.Typer) -> None:
         ] = DEFAULT_PREVIEW_STEPS,
     ) -> None:
         """Inspect, redact, confirm, and upload trajectory JSONL."""
+        _maybe_print_update_hint()
         try:
             _run_upload(
                 _UploadOptions(

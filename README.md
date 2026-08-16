@@ -26,6 +26,10 @@ Submit my best local Claude Code or Codex session to the BenchFlow eval prize. R
 The agent finds sessions on this machine, opens the viewer, and uploads after
 you like what you see.
 
+Be on the latest BenchFlow first — `uv tool install --python 3.12 --upgrade
+--force benchflow`. The `bench traj` commands print a one-line upgrade hint
+when a newer release is available.
+
 Prefer the terminal instead? The guided upload inspects before anything leaves
 your machine — it renders a redacted trajectory report (step counts, masked
 secrets, preview) and asks for confirmation:
