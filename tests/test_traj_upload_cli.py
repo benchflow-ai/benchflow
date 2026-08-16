@@ -715,27 +715,45 @@ def test_skip_update_check_env_var_never_fetches(
 
 
 def test_setup_prompt_prints_the_copy_paste_line() -> None:
-    """The human path is one line to paste into an agent.
+    """The human path is one prompt block to send to an agent.
 
-    Also guards the version step added in PR #1017 (follow-up to PRs #1013
-    and #1014): the paste line itself tells the agent to upgrade BenchFlow,
-    with the upgrade command appearing before the skill URL.
+    Guards the version step and hand-off framing added in PR #1017
+    (follow-up to PRs #1013 and #1014): the prompt tells the agent to
+    upgrade BenchFlow before reading the skill, the upgrade command appears
+    before the skill URL, and the URL sits on one unbroken physical line.
+    README.md renders the prompt as a blockquote (a fenced code block would
+    not soft-wrap on GitHub), so each unwrapped prompt line is asserted to be
+    present in the README instead of the whole string verbatim.
     """
-    from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL, UPGRADE_COMMAND
+    from benchflow.cli.traj import (
+        CONTRIBUTOR_PROMPT,
+        CONTRIBUTOR_PROMPT_FRAMING,
+        SKILL_RAW_URL,
+        UPGRADE_COMMAND,
+    )
 
     result = runner.invoke(app, ["traj", "setup", "--prompt"])
     readme = Path(__file__).resolve().parents[1] / "README.md"
+    readme_text = readme.read_text(encoding="utf-8")
 
     assert result.exit_code == 0, result.output
-    assert CONTRIBUTOR_PROMPT in click.unstyle(result.output)
+    output = click.unstyle(result.output)
+    assert CONTRIBUTOR_PROMPT_FRAMING in output
+    assert CONTRIBUTOR_PROMPT in output
     assert SKILL_RAW_URL in result.output
     assert "bench traj upload" not in result.output
-    assert CONTRIBUTOR_PROMPT in readme.read_text(encoding="utf-8")
+
+    prompt_lines = [line for line in CONTRIBUTOR_PROMPT.splitlines() if line]
+    assert len(prompt_lines) == 3
+    for line in prompt_lines:
+        assert line in readme_text
+    assert "send them to your coding agent" in readme_text
+
     assert UPGRADE_COMMAND in CONTRIBUTOR_PROMPT
     assert CONTRIBUTOR_PROMPT.index(UPGRADE_COMMAND) < CONTRIBUTOR_PROMPT.index(
         SKILL_RAW_URL
     )
-    assert "\n" not in CONTRIBUTOR_PROMPT
+    assert any(SKILL_RAW_URL in line for line in prompt_lines)
 
 
 def test_setup_yes_installs_the_skill(
@@ -750,7 +768,9 @@ def test_setup_yes_installs_the_skill(
     assert skill.is_file()
     text = skill.read_text(encoding="utf-8")
     assert "open the viewer" in text
-    assert "Paste this to your agent" in click.unstyle(result.output)
+    # PR #1017 reframed the hand-off copy: the block is a prompt for the
+    # agent, not steps for the human.
+    assert "Send this to your coding agent" in click.unstyle(result.output)
 
 
 def test_list_recent_sessions_scans_all_projects_most_recent_first(
