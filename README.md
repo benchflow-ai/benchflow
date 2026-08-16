@@ -15,7 +15,7 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 
 ## Quick start: 1. Submit a trajectory
 
-**Don't follow these steps yourself — send them to your coding agent.** Copy
+**Send these to your coding agent.** Copy
 the block below and paste it as a message to Claude Code, Codex, OpenCode, or
 Cursor. That is the $2,000 eval prize path. No BenchFlow account, API key, or
 Azure login.
