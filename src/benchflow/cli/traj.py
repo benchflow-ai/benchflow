@@ -23,6 +23,7 @@ from benchflow.cli._traj_upload_ui import (
     render_trajectory_report,
     upload_progress,
 )
+from benchflow.publish.redact import format_redaction_breakdown
 from benchflow.publish.traj_capture import (
     StagedCapture,
     default_source_id,
@@ -320,6 +321,7 @@ def _run_upload(options: _UploadOptions) -> None:
             artifacts.files,
             masked_values=artifacts.redaction_replacements,
             preview_steps=options.preview_steps,
+            masked_categories=artifacts.redaction_categories,
         )
         status.stop()
         render_trajectory_report(report, console=console)
@@ -649,6 +651,13 @@ def _print_dry_run(staged: StagedCapture) -> None:
     if staged.ignored:
         console.print(f"Ignored: {escape(', '.join(staged.ignored))}")
     console.print(f"Redactions: {staged.redaction_replacements}")
+    # One plain, greppable line so the upload skill can lift the breakdown into
+    # the viewer's confirm bar (bench eval view --redaction-summary "...").
+    breakdown = format_redaction_breakdown(dict(staged.artifact_redaction_categories))
+    if breakdown:
+        print(f"Masked for you: {breakdown}")
+    else:
+        print("Masked for you: nothing — no secrets detected")
 
 
 def _print_contributor_prompt() -> None:

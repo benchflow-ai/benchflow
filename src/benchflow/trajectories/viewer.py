@@ -97,9 +97,11 @@ body { padding-bottom: 104px; }
 .confirm-btn.approve:hover { background: #262626; }
 .confirm-btn.reject { background: var(--card); color: var(--ink); border: 1px solid var(--rule-strong); }
 .confirm-btn.reject:hover { background: var(--secondary); }
+.confirm-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
 </style>
 <div class="confirm-bar">
 <div class="confirm-inner" id="confirm-inner">
+<!--BENCHFLOW-REDACTION-NOTE-->
 <span class="confirm-question">Submit this trajectory to the BenchFlow eval prize?</span>
 <div class="confirm-actions">
 <button class="confirm-btn approve" onclick="__benchDecide('approve')">Approve &amp; submit</button>
@@ -124,11 +126,33 @@ async function __benchDecide(choice) {
 """
 
 
-def _inject_confirm_bar(page: str) -> str:
+_REDACTION_NOTE_MARKER = "<!--BENCHFLOW-REDACTION-NOTE-->"
+
+
+def _confirm_bar_html(redaction_summary: str | None) -> str:
+    """Confirm-bar snippet, optionally carrying the redaction-summary note.
+
+    The note is presentation-only text the caller composed (the upload skill
+    lifts it from ``bench traj upload --dry-run``); the viewer itself never
+    redacts, so without a summary the bar is byte-identical to the plain
+    ``--confirm`` bar.
+    """
+    note = ""
+    if redaction_summary:
+        note = (
+            '<div class="confirm-note">Before upload, BenchFlow masks: '
+            f"{html.escape(redaction_summary)}. "
+            "Originals never leave this machine.</div>"
+        )
+    return _CONFIRM_BAR_HTML.replace(_REDACTION_NOTE_MARKER, note, 1)
+
+
+def _inject_confirm_bar(page: str, redaction_summary: str | None = None) -> str:
     """Append the confirm bar just before </body> (or at the end as fallback)."""
+    bar = _confirm_bar_html(redaction_summary)
     if "</body>" in page:
-        return page.replace("</body>", f"{_CONFIRM_BAR_HTML}</body>", 1)
-    return page + _CONFIRM_BAR_HTML
+        return page.replace("</body>", f"{bar}</body>", 1)
+    return page + bar
 
 
 # Small BenchFlow wordmark header (inline SVG logo from the site's icon set —
@@ -739,6 +763,7 @@ def serve(
     port: int = 8888,
     prompts: list[str] | None = None,
     confirm: bool = False,
+    redaction_summary: str | None = None,
 ) -> str | None:
     """Serve a trial directory or a session JSONL file as a web page.
 
@@ -748,6 +773,11 @@ def serve(
     machine-readable ``DECISION: <value>`` line to stdout. Without it the
     server runs until Ctrl+C and the return value is ``None`` — exactly the
     pre-confirm behavior (no bar, no POST endpoint).
+
+    ``redaction_summary`` is an optional caller-composed line (e.g. ``"2 API
+    keys, 1 bearer token"``) rendered inside the confirm bar so the reviewer
+    sees what upload-time redaction would mask. Presentation-only; it has no
+    effect without ``confirm=True``.
     """
     import threading
     from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -773,7 +803,7 @@ def serve(
         # interaction against this live server, not part of the artifact.
         (path / "trajectory.html").write_text(html_content)
     if confirm:
-        html_content = _inject_confirm_bar(html_content)
+        html_content = _inject_confirm_bar(html_content, redaction_summary)
 
     print(f"Trajectory viewer: http://localhost:{port}")
     print(f"Trial: {path}")

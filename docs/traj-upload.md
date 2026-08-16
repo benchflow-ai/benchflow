@@ -73,7 +73,10 @@ otherwise-valid JSONL ineligible: the local staging pass replaces them with
 manifest metadata, computes a content digest, and uploads a manifest last. The
 first request can take a minute while the public broker wakes up; retries are
 safe. Use `--dry-run` to inspect the staged file list, digest, sizes, ignored
-siblings, and redaction count without making a network request.
+siblings, and redaction count without making a network request; its output ends
+with a plain `Masked for you: ...` line itemizing the masked secrets by kind,
+which the contributor skill lifts into the viewer's confirm bar via
+`bench eval view --confirm --redaction-summary`.
 
 Uploads are tagged with the repository the session was about: unless you pass
 `--source-id`, the CLI reads the session's recorded working directory,
@@ -103,7 +106,18 @@ The report is generated only from the staged, redacted copy. It shows:
   no extractable redacted text are skipped instead of producing placeholder
   steps such as `Assistant response`;
 - the number of API-key or secret-like values replaced with
-  `<XXX-benchflow-key-values-XXX>`; and
+  `<XXX-benchflow-key-values-XXX>`, followed by a `Masked for you` line that
+  itemizes what kind of secret each replacement was — API keys, bearer tokens,
+  private key blocks, passwords, URL credentials, and credential-bearing field
+  values, e.g. `2 API keys, 1 bearer token — originals never leave this
+  machine` — with a reminder that redaction ran locally and the server
+  independently rescans staged artifacts. The categories name what the
+  redaction rules actually detect (there is no PII/email detection); when
+  nothing matched, the line reads `No secrets or personal identifiers detected
+  — nothing needed masking.` The per-category counts are display-only: the
+  uploaded `trajectory_report` manifest field is validated by the server with
+  a closed schema and an exact recompute check, so it keeps only the total
+  masked-value count; and
 - the first five meaningful steps as a preview containing up to the first 100
   words of each step's redacted text.
 
@@ -147,7 +161,12 @@ contributor skill opens this before upload. Viewing a JSONL file does not
 write `trajectory.html` next to the session. With `--confirm` (0.7.2+) the
 page adds an approve/reject bar and the process prints `DECISION: approved`
 or `DECISION: rejected` and exits (0 approve / 3 reject), so the agent can
-wait on the click instead of a chat reply.
+wait on the click instead of a chat reply. The viewer shows the original
+session and never redacts; `--redaction-summary "2 API keys, 1 bearer token"`
+adds a display-only note to the confirm bar ("Before upload, BenchFlow
+masks: … Originals never leave this machine.") so the reviewer sees what the
+upload step will mask — the skill fills it from the `Masked for you` line of
+a `bench traj upload --dry-run`.
 
 ## What reaches the dataset
 

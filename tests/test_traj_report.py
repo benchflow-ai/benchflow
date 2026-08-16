@@ -441,3 +441,86 @@ def test_report_rejects_preview_limits_outside_the_public_cli_contract(
 
     with pytest.raises(ValueError, match="0-20"):
         build_trajectory_report((artifact,), masked_values=0, preview_steps=21)
+
+
+def test_report_carries_masked_categories_but_keeps_them_out_of_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Guards the redaction-transparency feature from PR #1022: staged categories flow into the report for the
+    terminal breakdown, but ``as_manifest_metadata`` must stay unchanged — the
+    server validates ``trajectory_report`` with ``extra="forbid"`` and an exact
+    recompute-equality check, so a new manifest field would be rejected."""
+    trajectory = tmp_path / "trajectory"
+    trajectory.mkdir()
+    (trajectory / "acp_trajectory.jsonl").write_text(
+        "".join(
+            json.dumps(record) + "\n"
+            for record in (
+                {
+                    "type": "user_message",
+                    "text": "here is sk-abc1234567defghijklmnop987654",
+                },
+                {"type": "agent_message", "text": "Done"},
+            )
+        )
+    )
+
+    with stage_trajectory_artifacts(trajectory, source_id="categories") as staged:
+        assert staged.redaction_categories == (("API key", 1),)
+        report = build_trajectory_report(
+            staged.files,
+            masked_values=staged.redaction_replacements,
+            masked_categories=staged.redaction_categories,
+        )
+
+    assert report.masked_values == 1
+    assert report.masked_categories == (("API key", 1),)
+    assert sum(count for _, count in report.masked_categories) == report.masked_values
+    assert "masked_categories" not in report.as_manifest_metadata()
+
+
+def _render_report(report: TrajectoryReport) -> str:
+    from rich.console import Console
+
+    from benchflow.cli._traj_upload_ui import render_trajectory_report
+
+    console = Console(record=True, width=120)
+    render_trajectory_report(report, console=console)
+    # Panels wrap long values and pad lines with box-drawing characters;
+    # normalize so copy assertions are wrap-insensitive.
+    return " ".join(console.export_text().replace("│", " ").split())
+
+
+def test_rendered_report_itemizes_masked_categories(tmp_path: Path) -> None:
+    """Guards the redaction-transparency feature from PR #1022: with masked values the terminal report shows the
+    itemized ``Masked for you`` breakdown plus the local-redaction reassurance."""
+    artifact = _artifact(tmp_path / "generic.jsonl", [{"type": "message", "text": "x"}])
+    report = build_trajectory_report(
+        (artifact,),
+        masked_values=3,
+        masked_categories=(("API key", 2), ("bearer token", 1)),
+    )
+
+    rendered = _render_report(report)
+    assert "Masked for you" in rendered
+    assert "2 API keys, 1 bearer token" in rendered
+    assert "originals never leave this machine" in rendered
+    assert (
+        "Redaction ran locally before anything was staged; the server "
+        "independently rescans and rejects any survivor." in rendered
+    )
+    assert "No secrets or personal identifiers detected" not in rendered
+
+
+def test_rendered_report_zero_masking_copy(tmp_path: Path) -> None:
+    """Guards the redaction-transparency feature from PR #1022: with nothing masked the report says so explicitly
+    instead of showing an empty breakdown."""
+    artifact = _artifact(tmp_path / "generic.jsonl", [{"type": "message", "text": "x"}])
+    report = build_trajectory_report((artifact,), masked_values=0)
+
+    rendered = _render_report(report)
+    assert (
+        "No secrets or personal identifiers detected — nothing needed masking."
+        in rendered
+    )
+    assert "Redaction ran locally" not in rendered
