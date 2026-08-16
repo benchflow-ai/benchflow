@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.2 — 2026-08-16
+
 ### Added
 - **The upload preview itemizes what redaction masked, by kind.** The
   redactor now categorizes every replacement by the rule that fired — API
