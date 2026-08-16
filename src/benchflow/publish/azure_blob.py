@@ -73,9 +73,7 @@ def upload_capture_direct(
             try:
                 with staged_file.local_path.open("rb") as stream:
                     data = (
-                        stream
-                        if on_bytes is None
-                        else ProgressReader(stream, on_bytes)
+                        stream if on_bytes is None else ProgressReader(stream, on_bytes)
                     )
                     client.upload_blob(
                         name=blob_name,

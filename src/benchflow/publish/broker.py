@@ -65,9 +65,7 @@ def upload_capture_via_broker(
                 object_name = prefix + staged_file.relname
                 with staged_file.local_path.open("rb") as stream:
                     content = (
-                        stream
-                        if on_bytes is None
-                        else ProgressReader(stream, on_bytes)
+                        stream if on_bytes is None else ProgressReader(stream, on_bytes)
                     )
                     put_response = client.put(
                         upload["put_url"],
