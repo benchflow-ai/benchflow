@@ -45,6 +45,7 @@ def upload_capture_via_broker(
         "traj_digest": staged.manifest["traj_digest"],
         "uploaded_by": staged.manifest["uploaded_by"],
         "artifacts": artifacts,
+        "manifest_sha256": staged.files[-1].sha256,
     }
     if contributor := staged.manifest.get("contributor"):
         request_body["contributor"] = contributor

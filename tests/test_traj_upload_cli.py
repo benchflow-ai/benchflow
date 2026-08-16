@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -148,8 +149,10 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
     """Broker mode sends the manifest handshake and returned PUT headers verbatim."""
     trial = _trial(tmp_path)
     requests: list[httpx.Request] = []
+    manifest_sha256 = ""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal manifest_sha256
         requests.append(request)
         if request.method == "POST":
             body = json.loads(request.content)
@@ -161,14 +164,17 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
                 "uploaded_by",
                 "contributor",
                 "artifacts",
+                "manifest_sha256",
             }
             assert body["contributor"] == {
                 "github_id": GITHUB_ID,
                 "email": EMAIL,
             }
             assert body["schema_version"] == "1.2.0"
+            manifest_sha256 = body["manifest_sha256"]
             return httpx.Response(200, json=_broker_payload(request))
         if request.url.path.endswith("manifest.json"):
+            assert hashlib.sha256(request.content).hexdigest() == manifest_sha256
             manifest = json.loads(request.content)
             assert manifest["contributor"] == {
                 "github_id": GITHUB_ID,

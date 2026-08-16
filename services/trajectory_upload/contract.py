@@ -72,15 +72,13 @@ class ContributorInfo(BaseModel):
         return validate_email(value)
 
 
-class UploadRequest(BaseModel):
+class CaptureDeclaration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.1.0", "1.2.0"]
     kind: Literal["bronze.trajectory"]
     source_id: str
     traj_digest: str
     uploaded_by: str | None = Field(default=None, max_length=MAX_UPLOADED_BY_LENGTH)
-    contributor: ContributorInfo
     artifacts: list[Artifact] = Field(min_length=1, max_length=MAX_ARTIFACTS)
 
     @field_validator("source_id")
@@ -105,6 +103,25 @@ class UploadRequest(BaseModel):
             raise ValueError(f"capture exceeds {MAX_CAPTURE_BYTES} bytes")
         if self.traj_digest != f"sha256:{trajectory_digest(self.artifacts)}":
             raise ValueError("traj_digest does not match the artifact hashes")
+        return self
+
+
+class UploadRequest(CaptureDeclaration):
+    schema_version: Literal["1.1.0", "1.2.0"]
+    contributor: ContributorInfo
+    manifest_sha256: str | None = None
+
+    @field_validator("manifest_sha256")
+    @classmethod
+    def validate_manifest_sha256(cls, value: str | None) -> str | None:
+        if value is not None and not SHA256.fullmatch(value):
+            raise ValueError("manifest sha256 must be 64 lowercase hex characters")
+        return value
+
+    @model_validator(mode="after")
+    def validate_manifest_binding(self) -> Self:
+        if self.schema_version == "1.2.0" and self.manifest_sha256 is None:
+            raise ValueError("schema 1.2.0 requires manifest sha256")
         return self
 
 
@@ -189,7 +206,7 @@ class TrajectoryReportInfo(BaseModel):
         return self
 
 
-class ContributionManifest(UploadRequest):
+class ContributionManifest(CaptureDeclaration):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["1.0.0", "1.1.0", "1.2.0"]

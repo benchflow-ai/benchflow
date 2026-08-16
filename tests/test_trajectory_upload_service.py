@@ -15,12 +15,18 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from benchflow.publish.traj_capture import stage_trajectory_capture
+from benchflow.publish.traj_capture import (
+    finalize_trajectory_capture,
+    stage_trajectory_artifacts,
+    stage_trajectory_capture,
+)
+from benchflow.publish.traj_report import build_trajectory_report
 from services.trajectory_upload.azure_backend import AzureUploadBroker
 from services.trajectory_upload.broker_app import (
     AlreadyUploaded,
     RateLimited,
     RejectedUpload,
+    UploadDeclarationConflict,
     _backend,
     create_app,
 )
@@ -233,6 +239,28 @@ def test_contributor_contract_is_validated_at_broker_and_manifest_boundaries(
     assert legacy_manifest.contributor is None
 
 
+def test_schema_12_handshake_requires_exact_manifest_digest(tmp_path: Path) -> None:
+    """Guards PR #1008 against accepting an unbound schema 1.2 manifest."""
+    with stage_trajectory_capture(
+        _trial(tmp_path),
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
+        body = _request_from_manifest(staged.manifest)
+    body["schema_version"] = "1.2.0"
+
+    with pytest.raises(ValidationError, match="requires manifest sha256"):
+        UploadRequest.model_validate(body)
+
+    body["manifest_sha256"] = "a" * 64
+    assert UploadRequest.model_validate(body).manifest_sha256 == "a" * 64
+
+    body["manifest_sha256"] = "A" * 64
+    with pytest.raises(ValidationError, match="64 lowercase hex"):
+        UploadRequest.model_validate(body)
+
+
 def test_broker_rejects_new_legacy_uploads_without_contributor(
     tmp_path: Path,
 ) -> None:
@@ -312,6 +340,12 @@ def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
     )
     assert rejected.status_code == 422
     assert "previously rejected" in rejected.json()["detail"]
+
+    conflicting = TestClient(create_app(FakeBroker(UploadDeclarationConflict()))).post(
+        "/v1/uploads", json=body
+    )
+    assert conflicting.status_code == 422
+    assert "conflicting active manifest" in conflicting.json()["detail"]
 
 
 def test_broker_validation_errors_are_fail_closed_and_json_safe(
@@ -708,6 +742,96 @@ def test_broker_persists_declared_artifact_sizes(
     assert grant.prefix.endswith(f"/{grant.upload_id}/")
 
 
+def test_broker_rejects_manifest_change_during_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1008 against mutating a manifest during validation."""
+    with stage_trajectory_capture(
+        _trial(tmp_path),
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
+        body = _request_from_manifest(staged.manifest)
+        body["schema_version"] = "1.2.0"
+        body["manifest_sha256"] = "a" * 64
+        request = UploadRequest.model_validate(body)
+        digest = staged.traj_digest
+    attempt_id = "u_" + "1" * 32
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "validating",
+                "attempt_id": attempt_id,
+                "declared_manifest_sha256": "b" * 64,
+            }
+        ]
+    )
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+    )
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+
+    with pytest.raises(UploadDeclarationConflict):
+        backend.create_upload(request, client_ip="127.0.0.1")
+
+    assert len(table.entities) == 1
+
+
+def test_broker_supersedes_conflicting_incomplete_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1008 against interrupted uploads permanently blocking retries."""
+    with stage_trajectory_capture(
+        _trial(tmp_path),
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
+        body = _request_from_manifest(staged.manifest)
+        body["schema_version"] = "1.2.0"
+        body["manifest_sha256"] = "a" * 64
+        request = UploadRequest.model_validate(body)
+        digest = staged.traj_digest
+    old_attempt = "u_" + "1" * 32
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+                "attempt_id": old_attempt,
+                "declared_manifest_sha256": "b" * 64,
+            }
+        ]
+    )
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(
+            get_user_delegation_key=lambda **_kwargs: "delegation-key"
+        ),
+        ip_hash_key=b"test",
+    )
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(
+        "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
+    )
+
+    grant = backend.create_upload(request, client_ip="127.0.0.1")
+
+    assert grant.upload_id != old_attempt
+    assert table.entities[-1]["attempt_id"] == grant.upload_id
+    assert table.entities[-1]["declared_manifest_sha256"] == "a" * 64
+
+
 def test_broker_reopens_rejected_digest_in_isolated_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -799,6 +923,104 @@ def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:
             prefix + item.relname: item.local_path.read_bytes() for item in staged.files
         }
     return digest, blobs
+
+
+def _quarantine_report_capture(
+    tmp_path: Path,
+) -> tuple[str, str, str, dict[str, bytes]]:
+    source = tmp_path / "capture.jsonl"
+    source.write_text(
+        '{"type":"user_message","text":"Please inspect"}\n', encoding="utf-8"
+    )
+    with stage_trajectory_artifacts(source, source_id="report-demo") as artifacts:
+        report = build_trajectory_report(
+            artifacts.files,
+            masked_values=artifacts.redaction_replacements,
+        )
+        staged = finalize_trajectory_capture(
+            artifacts,
+            github_id="benchflow-ai",
+            email="contributor@benchflow.ai",
+            trajectory_report=report.as_manifest_metadata(),
+        )
+        digest = staged.traj_digest
+        attempt_id = "u_" + "2" * 32
+        prefix = f"inbox/{digest}/{attempt_id}/"
+        blobs = {
+            prefix + item.relname: item.local_path.read_bytes() for item in staged.files
+        }
+        manifest_sha256 = staged.files[-1].sha256
+    return digest, attempt_id, manifest_sha256, blobs
+
+
+def test_queue_validator_enforces_schema_12_manifest_binding(tmp_path: Path) -> None:
+    """Guards PR #1008 against promoting a manifest changed after handshake."""
+    digest, attempt_id, _manifest_sha256, blobs = _quarantine_report_capture(tmp_path)
+    manifest_name = f"inbox/{digest}/{attempt_id}/manifest.json"
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/" + manifest_name
+                    )
+                }
+            }
+        )
+    )
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+                "attempt_id": attempt_id,
+                "declared_manifest_sha256": "0" * 64,
+            }
+        ]
+    )
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert table.entities[-1]["status"] == "rejected"
+    assert "manifest sha256 does not match declaration" in table.entities[-1]["detail"]
+    assert container.uploaded == []
+
+
+def test_queue_validator_promotes_bound_schema_12_report(tmp_path: Path) -> None:
+    """Guards PR #1008: a bound, recomputed report reaches community storage."""
+    digest, attempt_id, manifest_sha256, blobs = _quarantine_report_capture(tmp_path)
+    manifest_name = f"inbox/{digest}/{attempt_id}/manifest.json"
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/" + manifest_name
+                    )
+                }
+            }
+        )
+    )
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+                "attempt_id": attempt_id,
+                "declared_manifest_sha256": manifest_sha256,
+            }
+        ]
+    )
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert table.entities[-1]["status"] == "ingested"
+    promoted = json.loads(container.blobs[f"sources/community/{digest}/manifest.json"])
+    assert promoted["trajectory_report"]["human_steps"] == 1
 
 
 def test_queue_validator_promotes_manifest_last_and_cleans_quarantine(

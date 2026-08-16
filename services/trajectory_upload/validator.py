@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -136,7 +137,12 @@ class AzureCaptureValidator:
         try:
             with tempfile.TemporaryDirectory(prefix="benchflow-validator-") as name:
                 try:
-                    validated = self._download_and_validate(prefix, Path(name))
+                    validated = self._download_and_validate(
+                        prefix,
+                        Path(name),
+                        digest=digest,
+                        attempt_id=attempt_id,
+                    )
                 except ResourceNotFoundError as exc:
                     raise CaptureRejected("a declared capture blob is missing") from exc
                 if validated.manifest.traj_digest != f"sha256:{digest}":
@@ -219,7 +225,12 @@ class AzureCaptureValidator:
         return parsed
 
     def _download_and_validate(
-        self, prefix: str, staging_dir: Path
+        self,
+        prefix: str,
+        staging_dir: Path,
+        *,
+        digest: str,
+        attempt_id: str | None,
     ) -> ValidatedCapture:
         manifest_blob = self.container.get_blob_client(prefix + "manifest.json")
         properties = manifest_blob.get_blob_properties()
@@ -227,6 +238,14 @@ class AzureCaptureValidator:
             raise CaptureRejected("manifest exceeds the 1 MiB limit")
         manifest_bytes = manifest_blob.download_blob().readall()
         manifest = validate_manifest_bytes(manifest_bytes)
+        declared_manifest_sha256 = self._declared_manifest_sha256(digest, attempt_id)
+        if manifest.schema_version == "1.2.0" and declared_manifest_sha256 is None:
+            raise CaptureRejected("schema 1.2 manifest declaration is missing")
+        if (
+            declared_manifest_sha256 is not None
+            and hashlib.sha256(manifest_bytes).hexdigest() != declared_manifest_sha256
+        ):
+            raise CaptureRejected("manifest sha256 does not match declaration")
 
         artifact_paths: dict[str, Path] = {}
         for artifact in manifest.artifacts:
@@ -239,6 +258,17 @@ class AzureCaptureValidator:
                 blob.download_blob(max_concurrency=1).readinto(output)
             artifact_paths[relname] = local_path
         return validate_local_capture(manifest_bytes, artifact_paths)
+
+    def _declared_manifest_sha256(
+        self, digest: str, attempt_id: str | None
+    ) -> str | None:
+        entity = self._capture_entity(digest)
+        if entity is None or entity.get("attempt_id") != attempt_id:
+            return None
+        value = entity.get("declared_manifest_sha256")
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            return None
+        return value
 
     def _promote(self, capture: ValidatedCapture, digest: str) -> None:
         from azure.core.exceptions import ResourceExistsError

@@ -113,6 +113,14 @@ def test_final_manifest_persists_the_complete_trajectory_report(
             manifest_bytes,
             {item.relname: item.local_path for item in staged.files[:-1]},
         )
+        semantically_false = json.loads(manifest_bytes)
+        semantically_false["trajectory_report"]["thinking_steps"] -= 1
+        semantically_false["trajectory_report"]["human_steps"] += 1
+        with pytest.raises(CaptureRejected, match="does not match uploaded artifacts"):
+            validate_local_capture(
+                json.dumps(semantically_false).encode(),
+                {item.relname: item.local_path for item in staged.files[:-1]},
+            )
 
     assert staged.manifest["schema_version"] == "1.2.0"
     assert staged.manifest["trajectory_report"] == report_metadata
