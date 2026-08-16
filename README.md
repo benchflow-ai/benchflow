@@ -93,7 +93,7 @@ uv tool install --python 3.12 --upgrade benchflow
   in the install command so `uv` does not resolve an older Python-compatible
   package that lacks the CLI entrypoints.
 - If you see `Executables already exist: bench, benchflow`, re-run with `uv tool install --python 3.12 --upgrade --force benchflow` to replace stale entrypoints from an older install.
-- For Daytona, Modal, or AgentCore extras, install the relevant optional package, for example `uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'`.
+- For Daytona, Modal, AgentCore, or Fystash extras, install the relevant optional package, for example `uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'` or `benchflow[sandbox-fystash]`.
 
 Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --python 3.12 --prerelease allow --upgrade benchflow`).
 

@@ -420,6 +420,9 @@ sandbox-daytona = [
     { name = "daytona" },
     { name = "tenacity" },
 ]
+sandbox-fystash = [
+    { name = "fystash" },
+]
 sandbox-modal = [
     { name = "modal" },
     { name = "tenacity" },
@@ -450,6 +453,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'trl'", specifier = ">=2.19.0" },
     { name = "daytona", marker = "extra == 'sandbox-daytona'", specifier = ">=0.184.0" },
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.6" },
+    { name = "fystash", marker = "extra == 'sandbox-fystash'", specifier = ">=0.6.0" },
     { name = "google-cloud-aiplatform", specifier = ">=1.133.0,<2.0" },
     { name = "google-genai", marker = "extra == 'judge'", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27.0" },
@@ -476,7 +480,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.9" },
     { name = "uvicorn", marker = "extra == 'azure-service'", specifier = ">=0.30" },
 ]
-provides-extras = ["azure", "azure-service", "dev", "train", "trl", "sandbox-daytona", "sandbox-modal", "sandbox-agentcore", "bedrock", "judge", "deepagents"]
+provides-extras = ["azure", "azure-service", "dev", "train", "trl", "sandbox-daytona", "sandbox-modal", "sandbox-fystash", "sandbox-agentcore", "bedrock", "judge", "deepagents"]
 
 [[package]]
 name = "boto3"
@@ -1273,6 +1277,15 @@ wheels = [
 [package.optional-dependencies]
 http = [
     { name = "aiohttp" },
+]
+
+[[package]]
+name = "fystash"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/f6/3fd0820f57c2bebff683074025005a1f4b615ead341327752caff295034f/fystash-0.6.0.tar.gz", hash = "sha256:89768d0f5a6ca7a7262d1bf97a4dfe996872d34020d5d4c9045a2c30569d0cfe", size = 35910, upload-time = "2026-08-13T08:12:44.580Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/a6/1e0b1c89e6578819b0334633ff269f1c84e8274298eba664166bbdfc236a/fystash-0.6.0-py3-none-any.whl", hash = "sha256:b6d9a065ab214cdd612e86e572ab1410f9c5dde21ff72323520a36b57b574212", size = 32065, upload-time = "2026-08-13T08:12:41.673Z" },
 ]
 
 [[package]]
