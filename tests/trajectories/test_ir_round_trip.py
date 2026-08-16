@@ -21,6 +21,7 @@ fabricated, and a timeout does not come back at all.
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import UnionType
 from typing import Any, Union, get_args, get_origin
 
@@ -29,14 +30,22 @@ from pydantic import BaseModel
 
 from benchflow.trajectories.ir import (
     CanonicalTrace,
+    ContentBlock,
+    ContentBlockKind,
     EventKind,
+    ModelInfo,
+    OutcomeStatus,
     Provenance,
+    Role,
     ToolCall,
+    ToolStatus,
     TraceEvent,
+    TraceOutcome,
     TraceUsage,
     validate_trace,
 )
 from benchflow.trajectories.ir_from_acp import acp_events_to_ir
+from benchflow.trajectories.ir_from_atif import atif_to_ir
 from benchflow.trajectories.ir_round_trip import (
     ATIF_REPRESENTABILITY,
     DEFAULT_EMPTY_PATHS,
@@ -49,6 +58,7 @@ from benchflow.trajectories.ir_round_trip import (
     representability_of,
     round_trip_through_atif,
 )
+from benchflow.trajectories.ir_to_atif import ir_to_atif
 from tests.trajectories.test_atif_preservation import _rich_events
 
 PROMPTS = ["Solve the task.", "Then stop."]
@@ -202,10 +212,27 @@ def test_a_timeout_does_not_survive_the_loop():
     trip = _trip(prompts=PROMPTS)
     assert trip.report.kinds_before["timeout"] >= 1
     assert "timeout" not in trip.report.kinds_after
-    assert _outcome(trip.report, "events[].outcome") is RoundTripOutcome.LOST
-    assert _outcome(trip.report, "outcome.status") is RoundTripOutcome.LOST
-    for path in ("events[].outcome", "outcome.status"):
-        assert representability_of(path) is Representability.NOT_IN_ATIF
+
+    # Each field the marker carried, named rather than counted: a count would
+    # still pass if one of these came back and another vanished. Matched by
+    # prefix because a list-valued extension dumps to a path ending in ``[]``
+    # only while the list is non-empty, and the fixture's is.
+    cost = (
+        "events[].outcome",
+        "outcome.status",
+        "events[].extensions.timeout_sec",
+        "events[].extensions.pending_tool_call_ids",
+        "events[].extensions.terminal_trajectory_complete",
+    )
+    for path in cost:
+        matching = [
+            comparison
+            for comparison in trip.report.comparisons
+            if comparison.path == path or comparison.path == f"{path}[]"
+        ]
+        assert len(matching) == 1, (path, [c.path for c in trip.report.comparisons])
+        assert matching[0].outcome is RoundTripOutcome.LOST, path
+        assert matching[0].representability is Representability.NOT_IN_ATIF, path
 
 
 def test_reasoning_survives_but_its_boundaries_do_not_have_to():
@@ -496,6 +523,142 @@ def test_a_representable_loss_would_be_reported_separately_from_a_format_one():
     summary = compare_traces(before, after).summary()
     assert summary["lost"] == 1
     assert summary["non_representable"] == 0
+
+
+def _maximal_trace() -> CanonicalTrace:
+    """A trace with a value in every IR field, so the table can be falsified.
+
+    Built by hand rather than captured: no rollout populates per-event usage,
+    opaque content blocks or a run outcome at once, and the point of this
+    fixture is to exercise the fields a real rollout leaves empty.
+    """
+    when = datetime(2026, 1, 1, 12, 0, 0)
+    return CanonicalTrace(
+        trace_id="trace-1",
+        session_id="sess-1",
+        agent=ModelInfo(
+            agent_name="claude-code",
+            agent_version="2.1.0",
+            model="claude-sonnet-5",
+            provider="anthropic",
+        ),
+        started_at=when,
+        finished_at=when,
+        events=[
+            TraceEvent(
+                index=0,
+                kind=EventKind.USER_MESSAGE,
+                source_type="user_message",
+                role=Role.USER,
+                text="do the thing",
+                provenance=Provenance(source_format="probe"),
+            ),
+            TraceEvent(
+                index=1,
+                kind=EventKind.TOOL_CALL,
+                source_type="tool_call",
+                role=Role.AGENT,
+                text="calling",
+                tool_call=ToolCall(
+                    call_id="call-1",
+                    name="execute",
+                    name_semantics="acp_kind",
+                    title="ls -la",
+                    status=ToolStatus.COMPLETED,
+                    arguments={"cmd": "ls -la"},
+                    content=[
+                        ContentBlock(
+                            kind=ContentBlockKind.TEXT,
+                            text="a\nb",
+                            raw={"type": "text", "text": "a\nb"},
+                        ),
+                        ContentBlock(
+                            kind=ContentBlockKind.OPAQUE,
+                            raw={"type": "image", "data": "..."},
+                        ),
+                    ],
+                    started_at=when,
+                    finished_at=when,
+                ),
+                started_at=when,
+                finished_at=when,
+                outcome="ok",
+                usage=TraceUsage(input_tokens=5, output_tokens=1),
+                provenance=Provenance(source_format="probe"),
+                extensions={"vendor": "x"},
+            ),
+            TraceEvent(
+                index=2,
+                kind=EventKind.AGENT_MESSAGE,
+                source_type="agent_message",
+                role=Role.AGENT,
+                text="done",
+                provenance=Provenance(source_format="probe"),
+            ),
+        ],
+        usage=TraceUsage(
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_tokens=3,
+            cache_creation_tokens=4,
+            reasoning_tokens=5,
+            total_tokens=132,
+            source="llm_proxy_normalized",
+            cost_usd=0.25,
+            price_source="litellm",
+        ),
+        outcome=TraceOutcome(
+            status=OutcomeStatus.COMPLETED, stop_reason="end_turn", reward=1.0
+        ),
+        provenance=Provenance(source_format="probe"),
+        extensions={"run": "probe"},
+    )
+
+
+def _maximal_report():
+    before = _maximal_trace()
+    document, _ = ir_to_atif(before)
+    return compare_traces(before, atif_to_ir(document))
+
+
+def test_lost_is_not_zero_by_construction():
+    """The check that keeps `lost == 0` on a real rollout from being a tautology.
+
+    `lost` counts fields the table calls representable that did not survive. If
+    the table were merely pessimistic — everything marked unrepresentable — the
+    category would be empty on every input and `lost == 0` would mean nothing.
+
+    On a trace that populates every field it is **not** empty: `ir_to_atif`
+    writes no per-step metrics, so per-event usage is lost through a slot ATIF
+    actually has. That is a gap in our own edge, and it is exactly the kind of
+    finding the split exists to keep visible.
+    """
+    summary = _maximal_report().summary()
+    assert summary["lost"] >= 1
+    lost_paths = {
+        comparison.path
+        for comparison in _maximal_report().comparisons
+        if comparison.outcome is RoundTripOutcome.LOST
+        and comparison.representability is Representability.REPRESENTABLE
+    }
+    assert lost_paths == {"events[].usage.input_tokens", "events[].usage.output_tokens"}
+
+
+def test_the_table_never_calls_a_surviving_field_unrepresentable():
+    """The table must not be pessimistic in our favour.
+
+    A field wrongly marked `non_representable` would move a real, fixable loss
+    into the "cost of the format" column and quietly shrink `lost`. So: on a
+    trace that populates everything, no field the table calls unrepresentable
+    may come back with any of its values intact.
+    """
+    survived = {
+        comparison.path: comparison.matched_count
+        for comparison in _maximal_report().comparisons
+        if comparison.representability is Representability.NOT_IN_ATIF
+        and comparison.matched_count > 0
+    }
+    assert survived == {}
 
 
 def test_the_summary_accounts_for_every_comparison():

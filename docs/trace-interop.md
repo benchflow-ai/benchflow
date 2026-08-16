@@ -1211,11 +1211,20 @@ each rollout actually wrote.
 H1 is a 5-event tool-use rollout; H2 is 4 events ending in a real wall-clock
 timeout. Three results, in the order they matter:
 
-- **Nothing representable is lost.** Every value the loop drops is dropped
-  because ATIF has nowhere to put it. There is no gap in our own edges to close,
-  so the remaining loss is a property of the format and not of this
+- **Within the declared field mapping, nothing representable is lost.** Every
+  value the loop drops from these rollouts is dropped because ATIF has nowhere
+  to put it, so the remaining loss is a property of the format and not of this
   implementation. `test_nothing_representable_is_lost_on_a_captured_rollout`
   pins it, and a failure there would name a converter bug.
+
+  **This is a result, not a definition**, and the distinction matters because
+  the table declaring what is representable is written by hand: a field wrongly
+  marked unrepresentable would move a real, fixable loss into the format's
+  column and shrink `lost` to zero for free. Two tests close that. On a trace
+  populating *every* IR field, `lost` is **2** — `ir_to_atif` writes no per-step
+  metrics, so per-event usage is lost through a slot ATIF actually has — and no
+  field the table calls unrepresentable comes back with any value intact. So
+  `lost = 0` on these rollouts says something about them, not about the table.
 - **The trace comes back with *more* values than it left with** — 46 in, 56 out
   for H1 — while having lost information. Four fields are fabricated on every
   run: `agent.agent_version` (`"unknown"`), `events[].tool_call.arguments`
@@ -1230,12 +1239,15 @@ timeout. Three results, in the order they matter:
   With `prompts` the same laundering happens one level up: steps that are not
   trace data at all return as captured user messages, and the event count grows
   by exactly the number of prompts.
-- **A timeout costs six fields.** H2 differs from H1 only in ending in a
-  timeout, and that single fact takes with it `events[].outcome`,
-  `outcome.status`, the three `agent_timeout` extension fields and the event
-  itself — §5 loss #4, measured rather than asserted. The IR made all of it
+- **A timeout costs five fields and the event carrying them.** H2 differs from
+  H1 only in ending in a timeout, and that single fact takes with it
+  `events[].outcome` (`"wall_clock_timeout"`), `outcome.status` (`"timeout"`),
+  and the three extension fields the marker carried — `timeout_sec`,
+  `pending_tool_call_ids`, `terminal_trajectory_complete` — along with the event
+  itself. §5 loss #4, measured rather than asserted. The IR made all of it
   representable; the trip through ATIF makes the run look like one that simply
-  ended.
+  ended. (H1's single unrepresentable field, the source content block, is the
+  sixth entry in H2's column and is not a cost of the timeout.)
 
 `transformed` with `matched=0` is worth reading as its own category:
 `events[].source_type` and `events[].tool_call.name_semantics` are not degraded,

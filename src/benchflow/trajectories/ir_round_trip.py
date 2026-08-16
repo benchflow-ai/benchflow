@@ -173,7 +173,15 @@ EXCLUDED_PATHS: frozenset[str] = frozenset(
 # shape is not a set of IR fields. Compared whole: a source block either comes
 # back or it does not, and reporting three findings because it happened to have
 # three keys would weight one loss by the shape of the data.
-OPAQUE_PATHS: frozenset[str] = frozenset({"events[].tool_call.content[].raw"})
+OPAQUE_PATHS: frozenset[str] = frozenset(
+    {"events[].tool_call.content[].raw", "events[].tool_call.arguments"}
+)
+"""Both hold a mapping whose keys come from a tool or an agent, not from the IR.
+
+``arguments`` is here for the same reason ``raw`` is, and for one more: without
+it the field's path would depend on its contents — ``arguments.cmd`` when a call
+carries arguments, ``arguments`` when it carries ``{}`` — so the same IR field
+would be counted in different places depending on the data."""
 
 # Fields whose default *is* the empty container. An empty value at one of these
 # is the absence of values, not an observed empty one, so it is not counted —

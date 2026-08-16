@@ -549,8 +549,121 @@ def test_non_object_arguments_are_kept_and_declared():
 
 
 # ---------------------------------------------------------------------------
+# null, absent and empty are three different things
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("step", "expected"),
+    [
+        ({"step_id": 1, "source": "user", "message": None}, None),
+        ({"step_id": 1, "source": "user"}, None),
+        ({"step_id": 1, "source": "user", "message": ""}, ""),
+        ({"step_id": 1, "source": "user", "message": "m"}, "m"),
+    ],
+)
+def test_null_absent_and_empty_text_stay_distinct(step, expected):
+    """A JSON ``null`` is not a value, and it is certainly not ``"None"``.
+
+    Found by an adversarial probe, not by the suite: the coercion path turned
+    ``message: null`` into the four-character string ``"None"`` — a value the
+    document never contained, produced by the converter whose one rule is not to
+    invent. ``""`` stays ``""``, because that one *is* observed.
+    """
+    trace = atif_to_ir(_minimal(steps=[step]))
+    assert trace.events[0].text == expected
+
+
+def test_a_null_agent_field_does_not_become_a_string():
+    trace = atif_to_ir(
+        _minimal(agent={"name": None, "version": "1"}, steps=[{"source": "user"}])
+    )
+    assert trace.agent.agent_name is None
+    assert trace.agent.agent_version == "1"
+
+
+def test_null_reasoning_produces_no_segments():
+    """``reasoning_segments=["None"]`` would also have satisfied invariant 5,
+    which is why the invariants alone could not catch this."""
+    trace = atif_to_ir(
+        _minimal(steps=[{"source": "agent", "message": "m", "reasoning_content": None}])
+    )
+    event = trace.events[0]
+    assert event.reasoning is None
+    assert event.reasoning_segments is None
+
+
+# ---------------------------------------------------------------------------
+# Attribution the document does not license
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"step_id": 1, "message": "m"},
+        {"step_id": 1, "source": None, "message": "m"},
+        {"step_id": 1, "source": 123, "message": "m"},
+        {"step_id": 1, "source": "environment", "message": "m"},
+    ],
+)
+def test_a_step_with_no_usable_source_is_unknown_not_agent(step):
+    """Nothing in these steps says whose turn it is.
+
+    Attributing them to the agent would be the converter asserting what the
+    document does not — and `agent_message` is not a harmless default: it is the
+    kind a consumer counts as a model turn. `ir_from_acp` maps an unrecognized
+    record to UNKNOWN for the same reason.
+
+    Found by an adversarial probe; before it, a step with no `source` at all
+    read back as an agent message.
+    """
+    event = atif_to_ir(_minimal(steps=[step])).events[0]
+    assert event.kind is EventKind.UNKNOWN
+    assert event.role is None
+
+
+def test_a_non_string_source_is_kept_rather_than_discarded():
+    """It cannot be the IR's ``source_type``, which is a string — but dropping
+    it would lose the only thing the document said about the step's origin."""
+    trace = atif_to_ir(_minimal(steps=[{"step_id": 1, "source": 123, "message": "m"}]))
+    event = trace.events[0]
+    assert event.source_type is None
+    assert event.extensions["source"] == 123
+    assert "events[0].source_type" in _fields(trace, LossClass.NORMALIZED)
+
+
+# ---------------------------------------------------------------------------
 # Malformed input — a document read off disk is not a document we wrote
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("tool_calls", {"not": "a list"}),
+        ("tool_calls", "nonsense"),
+        ("observation", "nonsense"),
+        ("observation", {"results": {"not": "a list"}}),
+    ],
+)
+def test_a_structure_this_converter_cannot_read_is_kept_and_declared(key, value):
+    """ "Unreadable here" is not "not present".
+
+    Found by an adversarial probe: all four of these used to vanish with no
+    record in any path space, which is precisely the silent drop the loss
+    contract exists to make impossible.
+    """
+    trace = atif_to_ir(
+        _minimal(steps=[{"step_id": 1, "source": "agent", "message": "m", key: value}])
+    )
+    event = trace.events[0]
+    assert event.extensions[key] == value
+    assert [
+        record
+        for record in trace.losses.records
+        if record.space is PathSpace.SOURCE and record.field.endswith(key)
+    ]
 
 
 def test_a_non_mapping_document_is_rejected():

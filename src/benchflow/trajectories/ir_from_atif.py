@@ -40,6 +40,15 @@ carries the truth, and only for the edges that had one.
 That is a fact about ATIF, not a defect of this converter, and it is the reason
 the round trip is worth measuring rather than asserting.
 
+The rule cuts the other way too, at the places a document can be malformed.
+A JSON ``null`` in a string slot reads as *no value*, not as the four-character
+string ``"None"``. A step whose ``source`` is missing, or is not a string, or is
+outside the vocabulary becomes an ``UNKNOWN`` event rather than being attributed
+to the agent — the document does not say whose step it is, so neither does the
+trace. And a `tool_calls` or `observation` this converter cannot read is kept
+verbatim in ``extensions`` with a record, because "unreadable here" is not the
+same as "not present".
+
 ## What has no ATIF antecedent
 
 ATIF carries no trace id, no timestamps at any level, no run outcome, no
@@ -170,6 +179,15 @@ def _coerce_str(
     if key not in raw:
         return None
     value = raw[key]
+    if value is None:
+        # JSON null in a string slot. Coercing it would put the literal
+        # ``"None"`` in the trace — a four-character string the document never
+        # contained, and the exact kind of invention this edge exists to avoid.
+        # Absent and null both mean "no value to read", which is what the IR's
+        # ``None`` says; the difference between them is not representable here
+        # and neither is worth a record, since ATIF requires the field either
+        # way and a document without it is non-conformant, not lossy.
+        return None
     if isinstance(value, str):
         return value
     losses.add(
@@ -395,7 +413,7 @@ def _step_to_events(
     where = f"events[{first_index}]"
     source = raw_step.get("source")
     source_str = source if isinstance(source, str) else None
-    role = _ROLE_BY_SOURCE.get(source_str or "")
+    role = _ROLE_BY_SOURCE.get(source_str) if source_str is not None else None
 
     message = _coerce_str(raw_step, "message", f"{where}.text", losses)
     reasoning = _coerce_str(raw_step, "reasoning_content", f"{where}.reasoning", losses)
@@ -416,30 +434,64 @@ def _step_to_events(
         )
 
     raw_calls = raw_step.get("tool_calls")
-    calls = (
-        [call for call in raw_calls if isinstance(call, dict)]
-        if isinstance(raw_calls, list)
-        else []
-    )
-    if isinstance(raw_calls, list) and len(calls) != len(raw_calls):
+    calls: list[dict[str, Any]] = []
+    if isinstance(raw_calls, list):
+        calls = [call for call in raw_calls if isinstance(call, dict)]
+        if len(calls) != len(raw_calls):
+            losses.add(
+                f"steps[{first_index}].tool_calls",
+                LossClass.DROPPED,
+                "the step carries tool_calls entries that are not JSON objects",
+                space=PathSpace.SOURCE,
+            )
+    elif raw_calls is not None:
+        # Not a list at all. Kept verbatim rather than discarded: this converter
+        # cannot read it, which is not the same as it not being there.
+        extensions["tool_calls"] = raw_calls
         losses.add(
             f"steps[{first_index}].tool_calls",
-            LossClass.DROPPED,
-            "the step carries tool_calls entries that are not JSON objects",
+            LossClass.NORMALIZED,
+            f"tool_calls is {type(raw_calls).__name__}, not a list; kept verbatim "
+            "in extensions since no tool call could be read from it",
             space=PathSpace.SOURCE,
         )
 
     observation = raw_step.get("observation")
-    results = (
-        observation.get("results")
-        if isinstance(observation, dict)
-        and isinstance(observation.get("results"), list)
-        else []
-    )
+    results: list[Any] = []
+    unreadable_observation = False
+    if isinstance(observation, dict):
+        raw_results = observation.get("results")
+        if isinstance(raw_results, list):
+            results = raw_results
+        elif raw_results is not None:
+            unreadable_observation = True
+    elif observation is not None:
+        unreadable_observation = True
+    if unreadable_observation:
+        extensions["observation"] = observation
+        losses.add(
+            f"steps[{first_index}].observation",
+            LossClass.NORMALIZED,
+            "observation does not have the results list this converter reads; "
+            "kept verbatim in extensions",
+            space=PathSpace.SOURCE,
+        )
 
-    if source_str is not None and role is None:
-        # Outside the vocabulary this repository writes. Kept whole rather than
-        # forced into a role the document does not support.
+    if role is None:
+        # Nothing in the document says whose step this is: the source is
+        # missing, not a string, or outside the vocabulary. Inferring ``agent``
+        # would be the converter asserting something the document does not —
+        # `ir_from_acp` maps an unrecognized record to UNKNOWN for the same
+        # reason. The whole body is kept, since this edge cannot say which parts
+        # of an unrecognized step it understood.
+        if source is not None and source_str is None:
+            extensions["source"] = source
+            losses.add(
+                f"{where}.source_type",
+                LossClass.NORMALIZED,
+                f"source is {type(source).__name__}, not a string; the IR records "
+                "no source type and the original is kept in extensions",
+            )
         return [
             TraceEvent(
                 index=first_index,
@@ -500,6 +552,10 @@ def _kind_for_step(
     role: Role | None, message: str | None, reasoning: str | None
 ) -> EventKind:
     """The event kind a non-tool step maps to.
+
+    Only reached for a step whose ``source`` is in the vocabulary; anything else
+    became ``UNKNOWN`` before this point, rather than being attributed to the
+    agent by default.
 
     A step with reasoning and no message is what `ir_to_atif` writes when it
     flushes buffered thoughts, so it reads back as reasoning. A step with both
