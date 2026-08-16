@@ -392,17 +392,18 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
     assert completed == [item.relname for item in staged.files]
 
 
-def test_help_exposes_setup_and_upload() -> None:
+def test_help_exposes_setup_upload_and_status() -> None:
     """Guards PR #992 while ignoring Rich's environment-specific ANSI styling."""
     traj_group = next(group for group in app.registered_groups if group.name == "traj")
     assert {
         command.name for command in traj_group.typer_instance.registered_commands
-    } == {"setup", "upload"}
+    } == {"setup", "upload", "status"}
 
     result = runner.invoke(app, ["traj", "--help"])
     assert result.exit_code == 0
     assert "upload" in result.output
     assert "setup" in result.output
+    assert "status" in result.output
 
     upload_help = runner.invoke(app, ["traj", "upload", "--help"])
     assert upload_help.exit_code == 0
@@ -410,6 +411,7 @@ def test_help_exposes_setup_and_upload() -> None:
     assert "--github-id" in upload_help_output
     assert "--email" in upload_help_output
     assert "--preview-steps" in upload_help_output
+    assert "--wait" in upload_help_output
 
 
 def test_upload_prompts_for_path_github_id_and_email_in_order(
@@ -1094,3 +1096,274 @@ def test_session_without_usable_cwd_never_tags_from_invocation_directory(
     assert result.exit_code == 0, result.output
     assert captured["source_id"] == "session"
     assert "Repo:" not in click.unstyle(result.output)
+
+
+# --- storage verification wait + bench traj status (this PR) -----------------
+
+VALID_DIGEST = "a1" * 32
+
+
+def _fake_broker_upload(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_upload(staged, *, broker_url, on_file_complete, on_bytes):
+        for staged_file in staged.files:
+            on_file_complete(staged_file)
+        return SimpleNamespace(
+            url=broker_url, uploaded=("payload", "manifest"), skipped=()
+        )
+
+    monkeypatch.setattr(
+        "benchflow.publish.broker.upload_capture_via_broker", fake_upload
+    )
+
+
+class _FakeClock:
+    """Deterministic monotonic clock: sleeping advances time instantly."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(seconds, 0.01)
+
+
+def _patch_wait_clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+    clock = _FakeClock()
+    monkeypatch.setattr("benchflow.cli.traj._monotonic", clock.monotonic)
+    monkeypatch.setattr("benchflow.cli.traj._sleep", clock.sleep)
+    return clock
+
+
+def _patch_status_fetch(monkeypatch: pytest.MonkeyPatch, *outcomes):
+    """Feed scripted CaptureStatus results (or exceptions); repeat the last."""
+    from benchflow.publish.broker import CaptureStatus
+
+    calls: list[str] = []
+    sequence = list(outcomes)
+
+    def fake_fetch(*, broker_url, traj_digest, http_client=None) -> CaptureStatus:
+        calls.append(traj_digest)
+        outcome = sequence.pop(0) if len(sequence) > 1 else sequence[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("benchflow.publish.broker.fetch_capture_status", fake_fetch)
+    return calls
+
+
+def test_upload_waits_until_verified_in_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the transfer, the CLI polls the ledger until the validator's
+    promotion is confirmed, then reports the capture verified in storage."""
+    from benchflow.publish.broker import CaptureStatus
+
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "60")
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    _fake_broker_upload(monkeypatch)
+    _patch_wait_clock(monkeypatch)
+    calls = _patch_status_fetch(
+        monkeypatch,
+        CaptureStatus(status="pending"),
+        CaptureStatus(status="validating"),
+        CaptureStatus(status="ingested"),
+    )
+
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Submitted" in output
+    assert "Verified in Azure storage" in output
+    assert len(calls) == 3
+
+
+def test_upload_wait_rejection_is_a_cli_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A validator rejection after the transfer exits 1 with the fixable detail."""
+    from benchflow.publish.broker import CaptureStatus
+
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "60")
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    _fake_broker_upload(monkeypatch)
+    _patch_wait_clock(monkeypatch)
+    _patch_status_fetch(
+        monkeypatch,
+        CaptureStatus(status="rejected", detail="size mismatch for trajectory/a.jsonl"),
+    )
+
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 1
+    output = click.unstyle(result.output)
+    assert "validator rejected" in output
+    assert "size mismatch for trajectory/a.jsonl" in output
+
+
+def test_upload_wait_timeout_hands_off_to_traj_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exhausted budget stays a success and prints the status command."""
+    from benchflow.publish.broker import CaptureStatus
+
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "20")
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    _fake_broker_upload(monkeypatch)
+    _patch_wait_clock(monkeypatch)
+    _patch_status_fetch(monkeypatch, CaptureStatus(status="pending"))
+
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Still validating" in output
+    assert "bench traj status sha256:" in output
+    assert "Verified in Azure storage" not in output
+
+
+def test_upload_wait_missing_endpoint_keeps_legacy_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployed broker without the endpoint (404) changes nothing visible."""
+    from benchflow.publish.broker import CaptureStatus
+
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "60")
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    _fake_broker_upload(monkeypatch)
+    _patch_wait_clock(monkeypatch)
+    calls = _patch_status_fetch(monkeypatch, CaptureStatus(status="unsupported"))
+
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Submitted" in output
+    assert "Verified in Azure storage" not in output
+    assert "bench traj status" not in output
+    assert len(calls) == 1
+
+
+def test_upload_wait_transient_failures_give_up_gracefully(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated transport failures never fail an already-successful upload."""
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "60")
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    _fake_broker_upload(monkeypatch)
+    _patch_wait_clock(monkeypatch)
+    _patch_status_fetch(monkeypatch, ValueError("connection reset"))
+
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Couldn't confirm" in output
+    assert "bench traj status sha256:" in output
+
+
+def test_upload_no_wait_and_suite_default_never_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-wait and BENCHFLOW_TRAJ_WAIT_SECONDS=0 both skip polling entirely."""
+
+    def fail_fetch(**_kwargs):
+        raise AssertionError("status endpoint polled despite disabled wait")
+
+    monkeypatch.setattr("benchflow.publish.broker.fetch_capture_status", fail_fetch)
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    _fake_broker_upload(monkeypatch)
+    trial = _trial(tmp_path)
+
+    # Suite default: the conftest fixture sets the budget to 0.
+    result = runner.invoke(app, _upload_command(trial))
+    assert result.exit_code == 0, result.output
+
+    # Explicit opt-out beats a generous budget.
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "60")
+    result = runner.invoke(app, _upload_command(trial, "--no-wait"))
+    assert result.exit_code == 0, result.output
+
+
+def test_already_ingested_conflict_prints_verified_without_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A handshake 409 is proof of promotion: verified line, zero polls."""
+
+    def fail_fetch(**_kwargs):
+        raise AssertionError("an already-ingested digest must not be polled")
+
+    monkeypatch.setattr("benchflow.publish.broker.fetch_capture_status", fail_fetch)
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    conflict = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                409,
+                json={
+                    "base_url": "https://tasksminerdata.blob.core.windows.net/bronze",
+                    "prefix": "sources/community/demo/",
+                },
+            )
+        )
+    )
+    monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: conflict)
+
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Already submitted" in output
+    assert "Verified in Azure storage" in output
+
+
+@pytest.mark.parametrize(
+    ("status", "exit_code", "copy"),
+    [
+        ("ingested", 0, "Verified in Azure storage"),
+        ("pending", 0, "Queued"),
+        ("validating", 0, "Validating"),
+        ("rejected", 1, "validator rejected"),
+        ("unknown", 1, "no record"),
+        ("unsupported", 1, "does not report"),
+    ],
+)
+def test_traj_status_maps_states_to_exit_codes(
+    monkeypatch: pytest.MonkeyPatch, status: str, exit_code: int, copy: str
+) -> None:
+    from benchflow.publish.broker import CaptureStatus
+
+    detail = "size mismatch" if status == "rejected" else None
+    _patch_status_fetch(monkeypatch, CaptureStatus(status=status, detail=detail))
+
+    result = runner.invoke(app, ["traj", "status", f"sha256:{VALID_DIGEST}"])
+
+    assert result.exit_code == exit_code, result.output
+    output = click.unstyle(result.output)
+    assert copy in output
+    assert f"Digest: sha256:{VALID_DIGEST}" in output
+
+
+def test_traj_status_accepts_bare_hex_and_prompts_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from benchflow.publish.broker import CaptureStatus
+
+    calls = _patch_status_fetch(monkeypatch, CaptureStatus(status="ingested"))
+
+    bare = runner.invoke(app, ["traj", "status", VALID_DIGEST])
+    assert bare.exit_code == 0, bare.output
+
+    prompted = runner.invoke(app, ["traj", "status"], input=f"sha256:{VALID_DIGEST}\n")
+    assert prompted.exit_code == 0, prompted.output
+    assert "Digest" in click.unstyle(prompted.output)
+    assert calls == [VALID_DIGEST, VALID_DIGEST]
+
+
+def test_traj_status_rejects_malformed_digest() -> None:
+    result = runner.invoke(app, ["traj", "status", "not-a-digest"])
+
+    assert result.exit_code == 1
+    assert "sha256:<64 hex characters>" in click.unstyle(result.output)

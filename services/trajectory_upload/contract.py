@@ -246,6 +246,36 @@ class ContributionManifest(CaptureDeclaration):
 
 
 @dataclass(frozen=True)
+class CaptureStatusInfo:
+    """Public validation state of one capture digest.
+
+    ``status`` is one of ``pending``, ``validating``, ``ingested``,
+    ``rejected``, or ``unknown``. Only the bounded rejection detail and the
+    public promotion prefix ever accompany it — never contributor identity,
+    source ids, or quarantine internals.
+    """
+
+    digest: str
+    status: str
+    detail: str | None = None
+    prefix: str | None = None
+    updated_at: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "digest": f"sha256:{self.digest}",
+            "status": self.status,
+        }
+        if self.detail:
+            payload["detail"] = self.detail
+        if self.prefix:
+            payload["prefix"] = self.prefix
+        if self.updated_at:
+            payload["updated_at"] = self.updated_at
+        return payload
+
+
+@dataclass(frozen=True)
 class UploadObject:
     name: str
     put_url: str

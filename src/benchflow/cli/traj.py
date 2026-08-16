@@ -1,4 +1,4 @@
-"""``bench traj upload`` / ``bench traj setup`` — contribute trajectory captures."""
+"""``bench traj upload`` / ``setup`` / ``status`` — contribute trajectory captures."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ import click
 import typer
 from rich.markup import escape
 
+import benchflow.cli._traj_tui as tui
 from benchflow.cli._shared import console, print_error
 from benchflow.cli._traj_upload_ui import (
     UploadProgressHooks,
@@ -136,6 +138,29 @@ def _maybe_print_update_hint() -> None:
     print(f"A newer BenchFlow ({latest}) is available — run: {UPGRADE_COMMAND}")
 
 
+# Post-upload storage verification: how long the CLI polls the broker for the
+# validator's verdict before handing off to ``bench traj status``. The env
+# variable overrides the budget; ``0`` disables waiting entirely (the test
+# suite sets it for hermeticity).
+DEFAULT_WAIT_SECONDS = 240.0
+_WAIT_INITIAL_DELAY = 2.0
+_WAIT_MAX_DELAY = 10.0
+_WAIT_BACKOFF = 1.5
+_WAIT_TRANSIENT_LIMIT = 3
+
+_WAIT_STATE_COPY = {
+    "pending": "queued for validation",
+    "validating": "validator is checking this capture",
+    "unknown": "waiting for the ledger entry",
+    "throttled": "status endpoint is busy — backing off",
+}
+
+# Module-level indirections so the wait-loop tests control time without
+# patching the global ``time`` module.
+_sleep = time.sleep
+_monotonic = time.monotonic
+
+
 @dataclass(frozen=True)
 class _UploadOptions:
     path: Path | None
@@ -147,6 +172,7 @@ class _UploadOptions:
     container_url: str | None
     dry_run: bool
     preview_steps: int
+    wait: bool = True
 
 
 @dataclass(frozen=True)
@@ -194,14 +220,22 @@ def register_traj(app: typer.Typer) -> None:
         if list_sessions:
             _print_session_hits()
             return
+        tui.banner(
+            console,
+            "traj setup",
+            "Install the submit skill and hand your coding agent the prompt",
+        )
         interactive = sys.stdin.isatty() and not yes
         if interactive:
             if typer.confirm(
-                "Install the trajectory skill into this project?", default=True
+                tui.question_label("Install the trajectory skill into this project?"),
+                default=True,
             ):
                 _install_project_skill(Path.cwd())
             if shutil.which("npx") and typer.confirm(
-                "Also install for Claude / Codex / Cursor on this machine?",
+                tui.question_label(
+                    "Also install for Claude / Codex / Cursor on this machine?"
+                ),
                 default=False,
             ):
                 _run_npx_skill_install()
@@ -209,7 +243,8 @@ def register_traj(app: typer.Typer) -> None:
             _install_project_skill(Path.cwd())
         _print_contributor_prompt()
         if interactive and typer.confirm(
-            "List recent sessions and open the viewer now?", default=False
+            tui.question_label("List recent sessions and open the viewer now?"),
+            default=False,
         ):
             _interactive_view()
 
@@ -267,6 +302,14 @@ def register_traj(app: typer.Typer) -> None:
                 help="Number of redacted trajectory steps to preview",
             ),
         ] = DEFAULT_PREVIEW_STEPS,
+        wait: Annotated[
+            bool,
+            typer.Option(
+                "--wait/--no-wait",
+                help="After uploading, wait until the capture is verified "
+                "in storage (BENCHFLOW_TRAJ_WAIT_SECONDS overrides the budget)",
+            ),
+        ] = True,
     ) -> None:
         """Inspect, redact, confirm, and upload trajectory JSONL."""
         _maybe_print_update_hint()
@@ -282,14 +325,37 @@ def register_traj(app: typer.Typer) -> None:
                     container_url=container_url,
                     dry_run=dry_run,
                     preview_steps=preview_steps,
+                    wait=wait,
                 )
             )
         except ValueError as exc:
             print_error(str(exc))
             raise typer.Exit(1) from None
 
+    @traj_app.command("status")
+    def status(
+        digest: Annotated[
+            str | None,
+            typer.Argument(
+                help="Capture digest printed by bench traj upload (sha256:…)"
+            ),
+        ] = None,
+    ) -> None:
+        """Check whether an uploaded trajectory is verified in storage."""
+        _maybe_print_update_hint()
+        try:
+            _run_status(digest)
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
+
 
 def _run_upload(options: _UploadOptions) -> None:
+    tui.banner(
+        console,
+        "traj upload",
+        "Inspect, redact, confirm — nothing leaves this machine unreviewed",
+    )
     prompted = options.path is None
     path = options.path or _prompt_for_path()
     detected: _DetectedRepo | None = None
@@ -345,7 +411,7 @@ def _run_upload(options: _UploadOptions) -> None:
         # non-interactive so agents driving the CLI never hang on a TTY
         # prompt — their confirmation happens in chat, before this command.
         if prompted and not typer.confirm(
-            "Upload this trajectory?",
+            tui.question_label("Upload this trajectory?"),
             default=False,
         ):
             console.print("[yellow]Upload cancelled.[/yellow]")
@@ -357,6 +423,13 @@ def _run_upload(options: _UploadOptions) -> None:
         with upload_progress(staged.files, console=console) as hooks:
             result = _publish(staged, destination=destination, hooks=hooks)
         _print_upload_result(staged, result, direct=destination.direct)
+        if not destination.direct:
+            _confirm_storage(
+                result,
+                broker_url=destination.url,
+                traj_digest=staged.traj_digest,
+                wait=options.wait,
+            )
 
 
 def _resolve_contributor(
@@ -537,8 +610,17 @@ def _command_stdout(*args: str) -> str | None:
 
 
 def _prompt_for_path() -> Path:
+    # On a real terminal, offer the recent-session picker first; typing a
+    # path stays one keystroke away and is the only path everywhere else
+    # (agents, pipes, CI), preserving the prompt-driven contract.
+    if tui.interactive_terminal():
+        selected = _pick_recent_session()
+        if selected is not None:
+            return selected
     while True:
-        raw = typer.prompt("Trajectory JSONL file or trial directory").strip()
+        raw = typer.prompt(
+            tui.field_label("Trajectory JSONL file or trial directory")
+        ).strip()
         # Shells wrap dragged-in paths in quotes; accept them as typed.
         if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
             raw = raw[1:-1]
@@ -548,10 +630,40 @@ def _prompt_for_path() -> Path:
         print_error(f"path not found: {path}")
 
 
+def _pick_recent_session() -> Path | None:
+    """Arrow-key picker over recent sessions; ``None`` falls back to typing."""
+    from benchflow.trajectories.sessions import list_recent_sessions
+
+    try:
+        hits = list_recent_sessions()
+    except OSError:
+        return None
+    if not hits:
+        return None
+    options = [
+        *_session_options(hits),
+        tui.SelectOption(label="Enter a path manually…"),
+    ]
+    choice = tui.select(console, title="Pick a session to upload", options=options)
+    if choice is None or choice >= len(hits):
+        return None
+    return hits[choice].path
+
+
+def _session_options(hits) -> list[tui.SelectOption]:
+    return [
+        tui.SelectOption(
+            label=f"{hit.when}  {hit.source:<6} {tui.compact_path(hit.path)}",
+            hint=hit.snippet or "(no prompt yet)",
+        )
+        for hit in hits
+    ]
+
+
 def _prompt_valid(label: str, validate: Callable[[str], str]) -> str:
     while True:
         try:
-            return validate(typer.prompt(label))
+            return validate(typer.prompt(tui.field_label(label)))
         except ValueError as exc:
             print_error(str(exc))
 
@@ -568,6 +680,10 @@ def _resolve_destination(options: _UploadOptions) -> _UploadDestination:
         return _UploadDestination(url=destination, direct=True)
     if options.container_url:
         raise ValueError("--container-url is only valid with --direct")
+    return _UploadDestination(url=_resolve_broker_url(), direct=False)
+
+
+def _resolve_broker_url() -> str:
     destination = os.environ.get("BENCHFLOW_TRAJ_BROKER_URL") or DEFAULT_TRAJ_BROKER_URL
     if not destination:
         raise ValueError(
@@ -575,7 +691,187 @@ def _resolve_destination(options: _UploadOptions) -> _UploadDestination:
             "or use --direct with --container-url/BENCHFLOW_AZURE_CONTAINER_URL "
             "if you have Azure credentials"
         )
-    return _UploadDestination(url=destination, direct=False)
+    return destination
+
+
+def _wait_budget_seconds() -> float:
+    raw = os.environ.get("BENCHFLOW_TRAJ_WAIT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_WAIT_SECONDS
+    try:
+        return max(float(raw), 0.0)
+    except ValueError:
+        return DEFAULT_WAIT_SECONDS
+
+
+def _confirm_storage(
+    result: _PublishResult,
+    *,
+    broker_url: str,
+    traj_digest: str,
+    wait: bool,
+) -> None:
+    """Confirm the capture reached durable storage, or say how to check later.
+
+    The broker's status endpoint reads the validation ledger; ``ingested`` is
+    recorded only after the validator promotes every file to
+    ``sources/community/<digest>/`` in the Azure container, so a verified
+    result here is proof the files are in final storage — not just accepted
+    into quarantine.
+    """
+    if getattr(result, "already_ingested", False):
+        _print_verified()
+        return
+    if not wait:
+        return
+    budget = _wait_budget_seconds()
+    if budget <= 0:
+        return
+    _wait_for_validation(broker_url=broker_url, traj_digest=traj_digest, budget=budget)
+
+
+def _print_verified() -> None:
+    console.print(
+        f"[bold green]{tui.GLYPH_OK} Verified in Azure storage[/] "
+        "[dim]— the validator accepted and promoted this capture.[/]"
+    )
+
+
+def _print_status_hint(traj_digest: str) -> None:
+    # Plain print keeps the command selectable in agents and terminals.
+    print(f"  bench traj status sha256:{traj_digest}")
+
+
+def _wait_for_validation(*, broker_url: str, traj_digest: str, budget: float) -> None:
+    """Poll the broker until the validator's verdict, a timeout, or a 404.
+
+    Success and every soft outcome return normally; only a validator
+    rejection raises ``ValueError`` so the command exits 1 — the capture is
+    not in the dataset and the detail says what to fix.
+    """
+    from benchflow.publish.broker import fetch_capture_status
+
+    started = _monotonic()
+    delay = _WAIT_INITIAL_DELAY
+    transient_failures = 0
+    state_copy = _WAIT_STATE_COPY["pending"]
+    with console.status(
+        f"[bold {tui.ACCENT}]Verifying in storage[/] [dim]— {state_copy}[/]"
+    ) as live_status:
+        while True:
+            elapsed = _monotonic() - started
+            remaining = budget - elapsed
+            if remaining <= 0:
+                live_status.stop()
+                console.print(
+                    f"[yellow]Still validating after {int(elapsed)}s.[/] "
+                    "Your upload is safely queued; check on it any time:"
+                )
+                _print_status_hint(traj_digest)
+                return
+            try:
+                snapshot = fetch_capture_status(
+                    broker_url=broker_url, traj_digest=traj_digest
+                )
+                transient_failures = 0
+            except ValueError:
+                transient_failures += 1
+                if transient_failures >= _WAIT_TRANSIENT_LIMIT:
+                    live_status.stop()
+                    console.print(
+                        "[yellow]Couldn't confirm the storage status "
+                        "(network hiccup).[/] The upload itself succeeded; "
+                        "check on it any time:"
+                    )
+                    _print_status_hint(traj_digest)
+                    return
+                snapshot = None
+            if snapshot is not None:
+                if snapshot.status == "ingested":
+                    live_status.stop()
+                    _print_verified()
+                    return
+                if snapshot.status == "rejected":
+                    live_status.stop()
+                    detail = snapshot.detail or "the validator declined this capture"
+                    raise ValueError(
+                        f"the validator rejected this capture: {detail}. "
+                        "Fix the input and run the upload again."
+                    )
+                if snapshot.status == "unsupported":
+                    # Deployed broker predates the status endpoint: keep the
+                    # pre-verification behavior without any noise.
+                    return
+                if snapshot.status == "throttled" and snapshot.retry_after:
+                    delay = max(delay, min(snapshot.retry_after, remaining))
+                state_copy = _WAIT_STATE_COPY.get(snapshot.status, state_copy)
+                live_status.update(
+                    f"[bold {tui.ACCENT}]Verifying in storage[/] "
+                    f"[dim]— {state_copy} ({int(elapsed)}s)[/]"
+                )
+            _sleep(min(delay, max(remaining, 0.1)))
+            delay = min(delay * _WAIT_BACKOFF, _WAIT_MAX_DELAY)
+
+
+def _run_status(digest_argument: str | None) -> None:
+    from benchflow.publish.broker import fetch_capture_status
+
+    tui.banner(
+        console,
+        "traj status",
+        "Ask the contribution service about an uploaded capture",
+    )
+    raw = digest_argument or typer.prompt(tui.field_label("Digest (sha256:…)"))
+    traj_digest = _normalize_digest(raw)
+    broker_url = _resolve_broker_url()
+    with console.status(f"[bold {tui.ACCENT}]Checking capture status…[/]"):
+        snapshot = fetch_capture_status(broker_url=broker_url, traj_digest=traj_digest)
+    # Plain print keeps the digest selectable for retries and reports.
+    print(f"Digest: sha256:{traj_digest}")
+    if snapshot.status == "ingested":
+        _print_verified()
+        return
+    if snapshot.status == "pending":
+        console.print(
+            f"[{tui.ACCENT}]● Queued[/] — uploaded and waiting for the validator. "
+            "Check again in a minute."
+        )
+        return
+    if snapshot.status == "validating":
+        console.print(
+            f"[{tui.ACCENT}]● Validating[/] — the validator is checking this "
+            "capture right now. Check again shortly."
+        )
+        return
+    if snapshot.status == "rejected":
+        detail = snapshot.detail or "the validator declined this capture"
+        raise ValueError(f"the validator rejected this capture: {detail}")
+    if snapshot.status == "throttled":
+        suffix = (
+            f"; retry after {int(snapshot.retry_after)}s"
+            if snapshot.retry_after
+            else ""
+        )
+        raise ValueError(f"status checks are rate limited right now{suffix}")
+    if snapshot.status == "unsupported":
+        raise ValueError(
+            "the deployed contribution service does not report capture status "
+            "yet; uploads still work, and this command will once the latest "
+            "service is deployed"
+        )
+    raise ValueError(
+        "the service has no record of this digest. Check the digest, or run "
+        "bench traj upload first."
+    )
+
+
+def _normalize_digest(value: str) -> str:
+    body = value.strip().strip("'\"").removeprefix("sha256:")
+    if len(body) == 64 and all(char in "0123456789abcdef" for char in body):
+        return body
+    raise ValueError(
+        "digest must be sha256:<64 hex characters>, as printed by bench traj upload"
+    )
 
 
 def _publish(
@@ -720,11 +1016,15 @@ def _print_session_hits() -> None:
         return
     for index, hit in enumerate(hits, start=1):
         snippet = hit.snippet or "(no prompt yet)"
-        # Plain print + path on its own line: Rich wrapping used to split
-        # long session paths mid-token and make them unselectable.
-        print(f"{index}. [{hit.source}] {hit.when}")
+        # Styled facts first, then the path via plain print on its own line:
+        # Rich wrapping used to split long session paths mid-token and make
+        # them unselectable.
+        console.print(
+            f"[bold {tui.ACCENT}]{index:>2}[/] [magenta]{hit.source:<6}[/] "
+            f"[dim]{hit.when}[/]"
+        )
         print(f"   {hit.path}")
-        print(f"   {snippet}")
+        console.print(f"   [dim]└ {escape(snippet)}[/]")
 
 
 def _interactive_view() -> None:
@@ -735,14 +1035,10 @@ def _interactive_view() -> None:
     if not hits:
         console.print("No recent sessions found.")
         return
-    _print_session_hits()
-    choice = typer.prompt("Which number?", default="1")
-    try:
-        index = int(choice)
-    except ValueError:
-        print_error("Need a session number.")
-        raise typer.Exit(1) from None
-    if index < 1 or index > len(hits):
-        print_error("That number is not in the list.")
-        raise typer.Exit(1)
-    serve(str(hits[index - 1].path))
+    choice = tui.select(
+        console, title="Recent sessions", options=_session_options(hits)
+    )
+    if choice is None:
+        console.print("[yellow]Cancelled.[/]")
+        return
+    serve(str(hits[choice].path))

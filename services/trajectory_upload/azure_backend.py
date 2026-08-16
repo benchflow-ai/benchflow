@@ -21,10 +21,15 @@ from services.trajectory_upload.broker_app import (
     UploadDeclarationConflict,
 )
 from services.trajectory_upload.contract import (
+    CaptureStatusInfo,
     UploadGrant,
     UploadObject,
     UploadRequest,
 )
+
+# Ledger states a contributor may see. Anything else in the table (corruption,
+# a future migration) is reported as ``unknown`` rather than leaked verbatim.
+_PUBLIC_STATUSES = frozenset({"pending", "validating", "ingested", "rejected"})
 
 
 class AzureUploadBroker:
@@ -40,6 +45,7 @@ class AzureUploadBroker:
         ip_hash_key: bytes,
         rate_limit: int = 20,
         ip_rate_limit: int = 500,
+        status_rate_limit: int = 720,
         sas_minutes: int = 15,
     ) -> None:
         self.account_name = account_name
@@ -49,6 +55,10 @@ class AzureUploadBroker:
         self.ip_hash_key = ip_hash_key
         self.rate_limit = rate_limit
         self.ip_rate_limit = ip_rate_limit
+        # Status polls are cheap ledger reads, so their ceiling is far above
+        # the upload grant limit: one CLI wait polls a handful of times per
+        # minute for a few minutes.
+        self.status_rate_limit = status_rate_limit
         self.sas_minutes = min(max(sas_minutes, 1), 15)
         self._state_lock = threading.Lock()
         self._delegation_key: Any = None
@@ -79,6 +89,7 @@ class AzureUploadBroker:
             ip_hash_key=_required_env("TRAJ_UPLOAD_IP_HASH_KEY").encode(),
             rate_limit=int(os.environ.get("TRAJ_UPLOAD_RATE_LIMIT", "20")),
             ip_rate_limit=int(os.environ.get("TRAJ_UPLOAD_IP_RATE_LIMIT", "500")),
+            status_rate_limit=int(os.environ.get("TRAJ_STATUS_RATE_LIMIT", "720")),
             sas_minutes=int(os.environ.get("TRAJ_UPLOAD_SAS_MINUTES", "15")),
         )
 
@@ -164,6 +175,45 @@ class AzureUploadBroker:
             objects=objects,
             expires_at=expires_at,
         )
+
+    def get_capture_status(self, digest: str, *, client_ip: str) -> CaptureStatusInfo:
+        """Report the ledger state of one digest for the public status route.
+
+        The ledger row is written by the broker at handshake time and advanced
+        by the validator, and ``ingested`` is only recorded after promotion to
+        ``sources/community/<digest>/`` completes — so that status is proof the
+        capture is present in durable storage. Only the bounded, user-fixable
+        rejection detail is exposed; source ids and attempt internals are not.
+        """
+        self._consume_token("status", client_ip, self.status_rate_limit)
+        entity = self._capture_entity(digest)
+        if entity is None:
+            return CaptureStatusInfo(digest=digest, status="unknown")
+        status = entity.get("status")
+        if not isinstance(status, str) or status not in _PUBLIC_STATUSES:
+            return CaptureStatusInfo(digest=digest, status="unknown")
+        updated_at = entity.get("updated_at")
+        info = CaptureStatusInfo(
+            digest=digest,
+            status=status,
+            updated_at=updated_at if isinstance(updated_at, str) else None,
+        )
+        if status == "ingested":
+            return CaptureStatusInfo(
+                digest=info.digest,
+                status=info.status,
+                updated_at=info.updated_at,
+                prefix=f"sources/community/{digest}/",
+            )
+        if status == "rejected":
+            detail = entity.get("detail")
+            return CaptureStatusInfo(
+                digest=info.digest,
+                status=info.status,
+                updated_at=info.updated_at,
+                detail=detail[:512] if isinstance(detail, str) and detail else None,
+            )
+        return info
 
     @property
     def container_url(self) -> str:

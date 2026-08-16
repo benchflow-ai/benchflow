@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+- **Uploads are confirmed all the way into Azure storage.** After the
+  progress bar finishes, `bench traj upload` now polls the contribution
+  service's new `GET /v1/uploads/{digest}` capture-status endpoint (the
+  validation ledger) until the validator's verdict: `✓ Verified in Azure
+  storage` once the capture is promoted to `sources/community/<digest>/`, a
+  concise exit-1 error with the fixable detail if the validator rejects it,
+  and a `bench traj status sha256:<digest>` handoff line if validation is
+  still running when the budget (default 240 s, `BENCHFLOW_TRAJ_WAIT_SECONDS`
+  override, `--no-wait` opt-out) runs out. A handshake 409 ("already
+  submitted") prints the verified line immediately, and a deployed broker
+  that predates the endpoint (404) keeps today's behavior unchanged. The new
+  `bench traj status DIGEST` command runs one check on demand. Status polls
+  consume a separate, higher rate-limit budget (`TRAJ_STATUS_RATE_LIMIT`,
+  default 720/hour/IP) and reveal only the ledger state, the bounded
+  rejection detail, and the public promotion prefix — never contributor
+  identity or quarantine internals. The broker must be redeployed
+  (`deploy-trajectory-upload` workflow or `scripts/deploy.sh`) before the
+  endpoint answers in production; the CLI degrades gracefully until then.
+- **The `bench traj` family shares one polished terminal design language.**
+  A new presentation-only kit (`cli/_traj_tui.py`) gives `traj setup`,
+  `traj upload`, and `traj status` a coherent look: a `◆ benchflow · <command>`
+  banner, styled `◇` input prompts, an arrow-key recent-session picker (↑/↓,
+  1-9 jump, esc to fall back to typing a path) on real terminals, colored
+  step kinds in the report preview matching the browser viewer's palette,
+  and rounded panels. Every interactive affordance degrades to the exact
+  previous prompt-driven flow off-TTY (agents, pipes, CI, Windows), and all
+  machine-read lines (`Masked for you:`, `Digest:`, `Repo:`) stay plain.
 ## 0.7.3 — 2026-08-16
 
 ### Added

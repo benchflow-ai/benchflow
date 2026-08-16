@@ -31,6 +31,7 @@ from services.trajectory_upload.broker_app import (
     create_app,
 )
 from services.trajectory_upload.contract import (
+    CaptureStatusInfo,
     UploadGrant,
     UploadObject,
     UploadRequest,
@@ -86,6 +87,9 @@ class FakeBroker:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+    def get_capture_status(self, digest: str, *, client_ip: str) -> CaptureStatusInfo:
+        raise AssertionError("handshake tests must not reach the status route")
 
 
 def test_broker_cold_start_constructs_one_shared_backend() -> None:
@@ -1761,3 +1765,166 @@ def test_expired_validation_lease_is_reclaimed(tmp_path: Path) -> None:
     assert table.entities[-1]["status"] == "ingested"
     assert container.uploaded[-1] == f"sources/community/{digest}/manifest.json"
     assert queue.deleted == [("m1", "p1")]
+
+
+class FakeStatusBroker:
+    """Status-route double; the handshake route is never exercised here."""
+
+    def __init__(self, result: CaptureStatusInfo | Exception) -> None:
+        self.result = result
+        self.client_ip: str | None = None
+        self.digest: str | None = None
+
+    def create_upload(self, request: UploadRequest, *, client_ip: str) -> UploadGrant:
+        raise AssertionError("status tests must not reach the handshake route")
+
+    def get_capture_status(self, digest: str, *, client_ip: str) -> CaptureStatusInfo:
+        self.digest = digest
+        self.client_ip = client_ip
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def test_capture_status_route_reports_states_and_rate_limit() -> None:
+    """GET /v1/uploads/{digest} maps ledger states, 429s, and forwarded IPs."""
+    digest = "ab" * 32
+    backend = FakeStatusBroker(
+        CaptureStatusInfo(
+            digest=digest,
+            status="ingested",
+            prefix=f"sources/community/{digest}/",
+            updated_at="2026-08-16T00:00:00+00:00",
+        )
+    )
+    response = TestClient(create_app(backend)).get(
+        f"/v1/uploads/{digest}",
+        headers={"x-forwarded-for": "spoofed, 203.0.113.9"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["digest"] == f"sha256:{digest}"
+    assert payload["status"] == "ingested"
+    assert payload["prefix"] == f"sources/community/{digest}/"
+    assert backend.digest == digest
+    assert backend.client_ip == "203.0.113.9"
+
+    rejected = TestClient(
+        create_app(
+            FakeStatusBroker(
+                CaptureStatusInfo(
+                    digest=digest, status="rejected", detail="size mismatch"
+                )
+            )
+        )
+    ).get(f"/v1/uploads/{digest}")
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert rejected.json()["detail"] == "size mismatch"
+    assert "prefix" not in rejected.json()
+
+    unknown = TestClient(
+        create_app(FakeStatusBroker(CaptureStatusInfo(digest=digest, status="unknown")))
+    ).get(f"/v1/uploads/{digest}")
+    assert unknown.status_code == 200
+    assert unknown.json() == {"digest": f"sha256:{digest}", "status": "unknown"}
+
+    limited = TestClient(create_app(FakeStatusBroker(RateLimited(42)))).get(
+        f"/v1/uploads/{digest}"
+    )
+    assert limited.status_code == 429
+    assert limited.headers["Retry-After"] == "42"
+
+
+def test_capture_status_route_rejects_malformed_digests() -> None:
+    """Only a 64-lowercase-hex digest reaches the backend; 404 stays reserved
+    for deployments that predate the endpoint."""
+    backend = FakeStatusBroker(AssertionError("malformed digest reached the backend"))
+    client = TestClient(create_app(backend))
+
+    non_hex = client.get(f"/v1/uploads/{'zz' * 32}")
+    assert non_hex.status_code == 400
+
+    uppercase = client.get(f"/v1/uploads/{'AB' * 32}")
+    assert uppercase.status_code == 400
+
+    too_short = client.get(f"/v1/uploads/{'ab' * 31}")
+    assert too_short.status_code == 400
+
+
+def test_azure_backend_status_reads_ledger_without_upload_quota() -> None:
+    """Status polls consume a separate, larger budget than upload grants."""
+    digest = "ab" * 32
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "ingested",
+                "updated_at": "2026-08-16T00:00:00+00:00",
+            }
+        ]
+    )
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+        rate_limit=0,  # any upload-quota consumption would 429 immediately
+        status_rate_limit=3,
+    )
+
+    info = backend.get_capture_status(digest, client_ip="127.0.0.1")
+    assert info.status == "ingested"
+    assert info.prefix == f"sources/community/{digest}/"
+    assert info.updated_at == "2026-08-16T00:00:00+00:00"
+
+    assert backend.get_capture_status("cd" * 32, client_ip="127.0.0.1").status == (
+        "unknown"
+    )
+    backend.get_capture_status(digest, client_ip="127.0.0.1")
+    with pytest.raises(RateLimited):
+        backend.get_capture_status(digest, client_ip="127.0.0.1")
+
+    partitions = {entity["PartitionKey"] for entity in table.entities}
+    assert any(partition.startswith("rate-status-") for partition in partitions)
+    assert not any(
+        partition.startswith("rate-") and not partition.startswith("rate-status-")
+        for partition in partitions
+    )
+
+
+def test_azure_backend_status_bounds_detail_and_hides_corrupt_states() -> None:
+    """Rejection detail is truncated and non-public ledger states stay opaque."""
+    digest = "ab" * 32
+    rejected = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=FakeTable(
+            [
+                {
+                    "PartitionKey": "capture",
+                    "RowKey": digest,
+                    "status": "rejected",
+                    "detail": "x" * 600,
+                }
+            ]
+        ),
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+    )
+    info = rejected.get_capture_status(digest, client_ip="127.0.0.1")
+    assert info.status == "rejected"
+    assert info.detail == "x" * 512
+
+    corrupt = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=FakeTable(
+            [{"PartitionKey": "capture", "RowKey": digest, "status": "exploded"}]
+        ),
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+    )
+    assert corrupt.get_capture_status(digest, client_ip="127.0.0.1").status == "unknown"
