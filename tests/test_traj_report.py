@@ -74,7 +74,7 @@ def test_report_prefers_acp_events_and_previews_redacted_content(
     assert report.total_steps == 4
     assert report.thinking_steps == 1
     assert report.tool_call_steps == 1
-    assert report.human_prompts == 1
+    assert report.human_steps == 1
     assert report.masked_values == 1
     assert len(report.preview) == 3
     assert REDACTED in report.preview[0].summary
@@ -121,7 +121,7 @@ def test_report_understands_claude_thinking_tools_and_tool_results(
     assert report.total_steps == 3
     assert report.thinking_steps == 1
     assert report.tool_call_steps == 1
-    assert report.human_prompts == 1
+    assert report.human_steps == 1
     assert report.created_at == datetime(2026, 2, 3, 4, 5, 6, tzinfo=UTC)
     assert report.preview[1].kind == "Thinking + tool"
     assert report.preview[2].kind == "Tool result"
@@ -177,7 +177,7 @@ def test_report_filters_codex_metadata_and_counts_response_items(
     assert report.total_steps == 5
     assert report.thinking_steps == 1
     assert report.tool_call_steps == 1
-    assert report.human_prompts == 1
+    assert report.human_steps == 1
     assert [step.kind for step in report.preview] == [
         "Human",
         "Thinking",
@@ -222,9 +222,89 @@ def test_report_counts_only_new_human_messages_in_llm_exchange_history(
 
     assert report.format is TrajectoryFormat.LLM_EXCHANGE
     assert report.total_steps == 2
-    assert report.human_prompts == 2
+    assert report.human_steps == 2
     assert report.thinking_steps == 1
     assert report.tool_call_steps == 1
+
+
+def test_report_skips_claude_metadata_and_previews_first_100_words(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1008 against metadata labels replacing full step text."""
+    prompt_words = [f"word-{index}" for index in range(1, 106)]
+    artifact = _artifact(
+        tmp_path / "claude-with-preamble.jsonl",
+        [
+            {
+                "type": "queue-operation",
+                "operation": "enqueue",
+                "content": "queue metadata",
+            },
+            {
+                "type": "attachment",
+                "attachment": {
+                    "type": "skill_listing",
+                    "addedLines": ["attachment metadata"],
+                },
+            },
+            {
+                "type": "user",
+                "message": {"role": "user", "content": " ".join(prompt_words)},
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Inspect the repository"},
+                        {"type": "text", "text": "before choosing a tool"},
+                    ],
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Read",
+                            "input": {"file_path": "README.md"},
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "content": "Repository contents"}
+                    ],
+                },
+            },
+        ],
+    )
+
+    report = build_trajectory_report((artifact,), masked_values=0, preview_steps=4)
+
+    assert report.format is TrajectoryFormat.CLAUDE_CODE
+    assert report.total_steps == 4
+    assert report.human_steps == 1
+    assert [step.kind for step in report.preview] == [
+        "Human",
+        "Thinking",
+        "Tool call",
+        "Tool result",
+    ]
+    assert report.preview[0].summary == " ".join(prompt_words[:100]) + "…"
+    assert report.preview[1].summary == (
+        "Inspect the repository before choosing a tool"
+    )
+    assert report.preview[2].summary == 'Read: {"file_path": "README.md"}'
+    assert report.preview[3].summary == "Repository contents"
+    assert all("queue-operation" not in step.summary for step in report.preview)
+    assert all("attachment" not in step.summary for step in report.preview)
 
 
 def test_report_rejects_preview_limits_outside_the_public_cli_contract(

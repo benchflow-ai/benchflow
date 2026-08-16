@@ -44,10 +44,6 @@ class _UploadDestination:
     url: str
     direct: bool
 
-    @property
-    def label(self) -> str:
-        return "Azure container" if self.direct else "broker"
-
 
 class _PublishResult(Protocol):
     @property
@@ -160,7 +156,7 @@ def _run_upload(options: _UploadOptions) -> None:
             email=email,
         )
         if options.dry_run:
-            _print_dry_run(staged, destination=destination)
+            _print_dry_run(staged)
             return
         if interactive and not typer.confirm(
             "Upload this trajectory?",
@@ -245,10 +241,8 @@ def _print_upload_result(staged: StagedCapture, result: _PublishResult) -> None:
     )
 
 
-def _print_dry_run(staged: StagedCapture, *, destination: _UploadDestination) -> None:
-    console.print(
-        f"[bold]Dry run[/bold] — {destination.label}: {escape(destination.url)}"
-    )
+def _print_dry_run(staged: StagedCapture) -> None:
+    console.print("[bold]Dry run[/bold] — no files uploaded")
     console.print(f"Digest: sha256:{staged.traj_digest}")
     for staged_file in staged.files:
         console.print(

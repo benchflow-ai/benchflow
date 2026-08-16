@@ -21,7 +21,7 @@ from rich.text import Text
 
 from benchflow.publish.redact import REDACTED
 from benchflow.publish.traj_capture import StagedFile
-from benchflow.publish.traj_report import TrajectoryReport
+from benchflow.publish.traj_report import PREVIEW_WORD_LIMIT, TrajectoryReport
 
 
 def render_trajectory_report(report: TrajectoryReport, *, console: Console) -> None:
@@ -37,7 +37,7 @@ def render_trajectory_report(report: TrajectoryReport, *, console: Console) -> N
     facts.add_row("Total steps", str(report.total_steps))
     facts.add_row("Thinking steps", str(report.thinking_steps))
     facts.add_row("Tool-call steps", str(report.tool_call_steps))
-    facts.add_row("Human prompts", str(report.human_prompts))
+    facts.add_row("Human steps", str(report.human_steps))
     facts.add_row(
         "API keys / secrets masked",
         Text(str(report.masked_values), style="bold green"),
@@ -48,7 +48,10 @@ def render_trajectory_report(report: TrajectoryReport, *, console: Console) -> N
     if not report.preview:
         return
     preview = Table(
-        title=f"First {len(report.preview)} trajectory steps",
+        title=(
+            f"First {len(report.preview)} trajectory steps "
+            f"(up to {PREVIEW_WORD_LIMIT} words each)"
+        ),
         show_lines=True,
         header_style="bold cyan",
     )

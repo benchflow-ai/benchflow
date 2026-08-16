@@ -35,10 +35,12 @@ The report is generated only from the staged, redacted copy. It shows:
 - the primary trajectory and detected format;
 - the earliest trajectory timestamp, falling back to the source file timestamp;
 - JSONL file count and total trajectory size;
-- total steps, thinking steps, tool-call steps, and human prompts;
+- total steps, thinking steps, tool-call steps, and human steps (user-authored
+  messages sent to the agent);
 - the number of API-key or secret-like values replaced with
   `<XXX-benchflow-key-values-XXX>`; and
-- the first five meaningful steps as a compact preview.
+- the first five meaningful steps as a preview containing up to the first 100
+  words of each step's redacted text.
 
 Use `--preview-steps N` to show 0–20 steps. When a trial contains both
 `acp_trajectory.jsonl` and `llm_trajectory.jsonl`, the report uses ACP as the

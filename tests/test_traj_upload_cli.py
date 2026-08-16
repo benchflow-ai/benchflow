@@ -95,6 +95,8 @@ def test_dry_run_stages_without_constructing_a_transport(
     assert "trajectory/acp_trajectory.jsonl" in result.output
     assert "manifest.json" in result.output
     assert EMAIL not in result.output
+    assert "https://broker.test" not in result.output
+    assert "no files uploaded" in result.output
 
 
 def test_direct_mode_reports_azure_destination(
@@ -438,10 +440,11 @@ def test_cli_report_shows_redacted_preview_and_requested_step_counts(
     assert "Total steps" in output and "4" in output
     assert "Thinking steps" in output
     assert "Tool-call steps" in output
-    assert "Human prompts" in output
+    assert "Human steps" in output
     assert "API keys / secrets masked" in output
     assert "<XXX-benchflow-key-values-XXX>" in output
     assert "First 2 trajectory steps" in output
+    assert "up to 100 words each" in output
     assert secret not in output
 
 

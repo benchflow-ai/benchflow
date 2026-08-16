@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -12,7 +13,8 @@ from benchflow.publish.traj_capture import strict_json_loads
 
 DEFAULT_PREVIEW_STEPS = 5
 MAX_PREVIEW_STEPS = 20
-_PREVIEW_TEXT_LIMIT = 160
+PREVIEW_WORD_LIMIT = 100
+_PREVIEW_CHAR_SAFETY_LIMIT = 4000
 
 
 class TrajectoryFormat(Enum):
@@ -40,7 +42,7 @@ class TrajectoryReport:
     total_steps: int
     thinking_steps: int
     tool_call_steps: int
-    human_prompts: int
+    human_steps: int
     created_at: datetime
     created_at_source: str
     masked_values: int
@@ -60,7 +62,7 @@ class _Step:
     summary: str
     thinking: bool = False
     tool_call: bool = False
-    human_prompts: int = 0
+    human_steps: int = 0
 
 
 @dataclass
@@ -69,7 +71,7 @@ class _Analysis:
     total_steps: int = 0
     thinking_steps: int = 0
     tool_call_steps: int = 0
-    human_prompts: int = 0
+    human_steps: int = 0
     preview: list[TrajectoryPreviewStep] = field(default_factory=list)
     previous_llm_messages: list[Any] | None = None
 
@@ -77,13 +79,13 @@ class _Analysis:
         self.total_steps += 1
         self.thinking_steps += int(step.thinking)
         self.tool_call_steps += int(step.tool_call)
-        self.human_prompts += step.human_prompts
+        self.human_steps += step.human_steps
         if len(self.preview) < self.preview_limit:
             self.preview.append(
                 TrajectoryPreviewStep(
                     number=self.total_steps,
                     kind=step.kind,
-                    summary=_truncate(step.summary),
+                    summary=_preview_text(step.summary),
                 )
             )
 
@@ -102,7 +104,7 @@ def build_trajectory_report(
 
     primary = _primary_artifact(artifacts)
     analysis = _Analysis(preview_limit=preview_steps)
-    trajectory_format: TrajectoryFormat | None = None
+    trajectory_format = _detect_file_format(primary.local_path)
     earliest_timestamp: datetime | None = None
 
     with primary.local_path.open(encoding="utf-8") as stream:
@@ -117,8 +119,6 @@ def build_trajectory_report(
                 earliest_timestamp is None or timestamp < earliest_timestamp
             ):
                 earliest_timestamp = timestamp
-            if trajectory_format is None:
-                trajectory_format = _detect_format(record)
             for step in _record_steps(trajectory_format, record, analysis):
                 analysis.add(step)
 
@@ -128,13 +128,13 @@ def build_trajectory_report(
     )
     return TrajectoryReport(
         primary_file=primary.relname,
-        format=trajectory_format or TrajectoryFormat.GENERIC,
+        format=trajectory_format,
         file_count=len(artifacts),
         size_bytes=sum(item.size_bytes for item in artifacts),
         total_steps=analysis.total_steps,
         thinking_steps=analysis.thinking_steps,
         tool_call_steps=analysis.tool_call_steps,
-        human_prompts=analysis.human_prompts,
+        human_steps=analysis.human_steps,
         created_at=created_at,
         created_at_source=created_at_source,
         masked_values=masked_values,
@@ -154,6 +154,21 @@ def _primary_artifact(
         return 1, item.relname
 
     return min(artifacts, key=priority)
+
+
+def _detect_file_format(path: Path) -> TrajectoryFormat:
+    """Find the first recognized trajectory record after optional metadata."""
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            record = strict_json_loads(line)
+            if not isinstance(record, dict):
+                continue
+            detected = _detect_format(record)
+            if detected is not TrajectoryFormat.GENERIC:
+                return detected
+    return TrajectoryFormat.GENERIC
 
 
 def _detect_format(record: dict[str, Any]) -> TrajectoryFormat:
@@ -222,14 +237,16 @@ def _codex_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
             _Step(
                 kind="Human" if role == "user" else "Assistant",
                 summary=_content_text(payload.get("content")) or f"{role} message",
-                human_prompts=int(role == "user"),
+                human_steps=int(role == "user"),
             ),
         )
     if payload_type == "reasoning":
         return (
             _Step(
                 kind="Thinking",
-                summary=_content_text(payload.get("summary")) or "Reasoning step",
+                summary=_content_text(payload.get("summary"))
+                or _content_text(payload.get("content"))
+                or "Reasoning step",
                 thinking=True,
             ),
         )
@@ -238,9 +255,15 @@ def _codex_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
         "custom_tool_call",
     }:
         name = str(payload.get("name") or payload_type.replace("_", " "))
-        return (_Step(kind="Tool call", summary=name, tool_call=True),)
+        summary = _tool_text(name, payload.get("arguments") or payload.get("input"))
+        return (_Step(kind="Tool call", summary=summary, tool_call=True),)
     if payload_type.endswith("_call_output"):
-        return (_Step(kind="Tool result", summary="Tool result returned"),)
+        return (
+            _Step(
+                kind="Tool result",
+                summary=_content_text(payload.get("output")) or "Tool result returned",
+            ),
+        )
     return ()
 
 
@@ -260,7 +283,7 @@ def _claude_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
                 kind="Tool result" if only_tool_results else "Human",
                 summary=_content_text(content)
                 or ("Tool result returned" if only_tool_results else "Human prompt"),
-                human_prompts=int(not only_tool_results),
+                human_steps=int(not only_tool_results),
             ),
         )
     thinking = bool(block_types & {"thinking", "redacted_thinking"})
@@ -284,7 +307,7 @@ def _benchflow_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
             _Step(
                 kind="Human",
                 summary=_content_text(record.get("text")) or "Human prompt",
-                human_prompts=1,
+                human_steps=1,
             ),
         )
     if record_type == "agent_thought":
@@ -296,7 +319,9 @@ def _benchflow_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
             ),
         )
     if record_type == "tool_call":
-        summary = str(record.get("title") or record.get("kind") or "Tool call")
+        title = str(record.get("title") or record.get("kind") or "Tool call")
+        content = _content_text(record.get("content"))
+        summary = f"{title}: {content}" if content else title
         return (_Step(kind="Tool call", summary=summary, tool_call=True),)
     if record_type == "agent_message":
         return (
@@ -328,7 +353,7 @@ def _llm_exchange_steps(
         else current_messages
     )
     analysis.previous_llm_messages = list(current_messages)
-    human_prompts = sum(
+    human_steps = sum(
         1
         for message in new_messages
         if isinstance(message, dict) and _lower(message.get("role")) == "user"
@@ -345,7 +370,7 @@ def _llm_exchange_steps(
             summary=summary,
             thinking=thinking,
             tool_call=tool_call,
-            human_prompts=human_prompts,
+            human_steps=human_steps,
         ),
     )
 
@@ -354,7 +379,7 @@ def _opentraces_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
     steps: list[_Step] = []
     task = record.get("task")
     if isinstance(task, dict) and (prompt := _content_text(task.get("input"))):
-        steps.append(_Step(kind="Human", summary=prompt, human_prompts=1))
+        steps.append(_Step(kind="Human", summary=prompt, human_steps=1))
     for item in record.get("steps") or []:
         if not isinstance(item, dict):
             continue
@@ -395,6 +420,8 @@ def _generic_step(record: dict[str, Any]) -> _Step:
     summary = (
         _content_text(record.get("text"))
         or _content_text(record.get("content"))
+        or _content_text(record.get("message"))
+        or _content_text(record.get("payload"))
         or str(record.get("title") or record_type or "JSONL event")
     )
     kind = "Human" if human else _assistant_kind(thinking=thinking, tool_call=tool_call)
@@ -403,7 +430,7 @@ def _generic_step(record: dict[str, Any]) -> _Step:
         summary=summary,
         thinking=thinking,
         tool_call=tool_call,
-        human_prompts=int(human),
+        human_steps=int(human),
     )
 
 
@@ -523,36 +550,67 @@ def _last_message_text(messages: list[Any]) -> str:
 
 
 def _content_text(value: Any) -> str:
+    return _compact(" ".join(_content_parts(value)))
+
+
+def _content_parts(value: Any) -> list[str]:
     if isinstance(value, str):
-        return _compact(value)
+        compact = _compact(value)
+        return [compact] if compact else []
     if isinstance(value, list):
+        parts: list[str] = []
         for item in value:
-            if isinstance(item, str) and (text := _compact(item)):
-                return text
-            if not isinstance(item, dict):
-                continue
-            item_type = _lower(item.get("type"))
-            if item_type in {"tool_use", "server_tool_use", "tool_result"}:
-                continue
-            for key in ("text", "content", "summary"):
-                if key in item and (text := _content_text(item[key])):
-                    return text
+            parts.extend(_content_parts(item))
+        return parts
     if isinstance(value, dict):
-        for key in ("text", "content", "summary"):
-            if key in value and (text := _content_text(value[key])):
-                return text
-    return ""
+        item_type = _lower(value.get("type"))
+        if item_type in {
+            "tool_use",
+            "server_tool_use",
+            "function_call",
+            "tool_call",
+        }:
+            name = str(value.get("name") or item_type.replace("_", " "))
+            return [_tool_text(name, value.get("input") or value.get("arguments"))]
+        parts = []
+        for key in (
+            "text",
+            "thinking",
+            "reasoning",
+            "summary",
+            "content",
+            "output",
+            "message",
+            "prompt",
+        ):
+            if key in value:
+                parts.extend(_content_parts(value[key]))
+        return parts
+    return []
+
+
+def _tool_text(name: str, details: Any) -> str:
+    if details in (None, "", [], {}):
+        return name
+    if isinstance(details, str):
+        rendered = _compact(details)
+    else:
+        rendered = json.dumps(details, ensure_ascii=False, sort_keys=True)
+    return f"{name}: {rendered}"
 
 
 def _compact(value: str) -> str:
     return " ".join(value.split())
 
 
-def _truncate(value: str) -> str:
-    value = _compact(value)
-    if len(value) <= _PREVIEW_TEXT_LIMIT:
-        return value
-    return value[: _PREVIEW_TEXT_LIMIT - 1].rstrip() + "…"
+def _preview_text(value: str) -> str:
+    words = _compact(value).split()
+    preview = " ".join(words[:PREVIEW_WORD_LIMIT])
+    truncated = len(words) > PREVIEW_WORD_LIMIT
+    if len(preview) > _PREVIEW_CHAR_SAFETY_LIMIT:
+        preview = preview[:_PREVIEW_CHAR_SAFETY_LIMIT].rstrip()
+        truncated = True
+    return f"{preview}…" if truncated else preview
 
 
 def _lower(value: Any) -> str:
