@@ -413,11 +413,15 @@ bench eval metrics jobs/ --json
 
 ### bench eval view
 
-Serve a trial trajectory viewer in the browser for a rollout or job directory.
+Serve a trial trajectory viewer in the browser for a rollout directory, a job
+directory, or a Claude Code / Codex / ACP session JSONL file. Contributors
+reach this through the [trajectory upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md),
+not by running the command themselves.
 
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
+bench eval view ~/.claude/projects/<project>/<session>.jsonl
 ```
 
 ## bench train
@@ -854,26 +858,44 @@ and hosted-provider browsing to [`bench hub list`](#bench-hub). The old
 `bench environment create|list|cleanup` and `show|inspect` (plus `list
 --provider`/`--hub`) still work, each printing a one-line stderr notice.
 
+## bench traj setup
+
+Install the trajectory skill into the current project, or print the line
+contributors paste into an agent. Interactive by default. `--yes` copies the
+skill without prompts. `--prompt` prints only the copy-paste line. `--list`
+prints recent Claude Code / Codex / trial sessions.
+
+```bash
+bench traj setup
+bench traj setup --yes
+bench traj setup --prompt
+bench traj setup --list
+```
+
+See [Trajectory upload](../traj-upload.md).
+
 ## bench traj upload
 
 Validate, redact, and contribute trajectory JSONL through BenchFlow's public
-broker. `PATH` can be one JSONL file, a directory of JSONL files, or a trial
-directory containing `trajectory/`. The command stages only JSONL artifacts,
-writes a content-addressed manifest last, and treats an already-ingested digest
-as a successful no-op.
+broker. This is what the [upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md)
+runs after the user reviews the viewer. Contributors should not invoke it
+themselves. `PATH` can be one JSONL file, a directory of JSONL files, or a trial
+directory containing `trajectory/`. GitHub username and email are inferred from
+`gh` / `git` when omitted. The command stages only JSONL artifacts, writes a
+content-addressed manifest last, and treats a digest that is already in inbox
+or community storage as `Already submitted`.
 
 ```bash
+bench traj upload path/to/your-session.jsonl
 bench traj upload path/to/trial --github-id octocat --email octocat@example.com
-bench traj upload path/to/trajectory.jsonl --github-id octocat \
-  --email octocat@example.com --source-id my-project/run-42
-bench traj upload path/to/trial --github-id octocat \
-  --email octocat@example.com --dry-run
+bench traj upload path/to/trajectory.jsonl --source-id my-project/run-42
+bench traj upload path/to/trial --dry-run
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--github-id` | required | Self-asserted GitHub username stored in `manifest.json` |
-| `--email` | required | Contributor email stored in `manifest.json`; not printed by the CLI |
+| `--github-id` | inferred | GitHub username stored in `manifest.json`; inferred from `gh` / `git` / `BENCHFLOW_GITHUB_ID` |
+| `--email` | inferred | Contributor email stored in `manifest.json`; inferred from `git` / `BENCHFLOW_EMAIL`; not printed |
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
 | `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
 | `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |

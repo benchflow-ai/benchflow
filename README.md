@@ -13,26 +13,32 @@
 
 BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
-## Qucik start: 1. Upload a trajectory
+## Quick start: 1. Submit a trajectory
 
-For local Claude Code or Codex jsonl formatted trajectory files that you are proud of (contain challenging tasks you dealed with via chatting to agents), you can upload that file to BenchFlow to join the competition for winning $2,000 cash reward. No BenchFlow account, credentials, or API key is required:
+Proud of a Claude Code or Codex session? Copy this line into Claude Code,
+Codex, Cursor, or any coding agent. That is the $2,000 eval prize path. No
+BenchFlow account, API key, or Azure login.
 
-```bash
-# Install or upgrade BenchFlow
-uv tool install --python 3.12 --upgrade benchflow
-
-# Upload one capture
-bench traj upload /absolute/path/to/trial \
-  --github-id YOUR_GITHUB_ID \
-  --email YOU@example.com
+```
+Submit my best local Claude Code or Codex session to the BenchFlow eval prize. Read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
 ```
 
-The path may be a trial directory, a directory of JSONL files, or one JSONL
-file. Both contributor fields are required and are stored in `manifest.json`.
-See the concise [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md)
-or the [trajectory upload guide](./docs/traj-upload.md).
+The agent finds sessions on this machine, opens the viewer, and uploads after
+you like what you see.
 
-## Qucik start: 2. Run with a ChatGPT or Claude subscription
+Optional — set the skill up once, then keep talking to the agent:
+
+```bash
+npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload
+# or, if BenchFlow is already installed:
+bench traj setup
+```
+
+`npx skills add` asks which agents to install for. `bench traj setup` copies
+the skill into this project and prints the same paste line. See the
+[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md).
+
+## Quick start: 2. Run with a ChatGPT or Claude subscription
 
 No OpenAI or Anthropic API key is required. Start Docker, install BenchFlow,
 then run **one** of these options. BenchFlow detects the saved host login and

@@ -44,6 +44,12 @@ def _upload_command(path: Path, *args: str) -> list[str]:
     ]
 
 
+def _block_identity_inference(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BENCHFLOW_GITHUB_ID", raising=False)
+    monkeypatch.delenv("BENCHFLOW_EMAIL", raising=False)
+    monkeypatch.setattr("benchflow.cli.traj._command_stdout", lambda *_args: None)
+
+
 def test_stock_cli_has_the_verified_public_broker() -> None:
     """A wheel install can contribute without private endpoint configuration."""
     from benchflow.cli.traj import DEFAULT_TRAJ_BROKER_URL
@@ -91,6 +97,7 @@ def test_dry_run_stages_without_constructing_a_transport(
     result = runner.invoke(app, _upload_command(trial, "--dry-run"))
 
     assert result.exit_code == 0, result.output
+    assert "Looks good" in result.output
     assert "sha256:" in result.output
     assert "trajectory/acp_trajectory.jsonl" in result.output
     assert "manifest.json" in result.output
@@ -128,8 +135,10 @@ def test_direct_mode_reports_azure_destination(
     )
 
     assert result.exit_code == 0, result.output
-    assert "Uploaded trajectory" in result.output
-    assert "tasksminerdata.blob.core.windows.net/bronze" in result.output
+    assert "Submitted" in result.output
+    assert "sha256:" in result.output
+    assert EMAIL not in result.output
+    assert "blob.core.windows.net" not in result.output
 
 
 def test_broker_mode_uses_exact_manifest_and_server_order(
@@ -230,7 +239,8 @@ def test_broker_conflict_is_success_and_rate_limit_is_actionable(
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: conflict)
     result = runner.invoke(app, _upload_command(trial))
     assert result.exit_code == 0, result.output
-    assert "Already uploaded" in result.output
+    assert "Already submitted" in result.output
+    assert "blob.core.windows.net" not in result.output
 
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: limited)
     result = runner.invoke(app, _upload_command(trial))
@@ -297,17 +307,27 @@ def test_broker_mapping_violation_sends_zero_puts(tmp_path: Path, shape: str) ->
     assert methods == ["POST"]
 
 
-@pytest.mark.parametrize("status", [409, 412])
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (409, ""),
+        (412, ""),
+        (
+            403,
+            '<?xml version="1.0"?><Error><Code>UnauthorizedBlobOverwrite</Code></Error>',
+        ),
+    ],
+)
 def test_broker_put_conflicts_are_cloud_neutral_skips(
-    tmp_path: Path, status: int
+    tmp_path: Path, status: int, body: str
 ) -> None:
-    """Azure 409 and GCS 412 both mean an idempotent create-only skip."""
+    """Create-only conflicts, including Azure overwrite 403s, are retries."""
     trial = _trial(tmp_path)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return httpx.Response(200, json=_broker_payload(request))
-        return httpx.Response(status)
+        return httpx.Response(status, text=body)
 
     with stage_trajectory_capture(trial, source_id="demo") as staged:
         result = upload_capture_via_broker(
@@ -319,16 +339,17 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
     assert len(result.skipped) == len(staged.files)
 
 
-def test_help_exposes_only_the_planned_upload_command() -> None:
+def test_help_exposes_setup_and_upload() -> None:
     """Guards PR #992 while ignoring Rich's environment-specific ANSI styling."""
     traj_group = next(group for group in app.registered_groups if group.name == "traj")
     assert {
         command.name for command in traj_group.typer_instance.registered_commands
-    } == {"upload"}
+    } == {"setup", "upload"}
 
     result = runner.invoke(app, ["traj", "--help"])
     assert result.exit_code == 0
     assert "upload" in result.output
+    assert "setup" in result.output
 
     upload_help = runner.invoke(app, ["traj", "upload", "--help"])
     assert upload_help.exit_code == 0
@@ -337,20 +358,52 @@ def test_help_exposes_only_the_planned_upload_command() -> None:
     assert "--email" in upload_help_output
 
 
-def test_upload_requires_github_id_and_email_parameters(tmp_path: Path) -> None:
-    """Guards PR #992: every CLI upload must name its contributor."""
+def test_upload_infers_contributor_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-argument command uses local identity when flags are omitted."""
+    _block_identity_inference(monkeypatch)
+    monkeypatch.setenv("BENCHFLOW_GITHUB_ID", GITHUB_ID)
+    monkeypatch.setenv("BENCHFLOW_EMAIL", EMAIL)
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    result = runner.invoke(app, ["traj", "upload", str(_trial(tmp_path)), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Looks good" in result.output
+    assert EMAIL not in result.output
+
+
+def test_upload_explains_missing_contributor_without_typer_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing identity tells people the exact one-line fix."""
+    _block_identity_inference(monkeypatch)
+    result = runner.invoke(app, ["traj", "upload", str(_trial(tmp_path))])
+
+    assert result.exit_code == 1
+    output = click.unstyle(result.output)
+    assert "need a GitHub username and email" in output
+    assert "--github-id YOUR_ID --email YOU@example.com" in output
+
+
+def test_handshake_timeout_tells_people_to_retry(tmp_path: Path) -> None:
+    """A cold broker should not look like a broken install."""
     trial = _trial(tmp_path)
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
 
-    assert result.exit_code == 2
-    assert "--github-id" in click.unstyle(result.output)
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
 
-    result = runner.invoke(
-        app,
-        ["traj", "upload", str(trial), "--github-id", GITHUB_ID],
-    )
-    assert result.exit_code == 2
-    assert "--email" in click.unstyle(result.output)
+    with (
+        stage_trajectory_capture(
+            trial, source_id="demo", github_id=GITHUB_ID, email=EMAIL
+        ) as staged,
+        pytest.raises(ValueError, match="retries are safe"),
+    ):
+        upload_capture_via_broker(
+            staged,
+            broker_url="https://broker.test",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
 
 
 @pytest.mark.parametrize(
@@ -371,3 +424,71 @@ def test_upload_validates_contributor_parameters_locally(
 
     assert result.exit_code == 1
     assert message in result.output
+
+
+def test_setup_prompt_prints_the_copy_paste_line() -> None:
+    """The human path is one line to paste into an agent."""
+    from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL
+
+    result = runner.invoke(app, ["traj", "setup", "--prompt"])
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+
+    assert result.exit_code == 0, result.output
+    assert CONTRIBUTOR_PROMPT in click.unstyle(result.output)
+    assert SKILL_RAW_URL in result.output
+    assert "bench traj upload" not in result.output
+    assert CONTRIBUTOR_PROMPT in readme.read_text(encoding="utf-8")
+
+
+def test_setup_yes_installs_the_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Optional interactive setup can run non-interactively with --yes."""
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["traj", "setup", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    skill = tmp_path / ".agents" / "skills" / "benchflow-traj-upload" / "SKILL.md"
+    assert skill.is_file()
+    text = skill.read_text(encoding="utf-8")
+    assert "open the viewer" in text
+    assert "Paste this to your agent" in click.unstyle(result.output)
+
+
+def test_list_recent_sessions_scans_all_projects_most_recent_first(
+    tmp_path: Path,
+) -> None:
+    """Sessions from other project dirs must be found: people submit from a
+    different directory than the one they worked in."""
+    import os
+
+    from benchflow.trajectories.sessions import (
+        encode_claude_project_dir,
+        list_recent_sessions,
+    )
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / encode_claude_project_dir(str(cwd))
+    project.mkdir(parents=True)
+    older = project / "abc.jsonl"
+    older.write_text(
+        '{"type":"user","message":{"content":"prize session please"}}\n',
+        encoding="utf-8",
+    )
+    os.utime(older, (1_000_000, 1_000_000))
+    newer = home / ".claude" / "projects" / "-tmp-bio-work" / "bio.jsonl"
+    newer.parent.mkdir(parents=True)
+    newer.write_text(
+        '{"type":"user","message":{"content":"compute GC content of sample.fasta"}}\n',
+        encoding="utf-8",
+    )
+    os.utime(newer, (2_000_000, 2_000_000))
+
+    hits = list_recent_sessions(cwd=cwd, home=home, limit=8)
+
+    assert [hit.path for hit in hits] == [newer, older]
+    assert all(hit.source == "claude" for hit in hits)
+    assert "GC content" in hits[0].snippet
+    assert "prize session please" in hits[1].snippet
