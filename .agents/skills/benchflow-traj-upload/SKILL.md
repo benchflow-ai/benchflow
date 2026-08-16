@@ -1,63 +1,97 @@
 ---
 name: benchflow-traj-upload
-description: Upload or safely test completed BenchFlow trajectory contributions with local redaction, report inspection, and required contributor metadata. Use whenever a user asks to upload, test, validate, submit, share, or contribute one or more BenchFlow trajectories.
-user-invocable: true
-allowed-tools:
-  - Bash
+description: Operate, test, troubleshoot, and explain `bench traj upload` for public or trusted-direct trajectory contributions, including interactive and fully specified commands, dry runs, input validation, local secret masking, trajectory reports and previews, manifest metadata, upload progress, idempotency, and production promotion checks. Use this skill whenever a user wants to upload, contribute, share, test, locate, inspect, or debug a trajectory upload; validate a trajectory, report, or manifest; or verify the public upload path end to end, even if they do not explicitly name this skill.
 ---
 
 # Upload BenchFlow trajectories
 
-Require a local capture path, GitHub ID, and email. The CLI asks for any missing
-values in that order. Use the public default; do not add broker URLs, Azure
-credentials, or direct-upload flags for normal contributions.
+Use the public contribution route for ordinary users. Treat `--direct` as a
+trusted-operator escape hatch, not as an equivalent public-path test.
 
-For a released CLI, install or upgrade BenchFlow:
+Read [references/cli-contract.md](references/cli-contract.md) before explaining
+non-default modes, troubleshooting a failure, reviewing a generated manifest,
+or claiming an end-to-end production result. The reference is the complete
+behavior contract for the current CLI.
+
+## Choose the matching CLI build
+
+Use the released CLI when validating the published user experience:
 
 ```bash
 uv tool install --python 3.12 --upgrade benchflow
+bench traj upload
 ```
 
-When testing an unreleased repository checkout, do not substitute the stable
-tool. Run `uv sync --extra dev --locked`, then replace `bench` below with
-`uv run bench`.
+Use the repository checkout when validating unreleased PR behavior:
 
-Run once per capture. Prefer the interactive flow so the user can review and
-confirm the report:
+```bash
+uv sync --extra dev --locked
+uv run bench traj upload
+```
+
+Do not substitute the installed `bench` binary for `uv run bench` while testing
+unreleased code. Record `bench --version` or the exact Git SHA so the tested
+artifact is unambiguous.
+
+## Run the requested flow
+
+Prefer the guided flow when a person wants to inspect and confirm the capture:
 
 ```bash
 bench traj upload
 ```
 
-For a no-network rehearsal, use:
+The CLI asks for the path, renders a report from a locally redacted staging
+copy, asks for missing GitHub and email metadata, and defaults the upload
+confirmation to No.
 
-```bash
-bench traj upload --dry-run
-```
-
-Or provide every input in one command. This form shows the report but starts
-uploading without a confirmation prompt unless `--dry-run` is present:
+Use the fully specified form for scripts or an intentional no-prompt upload:
 
 ```bash
 bench traj upload <PATH> --github-id <GITHUB_ID> --email <EMAIL>
 ```
 
-After the path is entered, verify the report before continuing:
+Providing all three required inputs makes the command non-interactive: it still
+renders the report, then uploads without a confirmation prompt. If any one is
+missing, the session is interactive and asks only for missing values before a
+final confirmation.
 
-- Preview rows contain the first 100 words of each meaningful redacted step;
-  `--preview-steps` accepts 0-20 and defaults to 5.
-- Total steps equal thinking steps plus tool-call steps plus human steps. Human
-  steps are genuine user messages; tool results, status/metadata events, empty
-  records, and invented placeholders such as `Assistant response` do not count.
-- Detected secret values are replaced locally with
-  `<XXX-benchflow-key-values-XXX>`; the original files remain unchanged.
+Use a dry run before a real upload when testing new files or CLI changes:
 
-The uploaded schema-1.2 `manifest.json` stores GitHub ID and email under
-`contributor` and every displayed report field under `trajectory_report`. The
-server independently validates and rescans the capture before promotion. A dry
-run proves only local staging, so do not claim a real end-to-end upload unless a
-compatible live service accepts and promotes a canary.
+```bash
+bench traj upload <PATH> \
+  --github-id <GITHUB_ID> \
+  --email <EMAIL> \
+  --dry-run
+```
 
-Report whether each capture was uploaded, cancelled, already present, or only
-dry-run validated. Never expose contributor email, signed upload URLs, broker
-internals, or detected secret values in the final response.
+A dry run validates, redacts, reports, and creates the temporary manifest, but
+never prompts for confirmation and never makes a network request.
+
+## Inspect before uploading
+
+Verify these invariants in the rendered report:
+
+- `Total steps = Thinking steps + Tool-call steps + Human steps`.
+- Human steps are real user messages. Tool results, status or metadata records,
+  empty records, and invented placeholders such as `Assistant response` are not
+  trajectory steps.
+- Each preview row shows up to the first 100 words of a meaningful, already
+  redacted step. `--preview-steps` accepts 0 through 20 and defaults to 5.
+- Every detected secret value is replaced locally with
+  `<XXX-benchflow-key-values-XXX>`. Valid JSONL containing secrets is accepted
+  after masking; the original source files remain unchanged.
+- File count, byte size, creation time, primary file, format, step counts,
+  masked-value count, and preview are plausible for the selected capture.
+
+## Verify the result at the right boundary
+
+For a dry run, report only local validation. For a real public upload, verify
+that the trusted validator promoted the digest to
+`sources/community/<digest>/`, with `manifest.json` present last and bound to
+the uploaded artifacts. A client success message or quarantine write alone is
+not production end-to-end proof.
+
+Report whether the capture was uploaded, cancelled, already present, rejected,
+or only dry-run validated. Never expose contributor email, detected secret
+values, signed upload URLs, credentials, or internal service endpoints.
