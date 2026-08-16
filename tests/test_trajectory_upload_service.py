@@ -967,6 +967,38 @@ def test_contributor_budget_refills_continuously() -> None:
     backend._consume_rate_limit("198.51.100.9", "octocat")
 
 
+def test_token_bucket_survives_contended_conditional_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1027's burst fix: ETag races must not fail a crowd closed."""
+
+    class ContendedTable(FakeTable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.conflicts = 0
+
+        def update_entity(self, *, entity: dict, etag: str, **kwargs) -> None:
+            from azure.core.exceptions import ResourceModifiedError
+
+            if self.conflicts:
+                self.conflicts -= 1
+                raise ResourceModifiedError("etag changed")
+            super().update_entity(entity=entity, etag=etag, **kwargs)
+
+    table = ContendedTable()
+    backend = _rate_backend(table, rate_limit=20, ip_rate_limit=500)
+    waits: list[float] = []
+    monkeypatch.setattr(
+        "services.trajectory_upload.azure_backend.time",
+        SimpleNamespace(sleep=waits.append),
+    )
+    backend._consume_rate_limit("203.0.113.9", "contended")
+
+    table.conflicts = 8
+    backend._consume_rate_limit("203.0.113.9", "contended")
+    assert waits  # the survivor backed off between optimistic retries
+
+
 def test_ip_backstop_caps_identity_rotation() -> None:
     """One host rotating github ids is still bounded by the per-IP bucket."""
     backend = _rate_backend(FakeTable(), rate_limit=20, ip_rate_limit=3)

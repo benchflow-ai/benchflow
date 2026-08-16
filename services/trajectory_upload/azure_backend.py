@@ -7,7 +7,9 @@ import hmac
 import json
 import math
 import os
+import random
 import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -199,7 +201,12 @@ class AzureUploadBroker:
 
         digest = hmac.new(self.ip_hash_key, key.encode(), hashlib.sha256).hexdigest()
         row = f"{scope}-{digest}"
-        for _attempt in range(5):
+        for attempt in range(10):
+            if attempt:
+                # A whole venue shares one IP bucket row, so a synchronized
+                # burst loses ETag races in lockstep. Jitter de-synchronizes
+                # the optimistic retries instead of failing crowds closed.
+                time.sleep(random.uniform(0.005, 0.05) * attempt)
             now = datetime.now(UTC)
             try:
                 entity = self.table.get_entity(partition_key="ratebucket", row_key=row)
