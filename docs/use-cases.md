@@ -29,8 +29,8 @@ In BenchFlow, this is a two-role Scene where the "user" role is just another age
 source:
   repo: benchflow-ai/skillsbench
   path: tasks
-environment: daytona
-concurrency: 64
+environment: docker
+concurrency: 2
 
 scenes:
   - name: interactive-assist
@@ -87,7 +87,7 @@ config = RolloutConfig(
                   Turn("assistant", "The user provided additional guidance..."),
               ]),
     ],
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)
 ```
@@ -115,8 +115,8 @@ A coder agent solves the task, then an independent reviewer agent critiques the 
 source:
   repo: benchflow-ai/skillsbench
   path: tasks
-environment: daytona
-concurrency: 64
+environment: docker
+concurrency: 2
 
 scenes:
   - name: review-loop
@@ -160,7 +160,7 @@ config = RolloutConfig(
                   Turn("coder", "Call the review_code MCP tool to get feedback, then fix issues."),
               ]),
     ],
-    environment="daytona",
+    environment="docker",
     pre_agent_hooks=[mcp_reviewer_hook(port=8100, model="gemini-3.1-flash-lite")],
 )
 result = await bf.run(config)
@@ -199,8 +199,8 @@ An agent generates a task-specific skill before solving. This is a two-scene rol
 source:
   repo: benchflow-ai/skillsbench
   path: tasks
-environment: daytona
-concurrency: 64
+environment: docker
+concurrency: 2
 
 scenes:
   - name: skill-gen
@@ -241,7 +241,7 @@ config = RolloutConfig(
               roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
               turns=[Turn("solver")]),  # None prompt = native goal inline (legacy: instruction.md)
     ],
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)
 ```
@@ -269,8 +269,8 @@ The same agent receives multiple prompts in sequence, maintaining full conversat
 source:
   repo: benchflow-ai/skillsbench
   path: tasks
-environment: daytona
-concurrency: 64
+environment: docker
+concurrency: 2
 
 scenes:
   - name: iterative-solve
@@ -304,7 +304,7 @@ config = RolloutConfig(
                   Turn("solver", "Final check: verify every requirement is met."),
               ]),
     ],
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)
 ```
@@ -333,8 +333,8 @@ Different models fill different roles in the same scene. A cheap model codes, an
 source:
   repo: benchflow-ai/skillsbench
   path: tasks
-environment: daytona
-concurrency: 32
+environment: docker
+concurrency: 2
 
 scenes:
   - name: cross-model-review
@@ -378,7 +378,7 @@ config = RolloutConfig(
                   Turn("coder", "Address the reviewer's feedback."),
               ]),
     ],
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)
 ```
@@ -416,7 +416,7 @@ services = [SERVICES["gmail"], SERVICES["gcal"], SERVICES["slack"]]
 config = RolloutConfig(
     task_path=Path("tasks/schedule-meeting-from-email"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
-    environment="daytona",
+    environment="docker",
     pre_agent_hooks=build_service_hooks(services),
 )
 result = await bf.run(config)
@@ -457,4 +457,3 @@ tasks/schedule-meeting-from-email/
 └── verifier/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
-

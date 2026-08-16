@@ -36,7 +36,7 @@ from benchflow import RolloutConfig, Scene, Role, Turn
 config = RolloutConfig(
     task_path=Path("tasks/my-task"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
-    environment="daytona",
+    environment="docker",
     sandbox_setup_timeout=120,
 )
 
@@ -49,7 +49,7 @@ config = RolloutConfig(
         Scene(name="solve", roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
               turns=[Turn("solver")]),
     ],
-    environment="daytona",
+    environment="docker",
     sandbox_setup_timeout=120,
 )
 ```
@@ -114,7 +114,7 @@ from benchflow.runtime import Agent, Environment, Runtime, RuntimeConfig
 
 config = RuntimeConfig(sandbox_setup_timeout=300)
 agent = Agent("gemini", model="gemini-3.1-flash-lite-preview")
-env = Environment.from_task("tasks/X", sandbox="daytona")
+env = Environment.from_task("tasks/X", sandbox="docker")
 runtime = Runtime(env, agent, config=config)
 result = await runtime.execute()
 ```
@@ -131,7 +131,7 @@ result = await bf.run(config)
 
 # 2. Agent + Environment (0.3 style)
 agent = bf.Agent("gemini", model="gemini-3.1-flash-lite-preview")
-env = bf.Environment.from_task("tasks/X", sandbox="daytona")
+env = bf.Environment.from_task("tasks/X", sandbox="docker")
 runtime_config = bf.RuntimeConfig(sandbox_setup_timeout=300)
 result = await bf.run(agent, env, runtime_config)
 
@@ -196,7 +196,7 @@ config = RolloutConfig(
             Turn("coder", "Read feedback and fix."),
         ],
     )],
-    environment="daytona",
+    environment="docker",
 )
 ```
 
@@ -213,7 +213,7 @@ config = RolloutConfig(
               roles=[Role("solver", "gemini", "flash")],
               turns=[Turn("solver")]),
     ],
-    environment="daytona",
+    environment="docker",
 )
 ```
 
@@ -244,7 +244,7 @@ config = RolloutConfig(
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
     user=FunctionUser(user),
     max_user_rounds=3,
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)
 ```
@@ -378,8 +378,8 @@ from benchflow import Evaluation, EvaluationConfig, EvaluationResult, RetryConfi
 # applied to every task discovered under tasks_dir.
 config = EvaluationConfig(
     model="gemini-3.1-flash-lite-preview",
-    environment="daytona",
-    concurrency=8,
+    environment="docker",
+    concurrency=2,
     retry=RetryConfig(max_retries=2),
 )
 evaluation = Evaluation(tasks_dir="tasks", jobs_dir="jobs/my-run", config=config)

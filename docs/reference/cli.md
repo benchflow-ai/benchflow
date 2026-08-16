@@ -158,6 +158,13 @@ runs; it also accepts a single task directory.
 # From YAML config
 bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
+# One task on the default local Docker sandbox
+bench eval run \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks/citation-check \
+  --agent codex \
+  --model gpt-5.5
+
 # From remote repo (fast Daytona batch; token usage may be unavailable)
 bench eval run \
   --source-repo benchflow-ai/skillsbench \
@@ -619,7 +626,7 @@ Evaluate a skill against its evals.json test cases.
 bench skills eval skills/my-skill/ \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona
+  --sandbox docker
 ```
 
 
@@ -932,8 +939,8 @@ bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 source:
   repo: benchflow-ai/skillsbench
   path: tasks
-environment: daytona
-concurrency: 64
+environment: docker
+concurrency: 2
 sandbox_setup_timeout: 300
 agent: gemini
 model: gemini-3.1-flash-lite-preview
@@ -950,7 +957,7 @@ directly in Python.
 
 ```yaml
 task_dir: tasks/my-task
-environment: daytona
+environment: docker
 sandbox_setup_timeout: 300
 
 scenes:

@@ -35,7 +35,7 @@ bench eval run \
   --tasks-dir <task-path> \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona
+  --sandbox docker
 ```
 
 Or via Python SDK:
@@ -49,7 +49,7 @@ async def main():
     config = RolloutConfig(
         task_path=resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf"),
         scenes=[Scene.single(agent="gemini", model="gemini-3.1-flash-lite-preview")],
-        environment="daytona",
+        environment="docker",
     )
     result = await bf.run(config)
     print(f"Reward: {result.rewards}, Tools: {result.n_tool_calls}")
@@ -70,8 +70,8 @@ bench eval run \
   --source-path tasks \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona \
-  --concurrency 64
+  --sandbox docker \
+  --concurrency 2
 ```
 
 Or via YAML config:
@@ -86,8 +86,8 @@ source:
   path: tasks
 agent: gemini
 model: gemini-3.1-flash-lite-preview
-environment: daytona
-concurrency: 64
+environment: docker
+concurrency: 2
 max_retries: 1
 ```
 
@@ -167,7 +167,7 @@ bench agent list
 
 Any agent can be prefixed with `acpx/` to run via ACPX (https://acpx.sh/):
 ```bash
-bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
+bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ACPX is a headless ACP client with persistent sessions and crash recovery.
@@ -201,18 +201,18 @@ asyncio.run(main())
 uv tool install --python 3.12 --upgrade benchflow
 # (or from source: uv sync --extra dev --locked)
 export GEMINI_API_KEY=...     # or ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
-export DAYTONA_API_KEY=...    # for cloud sandboxes
 ```
 
 ## Sandboxes
 
 | Sandbox | Flag | Best for |
 |---------|------|----------|
-| `docker` | `--sandbox docker` | Local dev, small runs (<=10 tasks) |
+| `docker` | `--sandbox docker` | Local development and small runs; the default |
 | `daytona` | `--sandbox daytona` | Cloud runs with concurrency (needs DAYTONA_API_KEY) |
 | `modal` | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
 
-Use `daytona` for benchmarks. Docker is limited by network exhaustion.
+Start with Docker. Use Daytona or Modal only when the run needs remote
+isolation or more parallel machines than the local host can provide.
 
 ## Skills in tasks
 
@@ -228,7 +228,7 @@ COPY skills /root/.claude/skills
 bench eval run \
   --tasks-dir task-dir \
   --agent claude-agent-acp \
-  --sandbox daytona \
+  --sandbox docker \
   --skills-dir skills/ \
   --skill-mode with-skill
 ```

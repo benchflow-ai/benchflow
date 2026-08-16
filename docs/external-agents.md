@@ -9,18 +9,14 @@ first one is all there is to know.
 ## 1. Zero-config remote autoload (the default)
 
 Using an agent name BenchFlow doesn't recognize triggers a one-shot fetch of
-the declarative manifests from `benchflow-ai/agents@main`. Nothing to install
-or configure. End to end, from an empty directory to a scored rollout
-(verified as written: skillsbench `edit-pdf`, reward 1.0, ~23 min, a few
-cents on `deepseek-v4-flash` — rates approximate):
+the declarative manifests from `benchflow-ai/agents@main`. There is no separate
+agent package to install for manifest-based agents:
 
 ```bash
-# Install. `uv tool install --python 3.12 'benchflow[sandbox-daytona]'` (the
-# README's global-CLI idiom) and a plain venv + pip both work; pick one.
-pip install 'benchflow[sandbox-daytona]'
+# Install the normal local CLI; no cloud-sandbox extra is needed.
+uv tool install --python 3.12 --upgrade benchflow
 
 export DEEPSEEK_API_KEY=sk-...          # credentials for your --model provider
-export DAYTONA_API_KEY=dtn_...          # or use --sandbox docker
 
 # Get a task (sparse checkout of one SkillsBench task — same recipe as
 # getting-started; any task.md/Harbor-format task directory works):
@@ -29,8 +25,11 @@ git clone --depth 1 --filter=blob:none --sparse \
 cd skillsbench && git sparse-checkout set tasks/edit-pdf
 
 bench eval run --tasks-dir tasks/edit-pdf --agent prime-agent \
-  --model deepseek/deepseek-v4-flash --sandbox daytona
+  --model deepseek/deepseek-v4-flash --sandbox docker
 ```
+
+Use another sandbox only if the run needs remote scale; see
+[Sandboxes](./sandboxes.md).
 
 While the agent works, a terminal (TTY) shows the live Rich dashboard —
 progress bar, pass/fail counts, and a per-task activity column that tracks
