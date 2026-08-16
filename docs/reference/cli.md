@@ -426,11 +426,20 @@ Ctrl+C stop), `3` rejected — deliberately not `1`/`2`, which stay reserved
 for errors and usage mistakes. Without `--confirm` the server has no
 `/decision` endpoint and runs until Ctrl+C, as before.
 
+`--redaction-summary "2 API keys, 1 bearer token"` adds a display-only note to
+the `--confirm` bar — "Before upload, BenchFlow masks: … Originals never leave
+this machine." — so the reviewer sees what upload-time redaction will mask
+(the viewer itself shows the original session and never redacts). The upload
+skill fills it from the `Masked for you` line printed by
+`bench traj upload PATH --dry-run`. Without `--confirm` the flag has no
+effect; without the flag the bar is unchanged.
+
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
 bench eval view ~/.claude/projects/<project>/<session>.jsonl
 bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
+bench eval view session.jsonl --confirm --redaction-summary "2 API keys, 1 bearer token"
 ```
 
 ## bench train
@@ -921,7 +930,7 @@ bench traj upload path/to/trial --dry-run
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
 | `--repo` / `--no-repo` | on | Tag the upload with the repository the session was about: `repo/<owner>/<name>` from the session's recorded cwd git remote becomes the source id and the CLI prints `Repo: owner/name (use --no-repo to omit)`; explicit `--source-id` wins; undetectable repos fall back silently |
 | `--preview-steps` | `5` | Number of redacted trajectory steps to preview; accepts 0–20 |
-| `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
+| `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic; ends with a plain `Masked for you: ...` line itemizing masked secrets by kind (API keys, bearer tokens, private key blocks, passwords, URL credentials, credential-bearing field values) for `bench eval view --redaction-summary` |
 | `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |
 | `--container-url` | — | Azure Blob container URL for `--direct`; alternatively set `BENCHFLOW_AZURE_CONTAINER_URL` |
 

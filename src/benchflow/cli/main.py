@@ -1239,11 +1239,25 @@ def eval_view(
             ),
         ),
     ] = False,
+    redaction_summary: Annotated[
+        str | None,
+        typer.Option(
+            "--redaction-summary",
+            help=(
+                "Masked-secret breakdown shown in the --confirm bar, e.g. "
+                "'2 API keys, 1 bearer token' (lift it from "
+                "`bench traj upload PATH --dry-run`). Display-only; no effect "
+                "without --confirm."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """View a trial or session trajectory in the browser."""
     from benchflow.trajectories import viewer
 
-    decision = viewer.serve(str(rollout_dir), port, confirm=confirm)
+    decision = viewer.serve(
+        str(rollout_dir), port, confirm=confirm, redaction_summary=redaction_summary
+    )
     # Exit-code contract for --confirm: 0 approved, 3 rejected. 3 is chosen
     # so a rejection never collides with the CLI's existing error exits
     # (1 = errors, 2 = Typer usage errors).

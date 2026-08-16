@@ -3,6 +3,23 @@
 ## [Unreleased]
 
 ### Added
+- **The upload preview itemizes what redaction masked, by kind.** The
+  redactor now categorizes every replacement by the rule that fired — API
+  keys, bearer tokens, private key blocks, passwords, URL credentials, and
+  credential-bearing field values — and the terminal trajectory report shows
+  a `Masked for you: 2 API keys, 1 bearer token — originals never leave this
+  machine` breakdown under the masked-count row, plus a reassurance that
+  redaction ran locally and the server independently rescans staged
+  artifacts (or `No secrets or personal identifiers detected — nothing
+  needed masking.` when nothing matched). `bench traj upload --dry-run`
+  prints the same breakdown as a plain `Masked for you:` line, and
+  `bench eval view --confirm` gains a display-only `--redaction-summary`
+  flag that renders it in the confirm bar next to the Approve button; the
+  `benchflow-traj-upload` skill stages a dry run first and passes the line
+  through. The total `redaction_replacements` count and the manifest
+  `trajectory_report` contract are unchanged (the server validates the
+  report with a closed schema and exact recompute equality, so per-category
+  counts stay display-only).
 - **The trajectory viewer can collect the eval-prize confirmation in the
   browser.** `bench eval view PATH --confirm` renders the normal page plus a
   sticky site-styled bottom bar ("Submit this trajectory to the BenchFlow

@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import tempfile
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,7 +16,11 @@ from pathlib import Path
 from typing import Any, Never
 
 from benchflow import __version__
-from benchflow.publish.redact import redact_value, redact_value_to_stability
+from benchflow.publish.redact import (
+    redact_value,
+    redact_value_to_stability,
+    redaction_breakdown,
+)
 
 MAX_FILE_BYTES = 128 * 1024**2
 MAX_ARTIFACTS = 8
@@ -81,6 +86,10 @@ class StagedTrajectoryArtifacts:
     _metadata_dir: Path | None
     _staging_dir: Path
     _redact: bool
+    # Per-category artifact replacement counts in display order (display-only:
+    # the manifest/server contract stays untouched). Sums to
+    # ``redaction_replacements``.
+    redaction_categories: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -92,6 +101,8 @@ class StagedCapture:
     ignored: tuple[str, ...]
     artifact_redaction_replacements: int
     redaction_replacements: int
+    # Display-only per-category counts for the artifact replacements.
+    artifact_redaction_categories: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,12 +210,15 @@ def stage_trajectory_artifacts(
         staging_dir = Path(temp_name)
         payloads: list[StagedFile] = []
         replacement_count = 0
+        replacement_categories: Counter[str] = Counter()
         for source in resolved.files:
             relname = validate_artifact_name(f"trajectory/{source.name}")
             target = staging_dir / relname
             target.parent.mkdir(parents=True, exist_ok=True)
             if redact:
-                replacements = _redact_jsonl(source, target)
+                replacements = _redact_jsonl(
+                    source, target, categories=replacement_categories
+                )
                 replacement_count += replacements
             else:
                 shutil.copyfile(source, target)
@@ -240,6 +254,7 @@ def stage_trajectory_artifacts(
             _metadata_dir=resolved.metadata_dir,
             _staging_dir=staging_dir,
             _redact=redact,
+            redaction_categories=redaction_breakdown(replacement_categories),
         )
 
 
@@ -305,6 +320,7 @@ def finalize_trajectory_capture(
         ignored=artifacts.ignored,
         artifact_redaction_replacements=artifacts.redaction_replacements,
         redaction_replacements=replacement_count,
+        artifact_redaction_categories=artifacts.redaction_categories,
     )
 
 
@@ -430,7 +446,9 @@ def _validate_jsonl(path: Path) -> None:
         raise ValueError(f"trajectory JSONL has no records: {path}")
 
 
-def _redact_jsonl(source: Path, target: Path) -> int:
+def _redact_jsonl(
+    source: Path, target: Path, *, categories: Counter[str] | None = None
+) -> int:
     replacements = 0
     with (
         source.open(encoding="utf-8", newline="") as input_stream,
@@ -443,7 +461,9 @@ def _redact_jsonl(source: Path, target: Path) -> int:
                 continue
             value = strict_json_loads(body)
             try:
-                redacted, count = redact_value_to_stability(value)
+                redacted, count = redact_value_to_stability(
+                    value, categories=categories
+                )
             except RecursionError as exc:  # defense in depth after complexity gate
                 raise ValueError(
                     f"{source}: line {line_number}: trajectory JSONL nesting "

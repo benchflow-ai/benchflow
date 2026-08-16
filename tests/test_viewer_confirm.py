@@ -53,14 +53,16 @@ def _free_port() -> int:
 
 
 def _serve_in_thread(
-    path: Path, *, confirm: bool
+    path: Path, *, confirm: bool, redaction_summary: str | None = None
 ) -> tuple[int, threading.Thread, dict]:
     """Run serve() in a daemon thread; poll GET / until it answers."""
     port = _free_port()
     result: dict = {}
 
     def run() -> None:
-        result["decision"] = serve(str(path), port, confirm=confirm)
+        result["decision"] = serve(
+            str(path), port, confirm=confirm, redaction_summary=redaction_summary
+        )
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
@@ -180,7 +182,9 @@ def test_eval_view_maps_decision_to_exit_code(
     (non-1/2 so it cannot collide with error or usage exits), Ctrl+C → 0."""
     calls: dict = {}
 
-    def fake_serve(path, port=8888, prompts=None, confirm=False):
+    def fake_serve(
+        path, port=8888, prompts=None, confirm=False, redaction_summary=None
+    ):
         calls["confirm"] = confirm
         return decision
 
@@ -195,7 +199,9 @@ def test_eval_view_defaults_to_no_confirm(tmp_path, monkeypatch):
     behavior (no bar, no endpoint) is preserved."""
     calls: dict = {}
 
-    def fake_serve(path, port=8888, prompts=None, confirm=False):
+    def fake_serve(
+        path, port=8888, prompts=None, confirm=False, redaction_summary=None
+    ):
         calls["confirm"] = confirm
         return None
 
@@ -203,3 +209,71 @@ def test_eval_view_defaults_to_no_confirm(tmp_path, monkeypatch):
     res = runner.invoke(app, ["eval", "view", str(tmp_path)])
     assert res.exit_code == 0
     assert calls["confirm"] is False
+
+
+def test_confirm_bar_shows_redaction_summary_when_given(tmp_path):
+    """Redaction transparency: --redaction-summary renders the masked-secret
+    breakdown in the confirm bar (HTML-escaped), above the buttons."""
+    session = _write_session(tmp_path)
+    port, thread, result = _serve_in_thread(
+        session,
+        confirm=True,
+        redaction_summary="2 API keys, 1 bearer token <&>",
+    )
+
+    page = result["page"]
+    assert "Before upload, BenchFlow masks: 2 API keys, 1 bearer token" in page
+    assert "Originals never leave this machine." in page
+    assert "&lt;&amp;&gt;" in page  # summary is escaped, never raw HTML
+    assert "<&>" not in page
+    # The note precedes the question/buttons inside the bar markup.
+    assert page.index('<div class="confirm-note">') < page.index(
+        '<span class="confirm-question">'
+    )
+
+    _post_decision(port, "reject")
+    thread.join(timeout=10)
+
+
+def test_confirm_bar_without_redaction_summary_is_unchanged(tmp_path):
+    """Redaction transparency: the flag is optional — without it the confirm bar
+    carries no note markup, and plain (non-confirm) pages never carry any."""
+    session = _write_session(tmp_path)
+
+    plain_html = render_jsonl_file(session)
+    assert "confirm-note" not in plain_html
+    assert "Before upload, BenchFlow masks" not in plain_html
+
+    port, thread, result = _serve_in_thread(session, confirm=True)
+    assert "Before upload, BenchFlow masks" not in result["page"]
+    assert '<div class="confirm-note">' not in result["page"]
+
+    _post_decision(port, "reject")
+    thread.join(timeout=10)
+
+
+def test_eval_view_passes_redaction_summary_through(tmp_path, monkeypatch):
+    """Redaction transparency: the Typer command forwards --redaction-summary to
+    serve() untouched."""
+    calls: dict = {}
+
+    def fake_serve(
+        path, port=8888, prompts=None, confirm=False, redaction_summary=None
+    ):
+        calls["summary"] = redaction_summary
+        return None
+
+    monkeypatch.setattr(viewer, "serve", fake_serve)
+    res = runner.invoke(
+        app,
+        [
+            "eval",
+            "view",
+            str(tmp_path),
+            "--confirm",
+            "--redaction-summary",
+            "2 API keys, 1 bearer token",
+        ],
+    )
+    assert res.exit_code == 0
+    assert calls["summary"] == "2 API keys, 1 bearer token"
