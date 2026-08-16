@@ -67,3 +67,11 @@ def test_trajectory_upload_bicep_does_not_reconfigure_data_services() -> None:
     assert "resource queueService" in bicep
     assert "queueServices@2023-05-01' existing" in bicep
     assert "tableServices@2023-05-01' existing" in bicep
+
+
+def test_trajectory_upload_smoke_normalizes_storage_hardening_values() -> None:
+    """Guards the live Azure CLI TSV fix completed in PR #1008."""
+    smoke_test = (_SERVICE_ROOT / "scripts" / "smoke-test.sh").read_text()
+
+    assert "join('|', [to_string(allowBlobPublicAccess)" in smoke_test
+    assert '"false|false|true|TLS1_2"' in smoke_test

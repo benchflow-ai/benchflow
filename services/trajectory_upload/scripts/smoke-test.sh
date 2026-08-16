@@ -35,9 +35,9 @@ fi
 task_storage_state="$(az storage account show \
     --resource-group "$task_rg" \
     --name "$task_storage" \
-    --query '[allowBlobPublicAccess,allowSharedKeyAccess,enableHttpsTrafficOnly,minimumTlsVersion]' \
+    --query "join('|', [to_string(allowBlobPublicAccess), to_string(allowSharedKeyAccess), to_string(enableHttpsTrafficOnly), minimumTlsVersion])" \
     -o tsv)"
-if [[ "$task_storage_state" != $'false\tfalse\ttrue\tTLS1_2' ]]; then
+if [[ "$task_storage_state" != "false|false|true|TLS1_2" ]]; then
     echo "trajectory upload storage hardening drifted" >&2
     exit 1
 fi
