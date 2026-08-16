@@ -15,20 +15,23 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 
 ## Quick start: 1. Submit a trajectory
 
-Proud of a Claude Code or Codex session? Copy this line into Claude Code,
-Codex, Cursor, or any coding agent. That is the $2,000 eval prize path. No
-BenchFlow account, API key, or Azure login.
+**Don't follow these steps yourself — send them to your coding agent.** Copy
+the block below and paste it as a message to Claude Code, Codex, OpenCode, or
+Cursor. That is the $2,000 eval prize path. No BenchFlow account, API key, or
+Azure login.
 
-```
-Submit my best local Claude Code or Codex session to the BenchFlow eval prize. Read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
-```
+> Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, on this laptop) to the BenchFlow eval prize.
+>
+> 1. First make sure the latest benchflow CLI is installed: uv tool install --python 3.12 --upgrade --force benchflow
+>
+> 2. Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, and upload only after I (the human) review it.
 
 The agent finds sessions on this machine, opens the viewer, and uploads after
 you like what you see.
 
-Be on the latest BenchFlow first — `uv tool install --python 3.12 --upgrade
---force benchflow`. The `bench traj` commands print a one-line upgrade hint
-when a newer release is available.
+The prompt has the agent install the latest BenchFlow first (`uv tool
+install --python 3.12 --upgrade --force benchflow`). The `bench traj` commands
+also print a one-line upgrade hint when a newer release is available.
 
 Prefer the terminal instead? The guided upload inspects before anything leaves
 your machine — it renders a redacted trajectory report (step counts, masked
@@ -54,7 +57,7 @@ bench traj setup
 ```
 
 `npx skills add` asks which agents to install for. `bench traj setup` copies
-the skill into this project and prints the same paste line. See the
+the skill into this project and prints the same agent prompt. See the
 [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md).
 
 ## Quick start: 2. Run with a ChatGPT or Claude subscription

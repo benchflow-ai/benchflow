@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+- **Trajectory uploads are tagged with the session's repository by
+  default.** Unless `--source-id` is given, `bench traj upload` reads the
+  session's recorded working directory (Claude `cwd` events, Codex
+  `session_meta`), resolves its git `origin` remote (invocation directory as
+  fallback), and stores `repo/<owner>/<name>` as the manifest source id,
+  printing `Repo: owner/name (use --no-repo to omit)`. `--no-repo` opts out
+  — the `benchflow-traj-upload` skill now surfaces the detected tag during
+  the confirm step so contributors can decline it for private repos — and
+  undetectable repos fall back silently to the path-derived source id.
+
 ### Changed
 - **Trajectory viewer tool calls are color-coded and backgrounds are light.**
   Each tool kind now gets a muted GitHub-label-style accent on its name pill
@@ -14,6 +25,20 @@
   accent. Presentation only (CSS classes + a tool-name→accent mapping);
   content strings and behavior are unchanged. Applies to all three viewer
   templates, which share one stylesheet since #1019.
+- **The contributor prompt now tells the agent to upgrade BenchFlow first.**
+  `CONTRIBUTOR_PROMPT` (kept in sync in `README.md`, `docs/traj-upload.md`,
+  and the `benchflow-traj-upload` skill evals) is a three-line block that
+  says to run `uv tool install --python 3.12 --upgrade --force benchflow`
+  before reading the skill, so agents that skim the skill or hit a stale copy
+  still install the latest CLI. The prompt also names OpenCode and Cursor
+  sessions and the re:Agent hackathon 72-hour window; README/docs render it
+  as a blockquote (soft-wraps on GitHub) behind an explicit "send this to
+  your coding agent" framing, and `bench traj setup` prints the same framing.
+  The skill's Discover step gains best-effort Cursor
+  (`~/.cursor/projects/*/agent-transcripts/`) and OpenCode
+  (`~/.local/share/opencode/opencode.db`, `opencode db path`) locations plus
+  a prefer-recent-matching-sessions note. Follow-up to the version
+  precondition from #1013/#1014.
 - **Trajectory viewer restyled to match www.benchflow.ai.** All three
   `bench eval view` pages (stream-json/JSONL, ACP events, multi-turn trial)
   now share one inline stylesheet with the site's design language: light

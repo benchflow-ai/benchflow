@@ -64,7 +64,15 @@ If that command is missing, search these locations and skip nested
 
 - Claude Code: `~/.claude/projects/**/*.jsonl`
 - Codex: `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/*.jsonl`
+- Cursor: agent transcripts at `~/.cursor/projects/*/agent-transcripts/**/*.jsonl`
+- OpenCode: newer versions keep sessions in a SQLite database at
+  `~/.local/share/opencode/opencode.db` (run `opencode db path` to confirm);
+  older versions used JSON files under `~/.local/share/opencode/storage/session/`
 - BenchFlow trials: `jobs/**/trajectory/` or a directory with `turn*.txt`
+
+If the user described a time window or topic (for example, sessions from the
+last 72 hours on a specific project), prefer sessions matching that
+description.
 
 Show the 8 most recent with mtime, path, and the first user-prompt snippet.
 Skip sessions that clearly contain private or proprietary work unless the
@@ -91,6 +99,14 @@ finish reviewing. If the port is taken, try `--port 8889`.
 Ask them to look at the viewer. Do not upload until they say it looks good.
 If they want a different session, go back to pick.
 
+The upload is tagged with the repository the session was about: the CLI reads
+the session's recorded working directory, resolves its git `origin` remote,
+and stores `repo/<owner>/<name>` as the source id (it prints
+`Repo: owner/name (use --no-repo to omit)`; check the remote yourself or run
+`--dry-run` to see it beforehand). Mention the detected repo when you ask for
+confirmation — "This session will be tagged `repo/owner/name`; say the word
+if you want it omitted" — so they can opt out for private repos.
+
 Before upload, remind them not to submit secrets. The CLI masks detected
 secret values locally before anything leaves the machine, but redaction is a
 safety net, not a license to upload credentials.
@@ -105,6 +121,8 @@ the user to re-run a command.
 ```bash
 bench traj upload /path/to/session.jsonl
 ```
+
+If the user declined the repo tag in the confirm step, add `--no-repo`.
 
 If the first request times out, run the same upload again. Retries are safe
 because the digest is content-addressed. Report **Submitted** or **Already
