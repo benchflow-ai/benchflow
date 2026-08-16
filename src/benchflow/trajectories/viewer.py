@@ -429,7 +429,8 @@ def _looks_like_codex(events: list[dict]) -> bool:
 
 def _looks_like_acp(events: list[dict]) -> bool:
     return any(
-        e.get("type") in {"tool_call", "agent_thought", "user_message"} for e in events[:30]
+        e.get("type") in {"tool_call", "agent_thought", "user_message"}
+        for e in events[:30]
     )
 
 
@@ -482,7 +483,9 @@ def _codex_to_acp(events: list[dict]) -> list[dict]:
                 text = _codex_message_text(payload)
                 if not text:
                     continue
-                kind = "user_message" if payload.get("role") == "user" else "agent_message"
+                kind = (
+                    "user_message" if payload.get("role") == "user" else "agent_message"
+                )
                 converted.append({"type": kind, "text": text})
     return converted
 

@@ -585,6 +585,7 @@ def test_upload_validates_contributor_parameters_locally(
     assert result.exit_code == 1
     assert message in result.output
 
+
 def test_upload_infers_contributor_from_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
