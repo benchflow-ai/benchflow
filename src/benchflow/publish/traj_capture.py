@@ -451,7 +451,11 @@ def _redact_jsonl(source: Path, target: Path) -> int:
                 ) from exc
             except ValueError as exc:
                 raise ValueError(f"{source}: line {line_number}: {exc}") from exc
-            if count:
+            # Redaction can normalize an already-safe legacy placeholder to the
+            # BenchFlow marker without counting a newly discovered secret. Keep
+            # the staged artifact and its manifest preview on the same canonical
+            # representation even when the replacement count remains zero.
+            if count or redacted != value:
                 output_stream.write(
                     json.dumps(redacted, separators=(",", ":"), ensure_ascii=False)
                     + newline

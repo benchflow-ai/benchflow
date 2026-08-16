@@ -145,6 +145,52 @@ def test_final_manifest_persists_the_complete_trajectory_report(
         )
 
 
+def test_legacy_safe_marker_keeps_artifact_and_report_in_sync(tmp_path: Path) -> None:
+    """Guards PR #1008 against the live report-mismatch rejection.
+
+    A legacy ``***REDACTED***`` marker was normalized only in the manifest
+    preview because normalization did not increment the secret count, leaving
+    the staged artifact and independently recomputed report inconsistent.
+    """
+    source = tmp_path / "capture.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": 'Use API_KEY="***REDACTED***" for the request',
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with stage_trajectory_artifacts(source, source_id="legacy-marker") as artifacts:
+        report = build_trajectory_report(
+            artifacts.files,
+            masked_values=artifacts.redaction_replacements,
+        )
+        staged = finalize_trajectory_capture(
+            artifacts,
+            github_id="benchflow-user",
+            email="user@example.com",
+            trajectory_report=report.as_manifest_metadata(),
+        )
+        artifact_text = staged.files[0].local_path.read_text(encoding="utf-8")
+        validated = validate_local_capture(
+            staged.files[-1].local_path.read_bytes(),
+            {item.relname: item.local_path for item in staged.files[:-1]},
+        )
+
+    assert "***REDACTED***" not in artifact_text
+    assert REDACTED in artifact_text
+    assert staged.artifact_redaction_replacements == 0
+    assert validated.manifest.trajectory_report is not None
+    assert REDACTED in validated.manifest.trajectory_report.preview[0].summary
+
+
 def test_report_manifest_requires_contributor_metadata(tmp_path: Path) -> None:
     """Guards PR #1008 against creating an invalid anonymous schema 1.2 manifest."""
     source = tmp_path / "capture.jsonl"
