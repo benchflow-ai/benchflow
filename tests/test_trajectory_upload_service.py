@@ -1887,12 +1887,13 @@ def test_azure_backend_status_reads_ledger_without_upload_quota() -> None:
     with pytest.raises(RateLimited):
         backend.get_capture_status(digest, client_ip="127.0.0.1")
 
-    partitions = {entity["PartitionKey"] for entity in table.entities}
-    assert any(partition.startswith("rate-status-") for partition in partitions)
-    assert not any(
-        partition.startswith("rate-") and not partition.startswith("rate-status-")
-        for partition in partitions
-    )
+    status_rows = {
+        entity["RowKey"]
+        for entity in table.entities
+        if entity["PartitionKey"] == "ratebucket"
+    }
+    assert any(row.startswith("status-") for row in status_rows)
+    assert not any(row.startswith(("contributor-", "ip-")) for row in status_rows)
 
 
 def test_azure_backend_status_bounds_detail_and_hides_corrupt_states() -> None:

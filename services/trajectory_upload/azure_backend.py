@@ -249,6 +249,11 @@ class AzureUploadBroker:
             ResourceNotFoundError,
         )
 
+        if capacity <= 0:
+            # A zero-capacity bucket is an operator kill switch: nothing ever
+            # refills, so reject without touching the table (a first-seen key
+            # would otherwise be admitted while creating its row).
+            raise RateLimited(3600)
         digest = hmac.new(self.ip_hash_key, key.encode(), hashlib.sha256).hexdigest()
         row = f"{scope}-{digest}"
         for attempt in range(10):
