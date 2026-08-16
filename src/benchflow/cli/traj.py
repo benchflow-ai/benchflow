@@ -13,12 +13,24 @@ from rich.markup import escape
 
 from benchflow.cli._shared import console, print_error
 from benchflow.cli._traj_upload_ui import (
+    UploadProgressHooks,
     format_bytes,
     render_trajectory_report,
     upload_progress,
 )
-from benchflow.publish.traj_capture import StagedCapture, StagedFile
-from benchflow.publish.traj_report import DEFAULT_PREVIEW_STEPS, MAX_PREVIEW_STEPS
+from benchflow.publish.traj_capture import (
+    StagedCapture,
+    default_source_id,
+    finalize_trajectory_capture,
+    stage_trajectory_artifacts,
+    validate_email,
+    validate_github_id,
+)
+from benchflow.publish.traj_report import (
+    DEFAULT_PREVIEW_STEPS,
+    MAX_PREVIEW_STEPS,
+    build_trajectory_report,
+)
 
 # The environment variable remains an override for development and disaster
 # recovery.
@@ -49,8 +61,11 @@ class _PublishResult(Protocol):
     @property
     def url(self) -> str: ...
 
-    uploaded: tuple[str, ...]
-    skipped: tuple[str, ...]
+    @property
+    def uploaded(self) -> tuple[str, ...]: ...
+
+    @property
+    def skipped(self) -> tuple[str, ...]: ...
 
 
 def register_traj(app: typer.Typer) -> None:
@@ -118,19 +133,10 @@ def register_traj(app: typer.Typer) -> None:
 
 
 def _run_upload(options: _UploadOptions) -> None:
-    from benchflow.publish.traj_capture import (
-        default_source_id,
-        finalize_trajectory_capture,
-        stage_trajectory_artifacts,
-    )
-    from benchflow.publish.traj_report import build_trajectory_report
-
     interactive = any(
         value is None for value in (options.path, options.github_id, options.email)
     )
-    path = options.path or Path(
-        typer.prompt("Trajectory JSONL file or trial directory")
-    )
+    path = options.path or _prompt_for_path()
     source_id = options.source_id or default_source_id(path)
     destination = _resolve_destination(options)
 
@@ -164,12 +170,8 @@ def _run_upload(options: _UploadOptions) -> None:
         ):
             console.print("[yellow]Upload cancelled.[/yellow]")
             return
-        with upload_progress(staged.files, console=console) as on_file_complete:
-            result = _publish(
-                staged,
-                destination=destination,
-                on_file_complete=on_file_complete,
-            )
+        with upload_progress(staged.files, console=console) as hooks:
+            result = _publish(staged, destination=destination, hooks=hooks)
         _print_upload_result(staged, result)
 
 
@@ -178,9 +180,29 @@ def _resolve_contributor(
     email: str | None,
 ) -> tuple[str, str]:
     return (
-        github_id or typer.prompt("GitHub ID"),
-        email or typer.prompt("Email"),
+        github_id or _prompt_valid("GitHub ID", validate_github_id),
+        email or _prompt_valid("Email", validate_email),
     )
+
+
+def _prompt_for_path() -> Path:
+    while True:
+        raw = typer.prompt("Trajectory JSONL file or trial directory").strip()
+        # Shells wrap dragged-in paths in quotes; accept them as typed.
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            raw = raw[1:-1]
+        path = Path(raw).expanduser()
+        if path.exists():
+            return path
+        print_error(f"path not found: {path}")
+
+
+def _prompt_valid(label: str, validate: Callable[[str], str]) -> str:
+    while True:
+        try:
+            return validate(typer.prompt(label))
+        except ValueError as exc:
+            print_error(str(exc))
 
 
 def _resolve_destination(options: _UploadOptions) -> _UploadDestination:
@@ -209,7 +231,7 @@ def _publish(
     staged: StagedCapture,
     *,
     destination: _UploadDestination,
-    on_file_complete: Callable[[StagedFile], None],
+    hooks: UploadProgressHooks,
 ) -> _PublishResult:
     if destination.direct:
         from benchflow.publish.azure_blob import upload_capture_direct
@@ -217,14 +239,16 @@ def _publish(
         return upload_capture_direct(
             staged,
             container_url=destination.url,
-            on_file_complete=on_file_complete,
+            on_file_complete=hooks.on_file_complete,
+            on_bytes=hooks.on_bytes,
         )
     from benchflow.publish.broker import upload_capture_via_broker
 
     return upload_capture_via_broker(
         staged,
         broker_url=destination.url,
-        on_file_complete=on_file_complete,
+        on_file_complete=hooks.on_file_complete,
+        on_bytes=hooks.on_bytes,
     )
 
 

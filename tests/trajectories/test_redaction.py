@@ -17,6 +17,7 @@ from benchflow.trajectories.types import (
     Trajectory,
     redact_acp_trajectory_jsonl,
     redact_trajectory_text,
+    redact_trajectory_text_with_count,
 )
 
 # Fake token fixtures assembled from split literals so the full token string
@@ -703,6 +704,25 @@ def test_redaction_preserves_json_when_code_mentions_token_label():
     json.loads(redacted)
     assert "class Token" in redacted
     assert "***REDACTED***" not in redacted
+
+
+def test_query_param_redaction_is_idempotent_after_replacement():
+    """Guards PR #1008: the query-param carriers re-matched their own
+    ``***REDACTED***`` marker (the value classes allowed ``*``), so every rescan
+    counted a fresh replacement — the publish-layer stability loop diverged and
+    the server-side rescan rejected already-clean uploads."""
+    raw = (
+        f"GET https://api/v1?access_token={_FAKE_QUERY_SECRET}"
+        f"&sig={_FAKE_QUERY_SECRET}{_FAKE_QUERY_SECRET}&page=2"
+    )
+
+    once, first = redact_trajectory_text_with_count(raw)
+    twice, second = redact_trajectory_text_with_count(once)
+
+    assert first == 2
+    assert (twice, second) == (once, 0)
+    assert "?access_token=***REDACTED***" in once
+    assert once.endswith("&page=2")
 
 
 def test_redaction_does_not_corrupt_python_authorization_fstrings():

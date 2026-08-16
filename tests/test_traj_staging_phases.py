@@ -71,3 +71,34 @@ def test_staged_secret_marker_passes_the_independent_server_scan(
         validated = validate_local_capture(manifest_bytes, paths)
 
     assert validated.manifest.source_id == "demo"
+
+
+def test_query_param_secrets_stage_stably_and_pass_the_server_rescan(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1008: query-param secret carriers made client redaction
+    diverge ("did not converge") and the independent server rescan reject the
+    staged marker as an unredacted secret."""
+    sas_signature = "A1" * 20
+    source = tmp_path / "capture.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "user_message",
+                "text": "GET https://api/v1?access_token=opaque-prefixless&page=2",
+                "url": f"https://acct.blob/c/f?sv=2023-01-01&sig={sas_signature}&se=x",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with stage_trajectory_capture(source, source_id="query-demo") as staged:
+        payload = staged.files[0].local_path.read_text(encoding="utf-8")
+        assert payload.count(REDACTED) == 2
+        assert "opaque-prefixless" not in payload
+        assert sas_signature not in payload
+        assert "&page=2" in payload
+        manifest_bytes = staged.files[-1].local_path.read_bytes()
+        paths = {item.relname: item.local_path for item in staged.files[:-1]}
+        validate_local_capture(manifest_bytes, paths)

@@ -105,7 +105,7 @@ def test_direct_mode_reports_azure_destination(
     """The CLI delegates direct mode and renders the returned Azure URL."""
     trial = _trial(tmp_path)
 
-    def fake_upload(staged, *, container_url, on_file_complete):
+    def fake_upload(staged, *, container_url, on_file_complete, on_bytes):
         assert staged.manifest["contributor"] == {
             "github_id": GITHUB_ID,
             "email": EMAIL,
@@ -353,7 +353,7 @@ def test_upload_prompts_for_path_github_id_and_email_in_order(
     """Guards the interactive upload follow-up to PR #992."""
     trial = _trial(tmp_path)
 
-    def fake_upload(staged, *, broker_url, on_file_complete):
+    def fake_upload(staged, *, broker_url, on_file_complete, on_bytes):
         assert staged.manifest["contributor"] == {
             "github_id": GITHUB_ID,
             "email": EMAIL,
@@ -470,6 +470,56 @@ def test_upload_prompts_only_for_missing_parameters(tmp_path: Path) -> None:
     assert "Email:" in output
     assert "GitHub ID:" not in output
     assert "Trajectory JSONL file or trial directory:" not in output
+
+
+def test_interactive_prompts_reask_after_invalid_input(tmp_path: Path) -> None:
+    """Guards PR #1008: a typo at any interactive prompt re-asks in place
+    instead of aborting the staged upload, and dragged-in quoted paths are
+    accepted as typed."""
+    trial = _trial(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["traj", "upload", "--dry-run"],
+        input=(
+            f"{tmp_path / 'missing'}\n"
+            f"'{trial}'\n"
+            "-bad-\n"
+            f"{GITHUB_ID}\n"
+            "not-an-email\n"
+            f"{EMAIL}\n"
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "path not found" in output
+    assert "invalid GitHub ID" in output
+    assert "invalid contributor email" in output
+    assert "Dry run" in output
+
+
+def test_broker_upload_reports_streamed_byte_progress(tmp_path: Path) -> None:
+    """Guards PR #1008: single-file uploads stream byte counts to the progress
+    callback instead of jumping only at file boundaries."""
+    trial = _trial(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json=_broker_payload(request))
+        request.read()
+        return httpx.Response(201)
+
+    byte_counts: list[int] = []
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        upload_capture_via_broker(
+            staged,
+            broker_url="https://broker.test",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            on_bytes=byte_counts.append,
+        )
+        assert sum(byte_counts) == sum(item.size_bytes for item in staged.files)
+    assert all(count > 0 for count in byte_counts)
 
 
 def test_upload_rejects_preview_counts_above_the_terminal_bound(tmp_path: Path) -> None:

@@ -307,6 +307,71 @@ def test_report_skips_claude_metadata_and_previews_first_100_words(
     assert all("attachment" not in step.summary for step in report.preview)
 
 
+def test_report_detects_claude_sessions_behind_leading_summary_metadata(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1008: resumed Claude Code sessions open with summary records
+    whose lack of a format signature previously locked the whole report into
+    Generic JSONL with inflated step and human-prompt counts."""
+    artifact = _artifact(
+        tmp_path / "claude.jsonl",
+        [
+            {"type": "summary", "summary": "Earlier task recap", "leafUuid": "0f0f"},
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "Fix the tests"},
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Inspect first"},
+                        {"type": "tool_use", "name": "Read", "input": {}},
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": "test output"}],
+                },
+            },
+        ],
+    )
+
+    report = build_trajectory_report((artifact,), masked_values=0)
+
+    assert report.format is TrajectoryFormat.CLAUDE_CODE
+    assert report.total_steps == 3
+    assert report.thinking_steps == 1
+    assert report.tool_call_steps == 1
+    assert report.human_steps == 1
+    assert [step.kind for step in report.preview] == [
+        "Human",
+        "Thinking + tool",
+        "Tool result",
+    ]
+
+
+def test_report_preview_strips_terminal_control_sequences(tmp_path: Path) -> None:
+    """Guards PR #1008: preview summaries render in the contributor's terminal,
+    so ESC/OSC control bytes inside trajectory text (which Rich passes through)
+    must not survive into the report."""
+    artifact = _artifact(
+        tmp_path / "generic.jsonl",
+        [{"type": "message", "text": "hi \x1b]0;PWNED\x07 there \x1b[2J end"}],
+    )
+
+    report = build_trajectory_report((artifact,), masked_values=0)
+
+    summary = report.preview[0].summary
+    assert "\x1b" not in summary
+    assert "\x07" not in summary
+    assert "PWNED" in summary
+
+
 def test_report_rejects_preview_limits_outside_the_public_cli_contract(
     tmp_path: Path,
 ) -> None:

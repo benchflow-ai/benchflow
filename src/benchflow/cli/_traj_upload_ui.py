@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from rich.console import Console
 from rich.panel import Panel
@@ -68,15 +69,24 @@ def render_trajectory_report(report: TrajectoryReport, *, console: Console) -> N
         )
 
 
+@dataclass(frozen=True)
+class UploadProgressHooks:
+    """Transport callbacks that feed one shared progress bar."""
+
+    on_bytes: Callable[[int], None]
+    on_file_complete: Callable[[StagedFile], None]
+
+
 @contextmanager
 def upload_progress(
     files: tuple[StagedFile, ...],
     *,
     console: Console,
-) -> Iterator[Callable[[StagedFile], None]]:
-    """Display file-level byte progress and yield the transport callback."""
+) -> Iterator[UploadProgressHooks]:
+    """Display streamed byte progress and yield the transport callbacks."""
     total_bytes = sum(item.size_bytes for item in files)
-    completed_bytes = 0
+    streamed_bytes = 0
+    boundary_bytes = 0
     progress = Progress(
         SpinnerColumn(style="cyan"),
         TextColumn("[bold cyan]{task.description}"),
@@ -89,16 +99,24 @@ def upload_progress(
     with progress:
         task_id = progress.add_task("Uploading trajectory", total=total_bytes)
 
+        def on_bytes(count: int) -> None:
+            nonlocal streamed_bytes
+            streamed_bytes = min(streamed_bytes + count, total_bytes)
+            progress.update(task_id, completed=streamed_bytes)
+
         def on_file_complete(staged_file: StagedFile) -> None:
-            nonlocal completed_bytes
-            completed_bytes += staged_file.size_bytes
+            # Resync at each file boundary: a transport retry may re-read
+            # bytes, so the boundary is authoritative for completed work.
+            nonlocal boundary_bytes, streamed_bytes
+            boundary_bytes = min(boundary_bytes + staged_file.size_bytes, total_bytes)
+            streamed_bytes = boundary_bytes
             progress.update(
                 task_id,
-                completed=min(completed_bytes, total_bytes),
+                completed=boundary_bytes,
                 description=f"Uploaded {staged_file.relname}",
             )
 
-        yield on_file_complete
+        yield UploadProgressHooks(on_bytes=on_bytes, on_file_complete=on_file_complete)
         progress.update(
             task_id,
             completed=total_bytes,

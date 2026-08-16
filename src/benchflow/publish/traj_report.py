@@ -15,6 +15,7 @@ DEFAULT_PREVIEW_STEPS = 5
 MAX_PREVIEW_STEPS = 20
 PREVIEW_WORD_LIMIT = 100
 _PREVIEW_CHAR_SAFETY_LIMIT = 4000
+_FORMAT_SCAN_LIMIT = 25
 
 
 class TrajectoryFormat(Enum):
@@ -50,10 +51,17 @@ class TrajectoryReport:
 
 
 class TrajectoryArtifact(Protocol):
-    relname: str
-    local_path: Path
-    size_bytes: int
-    created_at: datetime | None
+    @property
+    def relname(self) -> str: ...
+
+    @property
+    def local_path(self) -> Path: ...
+
+    @property
+    def size_bytes(self) -> int: ...
+
+    @property
+    def created_at(self) -> datetime | None: ...
 
 
 @dataclass(frozen=True)
@@ -157,7 +165,13 @@ def _primary_artifact(
 
 
 def _detect_file_format(path: Path) -> TrajectoryFormat:
-    """Find the first recognized trajectory record after optional metadata."""
+    """Find the first recognized trajectory record after optional metadata.
+
+    The scan is bounded: session metadata never runs more than a few records
+    deep, and an unbounded scan would read a large genuinely-generic file
+    end to end before the reporting pass reads it again.
+    """
+    scanned = 0
     with path.open(encoding="utf-8") as stream:
         for line in stream:
             if not line.strip():
@@ -168,6 +182,9 @@ def _detect_file_format(path: Path) -> TrajectoryFormat:
             detected = _detect_format(record)
             if detected is not TrajectoryFormat.GENERIC:
                 return detected
+            scanned += 1
+            if scanned >= _FORMAT_SCAN_LIMIT:
+                break
     return TrajectoryFormat.GENERIC
 
 
@@ -184,6 +201,11 @@ def _detect_format(record: dict[str, Any]) -> TrajectoryFormat:
     if record_type in {"user", "assistant", "system", "progress"} and isinstance(
         record.get("message"), dict
     ):
+        return TrajectoryFormat.CLAUDE_CODE
+    # Claude Code metadata lines that lead resumed/compacted session files.
+    if record_type == "summary" and isinstance(record.get("leafUuid"), str):
+        return TrajectoryFormat.CLAUDE_CODE
+    if record_type == "file-history-snapshot" and "messageId" in record:
         return TrajectoryFormat.CLAUDE_CODE
     if record_type in {
         "user_message",
@@ -600,6 +622,10 @@ def _tool_text(name: str, details: Any) -> str:
 
 
 def _compact(value: str) -> str:
+    # Preview summaries render in the contributor's terminal, so control
+    # characters from the trajectory (ESC/OSC sequences Rich passes through)
+    # must not survive into them.
+    value = "".join(char if char.isprintable() else " " for char in value)
     return " ".join(value.split())
 
 

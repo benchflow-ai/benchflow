@@ -430,7 +430,7 @@ def _redact_jsonl(source: Path, target: Path) -> int:
         source.open(encoding="utf-8", newline="") as input_stream,
         target.open("w", encoding="utf-8", newline="") as output_stream,
     ):
-        for line in input_stream:
+        for line_number, line in enumerate(input_stream, start=1):
             body, newline = _split_newline(line)
             if not body.strip():
                 output_stream.write(line)
@@ -439,7 +439,12 @@ def _redact_jsonl(source: Path, target: Path) -> int:
             try:
                 redacted, count = redact_value_to_stability(value)
             except RecursionError as exc:  # defense in depth after complexity gate
-                raise ValueError("trajectory JSONL nesting exceeds the limit") from exc
+                raise ValueError(
+                    f"{source}: line {line_number}: trajectory JSONL nesting "
+                    "exceeds the limit"
+                ) from exc
+            except ValueError as exc:
+                raise ValueError(f"{source}: line {line_number}: {exc}") from exc
             if count:
                 output_stream.write(
                     json.dumps(redacted, separators=(",", ":"), ensure_ascii=False)

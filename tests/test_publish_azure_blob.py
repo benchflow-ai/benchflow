@@ -39,6 +39,10 @@ class FakeContainerClient:
         self.calls: list[dict] = []
 
     def upload_blob(self, **kwargs) -> None:
+        data = kwargs.get("data")
+        if hasattr(data, "read"):  # drain like the real SDK so progress fires
+            while data.read(64 * 1024):
+                pass
         self.calls.append(kwargs)
         failure = self.failures.get(kwargs["name"])
         if failure is not None:
@@ -657,6 +661,26 @@ def test_direct_upload_preserves_canonical_order_and_metadata(
     assert client.calls[0]["content_settings"].content_type == "application/jsonl"
     assert result.url.startswith("https://tasksminerdata.blob.core.windows.net/bronze/")
     assert completed == [item.relname for item in staged.files]
+
+
+def test_direct_upload_reports_streamed_byte_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1008: direct uploads stream byte counts to the progress
+    callback instead of jumping only at file boundaries."""
+    client = FakeContainerClient()
+    _install_fake_azure(monkeypatch, client)
+    trial = _trial(tmp_path)
+
+    byte_counts: list[int] = []
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        upload_capture_direct(
+            staged,
+            container_url="https://tasksminerdata.blob.core.windows.net/bronze",
+            on_bytes=byte_counts.append,
+        )
+        assert sum(byte_counts) == sum(item.size_bytes for item in staged.files)
+    assert all(count > 0 for count in byte_counts)
 
 
 def test_direct_upload_suppresses_azure_sdk_info_logs(

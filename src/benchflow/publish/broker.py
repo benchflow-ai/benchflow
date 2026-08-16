@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from benchflow.publish._progress import ProgressReader
 from benchflow.publish.traj_capture import StagedCapture, StagedFile
 
 
@@ -32,6 +33,7 @@ def upload_capture_via_broker(
     broker_url: str,
     http_client: httpx.Client | None = None,
     on_file_complete: Callable[[StagedFile], None] | None = None,
+    on_bytes: Callable[[int], None] | None = None,
 ) -> BrokerPublishResult:
     """Request scoped upload URLs and PUT every staged file in server order."""
     endpoint = f"{broker_url.rstrip('/')}/v1/uploads"
@@ -62,10 +64,15 @@ def upload_capture_via_broker(
             for staged_file, upload in zip(staged.files, objects, strict=True):
                 object_name = prefix + staged_file.relname
                 with staged_file.local_path.open("rb") as stream:
+                    content = (
+                        stream
+                        if on_bytes is None
+                        else ProgressReader(stream, on_bytes)
+                    )
                     put_response = client.put(
                         upload["put_url"],
                         headers=upload["headers"],
-                        content=stream,
+                        content=content,
                         timeout=300,
                     )
                 if put_response.status_code in {409, 412}:
