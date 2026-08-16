@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.1 — 2026-08-16
+
 ### Added
 - **`bench traj setup` / `bench traj upload` print an upgrade hint when
   outdated.** Both commands start with a lightweight PyPI latest-version
