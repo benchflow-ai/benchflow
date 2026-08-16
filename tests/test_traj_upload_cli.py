@@ -747,7 +747,8 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     assert len(prompt_lines) == 3
     for line in prompt_lines:
         assert line in readme_text
-    assert "send them to your coding agent" in readme_text
+    # Wording updated on main in 8cae2a42 ("Send these to your coding agent.").
+    assert "Send these to your coding agent" in readme_text
 
     assert UPGRADE_COMMAND in CONTRIBUTOR_PROMPT
     assert CONTRIBUTOR_PROMPT.index(UPGRADE_COMMAND) < CONTRIBUTOR_PROMPT.index(
