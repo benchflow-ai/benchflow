@@ -207,6 +207,46 @@ def test_validator_accepts_zip_artifact_and_rejects_fake_zip(tmp_path: Path) -> 
             validate_local_capture(manifest_bytes, paths)
 
 
+def test_schema_12_manifest_with_workspace_validates_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """Guards the live rejection from the first workspace deploy: the manifest
+    model cross-checked the trajectory report's file count and size against
+    ALL artifacts, so any capture carrying a workspace zip failed with
+    'trajectory report file count does not match artifacts'. The report
+    describes the JSONL alone on both sides."""
+    from benchflow.publish.traj_capture import finalize_trajectory_capture
+    from benchflow.publish.traj_report import build_trajectory_report
+
+    session = _session(tmp_path)
+    folder = tmp_path / "ws"
+    folder.mkdir()
+    (folder / "file.txt").write_text("content\n")
+    with stage_trajectory_artifacts(session, source_id="demo") as artifacts:
+        report = build_trajectory_report(
+            artifacts.files,
+            masked_values=artifacts.redaction_replacements,
+            preview_steps=0,
+        )
+        result = attach_workspace_archive(artifacts, folder)
+        assert result.attached is not None
+        staged = finalize_trajectory_capture(
+            result.artifacts,
+            github_id=GITHUB_ID,
+            email=EMAIL,
+            trajectory_report=report.as_manifest_metadata(),
+        )
+        assert staged.manifest["schema_version"] == "1.2.0"
+        manifest_bytes = staged.files[-1].local_path.read_bytes()
+        paths = {
+            item.relname: item.local_path
+            for item in staged.files
+            if item.relname != "manifest.json"
+        }
+        validated = validate_local_capture(manifest_bytes, paths)
+        assert "workspace/ws.zip" in validated.artifact_paths
+
+
 def test_validator_zip_magic_rejects_non_zip_bytes(tmp_path: Path) -> None:
     from services.trajectory_upload.validation import _validate_zip_magic
 

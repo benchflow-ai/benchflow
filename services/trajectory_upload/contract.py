@@ -247,14 +247,21 @@ class ContributionManifest(CaptureDeclaration):
             raise ValueError("trajectory report metadata requires schema 1.2.0")
         if self.trajectory_report is not None:
             report = self.trajectory_report
-            artifact_names = {artifact.name for artifact in self.artifacts}
+            # The report describes the trajectory JSONL alone; the optional
+            # workspace archive is an opaque attachment outside its scope.
+            trajectory_artifacts = [
+                artifact
+                for artifact in self.artifacts
+                if not artifact.name.startswith(WORKSPACE_ARTIFACT_PREFIX)
+            ]
+            artifact_names = {artifact.name for artifact in trajectory_artifacts}
             if report.primary_file not in artifact_names:
                 raise ValueError("trajectory report primary file is not an artifact")
-            if report.file_count != len(self.artifacts):
+            if report.file_count != len(trajectory_artifacts):
                 raise ValueError(
                     "trajectory report file count does not match artifacts"
                 )
-            if report.size_bytes != sum(item.bytes for item in self.artifacts):
+            if report.size_bytes != sum(item.bytes for item in trajectory_artifacts):
                 raise ValueError("trajectory report size does not match artifacts")
             if report.masked_values > self.redaction.replacements:
                 raise ValueError(
