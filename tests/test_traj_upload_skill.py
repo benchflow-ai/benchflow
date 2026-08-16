@@ -55,9 +55,7 @@ def test_traj_upload_skill_uses_current_skill_creator_shape() -> None:
 def test_traj_upload_skill_documents_every_live_cli_flag() -> None:
     """Guards PR #1008 so new trajectory-upload flags cannot bypass the skill."""
     contract = _CLI_CONTRACT.read_text(encoding="utf-8")
-    documented = {
-        flag for flag in _traj_upload_flags() if f"`{flag}`" in contract
-    }
+    documented = {flag for flag in _traj_upload_flags() if f"`{flag}`" in contract}
 
     assert documented == _traj_upload_flags(), (
         "bench traj upload flags missing from the skill contract: "
