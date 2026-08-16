@@ -110,6 +110,10 @@ def test_direct_mode_reports_azure_destination(
             "github_id": GITHUB_ID,
             "email": EMAIL,
         }
+        assert staged.manifest["schema_version"] == "1.2.0"
+        assert staged.manifest["trajectory_report"]["primary_file"] == (
+            "trajectory/acp_trajectory.jsonl"
+        )
         for staged_file in staged.files:
             on_file_complete(staged_file)
         return SimpleNamespace(
@@ -162,13 +166,18 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
                 "github_id": GITHUB_ID,
                 "email": EMAIL,
             }
-            assert body["schema_version"] == "1.1.0"
+            assert body["schema_version"] == "1.2.0"
             return httpx.Response(200, json=_broker_payload(request))
         if request.url.path.endswith("manifest.json"):
-            assert json.loads(request.content)["contributor"] == {
+            manifest = json.loads(request.content)
+            assert manifest["contributor"] == {
                 "github_id": GITHUB_ID,
                 "email": EMAIL,
             }
+            assert manifest["trajectory_report"]["total_steps"] == 1
+            assert manifest["trajectory_report"]["preview"] == [
+                {"kind": "Assistant", "number": 1, "summary": "demo"}
+            ]
         assert request.headers["x-ms-blob-type"] == "BlockBlob"
         assert request.headers["if-none-match"] == "*"
         return httpx.Response(201)

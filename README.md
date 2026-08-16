@@ -37,7 +37,8 @@ prompted for interactively. Detected secret values are replaced locally with
 in `manifest.json`. After the path is entered, the CLI shows a redacted preview
 and a trajectory report with partitioned human, thinking, and tool-call counts,
 creation time, file size, and the number of masked key values. Interactive users
-confirm the report before a byte-progress display starts the upload.
+confirm the report before a byte-progress display starts the upload. The full
+redacted report is retained in the uploaded `manifest.json`.
 See the concise [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md)
 or the [trajectory upload guide](./docs/traj-upload.md).
 

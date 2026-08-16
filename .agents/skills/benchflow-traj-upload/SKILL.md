@@ -35,5 +35,6 @@ flags. The CLI validates JSONL locally and replaces detected secret values with
 under `contributor` in `manifest.json`. Interactive mode renders a redacted
 trajectory report immediately after the path, asks for missing contributor
 details, and requires confirmation before upload. Review that report with the
-user when acting interactively. Report whether each capture was uploaded,
-cancelled, or already present.
+user when acting interactively. The complete redacted report is retained under
+`trajectory_report` in the uploaded manifest. Report whether each capture was
+uploaded, cancelled, or already present.

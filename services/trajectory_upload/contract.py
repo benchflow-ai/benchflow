@@ -75,7 +75,7 @@ class ContributorInfo(BaseModel):
 class UploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.1.0"]
+    schema_version: Literal["1.1.0", "1.2.0"]
     kind: Literal["bronze.trajectory"]
     source_id: str
     traj_digest: str
@@ -140,20 +140,91 @@ class RedactionInfo(BaseModel):
     replacements: int = Field(ge=0)
 
 
+class TrajectoryPreviewInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    number: int = Field(ge=1)
+    kind: str = Field(min_length=1, max_length=64)
+    summary: str = Field(min_length=1, max_length=4001)
+
+
+class TrajectoryReportInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_file: str
+    format: Literal[
+        "BenchFlow ACP",
+        "Claude Code",
+        "Codex",
+        "LLM exchanges",
+        "OpenTrace",
+        "Generic JSONL",
+    ]
+    file_count: int = Field(ge=1, le=MAX_ARTIFACTS)
+    size_bytes: int = Field(ge=1, le=MAX_CAPTURE_BYTES)
+    total_steps: int = Field(ge=0)
+    thinking_steps: int = Field(ge=0)
+    tool_call_steps: int = Field(ge=0)
+    human_steps: int = Field(ge=0)
+    created_at: datetime
+    created_at_source: Literal["trajectory timestamp", "file timestamp"]
+    masked_values: int = Field(ge=0)
+    preview: list[TrajectoryPreviewInfo] = Field(max_length=20)
+
+    @field_validator("primary_file")
+    @classmethod
+    def validate_primary_file(cls, value: str) -> str:
+        return validate_artifact_name(value)
+
+    @model_validator(mode="after")
+    def validate_step_partition(self) -> Self:
+        categorized = self.thinking_steps + self.tool_call_steps + self.human_steps
+        if self.total_steps != categorized:
+            raise ValueError("trajectory report step counts must partition total steps")
+        expected_numbers = list(range(1, len(self.preview) + 1))
+        if [step.number for step in self.preview] != expected_numbers:
+            raise ValueError("trajectory report preview must contain the first steps")
+        if len(self.preview) > self.total_steps:
+            raise ValueError("trajectory report preview exceeds total steps")
+        return self
+
+
 class ContributionManifest(UploadRequest):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0.0", "1.1.0"]
+    schema_version: Literal["1.0.0", "1.1.0", "1.2.0"]
     contributor: ContributorInfo | None = None
     created_at: datetime
     tool: ToolInfo
     run: RunInfo
     redaction: RedactionInfo
+    trajectory_report: TrajectoryReportInfo | None = None
 
     @model_validator(mode="after")
     def validate_manifest_version(self) -> Self:
-        if self.schema_version == "1.1.0" and self.contributor is None:
-            raise ValueError("schema 1.1.0 requires contributor metadata")
+        if self.schema_version in {"1.1.0", "1.2.0"} and self.contributor is None:
+            raise ValueError(
+                f"schema {self.schema_version} requires contributor metadata"
+            )
+        if self.schema_version == "1.2.0" and self.trajectory_report is None:
+            raise ValueError("schema 1.2.0 requires trajectory report metadata")
+        if self.schema_version != "1.2.0" and self.trajectory_report is not None:
+            raise ValueError("trajectory report metadata requires schema 1.2.0")
+        if self.trajectory_report is not None:
+            report = self.trajectory_report
+            artifact_names = {artifact.name for artifact in self.artifacts}
+            if report.primary_file not in artifact_names:
+                raise ValueError("trajectory report primary file is not an artifact")
+            if report.file_count != len(self.artifacts):
+                raise ValueError(
+                    "trajectory report file count does not match artifacts"
+                )
+            if report.size_bytes != sum(item.bytes for item in self.artifacts):
+                raise ValueError("trajectory report size does not match artifacts")
+            if report.masked_values > self.redaction.replacements:
+                raise ValueError(
+                    "trajectory report masked values exceed redaction count"
+                )
         return self
 
 

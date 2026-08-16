@@ -55,6 +55,32 @@ class TrajectoryReport:
     masked_values: int
     preview: tuple[TrajectoryPreviewStep, ...]
 
+    def as_manifest_metadata(self) -> dict[str, Any]:
+        """Serialize every displayed report field for the upload manifest."""
+        return {
+            "primary_file": self.primary_file,
+            "format": self.format.value,
+            "file_count": self.file_count,
+            "size_bytes": self.size_bytes,
+            "total_steps": self.total_steps,
+            "thinking_steps": self.thinking_steps,
+            "tool_call_steps": self.tool_call_steps,
+            "human_steps": self.human_steps,
+            "created_at": self.created_at.astimezone(UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "created_at_source": self.created_at_source,
+            "masked_values": self.masked_values,
+            "preview": [
+                {
+                    "number": step.number,
+                    "kind": step.kind,
+                    "summary": step.summary,
+                }
+                for step in self.preview
+            ],
+        }
+
 
 class TrajectoryArtifact(Protocol):
     @property

@@ -54,6 +54,12 @@ size, and masked-value totals still cover every uploaded JSONL artifact. Format
 classification is exact for BenchFlow ACP, Claude Code, Codex, OpenTrace, and
 BenchFlow LLM-exchange files, with a conservative generic JSONL fallback.
 
+The uploaded `manifest.json` persists the complete redacted report under
+`trajectory_report`: primary file, detected format, JSONL file and byte totals,
+the mutually exclusive step counts, creation time and its source, masked-value
+count, and every displayed preview row. The server validates those values
+against the declared artifacts and rejects inconsistent report metadata.
+
 Interactive mode shows this report before contributor prompts and requires an
 explicit confirmation. A command containing the path, `--github-id`, and
 `--email` remains non-interactive: it shows the same report and starts uploading

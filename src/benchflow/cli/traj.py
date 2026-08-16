@@ -160,6 +160,7 @@ def _run_upload(options: _UploadOptions) -> None:
             uploaded_by=os.environ.get("BENCHFLOW_TRAJ_UPLOADED_BY"),
             github_id=github_id,
             email=email,
+            trajectory_report=report.as_manifest_metadata(),
         )
         if options.dry_run:
             _print_dry_run(staged)

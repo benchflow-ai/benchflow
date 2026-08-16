@@ -249,6 +249,7 @@ def finalize_trajectory_capture(
     uploaded_by: str | None = None,
     github_id: str | None = None,
     email: str | None = None,
+    trajectory_report: Mapping[str, Any] | None = None,
 ) -> StagedCapture:
     """Bind contributor metadata and write the manifest for staged artifacts."""
     if uploaded_by is not None and len(uploaded_by) > MAX_UPLOADED_BY_LENGTH:
@@ -256,6 +257,8 @@ def finalize_trajectory_capture(
             f"trajectory contributor label exceeds {MAX_UPLOADED_BY_LENGTH} characters"
         )
     contributor = _contributor(github_id, email)
+    if trajectory_report is not None and contributor is None:
+        raise ValueError("trajectory report metadata requires contributor metadata")
     payloads = list(artifacts.files)
     replacement_count = artifacts.redaction_replacements
     manifest = _build_manifest(
@@ -265,6 +268,7 @@ def finalize_trajectory_capture(
         metadata_dir=artifacts._metadata_dir,
         uploaded_by=uploaded_by,
         contributor=contributor,
+        trajectory_report=trajectory_report,
         redact=artifacts._redact,
         replacement_count=replacement_count,
     )
@@ -313,6 +317,7 @@ def stage_trajectory_capture(
     uploaded_by: str | None = None,
     github_id: str | None = None,
     email: str | None = None,
+    trajectory_report: Mapping[str, Any] | None = None,
 ) -> Iterator[StagedCapture]:
     """Validate and stage a complete capture without mutating its source."""
     with stage_trajectory_artifacts(
@@ -325,6 +330,7 @@ def stage_trajectory_capture(
             uploaded_by=uploaded_by,
             github_id=github_id,
             email=email,
+            trajectory_report=trajectory_report,
         )
 
 
@@ -530,11 +536,18 @@ def _build_manifest(
     metadata_dir: Path | None,
     uploaded_by: str | None,
     contributor: dict[str, str] | None,
+    trajectory_report: Mapping[str, Any] | None,
     redact: bool,
     replacement_count: int,
 ) -> dict[str, Any]:
+    if trajectory_report is not None:
+        schema_version = "1.2.0"
+    elif contributor is not None:
+        schema_version = "1.1.0"
+    else:
+        schema_version = "1.0.0"
     manifest = {
-        "schema_version": "1.1.0" if contributor is not None else "1.0.0",
+        "schema_version": schema_version,
         "kind": "bronze.trajectory",
         "created_at": datetime.now(UTC)
         .replace(microsecond=0)
@@ -553,6 +566,8 @@ def _build_manifest(
     }
     if contributor is not None:
         manifest["contributor"] = contributor
+    if trajectory_report is not None:
+        manifest["trajectory_report"] = dict(trajectory_report)
     return manifest
 
 
