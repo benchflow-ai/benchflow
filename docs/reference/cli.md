@@ -878,14 +878,21 @@ See [Trajectory upload](../traj-upload.md).
 
 Validate, redact, and contribute trajectory JSONL through BenchFlow's public
 broker. This is what the [upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md)
-runs after the user reviews the viewer. Contributors should not invoke it
-themselves. `PATH` can be one JSONL file, a directory of JSONL files, or a trial
-directory containing `trajectory/`. GitHub username and email are inferred from
-`gh` / `git` when omitted. The command stages only JSONL artifacts, writes a
-content-addressed manifest last, and treats a digest that is already in inbox
-or community storage as `Already submitted`.
+runs after the user reviews the viewer; the guided form below is the direct
+terminal alternative. `PATH` can be one JSONL file, a directory of JSONL files,
+or a trial directory containing `trajectory/`. The command stages only JSONL
+artifacts, writes a content-addressed manifest last, and treats a digest that
+is already in inbox or community storage as `Already submitted`. Detected
+secret values are replaced locally with `<XXX-benchflow-key-values-XXX>`
+before upload. After the path is known, the CLI renders a redacted preview and
+format-aware trajectory report. GitHub username and email are inferred from
+`gh` / `git` when omitted; run the bare command to be prompted for the path
+and for identity that inference cannot find. Sessions that prompted require
+confirmation and then show byte progress; invocations that resolved without
+prompting stay non-interactive.
 
 ```bash
+bench traj upload
 bench traj upload path/to/your-session.jsonl
 bench traj upload path/to/trial --github-id octocat --email octocat@example.com
 bench traj upload path/to/trajectory.jsonl --source-id my-project/run-42
@@ -894,9 +901,10 @@ bench traj upload path/to/trial --dry-run
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--github-id` | inferred | GitHub username stored in `manifest.json`; inferred from `gh` / `git` / `BENCHFLOW_GITHUB_ID` |
-| `--email` | inferred | Contributor email stored in `manifest.json`; inferred from `git` / `BENCHFLOW_EMAIL`; not printed |
+| `--github-id` | inferred, then prompted | Self-asserted GitHub username stored in `manifest.json`; inferred from `gh` / `git` / `BENCHFLOW_GITHUB_ID` |
+| `--email` | inferred, then prompted | Contributor email stored in `manifest.json`; inferred from `git` / `BENCHFLOW_EMAIL`; not repeated in success output |
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
+| `--preview-steps` | `5` | Number of redacted trajectory steps to preview; accepts 0–20 |
 | `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
 | `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |
 | `--container-url` | — | Azure Blob container URL for `--direct`; alternatively set `BENCHFLOW_AZURE_CONTAINER_URL` |

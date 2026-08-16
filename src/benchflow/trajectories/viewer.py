@@ -451,7 +451,8 @@ def _codex_message_text(payload: dict) -> str:
 def _codex_to_acp(events: list[dict]) -> list[dict]:
     converted: list[dict] = []
     for event in events:
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        raw_payload = event.get("payload")
+        payload: dict = raw_payload if isinstance(raw_payload, dict) else {}
         top = event.get("type")
         if top == "event_msg":
             inner = payload.get("type")

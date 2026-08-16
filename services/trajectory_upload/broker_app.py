@@ -30,6 +30,10 @@ class RejectedUpload(Exception):
     """The same immutable capture digest already failed validation."""
 
 
+class UploadDeclarationConflict(Exception):
+    """An active digest is bound to a different immutable manifest."""
+
+
 class UploadBroker(Protocol):
     def create_upload(
         self, request: UploadRequest, *, client_ip: str
@@ -118,6 +122,13 @@ def create_app(
             return JSONResponse(
                 status_code=422,
                 content={"detail": "trajectory capture was previously rejected"},
+            )
+        except UploadDeclarationConflict:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": "trajectory capture has a conflicting active manifest"
+                },
             )
         return JSONResponse(status_code=200, content=grant.as_dict())
 

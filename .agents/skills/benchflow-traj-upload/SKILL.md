@@ -22,6 +22,9 @@ until they like it, then you upload.
 Do not print broker URLs, Azure blob URLs, or a "run this yourself" command.
 Those leak private inbox paths and turn a paste-to-agent flow back into a CLI.
 
+For operating, testing, or debugging the upload pipeline itself (dry runs,
+manifests, promotion checks), use `benchflow-traj-upload-ops` instead.
+
 ## Workflow
 
 ```
@@ -56,12 +59,13 @@ bench traj setup --list
 If that command is missing, search these locations and skip nested
 `subagents/` files unless the user asks:
 
-- Claude Code: `~/.claude/projects/<encoded-cwd>/*.jsonl`
+- Claude Code: `~/.claude/projects/**/*.jsonl`
 - Codex: `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/*.jsonl`
 - BenchFlow trials: `jobs/**/trajectory/` or a directory with `turn*.txt`
 
 Show the 8 most recent with mtime, path, and the first user-prompt snippet.
-If the user already named a file or folder, skip discovery.
+Skip sessions that clearly contain private or proprietary work unless the
+user names them. If the user already named a file or folder, skip discovery.
 
 ## Step 3 — Pick
 
@@ -84,14 +88,16 @@ finish reviewing. If the port is taken, try `--port 8889`.
 Ask them to look at the viewer. Do not upload until they say it looks good.
 If they want a different session, go back to pick.
 
-Before upload, remind them not to submit secrets. Redaction is a safety net,
-not a license to upload credentials.
+Before upload, remind them not to submit secrets. The CLI masks detected
+secret values locally before anything leaves the machine, but redaction is a
+safety net, not a license to upload credentials.
 
 ## Step 6 — Submit
 
-You run the upload. Infer GitHub username and email from `gh` / `git`. If
-identity is missing, ask for both in chat and pass `--github-id` / `--email`.
-Do not tell the user to re-run a command.
+You run the upload. The CLI infers GitHub username and email from `gh` /
+`git`; when identity resolves, the upload runs without prompts. If inference
+fails, ask for both in chat and pass `--github-id` / `--email`. Do not tell
+the user to re-run a command.
 
 ```bash
 bench traj upload /path/to/session.jsonl

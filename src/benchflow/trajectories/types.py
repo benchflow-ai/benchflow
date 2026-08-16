@@ -303,6 +303,9 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # `?key=` is still caught by its token-family pattern above. Includes AWS
     # SigV4 / Azure SAS / access-key names. Placed BEFORE the carriers below so the
     # `*token*` carrier can't over-consume the rest of the query string past `&`.
+    # Like _SECVAL, the value class excludes `*` so an already-redacted
+    # `?access_token=***REDACTED***` isn't re-counted — a re-match here made the
+    # publish-layer stability loop diverge and the server rescan reject (#1008).
     (
         re.compile(
             r"([?&](?:"
@@ -310,7 +313,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"session_id|sessionid|client_secret|aws_secret_access_key|account_key|"
             r"secret|password_hash|password|passwd|"
             r"signature|x-amz-signature|x-amz-credential|x-amz-security-token|sas"
-            r")=)[^&\s\"']+",
+            r")=)[^&\s\"'*]+",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
@@ -318,9 +321,10 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Azure SAS `?sig=<token>` — bare `sig` is excluded from the curated list above
     # (a `?sig=v2` scheme-version flag is a common non-secret), so gate on a
     # high-entropy value length: a real SAS signature is a 40+ char base64 HMAC,
-    # while a version flag is short (#830).
+    # while a version flag is short (#830). Excludes `*` like the curated params
+    # above so the 14-char `***REDACTED***` marker can never re-match (#1008).
     (
-        re.compile(r"([?&]sig=)[^&\s\"']{16,}", re.IGNORECASE),
+        re.compile(r"([?&]sig=)[^&\s\"'*]{16,}", re.IGNORECASE),
         r"\1***REDACTED***",
     ),
     # --- Header / key-value secret carriers ---

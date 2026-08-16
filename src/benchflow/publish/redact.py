@@ -9,7 +9,10 @@ from typing import Any, NamedTuple
 
 from benchflow.trajectories.types import redact_trajectory_text_with_count
 
-REDACTED = "[REDACTED]"
+REDACTED = "<XXX-benchflow-key-values-XXX>"
+_CANONICAL_REDACTED = "***REDACTED***"
+_LEGACY_REDACTED_VALUES = frozenset({"[REDACTED]", _CANONICAL_REDACTED})
+_MAX_REDACTION_PASSES = 16
 
 DENYLISTED_KEYS = frozenset(
     {
@@ -69,10 +72,10 @@ class RedactionPattern(NamedTuple):
 VALUE_PATTERNS = (
     # Google AI Studio's newer token format is not covered by the canonical
     # trajectory redactor yet.
-    RedactionPattern(re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), "***REDACTED***"),
+    RedactionPattern(re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), REDACTED),
     RedactionPattern(
         re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE),
-        "Bearer ***REDACTED***",
+        f"Bearer {REDACTED}",
     ),
 )
 
@@ -80,7 +83,7 @@ VALUE_PATTERNS = (
 def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int]:
     """Return a structurally redacted JSON value and replacement count."""
     if field_name is not None and _is_sensitive_key(field_name):
-        return (value, 0) if value == REDACTED else (REDACTED, 1)
+        return (value, 0) if _is_redacted_value(value) else (REDACTED, 1)
 
     if isinstance(value, Mapping):
         redacted: dict[Any, Any] = {}
@@ -133,8 +136,25 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
     return _redact_text(value)
 
 
+def redact_value_to_stability(value: Any) -> tuple[Any, int]:
+    """Redact until another server-side pass would make no replacements."""
+    redacted = value
+    replacements = 0
+    for _ in range(_MAX_REDACTION_PASSES):
+        redacted, count = redact_value(redacted)
+        replacements += count
+        if count == 0:
+            return redacted, replacements
+    raise ValueError("trajectory secret redaction did not converge")
+
+
 def _redact_text(value: str) -> tuple[str, int]:
-    redacted_text, replacements = redact_trajectory_text_with_count(value)
+    # The canonical carrier patterns intentionally ignore their asterisk marker.
+    # Protect our public-upload marker with that value during the scan so a second
+    # client/server pass is idempotent even inside text such as ``API_KEY=...``.
+    protected = value.replace(REDACTED, _CANONICAL_REDACTED)
+    redacted_text, replacements = redact_trajectory_text_with_count(protected)
+    redacted_text = redacted_text.replace(_CANONICAL_REDACTED, REDACTED)
     for pattern, replacement in VALUE_PATTERNS:
         redacted_text, count = pattern.subn(replacement, redacted_text)
         replacements += count
@@ -163,7 +183,7 @@ def _redact_argv(
     redact_next = False
     for item in values:
         if redact_next:
-            if item == REDACTED or item == "***REDACTED***":
+            if _is_redacted_value(item):
                 redacted.append(item)
             else:
                 redacted.append(REDACTED)
@@ -175,7 +195,7 @@ def _redact_argv(
             option, separator, option_value = item.partition("=")
             if _is_sensitive_key(option):
                 if separator and option_value:
-                    if option_value in {REDACTED, "***REDACTED***"}:
+                    if _is_redacted_value(option_value):
                         redacted.append(item)
                     else:
                         redacted.append(f"{option}={REDACTED}")
@@ -192,6 +212,12 @@ def _redact_argv(
         else:
             redacted.append(item)
     return redacted, replacements
+
+
+def _is_redacted_value(value: Any) -> bool:
+    return isinstance(value, str) and (
+        value == REDACTED or value in _LEGACY_REDACTED_VALUES
+    )
 
 
 def _is_sensitive_key(field_name: str) -> bool:

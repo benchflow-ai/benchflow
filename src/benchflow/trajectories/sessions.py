@@ -128,7 +128,8 @@ def _event_prompt(event: dict) -> str:
             return "\n".join(part for part in parts if part)
     if etype == "user_message":
         return str(event.get("text") or "")
-    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_payload = event.get("payload")
+    payload: dict = raw_payload if isinstance(raw_payload, dict) else {}
     if etype == "event_msg" and payload.get("type") == "user_message":
         return str(payload.get("message") or "")
     return ""

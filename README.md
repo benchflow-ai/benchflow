@@ -26,6 +26,21 @@ Submit my best local Claude Code or Codex session to the BenchFlow eval prize. R
 The agent finds sessions on this machine, opens the viewer, and uploads after
 you like what you see.
 
+Prefer the terminal instead? The guided upload inspects before anything leaves
+your machine — it renders a redacted trajectory report (step counts, masked
+secrets, preview) and asks for confirmation:
+
+```bash
+uv tool install --python 3.12 --upgrade benchflow
+bench traj upload
+```
+
+Detected secret values are replaced locally with
+`<XXX-benchflow-key-values-XXX>` before upload, and the full redacted report is
+retained in the uploaded `manifest.json`. See the
+[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md) or the
+[trajectory upload guide](./docs/traj-upload.md).
+
 Optional — set the skill up once, then keep talking to the agent:
 
 ```bash

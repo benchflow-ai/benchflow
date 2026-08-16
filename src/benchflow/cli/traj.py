@@ -6,13 +6,35 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Protocol
 
+import click
 import typer
 from rich.markup import escape
 
 from benchflow.cli._shared import console, print_error
+from benchflow.cli._traj_upload_ui import (
+    UploadProgressHooks,
+    format_bytes,
+    render_trajectory_report,
+    upload_progress,
+)
+from benchflow.publish.traj_capture import (
+    StagedCapture,
+    default_source_id,
+    finalize_trajectory_capture,
+    stage_trajectory_artifacts,
+    validate_email,
+    validate_github_id,
+)
+from benchflow.publish.traj_report import (
+    DEFAULT_PREVIEW_STEPS,
+    MAX_PREVIEW_STEPS,
+    build_trajectory_report,
+)
 
 # The environment variable remains an override for development and disaster
 # recovery.
@@ -36,6 +58,35 @@ CONTRIBUTOR_PROMPT = (
     f"{SKILL_RAW_URL} "
     "and follow it: find a session, open the viewer, upload only after I review it."
 )
+
+
+@dataclass(frozen=True)
+class _UploadOptions:
+    path: Path | None
+    github_id: str | None
+    email: str | None
+    source_id: str | None
+    direct: bool
+    container_url: str | None
+    dry_run: bool
+    preview_steps: int
+
+
+@dataclass(frozen=True)
+class _UploadDestination:
+    url: str
+    direct: bool
+
+
+class _PublishResult(Protocol):
+    @property
+    def url(self) -> str: ...
+
+    @property
+    def uploaded(self) -> tuple[str, ...]: ...
+
+    @property
+    def skipped(self) -> tuple[str, ...]: ...
 
 
 def register_traj(app: typer.Typer) -> None:
@@ -88,21 +139,22 @@ def register_traj(app: typer.Typer) -> None:
     @traj_app.command("upload")
     def upload(
         path: Annotated[
-            Path,
+            Path | None,
             typer.Argument(help="Trajectory JSONL file, directory, or trial directory"),
-        ],
+        ] = None,
         github_id: Annotated[
             str | None,
             typer.Option(
                 "--github-id",
-                help="GitHub username to credit (inferred from gh/git when omitted)",
+                help="Contributor GitHub username (inferred from gh/git when omitted)",
             ),
         ] = None,
         email: Annotated[
             str | None,
             typer.Option(
                 "--email",
-                help="Email stored in the manifest (inferred from git when omitted)",
+                help="Contributor email stored in the manifest "
+                "(inferred from git when omitted)",
             ),
         ] = None,
         source_id: Annotated[
@@ -121,91 +173,149 @@ def register_traj(app: typer.Typer) -> None:
             bool,
             typer.Option("--dry-run", help="Validate and stage without uploading"),
         ] = False,
+        preview_steps: Annotated[
+            int,
+            typer.Option(
+                "--preview-steps",
+                min=0,
+                max=MAX_PREVIEW_STEPS,
+                help="Number of redacted trajectory steps to preview",
+            ),
+        ] = DEFAULT_PREVIEW_STEPS,
     ) -> None:
-        """Validate, redact, and upload trajectory JSONL."""
-        from benchflow.publish.azure_blob import upload_capture_direct
-        from benchflow.publish.broker import upload_capture_via_broker
-        from benchflow.publish.traj_capture import (
-            default_source_id,
-            stage_trajectory_capture,
-        )
-
+        """Inspect, redact, confirm, and upload trajectory JSONL."""
         try:
-            resolved_github_id, resolved_email = resolve_contributor(
-                github_id=github_id, email=email
+            _run_upload(
+                _UploadOptions(
+                    path=path,
+                    github_id=github_id,
+                    email=email,
+                    source_id=source_id,
+                    direct=direct,
+                    container_url=container_url,
+                    dry_run=dry_run,
+                    preview_steps=preview_steps,
+                )
             )
-            selected_source_id = source_id or default_source_id(path)
-            if direct:
-                destination = container_url or os.environ.get(
-                    "BENCHFLOW_AZURE_CONTAINER_URL"
-                )
-                if not destination:
-                    raise ValueError(
-                        "--direct requires --container-url or "
-                        "BENCHFLOW_AZURE_CONTAINER_URL"
-                    )
-            else:
-                if container_url:
-                    raise ValueError("--container-url is only valid with --direct")
-                destination = (
-                    os.environ.get("BENCHFLOW_TRAJ_BROKER_URL")
-                    or DEFAULT_TRAJ_BROKER_URL
-                )
-                if not destination:
-                    raise ValueError(
-                        "no trajectory broker is configured; set "
-                        "BENCHFLOW_TRAJ_BROKER_URL, or use --direct with "
-                        "--container-url/BENCHFLOW_AZURE_CONTAINER_URL if you have "
-                        "Azure credentials"
-                    )
-
-            with stage_trajectory_capture(
-                path,
-                source_id=selected_source_id,
-                uploaded_by=os.environ.get("BENCHFLOW_TRAJ_UPLOADED_BY"),
-                github_id=resolved_github_id,
-                email=resolved_email,
-            ) as staged:
-                if dry_run:
-                    _print_dry_run(staged)
-                    return
-                if not direct:
-                    console.print(
-                        "Uploading… the first request can take a minute "
-                        "while the service wakes up."
-                    )
-                if direct:
-                    result = upload_capture_direct(
-                        staged,
-                        container_url=destination,
-                    )
-                else:
-                    result = upload_capture_via_broker(
-                        staged,
-                        broker_url=destination,
-                    )
-                _print_submit_result(staged, result)
         except ValueError as exc:
             print_error(str(exc))
             raise typer.Exit(1) from None
 
 
-def resolve_contributor(*, github_id: str | None, email: str | None) -> tuple[str, str]:
-    """Fill missing contributor fields from the local git/gh identity."""
+def _run_upload(options: _UploadOptions) -> None:
+    prompted = options.path is None
+    path = options.path or _prompt_for_path()
+    source_id = options.source_id or default_source_id(path)
+    destination = _resolve_destination(options)
+
+    with (
+        console.status(
+            "[bold cyan]Inspecting trajectory and masking key values…"
+        ) as status,
+        stage_trajectory_artifacts(path, source_id=source_id) as artifacts,
+    ):
+        report = build_trajectory_report(
+            artifacts.files,
+            masked_values=artifacts.redaction_replacements,
+            preview_steps=options.preview_steps,
+        )
+        status.stop()
+        render_trajectory_report(report, console=console)
+
+        github_id, email, identity_prompted = _resolve_contributor(
+            options.github_id, options.email
+        )
+        prompted = prompted or identity_prompted
+        staged = finalize_trajectory_capture(
+            artifacts,
+            uploaded_by=os.environ.get("BENCHFLOW_TRAJ_UPLOADED_BY"),
+            github_id=github_id,
+            email=email,
+            trajectory_report=report.as_manifest_metadata(),
+        )
+        if options.dry_run:
+            _print_dry_run(staged)
+            return
+        # Confirm only when this session actually prompted a human. Fully
+        # resolved invocations (flags or gh/git inference) stay
+        # non-interactive so agents driving the CLI never hang on a TTY
+        # prompt — their confirmation happens in chat, before this command.
+        if prompted and not typer.confirm(
+            "Upload this trajectory?",
+            default=False,
+        ):
+            console.print("[yellow]Upload cancelled.[/yellow]")
+            return
+        if not destination.direct:
+            console.print(
+                "Uploading… the first request can take a minute "
+                "while the service wakes up."
+            )
+        with upload_progress(staged.files, console=console) as hooks:
+            result = _publish(staged, destination=destination, hooks=hooks)
+        _print_upload_result(staged, result, direct=destination.direct)
+
+
+def _resolve_contributor(
+    github_id: str | None,
+    email: str | None,
+) -> tuple[str, str, bool]:
+    """Resolve contributor identity: flags, then env/gh/git, then a prompt.
+
+    Returns ``(github_id, email, prompted)``. When a prompt is needed but no
+    input is available (an agent piping the command), the click abort becomes
+    the one-line ``--github-id`` / ``--email`` fallback instead of a bare
+    ``Aborted.``.
+    """
+    # Explicit flags are validated as given (a malformed flag is an error,
+    # never silently replaced); only absent values fall through to inference.
+    resolved_github = (github_id or "").strip()
     resolved_github = (
-        (github_id or "").strip()
-        or os.environ.get("BENCHFLOW_GITHUB_ID", "").strip()
-        or _command_stdout("gh", "api", "user", "--jq", ".login")
-        or _git_config("github.user")
+        validate_github_id(resolved_github) if resolved_github else _infer_github_id()
     )
+    resolved_email = (email or "").strip()
     resolved_email = (
-        (email or "").strip()
-        or os.environ.get("BENCHFLOW_EMAIL", "").strip()
-        or _git_config("user.email")
+        validate_email(resolved_email) if resolved_email else _infer_email()
     )
-    if not resolved_github or not resolved_email:
-        raise ValueError(_MISSING_CONTRIBUTOR)
-    return resolved_github, resolved_email
+    if resolved_github and resolved_email:
+        return resolved_github, resolved_email, False
+    try:
+        return (
+            resolved_github or _prompt_valid("GitHub ID", validate_github_id),
+            resolved_email or _prompt_valid("Email", validate_email),
+            True,
+        )
+    except click.exceptions.Abort:
+        raise ValueError(_MISSING_CONTRIBUTOR) from None
+
+
+def _infer_github_id() -> str:
+    for candidate in (
+        os.environ.get("BENCHFLOW_GITHUB_ID", "").strip(),
+        _command_stdout("gh", "api", "user", "--jq", ".login") or "",
+        _git_config("github.user") or "",
+    ):
+        if not candidate:
+            continue
+        try:
+            return validate_github_id(candidate)
+        except ValueError:
+            continue
+    return ""
+
+
+def _infer_email() -> str:
+    for candidate in (
+        os.environ.get("BENCHFLOW_EMAIL", "").strip(),
+        _git_config("user.email") or "",
+    ):
+        if not candidate:
+            continue
+        try:
+            return validate_email(candidate)
+        except ValueError:
+            continue
+    return ""
 
 
 def _git_config(key: str) -> str | None:
@@ -227,38 +337,120 @@ def _command_stdout(*args: str) -> str | None:
     return value or None
 
 
-def _print_dry_run(staged) -> None:
-    console.print("[bold]Looks good.[/bold] Nothing was uploaded.")
-    console.print(f"Digest: sha256:{staged.traj_digest}")
-    for staged_file in staged.files:
-        console.print(
-            f"  {escape(staged_file.relname)} ({_format_bytes(staged_file.size_bytes)})"
+def _prompt_for_path() -> Path:
+    while True:
+        raw = typer.prompt("Trajectory JSONL file or trial directory").strip()
+        # Shells wrap dragged-in paths in quotes; accept them as typed.
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            raw = raw[1:-1]
+        path = Path(raw).expanduser()
+        if path.exists():
+            return path
+        print_error(f"path not found: {path}")
+
+
+def _prompt_valid(label: str, validate: Callable[[str], str]) -> str:
+    while True:
+        try:
+            return validate(typer.prompt(label))
+        except ValueError as exc:
+            print_error(str(exc))
+
+
+def _resolve_destination(options: _UploadOptions) -> _UploadDestination:
+    if options.direct:
+        destination = options.container_url or os.environ.get(
+            "BENCHFLOW_AZURE_CONTAINER_URL"
         )
-    if staged.ignored:
-        console.print(f"Ignored: {escape(', '.join(staged.ignored))}")
-    if staged.redaction_replacements:
-        console.print(f"Redactions: {staged.redaction_replacements}")
+        if not destination:
+            raise ValueError(
+                "--direct requires --container-url or BENCHFLOW_AZURE_CONTAINER_URL"
+            )
+        return _UploadDestination(url=destination, direct=True)
+    if options.container_url:
+        raise ValueError("--container-url is only valid with --direct")
+    destination = os.environ.get("BENCHFLOW_TRAJ_BROKER_URL") or DEFAULT_TRAJ_BROKER_URL
+    if not destination:
+        raise ValueError(
+            "no trajectory broker is configured; set BENCHFLOW_TRAJ_BROKER_URL, "
+            "or use --direct with --container-url/BENCHFLOW_AZURE_CONTAINER_URL "
+            "if you have Azure credentials"
+        )
+    return _UploadDestination(url=destination, direct=False)
 
 
-def _print_submit_result(staged, result) -> None:
+def _publish(
+    staged: StagedCapture,
+    *,
+    destination: _UploadDestination,
+    hooks: UploadProgressHooks,
+) -> _PublishResult:
+    if destination.direct:
+        from benchflow.publish.azure_blob import upload_capture_direct
+
+        return upload_capture_direct(
+            staged,
+            container_url=destination.url,
+            on_file_complete=hooks.on_file_complete,
+            on_bytes=hooks.on_bytes,
+        )
+    from benchflow.publish.broker import upload_capture_via_broker
+
+    return upload_capture_via_broker(
+        staged,
+        broker_url=destination.url,
+        on_file_complete=hooks.on_file_complete,
+        on_bytes=hooks.on_bytes,
+    )
+
+
+def _print_upload_result(
+    staged: StagedCapture, result: _PublishResult, *, direct: bool
+) -> None:
+    # Public success copy never includes the destination URL: broker uploads
+    # land in a private quarantine inbox nobody can open, and printing it
+    # invites people to share a link that 403s. Direct mode is a trusted
+    # operator route where the destination is the point.
+    if direct:
+        if not result.uploaded:
+            console.print(
+                f"[green]Already uploaded:[/green] {escape(result.url)} (no-op)"
+            )
+            return
+        size = sum(item.size_bytes for item in staged.files)
+        console.print(
+            "[green]Uploaded trajectory:[/green] "
+            f"{escape(result.url)} "
+            f"({len(result.uploaded)} uploaded, {len(result.skipped)} skipped, "
+            f"{format_bytes(size)}, {staged.redaction_replacements} redactions)"
+        )
+        return
     digest = f"sha256:{staged.traj_digest}"
     if result.uploaded:
+        size = sum(item.size_bytes for item in staged.files)
         console.print("[green]Submitted.[/green] We'll review this trajectory.")
+        console.print(
+            f"Digest: {digest}\n"
+            f"Files: {len(staged.files)} ({format_bytes(size)}, "
+            f"{staged.redaction_replacements} redactions)"
+        )
     else:
         console.print(
             "[green]Already submitted.[/green] Same trajectory, nothing else to do."
         )
-    console.print(f"Digest: {digest}")
-    console.print(f"Files: {len(staged.files)}")
+        console.print(f"Digest: {digest}")
 
 
-def _format_bytes(size: int) -> str:
-    value = float(size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    raise AssertionError("unreachable")
+def _print_dry_run(staged: StagedCapture) -> None:
+    console.print("[bold]Dry run[/bold] — no files uploaded")
+    console.print(f"Digest: sha256:{staged.traj_digest}")
+    for staged_file in staged.files:
+        console.print(
+            f"  {escape(staged_file.relname)} ({format_bytes(staged_file.size_bytes)})"
+        )
+    if staged.ignored:
+        console.print(f"Ignored: {escape(', '.join(staged.ignored))}")
+    console.print(f"Redactions: {staged.redaction_replacements}")
 
 
 def _print_contributor_prompt() -> None:

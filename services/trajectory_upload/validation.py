@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from benchflow.publish.redact import redact_value
@@ -12,9 +13,11 @@ from benchflow.publish.traj_capture import (
     strict_json_loads,
     validate_json_complexity,
 )
+from benchflow.publish.traj_report import build_trajectory_report
 from services.trajectory_upload.contract import (
     MAX_MANIFEST_BYTES,
     ContributionManifest,
+    TrajectoryReportInfo,
 )
 
 
@@ -27,6 +30,14 @@ class ValidatedCapture:
     manifest: ContributionManifest
     artifact_paths: dict[str, Path]
     manifest_bytes: bytes
+
+
+@dataclass(frozen=True)
+class _ReportArtifact:
+    relname: str
+    local_path: Path
+    size_bytes: int
+    created_at: datetime | None
 
 
 def validate_local_capture(
@@ -47,11 +58,43 @@ def validate_local_capture(
         if _sha256(path) != artifact.sha256:
             raise CaptureRejected(f"sha256 mismatch for {artifact.name}")
         _validate_and_scan_jsonl(path, artifact.name)
+    _validate_trajectory_report(manifest, artifact_paths)
     return ValidatedCapture(
         manifest=manifest,
         artifact_paths=artifact_paths,
         manifest_bytes=manifest_bytes,
     )
+
+
+def _validate_trajectory_report(
+    manifest: ContributionManifest,
+    artifact_paths: dict[str, Path],
+) -> None:
+    declared = manifest.trajectory_report
+    if declared is None:
+        return
+    fallback_created_at = (
+        declared.created_at if declared.created_at_source == "file timestamp" else None
+    )
+    artifacts = tuple(
+        _ReportArtifact(
+            relname=item.name,
+            local_path=artifact_paths[item.name],
+            size_bytes=item.bytes,
+            created_at=fallback_created_at,
+        )
+        for item in manifest.artifacts
+    )
+    recomputed = build_trajectory_report(
+        artifacts,
+        masked_values=declared.masked_values,
+        preview_steps=len(declared.preview),
+    )
+    recomputed_info = TrajectoryReportInfo.model_validate(
+        recomputed.as_manifest_metadata()
+    )
+    if recomputed_info != declared:
+        raise CaptureRejected("trajectory report does not match uploaded artifacts")
 
 
 def validate_manifest_bytes(manifest_bytes: bytes) -> ContributionManifest:

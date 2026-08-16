@@ -11,7 +11,7 @@ from types import ModuleType
 import pytest
 
 from benchflow.publish.azure_blob import upload_capture_direct
-from benchflow.publish.redact import redact_value
+from benchflow.publish.redact import REDACTED, redact_value, redact_value_to_stability
 from benchflow.publish.traj_capture import stage_trajectory_capture
 
 
@@ -39,6 +39,10 @@ class FakeContainerClient:
         self.calls: list[dict] = []
 
     def upload_blob(self, **kwargs) -> None:
+        data = kwargs.get("data")
+        if hasattr(data, "read"):  # drain like the real SDK so progress fires
+            while data.read(64 * 1024):
+                pass
         self.calls.append(kwargs)
         failure = self.failures.get(kwargs["name"])
         if failure is not None:
@@ -421,7 +425,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
         assert "opaque-list-secret" not in payload
         assert "123456" not in payload
         assert "ASIAQWERTYUIOPASDFGH" not in payload
-        assert '"api_key":"[REDACTED]"' in payload
+        assert f'"api_key":"{REDACTED}"' in payload
         assert "another-prefixless-value" not in payload
         assert staged.redaction_replacements == 7
         assert staged.manifest["redaction"] == {"applied": True, "replacements": 7}
@@ -476,7 +480,7 @@ def test_contribution_redactor_covers_token_and_camel_case_fields(
     """Guards PR #989 against prefixless credentials in common JSON fields."""
     redacted, replacements = redact_value({field_name: "opaque-prefixless-value"})
 
-    assert redacted[field_name] == "[REDACTED]"
+    assert redacted[field_name] == REDACTED
     assert replacements == 1
 
 
@@ -506,7 +510,7 @@ def test_contribution_redactor_propagates_structured_secret_carriers(
 
     redacted, replacements = redact_value(value)
 
-    assert redacted["headers"][0]["Value"] == "[REDACTED]"
+    assert redacted["headers"][0]["Value"] == REDACTED
     assert replacements == 1
 
 
@@ -515,6 +519,23 @@ def test_contribution_redactor_preserves_kebab_case_sk_identifiers() -> None:
     value = {"output": "task-sk-us-east-1-refactor-auth"}
 
     assert redact_value(value) == (value, 0)
+
+
+def test_contribution_redactor_uses_stable_public_upload_marker() -> None:
+    """Guards the upload-redaction follow-up to PR #992."""
+    value = {
+        "api_key": "opaque-prefixless-value",
+        "text": "API_KEY=another-prefixless-value",
+        "command": ["tool", "--client-secret", "third-prefixless-value"],
+    }
+
+    redacted, replacements = redact_value_to_stability(value)
+
+    assert REDACTED == "<XXX-benchflow-key-values-XXX>"
+    assert replacements == 3
+    assert "prefixless-value" not in json.dumps(redacted)
+    assert json.dumps(redacted).count(REDACTED) == 3
+    assert redact_value(redacted) == (redacted, 0)
 
 
 def test_staging_rejects_credential_like_artifact_filename(tmp_path: Path) -> None:
@@ -562,8 +583,8 @@ def test_manifest_free_text_is_redacted_and_counted(tmp_path: Path) -> None:
         source_id="demo",
         uploaded_by=token,
     ) as staged:
-        assert staged.manifest["uploaded_by"] == "***REDACTED***"
-        assert staged.manifest["run"]["model"] == "***REDACTED***"
+        assert staged.manifest["uploaded_by"] == REDACTED
+        assert staged.manifest["run"]["model"] == REDACTED
         assert staged.manifest["redaction"]["replacements"] == 2
         assert staged.redaction_replacements == 2
         assert token not in staged.files[-1].local_path.read_text(encoding="utf-8")
@@ -625,9 +646,11 @@ def test_direct_upload_preserves_canonical_order_and_metadata(
     trial = _trial(tmp_path)
 
     with stage_trajectory_capture(trial, source_id="demo/source") as staged:
+        completed: list[str] = []
         result = upload_capture_direct(
             staged,
             container_url="https://tasksminerdata.blob.core.windows.net/bronze",
+            on_file_complete=lambda staged_file: completed.append(staged_file.relname),
         )
         expected = [f"{result.prefix}{item.relname}" for item in staged.files]
 
@@ -637,6 +660,27 @@ def test_direct_upload_preserves_canonical_order_and_metadata(
     assert all("-" not in key for key in client.calls[0]["metadata"])
     assert client.calls[0]["content_settings"].content_type == "application/jsonl"
     assert result.url.startswith("https://tasksminerdata.blob.core.windows.net/bronze/")
+    assert completed == [item.relname for item in staged.files]
+
+
+def test_direct_upload_reports_streamed_byte_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1008: direct uploads stream byte counts to the progress
+    callback instead of jumping only at file boundaries."""
+    client = FakeContainerClient()
+    _install_fake_azure(monkeypatch, client)
+    trial = _trial(tmp_path)
+
+    byte_counts: list[int] = []
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        upload_capture_direct(
+            staged,
+            container_url="https://tasksminerdata.blob.core.windows.net/bronze",
+            on_bytes=byte_counts.append,
+        )
+        assert sum(byte_counts) == sum(item.size_bytes for item in staged.files)
+    assert all(count > 0 for count in byte_counts)
 
 
 def test_direct_upload_suppresses_azure_sdk_info_logs(
