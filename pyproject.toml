@@ -88,6 +88,10 @@ sandbox-modal = [
     "modal>=0.73",
     "tenacity>=8.0",
 ]
+sandbox-fystash = [
+    # Public Fystash Python SDK (catalog client + Revision/Branch/Plan/Run).
+    "fystash>=0.6.0",
+]
 sandbox-agentcore = [
     # Bedrock AgentCore Runtime microVMs. The SDK supplies the interactive
     # shell (`open_shell`) used as the ACP transport; boto3 supplies the
@@ -215,6 +219,7 @@ exclude = [
     "src/benchflow/sandbox/daytona_strategies.py",
     "src/benchflow/sandbox/daytona_dind.py",
     "src/benchflow/sandbox/modal_impl.py",
+    "src/benchflow/sandbox/fystash.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",
     "src/benchflow/_env_setup.py",

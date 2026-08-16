@@ -160,7 +160,7 @@ def test_validator_reports_unknown_sandbox_backend() -> None:
         (
             "sandbox",
             "unknown sandbox backend; use docker, daytona, modal, apple-container, "
-            "or agentcore",
+            "agentcore, or fystash",
         )
     ]
 

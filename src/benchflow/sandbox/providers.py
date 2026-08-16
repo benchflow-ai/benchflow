@@ -87,6 +87,14 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         # task cannot be honored here.
         enforces_no_network=False,
     ),
+    SandboxProvider(
+        "fystash",
+        extra="sandbox-fystash",
+        model_proxy=ModelProxyLocation.SANDBOX,
+        # Manifests pin network.default: deny. ImageBuilder / compose / GPU
+        # are residuals — see sandbox/fystash.py.
+        supports_compose=False,
+    ),
 )
 
 PROVIDERS_BY_NAME: dict[str, SandboxProvider] = {p.name: p for p in _PROVIDERS}

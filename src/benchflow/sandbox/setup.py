@@ -810,6 +810,23 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "fystash":
+        try:
+            from benchflow.sandbox.fystash import FystashSandbox, _load_fystash_sdk
+
+            _load_fystash_sdk()
+        except ImportError as exc:
+            _raise_missing_optional_sandbox_dependency("fystash", exc)
+
+        FystashSandbox.preflight()
+        return FystashSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     else:
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"

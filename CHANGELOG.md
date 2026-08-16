@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- **Fystash sandbox backend.** `--sandbox fystash` implements the Sandbox
+  protocol over the public Fystash API (`compile` → Branch → Plan → apply).
+  Install the `sandbox-fystash` extra. Snapshot/restore is same-Run
+  `/workspace` tar rollback, not a Firecracker VM snapshot. Arbitrary guest
+  Dockerfiles, DinD, and GPU are residuals.
+
 ## 0.6.9 — 2026-08-15
 
 ### Changed
