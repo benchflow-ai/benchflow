@@ -130,6 +130,215 @@ def test_skill_invocation_count_ignores_marker_in_nested_metadata() -> None:
     assert count_skill_invocations(trajectory) == 0
 
 
+def test_skill_invocation_count_accepts_opencode_skill_content_envelope() -> None:
+    """Guards the fix from PR #939 (issue #998): opencode reports a skill call
+    as kind="other" / title="skill" with the skill body in a <skill_content>
+    envelope. Neither the canonical kind nor the OpenHands header is present,
+    so before PR #939 every opencode with-skill rollout reported
+    n_skill_invocations=0."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "call_D3Vsvu3AN2TVSjfUuJpeDJdF",
+            "kind": "other",
+            "title": "skill",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": (
+                            '<skill_content name="polar-electrostatics-mentor">\n'
+                            "# Skill: polar-electrostatics-mentor\n"
+                        ),
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_ignores_quoted_skill_content_envelope() -> None:
+    """Guards the fix from PR #939: the <skill_content> envelope counts only
+    when it opens the tool result. A tool that greps for the tag is not a
+    skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "grep skill_content trajectory.jsonl",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": 'trajectory.jsonl:8:<skill_content name="pdf">',
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
+def test_skill_titled_tool_with_real_kind_is_not_a_skill_invocation() -> None:
+    """Guards the fix from PR #939: title="skill" is honored only for
+    unclassified kinds. A read/execute tool that happens to be titled "skill"
+    keeps its declared identity, so no-skill rollouts cannot be contaminated
+    by a filename."""
+    trajectory = [
+        {"type": "tool_call", "kind": "read", "title": "skill"},
+        {"type": "tool_call", "kind": "execute", "title": "Skill"},
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
+def test_skill_invocation_count_accepts_opencode_export_appended_title() -> None:
+    """Guards the fix from PR #939 (issue #998): a trajectory export can append
+    the serialized arguments to the title (``skill {"name": ...}``), so the
+    bare-title branch cannot see it and the <skill_content> envelope alone
+    must carry the count."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": 'skill {"name": "transmon-calibration-chain"}',
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": (
+                            '<skill_content name="transmon-calibration-chain">\n'
+                            "# Skill: transmon-calibration-chain\n"
+                        ),
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_accepts_pinned_opencode_markdown_header() -> None:
+    """Guards the fix from PR #939: the pinned agent (opencode-ai@1.17.20)
+    opens a skill result with a markdown ``## Skill: <name>`` header rather
+    than 1.18's <skill_content> element. Combined with an args-appended title
+    (issue #998) no title branch applies, so the header alone must carry the
+    count."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": 'skill {"name": "polar-electrostatics-mentor"}',
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": (
+                            "## Skill: polar-electrostatics-mentor\n\n"
+                            "**Base directory**: /skills/polar-electrostatics-mentor\n"
+                        ),
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_accepts_claude_agent_acp_launch_shape() -> None:
+    """Guards the fix from PR #939: claude-agent-acp emits a skill launch as
+    kind="other" / title="Skill" with a ``Launching skill: <name>`` content
+    line. Both the title and the anchored launch line are recognized, so the
+    count survives either signal mutating in an export."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "Skill",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "Launching skill: document-extraction",
+                    },
+                }
+            ],
+        },
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": 'Skill {"name": "document-extraction"}',
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "Launching skill: document-extraction",
+                    },
+                }
+            ],
+        },
+    ]
+
+    assert count_skill_invocations(trajectory) == 2
+
+
+def test_skill_invocation_count_ignores_unanchored_or_real_kind_headers() -> None:
+    """Guards the fix from PR #939: the ``## Skill:`` / ``Launching skill:``
+    openings count only for unclassified kinds and only when they open the
+    tool result. A read tool returning a skill document, or a tool whose
+    output quotes a launch line mid-stream, is not a skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "read",
+            "title": "read polar-mentor.md",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "## Skill: polar-electrostatics-mentor\n",
+                    },
+                }
+            ],
+        },
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "tail session.log",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "12:01 agent: Launching skill: pdf\n",
+                    },
+                }
+            ],
+        },
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
 def test_build_rollout_result_writes_skill_invocation_metric(tmp_path) -> None:
     """Guards issue #507: result.json exposes structured skill invocation counts."""
     trajectory = [
