@@ -11,10 +11,15 @@ task_validator="${BENCHFLOW_UPLOAD_VALIDATOR_JOB:-tasksminer-traj-validator}"
 task_queue="trajectory-validation"
 task_table="trajectoryuploads"
 task_subscription="$(az account show --query id -o tsv)"
-task_user_id="$(az ad signed-in-user show --query id -o tsv)"
 task_repo_root="$(git rev-parse --show-toplevel)"
-task_image_tag="$(git rev-parse --short=12 HEAD)"
+task_image_tag="${BENCHFLOW_UPLOAD_IMAGE_TAG:-$(git rev-parse --short=12 HEAD)}"
 task_image="${task_acr}.azurecr.io/trajectory-upload:${task_image_tag}"
+task_service_root="${task_repo_root}/services/trajectory_upload"
+
+if ! [[ "$task_image_tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+    echo "invalid trajectory upload image tag" >&2
+    exit 2
+fi
 
 for task_provider in \
     Microsoft.App \
@@ -58,16 +63,20 @@ az group create \
     --tags service=trajectory-upload environment=production \
     --output none
 
-az storage account create \
-    --name "$task_storage" \
+az deployment group create \
+    --name "trajectory-upload-${task_image_tag}" \
     --resource-group "$task_rg" \
-    --location "$task_location" \
-    --sku Standard_LRS \
-    --kind StorageV2 \
-    --https-only true \
-    --min-tls-version TLS1_2 \
-    --allow-blob-public-access false \
-    --allow-shared-key-access false \
+    --template-file "${task_service_root}/infra/main.bicep" \
+    --parameters "${task_service_root}/infra/production.bicepparam" \
+    --parameters \
+        "location=${task_location}" \
+        "storageAccountName=${task_storage}" \
+        "containerRegistryName=${task_acr}" \
+        "containerAppsEnvironmentName=${task_environment}" \
+        "brokerAppName=${task_broker}" \
+        "validatorJobName=${task_validator}" \
+        "validationQueueName=${task_queue}" \
+        "uploadLedgerTableName=${task_table}" \
     --output none
 
 task_storage_id="$(az storage account show \
@@ -79,79 +88,16 @@ task_bronze_scope="${task_blob_scope}/containers/bronze"
 task_queue_scope="${task_storage_id}/queueServices/default/queues/${task_queue}"
 task_table_scope="${task_storage_id}/tableServices/default/tables/${task_table}"
 
-# The deploying owner needs data-plane access because account keys are disabled.
-ensure_role_assignment "$task_user_id" "Storage Blob Data Contributor" "$task_storage_id"
-ensure_role_assignment "$task_user_id" "Storage Queue Data Contributor" "$task_storage_id"
-ensure_role_assignment "$task_user_id" "Storage Table Data Contributor" "$task_storage_id"
-
-az storage account blob-service-properties update \
-    --account-name "$task_storage" \
-    --resource-group "$task_rg" \
-    --enable-versioning true \
-    --output none
-
-for task_container in bronze silver gold; do
-    az storage container create \
-        --name "$task_container" \
-        --account-name "$task_storage" \
-        --auth-mode login \
-        --public-access off \
-        --output none
-done
-az storage queue create \
-    --name "$task_queue" \
-    --account-name "$task_storage" \
-    --auth-mode login \
-    --output none
-az storage table create \
-    --name "$task_table" \
-    --account-name "$task_storage" \
-    --auth-mode login \
-    --output none
 az storage account management-policy create \
     --account-name "$task_storage" \
     --resource-group "$task_rg" \
-    --policy "@${task_repo_root}/infra/trajectory-upload/lifecycle.json" \
+    --policy "@${task_service_root}/infra/lifecycle.json" \
     --output none
 
-task_logs="${task_environment}-logs"
-az monitor log-analytics workspace create \
-    --resource-group "$task_rg" \
-    --workspace-name "$task_logs" \
-    --location "$task_location" \
-    --output none
-task_logs_id="$(az monitor log-analytics workspace show \
-    --resource-group "$task_rg" \
-    --workspace-name "$task_logs" \
-    --query id -o tsv)"
-az monitor diagnostic-settings create \
-    --name trajectory-upload-storage \
-    --resource "$task_blob_scope" \
-    --workspace "$task_logs_id" \
-    --logs '[{"category":"StorageRead","enabled":true},{"category":"StorageWrite","enabled":true},{"category":"StorageDelete","enabled":true}]' \
-    --output none
-
-az acr create \
-    --name "$task_acr" \
-    --resource-group "$task_rg" \
-    --location "$task_location" \
-    --sku Basic \
-    --admin-enabled false \
-    --output none
 task_acr_id="$(az acr show --name "$task_acr" --query id -o tsv)"
 
 task_broker_identity="${task_broker}-id"
 task_validator_identity="${task_validator}-id"
-az identity create \
-    --name "$task_broker_identity" \
-    --resource-group "$task_rg" \
-    --location "$task_location" \
-    --output none
-az identity create \
-    --name "$task_validator_identity" \
-    --resource-group "$task_rg" \
-    --location "$task_location" \
-    --output none
 task_broker_identity_id="$(az identity show -g "$task_rg" -n "$task_broker_identity" --query id -o tsv)"
 task_broker_principal_id="$(az identity show -g "$task_rg" -n "$task_broker_identity" --query principalId -o tsv)"
 task_validator_identity_id="$(az identity show -g "$task_rg" -n "$task_validator_identity" --query id -o tsv)"
@@ -237,14 +183,6 @@ az acr build \
     "$task_repo_root" \
     --output none
 
-az containerapp env create \
-    --name "$task_environment" \
-    --resource-group "$task_rg" \
-    --location "$task_location" \
-    --logs-workspace-id "$(az monitor log-analytics workspace show -g "$task_rg" -n "$task_logs" --query customerId -o tsv)" \
-    --logs-workspace-key "$(az monitor log-analytics workspace get-shared-keys -g "$task_rg" -n "$task_logs" --query primarySharedKey -o tsv)" \
-    --output none
-
 task_ip_hash_key="$(openssl rand -hex 32)"
 az containerapp create \
     --name "$task_broker" \
@@ -327,8 +265,4 @@ az storage account update \
     --https-only true \
     --output none
 
-task_broker_fqdn="$(az containerapp show \
-    --name "$task_broker" \
-    --resource-group "$task_rg" \
-    --query properties.configuration.ingress.fqdn -o tsv)"
-echo "https://${task_broker_fqdn}"
+echo "trajectory upload deployment completed for image ${task_image_tag}"

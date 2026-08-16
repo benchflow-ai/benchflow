@@ -125,5 +125,5 @@ container. The production deployment creates this as
 role also works but grants more than direct upload needs. For routine community
 contributions, use the default broker mode.
 
-Deployment configuration and verification live in
-[`infra/trajectory-upload/`](../infra/trajectory-upload/README.md).
+Deployment configuration and verification live beside the service in
+[`services/trajectory_upload/`](../services/trajectory_upload/README.md).

@@ -1481,7 +1481,7 @@ def test_queue_validator_rejects_excessively_nested_manifest(tmp_path: Path) -> 
 
 def test_deploy_selects_event_topic_by_storage_source() -> None:
     """Guards PR #989 against attaching events to an unrelated system topic."""
-    script = Path("infra/trajectory-upload/deploy-azure.sh").read_text()
+    script = Path("services/trajectory_upload/scripts/deploy.sh").read_text()
 
     assert (
         "map(select((.source | ascii_downcase) == ($source | ascii_downcase)))"
@@ -1492,7 +1492,7 @@ def test_deploy_selects_event_topic_by_storage_source() -> None:
 
 def test_deploy_scopes_event_delivery_identity_to_validation_queue() -> None:
     """Guards PR #989 against granting Event Grid account-wide queue access."""
-    script = Path("infra/trajectory-upload/deploy-azure.sh").read_text()
+    script = Path("services/trajectory_upload/scripts/deploy.sh").read_text()
 
     assert (
         '"$task_system_topic_principal_id" \\\n'
