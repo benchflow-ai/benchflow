@@ -54,9 +54,20 @@ class TrajectoryReport:
     created_at_source: str
     masked_values: int
     preview: tuple[TrajectoryPreviewStep, ...]
+    # Per-category masked-value counts, display order, summing to
+    # ``masked_values``. Display-only: the manifest ``trajectory_report``
+    # contract (``TrajectoryReportInfo``, ``extra="forbid"``, exact
+    # recompute-equality on the server) must not gain fields, so
+    # ``as_manifest_metadata`` deliberately excludes this.
+    masked_categories: tuple[tuple[str, int], ...] = ()
 
     def as_manifest_metadata(self) -> dict[str, Any]:
-        """Serialize every displayed report field for the upload manifest."""
+        """Serialize every displayed report field for the upload manifest.
+
+        ``masked_categories`` is intentionally absent: the server validates
+        ``trajectory_report`` with ``extra="forbid"`` and an exact equality
+        check against its own recomputation, so new fields would be rejected.
+        """
         return {
             "primary_file": self.primary_file,
             "format": self.format.value,
@@ -133,6 +144,7 @@ def build_trajectory_report(
     *,
     masked_values: int,
     preview_steps: int = DEFAULT_PREVIEW_STEPS,
+    masked_categories: tuple[tuple[str, int], ...] = (),
 ) -> TrajectoryReport:
     """Summarize one canonical trajectory view from staged, redacted artifacts."""
     if not artifacts:
@@ -183,6 +195,7 @@ def build_trajectory_report(
         created_at_source=created_at_source,
         masked_values=masked_values,
         preview=tuple(analysis.preview),
+        masked_categories=masked_categories,
     )
 
 

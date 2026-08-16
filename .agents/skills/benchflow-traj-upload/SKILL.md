@@ -85,11 +85,30 @@ yet — the viewer is how they decide the session is the one they meant.
 
 ## Step 4 — View
 
-Open the viewer with the in-page confirm bar and tell the user the URL:
+First stage a dry run so you can show the user what upload-time redaction
+would mask for them (nothing is uploaded):
 
 ```bash
-bench eval view /path/to/session.jsonl --confirm --port 8889
+bench traj upload /path/to/session.jsonl --dry-run
 ```
+
+Its output ends with a plain `Masked for you: ...` line (for example
+`Masked for you: 2 API keys, 1 bearer token`, or
+`Masked for you: nothing — no secrets detected`). Extract the text after
+`Masked for you: ` — call it the masking summary.
+
+Then open the viewer with the in-page confirm bar and tell the user the URL,
+passing the masking summary so it renders next to the Approve button:
+
+```bash
+bench eval view /path/to/session.jsonl --confirm --port 8889 \
+  --redaction-summary "2 API keys, 1 bearer token"
+```
+
+The viewer shows the ORIGINAL session (it does not redact); the
+`--redaction-summary` note tells the reviewer what the upload step will mask.
+If the installed CLI rejects `--redaction-summary` (older than 0.7.2), drop
+the flag and state the masking summary in chat instead.
 
 That path may also be a trial directory. If the port is taken, pick another.
 
@@ -126,8 +145,12 @@ and stores `repo/<owner>/<name>` as the source id (it prints
 confirmation — "This session will be tagged `repo/owner/name`; say the word
 if you want it omitted" — so they can opt out for private repos.
 
-Before upload, remind them not to submit secrets. The CLI masks detected
-secret values locally before anything leaves the machine, but redaction is a
+Before upload, remind them not to submit secrets, and repeat the masking
+summary from the Step 4 dry run when asking for approval — "Before upload,
+BenchFlow masks: 2 API keys, 1 bearer token; originals never leave this
+machine" — so they know exactly what redaction handles for them. The CLI
+masks detected secret values locally before anything leaves the machine (the
+server independently rescans and rejects any survivor), but redaction is a
 safety net, not a license to upload credentials.
 
 ## Step 6 — Submit

@@ -20,9 +20,28 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-from benchflow.publish.redact import REDACTED
+from benchflow.publish.redact import REDACTED, format_redaction_breakdown
 from benchflow.publish.traj_capture import StagedFile
 from benchflow.publish.traj_report import PREVIEW_WORD_LIMIT, TrajectoryReport
+
+# Redaction-transparency copy shown with the masked-value count. The wording is
+# deliberately honest: redaction is a local structural pass (no agents, no
+# token spend), and the server independently rescans staged artifacts.
+NO_MASKING_NEEDED_COPY = (
+    "No secrets or personal identifiers detected — nothing needed masking."
+)
+REDACTION_REASSURANCE_COPY = (
+    "Redaction ran locally before anything was staged; "
+    "the server independently rescans and rejects any survivor."
+)
+
+
+def masked_for_you_line(report: TrajectoryReport) -> str:
+    """Itemized ``Masked for you`` copy for a report with masked values."""
+    breakdown = format_redaction_breakdown(dict(report.masked_categories))
+    if not breakdown:  # category data unavailable — fall back to the total
+        breakdown = f"{report.masked_values} secret-like values"
+    return f"{breakdown} — originals never leave this machine"
 
 
 def render_trajectory_report(report: TrajectoryReport, *, console: Console) -> None:
@@ -43,8 +62,17 @@ def render_trajectory_report(report: TrajectoryReport, *, console: Console) -> N
         "API keys / secrets masked",
         Text(str(report.masked_values), style="bold green"),
     )
+    if report.masked_values:
+        facts.add_row(
+            "Masked for you",
+            Text(masked_for_you_line(report), style="green"),
+        )
+    else:
+        facts.add_row("Masked for you", Text(NO_MASKING_NEEDED_COPY, style="dim"))
     facts.add_row("Safe replacement", Text(REDACTED))
     console.print(Panel(facts, title="Trajectory report", border_style="cyan"))
+    if report.masked_values:
+        console.print(f"[dim]{REDACTION_REASSURANCE_COPY}[/dim]")
 
     if not report.preview:
         return
