@@ -28,7 +28,7 @@ manifests, promotion checks), use `benchflow-traj-upload-ops` instead.
 ## Workflow
 
 ```
-1. setup     → install benchflow if `bench` is missing
+1. setup     → ensure the latest benchflow is installed
 2. discover  → list recent local Claude / Codex / trial sessions
 3. pick      → user chooses one (or confirms your recommendation)
 4. view      → open the trajectory viewer and give them the localhost URL
@@ -39,14 +39,17 @@ manifests, promotion checks), use `benchflow-traj-upload-ops` instead.
 
 ## Step 1 — Setup
 
-If `bench` is not on PATH:
+Always make sure the latest BenchFlow is installed before anything else —
+`bench traj setup` and the session-JSONL viewer only exist in 0.7.1+:
 
 ```bash
 uv tool install --python 3.12 --upgrade benchflow
 ```
 
-If uv reports `Executables already exist`, rerun with `--force`. Confirm with
-`bench --version`.
+If uv reports `Executables already exist`, rerun with `--force`. Verify that
+`bench --version` reports at least 0.7.1. If the installed CLI lacks
+`bench traj setup` or cannot open a session JSONL in the viewer, upgrade
+first rather than working around it.
 
 ## Step 2 — Discover
 

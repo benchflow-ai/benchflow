@@ -634,6 +634,86 @@ def test_handshake_timeout_tells_people_to_retry(tmp_path: Path) -> None:
         )
 
 
+def _enable_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo the suite-wide BENCHFLOW_SKIP_UPDATE_CHECK conftest fixture."""
+    monkeypatch.delenv("BENCHFLOW_SKIP_UPDATE_CHECK", raising=False)
+
+
+def test_outdated_install_prints_the_upgrade_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1014 (the version-check follow-up to PR #1013): an install
+    older than the PyPI latest gets one hint line on setup and upload."""
+    _enable_update_check(monkeypatch)
+    monkeypatch.setattr("benchflow.cli.traj._installed_version", lambda: "0.7.0")
+    monkeypatch.setattr("benchflow.cli.traj._fetch_latest_version", lambda: "0.7.2")
+
+    hint = (
+        "A newer BenchFlow (0.7.2) is available — run: "
+        "uv tool install --python 3.12 --upgrade --force benchflow"
+    )
+    setup_result = runner.invoke(app, ["traj", "setup", "--prompt"])
+    assert setup_result.exit_code == 0, setup_result.output
+    assert hint in click.unstyle(setup_result.output)
+
+    upload_result = runner.invoke(app, _upload_command(_trial(tmp_path), "--dry-run"))
+    assert upload_result.exit_code == 0, upload_result.output
+    assert hint in click.unstyle(upload_result.output)
+
+
+def test_update_check_network_failure_is_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1014 (the version-check follow-up to PR #1013): a PyPI
+    failure prints nothing and leaves the exit code untouched."""
+    from benchflow.cli.traj import CONTRIBUTOR_PROMPT
+
+    _enable_update_check(monkeypatch)
+
+    def fail_fetch() -> str | None:
+        raise httpx.ConnectError("no network")
+
+    monkeypatch.setattr("benchflow.cli.traj._fetch_latest_version", fail_fetch)
+    result = runner.invoke(app, ["traj", "setup", "--prompt"])
+
+    assert result.exit_code == 0, result.output
+    assert "newer BenchFlow" not in result.output
+    assert CONTRIBUTOR_PROMPT in click.unstyle(result.output)
+
+
+@pytest.mark.parametrize(
+    "installed", ["0.7.2", "0.8.0", "0.7.2.dev0", "0.7.3.dev1", "0.7.2rc1"]
+)
+def test_current_or_newer_dev_install_prints_no_hint(
+    installed: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1014 (the version-check follow-up to PR #1013): up-to-date
+    installs and dev/prereleases of a newer-or-equal base are not outdated."""
+    _enable_update_check(monkeypatch)
+    monkeypatch.setattr("benchflow.cli.traj._installed_version", lambda: installed)
+    monkeypatch.setattr("benchflow.cli.traj._fetch_latest_version", lambda: "0.7.2")
+    result = runner.invoke(app, ["traj", "setup", "--prompt"])
+
+    assert result.exit_code == 0, result.output
+    assert "newer BenchFlow" not in result.output
+
+
+def test_skip_update_check_env_var_never_fetches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1014 (the version-check follow-up to PR #1013): the conftest
+    hermeticity guard BENCHFLOW_SKIP_UPDATE_CHECK short-circuits the fetch."""
+
+    def fail_fetch() -> str | None:
+        raise AssertionError("update check fetched despite skip env var")
+
+    monkeypatch.setattr("benchflow.cli.traj._fetch_latest_version", fail_fetch)
+    result = runner.invoke(app, ["traj", "setup", "--prompt"])
+
+    assert result.exit_code == 0, result.output
+    assert "newer BenchFlow" not in result.output
+
+
 def test_setup_prompt_prints_the_copy_paste_line() -> None:
     """The human path is one line to paste into an agent."""
     from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL

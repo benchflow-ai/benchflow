@@ -863,7 +863,10 @@ and hosted-provider browsing to [`bench hub list`](#bench-hub). The old
 Install the trajectory skill into the current project, or print the line
 contributors paste into an agent. Interactive by default. `--yes` copies the
 skill without prompts. `--prompt` prints only the copy-paste line. `--list`
-prints recent Claude Code / Codex / trial sessions.
+prints recent Claude Code / Codex / trial sessions. On start, the command
+checks PyPI for a newer release (2 s timeout, silent on any failure) and
+prints a one-line upgrade hint when the installed version is outdated; set
+`BENCHFLOW_SKIP_UPDATE_CHECK=1` to disable the check.
 
 ```bash
 bench traj setup
@@ -889,7 +892,10 @@ format-aware trajectory report. GitHub username and email are inferred from
 `gh` / `git` when omitted; run the bare command to be prompted for the path
 and for identity that inference cannot find. Sessions that prompted require
 confirmation and then show byte progress; invocations that resolved without
-prompting stay non-interactive.
+prompting stay non-interactive. Like `bench traj setup`, the command starts
+with a silent-on-failure PyPI check and prints a one-line upgrade hint when a
+newer BenchFlow release is available (`BENCHFLOW_SKIP_UPDATE_CHECK=1`
+disables it).
 
 ```bash
 bench traj upload

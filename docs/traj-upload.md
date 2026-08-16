@@ -9,6 +9,11 @@ Submit my best local Claude Code or Codex session to the BenchFlow eval prize. R
 The agent reads the skill, finds a local session, opens the viewer, and
 uploads after you say it looks good.
 
+Be on the latest BenchFlow first — `uv tool install --python 3.12 --upgrade
+--force benchflow` — because `bench traj setup` and the session-JSONL viewer
+require 0.7.1+. When a newer release is available on PyPI, `bench traj setup`
+and `bench traj upload` print a one-line upgrade hint.
+
 ## Optional: set the skill up once
 
 If you want later chats to know the workflow without pasting the long line:

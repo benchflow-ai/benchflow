@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+- **`bench traj setup` / `bench traj upload` print an upgrade hint when
+  outdated.** Both commands start with a lightweight PyPI latest-version
+  check (2 s timeout, completely silent on any network or parse failure) and
+  print a one-line `uv tool install --python 3.12 --upgrade --force
+  benchflow` hint when the installed version is older than the latest
+  release; dev/prereleases of a newer-or-equal base are not outdated.
+  `BENCHFLOW_SKIP_UPDATE_CHECK=1` disables the check. The
+  `benchflow-traj-upload` skill and docs now tell contributors to upgrade to
+  the latest BenchFlow (0.7.1+) before using the trajectory-upload flow.
+
 ### Changed
 - **Trajectory contribution is a copy-paste line, plus optional setup.**
   Contributors paste one line into their agent; the agent reads
