@@ -83,6 +83,16 @@ def test_format_acp_model_passes_through_existing_provider_prefix():
     )
 
 
+def test_gemini_acp_model_strips_google_prefix():
+    """Guards Gemini model-resource 404s for current Google model IDs."""
+    from benchflow.acp.runtime import _format_acp_model
+
+    assert (
+        _format_acp_model("google/gemini-3.5-flash-lite", "gemini")
+        == "gemini-3.5-flash-lite"
+    )
+
+
 def test_mimo_registered_xiaomi_model_keeps_provider_prefix():
     from benchflow.acp.runtime import _format_acp_model
 

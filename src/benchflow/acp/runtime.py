@@ -255,6 +255,11 @@ def _format_acp_model(model: str, agent: str) -> str:
     models.dev provider prefix when the agent requires it.
     """
     bare = strip_provider_prefix(model)
+    # Gemini CLI accepts bare Google model IDs. ``google/`` is a models.dev
+    # provider prefix rather than a registered BenchFlow provider, so the
+    # generic normalizer intentionally leaves it alone.
+    if agent == "gemini" and model.startswith("google/"):
+        bare = model.removeprefix("google/")
     agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
         # Proxy mode: BenchFlow's LiteLLM proxy serves the model under the alias
