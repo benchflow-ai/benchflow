@@ -351,10 +351,9 @@ def _run_upload(options: _UploadOptions) -> None:
             console.print("[yellow]Upload cancelled.[/yellow]")
             return
         if not destination.direct:
-            console.print(
-                "Uploading… the first request can take a minute "
-                "while the service wakes up."
-            )
+            # Honest on both cold and warm runs: the broker may already be
+            # up. Don't claim it's waking when a retry is just transferring.
+            console.print("Uploading… this can take up to a minute; retries are safe.")
         with upload_progress(staged.files, console=console) as hooks:
             result = _publish(staged, destination=destination, hooks=hooks)
         _print_upload_result(staged, result, direct=destination.direct)
@@ -717,11 +716,15 @@ def _print_session_hits() -> None:
 
     hits = list_recent_sessions()
     if not hits:
-        console.print("No recent Claude Code, Codex, or trial sessions found.")
+        print("No recent Claude Code, Codex, or trial sessions found.")
         return
     for index, hit in enumerate(hits, start=1):
         snippet = hit.snippet or "(no prompt yet)"
-        console.print(f"{index}. [{hit.source}] {hit.when}  {hit.path}\n   {snippet}")
+        # Plain print + path on its own line: Rich wrapping used to split
+        # long session paths mid-token and make them unselectable.
+        print(f"{index}. [{hit.source}] {hit.when}")
+        print(f"   {hit.path}")
+        print(f"   {snippet}")
 
 
 def _interactive_view() -> None:

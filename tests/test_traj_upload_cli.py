@@ -813,6 +813,59 @@ def test_list_recent_sessions_scans_all_projects_most_recent_first(
     assert "prize session please" in hits[1].snippet
 
 
+def test_setup_list_prints_path_on_its_own_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards the collector-audit friction fix from PR #1024: ``bench traj
+    setup --list`` used Rich wrapping on ``index. [source] when  /very/long/path``,
+    which split session paths mid-token and made them unselectable. The path
+    must sit on its own physical line after the index/source/time line."""
+    from benchflow.trajectories.sessions import SessionHit
+
+    long_path = Path(
+        "/Users/someone/.claude/projects/"
+        "-Users-someone-very-long-project-name-that-used-to-wrap/"
+        "01234567-89ab-cdef-0123-456789abcdef.jsonl"
+    )
+    monkeypatch.setattr(
+        "benchflow.trajectories.sessions.list_recent_sessions",
+        lambda: [
+            SessionHit(
+                path=long_path,
+                source="claude",
+                mtime=1_700_000_000,
+                snippet="fit a Michaelis-Menten curve",
+            )
+        ],
+    )
+    result = runner.invoke(app, ["traj", "setup", "--list"])
+
+    assert result.exit_code == 0, result.output
+    lines = [line.rstrip() for line in click.unstyle(result.output).splitlines()]
+    assert f"   {long_path}" in lines
+    path_line = next(line for line in lines if str(long_path) in line)
+    assert path_line.strip() == str(long_path)
+    assert "fit a Michaelis-Menten curve" in result.output
+
+
+def test_broker_upload_does_not_claim_the_service_is_waking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards the collector-audit friction fix from PR #1024: a warm rerun
+    still printed ``while the service wakes up``, which is stale once the
+    broker is up. The progress line must stay honest on both cold and warm
+    runs."""
+    captured: dict[str, str] = {}
+    _capture_broker_source_id(monkeypatch, captured)
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    result = runner.invoke(app, _upload_command(_trial(tmp_path)))
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "wakes up" not in output
+    assert "Uploading… this can take up to a minute; retries are safe." in output
+
+
 def _repo_line(session_cwd: Path) -> str:
     return (
         f"Repo: benchflow-ai/benchflow (from session cwd {session_cwd}; "
