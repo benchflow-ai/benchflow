@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any
@@ -10,7 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from benchflow.publish.traj_capture import StagedCapture
+from benchflow.publish.traj_capture import StagedCapture, StagedFile
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ def upload_capture_via_broker(
     *,
     broker_url: str,
     http_client: httpx.Client | None = None,
+    on_file_complete: Callable[[StagedFile], None] | None = None,
 ) -> BrokerPublishResult:
     """Request scoped upload URLs and PUT every staged file in server order."""
     endpoint = f"{broker_url.rstrip('/')}/v1/uploads"
@@ -68,12 +70,14 @@ def upload_capture_via_broker(
                     )
                 if put_response.status_code in {409, 412}:
                     skipped.append(object_name)
-                    continue
-                _raise_for_broker_response(
-                    put_response,
-                    operation=f"upload of {staged_file.relname}",
-                )
-                uploaded.append(object_name)
+                else:
+                    _raise_for_broker_response(
+                        put_response,
+                        operation=f"upload of {staged_file.relname}",
+                    )
+                    uploaded.append(object_name)
+                if on_file_complete is not None:
+                    on_file_complete(staged_file)
     except httpx.HTTPError as exc:
         raise ValueError(f"trajectory broker request failed: {exc}") from exc
 

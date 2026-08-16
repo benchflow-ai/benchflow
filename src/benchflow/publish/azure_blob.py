@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 from benchflow import __version__
-from benchflow.publish.traj_capture import StagedCapture
+from benchflow.publish.traj_capture import StagedCapture, StagedFile
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ def upload_capture_direct(
     *,
     container_url: str,
     credential: Any = None,
+    on_file_complete: Callable[[StagedFile], None] | None = None,
 ) -> BlobPublishResult:
     """Create staged files in an Azure container without overwriting blobs."""
     try:
@@ -100,6 +102,8 @@ def upload_capture_direct(
                 ) from exc
             else:
                 uploaded.append(blob_name)
+            if on_file_complete is not None:
+                on_file_complete(staged_file)
     return BlobPublishResult(
         account=account,
         container=container,

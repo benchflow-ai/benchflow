@@ -21,14 +21,23 @@ For local Claude Code or Codex jsonl formatted trajectory files that you are pro
 # Install or upgrade BenchFlow
 uv tool install --python 3.12 --upgrade benchflow
 
-# Upload one capture
+# Interactive upload (prompts for path, GitHub ID, then email)
+bench traj upload
+
+# Or provide every input up front
 bench traj upload /absolute/path/to/trial \
   --github-id YOUR_GITHUB_ID \
   --email YOU@example.com
 ```
 
 The path may be a trial directory, a directory of JSONL files, or one JSONL
-file. Both contributor fields are required and are stored in `manifest.json`.
+file. Path and contributor details are required inputs; any that are omitted are
+prompted for interactively. Detected secret values are replaced locally with
+`<XXX-benchflow-key-values-XXX>` before upload. Contributor details are stored
+in `manifest.json`. After the path is entered, the CLI shows a redacted preview
+and a trajectory report with step counts, human prompts, thinking/tool activity,
+creation time, file size, and the number of masked key values. Interactive users
+confirm the report before a byte-progress display starts the upload.
 See the concise [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md)
 or the [trajectory upload guide](./docs/traj-upload.md).
 

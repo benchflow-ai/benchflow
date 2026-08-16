@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Never
 
 from benchflow import __version__
-from benchflow.publish.redact import redact_value
+from benchflow.publish.redact import redact_value, redact_value_to_stability
 
 MAX_FILE_BYTES = 128 * 1024**2
 MAX_ARTIFACTS = 8
@@ -66,6 +66,21 @@ class StagedFile:
     sha256: str
     size_bytes: int
     content_type: str
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class StagedTrajectoryArtifacts:
+    """Validated, redacted artifacts awaiting contributor finalization."""
+
+    source_id: str
+    traj_digest: str
+    files: tuple[StagedFile, ...]
+    ignored: tuple[str, ...]
+    redaction_replacements: int
+    _metadata_dir: Path | None
+    _staging_dir: Path
+    _redact: bool
 
 
 @dataclass(frozen=True)
@@ -75,6 +90,7 @@ class StagedCapture:
     files: tuple[StagedFile, ...]
     manifest: dict[str, Any]
     ignored: tuple[str, ...]
+    artifact_redaction_replacements: int
     redaction_replacements: int
 
 
@@ -156,29 +172,14 @@ def validate_artifact_name(name: str) -> str:
 
 
 @contextmanager
-def stage_trajectory_capture(
+def stage_trajectory_artifacts(
     path: Path,
     *,
     source_id: str,
     redact: bool = True,
-    uploaded_by: str | None = None,
-    github_id: str | None = None,
-    email: str | None = None,
-) -> Iterator[StagedCapture]:
-    """Validate and stage a trajectory capture without mutating its source."""
+) -> Iterator[StagedTrajectoryArtifacts]:
+    """Validate and redact JSONL artifacts without building their manifest."""
     source_id = validate_source_id(source_id)
-    if uploaded_by is not None and len(uploaded_by) > MAX_UPLOADED_BY_LENGTH:
-        raise ValueError(
-            f"trajectory contributor label exceeds {MAX_UPLOADED_BY_LENGTH} characters"
-        )
-    contributor: dict[str, str] | None = None
-    if github_id is not None or email is not None:
-        if github_id is None or email is None:
-            raise ValueError("GitHub ID and email must be provided together")
-        contributor = {
-            "github_id": validate_github_id(github_id),
-            "email": validate_email(email),
-        }
     resolved = _resolve_input(path)
     if len(resolved.files) > MAX_ARTIFACTS:
         raise ValueError(
@@ -207,7 +208,14 @@ def stage_trajectory_capture(
                 replacement_count += replacements
             else:
                 shutil.copyfile(source, target)
-            payloads.append(_staged_file(target, relname, "application/jsonl"))
+            payloads.append(
+                _staged_file(
+                    target,
+                    relname,
+                    "application/jsonl",
+                    created_at=_source_created_at(source),
+                )
+            )
 
         payloads.sort(key=lambda item: item.relname)
         for payload in payloads:
@@ -223,49 +231,112 @@ def stage_trajectory_capture(
                 f"{staged_capture_bytes} bytes"
             )
         traj_digest = _trajectory_digest(payloads)
-        manifest = _build_manifest(
+        yield StagedTrajectoryArtifacts(
             source_id=source_id,
             traj_digest=traj_digest,
-            payloads=payloads,
-            metadata_dir=resolved.metadata_dir,
-            uploaded_by=uploaded_by,
-            contributor=contributor,
-            redact=redact,
-            replacement_count=replacement_count,
-        )
-        if redact:
-            redacted_manifest, manifest_replacements = redact_value(manifest)
-            if redacted_manifest["source_id"] != manifest["source_id"]:
-                raise ValueError("source id contains a secret-like value")
-            if redacted_manifest.get("contributor") != manifest.get("contributor"):
-                raise ValueError("contributor metadata resembles a secret-like value")
-            replacement_count += manifest_replacements
-            redacted_manifest["redaction"]["replacements"] = replacement_count
-            manifest = redacted_manifest
-        manifest_path = staging_dir / "manifest.json"
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
-        )
-        manifest_size = manifest_path.stat().st_size
-        if manifest_size > MAX_MANIFEST_BYTES:
-            raise ValueError(
-                f"trajectory manifest exceeds {MAX_MANIFEST_BYTES} bytes: "
-                f"{manifest_size} bytes"
-            )
-        manifest_file = _staged_file(
-            manifest_path,
-            "manifest.json",
-            "application/json",
-        )
-        yield StagedCapture(
-            source_id=source_id,
-            traj_digest=traj_digest,
-            files=(*payloads, manifest_file),
-            manifest=manifest,
+            files=tuple(payloads),
             ignored=resolved.ignored,
             redaction_replacements=replacement_count,
+            _metadata_dir=resolved.metadata_dir,
+            _staging_dir=staging_dir,
+            _redact=redact,
         )
+
+
+def finalize_trajectory_capture(
+    artifacts: StagedTrajectoryArtifacts,
+    *,
+    uploaded_by: str | None = None,
+    github_id: str | None = None,
+    email: str | None = None,
+) -> StagedCapture:
+    """Bind contributor metadata and write the manifest for staged artifacts."""
+    if uploaded_by is not None and len(uploaded_by) > MAX_UPLOADED_BY_LENGTH:
+        raise ValueError(
+            f"trajectory contributor label exceeds {MAX_UPLOADED_BY_LENGTH} characters"
+        )
+    contributor = _contributor(github_id, email)
+    payloads = list(artifacts.files)
+    replacement_count = artifacts.redaction_replacements
+    manifest = _build_manifest(
+        source_id=artifacts.source_id,
+        traj_digest=artifacts.traj_digest,
+        payloads=payloads,
+        metadata_dir=artifacts._metadata_dir,
+        uploaded_by=uploaded_by,
+        contributor=contributor,
+        redact=artifacts._redact,
+        replacement_count=replacement_count,
+    )
+    if artifacts._redact:
+        redacted_manifest, manifest_replacements = redact_value_to_stability(manifest)
+        if redacted_manifest["source_id"] != manifest["source_id"]:
+            raise ValueError("source id contains a secret-like value")
+        if redacted_manifest.get("contributor") != manifest.get("contributor"):
+            raise ValueError("contributor metadata resembles a secret-like value")
+        replacement_count += manifest_replacements
+        redacted_manifest["redaction"]["replacements"] = replacement_count
+        manifest = redacted_manifest
+    manifest_path = artifacts._staging_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    manifest_size = manifest_path.stat().st_size
+    if manifest_size > MAX_MANIFEST_BYTES:
+        raise ValueError(
+            f"trajectory manifest exceeds {MAX_MANIFEST_BYTES} bytes: "
+            f"{manifest_size} bytes"
+        )
+    manifest_file = _staged_file(
+        manifest_path,
+        "manifest.json",
+        "application/json",
+    )
+    return StagedCapture(
+        source_id=artifacts.source_id,
+        traj_digest=artifacts.traj_digest,
+        files=(*artifacts.files, manifest_file),
+        manifest=manifest,
+        ignored=artifacts.ignored,
+        artifact_redaction_replacements=artifacts.redaction_replacements,
+        redaction_replacements=replacement_count,
+    )
+
+
+@contextmanager
+def stage_trajectory_capture(
+    path: Path,
+    *,
+    source_id: str,
+    redact: bool = True,
+    uploaded_by: str | None = None,
+    github_id: str | None = None,
+    email: str | None = None,
+) -> Iterator[StagedCapture]:
+    """Validate and stage a complete capture without mutating its source."""
+    with stage_trajectory_artifacts(
+        path,
+        source_id=source_id,
+        redact=redact,
+    ) as artifacts:
+        yield finalize_trajectory_capture(
+            artifacts,
+            uploaded_by=uploaded_by,
+            github_id=github_id,
+            email=email,
+        )
+
+
+def _contributor(github_id: str | None, email: str | None) -> dict[str, str] | None:
+    if github_id is None and email is None:
+        return None
+    if github_id is None or email is None:
+        raise ValueError("GitHub ID and email must be provided together")
+    return {
+        "github_id": validate_github_id(github_id),
+        "email": validate_email(email),
+    }
 
 
 def _resolve_input(path: Path) -> _ResolvedInput:
@@ -366,7 +437,7 @@ def _redact_jsonl(source: Path, target: Path) -> int:
                 continue
             value = strict_json_loads(body)
             try:
-                redacted, count = redact_value(value)
+                redacted, count = redact_value_to_stability(value)
             except RecursionError as exc:  # defense in depth after complexity gate
                 raise ValueError("trajectory JSONL nesting exceeds the limit") from exc
             if count:
@@ -415,14 +486,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _staged_file(path: Path, relname: str, content_type: str) -> StagedFile:
+def _staged_file(
+    path: Path,
+    relname: str,
+    content_type: str,
+    *,
+    created_at: datetime | None = None,
+) -> StagedFile:
     return StagedFile(
         relname=relname,
         local_path=path,
         sha256=_sha256(path),
         size_bytes=path.stat().st_size,
         content_type=content_type,
+        created_at=created_at,
     )
+
+
+def _source_created_at(path: Path) -> datetime:
+    stat = path.stat()
+    timestamp = getattr(stat, "st_birthtime", stat.st_mtime)
+    return datetime.fromtimestamp(timestamp, UTC)
 
 
 def _trajectory_digest(payloads: list[StagedFile]) -> str:
