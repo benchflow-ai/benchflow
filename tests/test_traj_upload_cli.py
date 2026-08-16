@@ -248,12 +248,18 @@ def test_broker_conflict_is_success_and_rate_limit_is_actionable(
             )
         )
     )
-    limited = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                429, text="slow down", headers={"Retry-After": "60"}
-            )
-        )
+    throttles = 0
+
+    def throttle(_request: httpx.Request) -> httpx.Response:
+        nonlocal throttles
+        throttles += 1
+        return httpx.Response(429, text="slow down", headers={"Retry-After": "60"})
+
+    limited = httpx.Client(transport=httpx.MockTransport(throttle))
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "benchflow.publish.broker.time",
+        SimpleNamespace(sleep=sleeps.append),
     )
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: conflict)
     result = runner.invoke(app, _upload_command(trial))
@@ -265,6 +271,41 @@ def test_broker_conflict_is_success_and_rate_limit_is_actionable(
     result = runner.invoke(app, _upload_command(trial))
     assert result.exit_code == 1
     assert "retry after 60" in result.output
+    assert throttles == 4  # the handshake waited out three short 429s first
+    assert all(60 <= wait <= 61 for wait in sleeps)
+
+
+def test_broker_handshake_recovers_from_transient_429(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crowd-burst 429 with a short Retry-After self-heals without failing."""
+    trial = _trial(tmp_path)
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    posts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.method == "POST":
+            posts += 1
+            if posts <= 2:
+                return httpx.Response(
+                    429, text="slow down", headers={"Retry-After": "1"}
+                )
+            return httpx.Response(200, json=_broker_payload(request))
+        return httpx.Response(201)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "benchflow.publish.broker.time",
+        SimpleNamespace(sleep=sleeps.append),
+    )
+    monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: client)
+    result = runner.invoke(app, _upload_command(trial))
+
+    assert result.exit_code == 0, result.output
+    assert posts == 3
+    assert len(sleeps) == 2
 
 
 def test_missing_broker_names_both_available_modes(

@@ -196,8 +196,8 @@ az containerapp create \
     --target-port 8000 \
     --transport http \
     --allow-insecure false \
-    --min-replicas 0 \
-    --max-replicas 1 \
+    --min-replicas 1 \
+    --max-replicas 2 \
     --cpu 0.5 \
     --memory 1.0Gi \
     --secrets "ip-hash-key=${task_ip_hash_key}" \
@@ -208,6 +208,7 @@ az containerapp create \
         "AZURE_LEDGER_TABLE=${task_table}" \
         "TRAJ_UPLOAD_IP_HASH_KEY=secretref:ip-hash-key" \
         "TRAJ_UPLOAD_RATE_LIMIT=20" \
+        "TRAJ_UPLOAD_IP_RATE_LIMIT=2000" \
         "TRAJ_UPLOAD_SAS_MINUTES=15" \
     --output none
 
@@ -227,9 +228,9 @@ az containerapp job create \
     --replica-retry-limit 3 \
     --parallelism 1 \
     --replica-completion-count 1 \
-    --polling-interval 30 \
+    --polling-interval 15 \
     --min-executions 0 \
-    --max-executions 5 \
+    --max-executions 10 \
     --scale-rule-name trajectory-queue \
     --scale-rule-type azure-queue \
     --scale-rule-metadata \

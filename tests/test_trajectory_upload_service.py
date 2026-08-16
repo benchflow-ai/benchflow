@@ -44,6 +44,7 @@ from services.trajectory_upload.validation import (
 from services.trajectory_upload.validator import (
     AzureCaptureValidator,
     _capture_from_event,
+    drain,
 )
 
 
@@ -636,6 +637,18 @@ class FakeTable:
         self.entities.append(entity)
         self.version += 1
 
+    def create_entity(self, entity: dict) -> None:
+        from azure.core.exceptions import ResourceExistsError
+
+        for existing in self.entities:
+            if (
+                existing["PartitionKey"] == entity["PartitionKey"]
+                and existing["RowKey"] == entity["RowKey"]
+            ):
+                raise ResourceExistsError("entity already exists")
+        self.entities.append(entity)
+        self.version += 1
+
     def update_entity(self, *, entity: dict, etag: str, **_kwargs) -> None:
         assert etag == str(self.version)
         self.entities.append(entity)
@@ -695,7 +708,7 @@ def test_broker_regrant_does_not_downgrade_ledger_state(
         ),
         ip_hash_key=b"test",
     )
-    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda *_args: None)
     monkeypatch.setattr(
         "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
     )
@@ -730,7 +743,7 @@ def test_broker_persists_declared_artifact_sizes(
         ),
         ip_hash_key=b"test",
     )
-    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda *_args: None)
     monkeypatch.setattr(
         "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
     )
@@ -776,7 +789,7 @@ def test_broker_rejects_manifest_change_during_validation(
         blob_service=SimpleNamespace(),
         ip_hash_key=b"test",
     )
-    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda *_args: None)
 
     with pytest.raises(UploadDeclarationConflict):
         backend.create_upload(request, client_ip="127.0.0.1")
@@ -820,7 +833,7 @@ def test_broker_supersedes_conflicting_incomplete_attempt(
         ),
         ip_hash_key=b"test",
     )
-    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda *_args: None)
     monkeypatch.setattr(
         "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
     )
@@ -865,7 +878,7 @@ def test_broker_reopens_rejected_digest_in_isolated_attempt(
         ),
         ip_hash_key=b"test",
     )
-    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda *_args: None)
     monkeypatch.setattr(
         "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
     )
@@ -907,6 +920,82 @@ def test_terminal_digest_handshakes_consume_rate_limit(
         backend.create_upload(request, client_ip="127.0.0.1")
     with pytest.raises(RateLimited):
         backend.create_upload(request, client_ip="127.0.0.1")
+
+
+def _rate_backend(
+    table: FakeTable, *, rate_limit: int = 20, ip_rate_limit: int = 500
+) -> AzureUploadBroker:
+    return AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+        rate_limit=rate_limit,
+        ip_rate_limit=ip_rate_limit,
+    )
+
+
+def test_shared_nat_contributors_have_independent_budgets() -> None:
+    """A venue NAT full of contributors must not share one hourly budget."""
+    backend = _rate_backend(FakeTable(), rate_limit=1, ip_rate_limit=400)
+    for index in range(300):
+        backend._consume_rate_limit("203.0.113.7", f"contributor-{index}")
+
+    with pytest.raises(RateLimited):
+        backend._consume_rate_limit("203.0.113.7", "contributor-0")
+
+
+def test_contributor_budget_refills_continuously() -> None:
+    """Retry-After reflects the next token, not the top of the clock hour."""
+    table = FakeTable()
+    backend = _rate_backend(table, rate_limit=2)
+    backend._consume_rate_limit("198.51.100.9", "octocat")
+    backend._consume_rate_limit("198.51.100.9", "octocat")
+
+    with pytest.raises(RateLimited) as excinfo:
+        backend._consume_rate_limit("198.51.100.9", "octocat")
+    assert 1 <= excinfo.value.retry_after <= 1800
+
+    bucket = next(
+        entity
+        for entity in reversed(table.entities)
+        if entity["PartitionKey"] == "ratebucket"
+        and entity["RowKey"].startswith("contributor-")
+    )
+    bucket["updated_at"] = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
+    backend._consume_rate_limit("198.51.100.9", "octocat")
+
+
+def test_ip_backstop_caps_identity_rotation() -> None:
+    """One host rotating github ids is still bounded by the per-IP bucket."""
+    backend = _rate_backend(FakeTable(), rate_limit=20, ip_rate_limit=3)
+    for index in range(3):
+        backend._consume_rate_limit("192.0.2.4", f"rotating-{index}")
+
+    with pytest.raises(RateLimited):
+        backend._consume_rate_limit("192.0.2.4", "rotating-3")
+
+    backend._consume_rate_limit("192.0.2.5", "rotating-3")
+
+
+def test_validator_drain_stops_on_empty_queue_and_budget() -> None:
+    class CountingValidator:
+        def __init__(self, available: int) -> None:
+            self.available = available
+            self.calls = 0
+
+        def run_once(self) -> bool:
+            self.calls += 1
+            return self.calls <= self.available
+
+    counting = CountingValidator(available=3)
+    assert drain(counting, budget_seconds=30.0) == 3
+    assert counting.calls == 4
+
+    exhausted = CountingValidator(available=10)
+    assert drain(exhausted, budget_seconds=0.0) == 0
+    assert exhausted.calls == 0
 
 
 def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:

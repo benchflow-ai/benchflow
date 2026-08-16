@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -18,6 +20,11 @@ from benchflow.publish.traj_capture import StagedCapture, StagedFile
 # the first SAS grant. Retries are safe; keep this under two minutes.
 HANDSHAKE_TIMEOUT_SEC = 90.0
 PUT_TIMEOUT_SEC = 300.0
+# The broker's token buckets answer 429 with an honest, usually-short
+# Retry-After. Waiting it out inline turns a crowd burst into a smooth queue;
+# anything longer than this cap is surfaced to the contributor instead.
+HANDSHAKE_RETRY_LIMIT = 3
+HANDSHAKE_RETRY_MAX_WAIT_SEC = 120.0
 
 
 @dataclass(frozen=True)
@@ -57,9 +64,7 @@ def upload_capture_via_broker(
     manager = nullcontext(http_client) if http_client is not None else httpx.Client()
     try:
         with _quiet_httpx_request_logging(), manager as client:
-            response = client.post(
-                endpoint, json=request_body, timeout=HANDSHAKE_TIMEOUT_SEC
-            )
+            response = _post_handshake(client, endpoint, request_body)
             if response.status_code == 409:
                 return _already_uploaded_result(response, staged, broker_url)
             _raise_for_broker_response(response, operation="upload handshake")
@@ -105,6 +110,35 @@ def upload_capture_via_broker(
         uploaded=tuple(uploaded),
         skipped=tuple(skipped),
     )
+
+
+def _post_handshake(
+    client: httpx.Client, endpoint: str, request_body: dict[str, Any]
+) -> httpx.Response:
+    """POST the handshake, waiting out short broker 429s instead of failing."""
+    response = client.post(endpoint, json=request_body, timeout=HANDSHAKE_TIMEOUT_SEC)
+    for _retry in range(HANDSHAKE_RETRY_LIMIT):
+        if response.status_code != 429:
+            return response
+        retry_after = _retry_after_seconds(response)
+        if retry_after is None or retry_after > HANDSHAKE_RETRY_MAX_WAIT_SEC:
+            return response
+        time.sleep(retry_after + random.uniform(0.0, 1.0))
+        response = client.post(
+            endpoint, json=request_body, timeout=HANDSHAKE_TIMEOUT_SEC
+        )
+    return response
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
 
 
 def _is_create_only_conflict(response: httpx.Response) -> bool:

@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -435,9 +436,26 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+def drain(validator: Any, *, budget_seconds: float) -> int:
+    """Process queue messages until the queue is empty or the budget expires.
+
+    One Job execution used to handle a single message, which capped promotion
+    throughput at the container start rate. Draining keeps the replica busy
+    for as long as its budget allows; the budget must stay below the Job's
+    replica timeout so Azure never kills a replica mid-validation.
+    """
+    deadline = time.monotonic() + budget_seconds
+    processed = 0
+    while time.monotonic() < deadline and validator.run_once():
+        processed += 1
+    return processed
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    AzureCaptureValidator.from_env().run_once()
+    budget = float(os.environ.get("AZURE_VALIDATOR_DRAIN_SECONDS", "1500"))
+    processed = drain(AzureCaptureValidator.from_env(), budget_seconds=budget)
+    logger.info("validator drained %d queue messages", processed)
 
 
 if __name__ == "__main__":
