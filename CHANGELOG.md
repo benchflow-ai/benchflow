@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### Changed
+- **Trajectory viewer tool calls are color-coded and backgrounds are light.**
+  Each tool kind now gets a muted GitHub-label-style accent on its name pill
+  and a left border strip on the card: shell/exec → amber, write/edit → blue,
+  read → teal, agent/task/skill → purple, web/search/fetch → cyan, everything
+  else → neutral gray. Tool arguments and tool outputs render on light
+  surfaces (`#f5f5f5` / white with dark ink) instead of near-black blocks;
+  the dark `#141414` terminal treatment is reserved for shell-command output
+  only, and the ink-black result card stays as the deliberate bento-ink
+  accent. Presentation only (CSS classes + a tool-name→accent mapping);
+  content strings and behavior are unchanged. Applies to all three viewer
+  templates, which share one stylesheet since #1019.
 - **Trajectory viewer restyled to match www.benchflow.ai.** All three
   `bench eval view` pages (stream-json/JSONL, ACP events, multi-turn trial)
   now share one inline stylesheet with the site's design language: light

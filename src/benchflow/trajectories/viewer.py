@@ -16,9 +16,15 @@ _RESULT_PREVIEW = 300  # max chars for result summary
 
 # Shared stylesheet for all viewer pages, matching the www.benchflow.ai design
 # language (light monochrome: near-white page, white cards, near-black ink,
-# pure-black accent, Satoshi/Google Sans Code with system-safe fallbacks, dark
-# code blocks). Kept inline so pages work fully offline with no external
-# requests; one constant so the three templates stop drifting apart.
+# Satoshi/Google Sans Code with system-safe fallbacks). Kept inline so pages
+# work fully offline with no external requests; one constant so the three
+# templates stop drifting apart.
+#
+# The site itself is deliberately achromatic, so tool-call accents below are
+# muted GitHub-label-style pastels (pale chip background + darker same-hue
+# text + a soft left border strip) that read as annotations rather than
+# fighting the monochrome base. The dark #141414 code treatment is reserved
+# for terminal output of shell commands; everything else stays light.
 _VIEWER_CSS = """\
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
@@ -46,8 +52,10 @@ body { font-family: var(--font-sans); background: var(--background); color: var(
 .meta span { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); padding: 3px 9px; border-radius: 4px; border: 1px solid var(--border); }
 .step { margin-bottom: 8px; padding: 12px 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(10, 10, 10, 0.04); }
 .step.prompt { background: var(--secondary); border-color: var(--rule-strong); margin-bottom: 14px; }
-.step.output { background: var(--code-bg); border-color: var(--code-bg); padding: 10px 16px; }
-.step.output pre { color: var(--code-ink); font-family: var(--font-mono); font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.step.output { background: var(--card); border-color: var(--border); padding: 10px 16px; }
+.step.output pre { color: var(--ink-secondary); font-family: var(--font-mono); font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.step.output.term { background: var(--code-bg); border-color: var(--code-bg); }
+.step.output.term pre { color: var(--code-ink); }
 .step.result { background: var(--ink); border-color: var(--ink); margin-top: 14px; }
 .step.result .msg { color: var(--background); }
 .step-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -59,8 +67,15 @@ body { font-family: var(--font-sans); background: var(--background); color: var(
 .msg { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
 .thinking { font-size: 13px; color: var(--muted); font-style: italic; margin-bottom: 8px; padding: 8px 12px; background: var(--secondary); border-radius: 4px; border-left: 2px solid var(--rule-strong); white-space: pre-wrap; word-break: break-word; }
 .tool { margin-bottom: 6px; }
-.tool-name { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--ink); background: var(--secondary); border: 1px solid var(--border); padding: 2px 9px; border-radius: 4px; }
-.tool-args { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--code-ink); background: var(--code-bg); padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+.tool-name { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--acc-ink, var(--ink)); background: var(--acc-bg, var(--secondary)); border: 1px solid var(--acc-line, var(--border)); padding: 2px 9px; border-radius: 4px; }
+.tool-args { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+.step.tool-step { border-left: 3px solid var(--acc-strip, var(--rule-strong)); }
+.acc-bash  { --acc-bg: #f7efda; --acc-line: #ecdcb2; --acc-ink: #8a5a12; --acc-strip: #dcb45e; }
+.acc-edit  { --acc-bg: #e8f0fa; --acc-line: #d0dff1; --acc-ink: #1d4e89; --acc-strip: #7fa8d8; }
+.acc-read  { --acc-bg: #e5f2ec; --acc-line: #cbe3d7; --acc-ink: #1a6b52; --acc-strip: #74bda0; }
+.acc-agent { --acc-bg: #efeaf8; --acc-line: #ded3ef; --acc-ink: #5b3e96; --acc-strip: #a78fd6; }
+.acc-web   { --acc-bg: #e3f1f6; --acc-line: #c8e2ea; --acc-ink: #176478; --acc-strip: #6fb6ca; }
+.acc-other { --acc-bg: var(--secondary); --acc-line: var(--border); --acc-ink: var(--ink-secondary); --acc-strip: var(--rule-strong); }
 .metrics { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-top: 4px; }
 .turn-divider { border-top: 1px solid var(--border); margin: 24px 0; }
 """
@@ -87,6 +102,28 @@ _WORDMARK_HTML = (
 )
 
 
+# Tool kind → accent class. Substring matching so it covers Claude Code tool
+# names (Bash, Write, Edit, Read, Agent, WebSearch, ...), ACP kinds (execute,
+# edit, read, search, fetch, ...), and Codex function names (shell, ...).
+# Order matters: earlier entries win (e.g. "websearch" hits web before read).
+_TOOL_ACCENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("acc-web", ("web", "search", "fetch", "grep", "glob", "browser")),
+    ("acc-bash", ("bash", "shell", "exec", "terminal", "command")),
+    ("acc-edit", ("write", "edit", "patch", "delete", "move", "notebook")),
+    ("acc-read", ("read", "cat", "view", "ls", "list")),
+    ("acc-agent", ("agent", "task", "skill", "oracle")),
+)
+
+
+def _tool_accent_class(name: str) -> str:
+    """Map a tool name/kind to its accent CSS class (presentation only)."""
+    lowered = name.lower()
+    for css_class, needles in _TOOL_ACCENTS:
+        if any(needle in lowered for needle in needles):
+            return css_class
+    return "acc-other"
+
+
 def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
     """Render one turn's events as HTML blocks."""
     blocks = []
@@ -103,6 +140,9 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
     # Group: thinking → text → tool_use → tool_result → thinking → ...
     pending_thinking = ""
     pending_text = ""
+    # tool_use id → accent class, so each tool_result can match its call's
+    # accent and shell results alone keep the dark terminal treatment.
+    accent_by_tool_id: dict[str, str] = {}
 
     for event in events:
         etype = event.get("type", "")
@@ -160,7 +200,13 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
                         f"</div>"
                     )
 
-                    blocks.append(f'<div class="step agent">{"".join(parts)}</div>')
+                    accent = _tool_accent_class(block.get("name", ""))
+                    if block.get("id"):
+                        accent_by_tool_id[str(block["id"])] = accent
+                    blocks.append(
+                        f'<div class="step agent tool-step {accent}">'
+                        f"{''.join(parts)}</div>"
+                    )
 
         elif etype == "user":
             content = event.get("message", {}).get("content", "")
@@ -181,8 +227,13 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
                             display = "[binary content]"
                         else:
                             display = html.escape(raw[:400])
+                        accent = accent_by_tool_id.get(
+                            str(block.get("tool_use_id", "")), "acc-other"
+                        )
+                        term = " term" if accent == "acc-bash" else ""
                         blocks.append(
-                            f'<div class="step output"><pre>{display}</pre></div>'
+                            f'<div class="step output tool-step {accent}{term}">'
+                            f"<pre>{display}</pre></div>"
                         )
                     elif block.get("type") == "text" and block.get("text"):
                         texts.append(str(block["text"]))
@@ -408,8 +459,13 @@ def _render_acp_events(
             kind = html.escape(event.get("kind", ""))
             event_title = html.escape(event.get("title", ""))
             status = event.get("status", "")
+            # ACP kinds are coarse ("other" covers Skill/Task/...); when the
+            # kind doesn't map, fall back to the human title for the accent.
+            accent = _tool_accent_class(event.get("kind", ""))
+            if accent == "acc-other":
+                accent = _tool_accent_class(event.get("title", ""))
             blocks.append(
-                f'<div class="step agent">'
+                f'<div class="step agent tool-step {accent}">'
                 f'<div class="tool"><span class="tool-name">{kind}</span> {event_title}</div>'
                 f'<div class="metrics">{status}</div>'
                 f"</div>"
