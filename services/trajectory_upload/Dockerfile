@@ -4,7 +4,9 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
-COPY services ./services
+COPY services/__init__.py ./services/__init__.py
+COPY services/trajectory_upload/*.py ./services/trajectory_upload/
+COPY services/trajectory_upload/validator-entrypoint ./services/trajectory_upload/validator-entrypoint
 
 RUN uv sync --frozen --no-dev --extra azure-service \
     && groupadd --system benchflow \

@@ -860,9 +860,15 @@ Validate, redact, and contribute trajectory JSONL through BenchFlow's public
 broker. `PATH` can be one JSONL file, a directory of JSONL files, or a trial
 directory containing `trajectory/`. The command stages only JSONL artifacts,
 writes a content-addressed manifest last, and treats an already-ingested digest
-as a successful no-op.
+as a successful no-op. Run it without `PATH`, `--github-id`, or `--email` to be
+prompted for those three inputs in that order. Detected secret values are
+replaced locally with `<XXX-benchflow-key-values-XXX>` before upload. After the
+path is known, the CLI renders a redacted preview and format-aware trajectory
+report. Interactive uploads require confirmation and then show byte progress;
+the fully specified form remains non-interactive.
 
 ```bash
+bench traj upload
 bench traj upload path/to/trial --github-id octocat --email octocat@example.com
 bench traj upload path/to/trajectory.jsonl --github-id octocat \
   --email octocat@example.com --source-id my-project/run-42
@@ -872,9 +878,10 @@ bench traj upload path/to/trial --github-id octocat \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--github-id` | required | Self-asserted GitHub username stored in `manifest.json` |
-| `--email` | required | Contributor email stored in `manifest.json`; not printed by the CLI |
+| `--github-id` | prompted when omitted | Self-asserted GitHub username stored in `manifest.json` |
+| `--email` | prompted when omitted | Contributor email stored in `manifest.json`; not repeated in success output |
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
+| `--preview-steps` | `5` | Number of redacted trajectory steps to preview; accepts 0–20 |
 | `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
 | `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |
 | `--container-url` | — | Azure Blob container URL for `--direct`; alternatively set `BENCHFLOW_AZURE_CONTAINER_URL` |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -95,6 +96,8 @@ def test_dry_run_stages_without_constructing_a_transport(
     assert "trajectory/acp_trajectory.jsonl" in result.output
     assert "manifest.json" in result.output
     assert EMAIL not in result.output
+    assert "https://broker.test" not in result.output
+    assert "no files uploaded" in result.output
 
 
 def test_direct_mode_reports_azure_destination(
@@ -103,11 +106,17 @@ def test_direct_mode_reports_azure_destination(
     """The CLI delegates direct mode and renders the returned Azure URL."""
     trial = _trial(tmp_path)
 
-    def fake_upload(staged, *, container_url):
+    def fake_upload(staged, *, container_url, on_file_complete, on_bytes):
         assert staged.manifest["contributor"] == {
             "github_id": GITHUB_ID,
             "email": EMAIL,
         }
+        assert staged.manifest["schema_version"] == "1.2.0"
+        assert staged.manifest["trajectory_report"]["primary_file"] == (
+            "trajectory/acp_trajectory.jsonl"
+        )
+        for staged_file in staged.files:
+            on_file_complete(staged_file)
         return SimpleNamespace(
             url=f"{container_url}/sources/demo/{staged.traj_digest}/",
             uploaded=("payload", "manifest"),
@@ -130,6 +139,8 @@ def test_direct_mode_reports_azure_destination(
     assert result.exit_code == 0, result.output
     assert "Uploaded trajectory" in result.output
     assert "tasksminerdata.blob.core.windows.net/bronze" in result.output
+    assert "Upload this trajectory?" not in result.output
+    assert "Upload complete" in result.output
 
 
 def test_broker_mode_uses_exact_manifest_and_server_order(
@@ -138,8 +149,10 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
     """Broker mode sends the manifest handshake and returned PUT headers verbatim."""
     trial = _trial(tmp_path)
     requests: list[httpx.Request] = []
+    manifest_sha256 = ""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal manifest_sha256
         requests.append(request)
         if request.method == "POST":
             body = json.loads(request.content)
@@ -151,18 +164,26 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
                 "uploaded_by",
                 "contributor",
                 "artifacts",
+                "manifest_sha256",
             }
             assert body["contributor"] == {
                 "github_id": GITHUB_ID,
                 "email": EMAIL,
             }
-            assert body["schema_version"] == "1.1.0"
+            assert body["schema_version"] == "1.2.0"
+            manifest_sha256 = body["manifest_sha256"]
             return httpx.Response(200, json=_broker_payload(request))
         if request.url.path.endswith("manifest.json"):
-            assert json.loads(request.content)["contributor"] == {
+            assert hashlib.sha256(request.content).hexdigest() == manifest_sha256
+            manifest = json.loads(request.content)
+            assert manifest["contributor"] == {
                 "github_id": GITHUB_ID,
                 "email": EMAIL,
             }
+            assert manifest["trajectory_report"]["total_steps"] == 1
+            assert manifest["trajectory_report"]["preview"] == [
+                {"kind": "Assistant", "number": 1, "summary": "demo"}
+            ]
         assert request.headers["x-ms-blob-type"] == "BlockBlob"
         assert request.headers["if-none-match"] == "*"
         return httpx.Response(201)
@@ -310,13 +331,16 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
         return httpx.Response(status)
 
     with stage_trajectory_capture(trial, source_id="demo") as staged:
+        completed: list[str] = []
         result = upload_capture_via_broker(
             staged,
             broker_url="https://broker.test",
             http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            on_file_complete=lambda staged_file: completed.append(staged_file.relname),
         )
     assert not result.uploaded
     assert len(result.skipped) == len(staged.files)
+    assert completed == [item.relname for item in staged.files]
 
 
 def test_help_exposes_only_the_planned_upload_command() -> None:
@@ -335,22 +359,193 @@ def test_help_exposes_only_the_planned_upload_command() -> None:
     upload_help_output = click.unstyle(upload_help.output)
     assert "--github-id" in upload_help_output
     assert "--email" in upload_help_output
+    assert "--preview-steps" in upload_help_output
 
 
-def test_upload_requires_github_id_and_email_parameters(tmp_path: Path) -> None:
-    """Guards PR #992: every CLI upload must name its contributor."""
+def test_upload_prompts_for_path_github_id_and_email_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards the interactive upload follow-up to PR #992."""
     trial = _trial(tmp_path)
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
 
-    assert result.exit_code == 2
-    assert "--github-id" in click.unstyle(result.output)
+    def fake_upload(staged, *, broker_url, on_file_complete, on_bytes):
+        assert staged.manifest["contributor"] == {
+            "github_id": GITHUB_ID,
+            "email": EMAIL,
+        }
+        for staged_file in staged.files:
+            on_file_complete(staged_file)
+        return SimpleNamespace(
+            url=f"{broker_url}/sources/community/{staged.traj_digest}/",
+            uploaded=("payload", "manifest"),
+            skipped=(),
+        )
+
+    monkeypatch.setattr(
+        "benchflow.publish.broker.upload_capture_via_broker", fake_upload
+    )
+    result = runner.invoke(
+        app,
+        ["traj", "upload"],
+        input=f"{trial}\n{GITHUB_ID}\n{EMAIL}\ny\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert (
+        output.index("Trajectory JSONL file or trial directory")
+        < output.index("Trajectory report")
+        < output.index("GitHub ID")
+        < output.index("Email")
+    )
+    assert "Upload this trajectory?" in output
+    assert "Uploaded trajectory" in output
+
+
+def test_interactive_preview_can_cancel_before_the_upload_handshake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards the trajectory-report follow-up to PR #992 confirmation gate."""
+    trial = _trial(tmp_path)
+
+    def fail_upload(*args, **kwargs):
+        raise AssertionError("upload started after the contributor declined")
+
+    monkeypatch.setattr(
+        "benchflow.publish.broker.upload_capture_via_broker", fail_upload
+    )
+    result = runner.invoke(
+        app,
+        ["traj", "upload"],
+        input=f"{trial}\n{GITHUB_ID}\n{EMAIL}\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Upload cancelled" in click.unstyle(result.output)
+
+
+def test_cli_report_shows_redacted_preview_and_requested_step_counts(
+    tmp_path: Path,
+) -> None:
+    """Guards the trajectory-report follow-up to PR #992 terminal report."""
+    trial = _trial(tmp_path)
+    secret = "sk-1234567890abcdefghijklmnop"
+    trajectory = trial / "trajectory" / "acp_trajectory.jsonl"
+    trajectory.write_text(
+        "".join(
+            json.dumps(record) + "\n"
+            for record in (
+                {"type": "user_message", "text": f"API_KEY={secret}"},
+                {"type": "agent_thought", "text": "Inspect first"},
+                {"type": "tool_call", "kind": "read", "title": "Open README"},
+                {"type": "agent_message", "text": "Done"},
+            )
+        ),
+        encoding="utf-8",
+    )
 
     result = runner.invoke(
         app,
-        ["traj", "upload", str(trial), "--github-id", GITHUB_ID],
+        _upload_command(trial, "--dry-run", "--preview-steps", "2"),
     )
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Trajectory report" in output
+    assert "Total steps" in output and "4" in output
+    assert "Thinking steps" in output
+    assert "Tool-call steps" in output
+    assert "Human steps" in output
+    assert "API keys / secrets masked" in output
+    assert "<XXX-benchflow-key-values-XXX>" in output
+    assert "First 2 trajectory steps" in output
+    assert "up to 100 words each" in output
+    assert secret not in output
+
+
+def test_upload_prompts_only_for_missing_parameters(tmp_path: Path) -> None:
+    """Guards PR #992's explicit form while adding partial interactive input."""
+    trial = _trial(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "traj",
+            "upload",
+            str(trial),
+            "--github-id",
+            GITHUB_ID,
+            "--dry-run",
+        ],
+        input=f"{EMAIL}\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "Email:" in output
+    assert "GitHub ID:" not in output
+    assert "Trajectory JSONL file or trial directory:" not in output
+
+
+def test_interactive_prompts_reask_after_invalid_input(tmp_path: Path) -> None:
+    """Guards PR #1008: a typo at any interactive prompt re-asks in place
+    instead of aborting the staged upload, and dragged-in quoted paths are
+    accepted as typed."""
+    trial = _trial(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["traj", "upload", "--dry-run"],
+        input=(
+            f"{tmp_path / 'missing'}\n"
+            f"'{trial}'\n"
+            "-bad-\n"
+            f"{GITHUB_ID}\n"
+            "not-an-email\n"
+            f"{EMAIL}\n"
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    output = click.unstyle(result.output)
+    assert "path not found" in output
+    assert "invalid GitHub ID" in output
+    assert "invalid contributor email" in output
+    assert "Dry run" in output
+
+
+def test_broker_upload_reports_streamed_byte_progress(tmp_path: Path) -> None:
+    """Guards PR #1008: single-file uploads stream byte counts to the progress
+    callback instead of jumping only at file boundaries."""
+    trial = _trial(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json=_broker_payload(request))
+        request.read()
+        return httpx.Response(201)
+
+    byte_counts: list[int] = []
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        upload_capture_via_broker(
+            staged,
+            broker_url="https://broker.test",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            on_bytes=byte_counts.append,
+        )
+        assert sum(byte_counts) == sum(item.size_bytes for item in staged.files)
+    assert all(count > 0 for count in byte_counts)
+
+
+def test_upload_rejects_preview_counts_above_the_terminal_bound(tmp_path: Path) -> None:
+    """Guards the trajectory-report follow-up to PR #992 preview bound."""
+    result = runner.invoke(
+        app,
+        _upload_command(_trial(tmp_path), "--dry-run", "--preview-steps", "21"),
+    )
+
     assert result.exit_code == 2
-    assert "--email" in click.unstyle(result.output)
+    assert "20" in click.unstyle(result.output)
 
 
 @pytest.mark.parametrize(

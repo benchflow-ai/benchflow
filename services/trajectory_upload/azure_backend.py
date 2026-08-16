@@ -15,6 +15,7 @@ from urllib.parse import quote
 from services.trajectory_upload.broker_app import (
     AlreadyUploaded,
     RateLimited,
+    UploadDeclarationConflict,
 )
 from services.trajectory_upload.contract import (
     UploadGrant,
@@ -87,7 +88,15 @@ class AzureUploadBroker:
                     base_url=self.container_url,
                     prefix=f"sources/community/{digest}/",
                 )
-            if status in {"pending", "validating"}:
+            declaration_conflict = (
+                status in {"pending", "validating"}
+                and request.manifest_sha256 is not None
+                and entity is not None
+                and entity.get("declared_manifest_sha256") != request.manifest_sha256
+            )
+            if status == "validating" and declaration_conflict:
+                raise UploadDeclarationConflict
+            if status in {"pending", "validating"} and not declaration_conflict:
                 if entity is None:  # pragma: no cover - implied by status above
                     raise RuntimeError("active capture ledger entry is missing")
                 persisted_attempt = entity.get("attempt_id")
@@ -110,6 +119,8 @@ class AzureUploadBroker:
                         "status": "pending",
                         "attempt_id": upload_id,
                         "source_id": request.source_id,
+                        "schema_version": request.schema_version,
+                        "declared_manifest_sha256": request.manifest_sha256 or "",
                         "declared_artifacts": json.dumps(
                             {
                                 artifact.name: artifact.bytes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any
@@ -10,7 +11,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from benchflow.publish.traj_capture import StagedCapture
+from benchflow.publish._progress import ProgressReader
+from benchflow.publish.traj_capture import StagedCapture, StagedFile
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,8 @@ def upload_capture_via_broker(
     *,
     broker_url: str,
     http_client: httpx.Client | None = None,
+    on_file_complete: Callable[[StagedFile], None] | None = None,
+    on_bytes: Callable[[int], None] | None = None,
 ) -> BrokerPublishResult:
     """Request scoped upload URLs and PUT every staged file in server order."""
     endpoint = f"{broker_url.rstrip('/')}/v1/uploads"
@@ -41,6 +45,7 @@ def upload_capture_via_broker(
         "traj_digest": staged.manifest["traj_digest"],
         "uploaded_by": staged.manifest["uploaded_by"],
         "artifacts": artifacts,
+        "manifest_sha256": staged.files[-1].sha256,
     }
     if contributor := staged.manifest.get("contributor"):
         request_body["contributor"] = contributor
@@ -60,20 +65,25 @@ def upload_capture_via_broker(
             for staged_file, upload in zip(staged.files, objects, strict=True):
                 object_name = prefix + staged_file.relname
                 with staged_file.local_path.open("rb") as stream:
+                    content = (
+                        stream if on_bytes is None else ProgressReader(stream, on_bytes)
+                    )
                     put_response = client.put(
                         upload["put_url"],
                         headers=upload["headers"],
-                        content=stream,
+                        content=content,
                         timeout=300,
                     )
                 if put_response.status_code in {409, 412}:
                     skipped.append(object_name)
-                    continue
-                _raise_for_broker_response(
-                    put_response,
-                    operation=f"upload of {staged_file.relname}",
-                )
-                uploaded.append(object_name)
+                else:
+                    _raise_for_broker_response(
+                        put_response,
+                        operation=f"upload of {staged_file.relname}",
+                    )
+                    uploaded.append(object_name)
+                if on_file_complete is not None:
+                    on_file_complete(staged_file)
     except httpx.HTTPError as exc:
         raise ValueError(f"trajectory broker request failed: {exc}") from exc
 
