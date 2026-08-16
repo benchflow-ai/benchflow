@@ -1,0 +1,44 @@
+{
+  "skill_name": "benchflow-traj-upload-ops",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have an unreleased BenchFlow checkout and one Claude Code JSONL trajectory. Show me the safest local `--dry-run` command to inspect the report and manifest without uploading, then explain what the report counts mean.",
+      "expected_output": "Uses `uv run bench traj upload ... --dry-run`, distinguishes repository code from the installed release, explains the exact step partition and 100-word redacted preview, and does not claim network or production verification.",
+      "expectations": [
+        "Uses `uv run bench` for the unreleased checkout.",
+        "Uses `--dry-run` and states that it makes no network request.",
+        "States that total steps equal thinking plus tool-call plus human steps.",
+        "Defines human steps as genuine user messages and rejects metadata/tool results/placeholders as steps.",
+        "Mentions that previews contain up to the first 100 words from already-redacted steps.",
+        "States that all displayed report metadata is included in manifest.json."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "A contributor typed only `bench traj upload`. Explain exactly what they will be prompted for and when the upload starts. Also give the equivalent fully specified command.",
+      "expected_output": "Explains path-first inspection, report rendering, GitHub/email prompts, default-No confirmation, validation retries, and that the complete PATH/GitHub/email command uploads without confirmation.",
+      "expectations": [
+        "Prompts for the path before rendering the report.",
+        "Prompts for missing GitHub ID and email after the report.",
+        "States that the final confirmation defaults to No.",
+        "Shows `bench traj upload <PATH> --github-id <GITHUB_ID> --email <EMAIL>`.",
+        "States that supplying all required inputs skips confirmation but still renders the report.",
+        "Does not expose an internal service endpoint."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "The CLI says my trajectory uploaded successfully. What must I check before telling the team the public flow passed end to end, and how is `--direct` different?",
+      "expected_output": "Requires exact-digest trusted promotion evidence under sources/community with validator-recomputed manifest binding, distinguishes quarantine/client success from promotion, and describes direct Azure upload as a trusted operator route without public validation.",
+      "expectations": [
+        "Requires verification of the exact digest under `sources/community/<digest>/`.",
+        "Requires the trusted validator's recomputed schema-1.2 report, hashes, and manifest binding.",
+        "States that client success or quarantine presence alone is insufficient.",
+        "Explains that `--direct` uses local Azure credentials and `sources/<source-id>/<digest>/`.",
+        "States that direct upload does not prove the public contribution route.",
+        "Does not reveal signed URLs, credentials, email, secrets, or an internal service endpoint."
+      ]
+    }
+  ]
+}

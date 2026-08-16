@@ -1,13 +1,53 @@
 # Contribute trajectory captures
 
-Anyone with BenchFlow installed can contribute a completed trajectory through
-either an interactive prompt:
+Copy this line into your coding agent. You do not run a BenchFlow command.
+
+```
+Submit my best local Claude Code or Codex session to the BenchFlow eval prize. Read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
+```
+
+The agent reads the skill, finds a local session, opens the viewer, and
+uploads after you say it looks good.
+
+## Optional: set the skill up once
+
+If you want later chats to know the workflow without pasting the long line:
+
+```bash
+npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload
+```
+
+or, with BenchFlow already installed:
+
+```bash
+bench traj setup
+```
+
+`npx skills add` is interactive: it asks which agents to install for
+(Claude Code, Codex, Cursor, and other [Agent Skills](https://agentskills.io)
+hosts). `bench traj setup` copies the skill into
+`.agents/skills/benchflow-traj-upload/`, prints the same paste line, and can
+list sessions or open the viewer. After setup, a short ask is enough:
+**submit my best session to the eval prize**.
+
+`bench traj setup --prompt` prints only the copy-paste line.
+`bench traj setup --list` lists recent local sessions.
+
+## Optional: interactive upload without an agent
+
+Prefer the terminal? The guided flow inspects and confirms before anything
+leaves the machine:
 
 ```bash
 bench traj upload
 ```
 
-or one fully specified command:
+It prompts for the path first, then validates, redacts, and inspects the local
+trajectory; renders the report and preview; fills GitHub ID and email from
+`gh` / `git` (or `BENCHFLOW_GITHUB_ID` / `BENCHFLOW_EMAIL`), prompting only for
+what inference cannot find; and asks for confirmation before uploading.
+
+The fully specified command is non-interactive for scripts and agents:
 
 ```bash
 bench traj upload path/to/trial \
@@ -15,18 +55,15 @@ bench traj upload path/to/trial \
   --email YOU@example.com
 ```
 
-When values are omitted, BenchFlow prompts for the path first. It then validates,
-redacts, and inspects the local trajectory; renders the report and preview;
-prompts for a missing GitHub ID and email; and asks for confirmation before
-uploading. `path/to/trial` may be a trial directory containing `trajectory/`, a
-directory of JSONL files, or one JSONL file. BenchFlow rejects duplicate
-object keys and non-finite numbers, but detected secret-like values do not make
+`path/to/trial` may be a trial directory containing `trajectory/`, a directory
+of JSONL files, or one JSONL file. BenchFlow rejects duplicate object keys and
+non-finite numbers, but detected secret-like values do not make
 otherwise-valid JSONL ineligible: the local staging pass replaces them with
 `<XXX-benchflow-key-values-XXX>`. It applies the same structural redaction to
-manifest metadata, computes a content digest, and uploads a manifest last. Use
-`--dry-run` to inspect the
-staged file list, digest, sizes, ignored siblings, and redaction count without
-making a network request.
+manifest metadata, computes a content digest, and uploads a manifest last. The
+first request can take a minute while the public broker wakes up; retries are
+safe. Use `--dry-run` to inspect the staged file list, digest, sizes, ignored
+siblings, and redaction count without making a network request.
 
 ## Local trajectory report
 
@@ -61,22 +98,30 @@ count, and every displayed preview row. The server validates those values
 against the declared artifacts and rejects inconsistent report metadata.
 
 Interactive mode shows this report before contributor prompts and requires an
-explicit confirmation. A command containing the path, `--github-id`, and
-`--email` remains non-interactive: it shows the same report and starts uploading
-without another prompt. Upload progress is displayed by processed file bytes.
+explicit confirmation. A command whose path and identity resolve without
+prompting — flags or `gh` / `git` inference — remains non-interactive: it shows
+the same report and starts uploading without another prompt. Upload progress is
+displayed by processed file bytes.
 
 GitHub ID and email are required inputs for both public and direct uploads, but
-may be provided through options or prompts. They are self-asserted contributor
-provenance, not proof of account ownership, and are stored in `manifest.json` as
-`{"contributor":{"github_id":"...","email":"..."}}`. An interactively
-entered email is visible in the terminal prompt but is not repeated in the
-success output. Dataset operators may retain or publish the manifest; use an
-address you are comfortable associating with the contribution.
+may be provided through options, inference, or prompts. They are self-asserted
+contributor provenance, not proof of account ownership, and are stored in
+`manifest.json` as `{"contributor":{"github_id":"...","email":"..."}}`. An
+interactively entered email is visible in the terminal prompt but is not
+repeated in the success output. Dataset operators may retain or publish the
+manifest; use an address you are comfortable associating with the contribution.
 
 The public broker URL is built into the CLI. `BENCHFLOW_TRAJ_BROKER_URL` can
 override it for development or disaster recovery, and
 `BENCHFLOW_TRAJ_UPLOADED_BY` can add a non-secret contributor label. Do not put
 credentials or personal data in either label.
+
+## Viewer
+
+`bench eval view PATH` serves a localhost page for a trial directory, a job
+directory, or a raw Claude Code / Codex / ACP session JSONL file. The
+contributor skill opens this before upload. Viewing a JSONL file does not
+write `trajectory.html` next to the session.
 
 ## What reaches the dataset
 
@@ -96,8 +141,8 @@ policy provide recovery and bound retention for attempted overwrites; the
 deployment does not configure an immutable-storage policy.
 
 The digest excludes contributor labels, timestamps, and transport details, so
-the same redacted bytes are idempotent across machines. Repeating an ingested
-upload prints `Already uploaded` and performs no blob writes.
+the same redacted bytes are idempotent across machines. Repeating a submitted
+upload prints `Already submitted` and performs no blob writes.
 
 The local replacement pass is designed to make otherwise-valid JSONL containing
 detected keys safe to upload. Review sensitive trajectories before contributing

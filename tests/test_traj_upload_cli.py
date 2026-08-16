@@ -45,6 +45,13 @@ def _upload_command(path: Path, *args: str) -> list[str]:
     ]
 
 
+def _block_identity_inference(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the prompt path: the dev machine's gh/git identity must not leak in."""
+    monkeypatch.delenv("BENCHFLOW_GITHUB_ID", raising=False)
+    monkeypatch.delenv("BENCHFLOW_EMAIL", raising=False)
+    monkeypatch.setattr("benchflow.cli.traj._command_stdout", lambda *_args: None)
+
+
 def test_stock_cli_has_the_verified_public_broker() -> None:
     """A wheel install can contribute without private endpoint configuration."""
     from benchflow.cli.traj import DEFAULT_TRAJ_BROKER_URL
@@ -251,7 +258,8 @@ def test_broker_conflict_is_success_and_rate_limit_is_actionable(
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: conflict)
     result = runner.invoke(app, _upload_command(trial))
     assert result.exit_code == 0, result.output
-    assert "Already uploaded" in result.output
+    assert "Already submitted" in result.output
+    assert "blob.core.windows.net" not in result.output
 
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: limited)
     result = runner.invoke(app, _upload_command(trial))
@@ -343,16 +351,17 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
     assert completed == [item.relname for item in staged.files]
 
 
-def test_help_exposes_only_the_planned_upload_command() -> None:
+def test_help_exposes_setup_and_upload() -> None:
     """Guards PR #992 while ignoring Rich's environment-specific ANSI styling."""
     traj_group = next(group for group in app.registered_groups if group.name == "traj")
     assert {
         command.name for command in traj_group.typer_instance.registered_commands
-    } == {"upload"}
+    } == {"setup", "upload"}
 
     result = runner.invoke(app, ["traj", "--help"])
     assert result.exit_code == 0
     assert "upload" in result.output
+    assert "setup" in result.output
 
     upload_help = runner.invoke(app, ["traj", "upload", "--help"])
     assert upload_help.exit_code == 0
@@ -366,6 +375,7 @@ def test_upload_prompts_for_path_github_id_and_email_in_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Guards the interactive upload follow-up to PR #992."""
+    _block_identity_inference(monkeypatch)
     trial = _trial(tmp_path)
 
     def fake_upload(staged, *, broker_url, on_file_complete, on_bytes):
@@ -399,13 +409,15 @@ def test_upload_prompts_for_path_github_id_and_email_in_order(
         < output.index("Email")
     )
     assert "Upload this trajectory?" in output
-    assert "Uploaded trajectory" in output
+    assert "Submitted" in output
+    assert "sources/community" not in output  # public success copy hides URLs
 
 
 def test_interactive_preview_can_cancel_before_the_upload_handshake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Guards the trajectory-report follow-up to PR #992 confirmation gate."""
+    _block_identity_inference(monkeypatch)
     trial = _trial(tmp_path)
 
     def fail_upload(*args, **kwargs):
@@ -463,8 +475,11 @@ def test_cli_report_shows_redacted_preview_and_requested_step_counts(
     assert secret not in output
 
 
-def test_upload_prompts_only_for_missing_parameters(tmp_path: Path) -> None:
+def test_upload_prompts_only_for_missing_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Guards PR #992's explicit form while adding partial interactive input."""
+    _block_identity_inference(monkeypatch)
     trial = _trial(tmp_path)
 
     result = runner.invoke(
@@ -487,10 +502,13 @@ def test_upload_prompts_only_for_missing_parameters(tmp_path: Path) -> None:
     assert "Trajectory JSONL file or trial directory:" not in output
 
 
-def test_interactive_prompts_reask_after_invalid_input(tmp_path: Path) -> None:
+def test_interactive_prompts_reask_after_invalid_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Guards PR #1008: a typo at any interactive prompt re-asks in place
     instead of aborting the staged upload, and dragged-in quoted paths are
     accepted as typed."""
+    _block_identity_inference(monkeypatch)
     trial = _trial(tmp_path)
 
     result = runner.invoke(
@@ -566,3 +584,119 @@ def test_upload_validates_contributor_parameters_locally(
 
     assert result.exit_code == 1
     assert message in result.output
+
+
+def test_upload_infers_contributor_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-argument command uses local identity when flags are omitted."""
+    _block_identity_inference(monkeypatch)
+    monkeypatch.setenv("BENCHFLOW_GITHUB_ID", GITHUB_ID)
+    monkeypatch.setenv("BENCHFLOW_EMAIL", EMAIL)
+    monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
+    result = runner.invoke(app, ["traj", "upload", str(_trial(tmp_path)), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output
+    assert EMAIL not in result.output
+
+
+def test_upload_explains_missing_contributor_without_typer_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing identity with no prompt input gives the exact one-line fix."""
+    _block_identity_inference(monkeypatch)
+    result = runner.invoke(app, ["traj", "upload", str(_trial(tmp_path))])
+
+    assert result.exit_code == 1
+    output = click.unstyle(result.output)
+    assert "need a GitHub username and email" in output
+    assert "--github-id YOUR_ID --email YOU@example.com" in output
+
+
+def test_handshake_timeout_tells_people_to_retry(tmp_path: Path) -> None:
+    """A cold scale-to-zero broker should not look like a broken install."""
+    trial = _trial(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
+
+    with (
+        stage_trajectory_capture(
+            trial, source_id="demo", github_id=GITHUB_ID, email=EMAIL
+        ) as staged,
+        pytest.raises(ValueError, match="retries are safe"),
+    ):
+        upload_capture_via_broker(
+            staged,
+            broker_url="https://broker.test",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+
+def test_setup_prompt_prints_the_copy_paste_line() -> None:
+    """The human path is one line to paste into an agent."""
+    from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL
+
+    result = runner.invoke(app, ["traj", "setup", "--prompt"])
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+
+    assert result.exit_code == 0, result.output
+    assert CONTRIBUTOR_PROMPT in click.unstyle(result.output)
+    assert SKILL_RAW_URL in result.output
+    assert "bench traj upload" not in result.output
+    assert CONTRIBUTOR_PROMPT in readme.read_text(encoding="utf-8")
+
+
+def test_setup_yes_installs_the_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Optional interactive setup can run non-interactively with --yes."""
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["traj", "setup", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    skill = tmp_path / ".agents" / "skills" / "benchflow-traj-upload" / "SKILL.md"
+    assert skill.is_file()
+    text = skill.read_text(encoding="utf-8")
+    assert "open the viewer" in text
+    assert "Paste this to your agent" in click.unstyle(result.output)
+
+
+def test_list_recent_sessions_scans_all_projects_most_recent_first(
+    tmp_path: Path,
+) -> None:
+    """Sessions from other project dirs must be found: people submit from a
+    different directory than the one they worked in."""
+    import os
+
+    from benchflow.trajectories.sessions import (
+        encode_claude_project_dir,
+        list_recent_sessions,
+    )
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / encode_claude_project_dir(str(cwd))
+    project.mkdir(parents=True)
+    older = project / "abc.jsonl"
+    older.write_text(
+        '{"type":"user","message":{"content":"prize session please"}}\n',
+        encoding="utf-8",
+    )
+    os.utime(older, (1_000_000, 1_000_000))
+    newer = home / ".claude" / "projects" / "-tmp-bio-work" / "bio.jsonl"
+    newer.parent.mkdir(parents=True)
+    newer.write_text(
+        '{"type":"user","message":{"content":"compute GC content of sample.fasta"}}\n',
+        encoding="utf-8",
+    )
+    os.utime(newer, (2_000_000, 2_000_000))
+
+    hits = list_recent_sessions(cwd=cwd, home=home, limit=8)
+
+    assert [hit.path for hit in hits] == [newer, older]
+    assert all(hit.source == "claude" for hit in hits)
+    assert "GC content" in hits[0].snippet
+    assert "prize session please" in hits[1].snippet

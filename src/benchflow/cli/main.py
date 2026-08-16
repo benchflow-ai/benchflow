@@ -1223,11 +1223,13 @@ def eval_metrics(
 def eval_view(
     rollout_dir: Annotated[
         Path,
-        typer.Argument(help="Rollout or job directory with trajectories"),
+        typer.Argument(
+            help="Rollout directory, job directory, or trajectory JSONL file"
+        ),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
 ) -> None:
-    """View a trial trajectory in the browser."""
+    """View a trial or session trajectory in the browser."""
     from benchflow.trajectories.viewer import serve
 
     serve(str(rollout_dir), port)

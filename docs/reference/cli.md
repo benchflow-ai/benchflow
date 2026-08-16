@@ -413,11 +413,15 @@ bench eval metrics jobs/ --json
 
 ### bench eval view
 
-Serve a trial trajectory viewer in the browser for a rollout or job directory.
+Serve a trial trajectory viewer in the browser for a rollout directory, a job
+directory, or a Claude Code / Codex / ACP session JSONL file. Contributors
+reach this through the [trajectory upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md),
+not by running the command themselves.
 
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
+bench eval view ~/.claude/projects/<project>/<session>.jsonl
 ```
 
 ## bench train
@@ -854,32 +858,51 @@ and hosted-provider browsing to [`bench hub list`](#bench-hub). The old
 `bench environment create|list|cleanup` and `show|inspect` (plus `list
 --provider`/`--hub`) still work, each printing a one-line stderr notice.
 
+## bench traj setup
+
+Install the trajectory skill into the current project, or print the line
+contributors paste into an agent. Interactive by default. `--yes` copies the
+skill without prompts. `--prompt` prints only the copy-paste line. `--list`
+prints recent Claude Code / Codex / trial sessions.
+
+```bash
+bench traj setup
+bench traj setup --yes
+bench traj setup --prompt
+bench traj setup --list
+```
+
+See [Trajectory upload](../traj-upload.md).
+
 ## bench traj upload
 
 Validate, redact, and contribute trajectory JSONL through BenchFlow's public
-broker. `PATH` can be one JSONL file, a directory of JSONL files, or a trial
-directory containing `trajectory/`. The command stages only JSONL artifacts,
-writes a content-addressed manifest last, and treats an already-ingested digest
-as a successful no-op. Run it without `PATH`, `--github-id`, or `--email` to be
-prompted for those three inputs in that order. Detected secret values are
-replaced locally with `<XXX-benchflow-key-values-XXX>` before upload. After the
-path is known, the CLI renders a redacted preview and format-aware trajectory
-report. Interactive uploads require confirmation and then show byte progress;
-the fully specified form remains non-interactive.
+broker. This is what the [upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md)
+runs after the user reviews the viewer; the guided form below is the direct
+terminal alternative. `PATH` can be one JSONL file, a directory of JSONL files,
+or a trial directory containing `trajectory/`. The command stages only JSONL
+artifacts, writes a content-addressed manifest last, and treats a digest that
+is already in inbox or community storage as `Already submitted`. Detected
+secret values are replaced locally with `<XXX-benchflow-key-values-XXX>`
+before upload. After the path is known, the CLI renders a redacted preview and
+format-aware trajectory report. GitHub username and email are inferred from
+`gh` / `git` when omitted; run the bare command to be prompted for the path
+and for identity that inference cannot find. Sessions that prompted require
+confirmation and then show byte progress; invocations that resolved without
+prompting stay non-interactive.
 
 ```bash
 bench traj upload
+bench traj upload path/to/your-session.jsonl
 bench traj upload path/to/trial --github-id octocat --email octocat@example.com
-bench traj upload path/to/trajectory.jsonl --github-id octocat \
-  --email octocat@example.com --source-id my-project/run-42
-bench traj upload path/to/trial --github-id octocat \
-  --email octocat@example.com --dry-run
+bench traj upload path/to/trajectory.jsonl --source-id my-project/run-42
+bench traj upload path/to/trial --dry-run
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--github-id` | prompted when omitted | Self-asserted GitHub username stored in `manifest.json` |
-| `--email` | prompted when omitted | Contributor email stored in `manifest.json`; not repeated in success output |
+| `--github-id` | inferred, then prompted | Self-asserted GitHub username stored in `manifest.json`; inferred from `gh` / `git` / `BENCHFLOW_GITHUB_ID` |
+| `--email` | inferred, then prompted | Contributor email stored in `manifest.json`; inferred from `git` / `BENCHFLOW_EMAIL`; not repeated in success output |
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
 | `--preview-steps` | `5` | Number of redacted trajectory steps to preview; accepts 0–20 |
 | `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |

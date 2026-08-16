@@ -1,4 +1,9 @@
-"""Drift guards for the public trajectory-upload operating skill."""
+"""Drift guards for the trajectory-upload operating skill.
+
+The operator manual from PR #1008 lives at ``benchflow-traj-upload-ops``;
+the ``benchflow-traj-upload`` name is the contributor-facing skill that the
+README paste line and ``bench traj setup`` reference.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ import yaml
 from benchflow.cli.main import app
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SKILL_DIR = _REPO_ROOT / ".agents" / "skills" / "benchflow-traj-upload"
+_SKILL_DIR = _REPO_ROOT / ".agents" / "skills" / "benchflow-traj-upload-ops"
 _SKILL_MD = _SKILL_DIR / "SKILL.md"
 _CLI_CONTRACT = _SKILL_DIR / "references" / "cli-contract.md"
 
@@ -45,7 +50,7 @@ def test_traj_upload_skill_uses_current_skill_creator_shape() -> None:
     metadata = _frontmatter(skill_text)
 
     assert set(metadata) == {"name", "description"}
-    assert metadata["name"] == "benchflow-traj-upload"
+    assert metadata["name"] == "benchflow-traj-upload-ops"
     description = str(metadata["description"])
     for trigger in ("upload", "test", "troubleshoot", "manifest", "production"):
         assert trigger in description
@@ -93,7 +98,7 @@ def test_traj_upload_skill_evals_are_parseable_and_cover_three_modes() -> None:
         (_SKILL_DIR / "evals" / "evals.json").read_text(encoding="utf-8")
     )
 
-    assert evals["skill_name"] == "benchflow-traj-upload"
+    assert evals["skill_name"] == "benchflow-traj-upload-ops"
     assert [case["id"] for case in evals["evals"]] == [1, 2, 3]
     prompts = " ".join(case["prompt"] for case in evals["evals"])
     for mode in ("--dry-run", "bench traj upload", "--direct"):

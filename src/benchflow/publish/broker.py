@@ -14,6 +14,11 @@ import httpx
 from benchflow.publish._progress import ProgressReader
 from benchflow.publish.traj_capture import StagedCapture, StagedFile
 
+# Scale-to-zero brokers can take longer than a default HTTP timeout to mint
+# the first SAS grant. Retries are safe; keep this under two minutes.
+HANDSHAKE_TIMEOUT_SEC = 90.0
+PUT_TIMEOUT_SEC = 300.0
+
 
 @dataclass(frozen=True)
 class BrokerPublishResult:
@@ -52,7 +57,9 @@ def upload_capture_via_broker(
     manager = nullcontext(http_client) if http_client is not None else httpx.Client()
     try:
         with _quiet_httpx_request_logging(), manager as client:
-            response = client.post(endpoint, json=request_body, timeout=30)
+            response = client.post(
+                endpoint, json=request_body, timeout=HANDSHAKE_TIMEOUT_SEC
+            )
             if response.status_code == 409:
                 return _already_uploaded_result(response, staged, broker_url)
             _raise_for_broker_response(response, operation="upload handshake")
@@ -72,9 +79,9 @@ def upload_capture_via_broker(
                         upload["put_url"],
                         headers=upload["headers"],
                         content=content,
-                        timeout=300,
+                        timeout=PUT_TIMEOUT_SEC,
                     )
-                if put_response.status_code in {409, 412}:
+                if _is_create_only_conflict(put_response):
                     skipped.append(object_name)
                 else:
                     _raise_for_broker_response(
@@ -84,6 +91,11 @@ def upload_capture_via_broker(
                     uploaded.append(object_name)
                 if on_file_complete is not None:
                     on_file_complete(staged_file)
+    except httpx.TimeoutException as exc:
+        raise ValueError(
+            "upload timed out while reaching the service. "
+            "Run the same command again — retries are safe."
+        ) from exc
     except httpx.HTTPError as exc:
         raise ValueError(f"trajectory broker request failed: {exc}") from exc
 
@@ -92,6 +104,25 @@ def upload_capture_via_broker(
         prefix=prefix,
         uploaded=tuple(uploaded),
         skipped=tuple(skipped),
+    )
+
+
+def _is_create_only_conflict(response: httpx.Response) -> bool:
+    """Treat create-only blob conflicts as an idempotent skip.
+
+    Azure user-delegation SAS with ``create`` and ``If-None-Match: *`` returns
+    403 ``UnauthorizedBlobOverwrite`` when the blob already exists. GCS uses
+    412. Neither should fail a contributor retry.
+    """
+    if response.status_code in {409, 412}:
+        return True
+    if response.status_code != 403:
+        return False
+    detail = response.text
+    return (
+        "UnauthorizedBlobOverwrite" in detail
+        or "BlobAlreadyExists" in detail
+        or "already exists" in detail.lower()
     )
 
 

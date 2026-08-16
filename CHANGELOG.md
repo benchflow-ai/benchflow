@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed
+- **Trajectory contribution is a copy-paste line, plus optional setup.**
+  Contributors paste one line into their agent; the agent reads
+  `benchflow-traj-upload`, opens the viewer, then uploads. Optional setup is
+  `npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload` or
+  `bench traj setup`. `bench eval view` accepts a raw session JSONL file and
+  does not write `trajectory.html` next to it. The CLI infers GitHub
+  username and email from `gh` / `git` before prompting, prints `Submitted` /
+  `Already submitted` plus a digest for public uploads (not a private Azure
+  inbox URL), waits up to 90s for broker cold start, and treats Azure
+  `403 UnauthorizedBlobOverwrite` as an idempotent skip. (#1008's interactive
+  report, local secret masking to `<XXX-benchflow-key-values-XXX>`, schema-1.2
+  manifest report binding, and byte progress are included; the PR #1008
+  operator manual now lives at `benchflow-traj-upload-ops` so the public skill
+  name stays contributor-facing.)
+
 ## 0.6.9 — 2026-08-15
 
 ### Changed
