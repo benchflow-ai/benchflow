@@ -418,10 +418,19 @@ directory, or a Claude Code / Codex / ACP session JSONL file. Contributors
 reach this through the [trajectory upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md),
 not by running the command themselves.
 
+`--confirm` adds a sticky approve/reject bar to the page. When the reviewer
+clicks **Approve & submit** or **Not this one**, the server prints one
+machine-readable line to stdout — `DECISION: approved` or
+`DECISION: rejected` — and exits. Exit codes: `0` approved (also the normal
+Ctrl+C stop), `3` rejected — deliberately not `1`/`2`, which stay reserved
+for errors and usage mistakes. Without `--confirm` the server has no
+`/decision` endpoint and runs until Ctrl+C, as before.
+
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
 bench eval view ~/.claude/projects/<project>/<session>.jsonl
+bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
 ```
 
 ## bench train

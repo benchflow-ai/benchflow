@@ -31,8 +31,8 @@ manifests, promotion checks), use `benchflow-traj-upload-ops` instead.
 1. setup     → ensure the latest benchflow is installed
 2. discover  → list recent local Claude / Codex / trial sessions
 3. pick      → user chooses one (or confirms your recommendation)
-4. view      → open the trajectory viewer and give them the localhost URL
-5. confirm   → wait until they say it looks good
+4. view      → open the viewer with --confirm and give them the localhost URL
+5. confirm   → wait for the Approve button (or their chat reply)
 6. submit    → you upload; report Submitted / Already submitted + digest
 7. persist   → if this repo has no local copy of this skill, write one
 ```
@@ -85,19 +85,38 @@ yet — the viewer is how they decide the session is the one they meant.
 
 ## Step 4 — View
 
-Open the viewer in the background and tell the user the URL:
+Open the viewer with the in-page confirm bar and tell the user the URL:
 
 ```bash
-bench eval view /path/to/session.jsonl
+bench eval view /path/to/session.jsonl --confirm --port 8889
 ```
 
-That path may also be a trial directory. Leave the server running until they
-finish reviewing. If the port is taken, try `--port 8889`.
+That path may also be a trial directory. If the port is taken, pick another.
+
+With `--confirm` the page shows an **Approve & submit** / **Not this one**
+bar. When the user clicks, the server prints one line to stdout —
+`DECISION: approved` or `DECISION: rejected` — and exits (exit code 0 on
+approve, 3 on reject). Run the command so you can wait on that output:
+either start it in the background and poll its output for the `DECISION:`
+line, or run it blocking with a generous timeout.
+
+If the installed CLI predates `--confirm` (`bench --version` below 0.7.2),
+run the plain `bench eval view /path/to/session.jsonl` in the background
+instead and rely on the chat confirmation in Step 5.
 
 ## Step 5 — Confirm
 
-Ask them to look at the viewer. Do not upload until they say it looks good.
-If they want a different session, go back to pick.
+Ask them to review the page and click a button in the viewer:
+
+- `DECISION: approved` (exit 0) → they approved; proceed to Step 6.
+- `DECISION: rejected` (exit 3) → they want a different session; go back to
+  pick.
+- If they answer in chat before clicking anything, kill the viewer process
+  and honor the chat answer.
+- Without `--confirm` (older CLI), wait until they say in chat that it looks
+  good.
+
+Do not upload until one of those signals says the session is right.
 
 The upload is tagged with the repository the session was about: the CLI reads
 the session's recorded working directory, resolves its git `origin` remote,

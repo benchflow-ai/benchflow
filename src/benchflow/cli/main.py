@@ -1228,11 +1228,27 @@ def eval_view(
         ),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Show an Approve & submit / Not this one bar on the page; "
+                "print DECISION: approved|rejected and exit 0 on approve, "
+                "3 on reject."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """View a trial or session trajectory in the browser."""
-    from benchflow.trajectories.viewer import serve
+    from benchflow.trajectories import viewer
 
-    serve(str(rollout_dir), port)
+    decision = viewer.serve(str(rollout_dir), port, confirm=confirm)
+    # Exit-code contract for --confirm: 0 approved, 3 rejected. 3 is chosen
+    # so a rejection never collides with the CLI's existing error exits
+    # (1 = errors, 2 = Typer usage errors).
+    if decision == "rejected":
+        raise typer.Exit(3)
 
 
 # ── Command-group wiring ──────────────────────────────────────────────

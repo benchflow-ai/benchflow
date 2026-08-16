@@ -138,7 +138,10 @@ credentials or personal data in either label.
 `bench eval view PATH` serves a localhost page for a trial directory, a job
 directory, or a raw Claude Code / Codex / ACP session JSONL file. The
 contributor skill opens this before upload. Viewing a JSONL file does not
-write `trajectory.html` next to the session.
+write `trajectory.html` next to the session. With `--confirm` (0.7.2+) the
+page adds an approve/reject bar and the process prints `DECISION: approved`
+or `DECISION: rejected` and exits (0 approve / 3 reject), so the agent can
+wait on the click instead of a chat reply.
 
 ## What reaches the dataset
 

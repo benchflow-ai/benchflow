@@ -80,6 +80,57 @@ body { font-family: var(--font-sans); background: var(--background); color: var(
 .turn-divider { border-top: 1px solid var(--border); margin: 24px 0; }
 """
 
+# Sticky bottom confirmation bar injected only in --confirm mode. Styling
+# reuses the page's CSS variables (white surface, top border, ink text, pill
+# buttons) so it reads as part of the same www.benchflow.ai design language.
+# The <style> block rides along with the snippet so plain (non-confirm) pages
+# carry zero confirm markup or CSS.
+_CONFIRM_BAR_HTML = """\
+<style>
+body { padding-bottom: 104px; }
+.confirm-bar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--card); border-top: 1px solid var(--border); box-shadow: 0 -1px 3px rgba(10, 10, 10, 0.05); z-index: 10; }
+.confirm-inner { max-width: 960px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.confirm-question { font-size: 14px; font-weight: 500; color: var(--ink); }
+.confirm-actions { display: flex; gap: 8px; flex: none; }
+.confirm-btn { font-family: var(--font-sans); font-size: 13px; font-weight: 600; letter-spacing: -0.01em; padding: 8px 18px; border-radius: 9999px; cursor: pointer; transition: background 0.15s ease; }
+.confirm-btn.approve { background: var(--ink); color: var(--background); border: 1px solid var(--ink); }
+.confirm-btn.approve:hover { background: #262626; }
+.confirm-btn.reject { background: var(--card); color: var(--ink); border: 1px solid var(--rule-strong); }
+.confirm-btn.reject:hover { background: var(--secondary); }
+</style>
+<div class="confirm-bar">
+<div class="confirm-inner" id="confirm-inner">
+<span class="confirm-question">Submit this trajectory to the BenchFlow eval prize?</span>
+<div class="confirm-actions">
+<button class="confirm-btn approve" onclick="__benchDecide('approve')">Approve &amp; submit</button>
+<button class="confirm-btn reject" onclick="__benchDecide('reject')">Not this one</button>
+</div>
+</div>
+</div>
+<script>
+async function __benchDecide(choice) {
+  try {
+    await fetch("/decision", { method: "POST", body: choice });
+  } catch (err) {
+    // The server exits right after answering; a dropped socket is still a
+    // delivered decision, so fall through to the confirmation note.
+  }
+  document.getElementById("confirm-inner").innerHTML =
+    choice === "approve"
+      ? '<span class="confirm-question">Approved — go back to your agent.</span>'
+      : '<span class="confirm-question">Rejected — tell your agent which session instead.</span>';
+}
+</script>
+"""
+
+
+def _inject_confirm_bar(page: str) -> str:
+    """Append the confirm bar just before </body> (or at the end as fallback)."""
+    if "</body>" in page:
+        return page.replace("</body>", f"{_CONFIRM_BAR_HTML}</body>", 1)
+    return page + _CONFIRM_BAR_HTML
+
+
 # Small BenchFlow wordmark header (inline SVG logo from the site's icon set —
 # no external requests) shown above the page title on every viewer page.
 _WORDMARK_HTML = (
@@ -634,9 +685,21 @@ def _stream_json_page(title: str, events: list[dict], turn_blocks: list[str]) ->
 
 
 def serve(
-    rollout_path: str, port: int = 8888, prompts: list[str] | None = None
-) -> None:
-    """Serve a trial directory or a session JSONL file as a web page."""
+    rollout_path: str,
+    port: int = 8888,
+    prompts: list[str] | None = None,
+    confirm: bool = False,
+) -> str | None:
+    """Serve a trial directory or a session JSONL file as a web page.
+
+    With ``confirm=True`` the page carries an Approve/Reject bar posting to
+    ``/decision``; the first valid decision shuts the server down and is
+    returned as ``"approved"`` or ``"rejected"`` after printing a
+    machine-readable ``DECISION: <value>`` line to stdout. Without it the
+    server runs until Ctrl+C and the return value is ``None`` — exactly the
+    pre-confirm behavior (no bar, no POST endpoint).
+    """
+    import threading
     from http.server import HTTPServer, SimpleHTTPRequestHandler
 
     path = Path(rollout_path)
@@ -656,11 +719,20 @@ def serve(
         print(f"No trajectories found in {path}")
         sys.exit(1)
     if write_sidecar:
+        # The sidecar stays the plain page: the confirm bar is a one-shot
+        # interaction against this live server, not part of the artifact.
         (path / "trajectory.html").write_text(html_content)
+    if confirm:
+        html_content = _inject_confirm_bar(html_content)
 
     print(f"Trajectory viewer: http://localhost:{port}")
     print(f"Trial: {path}")
-    print("Press Ctrl+C to stop\n")
+    if confirm:
+        print("Waiting for Approve / Not this one in the browser (Ctrl+C to stop)\n")
+    else:
+        print("Press Ctrl+C to stop\n")
+
+    decision: str | None = None
 
     class Handler(SimpleHTTPRequestHandler):
         def do_GET(self):
@@ -672,11 +744,44 @@ def serve(
         def log_message(self, format, *args):
             pass
 
-    server = HTTPServer(("localhost", port), Handler)
+    handler_cls: type[SimpleHTTPRequestHandler] = Handler
+
+    if confirm:
+
+        class ConfirmHandler(Handler):
+            def do_POST(self):
+                nonlocal decision
+                if self.path != "/decision":
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length).decode("utf-8", "replace").strip()
+                if body not in ("approve", "reject"):
+                    self.send_error(400, "Body must be 'approve' or 'reject'")
+                    return
+                decision = "approved" if body == "approve" else "rejected"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(decision.encode())
+                # shutdown() blocks until serve_forever returns, and this
+                # handler runs inside that loop — stop from a helper thread.
+                threading.Thread(target=server.shutdown, daemon=True).start()
+
+        handler_cls = ConfirmHandler
+
+    server = HTTPServer(("localhost", port), handler_cls)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+        return None
+    finally:
+        server.server_close()
+
+    if decision is not None:
+        print(f"DECISION: {decision}", flush=True)
+    return decision
 
 
 if __name__ == "__main__":
