@@ -13,26 +13,7 @@
 
 BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
-## Qucik start: 1. Upload a trajectory
-
-For local Claude Code or Codex jsonl formatted trajectory files that you are proud of (contain challenging tasks you dealed with via chatting to agents), you can upload that file to BenchFlow to join the competition for winning $2,000 cash reward. No BenchFlow account, credentials, or API key is required:
-
-```bash
-# Install or upgrade BenchFlow
-uv tool install --python 3.12 --upgrade benchflow
-
-# Upload one capture
-bench traj upload /absolute/path/to/trial \
-  --github-id YOUR_GITHUB_ID \
-  --email YOU@example.com
-```
-
-The path may be a trial directory, a directory of JSONL files, or one JSONL
-file. Both contributor fields are required and are stored in `manifest.json`.
-See the concise [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md)
-or the [trajectory upload guide](./docs/traj-upload.md).
-
-## Qucik start: 2. Run with a ChatGPT or Claude subscription
+## Quick start: run locally with a subscription
 
 No OpenAI or Anthropic API key is required. Start Docker, install BenchFlow,
 then run **one** of these options. BenchFlow detects the saved host login and
@@ -53,7 +34,7 @@ unset OPENAI_API_KEY CODEX_API_KEY  # ensure subscription auth is used
 
 bench eval run \
   --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/citation-check \
+  --source-path tasks/3d-scan-calc \
   --agent codex \
   --model gpt-5.5 \
   --sandbox docker
@@ -69,7 +50,7 @@ unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN  # ensure subscription auth is used
 
 bench eval run \
   --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/citation-check \
+  --source-path tasks/3d-scan-calc \
   --agent claude \
   --model claude-sonnet-4-6 \
   --sandbox docker
@@ -78,7 +59,9 @@ bench eval run \
 The agent may pass or fail the benchmark task; either result means the
 evaluation completed. Each run writes rewards, token usage, and the full
 trajectory under `jobs/`. See [Getting started](./docs/getting-started.md) for
-other agents, models, and sandboxes.
+the complete local path, or [Start in 5 minutes](./docs/start-in-5-minutes.md)
+for the shortest tested walkthrough. Daytona and other cloud sandboxes are
+optional.
 
 ## Install
 
@@ -99,19 +82,26 @@ Internal users wanting the newest preview from `main` install the [internal prev
 
 **Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); the
 `--python 3.12` flag lets it provision a compatible interpreter for the tool
-install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal;
-export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use
-subscription auth (`claude auth login` / `codex login`). Provider-prefixed models
-may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` +
-`AZURE_API_ENDPOINT`.
+install. Local runs need Docker plus either subscription auth
+(`claude auth login` / `codex login`) or an agent API key. Configure Daytona,
+Modal, or AgentCore only when you intentionally select that remote backend.
 
 ## Documentation
 
-Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
+Read the published documentation at
+[www.benchflow.ai/docs/benchflow](https://www.benchflow.ai/docs/benchflow).
+Its BenchFlow pages are generated from the Markdown in [`docs/`](./docs/), so
+fixes stay versioned with the runtime. Start with
+[Start in 5 minutes](./docs/start-in-5-minutes.md), then
+[Concepts](./docs/concepts.md) for the mental model.
 
 | If you want to… | Read |
 |------------------|------|
+| Run a real local task immediately | [Start in 5 minutes](./docs/start-in-5-minutes.md) |
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
+| Choose an agent login, API key, or provider | [Authentication](./docs/authentication.md) |
+| Run a local batch or compare skill modes | [Running evaluations](./docs/running-evaluations.md) |
+| Choose between local and cloud sandboxes | [Sandboxes](./docs/sandboxes.md) |
 | Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
 | Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
 | Run an agent from the public agents repo (goose, qwen-code, prime-agent, …) | [Running external agents](./docs/external-agents.md) |
@@ -121,6 +111,10 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
+| Continue a timed-out run without losing its conversation | [Continue runs](./docs/continue-runs.md) |
+| Provision stateful services independently from tasks | [Environment plane](./docs/environment-plane.md) |
+| Score subjective outputs with an LLM | [LLM-as-judge](./docs/llm-judge.md) |
+| Audit finished rollouts for reward hacking or task quality | [Rubric review](./docs/rubric-review.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
 | Contribute a trajectory capture | [Trajectory upload](./docs/traj-upload.md) |
 | Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
@@ -129,6 +123,21 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
 Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
+
+## Contribute an existing trajectory
+
+You can upload a local Claude Code or Codex JSONL trajectory without a
+BenchFlow account or model API key:
+
+```bash
+bench traj upload /absolute/path/to/trial \
+  --github-id YOUR_GITHUB_ID \
+  --email YOU@example.com
+```
+
+The path may be a trial directory, a directory of JSONL files, or one JSONL
+file. Both contributor fields are required and stored in `manifest.json`.
+See the [trajectory upload guide](./docs/traj-upload.md).
 
 > **`bench agent` vs `bench eval adopt`.** `bench agent list` / `bench agent show`
 > inspect **registered AI agents** (the solver programs like Claude Code or

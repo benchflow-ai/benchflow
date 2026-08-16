@@ -146,18 +146,12 @@ directly with `bench skills eval`, add a sibling `evals/evals.json` inside that
 skill directory or copy the skill into a standalone skill directory with the
 same `evals/` contract.
 
-The repo includes a real standalone example at
-[`skills/citation-management/`](../skills/citation-management/), adapted
-from the SkillsBench `citation-check` task:
-
-```bash
-bench skills eval skills/citation-management \
-  --agent gemini \
-  --model gemini-3.1-flash-lite-preview \
-  --sandbox docker \
-  --jobs-dir jobs/skill-eval-citation-management \
-  --concurrency 1
-```
+The repo includes a real task-embedded example at
+[`docs/examples/task-md/real-skillsbench/citation-check/environment/skills/citation-management/`](./examples/task-md/real-skillsbench/citation-check/environment/skills/citation-management/),
+adapted from the SkillsBench `citation-check` task. It is intentionally a task
+fixture rather than a standalone skill-eval package, so copy it to your own
+skill directory and add `evals/evals.json` before passing that directory to
+`bench skills eval`.
 
 ## Multi-agent comparison
 

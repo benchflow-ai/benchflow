@@ -9,7 +9,7 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 |-----------|------------|
 | **Task** | A directory on disk: a `task.md` document (YAML frontmatter + prompt body) plus `environment/Dockerfile` for the sandbox, `verifier/` checks, and optional `oracle/` — or the legacy split layout (`task.toml` + `instruction.md` + `tests/` + `solution/`). Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. Use the `acpx/` prefix (e.g. `acpx/gemini`) to route through [ACPX](https://acpx.sh/), a headless ACP client with persistent sessions and crash recovery. |
-| **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
+| **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker is the local default; Daytona, Modal, and AgentCore are optional remote backends. See [Sandboxes](./sandboxes.md). |
 | **Verifier** | The test runner that scores the rollout. Its entry point is a `test.sh` script (native `verifier/test.sh`, legacy `tests/test.sh`) — which typically runs `pytest` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier scored against a rubric. Outputs `rewards: {reward: float}`. See the [verifier file map](#verifier-file-map) for which file lives where in native vs legacy packages. |
 | **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. |
 
@@ -50,7 +50,7 @@ from pathlib import Path
 config = RolloutConfig(
     task_path=Path("tasks/edit-pdf"),
     scenes=[Scene.single(agent="gemini", model="gemini-3.1-pro-preview")],
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)   # full lifecycle
 print(result.rewards)            # {'reward': 1.0}
@@ -196,6 +196,8 @@ Trajectories are written to `<jobs_dir>/<job_name>/<rollout_name>/trajectory/acp
 ## Where to go next
 
 - [Getting started](./getting-started.md) — install, run your first eval.
+- [Running evaluations](./running-evaluations.md) — single tasks, batches, skills, and results.
+- [Sandboxes](./sandboxes.md) — start with Docker and choose a cloud backend only when needed.
 - [Task authoring (native task.md)](./task-authoring-task-md.md) — write a task as a single `task.md` document plus `environment/` and `verifier/`.
 - [Migrating a legacy task](./task-authoring.md) — convert an existing `task.toml` + `instruction.md` split package to `task.md` (the split layout is no longer a first-class authoring path).
 - [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks against a rubric (see the [verifier file map](#verifier-file-map) for native vs legacy rubric paths).

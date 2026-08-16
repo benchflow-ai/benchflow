@@ -32,7 +32,7 @@ config = RolloutConfig(
     scenes=[Scene.single(agent="opencode", model="anthropic/claude-sonnet-4-6")],
     user=FunctionUser(progressive),
     max_user_rounds=3,
-    environment="daytona",
+    environment="docker",
 )
 result = await bf.run(config)
 ```

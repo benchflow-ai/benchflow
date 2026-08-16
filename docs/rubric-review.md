@@ -68,28 +68,30 @@ Rubric resolution order, per reviewed rollout:
 ## Running a review
 
 ```bash
-# review one rollout
+# review one rollout locally with a Codex subscription
 bench review jobs/<job>/<rollout> --sandbox docker \
-  --model gemini/gemini-2.5-flash --tasks-root ./tasks
+  --agent codex --model gpt-5.5 --tasks-root ./tasks
 
-# review every rollout in a job, eight at a time, on Daytona
-bench review jobs/<job> --sandbox daytona -n 8 \
-  --model gemini/gemini-2.5-flash --tasks-root ./tasks
+# review a small job locally, two rollouts at a time
+bench review jobs/<job> --sandbox docker -n 2 \
+  --agent codex --model gpt-5.5 --tasks-root ./tasks
 
 # audit the winners for grader manipulation
-bench review jobs/<job> --passing --model gemini/gemini-2.5-flash
+bench review jobs/<job> --passing \
+  --agent codex --model gpt-5.5
 
 # analyze the losers for specification gaps
 bench review jobs/<job> --failing -r spec-rubric.json \
-  --model gemini/gemini-2.5-flash
+  --agent codex --model gpt-5.5
 ```
 
 `--passing` selects rollouts with reward 1.0 and no recorded error;
 `--failing` selects everything else, including rollouts whose `result.json`
 is unreadable. The reviewer agent (`--agent`, default `opencode`) and model
-(`--model`; agents without a registry default require one — pass a gateway
-model id such as `gemini/gemini-2.5-flash`) are independent of whatever ran
-the original job.
+(`--model`; agents without a registry default require one) are independent of
+whatever ran the original job. Docker is the default and is appropriate for
+one review or a small local job; choose a remote sandbox only when you need
+more isolated parallel reviewers.
 
 ## How a review executes
 

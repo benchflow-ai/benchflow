@@ -13,10 +13,11 @@ bench eval run \
   --source-path tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona
+  --sandbox docker
 ```
 
-Sandboxes are `docker`, `daytona`, and `modal`.
+Docker is the local default. Daytona, Modal, Apple Container, and AgentCore are
+optional alternatives; see [Sandboxes](../sandboxes.md).
 
 ## Skills
 
@@ -28,7 +29,7 @@ bench eval run \
   --tasks-dir tasks/my-task \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
-  --sandbox daytona \
+  --sandbox docker \
   --skill-mode with-skill \
   --skills-dir tasks/my-task/environment/skills
 ```
