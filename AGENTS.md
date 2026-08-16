@@ -37,6 +37,7 @@ uv run ruff check .
 | `benchflow` | Running benchmarks, creating tasks, inspecting results via the CLI/SDK. |
 | `benchflow-experiment-review` | Auditing **already-published run trajectories** — traj health, reward hacking, no-skill leakage, Daytona/Docker parity. Wired into `.github/scripts/codex_review.py` and `integration-final-review.yml`. |
 | `benchflow-traj-upload` | Uploading trajectories to the HuggingFace/GCS traj database. |
+| `skill-creator` | Creating, improving, evaluating, and packaging reusable skills. Vendored from [anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator). |
 | `task-creator` | Authoring a new **SkillsBench** task, idea → submission-ready PR. |
 | `task-review` | Reviewing a **SkillsBench task PR** pre-merge — track routing, policy checks, oracle+agent benchmarks, report bundle. |
 | `thermo-nuclear-code-quality-review` | Deliberately harsh maintainability review of a branch. User-invoked only (`disable-model-invocation: true`). |
@@ -44,5 +45,7 @@ uv run ruff check .
 `task-creator` and `task-review` are verbatim copies from
 [benchflow-ai/skillsbench](https://github.com/benchflow-ai/skillsbench); they operate on a
 skillsbench checkout, not on this repo. Re-sync by copying `.agents/skills/{task-creator,task-review}`
-from there. Keep the two review skills distinct: **`task-review` is pre-merge task-PR review,
+from there. `skill-creator` is a verbatim copy from
+[anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator).
+Keep the two review skills distinct: **`task-review` is pre-merge task-PR review,
 `benchflow-experiment-review` is post-run trajectory auditing.**
