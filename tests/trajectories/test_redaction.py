@@ -1013,7 +1013,7 @@ _FAKE_PEM = (
     ],
 )
 def test_canonical_text_redaction_reports_a_category(text, expected_category):
-    """Redaction transparency: each canonical rule tags its replacements with the
+    """Guards the redaction-transparency feature from PR #1022: each canonical rule tags its replacements with the
     kind of secret it actually detects."""
     from benchflow.trajectories.types import redact_trajectory_text_with_categories
 
@@ -1023,7 +1023,7 @@ def test_canonical_text_redaction_reports_a_category(text, expected_category):
 
 
 def test_text_categories_sum_to_the_backward_compatible_count():
-    """Redaction transparency: the categorized scan and the count scan agree, so
+    """Guards the redaction-transparency feature from PR #1022: the categorized scan and the count scan agree, so
     ``redaction_replacements`` stays backward-compatible."""
     from benchflow.trajectories.types import (
         redact_trajectory_text_with_categories,
@@ -1047,7 +1047,7 @@ def test_text_categories_sum_to_the_backward_compatible_count():
 
 
 def test_publish_redaction_accumulates_structural_field_categories():
-    """Redaction transparency: structural (field-name keyed) masking categorizes
+    """Guards the redaction-transparency feature from PR #1022: structural (field-name keyed) masking categorizes
     by the credential-bearing name that fired, and the counter total equals the
     returned replacement count."""
     from collections import Counter
@@ -1077,7 +1077,7 @@ def test_publish_redaction_accumulates_structural_field_categories():
 
 
 def test_publish_redaction_categorizes_cli_password_options():
-    """Redaction transparency: CLI-argument masking attributes the replacement to
+    """Guards the redaction-transparency feature from PR #1022: CLI-argument masking attributes the replacement to
     the sensitive option name (``--password`` → password)."""
     from collections import Counter
 
@@ -1090,7 +1090,7 @@ def test_publish_redaction_categorizes_cli_password_options():
 
 
 def test_stability_redaction_counter_matches_total():
-    """Redaction transparency: the multi-pass stability loop reports the same
+    """Guards the redaction-transparency feature from PR #1022: the multi-pass stability loop reports the same
     total through the category counter as through its return value."""
     from collections import Counter
 
@@ -1108,7 +1108,7 @@ def test_stability_redaction_counter_matches_total():
 
 
 def test_format_redaction_breakdown_orders_and_pluralizes():
-    """Redaction transparency: breakdown prose is display-ordered and pluralized
+    """Guards the redaction-transparency feature from PR #1022: breakdown prose is display-ordered and pluralized
     (``2 API keys, 1 bearer token``)."""
     from benchflow.publish.redact import (
         format_redaction_breakdown,

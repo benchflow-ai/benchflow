@@ -212,7 +212,7 @@ def test_eval_view_defaults_to_no_confirm(tmp_path, monkeypatch):
 
 
 def test_confirm_bar_shows_redaction_summary_when_given(tmp_path):
-    """Redaction transparency: --redaction-summary renders the masked-secret
+    """Guards the redaction-transparency feature from PR #1022: --redaction-summary renders the masked-secret
     breakdown in the confirm bar (HTML-escaped), above the buttons."""
     session = _write_session(tmp_path)
     port, thread, result = _serve_in_thread(
@@ -236,7 +236,7 @@ def test_confirm_bar_shows_redaction_summary_when_given(tmp_path):
 
 
 def test_confirm_bar_without_redaction_summary_is_unchanged(tmp_path):
-    """Redaction transparency: the flag is optional — without it the confirm bar
+    """Guards the redaction-transparency feature from PR #1022: the flag is optional — without it the confirm bar
     carries no note markup, and plain (non-confirm) pages never carry any."""
     session = _write_session(tmp_path)
 
@@ -253,7 +253,7 @@ def test_confirm_bar_without_redaction_summary_is_unchanged(tmp_path):
 
 
 def test_eval_view_passes_redaction_summary_through(tmp_path, monkeypatch):
-    """Redaction transparency: the Typer command forwards --redaction-summary to
+    """Guards the redaction-transparency feature from PR #1022: the Typer command forwards --redaction-summary to
     serve() untouched."""
     calls: dict = {}
 

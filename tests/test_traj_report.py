@@ -446,7 +446,7 @@ def test_report_rejects_preview_limits_outside_the_public_cli_contract(
 def test_report_carries_masked_categories_but_keeps_them_out_of_the_manifest(
     tmp_path: Path,
 ) -> None:
-    """Redaction transparency: staged categories flow into the report for the
+    """Guards the redaction-transparency feature from PR #1022: staged categories flow into the report for the
     terminal breakdown, but ``as_manifest_metadata`` must stay unchanged — the
     server validates ``trajectory_report`` with ``extra="forbid"`` and an exact
     recompute-equality check, so a new manifest field would be rejected."""
@@ -492,7 +492,7 @@ def _render_report(report: TrajectoryReport) -> str:
 
 
 def test_rendered_report_itemizes_masked_categories(tmp_path: Path) -> None:
-    """Redaction transparency: with masked values the terminal report shows the
+    """Guards the redaction-transparency feature from PR #1022: with masked values the terminal report shows the
     itemized ``Masked for you`` breakdown plus the local-redaction reassurance."""
     artifact = _artifact(tmp_path / "generic.jsonl", [{"type": "message", "text": "x"}])
     report = build_trajectory_report(
@@ -513,7 +513,7 @@ def test_rendered_report_itemizes_masked_categories(tmp_path: Path) -> None:
 
 
 def test_rendered_report_zero_masking_copy(tmp_path: Path) -> None:
-    """Redaction transparency: with nothing masked the report says so explicitly
+    """Guards the redaction-transparency feature from PR #1022: with nothing masked the report says so explicitly
     instead of showing an empty breakdown."""
     artifact = _artifact(tmp_path / "generic.jsonl", [{"type": "message", "text": "x"}])
     report = build_trajectory_report((artifact,), masked_values=0)
