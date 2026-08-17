@@ -435,9 +435,31 @@ bench eval metrics jobs/ --json
 ### bench eval view
 
 Serve a trial trajectory viewer in the browser for a rollout directory, a job
-directory, or a Claude Code / Codex / ACP session JSONL file. Contributors
+directory, a Claude Code / Codex / ACP session JSONL file, or a HuggingFace
+trajectory dataset. Contributors
 reach this through the [trajectory upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md),
 not by running the command themselves.
+
+ACP rollout directories render as an interactive review page: full-fidelity
+event stream (long content collapses instead of truncating), a header with
+harness/model/skills, reward badge, token/cost/duration tiles and
+`result.json` failure diagnostics, Verifier and Metrics tabs, Focus/Full
+modes, per-kind filters, text search, and per-event `#e42` anchors. When a
+capture carries per-event timestamps the stream shows a `+m:ss` timeline and
+per-tool durations; today's captures carry none, so nothing renders until the
+capture side starts writing them.
+
+Pointing the command at a directory **of** rollouts (a job directory, a whole
+`jobs/` tree) serves **browse mode** instead: a run sidebar
+(task, pass/fail, harness, model, skill mode) with traces loaded dynamically
+via `/api/rollouts` and `/api/rollout?id=…` — ids resolve only by exact
+membership in a fresh directory scan — plus `?run=<id>` deep links.
+
+`hf://<org>/<dataset>[@revision][/subpath]` browses a HuggingFace trajectory
+dataset (e.g. the community ground-truth uploads): only the viewer-relevant
+files are fetched (trajectories plus result/timing/prompts/verifier sidecars,
+never the large `llm_trajectory`/`trainer` exports) into the shared
+`huggingface_hub` cache, so repeat views are incremental.
 
 `--confirm` adds a sticky approve/reject bar to the page. When the reviewer
 clicks **Approve & submit** or **Not this one**, the server prints one
@@ -458,6 +480,7 @@ effect; without the flag the bar is unchanged.
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
+bench eval view hf://benchflow/skillsbench-trajectories-apr2026/jobs/opus47-with-skills-t1
 bench eval view ~/.claude/projects/<project>/<session>.jsonl
 bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
 bench eval view session.jsonl --confirm --redaction-summary "2 API keys, 1 bearer token"
