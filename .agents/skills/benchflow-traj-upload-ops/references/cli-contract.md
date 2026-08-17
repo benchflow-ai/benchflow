@@ -29,10 +29,15 @@ bench traj upload [PATH]
   [--email TEXT]
   [--source-id TEXT]
   [--repo | --no-repo]
+  [--workspace | --no-workspace]
+  [--workspace-dir PATH]
   [--direct]
   [--container-url TEXT]
   [--dry-run]
   [--preview-steps INTEGER]
+  [--wait | --no-wait]
+
+bench traj status [DIGEST]
 ```
 
 | Input | Contract |
@@ -42,10 +47,14 @@ bench traj upload [PATH]
 | `--email` | Bounded ASCII contributor email, stored in `manifest.json`. |
 | `--source-id` | Optional stable source identifier. If omitted, derive it from the selected file stem or directory name. Accept 1-128 letters, numbers, dots, underscores, hyphens, or single path separators; reject `.`/`..` segments and repeated separators. |
 | `--repo` / `--no-repo` | Repo tagging, on by default. When no `--source-id` is given, read the session's recorded working directory (Claude `cwd` events or the Codex `session_meta` payload), resolve its git `origin` remote (2 s timeout, silent failure), normalize https/ssh URLs to `owner/name`, and use `repo/<owner>/<name>` as the source id, printing `Repo: <owner>/<name> (from session cwd <path>; use --no-repo to omit)` (the local path is terminal output only, never uploaded). The session's own recorded cwd is the only provenance source — there is no fallback to the upload invocation directory. No recorded cwd, a missing directory, or no GitHub remote mean no tag: the upload silently keeps the derived source id, exactly like `--no-repo`. Local-path remotes never produce a tag; an explicit `--source-id` always wins. |
+| `--workspace` / `--no-workspace` | Workspace attachment, on by default. Reads the same session-recorded cwd as repo tagging; when it is an existing directory, the folder is zipped into the capture as `workspace/<name>.zip` and the CLI prints `Workspace: <path> (from session cwd; use --no-workspace to omit)` then `Workspace attached: workspace/<name>.zip (<size>, <n> files, <m> excluded)`. `.git`/VCS internals, dependency trees (`node_modules`, `.venv`, …), caches, symlinks, and secret-shaped filenames (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.netrc`, …) are excluded; everything else is archived **as-is, without content redaction** — the CLI says so on the attach line. The workspace is skipped (with a printed reason, never an error) when the included files exceed 1 GiB before compression, exceed 50,000 files, the folder is missing or empty, or the resulting zip exceeds 1 GiB; the zip is created inside the staging temporary directory and is always deleted when staging exits. When detection fails on a real terminal, one optional `◇ Workspace folder to attach (optional, Enter to skip)` prompt accepts a folder or skips; off-TTY there is no prompt. |
+| `--workspace-dir` | Explicit workspace folder to attach instead of auto-detection; a missing folder is a hard error. Implies nothing about repo tagging. |
 | `--preview-steps` | Number of meaningful redacted steps to show; range 0-20, default 5. Zero suppresses the preview table. |
 | `--dry-run` | Validate, redact, report, and finalize a temporary manifest without confirmation or network access. |
 | `--direct` | Use trusted local Azure credentials instead of the public contribution service. |
 | `--container-url` | Azure container URL for `--direct`; invalid without `--direct`. |
+| `--wait` / `--no-wait` | Storage verification, on by default for public uploads: after the byte transfer, poll the broker's capture-status endpoint until the validator's verdict. `BENCHFLOW_TRAJ_WAIT_SECONDS` overrides the polling budget (default 240; `0` disables the wait entirely). Never applies to `--direct` or `--dry-run`. |
+| `DIGEST` (`traj status`) | `sha256:<64 hex>` or the bare 64-hex digest printed by an upload; prompted for when omitted. |
 
 Use `uv run bench` in a source checkout and `bench` for an installed release.
 
@@ -219,6 +228,34 @@ as a successful no-op.
 Never print signed PUT URLs, request headers, internal service endpoints,
 credentials, detected secrets, or contributor email.
 
+## Storage verification
+
+After a public upload, the CLI polls `GET /v1/uploads/<digest>` on the broker
+(the validation-ledger state) until one of these outcomes:
+
+- `ingested` → print `Verified in cloud storage`. The validator records
+  `ingested` only after promoting every file to `sources/community/<digest>/`,
+  so this line is proof the capture reached durable storage — a stronger claim
+  than the transfer finishing.
+- `rejected` → exit 1 with the bounded, user-fixable rejection detail. The
+  transfer succeeded but the capture is not in the dataset.
+- HTTP 404 from the endpoint → the deployed broker predates status reporting;
+  return silently with exactly the pre-verification behavior.
+- Budget exhausted (default 240 s with backoff from 2 s to 10 s) or repeated
+  transport failures → say the upload is safely queued and print the
+  `bench traj status sha256:<digest>` line to check later.
+
+A handshake 409 (already ingested) prints the verified line immediately
+without polling. `bench traj status DIGEST` runs one poll on demand and maps
+states to exit codes: `ingested`/`pending`/`validating` exit 0; `rejected`,
+an unknown digest, rate limiting, and a status-less deployment exit 1.
+
+The status endpoint reveals only the ledger state, the bounded rejection
+detail, and the public promotion prefix for a digest the caller already
+holds — never contributor identity, source ids, or quarantine internals.
+Status polls consume a separate, much higher rate-limit budget than upload
+grants (`TRAJ_STATUS_RATE_LIMIT`, default 720/hour/IP).
+
 ## Public upload protocol
 
 The public client:
@@ -288,6 +325,7 @@ Use precise claims:
 | Unit or CLI-runner tests | Local implementation behavior under mocks. |
 | `--dry-run` on a real capture | Real local parsing, masking, report, and manifest behavior; no network proof. |
 | Real public command returns success | Client and contribution-service upload path accepted the capture; promotion still needs checking. |
+| CLI prints `Verified in cloud storage` (or `traj status` reports `ingested`) against a deployed broker | The validation ledger recorded promotion for that digest; equivalent to promotion unless the ledger itself is suspect. |
 | Trusted storage shows the exact digest under `sources/community/`, with validator-recomputed schema-1.2 manifest and no quarantine residue | Production public upload worked end to end for that exact build and capture. |
 
 Record the CLI version or Git SHA, digest, command mode, result, and storage
@@ -300,8 +338,13 @@ Use the implementation, not this prose, as the final authority when reviewing a
 new code change:
 
 - `src/benchflow/cli/traj.py`: options, prompts, confirmation, dry-run, routing,
-  and result text.
+  result text, the storage-verification wait, and `bench traj status`.
 - `src/benchflow/cli/_traj_upload_ui.py`: report and byte-progress rendering.
+- `src/benchflow/cli/_traj_tui.py`: the shared `bench traj` design language —
+  banner, styled prompts, and the TTY-only session picker (presentation only;
+  every interactive affordance falls back to the plain prompt contract).
+- `services/trajectory_upload/broker_app.py` + `azure_backend.py`: the
+  `GET /v1/uploads/{digest}` capture-status endpoint over the ledger.
 - `src/benchflow/publish/traj_capture.py`: input limits, strict JSONL, staging,
   digest, contributor metadata, and manifest.
 - `src/benchflow/publish/redact.py`: local secret detection and convergence.

@@ -38,6 +38,15 @@ services/trajectory_upload/
   cleanup, queue, and ledger authority;
 - two-day inbox/version expiry plus storage read/write/delete diagnostics.
 
+The broker also serves `GET /v1/uploads/{digest}`: the public capture-status
+endpoint the CLI polls after an upload (and `bench traj status` on demand). It
+reads the validation ledger and reports `pending`, `validating`, `ingested`
+(with the `sources/community/<digest>/` promotion prefix), `rejected` (with
+the bounded rejection detail), or `unknown`; unknown digests are a 200 so
+clients can use 404 to detect a deployment that predates the endpoint. Status
+polls consume their own per-IP budget (`TRAJ_STATUS_RATE_LIMIT`, default
+720/hour) instead of upload-grant quota.
+
 `infra/main.bicep` owns the stable resource topology: private storage and data
 containers, queue/table, diagnostics, registry, identities, log workspace, and
 Container Apps environment. `scripts/deploy.sh` owns operations that require
