@@ -1224,7 +1224,10 @@ def eval_view(
     rollout_dir: Annotated[
         Path,
         typer.Argument(
-            help="Rollout directory, job directory, or trajectory JSONL file"
+            help=(
+                "Rollout directory, job directory, trajectory JSONL file, or "
+                "an hf://<org>/<dataset>[/subpath] trajectory dataset"
+            )
         ),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,

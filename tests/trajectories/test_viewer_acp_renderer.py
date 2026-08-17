@@ -9,9 +9,13 @@ prototype branch.
 import json
 from pathlib import Path
 
+import pytest
+
 from benchflow.trajectories.viewer import (
     _discover_rollouts,
+    _parse_hf_spec,
     _render_acp_trajectory,
+    _resolve_hf_source,
     _rollout_summary,
     _tool_content_texts,
     render_rollout,
@@ -158,6 +162,17 @@ class TestBrowseMode:
             assert not rid.startswith("/")
             assert (tmp_path / rid).resolve().is_relative_to(tmp_path.resolve())
 
+    def test_discovery_reaches_dataset_root_depth(self, tmp_path):
+        # HF trajectory datasets nest one level deeper than local job dirs:
+        # <root>/jobs/<run>/<timestamp>/<rollout>.
+        _write_rollout(
+            tmp_path / "jobs" / "run-a" / "2026-04-22__01-27-25" / "t__ffff0000",
+            [{"type": "agent_message", "text": "x"}],
+        )
+        assert _discover_rollouts(tmp_path) == [
+            "jobs/run-a/2026-04-22__01-27-25/t__ffff0000"
+        ]
+
     def test_rollout_summary_reads_result_json(self, tmp_path):
         rollout = _write_rollout(tmp_path / "j" / "t__eeee0000", [{"type": "agent_message", "text": "x"}])
         (rollout / "result.json").write_text(
@@ -175,3 +190,59 @@ class TestBrowseMode:
         assert summary["reward"] == 1.0
         assert summary["agent_name"] == "gemini"
         assert summary["has_error"] is False
+
+
+class TestHfSource:
+    def test_parse_full_spec(self):
+        assert _parse_hf_spec("hf://benchflow/skillsbench-trajectories-apr2026") == (
+            "benchflow/skillsbench-trajectories-apr2026",
+            None,
+            "",
+        )
+        assert _parse_hf_spec("hf://org/name/jobs/run-1") == (
+            "org/name",
+            None,
+            "jobs/run-1",
+        )
+        assert _parse_hf_spec("hf://org/name@abc123/jobs") == (
+            "org/name",
+            "abc123",
+            "jobs",
+        )
+
+    def test_parse_tolerates_collapsed_slashes(self):
+        # Path("hf://a/b") round-trips as "hf:/a/b" (typer converts the CLI
+        # argument to Path before serve() sees it).
+        assert _parse_hf_spec("hf:/org/name/sub") == ("org/name", None, "sub")
+
+    def test_parse_rejects_bare_org(self):
+        with pytest.raises(ValueError):
+            _parse_hf_spec("hf://just-one-part")
+
+    def test_resolve_downloads_scoped_patterns(self, tmp_path, monkeypatch):
+        calls = {}
+
+        def fake_snapshot_download(*, repo_id, repo_type, revision, allow_patterns):
+            calls.update(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                allow_patterns=allow_patterns,
+            )
+            (tmp_path / "jobs" / "run-1").mkdir(parents=True)
+            return str(tmp_path)
+
+        import huggingface_hub
+
+        monkeypatch.setattr(
+            huggingface_hub, "snapshot_download", fake_snapshot_download
+        )
+        root = _resolve_hf_source("hf://org/name/jobs/run-1")
+        assert root == tmp_path / "jobs" / "run-1"
+        assert calls["repo_id"] == "org/name"
+        assert calls["repo_type"] == "dataset"
+        # every pattern is scoped under the requested subpath, and the large
+        # non-viewer files (llm_trajectory, trainer/) are never requested
+        assert all(p.startswith("jobs/run-1/") for p in calls["allow_patterns"])
+        assert "jobs/run-1/trajectory/acp_trajectory.jsonl" in calls["allow_patterns"]
+        assert not any("llm_trajectory" in p for p in calls["allow_patterns"])
