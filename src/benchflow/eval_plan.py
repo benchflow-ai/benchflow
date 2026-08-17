@@ -126,6 +126,10 @@ class EvalCreateRequest:
     publish_hf: str | None = None
     hf_prefix: str | None = None
     hf_public_read_check: bool = False
+    publish_bucket: str | None = None
+    eval_results_model: str | None = None
+    eval_results_dataset: str | None = None
+    eval_results_task: str | None = None
     matrix: Path | None = None
     trials: int = 1
 
@@ -276,6 +280,12 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--retry-concurrency must be >= 1")
     if request.hf_prefix and not request.publish_hf:
         raise EvalPlanError("--hf-prefix requires --publish-hf")
+    if request.eval_results_model and not (
+        request.eval_results_dataset and request.eval_results_task
+    ):
+        raise EvalPlanError(
+            "--eval-results-model requires --eval-results-dataset and --eval-results-task"
+        )
     if request.tasks_dir and not Path(request.tasks_dir).exists():
         raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
     if request.matrix is not None and not Path(request.matrix).is_file():
