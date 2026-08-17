@@ -64,12 +64,14 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 }
 .run {
   display: block; width: 100%; text-align: left; background: none; cursor: pointer;
-  color: var(--ink); border: none; border-left: 2px solid var(--border);
+  color: var(--ink); border: none; border-left: 4px solid var(--faint);
   border-radius: 0 6px 6px 0; padding: 9px 12px; margin-bottom: 2px;
 }
-/* status-colored left edge on every row — pass-rate visible at a glance */
-.run.pass { border-left-color: var(--ok-strip); }
-.run.fail { border-left-color: var(--bad-strip); }
+/* status-colored left edge on every row — pass-rate visible at a glance.
+   Ink-strength tones on purpose: these are the verdict anchors that keep
+   the monochrome base from reading washed-out. */
+.run.pass { border-left-color: var(--ok-ink); }
+.run.fail { border-left-color: var(--bad-ink); }
 .run:hover { background: var(--secondary); }
 .run:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
 .run[aria-current="true"] { background: var(--secondary); }
@@ -97,8 +99,10 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
   padding: 2px 10px; border-radius: 9999px; border: 1px solid var(--border);
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
 }
-.badge.pass { background: var(--ok-bg); color: var(--ok-ink); border-color: var(--ok-line); }
-.badge.fail { background: var(--bad-bg); color: var(--bad-ink); border-color: var(--bad-line); }
+/* solid verdict pills — the one saturated anchor per page (the black PROMPT
+   pill establishes the solid-pill grammar; these are its green/red siblings) */
+.badge.pass { background: var(--ok-ink); color: #ffffff; border-color: var(--ok-ink); }
+.badge.fail { background: var(--bad-ink); color: #ffffff; border-color: var(--bad-ink); }
 .badge.warn { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-line); }
 .badge.unscored { background: var(--secondary); color: var(--muted); }
 
@@ -120,7 +124,7 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 #errors { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; }
 .errbox {
   background: var(--bad-bg); border: 1px solid var(--bad-line);
-  border-left: 3px solid var(--bad-strip);
+  border-left: 3px solid var(--bad-ink);
   border-radius: var(--radius); padding: 9px 14px; font-size: 12.5px;
 }
 .errbox .elabel {
@@ -192,7 +196,12 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
   border-left: 3px solid #ded3ef;
   border-radius: 0 var(--radius) var(--radius) 0; padding: 6px 14px;
 }
-.card.k-tool { border-left-color: var(--k-strip, var(--rule-strong)); }
+.card.k-tool {
+  /* full kind-tinted frame + stronger left strip — same grammar as the
+     failed/timeout cards (pale line all round, saturated strip on the left) */
+  border-color: var(--k-line, var(--border));
+  border-left-color: var(--k-strip, var(--rule-strong));
+}
 .card.k-tool.failed { border-left-color: var(--bad-strip); background: var(--bad-bg); border-color: var(--bad-line); }
 .card.k-timeout { border-left-color: var(--bad-strip); background: var(--bad-bg); border-color: var(--bad-line); }
 .card.k-unknown { border-left-color: var(--rule-strong); border-style: dashed; box-shadow: none; }
@@ -227,7 +236,7 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
   color: var(--muted); background: var(--secondary); border: 1px solid var(--border);
 }
 .status.completed { color: var(--ok-ink); background: var(--ok-bg); border-color: var(--ok-line); }
-.status.failed, .status.cancelled { color: var(--bad-ink); background: var(--bad-bg); border-color: var(--bad-line); }
+.status.failed, .status.cancelled { color: #ffffff; background: var(--bad-ink); border-color: var(--bad-ink); }
 .status.pending, .status.in_progress { color: var(--warn-ink); background: var(--warn-bg); border-color: var(--warn-line); }
 .ttitle { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); word-break: break-all; }
 .body { margin-top: 6px; white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.65; }
