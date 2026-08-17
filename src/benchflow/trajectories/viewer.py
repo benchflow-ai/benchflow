@@ -1,13 +1,19 @@
 """Trajectory viewer — renders Claude Code stream-json, Codex sessions, and ACP JSONL as HTML.
 
-Works with trial directories (`turn*.txt` or `trajectory/acp_trajectory.jsonl`)
-and with a raw session JSONL file. No ATIF conversion.
+Works with trial directories (`turn*.txt` or `trajectory/acp_trajectory.jsonl`),
+with a raw session JSONL file, and — for a directory *of* rollouts — as a
+browsable multi-run server (sidebar + JSON API, see ``_serve_browse``). ACP
+rollout directories render through the interactive ``viewer_template.html``
+page; stream-json/Codex/raw-file paths keep the shared inline-CSS renderers.
+No ATIF conversion.
 """
 
 import html
 import json
 import sys
+from importlib import resources
 from pathlib import Path
+from typing import Any
 
 _THINKING_PREVIEW = 600  # max chars for thinking block preview
 _ARGS_PREVIEW = 300  # max chars for tool args display
@@ -383,7 +389,11 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     # rather than crashing the whole view with a raw JSONDecodeError traceback.
     if prompts is None and (rollout_dir / "prompts.json").exists():
         try:
-            prompts = json.loads((rollout_dir / "prompts.json").read_text())
+            prompts = json.loads(
+                (rollout_dir / "prompts.json").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
         except (json.JSONDecodeError, OSError):
             prompts = None
 
@@ -434,7 +444,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     all_events: list[dict] = []
     all_blocks = []
     for i, tf in enumerate(turn_files):
-        events = _parse_jsonl(tf.read_text())
+        events = _parse_jsonl(tf.read_text(encoding="utf-8", errors="replace"))
         all_events.extend(events)
         all_blocks.append(render_turn(events, i + 1, prompts[i]))
 
@@ -462,23 +472,362 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 </html>"""
 
 
+# ── ACP (canonical) renderer: payload + interactive template ─────────────
+#
+# Rollout DIRECTORIES render through viewer_template.html: Python assembles
+# one JSON payload (normalized steps + result/timing/verifier metadata) and
+# the self-contained vanilla-JS page renders it client-side. Raw session
+# FILES keep the inline `_render_acp_events` renderer below (its output is
+# pinned server-side by the jsonl-session tests).
+
+_TEMPLATE_NAME = "viewer_template.html"
+_PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
+_TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
+
+# result.json diagnostic blocks surfaced in the header error banner, in
+# display order. Each is null unless that failure mode actually occurred.
+_DIAGNOSTIC_KEYS = (
+    "idle_timeout_info",
+    "agent_timeout_info",
+    "sandbox_startup_info",
+    "transport_error_info",
+    "verifier_timeout_info",
+    "api_error_info",
+    "suspected_api_error_info",
+)
+
+
+def _load_json(path: Path) -> Any:
+    # errors="replace": binary/mis-encoded sidecars degrade to a JSON parse
+    # failure (→ None) instead of an unhandled UnicodeDecodeError.
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _tool_content_texts(content: Any) -> list[str]:
+    """Flatten ACP tool_call content blocks to plain strings.
+
+    Three shapes occur in captures: the canonical nested block
+    ``{"type": "content", "content": {"type": "text", "text": ...}}``, a flat
+    ``{"text": ...}``, and edit-tool diff blocks
+    ``{"type": "diff", "path": ..., "oldText": ..., "newText": ...}``.
+    """
+    texts: list[str] = []
+    if not isinstance(content, list):
+        return texts
+    for item in content:
+        if not isinstance(item, dict):
+            texts.append(str(item))
+            continue
+        inner = item.get("content")
+        if isinstance(inner, dict) and "text" in inner:
+            texts.append(str(inner.get("text", "")))
+        elif "text" in item:
+            texts.append(str(item.get("text", "")))
+        elif item.get("type") == "diff":
+            texts.append(
+                f"diff {item.get('path', '')}\n"
+                f"--- old\n{item.get('oldText') or ''}\n"
+                f"+++ new\n{item.get('newText') or ''}"
+            )
+        else:
+            texts.append(json.dumps(item, ensure_ascii=False))
+    return [t for t in texts if t]
+
+
+def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[dict]:
+    """Project raw ACP events onto renderer steps with server-side numbering.
+
+    Prompt labels ("PROMPT 1") are computed here, not client-side, and the
+    ``prompts`` list is embedded only when the trajectory has no inline
+    user_message events — embedding both would duplicate prompt text in the
+    emitted page (pinned by TestViewerCompatibility).
+    """
+    steps: list[dict] = []
+    prompt_counter = 0
+
+    def add(kind: str, **fields: Any) -> None:
+        steps.append({"i": len(steps) + 1, "kind": kind, **fields})
+
+    has_inline_prompts = any(e.get("type") == "user_message" for e in events)
+    if not has_inline_prompts:
+        for text in prompts or []:
+            prompt_counter += 1
+            add("prompt", label=f"PROMPT {prompt_counter}", text=str(text))
+
+    for event in events:
+        etype = event.get("type", "")
+        if etype == "user_message":
+            prompt_counter += 1
+            add(
+                "prompt",
+                label=f"PROMPT {prompt_counter}",
+                text=str(event.get("text", "")),
+            )
+        elif etype == "agent_message":
+            add("message", text=str(event.get("text", "")))
+        elif etype == "agent_thought":
+            add("thought", text=str(event.get("text", "")))
+        elif etype == "tool_call":
+            add(
+                "tool",
+                tool={
+                    "id": event.get("tool_call_id", ""),
+                    "kind": event.get("kind", "other"),
+                    "title": event.get("title", ""),
+                    "status": event.get("status", ""),
+                    "content": _tool_content_texts(event.get("content")),
+                },
+            )
+        elif etype == "agent_timeout":
+            # Coerce to a list of strings — a crafted non-list value would
+            # otherwise reach the client and break the renderer.
+            pending_raw = event.get("pending_tool_call_ids")
+            add(
+                "timeout",
+                timeout={
+                    "reason": event.get("reason", ""),
+                    "timeout_sec": event.get("timeout_sec"),
+                    "pending": [str(x) for x in pending_raw]
+                    if isinstance(pending_raw, list)
+                    else [],
+                    "complete": event.get("terminal_trajectory_complete"),
+                },
+            )
+        else:
+            # Unknown/future event types render as a generic card, never crash.
+            add(
+                "unknown",
+                type=str(etype),
+                text=json.dumps(event, ensure_ascii=False)[:2000],
+            )
+    return steps
+
+
+def _build_meta(
+    result_data: dict, timing: dict | None, steps: list[dict]
+) -> dict[str, Any]:
+    rewards = result_data.get("rewards")
+    reward = rewards.get("reward") if isinstance(rewards, dict) else None
+    agent_result = result_data.get("agent_result")
+    usage = agent_result if isinstance(agent_result, dict) else {}
+
+    errors: list[dict[str, str]] = []
+    if result_data.get("error"):
+        errors.append(
+            {
+                "label": str(result_data.get("error_category") or "error"),
+                "text": str(result_data["error"]),
+            }
+        )
+    if result_data.get("verifier_error"):
+        errors.append(
+            {
+                "label": str(
+                    result_data.get("verifier_error_category") or "verifier error"
+                ),
+                "text": str(result_data["verifier_error"]),
+            }
+        )
+    if result_data.get("export_error"):
+        errors.append(
+            {"label": "export error", "text": str(result_data["export_error"])}
+        )
+    for key in _DIAGNOSTIC_KEYS:
+        value = result_data.get(key)
+        if value:
+            errors.append(
+                {
+                    "label": key.removesuffix("_info").replace("_", " "),
+                    "text": json.dumps(value, ensure_ascii=False, default=str)[:2000],
+                }
+            )
+
+    return {
+        "task_name": result_data.get("task_name"),
+        "agent_name": result_data.get("agent_name") or result_data.get("agent"),
+        "model": result_data.get("model"),
+        "skill_mode": result_data.get("skill_mode"),
+        "reward": reward,
+        "usage": usage,
+        "counts": {
+            "prompts": sum(1 for s in steps if s["kind"] == "prompt"),
+            "messages": sum(1 for s in steps if s["kind"] == "message"),
+            "thoughts": sum(1 for s in steps if s["kind"] == "thought"),
+            "tools": sum(1 for s in steps if s["kind"] == "tool"),
+        },
+        "timing": timing,
+        "duration_sec": (timing or {}).get("total"),
+        "errors": errors,
+        "trajectory_source": result_data.get("trajectory_source"),
+        "partial_trajectory": result_data.get("partial_trajectory"),
+        "started_at": result_data.get("started_at"),
+        "finished_at": result_data.get("finished_at"),
+    }
+
+
+def _load_verifier(rollout_dir: Path) -> dict[str, Any]:
+    vdir = rollout_dir / "verifier"
+    reward = _read_text(vdir / "reward.txt")
+    ctrf_tests = None
+    ctrf = _load_json(vdir / "ctrf.json")
+    if isinstance(ctrf, dict):
+        raw_tests = (ctrf.get("results") or {}).get("tests")
+        if isinstance(raw_tests, list):
+            ctrf_tests = [
+                {
+                    "name": str(t.get("name", "")),
+                    "status": str(t.get("status", "")),
+                    "duration": t.get("duration"),
+                }
+                for t in raw_tests
+                if isinstance(t, dict)
+            ]
+    return {
+        "reward": reward.strip() if reward else None,
+        "stdout": _read_text(vdir / "test-stdout.txt"),
+        "stderr": _read_text(vdir / "test-stderr.txt"),
+        "ctrf": ctrf_tests,
+    }
+
+
+def _load_template() -> str:
+    return (resources.files("benchflow.trajectories") / _TEMPLATE_NAME).read_text(
+        encoding="utf-8"
+    )
+
+
+def _safe_json(obj: Any) -> str:
+    """Serialize untrusted payload data to UTF-8-safe JSON text.
+
+    Lone surrogates (possible in crafted trajectory text) survive
+    ``json.dumps(ensure_ascii=False)`` but crash utf-8 encoding later in
+    ``serve()``; replace them here.
+    """
+    data = json.dumps(obj, ensure_ascii=False, default=str)
+    return data.encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _render_shell(title: str, boot: dict[str, Any]) -> str:
+    """Inject a boot document into the template (script-breakout escaped)."""
+    page = _load_template()
+    page = page.replace(_TITLE_PLACEHOLDER, html.escape(title), 1)
+    return page.replace(_PAYLOAD_PLACEHOLDER, _safe_json(boot).replace("</", "<\\/"), 1)
+
+
+def _build_acp_payload(rollout_dir: Path, prompts: list[str] | None) -> dict[str, Any]:
+    """Assemble the renderer payload for one canonical ACP rollout dir."""
+    acp_path = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+    try:
+        text = acp_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    events = _parse_jsonl(text)
+
+    if prompts is None:
+        loaded = _load_json(rollout_dir / "prompts.json")
+        prompts = loaded if isinstance(loaded, list) else None
+
+    result_data = _load_result_json(rollout_dir)
+    timing = _load_json(rollout_dir / "timing.json")
+    if not isinstance(timing, dict):
+        embedded = result_data.get("timing")
+        timing = embedded if isinstance(embedded, dict) else None
+
+    steps = _normalize_steps(events, prompts)
+    return {
+        "schema_version": 1,
+        "rollout_name": rollout_dir.name,
+        "meta": _build_meta(result_data, timing, steps),
+        "steps": steps,
+        "verifier": _load_verifier(rollout_dir),
+    }
+
+
+def _is_acp_rollout_dir(path: Path) -> bool:
+    return (path / "trajectory" / "acp_trajectory.jsonl").exists()
+
+
+def _discover_rollouts(base: Path, max_depth: int = 3, cap: int = 500) -> list[str]:
+    """Relative paths of ACP rollout dirs under ``base``, sorted, capped.
+
+    The returned ids double as the ``/api/rollout?id=`` whitelist: an id is
+    only ever resolved by exact membership here, so crafted ids (``../``
+    traversal and the like) can never reach the filesystem.
+    """
+    found: list[str] = []
+
+    def walk(d: Path, depth: int) -> None:
+        if len(found) >= cap:
+            return
+        if _is_acp_rollout_dir(d):
+            found.append(d.relative_to(base).as_posix())
+            return  # rollout dirs don't nest
+        if depth >= max_depth:
+            return
+        try:
+            children = sorted(p for p in d.iterdir() if p.is_dir())
+        except OSError:
+            return
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            walk(child, depth + 1)
+
+    try:
+        top = sorted(p for p in base.iterdir() if p.is_dir())
+    except OSError:
+        return found
+    for child in top:
+        if not child.name.startswith("."):
+            walk(child, 1)
+    return found
+
+
+def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
+    """Sidebar row for one rollout: identity + score at a glance."""
+    d = base / rel_id
+    result_data = _load_result_json(d)
+    rewards = result_data.get("rewards")
+    reward = rewards.get("reward") if isinstance(rewards, dict) else None
+    return {
+        "id": rel_id,
+        "name": d.name,
+        "task_name": result_data.get("task_name") or d.name,
+        "agent_name": result_data.get("agent_name") or result_data.get("agent"),
+        "model": result_data.get("model"),
+        "reward": reward,
+        "has_error": bool(
+            result_data.get("error") or result_data.get("verifier_error")
+        ),
+        "skill_mode": result_data.get("skill_mode"),
+    }
+
+
 def _render_acp_trajectory(
     rollout_dir: Path, acp_path: Path, prompts: list[str] | None
 ) -> str:
-    """Render an ACP trajectory JSONL file as HTML."""
-    events = _parse_jsonl(acp_path.read_text())
-    result_data = _load_result_json(rollout_dir)
-    return _render_acp_events(rollout_dir.name, events, result_data, prompts)
+    """Render a canonical ACP rollout as a self-contained interactive page.
+
+    Trajectory content is untrusted input: it travels as JSON data (``</``
+    escaped so it cannot break out of the script tag) and the template
+    renders it exclusively via ``textContent``.
+    """
+    payload = _build_acp_payload(rollout_dir, prompts)
+    return _render_shell(rollout_dir.name, {"mode": "single", "payload": payload})
 
 
 def _load_result_json(rollout_dir: Path) -> dict:
-    result_path = rollout_dir / "result.json"
-    if not result_path.exists():
-        return {}
-    try:
-        parsed = json.loads(result_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+    parsed = _load_json(rollout_dir / "result.json")
     return parsed if isinstance(parsed, dict) else {}
 
 
@@ -642,7 +991,7 @@ def _codex_to_acp(events: list[dict]) -> list[dict]:
 def render_jsonl_file(path: Path) -> str:
     """Render a Claude Code, Codex, or ACP session JSONL file as HTML."""
     try:
-        events = _parse_jsonl(path.read_text())
+        events = _parse_jsonl(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return _NO_TRAJECTORIES_HTML
     if not events:
@@ -765,7 +1114,45 @@ def serve(
     confirm: bool = False,
     redaction_summary: str | None = None,
 ) -> str | None:
-    """Serve a trial directory or a session JSONL file as a web page.
+    """Serve a trial directory, a session JSONL file, or a directory of runs.
+
+    Single trajectories (a rollout directory, or a session JSONL file) keep
+    the one-page behavior, including the ``confirm=True`` Approve/Reject
+    contract documented on :func:`_serve_single`. A directory that is not
+    itself a rollout but contains rollout directories is served in browse
+    mode instead: a run sidebar plus ``/api/rollout?id=…`` endpoints the page
+    uses to load traces dynamically (see :func:`_serve_browse`).
+
+    ``confirm`` needs exactly one trajectory to approve, so combining it with
+    a multi-run directory is an error.
+    """
+    path = Path(rollout_path)
+    if (
+        path.is_dir()
+        and not _is_acp_rollout_dir(path)
+        and not any(path.glob("turn*.txt"))
+    ):
+        rollouts = _discover_rollouts(path)
+        if rollouts:
+            if confirm:
+                print(
+                    "--confirm needs a single rollout or session file, but "
+                    f"{path} is a directory of {len(rollouts)} runs"
+                )
+                sys.exit(1)
+            _serve_browse(path, port, n_runs=len(rollouts))
+            return None
+    return _serve_single(path, port, prompts, confirm, redaction_summary)
+
+
+def _serve_single(
+    path: Path,
+    port: int,
+    prompts: list[str] | None,
+    confirm: bool,
+    redaction_summary: str | None,
+) -> str | None:
+    """Serve one trial directory or session JSONL file as a web page.
 
     With ``confirm=True`` the page carries an Approve/Reject bar posting to
     ``/decision``; the first valid decision shuts the server down and is
@@ -782,7 +1169,6 @@ def serve(
     import threading
     from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-    path = Path(rollout_path)
     write_sidecar = False
     if path.is_file():
         html_content = render_jsonl_file(path)
@@ -862,6 +1248,79 @@ def serve(
     if decision is not None:
         print(f"DECISION: {decision}", flush=True)
     return decision
+
+
+def _serve_browse(base: Path, port: int, n_runs: int) -> None:
+    """Multi-rollout browser: sidebar shell + JSON API, rescanned per request."""
+    from http.server import HTTPServer, SimpleHTTPRequestHandler
+    from urllib.parse import parse_qs, urlsplit
+
+    class Handler(SimpleHTTPRequestHandler):
+        def _send(self, status: int, content_type: str, body: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            parsed = urlsplit(self.path)
+            if parsed.path == "/":
+                ids = _discover_rollouts(base)
+                shell = _render_shell(
+                    base.name,
+                    {
+                        "mode": "browse",
+                        "rollouts": [_rollout_summary(base, r) for r in ids],
+                    },
+                )
+                self._send(
+                    200,
+                    "text/html; charset=utf-8",
+                    shell.encode("utf-8", errors="replace"),
+                )
+            elif parsed.path == "/api/rollouts":
+                ids = _discover_rollouts(base)
+                body = _safe_json([_rollout_summary(base, r) for r in ids])
+                self._send(
+                    200,
+                    "application/json; charset=utf-8",
+                    body.encode("utf-8", errors="replace"),
+                )
+            elif parsed.path == "/api/rollout":
+                rid = (parse_qs(parsed.query).get("id") or [None])[0]
+                # Exact-membership whitelist: an id is never resolved as a
+                # path unless a fresh scan discovered it, so crafted ids
+                # (../ traversal, absolute paths) cannot reach the filesystem.
+                if rid is None or rid not in set(_discover_rollouts(base)):
+                    self._send(
+                        404,
+                        "application/json; charset=utf-8",
+                        b'{"error": "unknown rollout id"}',
+                    )
+                    return
+                body = _safe_json(_build_acp_payload(base / rid, None))
+                self._send(
+                    200,
+                    "application/json; charset=utf-8",
+                    body.encode("utf-8", errors="replace"),
+                )
+            else:
+                self._send(404, "text/plain; charset=utf-8", b"not found")
+
+        def log_message(self, format, *args):
+            pass
+
+    print(f"Trajectory browser: http://localhost:{port}")
+    print(f"Scanning: {base} ({n_runs} runs)")
+    print("Press Ctrl+C to stop\n")
+
+    server = HTTPServer(("localhost", port), Handler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":
