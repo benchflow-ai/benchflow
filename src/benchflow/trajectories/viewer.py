@@ -757,7 +757,7 @@ def _is_acp_rollout_dir(path: Path) -> bool:
     return (path / "trajectory" / "acp_trajectory.jsonl").exists()
 
 
-def _discover_rollouts(base: Path, max_depth: int = 3, cap: int = 500) -> list[str]:
+def _discover_rollouts(base: Path, max_depth: int = 4, cap: int = 500) -> list[str]:
     """Relative paths of ACP rollout dirs under ``base``, sorted, capped.
 
     The returned ids double as the ``/api/rollout?id=`` whitelist: an id is
@@ -1107,6 +1107,71 @@ def _stream_json_page(
 </html>"""
 
 
+# Sidecar files the viewer reads from a rollout dir; hf:// resolution fetches
+# only these (large llm_trajectory.jsonl / trainer exports are skipped).
+_HF_VIEWER_FILES = (
+    "result.json",
+    "timing.json",
+    "prompts.json",
+    "trajectory/acp_trajectory.jsonl",
+    "verifier/*",
+)
+
+
+def _parse_hf_spec(spec: str) -> tuple[str, str | None, str]:
+    """Split ``hf://org/name[@revision][/subpath]`` into its parts.
+
+    Tolerates ``hf:/`` (a Path round-trip collapses the double slash) and
+    returns ``(repo_id, revision, subpath)``.
+    """
+    raw = spec.split(":", 1)[1].lstrip("/")
+    parts = [p for p in raw.split("/") if p]
+    if len(parts) < 2:
+        raise ValueError(
+            f"invalid HF dataset spec {spec!r} — expected hf://<org>/<name>[/subpath]"
+        )
+    repo_id = "/".join(parts[:2])
+    revision = None
+    if "@" in parts[1]:
+        name, _, revision = parts[1].partition("@")
+        repo_id = f"{parts[0]}/{name}"
+    return repo_id, revision, "/".join(parts[2:])
+
+
+def _resolve_hf_source(spec: str) -> Path:
+    """Materialize the viewer-relevant slice of an HF dataset locally.
+
+    Downloads (into the shared huggingface_hub cache, so repeat views are
+    incremental) only the files the viewer renders — trajectories plus
+    result/timing/prompts/verifier sidecars — and returns the local
+    directory to serve.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ModuleNotFoundError:
+        print("huggingface_hub is required for hf:// sources")
+        sys.exit(1)
+
+    repo_id, revision, subpath = _parse_hf_spec(spec)
+    scope = f"{subpath.rstrip('/')}/" if subpath else ""
+    patterns = []
+    for name in _HF_VIEWER_FILES:
+        patterns.append(f"{scope}{name}")
+        patterns.append(f"{scope}**/{name}")
+    print(f"Fetching {repo_id}" + (f" @ {revision}" if revision else "") + " …")
+    local = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        revision=revision,
+        allow_patterns=patterns,
+    )
+    root = Path(local) / subpath if subpath else Path(local)
+    if not root.is_dir():
+        print(f"No such path in dataset {repo_id}: {subpath}")
+        sys.exit(1)
+    return root
+
+
 def serve(
     rollout_path: str,
     port: int = 8888,
@@ -1114,7 +1179,12 @@ def serve(
     confirm: bool = False,
     redaction_summary: str | None = None,
 ) -> str | None:
-    """Serve a trial directory, a session JSONL file, or a directory of runs.
+    """Serve a trial directory, a session JSONL file, a directory of runs,
+    or an ``hf://`` dataset source.
+
+    ``hf://<org>/<name>[/subpath]`` fetches the viewer-relevant slice of a
+    HuggingFace trajectory dataset (e.g. the community ground-truth uploads)
+    into the local HF cache and serves it like any local directory.
 
     Single trajectories (a rollout directory, or a session JSONL file) keep
     the one-page behavior, including the ``confirm=True`` Approve/Reject
@@ -1126,6 +1196,8 @@ def serve(
     ``confirm`` needs exactly one trajectory to approve, so combining it with
     a multi-run directory is an error.
     """
+    if isinstance(rollout_path, str) and rollout_path.startswith("hf:"):
+        rollout_path = str(_resolve_hf_source(rollout_path))
     path = Path(rollout_path)
     if (
         path.is_dir()
