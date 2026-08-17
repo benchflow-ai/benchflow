@@ -246,3 +246,61 @@ class TestHfSource:
         assert all(p.startswith("jobs/run-1/") for p in calls["allow_patterns"])
         assert "jobs/run-1/trajectory/acp_trajectory.jsonl" in calls["allow_patterns"]
         assert not any("llm_trajectory" in p for p in calls["allow_patterns"])
+
+
+class TestTimestamps:
+    """Forward-compat passthrough for the capture-side timestamp proposal
+    (benchflow#1033): render when present, invisible when absent."""
+
+    def test_timestamps_pass_through_when_present(self, tmp_path):
+        events = [
+            {"type": "user_message", "text": "go", "ts": "2026-08-15T09:41:03+00:00"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "c1",
+                "kind": "execute",
+                "title": "ls",
+                "status": "completed",
+                "content": [],
+                "started_at": "2026-08-15T09:41:05+00:00",
+                "finished_at": "2026-08-15T09:41:07.500000+00:00",
+            },
+        ]
+        payload = _extract_payload(render_rollout(_write_rollout(tmp_path, events)))
+        s0, s1 = payload["steps"]
+        assert s1["t"] - s0["t"] == pytest.approx(2.0)
+        assert s1["dur"] == pytest.approx(2.5)
+
+    def test_no_timestamp_keys_when_absent(self, tmp_path):
+        # Today's captures carry none — steps must not grow t/dur keys.
+        events = [
+            {"type": "agent_message", "text": "hi"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "c",
+                "kind": "read",
+                "title": "x",
+                "status": "completed",
+                "content": [],
+            },
+        ]
+        payload = _extract_payload(render_rollout(_write_rollout(tmp_path, events)))
+        for step in payload["steps"]:
+            assert "t" not in step and "dur" not in step
+
+    def test_unparseable_timestamps_ignored(self, tmp_path):
+        events = [
+            {"type": "agent_message", "text": "hi", "ts": "not-a-time"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "c",
+                "kind": "read",
+                "title": "x",
+                "status": "completed",
+                "content": [],
+                "started_at": True,
+            },
+        ]
+        payload = _extract_payload(render_rollout(_write_rollout(tmp_path, events)))
+        for step in payload["steps"]:
+            assert "t" not in step and "dur" not in step

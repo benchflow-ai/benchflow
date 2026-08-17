@@ -211,6 +211,7 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .chead { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .seq { color: var(--faint); font-family: var(--font-mono); font-size: 11px; text-decoration: none; min-width: 30px; }
 .seq:hover { color: var(--ink); }
+.tstamp { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .klabel {
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
   letter-spacing: 0.05em; text-transform: uppercase;
@@ -307,6 +308,7 @@ table.plain th { font-family: var(--font-mono); color: var(--faint); font-weight
    /api/rollout?id=… . All dynamic content flows through textContent. */
 const BOOT = JSON.parse(document.getElementById("bf-payload").textContent);
 let CUR = null;      /* current payload */
+let T_BASE = null;   /* epoch of the first timestamped step (timeline origin) */
 let renderGen = 0;   /* bumped per load; cancels stale chunked renders */
 const state = { focus: false, kinds: new Set(), failedOnly: false, matches: [], matchIdx: -1 };
 const COLLAPSE_CHARS = 700, COLLAPSE_LINES = 12;
@@ -334,6 +336,20 @@ function fmtDuration(sec) {
   if (sec === null || sec === undefined || typeof sec !== "number") return null;
   const m = Math.floor(sec / 60), s = Math.round(sec % 60);
   return m ? m + "m " + s + "s" : s + "s";
+}
+/* timeline offset "+m:ss" (hours appear as needed) from the first
+   timestamped step; renders only when the capture carries timestamps */
+function fmtOffset(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const mm = h ? String(m).padStart(2, "0") : String(m);
+  return "+" + (h ? h + ":" + mm : mm) + ":" + String(s).padStart(2, "0");
+}
+function fmtDurShort(sec) {
+  if (typeof sec !== "number") return null;
+  if (sec < 1) return "<1s";
+  if (sec < 60) return sec.toFixed(1).replace(/\.0$/, "") + "s";
+  return Math.floor(sec / 60) + "m " + Math.round(sec % 60) + "s";
 }
 
 /* ── header ─────────────────────────────────────────────── */
@@ -533,6 +549,9 @@ function buildCard(step) {
   const seq = el("a", "seq", "#" + step.i);
   seq.href = "#e" + step.i;
   head.appendChild(seq);
+  if (typeof step.t === "number" && T_BASE !== null) {
+    head.appendChild(el("span", "tstamp", fmtOffset(step.t - T_BASE)));
+  }
   if (step.kind === "prompt") head.appendChild(el("span", "klabel", step.label || "prompt"));
   else if (step.kind === "message") head.appendChild(el("span", "klabel", "agent"));
   else if (step.kind === "thought") head.appendChild(el("span", "klabel", "thought"));
@@ -565,6 +584,8 @@ function buildCard(step) {
     head.appendChild(el("span", "kindbadge", t.kind || "tool"));
     head.appendChild(el("span", "ttitle", t.title || ""));
     head.appendChild(el("span", "status " + (t.status || ""), t.status || "?"));
+    const durTxt = fmtDurShort(step.dur);
+    if (durTxt) head.appendChild(el("span", "tstamp", durTxt));
     if (t.status === "failed" || t.status === "cancelled") card.classList.add("failed");
   }
   card.appendChild(head);
@@ -591,6 +612,10 @@ function buildCard(step) {
 
 function renderTrace(p) {
   const STEPS = p.steps || [];
+  T_BASE = null;
+  for (const s of STEPS) {
+    if (typeof s.t === "number") { T_BASE = s.t; break; }
+  }
   const main = document.getElementById("view-trace");
   main.textContent = "";
   if (!STEPS.length) {

@@ -11,6 +11,7 @@ No ATIF conversion.
 import html
 import json
 import sys
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -544,6 +545,25 @@ def _tool_content_texts(content: Any) -> list[str]:
     return [t for t in texts if t]
 
 
+def _parse_ts(value: Any) -> float | None:
+    """Lenient timestamp → epoch seconds; None for absent/unparseable.
+
+    Accepts numeric epochs and anything ``datetime.fromisoformat`` reads
+    (ISO-8601, and the space-separated ``str(datetime.now())`` form used by
+    result.json's started_at).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[dict]:
     """Project raw ACP events onto renderer steps with server-side numbering.
 
@@ -551,12 +571,32 @@ def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[dict
     ``prompts`` list is embedded only when the trajectory has no inline
     user_message events — embedding both would duplicate prompt text in the
     emitted page (pinned by TestViewerCompatibility).
+
+    Timestamps are forward-compatible passthrough: today's captures carry
+    none (verified across the HF ground-truth uploads), but when the
+    capture-side proposal lands (``ts`` on text events, ``started_at`` /
+    ``finished_at`` on tool calls — benchflow#1033) steps gain ``t`` (epoch)
+    and tools ``dur`` (seconds), and the renderer shows a timeline with no
+    further changes.
     """
     steps: list[dict] = []
     prompt_counter = 0
 
-    def add(kind: str, **fields: Any) -> None:
-        steps.append({"i": len(steps) + 1, "kind": kind, **fields})
+    def add(kind: str, event: dict | None = None, **fields: Any) -> None:
+        step = {"i": len(steps) + 1, "kind": kind, **fields}
+        if event is not None:
+            if kind == "tool":
+                started = _parse_ts(event.get("started_at") or event.get("ts"))
+                finished = _parse_ts(event.get("finished_at"))
+                if started is not None:
+                    step["t"] = started
+                    if finished is not None and finished >= started:
+                        step["dur"] = finished - started
+            else:
+                ts = _parse_ts(event.get("ts"))
+                if ts is not None:
+                    step["t"] = ts
+        steps.append(step)
 
     has_inline_prompts = any(e.get("type") == "user_message" for e in events)
     if not has_inline_prompts:
@@ -570,16 +610,18 @@ def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[dict
             prompt_counter += 1
             add(
                 "prompt",
+                event,
                 label=f"PROMPT {prompt_counter}",
                 text=str(event.get("text", "")),
             )
         elif etype == "agent_message":
-            add("message", text=str(event.get("text", "")))
+            add("message", event, text=str(event.get("text", "")))
         elif etype == "agent_thought":
-            add("thought", text=str(event.get("text", "")))
+            add("thought", event, text=str(event.get("text", "")))
         elif etype == "tool_call":
             add(
                 "tool",
+                event,
                 tool={
                     "id": event.get("tool_call_id", ""),
                     "kind": event.get("kind", "other"),
@@ -594,6 +636,7 @@ def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[dict
             pending_raw = event.get("pending_tool_call_ids")
             add(
                 "timeout",
+                event,
                 timeout={
                     "reason": event.get("reason", ""),
                     "timeout_sec": event.get("timeout_sec"),
@@ -607,6 +650,7 @@ def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[dict
             # Unknown/future event types render as a generic card, never crash.
             add(
                 "unknown",
+                event,
                 type=str(etype),
                 text=json.dumps(event, ensure_ascii=False)[:2000],
             )
