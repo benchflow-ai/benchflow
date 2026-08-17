@@ -72,6 +72,9 @@ WORKSPACE_EXCLUDED_DIRS = frozenset(
 # are uploaded as-is (no content redaction), so obvious secret carriers stay
 # on the contributor's machine.
 WORKSPACE_EXCLUDED_FILES = (
+    # A linked git worktree's ``.git`` is a pointer FILE (not a directory)
+    # carrying a local absolute path; the directory case is excluded above.
+    re.compile(r"^\.git$", re.IGNORECASE),
     re.compile(r"^\.env(\..+)?$", re.IGNORECASE),
     re.compile(r".*\.(pem|key|p12|pfx|keystore)$", re.IGNORECASE),
     re.compile(r"^id_(rsa|dsa|ecdsa|ed25519)(\..+)?$", re.IGNORECASE),

@@ -63,6 +63,15 @@ def _workspace(tmp_path: Path) -> Path:
     return folder
 
 
+def _worktree_workspace(tmp_path: Path) -> Path:
+    """A linked git worktree: ``.git`` is a pointer FILE, not a directory."""
+    folder = tmp_path / "linked-worktree"
+    folder.mkdir()
+    (folder / ".git").write_text("gitdir: /Users/someone/repo/.git/worktrees/x\n")
+    (folder / "code.py").write_text("print('hi')\n")
+    return folder
+
+
 def _upload_command(path: Path, *args: str) -> list[str]:
     return [
         "traj",
@@ -101,6 +110,20 @@ def test_attach_archives_workspace_and_excludes_vcs_and_secrets(
         zip_path = result.attached.local_path
         assert zip_path.exists()
     assert not zip_path.exists()  # staging exit always removes the archive
+
+
+def test_attach_excludes_worktree_git_pointer_file(tmp_path: Path) -> None:
+    """Guards the 0.7.4 live-matrix find: a linked worktree's .git pointer
+    file (carrying a local absolute path) was zipped because only .git
+    directories were excluded."""
+    session = _session(tmp_path)
+    folder = _worktree_workspace(tmp_path)
+    with stage_trajectory_artifacts(session, source_id="demo") as artifacts:
+        result = attach_workspace_archive(artifacts, folder)
+        assert result.attached is not None
+        with zipfile.ZipFile(result.attached.local_path) as archive:
+            assert archive.namelist() == ["code.py"]
+        assert result.excluded_count >= 1
 
 
 def test_attach_skips_oversized_workspace_without_zipping(tmp_path: Path) -> None:
