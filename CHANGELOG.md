@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added
+- **ACP rollout directories render as an interactive reviewer page.**
+  `bench eval view <rollout>` now assembles a JSON payload (normalized
+  events + result/timing/verifier metadata) and renders it client-side in a
+  self-contained template (no build step, zero network requests): full
+  event stream with collapse instead of truncation, harness/model/skills
+  identity row, reward badge and `result.json` failure-diagnostic banners,
+  Verifier and Metrics tabs, Focus/Full modes, per-kind filters and hues,
+  text search, and per-event `#e42` anchors. Trajectory content is treated
+  as untrusted end to end (data-only embedding, `textContent` rendering).
+  Raw session JSONL files, the `--confirm` approve/reject contract, and the
+  legacy `turn*.txt` renderer are unchanged.
+- **Directories of rollouts serve a multi-run browser.** Pointing
+  `bench eval view` at a job directory (or a whole `jobs/` tree) serves a
+  run sidebar — task, pass/fail, harness, model, skill mode — with traces
+  loaded dynamically from `/api/rollout?id=…` (ids resolve only by exact
+  membership in a fresh directory scan, so crafted ids cannot reach the
+  filesystem) and `?run=<id>` deep links for citing a specific run.
+  `--confirm` on a multi-run directory errors out: a confirmation needs
+  exactly one trajectory.
+- **`hf://` sources browse HuggingFace trajectory datasets directly.**
+  `bench eval view hf://<org>/<dataset>[@revision][/subpath]` fetches the
+  viewer-relevant slice of a trajectory dataset (trajectories plus
+  result/timing/prompts/verifier sidecars — never the large
+  `llm_trajectory`/`trainer` exports) into the shared `huggingface_hub`
+  cache and serves it through browse mode, making the community
+  ground-truth uploads reviewable with one command.
+- **The viewer renders per-event timelines the moment captures provide
+  timestamps.** Steps gain a `+m:ss` offset chip and tool calls a duration
+  chip whenever events carry `ts` / `started_at` / `finished_at` fields;
+  with today's captures (which carry none) nothing changes visually.
+
 ## 0.7.4 — 2026-08-16
 
 ### Added
