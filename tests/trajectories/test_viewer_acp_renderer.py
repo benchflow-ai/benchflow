@@ -210,8 +210,19 @@ class TestBrowseMode:
                 [{"type": "agent_message", "text": "x"}],
             )
         monkeypatch.setenv("BENCHFLOW_VIEWER_MAX_RUNS", "2")
-        assert len(_discover_rollouts(tmp_path)) == 2
-        assert len(_discover_rollouts(tmp_path, cap=10)) == 4
+        # Exact prefix, not just the count: the handler's ids[:cap] slice and
+        # _resolve_browse_rollout's membership set both rely on the capped
+        # scan being a deterministic prefix of the full scan.
+        assert _discover_rollouts(tmp_path) == [
+            "job-0/t__00000000",
+            "job-1/t__00010000",
+        ]
+        assert _discover_rollouts(tmp_path, cap=10) == [
+            "job-0/t__00000000",
+            "job-1/t__00010000",
+            "job-2/t__00020000",
+            "job-3/t__00030000",
+        ]
 
     def test_discovery_reaches_dataset_root_depth(self, tmp_path):
         # HF trajectory datasets nest one level deeper than local job dirs:

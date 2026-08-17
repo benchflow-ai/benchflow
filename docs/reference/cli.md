@@ -454,6 +454,11 @@ Pointing the command at a directory **of** rollouts (a job directory, a whole
 (task, pass/fail, harness, model, skill mode) with traces loaded dynamically
 via `/api/rollouts` and `/api/rollout?id=…` — ids resolve only by exact
 membership in a fresh directory scan — plus `?run=<id>` deep links.
+Discovery is capped at 500 runs by default (`BENCHFLOW_VIEWER_MAX_RUNS`
+overrides); truncation is never silent — the sidebar heading, the server
+startup line, and an `X-BenchFlow-Capped: 1` response header on
+`/api/rollouts` all signal it, and a `?run=` id outside the discovered set
+shows an explicit error instead of another run.
 
 `hf://<org>/<dataset>[@revision][/subpath]` browses a HuggingFace trajectory
 dataset (e.g. the community ground-truth uploads): only the viewer-relevant

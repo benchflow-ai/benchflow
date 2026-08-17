@@ -699,8 +699,13 @@ def _build_meta(
         )
     # Diagnostics that ride along an actual error render as error banners;
     # on an otherwise-clean rollout they are behavior flags (e.g. #1025's
-    # chat-only completion) and render neutrally.
-    has_error = bool(result_data.get("error") or result_data.get("verifier_error"))
+    # chat-only completion) and render neutrally. All three error channels
+    # count as "actual error".
+    has_error = bool(
+        result_data.get("error")
+        or result_data.get("verifier_error")
+        or result_data.get("export_error")
+    )
     for key in _diagnostic_keys():
         value = result_data.get(key)
         if value:
@@ -832,7 +837,9 @@ def _discover_rollouts(
 
     The returned ids double as the ``/api/rollout?id=`` whitelist: an id is
     only ever resolved by exact membership here, so crafted ids (``../``
-    traversal and the like) can never reach the filesystem.
+    traversal and the like) can never reach the filesystem. Directory
+    symlinks under ``base`` are followed — serving a directory implies
+    trusting what it links to.
     """
     if cap is None:
         cap = _runs_cap()
@@ -1288,15 +1295,18 @@ def serve(
         and not _is_acp_rollout_dir(path)
         and not any(path.glob("turn*.txt"))
     ):
-        rollouts = _discover_rollouts(path)
+        cap = _runs_cap()
+        rollouts = _discover_rollouts(path, cap=cap + 1)
         if rollouts:
+            capped = len(rollouts) > cap
+            n_runs = min(len(rollouts), cap)
             if confirm:
                 print(
                     "--confirm needs a single rollout or session file, but "
-                    f"{path} is a directory of {len(rollouts)} runs"
+                    f"{path} is a directory of {n_runs}{'+' if capped else ''} runs"
                 )
                 sys.exit(1)
-            _serve_browse(path, port, n_runs=len(rollouts))
+            _serve_browse(path, port, n_runs=n_runs, capped=capped)
             return None
     return _serve_single(path, port, prompts, confirm, redaction_summary)
 
@@ -1406,15 +1416,23 @@ def _serve_single(
     return decision
 
 
-def _serve_browse(base: Path, port: int, n_runs: int) -> None:
+def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> None:
     """Multi-rollout browser: sidebar shell + JSON API, rescanned per request."""
     from http.server import HTTPServer, SimpleHTTPRequestHandler
     from urllib.parse import parse_qs, urlsplit
 
     class Handler(SimpleHTTPRequestHandler):
-        def _send(self, status: int, content_type: str, body: bytes) -> None:
+        def _send(
+            self,
+            status: int,
+            content_type: str,
+            body: bytes,
+            headers: tuple[tuple[str, str], ...] = (),
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
+            for name, value in headers:
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
@@ -1442,12 +1460,15 @@ def _serve_browse(base: Path, port: int, n_runs: int) -> None:
                     shell.encode("utf-8", errors="replace"),
                 )
             elif parsed.path == "/api/rollouts":
-                ids, _ = self._scan()
+                ids, truncated = self._scan()
                 body = _safe_json([_rollout_summary(base, r) for r in ids])
                 self._send(
                     200,
                     "application/json; charset=utf-8",
                     body.encode("utf-8", errors="replace"),
+                    # API consumers must be able to detect truncation too; the
+                    # body stays a bare list for backward compatibility.
+                    headers=(("X-BenchFlow-Capped", "1"),) if truncated else (),
                 )
             elif parsed.path == "/api/rollout":
                 rid = (parse_qs(parsed.query).get("id") or [None])[0]
@@ -1471,8 +1492,11 @@ def _serve_browse(base: Path, port: int, n_runs: int) -> None:
         def log_message(self, format, *args):
             pass
 
+    runs_desc = f"{n_runs} runs"
+    if capped:
+        runs_desc = f"first {n_runs} runs (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)"
     print(f"Trajectory browser: http://localhost:{port}")
-    print(f"Scanning: {base} ({n_runs} runs)")
+    print(f"Scanning: {base} ({runs_desc})")
     print("Press Ctrl+C to stop\n")
 
     server = HTTPServer(("localhost", port), Handler)
