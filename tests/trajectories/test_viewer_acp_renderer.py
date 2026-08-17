@@ -12,9 +12,12 @@ from pathlib import Path
 import pytest
 
 from benchflow.trajectories.viewer import (
+    _DIAGNOSTIC_KEYS_FALLBACK,
+    _diagnostic_keys,
     _discover_rollouts,
     _parse_hf_spec,
     _render_acp_trajectory,
+    _resolve_browse_rollout,
     _resolve_hf_source,
     _rollout_summary,
     _tool_content_texts,
@@ -25,9 +28,7 @@ from benchflow.trajectories.viewer import (
 def _write_rollout(tmp_path: Path, events: list[dict]) -> Path:
     traj = tmp_path / "trajectory"
     traj.mkdir(parents=True, exist_ok=True)
-    (traj / "acp_trajectory.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in events)
-    )
+    (traj / "acp_trajectory.jsonl").write_text("\n".join(json.dumps(e) for e in events))
     return tmp_path
 
 
@@ -49,7 +50,9 @@ class TestPayloadContract:
                 "kind": "execute",
                 "title": "ls",
                 "status": "completed",
-                "content": [{"type": "content", "content": {"type": "text", "text": "out"}}],
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "out"}}
+                ],
             },
             {"type": "agent_message", "text": "done"},
             {
@@ -87,11 +90,15 @@ class TestPayloadContract:
 
 class TestUntrustedContent:
     def test_script_breakout_is_escaped(self, tmp_path):
-        hostile = '</script><script>alert(1)</script>'
+        hostile = "</script><script>alert(1)</script>"
         rollout = _write_rollout(tmp_path, [{"type": "agent_message", "text": hostile}])
         page = render_rollout(rollout)
-        payload_zone = page.split('type="application/json">', 1)[1]
-        assert "</script><script>" not in payload_zone.split("</script>", 1)[0]
+        # The raw sequence anywhere in the emitted page would terminate the
+        # payload <script> tag early and execute the rest as live markup —
+        # it must survive only in escaped form. (This assertion fails if the
+        # "</" → "<\\/" escaping in _render_shell is removed.)
+        assert hostile not in page
+        assert "<\\/script>" in page
 
     def test_lone_surrogate_page_still_utf8_encodable(self, tmp_path):
         # Guards the serve() write path: json.dumps(ensure_ascii=False) keeps
@@ -132,18 +139,31 @@ class TestDegradation:
         assert isinstance(page, str) and page
 
     def test_prompts_deduplicated_when_inline_user_messages_exist(self, tmp_path):
-        rollout = _write_rollout(tmp_path, [{"type": "user_message", "text": "UNIQ-42"}])
+        rollout = _write_rollout(
+            tmp_path, [{"type": "user_message", "text": "UNIQ-42"}]
+        )
         page = _render_acp_trajectory(
-            rollout, rollout / "trajectory" / "acp_trajectory.jsonl", prompts=["UNIQ-42"]
+            rollout,
+            rollout / "trajectory" / "acp_trajectory.jsonl",
+            prompts=["UNIQ-42"],
         )
         assert page.count("UNIQ-42") == 1
 
 
 class TestBrowseMode:
     def test_discovery_finds_nested_rollouts_and_skips_hidden(self, tmp_path):
-        _write_rollout(tmp_path / "job-a" / "task-1__aaaa0000", [{"type": "agent_message", "text": "x"}])
-        _write_rollout(tmp_path / "job-b" / "nested" / "task-2__bbbb0000", [{"type": "agent_message", "text": "y"}])
-        _write_rollout(tmp_path / ".hidden" / "task-3__cccc0000", [{"type": "agent_message", "text": "z"}])
+        _write_rollout(
+            tmp_path / "job-a" / "task-1__aaaa0000",
+            [{"type": "agent_message", "text": "x"}],
+        )
+        _write_rollout(
+            tmp_path / "job-b" / "nested" / "task-2__bbbb0000",
+            [{"type": "agent_message", "text": "y"}],
+        )
+        _write_rollout(
+            tmp_path / ".hidden" / "task-3__cccc0000",
+            [{"type": "agent_message", "text": "z"}],
+        )
         (tmp_path / "not-a-rollout").mkdir()
 
         ids = _discover_rollouts(tmp_path)
@@ -156,11 +176,42 @@ class TestBrowseMode:
         # The API resolves ids solely by exact membership in this list, so the
         # anti-traversal property reduces to: every id is a clean relative
         # path that stays under base.
-        _write_rollout(tmp_path / "job" / "t__dddd0000", [{"type": "agent_message", "text": "x"}])
+        _write_rollout(
+            tmp_path / "job" / "t__dddd0000", [{"type": "agent_message", "text": "x"}]
+        )
         for rid in _discover_rollouts(tmp_path):
             assert ".." not in rid.split("/")
             assert not rid.startswith("/")
             assert (tmp_path / rid).resolve().is_relative_to(tmp_path.resolve())
+
+    def test_api_id_resolution_enforces_whitelist_membership(self, tmp_path):
+        base = tmp_path / "base"
+        _write_rollout(
+            base / "inside" / "run__aaaa0000", [{"type": "agent_message", "text": "x"}]
+        )
+        # A REAL rollout outside the served base: reachable as a path, valid
+        # in shape — it must still never resolve, because access is granted
+        # by whitelist membership, not by the path existing. (This fails if
+        # the membership check in _resolve_browse_rollout is removed.)
+        _write_rollout(
+            tmp_path / "outside" / "secret__bbbb0000",
+            [{"type": "agent_message", "text": "s"}],
+        )
+
+        inside = _resolve_browse_rollout(base, "inside/run__aaaa0000")
+        assert inside == base / "inside" / "run__aaaa0000"
+        assert _resolve_browse_rollout(base, "../outside/secret__bbbb0000") is None
+        assert _resolve_browse_rollout(base, None) is None
+
+    def test_discovery_cap_env_override(self, tmp_path, monkeypatch):
+        for i in range(4):
+            _write_rollout(
+                tmp_path / f"job-{i}" / f"t__{i:04d}0000",
+                [{"type": "agent_message", "text": "x"}],
+            )
+        monkeypatch.setenv("BENCHFLOW_VIEWER_MAX_RUNS", "2")
+        assert len(_discover_rollouts(tmp_path)) == 2
+        assert len(_discover_rollouts(tmp_path, cap=10)) == 4
 
     def test_discovery_reaches_dataset_root_depth(self, tmp_path):
         # HF trajectory datasets nest one level deeper than local job dirs:
@@ -174,7 +225,9 @@ class TestBrowseMode:
         ]
 
     def test_rollout_summary_reads_result_json(self, tmp_path):
-        rollout = _write_rollout(tmp_path / "j" / "t__eeee0000", [{"type": "agent_message", "text": "x"}])
+        rollout = _write_rollout(
+            tmp_path / "j" / "t__eeee0000", [{"type": "agent_message", "text": "x"}]
+        )
         (rollout / "result.json").write_text(
             json.dumps(
                 {
@@ -304,3 +357,35 @@ class TestTimestamps:
         payload = _extract_payload(render_rollout(_write_rollout(tmp_path, events)))
         for step in payload["steps"]:
             assert "t" not in step and "dur" not in step
+
+
+class TestDiagnostics:
+    def test_keys_derive_from_registry(self):
+        from benchflow.diagnostics import DIAGNOSTIC_REGISTRY
+
+        assert _diagnostic_keys() == tuple(d.field for d in DIAGNOSTIC_REGISTRY)
+        # the 0.7.4 set must stay covered even as the registry grows
+        assert set(_DIAGNOSTIC_KEYS_FALLBACK) <= set(_diagnostic_keys())
+
+    def test_flag_without_error_renders_info_level(self, tmp_path):
+        rollout = _write_rollout(tmp_path, [{"type": "agent_message", "text": "hi"}])
+        (rollout / "result.json").write_text(
+            json.dumps({"idle_timeout_info": {"idle_timeout_sec": 30}})
+        )
+        payload = _extract_payload(render_rollout(rollout))
+        (entry,) = payload["meta"]["errors"]
+        assert entry["level"] == "info"
+
+    def test_diagnostic_alongside_error_stays_error_level(self, tmp_path):
+        rollout = _write_rollout(tmp_path, [{"type": "agent_message", "text": "hi"}])
+        (rollout / "result.json").write_text(
+            json.dumps(
+                {
+                    "error": "agent timed out",
+                    "agent_timeout_info": {"timeout_sec": 900},
+                }
+            )
+        )
+        payload = _extract_payload(render_rollout(rollout))
+        levels = {e["level"] for e in payload["meta"]["errors"] if "level" in e}
+        assert levels == {"error"}

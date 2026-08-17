@@ -132,6 +132,9 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 10px;
 }
 .errbox .etext { color: var(--ink-secondary); font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+/* behavior flags on otherwise-clean rollouts render neutrally, not as errors */
+.errbox.info { background: var(--secondary); border-color: var(--border); border-left-color: var(--rule-strong); }
+.errbox.info .elabel { color: var(--ink-secondary); }
 
 /* ── tabs & toolbar ─────────────────────────────────────── */
 #tabs { display: flex; gap: 4px; margin-top: 2px; border-bottom: 1px solid var(--border); }
@@ -405,7 +408,7 @@ function renderHeader(p) {
   if (errs.length) {
     const box = el("div", null); box.id = "errors";
     errs.forEach(e => {
-      const b = el("div", "errbox");
+      const b = el("div", "errbox" + (e.level === "info" ? " info" : ""));
       b.appendChild(el("span", "elabel", e.label));
       b.appendChild(el("span", "etext", e.text));
       box.appendChild(b);
@@ -838,7 +841,12 @@ function renderSidebar(rollouts, activeId) {
   const side = document.getElementById("side");
   side.textContent = "";
   side.classList.remove("hidden");
-  side.appendChild(el("h2", null, rollouts.length + " runs"));
+  const heading = BOOT.capped
+    ? "first " + rollouts.length + " runs (capped)"
+    : rollouts.length + " runs";
+  const h2 = el("h2", null, heading);
+  if (BOOT.capped) h2.title = "Raise BENCHFLOW_VIEWER_MAX_RUNS to discover more runs.";
+  side.appendChild(h2);
   rollouts.forEach(r => {
     const st = (r.reward === null || r.reward === undefined) ? "unscored" : (r.reward >= 1 ? "pass" : "fail");
     const b = el("button", "run " + st);
@@ -884,10 +892,19 @@ async function selectRun(id, push) {
 if (BOOT.mode === "browse") {
   const rollouts = BOOT.rollouts || [];
   const requested = new URLSearchParams(location.search).get("run");
-  const initial = rollouts.some(r => r.id === requested) ? requested : (rollouts[0] && rollouts[0].id);
-  renderSidebar(rollouts, initial || null);
-  if (initial) selectRun(initial, false);
-  else showLoadError("No runs found under this directory.");
+  if (requested && !rollouts.some(r => r.id === requested)) {
+    /* Never silently render a different run than the URL asked for. */
+    renderSidebar(rollouts, null);
+    showLoadError(
+      'Run "' + requested + '" is not among the ' + rollouts.length +
+      " discovered runs" +
+      (BOOT.capped ? " (list is capped — raise BENCHFLOW_VIEWER_MAX_RUNS)." : "."));
+  } else {
+    const initial = requested || (rollouts[0] && rollouts[0].id);
+    renderSidebar(rollouts, initial || null);
+    if (initial) selectRun(initial, false);
+    else showLoadError("No runs found under this directory.");
+  }
   window.addEventListener("popstate", () => {
     const id = new URLSearchParams(location.search).get("run");
     if (id && rollouts.some(r => r.id === id)) selectRun(id, false);

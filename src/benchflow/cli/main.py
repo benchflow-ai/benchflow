@@ -1226,7 +1226,8 @@ def eval_view(
         typer.Argument(
             help=(
                 "Rollout directory, job directory, trajectory JSONL file, or "
-                "an hf://<org>/<dataset>[/subpath] trajectory dataset"
+                "an hf://<org>/<dataset> trajectory dataset "
+                "(optionally with /subpath)"
             )
         ),
     ],

@@ -10,6 +10,7 @@ No ATIF conversion.
 
 import html
 import json
+import os
 import sys
 from datetime import datetime
 from importlib import resources
@@ -485,9 +486,10 @@ _TEMPLATE_NAME = "viewer_template.html"
 _PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
 _TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
 
-# result.json diagnostic blocks surfaced in the header error banner, in
-# display order. Each is null unless that failure mode actually occurred.
-_DIAGNOSTIC_KEYS = (
+# result.json diagnostic blocks surfaced in the header banner. The live list
+# derives from DIAGNOSTIC_REGISTRY so new diagnostics (e.g. behavior flags)
+# appear without this module drifting; the fallback pins the 0.7.4 set.
+_DIAGNOSTIC_KEYS_FALLBACK = (
     "idle_timeout_info",
     "agent_timeout_info",
     "sandbox_startup_info",
@@ -496,6 +498,15 @@ _DIAGNOSTIC_KEYS = (
     "api_error_info",
     "suspected_api_error_info",
 )
+
+
+def _diagnostic_keys() -> tuple[str, ...]:
+    """Diagnostic block keys, in registry display order."""
+    try:
+        from benchflow.diagnostics import DIAGNOSTIC_REGISTRY
+    except Exception:  # pragma: no cover — registry is core; stay lenient
+        return _DIAGNOSTIC_KEYS_FALLBACK
+    return tuple(d.field for d in DIAGNOSTIC_REGISTRY)
 
 
 def _load_json(path: Path) -> Any:
@@ -686,13 +697,18 @@ def _build_meta(
         errors.append(
             {"label": "export error", "text": str(result_data["export_error"])}
         )
-    for key in _DIAGNOSTIC_KEYS:
+    # Diagnostics that ride along an actual error render as error banners;
+    # on an otherwise-clean rollout they are behavior flags (e.g. #1025's
+    # chat-only completion) and render neutrally.
+    has_error = bool(result_data.get("error") or result_data.get("verifier_error"))
+    for key in _diagnostic_keys():
         value = result_data.get(key)
         if value:
             errors.append(
                 {
                     "label": key.removesuffix("_info").replace("_", " "),
                     "text": json.dumps(value, ensure_ascii=False, default=str)[:2000],
+                    "level": "error" if has_error else "info",
                 }
             )
 
@@ -801,13 +817,25 @@ def _is_acp_rollout_dir(path: Path) -> bool:
     return (path / "trajectory" / "acp_trajectory.jsonl").exists()
 
 
-def _discover_rollouts(base: Path, max_depth: int = 4, cap: int = 500) -> list[str]:
+def _runs_cap() -> int:
+    """Browse-mode run cap (``BENCHFLOW_VIEWER_MAX_RUNS`` overrides, default 500)."""
+    try:
+        return max(1, int(os.environ.get("BENCHFLOW_VIEWER_MAX_RUNS", "500")))
+    except ValueError:
+        return 500
+
+
+def _discover_rollouts(
+    base: Path, max_depth: int = 4, cap: int | None = None
+) -> list[str]:
     """Relative paths of ACP rollout dirs under ``base``, sorted, capped.
 
     The returned ids double as the ``/api/rollout?id=`` whitelist: an id is
     only ever resolved by exact membership here, so crafted ids (``../``
     traversal and the like) can never reach the filesystem.
     """
+    if cap is None:
+        cap = _runs_cap()
     found: list[str] = []
 
     def walk(d: Path, depth: int) -> None:
@@ -835,6 +863,18 @@ def _discover_rollouts(base: Path, max_depth: int = 4, cap: int = 500) -> list[s
         if not child.name.startswith("."):
             walk(child, 1)
     return found
+
+
+def _resolve_browse_rollout(base: Path, rid: str | None) -> Path | None:
+    """Resolve an ``/api/rollout`` id strictly by whitelist membership.
+
+    The id is never interpreted as a path unless a fresh scan discovered it,
+    so crafted ids (``../`` traversal, absolute paths) return ``None`` even
+    when the traversed-to path exists and is a real rollout.
+    """
+    if rid is None or rid not in set(_discover_rollouts(base)):
+        return None
+    return base / rid
 
 
 def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
@@ -1378,14 +1418,21 @@ def _serve_browse(base: Path, port: int, n_runs: int) -> None:
             self.end_headers()
             self.wfile.write(body)
 
+        def _scan(self) -> tuple[list[str], bool]:
+            """Fresh id list plus whether the cap truncated it."""
+            cap = _runs_cap()
+            ids = _discover_rollouts(base, cap=cap + 1)
+            return ids[:cap], len(ids) > cap
+
         def do_GET(self):
             parsed = urlsplit(self.path)
             if parsed.path == "/":
-                ids = _discover_rollouts(base)
+                ids, capped = self._scan()
                 shell = _render_shell(
                     base.name,
                     {
                         "mode": "browse",
+                        "capped": capped,
                         "rollouts": [_rollout_summary(base, r) for r in ids],
                     },
                 )
@@ -1395,7 +1442,7 @@ def _serve_browse(base: Path, port: int, n_runs: int) -> None:
                     shell.encode("utf-8", errors="replace"),
                 )
             elif parsed.path == "/api/rollouts":
-                ids = _discover_rollouts(base)
+                ids, _ = self._scan()
                 body = _safe_json([_rollout_summary(base, r) for r in ids])
                 self._send(
                     200,
@@ -1404,17 +1451,15 @@ def _serve_browse(base: Path, port: int, n_runs: int) -> None:
                 )
             elif parsed.path == "/api/rollout":
                 rid = (parse_qs(parsed.query).get("id") or [None])[0]
-                # Exact-membership whitelist: an id is never resolved as a
-                # path unless a fresh scan discovered it, so crafted ids
-                # (../ traversal, absolute paths) cannot reach the filesystem.
-                if rid is None or rid not in set(_discover_rollouts(base)):
+                rollout_dir = _resolve_browse_rollout(base, rid)
+                if rollout_dir is None:
                     self._send(
                         404,
                         "application/json; charset=utf-8",
                         b'{"error": "unknown rollout id"}',
                     )
                     return
-                body = _safe_json(_build_acp_payload(base / rid, None))
+                body = _safe_json(_build_acp_payload(rollout_dir, None))
                 self._send(
                     200,
                     "application/json; charset=utf-8",
