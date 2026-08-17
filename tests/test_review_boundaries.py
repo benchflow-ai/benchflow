@@ -246,16 +246,14 @@ class TestNetworkPosture:
         assert "allow_internet" not in task_md
 
 
-class TestRubricDialectDiscrimination:
-    def test_judge_rubric_is_not_claimed(self, tmp_path):
-        """llm-judge rubrics ({id, match_criteria}) share the filename and
-        must be left alone."""
+class TestRubricSlotOwnership:
+    def test_judge_shaped_json_in_reserved_slot_is_claimed(self, tmp_path):
+        """Guards PR #981: JSON shape cannot override path ownership."""
         task = tmp_path / "task"
         (task / "verifier").mkdir(parents=True)
-        (task / "verifier" / "rubric.json").write_text(
-            json.dumps(JUDGE_RUBRIC), encoding="utf-8"
-        )
-        assert find_task_rubric(task) is None
+        target = task / "verifier" / "rubric.json"
+        target.write_text(json.dumps(JUDGE_RUBRIC), encoding="utf-8")
+        assert find_task_rubric(task) == target
 
     def test_review_rubric_is_claimed(self, tmp_path):
         task = tmp_path / "task"
@@ -269,7 +267,8 @@ class TestRubricDialectDiscrimination:
         )
         assert find_task_rubric(task) == target
 
-    def test_judge_rubric_passes_task_authoring_check(self, tmp_path):
+    def test_judge_rubric_fails_task_authoring_check_in_reserved_slot(self, tmp_path):
+        """Guards PR #981: scoring JSON must move to a verifier-owned path."""
         from benchflow._utils.task_authoring import _check_review_rubric
 
         verifier = tmp_path / "verifier"
@@ -277,12 +276,12 @@ class TestRubricDialectDiscrimination:
         (verifier / "rubric.json").write_text(
             json.dumps(JUDGE_RUBRIC), encoding="utf-8"
         )
-        assert _check_review_rubric(verifier, verifier_label="verifier") == []
+        issues = _check_review_rubric(verifier, verifier_label="verifier")
+        assert len(issues) == 1
+        assert "verifier/rubric.json invalid" in issues[0]
 
     def test_all_misspelled_review_rubric_is_claimed(self, tmp_path):
-        """Round-3 fix: only the judge dialect is disclaimed; a rubric with
-        every review key misspelled must be claimed (and rejected loudly by
-        load_rubric), never silently replaced by the default."""
+        """Malformed review JSON is claimed and rejected loudly."""
         from benchflow.review.config import (
             ReviewRubricError,
             is_review_rubric_file,
@@ -310,7 +309,7 @@ class TestRubricDialectDiscrimination:
         ],
     )
     def test_ambiguous_or_malformed_dialects_are_claimed(self, tmp_path, document):
-        """Guards PR #942: only the full judge shape is disclaimed."""
+        """Guards PR #942: ambiguous review JSON is rejected loudly."""
 
         from benchflow.review.config import ReviewRubricError, is_review_rubric_file
 

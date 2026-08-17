@@ -24,6 +24,7 @@ from pydantic import (
     model_validator,
 )
 
+from benchflow.rewards.rubric_paths import DEFAULT_LLM_JUDGE_RUBRIC_PATH
 from benchflow.rewards.validation import validate_declared_reward_range
 
 ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
@@ -324,10 +325,10 @@ class JudgeVerifierConfig(TaskConfigModel):
         "(claude-* / gpt-* / gemini-*).",
     )
     rubric_path: str = Field(
-        default="tests/rubric.toml",
+        default=DEFAULT_LLM_JUDGE_RUBRIC_PATH,
         description="Path to the rubric file, relative to the task directory. "
-        "Both rubric.toml (native) and rubric.json (Harvey LAB style) are "
-        "supported.",
+        "TOML and Harvey LAB-style JSON scoring rubrics are supported outside "
+        "the reserved verifier/rubric.json and tests/rubric.json review slots.",
     )
     input_dir: str = Field(
         default="/app",

@@ -23,6 +23,7 @@ from benchflow.rewards.llm import (
 )
 from benchflow.rewards.protocol import RewardFunc
 from benchflow.rewards.rubric_config import ScoringConfig
+from benchflow.rewards.rubric_paths import ReservedReviewRubricError
 
 # Verdict parsing
 
@@ -764,6 +765,69 @@ description = "Works?"
         func = LLMJudgeRewardFunc()
         score = await func.score(tmp_path)
         assert score == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("location", ["rollout", "parent"])
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    async def test_never_auto_discovers_rubric_json(
+        self,
+        mock_judge: AsyncMock,
+        tmp_path: Path,
+        location: str,
+    ) -> None:
+        """Guards PR #981: JSON review contracts require explicit ownership."""
+
+        rollout_dir = tmp_path / "rollout"
+        rollout_dir.mkdir()
+        (rollout_dir / "llm_judge_score.txt").write_text("0.625")
+        rubric_dir = rollout_dir if location == "rollout" else tmp_path
+        (rubric_dir / "rubric.json").write_text(
+            json.dumps(
+                {
+                    "criteria": [
+                        {
+                            "name": "formal_exactness_and_trust",
+                            "description": "Category: research.",
+                            "guidance": "Detached post-run review guidance.",
+                        }
+                    ]
+                }
+            )
+        )
+
+        score = await LLMJudgeRewardFunc().score(rollout_dir)
+
+        assert score == pytest.approx(0.625)
+        mock_judge.assert_not_awaited()
+
+    @pytest.mark.parametrize("reserved_dir", ["verifier", "tests"])
+    async def test_explicit_reserved_review_rubric_is_rejected(
+        self,
+        tmp_path: Path,
+        reserved_dir: str,
+    ) -> None:
+        """Guards PR #981: direct reward-function use honors slot ownership."""
+
+        rubric_path = tmp_path / "task" / reserved_dir / "rubric.json"
+        rubric_path.parent.mkdir(parents=True)
+        rubric_path.write_text(
+            json.dumps(
+                {
+                    "criteria": [
+                        {
+                            "name": "quality",
+                            "description": "Human documentation.",
+                            "guidance": "Detached review guidance.",
+                        }
+                    ]
+                }
+            )
+        )
+
+        with pytest.raises(
+            ReservedReviewRubricError,
+            match=r"reserved for post-run `bench review`",
+        ):
+            await LLMJudgeRewardFunc(rubric_path=rubric_path).score(tmp_path)
 
 
 # LLMJudgeRewardFunc: error handling

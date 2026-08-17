@@ -253,6 +253,46 @@ def test_validator_reports_selected_llm_judge_missing_files(
     assert any("llm-judge context file not found" in reason for reason in reasons)
 
 
+def test_validator_rejects_review_rubric_as_selected_llm_judge_input(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #981: native judge strategies cannot consume review slots."""
+
+    task_dir = tmp_path / "reserved-review-rubric"
+    _write_task_md(task_dir)
+    (task_dir / "verifier" / "rubric.json").write_text(
+        '{"criteria":[{"name":"quality","description":"d","guidance":"g"}]}'
+    )
+    (task_dir / "verifier" / "verifier.md").write_text(
+        dedent(
+            """\
+            ---
+            verifier:
+              default_strategy: judge
+              strategies:
+                judge:
+                  type: llm-judge
+                  rubric: rubric.json
+            ---
+            """
+        )
+    )
+    task = Task(task_dir)
+    assert task.document is not None
+
+    issues = validate_task_runtime_support(
+        task.document,
+        sandbox="docker",
+        task_dir=task_dir,
+    )
+
+    reason = next(
+        issue.reason for issue in issues if issue.path == "verifier.strategies.judge"
+    )
+    assert "verifier/rubric.json is reserved for post-run `bench review`" in reason
+    assert "verifier/rubrics/verifier.toml" in reason
+
+
 def test_validator_reports_selected_reward_kit_without_runner(
     tmp_path: Path,
 ) -> None:

@@ -13,6 +13,12 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from benchflow.rewards.rubric_paths import (
+    DEFAULT_LLM_JUDGE_RUBRIC_PATH,
+    ReservedReviewRubricError,
+    validate_llm_judge_rubric_path,
+)
+
 _SCRIPT_ARTIFACT_SUFFIXES = {
     ".js",
     ".mjs",
@@ -149,6 +155,14 @@ class TaskPaths:
             )
             return bool(local_scripts) and all(path.is_file() for path in local_scripts)
         if strategy.type == "llm-judge":
+            rubric_path = self.tests_dir / (strategy.rubric_path or "")
+            try:
+                validate_llm_judge_rubric_path(
+                    rubric_path,
+                    task_dir=self.task_dir,
+                )
+            except ReservedReviewRubricError:
+                return False
             if not _strategy_file_exists(
                 strategy.rubric_path,
                 verifier_dir=self.tests_dir,
@@ -175,8 +189,9 @@ class TaskPaths:
         A legacy llm-judge package has no verifier.md strategy and no test.sh;
         it is verified by scoring deliverables against a rubric. The runtime
         resolves the rubric relative to the *task directory* from
-        ``[verifier.judge].rubric_path`` (default ``tests/rubric.toml``), so the
-        same resolution is mirrored here to confirm the rubric actually exists.
+        ``[verifier.judge].rubric_path`` (default
+        ``verifier/rubrics/verifier.toml``), so the same resolution is mirrored
+        here to confirm the rubric actually exists and is verifier-owned.
         """
         config_path = self.config_path
         if not config_path.is_file():
@@ -190,7 +205,7 @@ class TaskPaths:
         if not isinstance(verifier, dict) or verifier.get("type") != "llm-judge":
             return False
         judge = verifier.get("judge")
-        rubric_value = "tests/rubric.toml"
+        rubric_value = DEFAULT_LLM_JUDGE_RUBRIC_PATH
         if isinstance(judge, dict):
             configured = judge.get("rubric_path")
             if isinstance(configured, str) and configured:
@@ -201,6 +216,13 @@ class TaskPaths:
             if relative is None:
                 return False
             rubric_path = self.task_dir / Path(*relative.parts)
+        try:
+            validate_llm_judge_rubric_path(
+                rubric_path,
+                task_dir=self.task_dir,
+            )
+        except ReservedReviewRubricError:
+            return False
         return rubric_path.is_file()
 
     def is_valid(self, disable_verification: bool = False) -> bool:

@@ -351,6 +351,31 @@ class TestLoadRubricJson:
         with pytest.raises(ValueError, match="no description"):
             load_rubric_json(rubric_file)
 
+    def test_detached_review_rubric_fails_closed(self, tmp_path: Path) -> None:
+        """Guards PR #981: review guidance must never be ignored."""
+        rubric_file = tmp_path / "rubric.json"
+        rubric_file.write_text(
+            json.dumps(
+                {
+                    "criteria": [
+                        {
+                            "name": "formal_exactness_and_trust",
+                            "description": "Category: research.",
+                            "guidance": "The actual grading contract.",
+                        }
+                    ]
+                }
+            )
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            load_rubric_json(rubric_file)
+
+        message = str(exc_info.value)
+        assert "detached review rubric" in message
+        assert "bench review" in message
+        assert "match_criteria" in message
+
 
 class TestLoadRubricDispatch:
     def test_dispatches_to_json(self, tmp_path: Path) -> None:
