@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.4 — 2026-08-16
+
 ### Added
 - **Uploads are confirmed all the way into cloud storage.** After the
   progress bar finishes, `bench traj upload` now polls the contribution
