@@ -2667,6 +2667,15 @@ class Rollout:
         ):
             return
         trajectory = getattr(self, "_trajectory", None) or []
+        # The tool-call counter and the trajectory can disagree on salvage
+        # paths: the scraped-trajectory fallback (e.g. gemini's native
+        # trajectory file) rebuilds tool_call events the ACP session never
+        # counted, so _n_tool_calls stays 0 while the trajectory shows real
+        # tool activity. Any tool_call event means the agent DID act.
+        if any(
+            isinstance(e, dict) and e.get("type") == "tool_call" for e in trajectory
+        ):
+            return
         agent_messages = [
             e
             for e in trajectory
@@ -2684,9 +2693,7 @@ class Rollout:
                     usage_metrics.get("n_output_tokens")
                 ),
                 n_agent_messages=len(agent_messages),
-                n_message_chars=sum(
-                    len(e.get("text") or "") for e in agent_messages
-                ),
+                n_message_chars=sum(len(e.get("text") or "") for e in agent_messages),
             )
         )
 

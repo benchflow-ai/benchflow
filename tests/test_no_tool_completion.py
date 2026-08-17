@@ -121,6 +121,27 @@ class TestDetection:
         r._maybe_flag_no_tool_completion()
         assert r._diagnostics.recorded == []
 
+    def test_scraped_trajectory_with_tool_calls_not_flagged(self):
+        # Salvage paths (e.g. the gemini scraped-trajectory fallback) rebuild
+        # tool_call events the ACP session never counted: _n_tool_calls stays
+        # 0 while the trajectory shows real tool activity. The trajectory is
+        # authoritative — never flag those.
+        trajectory = [
+            *_chat_only_trajectory(),
+            {
+                "type": "tool_call",
+                "tool_call_id": "call-1",
+                "kind": "execute",
+                "title": "python probe.py",
+                "status": "completed",
+                "content": [],
+            },
+        ]
+        r = _rollout_double(trajectory=trajectory)
+        assert r._n_tool_calls == 0
+        r._maybe_flag_no_tool_completion()
+        assert r._diagnostics.recorded == []
+
 
 class TestPrecedence:
     def test_zero_token_case_still_routes_to_suspected_api_error(self):
@@ -173,3 +194,70 @@ class TestResultSurface:
 
     def test_run_result_carries_flag(self):
         assert RunResult(task_name="t", no_tool_completion=True).no_tool_completion
+
+
+class TestFreshRunSummaryEnrichment:
+    """Fresh runs build summary rows from in-memory RolloutResult via
+    rollout_result_payload(), which carries no diagnostic payloads — only the
+    persisted result.json has them. The enrichment step must pull them back
+    so fresh and resumed runs aggregate identically (PR #1025 review)."""
+
+    def _evaluation_double(self, jobs_dir):
+        from benchflow.evaluation import Evaluation
+
+        ev = Evaluation.__new__(Evaluation)
+        ev._jobs_dir = jobs_dir
+        ev._job_name = "job"
+        return ev
+
+    def test_payload_gains_persisted_diagnostic_fields(self, tmp_path):
+        import json
+
+        rollout_dir = tmp_path / "job" / "r1"
+        rollout_dir.mkdir(parents=True)
+        info = {
+            "total_tokens": 30000,
+            "n_output_tokens": 2727,
+            "n_agent_messages": 1,
+            "n_message_chars": 55,
+        }
+        (rollout_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "timing": {"total": 12.5},
+                    "no_tool_call_completion_info": info,
+                    "suspected_api_error_info": None,
+                }
+            )
+        )
+        ev = self._evaluation_double(tmp_path)
+        payload = {}
+        result = RunResult(task_name="t", rollout_name="r1")
+        ev._enrich_payload_with_persisted_fields(payload, result)
+        assert payload["no_tool_call_completion_info"] == info
+        assert payload["timing"] == {"total": 12.5}
+        # Null diagnostics must not materialize as keys.
+        assert "suspected_api_error_info" not in payload
+
+    def test_missing_result_json_is_silent(self, tmp_path):
+        ev = self._evaluation_double(tmp_path)
+        payload = {}
+        ev._enrich_payload_with_persisted_fields(
+            payload, RunResult(task_name="t", rollout_name="absent")
+        )
+        assert payload == {}
+
+    def test_existing_payload_fields_not_overwritten(self, tmp_path):
+        import json
+
+        rollout_dir = tmp_path / "job" / "r1"
+        rollout_dir.mkdir(parents=True)
+        (rollout_dir / "result.json").write_text(
+            json.dumps({"timing": {"total": 99.0}})
+        )
+        ev = self._evaluation_double(tmp_path)
+        payload = {"timing": {"total": 1.0}}
+        ev._enrich_payload_with_persisted_fields(
+            payload, RunResult(task_name="t", rollout_name="r1")
+        )
+        assert payload["timing"] == {"total": 1.0}
