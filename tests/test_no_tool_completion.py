@@ -15,6 +15,8 @@ nulls the reward.
 
 from types import SimpleNamespace
 
+import pytest
+
 from benchflow.diagnostics import (
     DIAGNOSTIC_BY_FIELD,
     DIAGNOSTIC_REGISTRY,
@@ -261,3 +263,61 @@ class TestFreshRunSummaryEnrichment:
             payload, RunResult(task_name="t", rollout_name="r1")
         )
         assert payload["timing"] == {"total": 1.0}
+
+
+@pytest.mark.asyncio
+async def test_fresh_run_summary_counts_chat_only_completion(tmp_path):
+    """End-to-end wiring regression (PR #1025 review): a fresh Evaluation.run()
+    whose rollout persisted ``no_tool_call_completion_info`` must count it in
+    summary.json on the FIRST pass — not only after a resume re-reads
+    result.json. This test fails if the enrichment call site in the fresh-pair
+    loop is removed."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+
+    task_dir = tmp_path / "chat-only-task"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text(
+        'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
+        "[agent]\ntimeout_sec = 60\n[environment]\n"
+    )
+    jobs_dir = tmp_path / "jobs"
+
+    cfg = EvaluationConfig(retry=RetryConfig(max_retries=0))
+    job = Evaluation(
+        tasks_dir=task_dir, jobs_dir=jobs_dir, config=cfg, job_name="fresh-run"
+    )
+
+    async def run_and_persist(*args, **kwargs):
+        # Simulate the rollout writer: the diagnostic payload exists ONLY in
+        # the on-disk result.json, exactly like a real fresh run.
+        rollout_dir = jobs_dir / "fresh-run" / "r1"
+        rollout_dir.mkdir(parents=True, exist_ok=True)
+        (rollout_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "no_tool_call_completion_info": {
+                        "total_tokens": 30000,
+                        "n_output_tokens": 2727,
+                        "n_agent_messages": 1,
+                        "n_message_chars": 55,
+                    }
+                }
+            )
+        )
+        return RunResult(
+            task_name="chat-only-task",
+            rollout_name="r1",
+            rewards={"reward": 0.0},
+            no_tool_completion=True,
+        )
+
+    job._sdk = AsyncMock()
+    job._sdk.run = AsyncMock(side_effect=run_and_persist)
+
+    await job.run()
+
+    summary = json.loads((jobs_dir / "fresh-run" / "summary.json").read_text())
+    assert summary["no_tool_call_completions"] == 1
