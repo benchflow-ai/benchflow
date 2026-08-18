@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -77,6 +78,15 @@ logger = logging.getLogger(__name__)
 # The checkpoint layers a branch can compose (RFC §3.1). Agent-session is
 # layer three and explicitly out of scope for v1.
 _SNAPSHOT_LAYERS = frozenset({"environment", "sandbox"})
+
+#: Node-state key holding how long a branch child took, in seconds. Recorded
+#: on the child node (even when the child raised) so a caller comparing
+#: children — ``bench eval ablate``'s per-arm cost column — can attribute time
+#: without re-deriving it from per-child artifacts, which only a
+#: fresh-rollout child leaves behind. Deliberately *not* serialized by
+#: :mod:`benchflow.branch_lineage`: a measured duration would make
+#: ``tree.json`` non-deterministic.
+CHILD_WALL_CLOCK_KEY = "wall_clock_sec"
 
 # The BranchDelta fields the engine executes vs records-only.
 # ``injected_prompt`` runs in place on the parent's rollout; ``skill_mode``
@@ -430,8 +440,9 @@ async def branch(
        continuation Steps attach directly to its branch node (a *pending* node,
        no content-free placeholder Step), so the reward lands on the real leaf.
     4. ``score / aggregate`` — each child's return is recorded on
-       ``child.state["reward"]``; their mean is V(parent), recorded on
-       ``parent.state["value"]`` and returned.
+       ``child.state["reward"]`` (and its duration on
+       :data:`CHILD_WALL_CLOCK_KEY`, in memory only); their mean is V(parent),
+       recorded on ``parent.state["value"]`` and returned.
 
     The branch point is always the current cursor. ``run_child`` is the
     per-child runner — injected for unit tests; the default
@@ -641,7 +652,13 @@ async def branch(
                     rollout, prompts=[delta.injected_prompt]
                 )
 
-        ret = await child_runner(child)
+        started = time.monotonic()
+        try:
+            ret = await child_runner(child)
+        finally:
+            # Recorded in a finally so a child that raised still reports what
+            # it cost before it did.
+            child.state[CHILD_WALL_CLOCK_KEY] = time.monotonic() - started
         child.state["reward"] = float(ret)
 
     # restore the parent's linear state — the tree grew, nothing else moved.
