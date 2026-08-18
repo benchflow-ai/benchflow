@@ -1864,10 +1864,11 @@ class Rollout:
 
         ``deltas`` — one :class:`~benchflow.branch_delta.BranchDelta` (or
         ``None``) per child, the recorded exactly-one-controlled-change each
-        child runs under (RFC §3.3). v1 executes ``injected_prompt`` only
-        (the child's user-visible first message, hash-recorded in
-        provenance); the other fields fail closed with
-        ``BranchDeltaNotSupported`` before any child runs.
+        child runs under (RFC §3.3). At the cursor only ``injected_prompt``
+        executes (the child's user-visible first message, hash-recorded in
+        provenance); ``skill_mode`` needs the ``env-ready`` boundary and so
+        runs through :meth:`branch_at_stage`, and every remaining field fails
+        closed with ``BranchDeltaNotSupported`` before any child runs.
         """
         return await _branch_engine(
             self,
@@ -1960,6 +1961,15 @@ class Rollout:
         stages that were. ``snapshot_layers`` defaults to the layers the stage
         actually captured; passing a different set is rejected rather than
         silently re-snapshotting.
+
+        This is also the entry point for the skills ablation (RFC §3.3): at
+        ``env-ready`` — captured before ``install_agent()``, with the
+        ``sandbox`` layer so the container rolls back too — a
+        ``BranchDelta(skill_mode=...)`` child runs as a fresh rollout over the
+        restored sandbox and re-runs skill deployment under the switched mode.
+        Give *every* child of that fork an explicit ``skill_mode`` so the arms
+        are symmetric; a ``None`` delta would run in place on this rollout
+        instead.
         """
         return await _branch_engine(
             self,

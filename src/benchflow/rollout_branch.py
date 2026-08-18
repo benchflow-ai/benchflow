@@ -20,6 +20,13 @@ argument — ``Rollout.branch`` / ``Rollout.mark_stage`` /
 ``RolloutConfig.snapshot_stages``, and :func:`branch` with ``at_stage=`` forks
 from what it recorded.
 
+Most children run *in place* on the parent Rollout (a fresh agent session over
+the restored world). A ``skill_mode`` delta cannot: skills are deployed by
+``install_agent()``, so the child has to re-run installation as its own
+Rollout over the restored ``env-ready`` sandbox. This module keeps the gates
+(:func:`_validate_skill_delta`); :mod:`benchflow.branch_skill` owns that
+child.
+
 Isolation invariant (the architecture's "tree is additive / no-regression"):
 after :func:`branch` returns, the parent Rollout's linear state — ``_cursor``,
 ``_trajectory``, ``_rewards``, ``_phase``, ``_n_tool_calls`` (and the session
@@ -47,6 +54,13 @@ from benchflow.branch import restore as _restore_branch
 from benchflow.branch import restore_composed as _restore_composed
 from benchflow.branch_delta import BranchDelta
 from benchflow.branch_lineage import write_branch_artifacts, write_stage_snapshots
+from benchflow.branch_skill import (
+    EXECUTION_FRESH_ROLLOUT,
+    SKILL_DELTA_LAYER,
+    SKILL_DELTA_STAGE,
+    make_skill_child_runner,
+    resolve_child_skill_policy,
+)
 from benchflow.branch_stage import (
     BranchStageNotCaptured,
     captured_stages,
@@ -64,13 +78,15 @@ logger = logging.getLogger(__name__)
 # layer three and explicitly out of scope for v1.
 _SNAPSHOT_LAYERS = frozenset({"environment", "sandbox"})
 
-# The BranchDelta fields the v1 engine executes vs records-only. Only
-# ``injected_prompt`` executes today; the rest exist in the schema and
+# The BranchDelta fields the engine executes vs records-only.
+# ``injected_prompt`` runs in place on the parent's rollout; ``skill_mode``
+# runs the child as a fresh rollout from the env-ready snapshot (RFC §3.3,
+# gated by :func:`_validate_skill_delta`). The rest exist in the schema and
 # provenance so the artifact format is stable, and fail closed here.
 # Derived from the schema (all BranchDelta fields minus the executable set)
 # so a future BranchDelta field is unsupported-by-default — it fails closed
 # here instead of being silently ignored. Sorted for deterministic errors.
-_EXECUTABLE_DELTA_FIELDS = frozenset({"injected_prompt"})
+_EXECUTABLE_DELTA_FIELDS = frozenset({"injected_prompt", "skill_mode"})
 _UNSUPPORTED_DELTA_FIELDS = tuple(
     sorted(
         {f.name for f in dataclasses.fields(BranchDelta)} - _EXECUTABLE_DELTA_FIELDS
@@ -79,13 +95,15 @@ _UNSUPPORTED_DELTA_FIELDS = tuple(
 
 
 class BranchDeltaNotSupported(NotImplementedError):
-    """A BranchDelta field the v1 branch engine cannot execute (fail closed).
+    """A BranchDelta a branch request cannot execute as asked (fail closed).
 
-    ``environment_ref``, ``config_override`` and ``skill_mode`` are schema-
-    and provenance-stable now but execute only in the RFC follow-on
-    (child-as-fresh-rollout via ``use_prebuilt_env``). Until then a branch
-    request naming them fails closed here — before any child runs — rather
-    than running a child that silently ignores its delta.
+    Two cases. ``environment_ref`` and ``config_override`` are schema- and
+    provenance-stable but have no execution path at all yet. ``skill_mode``
+    does — as a fresh child rollout — but only from the ``env-ready`` stage
+    snapshot, and only when that snapshot carries the container layer; a
+    request that does not satisfy those preconditions fails closed here,
+    before any child runs, rather than running a child that silently ignores
+    its delta or measures a world its restore could not roll back.
     """
 
 # The per-child runner: given the child's branch node, run its continuation and
@@ -219,6 +237,66 @@ def _gate_layers(
         rollout._environment if "environment" in layers else None,
         sandbox if "sandbox" in layers else None,
     )
+
+
+def _validate_skill_delta(
+    rollout: Rollout,
+    skill_mode: str,
+    *,
+    index: int,
+    at_stage: str | None,
+    layers: frozenset[str],
+    run_child: ChildRunner | None,
+) -> None:
+    """Gate a ``skill_mode`` delta before anything is quiesced (RFC §3.3).
+
+    Three preconditions, each a way the delta would otherwise measure nothing:
+
+    * **the stage** — skills are deployed by ``install_agent()``, so only the
+      ``env-ready`` boundary (captured before it) can vary them; a cursor
+      branch forks a world that already resolved the question.
+    * **the container layer** — skills live in the container filesystem, so an
+      environment-state-only checkpoint cannot roll the parent's pack back and
+      a ``no-skill`` child would still find it mounted.
+    * **the runner** — a caller-supplied ``run_child`` owns the child's
+      execution, so it, not the engine, would decide what the child installs.
+
+    The task's own skill policy is resolved here too, so ``with-skill``
+    against a task shipping no bundled pack raises the same typed error
+    ``setup()`` would raise, before the branch restored anything.
+    """
+    where = f"stage {at_stage!r}" if at_stage is not None else "the cursor"
+    if at_stage != SKILL_DELTA_STAGE:
+        raise BranchDeltaNotSupported(
+            f"deltas[{index}].skill_mode={skill_mode!r} executes only at "
+            f"the {SKILL_DELTA_STAGE!r} stage boundary, but this branch forks "
+            f"from {where}: skills are deployed by install_agent(), which has "
+            "already run by then. Capture the boundary with "
+            "RolloutConfig(snapshot_stages={'env-ready'}, "
+            "snapshot_layers={'environment', 'sandbox'}) and fork with "
+            "branch_at_stage('env-ready', ...) — the child then runs as a "
+            "fresh rollout over the restored sandbox (use_prebuilt_env)."
+        )
+    if SKILL_DELTA_LAYER not in layers:
+        raise BranchDeltaNotSupported(
+            f"deltas[{index}].skill_mode={skill_mode!r} needs the "
+            f"{SKILL_DELTA_LAYER!r} layer in the {SKILL_DELTA_STAGE!r} "
+            f"snapshot, which captured layers={sorted(layers)!r}: skills are "
+            "deployed into the container filesystem, and an "
+            "environment-state-only checkpoint cannot roll them back — the "
+            "child would re-install against the parent's skills. Re-capture "
+            "the stage with snapshot_layers={'environment', 'sandbox'} (or "
+            "{'sandbox'} alone for a stateless environment)."
+        )
+    if run_child is not None:
+        raise ValueError(
+            f"deltas[{index}].skill_mode cannot be combined with an explicit "
+            "run_child — the caller's runner owns the child's execution, so "
+            "the engine cannot re-run install_agent() under the switched "
+            "mode. Drop run_child so the fresh-rollout runner executes the "
+            "delta, or switch skills inside your own runner."
+        )
+    resolve_child_skill_policy(rollout._config, skill_mode)
 
 
 async def capture_stage(
@@ -373,13 +451,17 @@ async def branch(
 
     ``deltas`` records the exactly-one-controlled-change each child runs
     under (RFC §3.3) — one :class:`BranchDelta` (or ``None`` = zero delta)
-    per child, validated before anything runs. v1 executes
-    ``injected_prompt`` only: it becomes the child's continuation prompt,
-    delivered as the child's user-visible first message through the default
-    runner and recorded in provenance as a content hash. The other fields
-    (``environment_ref``, ``config_override``, ``skill_mode``) raise
+    per child, validated before anything runs. Two fields execute.
+    ``injected_prompt`` becomes the child's continuation prompt, delivered as
+    the child's user-visible first message through the default runner and
+    recorded in provenance as a content hash. ``skill_mode`` runs the child as
+    a *fresh rollout* over the restored sandbox (``use_prebuilt_env``), which
+    re-runs ``install_agent()`` under the switched mode — the with-skill /
+    no-skill ablation; it requires ``at_stage="env-ready"`` with the container
+    layer in that snapshot, and fails closed otherwise. The remaining fields
+    (``environment_ref``, ``config_override``) raise
     :class:`BranchDeltaNotSupported` — fail closed before any child runs —
-    until the child-as-fresh-rollout follow-on executes them.
+    until the RFC follow-on executes them.
 
     After this returns, ``rollout``'s linear state is exactly what it was
     before — the tree gained ``n`` children at the cursor, nothing else
@@ -425,13 +507,23 @@ async def branch(
             for field_name in _UNSUPPORTED_DELTA_FIELDS:
                 if getattr(delta, field_name) is not None:
                     raise BranchDeltaNotSupported(
-                        f"deltas[{index}].{field_name} is set, but the v1 "
-                        "branch engine executes injected_prompt only — "
-                        f"{field_name!r} runs in the rollout-branching RFC "
+                        f"deltas[{index}].{field_name} is set, but the branch "
+                        "engine executes injected_prompt and skill_mode only "
+                        f"— {field_name!r} runs in the rollout-branching RFC "
                         "follow-on (child-as-fresh-rollout via "
                         "use_prebuilt_env). The field is already recorded in "
                         "the schema and provenance; drop it to branch today."
                     )
+            skill_mode = delta.skill_mode
+            if skill_mode is not None:
+                _validate_skill_delta(
+                    rollout,
+                    skill_mode,
+                    index=index,
+                    at_stage=at_stage,
+                    layers=layers,
+                    run_child=run_child,
+                )
             if delta.injected_prompt is not None and run_child is not None:
                 raise ValueError(
                     f"deltas[{index}].injected_prompt cannot be combined "
@@ -462,6 +554,7 @@ async def branch(
 
     parent = stage_node if stage_snapshot is not None else rollout._cursor
     runner = run_child if run_child is not None else make_default_runner(rollout)
+    run_dir = getattr(rollout, "_rollout_dir", None)
 
     # quiesce — pause the agent before snapshotting so the checkpoint is
     # consistent (the Branch lifecycle quiesces first).
@@ -508,6 +601,12 @@ async def branch(
         child.state["delta"] = (
             delta if delta is not None else BranchDelta()
         ).provenance_dict()
+        # How the delta is executed, recorded on the node for the same reason:
+        # a skill_mode child re-runs installation as its own Rollout, and the
+        # artifacts must say so rather than leaving a reader to infer it from
+        # the delta.
+        if delta is not None and delta.skill_mode is not None:
+            child.state["delta_execution"] = EXECUTION_FRESH_ROLLOUT
         children.append(child)
 
         # restore the checkpointed layers (sandbox first, then env — the
@@ -520,15 +619,27 @@ async def branch(
         saved.restore_onto(rollout)
         rollout._cursor = child
 
-        # An injected-prompt delta binds the child's continuation prompt into
-        # a per-child default runner — the formalized version of the caller's
-        # per-child-prompt closure (validated above to not combine with an
-        # explicit run_child).
+        # Pick the per-child runner (both cases validated above to not combine
+        # with an explicit run_child). A skill_mode delta runs the child as a
+        # fresh Rollout over the just-restored env-ready sandbox, because
+        # skills are deployed by install_agent() and only a re-install can
+        # vary them; an injected-prompt delta binds the child's continuation
+        # prompt into a per-child default runner — the formalized version of
+        # the caller's per-child-prompt closure.
         child_runner = runner
-        if run_child is None and delta is not None and delta.injected_prompt is not None:
-            child_runner = make_default_runner(
-                rollout, prompts=[delta.injected_prompt]
-            )
+        if run_child is None and delta is not None:
+            if delta.skill_mode is not None:
+                child_runner = make_skill_child_runner(
+                    rollout,
+                    delta=delta,
+                    parent=parent,
+                    branch_stage=SKILL_DELTA_STAGE,
+                    run_dir=run_dir,
+                )
+            elif delta.injected_prompt is not None:
+                child_runner = make_default_runner(
+                    rollout, prompts=[delta.injected_prompt]
+                )
 
         ret = await child_runner(child)
         child.state["reward"] = float(ret)
@@ -546,7 +657,6 @@ async def branch(
     # Lineage artifacts (RFC §3.4) — written only when the rollout knows its
     # run directory, and failure-isolated: an artifact-write error is logged
     # and never corrupts the branch result.
-    run_dir = getattr(rollout, "_rollout_dir", None)
     if run_dir is not None:
         try:
             write_branch_artifacts(
