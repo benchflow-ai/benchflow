@@ -1,0 +1,19 @@
+/* Design language shared with the site-styled viewer pages (_VIEWER_CSS,
+   upstream #1019/#1020): light monochrome base, white cards, hairline
+   borders, muted pastel accents as annotations, dark code treatment
+   reserved for terminal output. Token names match _VIEWER_CSS so the
+   injected confirm bar (--confirm mode) styles itself with no adaptation. */
+:root {
+  color-scheme: light;
+  --background: #fafafa; --card: #ffffff; --secondary: #f5f5f5;
+  --ink: #0a0a0a; --ink-secondary: #404040; --muted: #737373; --faint: #a1a1a1;
+  --border: #e5e5e5; --rule-strong: #c7c7c7;
+  --code-bg: #141414; --code-ink: #ececec;
+  --radius: 8px;
+  --font-sans: "Satoshi", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* semantic extensions in the same pastel grammar: pale bg + darker ink + soft strip */
+  --ok-bg: #e5f2ec; --ok-line: #cbe3d7; --ok-ink: #1a6b52; --ok-strip: #74bda0;
+  --bad-bg: #faeae7; --bad-line: #f0d4cf; --bad-ink: #a63d32; --bad-strip: #dc9186;
+  --warn-bg: #f7efda; --warn-line: #ecdcb2; --warn-ink: #8a5a12; --warn-strip: #dcb45e;
+}
