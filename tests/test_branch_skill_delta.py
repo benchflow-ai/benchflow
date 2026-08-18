@@ -276,6 +276,40 @@ async def test_skill_delta_children_deploy_different_skills_at_env_ready(
     assert (task / "environment" / "skills" / "demo" / "SKILL.md").exists()
 
 
+async def test_skill_child_never_injects_skills_into_the_staged_dockerfile(
+    tmp_path: Path, monkeypatch
+):
+    """The child adopts the restored sandbox, so its Dockerfile is never built.
+
+    Real-docker repro: the with-skill child staged its skills into the task copy
+    and appended ``COPY _deps/skills /skills/`` to a Dockerfile nothing rebuilds.
+    ``deploy_skills`` then read that line as "already baked into the image",
+    skipped the runtime upload, and the link step failed closed with
+    ``experiment_fidelity/skill_deployment_missing``. Injection must not happen
+    for a caller-owned sandbox — the pack has to arrive by runtime upload.
+    """
+    planes = FakePlanes()
+    task = _task_dir(tmp_path)
+    rollout = _parent(task, tmp_path, planes=planes)
+    _fake_verifier(monkeypatch)
+    await _capture_env_ready(rollout)
+
+    await rollout.branch_at_stage(
+        "env-ready",
+        2,
+        deltas=[
+            BranchDelta(skill_mode="with-skill"),
+            BranchDelta(skill_mode="no-skill"),
+        ],
+    )
+
+    assert planes.dockerfile_injections == []
+    with_skill, no_skill = planes.deployments
+    # The pack still reaches the with-skill child — by upload, not by build.
+    assert with_skill["skill_files"] == ["demo"]
+    assert no_skill["skills_dir"] is None
+
+
 async def test_skill_delta_child_is_a_separate_rollout_over_the_parent_sandbox(
     tmp_path: Path, monkeypatch
 ):
