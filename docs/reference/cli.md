@@ -440,10 +440,13 @@ startup line, and an `X-BenchFlow-Capped: 1` response header on
 shows an explicit error instead of another run.
 
 `hf://<org>/<dataset>[@revision][/subpath]` browses a HuggingFace trajectory
-dataset (e.g. the community ground-truth uploads): only the viewer-relevant
-files are fetched (trajectories plus result/timing/prompts/verifier sidecars,
-never the large `llm_trajectory`/`trainer` exports) into the shared
-`huggingface_hub` cache, so repeat views are incremental.
+dataset (e.g. the community ground-truth uploads). The download allowlist is
+exact — `result.json`, `timing.json`, `prompts.json`,
+`trajectory/acp_trajectory.jsonl`, and the four verifier sidecars the viewer
+renders (`reward.txt`, `test-stdout.txt`, `test-stderr.txt`, `ctrf.json`) —
+never wildcards, so large run artifacts and `llm_trajectory`/`trainer`
+exports are not fetched. Files land in the shared `huggingface_hub` cache,
+so repeat views are incremental.
 
 `--confirm` adds a sticky approve/reject bar to the page. When the reviewer
 clicks **Approve & submit** or **Not this one**, the server prints one

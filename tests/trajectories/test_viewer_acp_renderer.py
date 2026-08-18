@@ -13,16 +13,20 @@ import pytest
 
 from benchflow.trajectories.viewer import (
     _DIAGNOSTIC_KEYS_FALLBACK,
+    _HF_VIEWER_FILES,
+    HfDatasetSource,
+    LocalPathSource,
     _diagnostic_keys,
     _discover_rollouts,
-    _parse_hf_spec,
     _render_acp_trajectory,
     _resolve_browse_rollout,
-    _resolve_hf_source,
     _rollout_summary,
     _tool_content_texts,
+    parse_source,
     render_rollout,
+    resolve_hf_dataset,
 )
+from benchflow.trajectories.viewer.payload import VERIFIER_SIDECARS
 
 
 def _write_rollout(tmp_path: Path, events: list[dict]) -> Path:
@@ -256,32 +260,43 @@ class TestBrowseMode:
         assert summary["has_error"] is False
 
 
-class TestHfSource:
-    def test_parse_full_spec(self):
-        assert _parse_hf_spec("hf://benchflow/skillsbench-trajectories-apr2026") == (
-            "benchflow/skillsbench-trajectories-apr2026",
-            None,
-            "",
+class TestSources:
+    def test_parse_hf_specs(self):
+        assert parse_source("hf://benchflow/skillsbench-trajectories-apr2026") == (
+            HfDatasetSource("benchflow/skillsbench-trajectories-apr2026", None, "")
         )
-        assert _parse_hf_spec("hf://org/name/jobs/run-1") == (
-            "org/name",
-            None,
-            "jobs/run-1",
+        assert parse_source("hf://org/name/jobs/run-1") == HfDatasetSource(
+            "org/name", None, "jobs/run-1"
         )
-        assert _parse_hf_spec("hf://org/name@abc123/jobs") == (
-            "org/name",
-            "abc123",
-            "jobs",
+        assert parse_source("hf://org/name@abc123/jobs") == HfDatasetSource(
+            "org/name", "abc123", "jobs"
         )
 
-    def test_parse_tolerates_collapsed_slashes(self):
-        # Path("hf://a/b") round-trips as "hf:/a/b" (typer converts the CLI
-        # argument to Path before serve() sees it).
-        assert _parse_hf_spec("hf:/org/name/sub") == ("org/name", None, "sub")
+    def test_parse_local_path(self):
+        src = parse_source("jobs/run/task__abc123")
+        assert isinstance(src, LocalPathSource)
+        assert src.path == Path("jobs/run/task__abc123")
 
-    def test_parse_rejects_bare_org(self):
+    def test_parse_rejects_path_mangled_spelling(self):
+        # A pathlib.Path round trip collapses hf:// into hf:/ — that spelling
+        # must be rejected with a pointer, never silently accepted.
+        with pytest.raises(ValueError, match="hf://"):
+            parse_source("hf:/org/name/sub")
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "hf://just-one-part",
+            "hf://org/name/../escape",
+            "hf://org/name/a/../b",
+            "hf://org/na me",
+            "hf://org/name@",
+            "hf://org/name/sub\\path",
+        ],
+    )
+    def test_parse_rejects_malformed_specs(self, spec):
         with pytest.raises(ValueError):
-            _parse_hf_spec("hf://just-one-part")
+            parse_source(spec)
 
     def test_resolve_downloads_scoped_patterns(self, tmp_path, monkeypatch):
         calls = {}
@@ -301,15 +316,31 @@ class TestHfSource:
         monkeypatch.setattr(
             huggingface_hub, "snapshot_download", fake_snapshot_download
         )
-        root = _resolve_hf_source("hf://org/name/jobs/run-1")
+        root = resolve_hf_dataset(HfDatasetSource("org/name", None, "jobs/run-1"))
         assert root == tmp_path / "jobs" / "run-1"
         assert calls["repo_id"] == "org/name"
         assert calls["repo_type"] == "dataset"
-        # every pattern is scoped under the requested subpath, and the large
-        # non-viewer files (llm_trajectory, trainer/) are never requested
         assert all(p.startswith("jobs/run-1/") for p in calls["allow_patterns"])
         assert "jobs/run-1/trajectory/acp_trajectory.jsonl" in calls["allow_patterns"]
         assert not any("llm_trajectory" in p for p in calls["allow_patterns"])
+
+    def test_allowlist_is_precise_and_cannot_widen(self):
+        # Regression for the review finding that verifier/* pulled ~31 MB of
+        # unconsumed artifacts: every allowlist entry is an exact path (the
+        # only wildcard anywhere is the **/ recursion prefix added at
+        # download time), and the verifier portion is exactly the set
+        # payload._load_verifier reads — derived from VERIFIER_SIDECARS, so
+        # widening one without the other fails here.
+        for name in _HF_VIEWER_FILES:
+            assert "*" not in name, name
+        verifier_entries = {n for n in _HF_VIEWER_FILES if n.startswith("verifier/")}
+        assert verifier_entries == {f"verifier/{n}" for n in VERIFIER_SIDECARS}
+        assert set(VERIFIER_SIDECARS) == {
+            "reward.txt",
+            "test-stdout.txt",
+            "test-stderr.txt",
+            "ctrf.json",
+        }
 
 
 class TestTimestamps:

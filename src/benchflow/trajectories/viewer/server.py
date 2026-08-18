@@ -17,7 +17,7 @@ from .legacy import (
 )
 from .payload import _build_acp_payload, _is_acp_rollout_dir, _safe_json
 from .render import _render_shell
-from .sources import _resolve_hf_source
+from .sources import HfDatasetSource, parse_source, resolve_hf_dataset
 
 
 def serve(
@@ -44,9 +44,15 @@ def serve(
     ``confirm`` needs exactly one trajectory to approve, so combining it with
     a multi-run directory is an error.
     """
-    if isinstance(rollout_path, str) and rollout_path.startswith("hf:"):
-        rollout_path = str(_resolve_hf_source(rollout_path))
-    path = Path(rollout_path)
+    try:
+        source = parse_source(str(rollout_path))
+    except ValueError as exc:
+        print(exc)
+        sys.exit(1)
+    if isinstance(source, HfDatasetSource):
+        path = resolve_hf_dataset(source)
+    else:
+        path = source.path
     if (
         path.is_dir()
         and not _is_acp_rollout_dir(path)

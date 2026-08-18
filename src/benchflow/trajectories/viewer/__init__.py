@@ -32,7 +32,13 @@ from .payload import (
 )
 from .render import _render_acp_trajectory, _render_shell
 from .server import serve
-from .sources import _HF_VIEWER_FILES, _parse_hf_spec, _resolve_hf_source
+from .sources import (
+    _HF_VIEWER_FILES,
+    HfDatasetSource,
+    LocalPathSource,
+    parse_source,
+    resolve_hf_dataset,
+)
 
 __all__ = [
     # public surface
@@ -40,6 +46,10 @@ __all__ = [
     "render_turn",
     "render_jsonl_file",
     "serve",
+    "parse_source",
+    "resolve_hf_dataset",
+    "LocalPathSource",
+    "HfDatasetSource",
     # internals reached by tests and siblings through the historical module
     "_DIAGNOSTIC_KEYS_FALLBACK",
     "_HF_VIEWER_FILES",
@@ -51,12 +61,10 @@ __all__ = [
     "_discover_rollouts",
     "_inject_confirm_bar",
     "_is_acp_rollout_dir",
-    "_parse_hf_spec",
     "_parse_jsonl",
     "_render_acp_trajectory",
     "_render_shell",
     "_resolve_browse_rollout",
-    "_resolve_hf_source",
     "_rollout_summary",
     "_runs_cap",
     "_safe_json",
