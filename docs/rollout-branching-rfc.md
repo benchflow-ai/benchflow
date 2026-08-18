@@ -140,6 +140,27 @@ quality of evidence as a linear run:
 - **Per-child artifact directories** (`children/<child-id>/`) each with standard
   `result.json` / `config.json` / trajectory files — a child is a first-class rollout
   (implementation seam: `use_prebuilt_env` + the existing child-runner).
+- **The parent's own artifacts survive its children.** Children share the parent's
+  sandbox, and the sandbox bind-mounts the parent rollout's `agent/` / `artifacts/` /
+  `verifier/` directories into the container — which `restore()` deliberately replays.
+  Left alone, every child writes (and, via `clear_verifier_output_dir`, *deletes*) the
+  parent's own evidence, so a finished two-arm ablation shows the second arm's
+  `reward.txt` where the parent's belongs. The engine therefore takes custody of those
+  three directories for the duration of the fork:
+
+  ```
+  <run_dir>/
+    agent/ artifacts/ verifier/                    # the parent's own, restored at the end
+    branches/<parent-node-id>/
+      parent/{agent,artifacts,verifier}/           # transient: held only while children run
+      children/<child-node-id>/
+        mounted/{agent,artifacts,verifier}/        # what THIS child wrote to the shared mounts
+  ```
+
+  The mount roots are emptied entry by entry, never removed (deleting a live bind-mount
+  source detaches it from the running container), and `parent/` is transient — finding
+  it after a run means the branch did not complete and the parent's evidence is in
+  there rather than at its canonical path.
 - **`source_provenance`** on every child, extending the existing seam (the same one
   `benchflow-continue` uses):
 
