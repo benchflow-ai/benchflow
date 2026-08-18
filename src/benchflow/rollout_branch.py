@@ -13,8 +13,12 @@ path is a distinct, optional capability. Keeping it here holds ``rollout.py``
 under the size threshold and keeps the branch logic independently testable.
 
 The engine functions are free functions taking a ``Rollout`` as their first
-argument — ``Rollout.branch`` is a thin one-line entry point that delegates
-here.
+argument — ``Rollout.branch`` / ``Rollout.mark_stage`` /
+``Rollout.branch_at_stage`` are thin entry points that delegate here.
+:func:`capture_stage` is the stage-boundary policy's one capture path (RFC
+§3.2): the lifecycle calls it at the boundaries named in
+``RolloutConfig.snapshot_stages``, and :func:`branch` with ``at_stage=`` forks
+from what it recorded.
 
 Isolation invariant (the architecture's "tree is additive / no-regression"):
 after :func:`branch` returns, the parent Rollout's linear state — ``_cursor``,
@@ -30,17 +34,24 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from benchflow.branch import StageSnapshot
+from benchflow.branch import adopt_checkpoint as _adopt_checkpoint
 from benchflow.branch import aggregate as _aggregate_branch
 from benchflow.branch import checkpoint as _checkpoint_branch
 from benchflow.branch import checkpoint_composed as _checkpoint_composed
 from benchflow.branch import restore as _restore_branch
 from benchflow.branch import restore_composed as _restore_composed
 from benchflow.branch_delta import BranchDelta
-from benchflow.branch_lineage import write_branch_artifacts
+from benchflow.branch_lineage import write_branch_artifacts, write_stage_snapshots
+from benchflow.branch_stage import (
+    BranchStageNotCaptured,
+    captured_stages,
+    validate_stage,
+)
 from benchflow.models import TrajectorySource
 from benchflow.trajectories.tree import RolloutNode
 
@@ -89,7 +100,10 @@ class _LinearState:
 
     Captured before a branch child runs and restored after — this is what
     makes a branch child an *isolated sub-rollout* rather than a re-entrant
-    mutation of the shared Rollout instance.
+    mutation of the shared Rollout instance. The stage registry (RFC §3.2) is
+    scoped the same way: a child that runs through its own ``pre-verify``
+    boundary records that snapshot on its own node, and it must not become the
+    *parent's* pre-verify — a later branch there would fork the child's world.
     """
 
     cursor: RolloutNode
@@ -102,6 +116,8 @@ class _LinearState:
     session_tool_count: int
     session_traj_count: int
     executed_prompts: list[str]
+    stage_snapshots: dict[str, StageSnapshot]
+    stage_nodes: dict[str, RolloutNode]
 
     @classmethod
     def capture(cls, rollout: Rollout) -> _LinearState:
@@ -117,6 +133,8 @@ class _LinearState:
             session_tool_count=getattr(rollout, "_session_tool_count", 0),
             session_traj_count=getattr(rollout, "_session_traj_count", 0),
             executed_prompts=list(rollout._executed_prompts),
+            stage_snapshots=dict(getattr(rollout, "_stage_snapshots", {})),
+            stage_nodes=dict(getattr(rollout, "_stage_nodes", {})),
         )
 
     def restore_onto(self, rollout: Rollout) -> None:
@@ -131,6 +149,184 @@ class _LinearState:
         rollout._session_tool_count = self.session_tool_count
         rollout._session_traj_count = self.session_traj_count
         rollout._executed_prompts = list(self.executed_prompts)
+        rollout._stage_snapshots = dict(self.stage_snapshots)
+        rollout._stage_nodes = dict(self.stage_nodes)
+
+
+def _resolve_layers(snapshot_layers: Iterable[str], *, subject: str) -> frozenset[str]:
+    """Validate a requested layer set — the one gate both snapshot paths use.
+
+    ``subject`` names the operation in the diagnostic ("branch", "stage
+    snapshot 'env-ready'").
+    """
+    layers = frozenset(snapshot_layers)
+    unknown = layers - _SNAPSHOT_LAYERS
+    if unknown:
+        raise ValueError(
+            f"unknown snapshot_layers {sorted(unknown)!r} — allowed layers "
+            f"are {sorted(_SNAPSHOT_LAYERS)!r}"
+        )
+    if not layers:
+        raise ValueError(
+            "snapshot_layers must request at least one layer — a "
+            f"{subject} without a checkpoint has no roll-back point"
+        )
+    return layers
+
+
+def _gate_layers(
+    rollout: Rollout,
+    layers: frozenset[str],
+    *,
+    subject: str,
+    requested: str,
+    gate_sandbox: bool = False,
+) -> tuple[Any, Any]:
+    """Fail closed when a requested layer's plane or capability is missing.
+
+    Returns the ``(environment, sandbox)`` live objects for the requested
+    layers — ``None`` for a layer that was not requested, which is exactly the
+    "layer not requested" signal :func:`checkpoint_composed` /
+    :func:`restore_composed` take. Every diagnostic names ``subject``, so a
+    stage capture says *which stage* could not be taken (RFC §3.2) instead of
+    the generic branch message.
+
+    The container layer keeps its #384 semantics: the Branch lifecycle
+    composes container ⊃ environment-state ⊃ agent-session, and restoring only
+    environment state can produce inconsistent state for runs that mutate
+    process/service state the Environment manifest does not capture — so a
+    missing ``supports_snapshot`` never silently degrades.
+    """
+    if "environment" in layers and getattr(rollout, "_environment", None) is None:
+        raise RuntimeError(
+            f"{subject} needs the Environment plane — there is no world to "
+            "snapshot. Pass RolloutConfig(environment_manifest=...)."
+        )
+    sandbox = getattr(rollout, "_env", None)
+    if (gate_sandbox or "sandbox" in layers) and not getattr(
+        sandbox, "supports_snapshot", False
+    ):
+        sandbox_name = type(sandbox).__name__ if sandbox else "<none>"
+        raise RuntimeError(
+            f"{subject} cannot run with {requested}: the active "
+            f"sandbox {sandbox_name!r} does not implement container-level "
+            "snapshot/restore. Use a provider whose Sandbox satisfies the "
+            "checkpoint contract (DockerSandbox or DaytonaSandbox in direct "
+            "mode), or drop the sandbox layer if Environment-state "
+            "checkpoint is sufficient for this run."
+        )
+    return (
+        rollout._environment if "environment" in layers else None,
+        sandbox if "sandbox" in layers else None,
+    )
+
+
+async def capture_stage(
+    rollout: Rollout,
+    stage: str,
+    *,
+    snapshot_layers: Iterable[str] = frozenset({"environment"}),
+) -> StageSnapshot:
+    """Take the composed stage snapshot at ``rollout``'s cursor (RFC §3.2).
+
+    The stage-boundary policy's one capture path: validate the stage name and
+    the requested layers, fail closed on a missing plane or capability (the
+    diagnostic names the stage), compose the checkpoint on the cursor node —
+    so the stage tag flows into ``tree.json`` through the node's own recorded
+    state — and register it under ``stage`` on the rollout. The registry is
+    re-serialized to ``stage_snapshots.json`` after every capture, with write
+    failures logged and isolated from the rollout.
+
+    Callers are the lifecycle's own boundaries (``start()``/``verify()``, gated
+    on ``RolloutConfig.snapshot_stages``) and ``Rollout.mark_stage`` for the
+    boundaries only the caller can see. Two stages captured without an
+    intervening Step land on the same node (``pre-verify`` and ``post-verify``
+    of a rollout that verifies once, say): the registry keeps both, and the
+    node's own tag is the most recent — a node has one checkpoint, and the
+    branch that adopts it re-tags it with the stage it branched from.
+    """
+    validate_stage(stage)
+    subject = f"stage snapshot {stage!r}"
+    layers = _resolve_layers(snapshot_layers, subject=subject)
+    snap_env, snap_sandbox = _gate_layers(
+        rollout,
+        layers,
+        subject=subject,
+        requested=f"snapshot_layers={sorted(layers)!r}",
+    )
+    try:
+        snapshot = await _checkpoint_composed(
+            rollout._cursor,
+            environment=snap_env,
+            sandbox=snap_sandbox,
+            stage=stage,
+        )
+    except Exception as exc:
+        exc.add_note(
+            f"stage snapshot {stage!r} (snapshot_layers={sorted(layers)!r}) "
+            "failed during checkpoint — the rollout fails closed; no partial "
+            "checkpoint was recorded on the node."
+        )
+        raise
+    rollout._stage_snapshots[stage] = snapshot
+    rollout._stage_nodes[stage] = rollout._cursor
+
+    run_dir = getattr(rollout, "_rollout_dir", None)
+    if run_dir is not None:
+        try:
+            write_stage_snapshots(run_dir=run_dir, snapshots=rollout._stage_snapshots)
+        except Exception:
+            logger.warning(
+                "stage snapshot artifact write under %s failed — the recorded "
+                "stage registry is unaffected",
+                run_dir,
+                exc_info=True,
+            )
+    return snapshot
+
+
+def _recorded_stage_checkpoint(
+    rollout: Rollout, stage: str, snapshot_layers: Iterable[str] | None
+) -> tuple[StageSnapshot, RolloutNode, frozenset[str]]:
+    """Resolve a recorded stage into ``(snapshot, branch node, layers)``.
+
+    A stage that was never captured fails closed with
+    :class:`~benchflow.branch_stage.BranchStageNotCaptured` naming what *was*
+    captured — degrading to a checkpoint at the cursor would fork a different
+    world state than the caller asked for and mislabel it in provenance. The
+    layers are derived from the recorded snapshot; an explicit
+    ``snapshot_layers`` that disagrees is a caller bug, not a request to
+    re-snapshot.
+    """
+    validate_stage(stage)
+    registry: dict[str, StageSnapshot] = getattr(rollout, "_stage_snapshots", {})
+    snapshot = registry.get(stage)
+    if snapshot is None:
+        raise BranchStageNotCaptured(
+            f"no snapshot recorded at stage {stage!r} — this rollout captured "
+            f"{captured_stages(registry)!r}. Request the stage up front with "
+            "RolloutConfig(snapshot_stages={...}), or record it at the cut "
+            "point with Rollout.mark_stage()."
+        )
+    layers = frozenset(
+        layer
+        for layer, ref in (
+            ("environment", snapshot.environment_ref),
+            ("sandbox", snapshot.sandbox_ref),
+        )
+        if ref is not None
+    )
+    if snapshot_layers is not None and frozenset(snapshot_layers) != layers:
+        raise ValueError(
+            f"branch_at_stage({stage!r}, snapshot_layers="
+            f"{sorted(frozenset(snapshot_layers))!r}) disagrees with the "
+            f"layers stage {stage!r} actually captured ({sorted(layers)!r}) — "
+            "a stage branch restores exactly what the stage snapshotted; "
+            "re-run with the layers the capture used, or capture the stage "
+            "with the layers you want."
+        )
+    node = getattr(rollout, "_stage_nodes", {}).get(stage, rollout._cursor)
+    return snapshot, node, layers
 
 
 async def branch(
@@ -139,8 +335,9 @@ async def branch(
     run_child: ChildRunner | None = None,
     *,
     require_sandbox_snapshot: bool = False,
-    snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
+    snapshot_layers: frozenset[str] | set[str] | None = None,
     deltas: Sequence[BranchDelta | None] | None = None,
+    at_stage: str | None = None,
 ) -> float:
     """Branch ``rollout`` at its cursor into ``n`` child continuations.
 
@@ -190,23 +387,25 @@ async def branch(
     lineage artifacts (``tree.json``,
     ``branches/<branch-node-id>/children/<child-node-id>/``), with any
     artifact-write failure logged and isolated from the branch result.
+
+    ``at_stage`` branches from a recorded stage boundary instead of
+    checkpointing at the cursor (RFC §3.2): the stage's :class:`StageSnapshot`
+    becomes the roll-back point every child restores to, the fork happens at
+    the node that stage was captured on (so the children continue that stage's
+    world, and V aggregates over this fork only), and the stage name — not the
+    ``cursor:<id>`` fallback — is the ``branch_stage`` recorded in provenance.
     """
-    layers = frozenset(snapshot_layers)
-    unknown = layers - _SNAPSHOT_LAYERS
-    if unknown:
-        raise ValueError(
-            f"unknown snapshot_layers {sorted(unknown)!r} — allowed layers "
-            f"are {sorted(_SNAPSHOT_LAYERS)!r}"
+    stage_snapshot: StageSnapshot | None = None
+    if at_stage is not None:
+        stage_snapshot, stage_node, layers = _recorded_stage_checkpoint(
+            rollout, at_stage, snapshot_layers
         )
-    if not layers:
-        raise ValueError(
-            "snapshot_layers must request at least one layer — a branch "
-            "without a checkpoint has no roll-back point"
-        )
-    if "environment" in layers and rollout._environment is None:
-        raise RuntimeError(
-            "branch() needs the Environment plane — there is no world to "
-            "snapshot. Pass RolloutConfig(environment_manifest=...)."
+        subject = f"branch_at_stage({at_stage!r})"
+    else:
+        subject = "branch"
+        layers = _resolve_layers(
+            frozenset({"environment"}) if snapshot_layers is None else snapshot_layers,
+            subject=subject,
         )
     if n < 2:
         raise ValueError(f"a branch forks into >= 2 children, got n={n}")
@@ -242,38 +441,26 @@ async def branch(
                     "runner delivers it."
                 )
 
-    # Fail closed when the run requires the container checkpoint layer but the
-    # sandbox cannot snapshot it (#384). The Branch lifecycle composes
-    # container ⊃ environment-state ⊃ agent-session; without the container
-    # layer, restoring only environment state can produce inconsistent state
-    # for runs that mutate process/service state the Environment manifest does
-    # not capture. ``require_sandbox_snapshot`` keeps its original check-only
+    # Fail closed when a requested layer's plane or capability is missing
+    # (#384). ``require_sandbox_snapshot`` keeps its original check-only
     # semantics; requesting the layer via ``snapshot_layers`` gates the same
-    # way and then actually composes the sandbox into the checkpoint.
-    if require_sandbox_snapshot or "sandbox" in layers:
-        sandbox = getattr(rollout, "_env", None)
-        supports = getattr(sandbox, "supports_snapshot", False)
-        if not supports:
-            requested = (
-                "require_sandbox_snapshot=True"
-                if require_sandbox_snapshot
-                else f"snapshot_layers={sorted(layers)!r}"
-            )
-            sandbox_name = type(sandbox).__name__ if sandbox else "<none>"
-            raise RuntimeError(
-                f"branch({requested}) cannot run: the active "
-                f"sandbox {sandbox_name!r} does not implement container-level "
-                "snapshot/restore. Use a provider whose Sandbox satisfies the "
-                "checkpoint contract (DockerSandbox or DaytonaSandbox in direct "
-                "mode), or drop the sandbox layer if Environment-state "
-                "checkpoint is sufficient for this run."
-            )
+    # way and then actually composes the sandbox into the checkpoint. A stage
+    # branch gates too — the planes must still be live to restore what the
+    # stage captured.
+    snap_env, snap_sandbox = _gate_layers(
+        rollout,
+        layers,
+        subject=subject,
+        requested=(
+            "require_sandbox_snapshot=True"
+            if require_sandbox_snapshot
+            else f"snapshot_layers={sorted(layers)!r}"
+        ),
+        gate_sandbox=require_sandbox_snapshot,
+    )
+    composed = stage_snapshot is not None or layers != frozenset({"environment"})
 
-    snap_env = rollout._environment if "environment" in layers else None
-    snap_sandbox = getattr(rollout, "_env", None) if "sandbox" in layers else None
-    composed = layers != frozenset({"environment"})
-
-    parent = rollout._cursor
+    parent = stage_node if stage_snapshot is not None else rollout._cursor
     runner = run_child if run_child is not None else make_default_runner(rollout)
 
     # quiesce — pause the agent before snapshotting so the checkpoint is
@@ -283,20 +470,25 @@ async def branch(
     # checkpoint — snapshot the requested layers at the parent; the roll-back
     # point. The default environment-only request keeps the legacy path (and
     # the legacy bare-StateSnapshot shape on node.state["snapshot"]) intact.
-    try:
-        if composed:
-            await _checkpoint_composed(
-                parent, environment=snap_env, sandbox=snap_sandbox
+    # A stage branch adopts the snapshot the stage boundary already took —
+    # re-snapshotting there would capture a world that has since moved on.
+    if stage_snapshot is not None:
+        _adopt_checkpoint(parent, stage_snapshot)
+    else:
+        try:
+            if composed:
+                await _checkpoint_composed(
+                    parent, environment=snap_env, sandbox=snap_sandbox
+                )
+            else:
+                await _checkpoint_branch(parent, rollout._environment)
+        except Exception as exc:
+            exc.add_note(
+                f"branch(snapshot_layers={sorted(layers)!r}) failed during "
+                "checkpoint — the branch fails closed; no partial checkpoint "
+                "was recorded on the node."
             )
-        else:
-            await _checkpoint_branch(parent, rollout._environment)
-    except Exception as exc:
-        exc.add_note(
-            f"branch(snapshot_layers={sorted(layers)!r}) failed during "
-            "checkpoint — the branch fails closed; no partial checkpoint was "
-            "recorded on the node."
-        )
-        raise
+            raise
 
     # The parent's linear state, captured once. Each child runs against a fresh
     # restore of this; the parent is restored to it at the end.
@@ -344,8 +536,10 @@ async def branch(
     # restore the parent's linear state — the tree grew, nothing else moved.
     saved.restore_onto(rollout)
 
-    # aggregate — per-child return -> V(parent).
-    value = _aggregate_branch(parent)
+    # aggregate — per-child return -> V(parent), over *this* fork's children:
+    # a stage branch point can already carry the linear continuation, whose
+    # node has no reward to average.
+    value = _aggregate_branch(parent, over=children)
     parent.state["value"] = value
     rollout._phase = "branched"
 
@@ -361,6 +555,11 @@ async def branch(
                 parent=parent,
                 children=children,
             )
+            # Re-serialize the (restored) parent registry: a child that ran
+            # through a stage boundary of its own already overwrote the file.
+            stages = getattr(rollout, "_stage_snapshots", {})
+            if stages:
+                write_stage_snapshots(run_dir=run_dir, snapshots=stages)
         except Exception:
             logger.warning(
                 "branch lineage artifact write under %s failed — the branch "
