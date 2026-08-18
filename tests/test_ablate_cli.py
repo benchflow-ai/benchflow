@@ -44,6 +44,7 @@ from benchflow.ablate import (
     validate_arms_for_stage,
     write_ablation_report,
 )
+from benchflow.branch import UNSCORED_KEY
 from benchflow.branch_delta import BranchDelta
 from benchflow.cli.main import app
 from benchflow.rollout_branch import CHILD_WALL_CLOCK_KEY
@@ -410,6 +411,94 @@ async def test_run_ablation_cleans_up_and_isolates_a_failing_arm(
     assert report.arms[1].verdict == "errored before scoring — no reward to attribute"
     assert report.value is None
     assert report.has_errors is True
+
+
+class _UnscoredRollout(_FakeRollout):
+    """A fork whose children ran but produced no verifier reward.
+
+    The engine contract this mirrors is pinned directly in
+    ``tests/test_branch_skill_delta.py`` and ``tests/test_rollout_branch.py``:
+    a child whose ``verify()`` yielded nothing gets ``UNSCORED_KEY`` (the
+    reason) on its node and *no* ``reward`` key, and the branch returns ``None``
+    because there is nothing to average. This is the live-run failure that
+    reported two confident ``0.00``s.
+    """
+
+    reason: ClassVar[str] = (
+        "branch child regex-email-parser produced no verifier reward — "
+        "No reward file found at /out/verifier/reward.txt or reward.json"
+    )
+
+    async def branch_at_stage(self, stage, n, *, deltas=None) -> float | None:
+        self.calls.append(f"branch_at_stage:{stage}")
+        assert deltas is not None and len(deltas) == n
+        for delta in deltas:
+            child = self.tree.attach(self.tree.root)
+            child.state["delta"] = delta.provenance_dict()
+            child.state["delta_execution"] = "fresh-rollout"
+            child.state[CHILD_WALL_CLOCK_KEY] = 118.7
+            child.state[UNSCORED_KEY] = self.reason
+        return None
+
+
+async def test_an_unscored_child_is_an_arm_error_never_a_fabricated_zero(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The regression that made a real ablation lie.
+
+    Both children ran and neither was scored. Every arm must report ``error``
+    with the reason, carry a ``null`` reward in ``ablation.json``, claim
+    nothing in its verdict (never "no difference" between two arms that were
+    never scored), leave V undefined, and make the command exit non-zero.
+    """
+    _patch_rollout(monkeypatch, _UnscoredRollout)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert [arm.status for arm in report.arms] == ["error", "error"]
+    assert [arm.reward for arm in report.arms] == [None, None]
+    assert all("No reward file found" in arm.error for arm in report.arms)
+    assert all("no difference" not in arm.verdict for arm in report.arms)
+    assert all("0.00" not in arm.verdict for arm in report.arms)
+    assert report.value is None
+    assert report.has_errors is True
+
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert [arm["reward"] for arm in payload["arms"]] == [None, None]
+    assert [arm["status"] for arm in payload["arms"]] == ["error", "error"]
+
+
+def test_cli_exits_1_and_prints_no_score_for_an_unscored_arm(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The table must not show a score for an arm that was never scored."""
+    arms = _skill_outcomes(with_skill=0.0, no_skill=0.0)
+    for arm in arms:
+        arm.reward = None
+        arm.error = _UnscoredRollout.reason
+    report = _report(arms=arms, value=None)
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    _patched_run(monkeypatch, report)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--out-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "produced no verifier reward" in _flat(result.stderr)
+    assert "no difference" not in _flat(result.output)
+    payload = json.loads((tmp_path / "out" / "ablation.json").read_text())
+    assert [arm["reward"] for arm in payload["arms"]] == [None, None]
 
 
 async def test_run_ablation_records_a_branch_that_never_forked(

@@ -46,7 +46,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from benchflow.branch import StageSnapshot
+from benchflow.branch import UNSCORED_KEY, StageSnapshot, UnscoredChildError
 from benchflow.branch import adopt_checkpoint as _adopt_checkpoint
 from benchflow.branch import aggregate as _aggregate_branch
 from benchflow.branch import checkpoint as _checkpoint_branch
@@ -426,7 +426,7 @@ async def branch(
     snapshot_layers: frozenset[str] | set[str] | None = None,
     deltas: Sequence[BranchDelta | None] | None = None,
     at_stage: str | None = None,
-) -> float:
+) -> float | None:
     """Branch ``rollout`` at its cursor into ``n`` child continuations.
 
     The Branch lifecycle (``docs/architecture.md``, "Lifecycles"):
@@ -442,7 +442,11 @@ async def branch(
     4. ``score / aggregate`` — each child's return is recorded on
        ``child.state["reward"]`` (and its duration on
        :data:`CHILD_WALL_CLOCK_KEY`, in memory only); their mean is V(parent),
-       recorded on ``parent.state["value"]`` and returned.
+       recorded on ``parent.state["value"]`` and returned. A child that ran
+       but produced no reward is recorded as *unscored*
+       (:data:`~benchflow.branch.UNSCORED_KEY`) with no ``reward`` of its own,
+       and makes the fork's value ``None`` — an unobserved score is never
+       averaged in as a zero.
 
     The branch point is always the current cursor. ``run_child`` is the
     per-child runner — injected for unit tests; the default
@@ -653,22 +657,47 @@ async def branch(
                 )
 
         started = time.monotonic()
+        unscored: str | None = None
         try:
             ret = await child_runner(child)
+        except UnscoredChildError as exc:
+            # The child ran but was never scored. Record *why*, leave the
+            # node's reward unset, and keep going: the next child restores the
+            # checkpoint for itself, so one lost score does not cost the fork.
+            unscored = exc.reason
         finally:
             # Recorded in a finally so a child that raised still reports what
             # it cost before it did.
             child.state[CHILD_WALL_CLOCK_KEY] = time.monotonic() - started
-        child.state["reward"] = float(ret)
+        if unscored is not None:
+            child.state[UNSCORED_KEY] = unscored
+            logger.error("branch child %s is unscored: %s", child.id, unscored)
+        else:
+            child.state["reward"] = float(ret)
 
     # restore the parent's linear state — the tree grew, nothing else moved.
     saved.restore_onto(rollout)
 
     # aggregate — per-child return -> V(parent), over *this* fork's children:
     # a stage branch point can already carry the linear continuation, whose
-    # node has no reward to average.
-    value = _aggregate_branch(parent, over=children)
-    parent.state["value"] = value
+    # node has no reward to average. An unscored child makes V *undefined*:
+    # averaging it in as a zero would report a number computed from a score
+    # that was never observed, so the value is left unrecorded and returned
+    # as None.
+    unscored_children = [child for child in children if UNSCORED_KEY in child.state]
+    value: float | None
+    if unscored_children:
+        value = None
+        logger.error(
+            "branch at %s left %d of %d children unscored — V(parent) is "
+            "undefined and no value is recorded",
+            parent.id,
+            len(unscored_children),
+            len(children),
+        )
+    else:
+        value = _aggregate_branch(parent, over=children)
+        parent.state["value"] = value
     rollout._phase = "branched"
 
     # Lineage artifacts (RFC §3.4) — written only when the rollout knows its
@@ -707,8 +736,10 @@ def make_default_runner(
     (``docs/architecture.md``, "The hard part"), so the agent restarts per
     child. Each child connects a fresh agent and disconnects it at the end, so
     no two children's agents overlap (the next child connects only after the
-    previous one disconnected). ``verify()`` returning ``None`` or an empty
-    dict falls back to a ``0.0`` return.
+    previous one disconnected). ``verify()`` returning ``None``, an empty dict,
+    or a dict with a ``None`` reward raises
+    :class:`~benchflow.branch.UnscoredChildError`: the child ran but was never
+    scored, and a fabricated ``0.0`` would read as a real failing score.
 
     ``prompts`` — the child's continuation prompts; ``None`` keeps the
     rollout's resolved prompts. An ``injected_prompt`` delta (RFC §3.3) binds
@@ -723,8 +754,22 @@ def make_default_runner(
         await rollout.execute(prompts, node=child)
         rewards = await rollout.verify()
         await rollout.disconnect()
-        if not rewards:
-            return 0.0
-        return float(rewards.get("reward", 0.0))
+        if not rewards or rewards.get("reward") is None:
+            raise UnscoredChildError(
+                f"branch child {child.id} produced no verifier reward "
+                f"(verify() returned {rewards!r})" + _verifier_error_suffix(rollout)
+            )
+        return float(rewards["reward"])
 
     return _runner
+
+
+def _verifier_error_suffix(rollout: Rollout) -> str:
+    """`` — <verifier error>`` when the rollout recorded one, else ``''``.
+
+    The verifier's own diagnostic is the difference between "the agent scored
+    nothing" and "the score never reached the host", so it is carried into the
+    unscored reason verbatim rather than left in the log.
+    """
+    error = getattr(rollout, "_verifier_error", None)
+    return f" — {error}" if error else ""

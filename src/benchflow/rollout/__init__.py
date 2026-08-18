@@ -1842,7 +1842,7 @@ class Rollout:
         require_sandbox_snapshot: bool = False,
         snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
         deltas: Sequence[BranchDelta | None] | None = None,
-    ) -> float:
+    ) -> float | None:
         """Branch the rollout at the cursor into ``n`` child continuations.
 
         Thin entry point — the Branch engine lives in
@@ -1954,7 +1954,7 @@ class Rollout:
         deltas: Sequence[BranchDelta | None] | None = None,
         run_child: ChildRunner | None = None,
         snapshot_layers: frozenset[str] | set[str] | None = None,
-    ) -> float:
+    ) -> float | None:
         """Branch from a recorded stage boundary instead of from the cursor.
 
         The counterfactual entry point (RFC §3.2): the children restore the
