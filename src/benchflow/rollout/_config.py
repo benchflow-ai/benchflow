@@ -24,6 +24,7 @@ from benchflow._utils.config import (
     normalize_reasoning_effort,
     normalize_sandbox_user,
 )
+from benchflow.branch_stage import normalize_stages
 from benchflow.contracts import BaseUser, RolloutPlanes
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.loop_strategies import (
@@ -117,6 +118,20 @@ class RolloutConfig:
     # C-axis overlay (parsed dict) deep-merged into the task's resolved config
     # at rollout setup. None => no overlay (default).
     config_override: dict | None = None
+    # Stage-boundary snapshot policy (rollout-branching RFC §3.2). The
+    # lifecycle boundaries named here get a composed checkpoint as the rollout
+    # passes them, registered on the Rollout for a later branch_at_stage().
+    # Empty (default) => today's behavior exactly: no stage is captured and no
+    # snapshot call is made anywhere in the lifecycle. Unknown names fail
+    # closed here, at construction, not at the boundary. ``post-research`` is
+    # not auto-detectable — declaring it says the harness will call
+    # ``Rollout.mark_stage()`` when planning ends.
+    snapshot_stages: frozenset[str] = frozenset()
+    # The checkpoint layers each stage snapshot composes (RFC §3.1), the same
+    # notion Rollout.branch() takes. Layer names are validated by the branch
+    # engine's capability gate, the single source of truth for which layers
+    # exist and which the active planes can actually take.
+    snapshot_layers: frozenset[str] = frozenset({"environment"})
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.
@@ -194,6 +209,8 @@ class RolloutConfig:
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
+        self.snapshot_stages = normalize_stages(self.snapshot_stages)
+        self.snapshot_layers = frozenset(self.snapshot_layers)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
         explicit_scenes = bool(self.scenes)
