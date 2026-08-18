@@ -34,6 +34,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from benchflow.branch import UnscoredChildError
 from benchflow.branch_lineage import branch_child_dir, child_provenance
 from benchflow.branch_stage import STAGE_ENV_READY
 from benchflow.skill_policy import (
@@ -179,6 +180,11 @@ async def run_skill_child(
     beside its ``config.json`` (RFC §3.4). Artifact failure is isolated and
     logged, exactly as the branch engine isolates lineage writes: the child's
     reward stands either way.
+
+    A child that *ran* but was never scored raises
+    :class:`~benchflow.branch.UnscoredChildError`. That is the same principle
+    one step further: a child whose reward does not exist is not a child that
+    scored zero either, and the engine records it as unscored.
     """
     from benchflow.rollout import Rollout as _Rollout
 
@@ -205,9 +211,18 @@ async def run_skill_child(
             exc_info=True,
         )
     scored = (result.rewards if result is not None else None) or rewards
-    if not scored:
-        return 0.0
-    return float(scored.get("reward", 0.0))
+    if not scored or scored.get("reward") is None:
+        # The child ran but was never scored — its verifier crashed, or its
+        # output never reached the host. Reporting 0.0 here is how a lost
+        # reward became a real-looking observation in a live ablation; the
+        # engine records this as an unscored child instead.
+        verifier_error = getattr(child_rollout, "_verifier_error", None)
+        raise UnscoredChildError(
+            f"branch child {config.rollout_name} produced no verifier reward "
+            f"(verify() returned {rewards!r})"
+            + (f" — {verifier_error}" if verifier_error else "")
+        )
+    return float(scored["reward"])
 
 
 def make_skill_child_runner(

@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from benchflow.branch import StageSnapshot
+from benchflow.branch import UNSCORED_KEY, StageSnapshot
 from benchflow.branch_delta import BranchDelta
 from benchflow.environment.protocol import StateSnapshot
 from benchflow.trajectories.tree import RolloutNode, RolloutTree
@@ -97,6 +97,11 @@ def serialize_tree(
         }
         if _REWARD_KEY in node.state:
             entry["reward"] = float(node.state[_REWARD_KEY])
+        if UNSCORED_KEY in node.state:
+            # A node carries a reward or a reason it has none — never a
+            # stand-in number. Serializing the reason keeps the lineage
+            # honest about which children the run actually observed.
+            entry[UNSCORED_KEY] = str(node.state[UNSCORED_KEY])
         if _VALUE_KEY in node.state:
             entry["value"] = float(node.state[_VALUE_KEY])
         if _DELTA_KEY in node.state:
