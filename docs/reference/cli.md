@@ -393,11 +393,19 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--json` | `false` | Emit the report as JSON on stdout instead of the table |
 
 Arm kinds map onto the two `BranchDelta` fields the branch engine executes:
-`with-skill` / `no-skill` set `skill_mode`, which re-runs `install_agent()` as
-a fresh child rollout over the restored snapshot — so they are only valid at
-`env-ready`, the boundary captured *before* installation. `inject:<file>` sets
-`injected_prompt`, delivered as that child's user-visible continuation prompt
-and recorded as a content hash only.
+`with-skill` / `no-skill` set `skill_mode`, which re-runs `install_agent()`
+under the switched mode — so they are only valid at `env-ready`, the boundary
+captured *before* installation. `inject:<file>` sets `injected_prompt`,
+delivered as that child's user-visible continuation prompt and recorded as a
+content hash only.
+
+*How* an arm runs depends on `--at-stage`, not on its kind. `env-ready`
+precedes `install_agent()`, so **every** arm forked there runs as a fresh child
+rollout over the restored snapshot and installs the agent for itself —
+including an `inject:` arm, which would otherwise be scored in a world with no
+agent, no skills and no path lockdown and reported as "the parent's world plus
+one prompt". At `pre-verify` / `post-verify` the agent is already installed and
+the arms continue in place.
 
 The table shows one row per arm — reward, pass/fail, wall clock, and a
 one-line attribution such as *"fails (0.00) where with-skill passes (1.00) at

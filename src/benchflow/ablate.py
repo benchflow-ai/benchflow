@@ -32,7 +32,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow.branch_delta import BranchDelta
-from benchflow.branch_skill import SKILL_DELTA_LAYER, SKILL_DELTA_STAGE
+from benchflow.branch_skill import (
+    FRESH_CHILD_LAYER,
+    FRESH_CHILD_STAGE,
+    SKILL_DELTA_LAYER,
+    SKILL_DELTA_STAGE,
+)
 from benchflow.branch_stage import (
     BRANCH_STAGES,
     MARKED_STAGES,
@@ -132,7 +137,9 @@ def parse_arm(spec: str) -> AblationArm:
     :class:`BranchDelta` field: ``with-skill`` / ``no-skill`` become
     ``skill_mode`` (the child re-runs installation as a fresh rollout from the
     ``env-ready`` snapshot), and ``inject:<path>`` reads the file and becomes
-    ``injected_prompt`` (the child's user-visible continuation prompt). An
+    ``injected_prompt`` (the child's user-visible continuation prompt) — which
+    at ``--at-stage env-ready`` is *also* delivered by a fresh rollout, since
+    every child of that boundary installs the agent for itself. An
     unknown kind, an empty spec, or an injection file that is missing or blank
     raises :class:`AblationSpecError` — a silently dropped arm would publish an
     ablation table with a missing comparison.
@@ -206,10 +213,15 @@ def parse_arms(spec: str) -> list[AblationArm]:
     return arms
 
 
-def validate_arms_for_stage(arms: Sequence[AblationArm], stage: str) -> str:
+def validate_arms_for_stage(
+    arms: Sequence[AblationArm],
+    stage: str,
+    *,
+    snapshot_layers: frozenset[str] | set[str] | None = None,
+) -> str:
     """Reject a stage/arm combination before the parent rollout runs.
 
-    Two pre-flight gates, both mirroring a rule that lives elsewhere:
+    Three pre-flight gates, each mirroring a rule that lives elsewhere:
 
     * ``post-research`` is a mid-``execute()`` cut point only an explicit
       ``Rollout.mark_stage()`` can record (RFC §3.2). This command drives the
@@ -218,6 +230,12 @@ def validate_arms_for_stage(arms: Sequence[AblationArm], stage: str) -> str:
     * a ``skill_mode`` arm executes only at ``env-ready``, because skills are
       deployed by ``install_agent()`` (RFC §3.3). The branch engine fails
       closed on this too; here it costs nothing instead of a full run.
+    * an ``env-ready`` ablation runs *every* arm as a fresh rollout — that
+      boundary precedes ``install_agent()``, so each child installs the agent
+      for itself — which needs the container layer in the stage snapshot. The
+      engine raises :class:`~benchflow.rollout_branch.BranchChildExecutionNotSupported`
+      for this; the mirror here is checked only when the caller passes the
+      layers it will request.
 
     Returns the validated stage, so callers can use this as their one gate.
     """
@@ -236,6 +254,18 @@ def validate_arms_for_stage(arms: Sequence[AblationArm], stage: str) -> str:
                 f"{stage!r}: skills are deployed by install_agent(), which has "
                 f"already run by {stage!r}, so the arm would measure nothing"
             )
+    if (
+        stage == FRESH_CHILD_STAGE
+        and snapshot_layers is not None
+        and FRESH_CHILD_LAYER not in snapshot_layers
+    ):
+        raise AblationSpecError(
+            f"--at-stage {FRESH_CHILD_STAGE!r} needs the {FRESH_CHILD_LAYER!r} "
+            f"snapshot layer, got {sorted(frozenset(snapshot_layers))!r}: that "
+            "boundary precedes install_agent(), so every arm re-installs the "
+            "agent for itself and the container layer is what rolls one arm's "
+            "installation back before the next one runs"
+        )
     return stage
 
 
@@ -619,7 +649,9 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
     from benchflow.evaluation import effective_model
     from benchflow.rollout import Rollout, RolloutConfig
 
-    stage = validate_arms_for_stage(request.arms, request.stage)
+    stage = validate_arms_for_stage(
+        request.arms, request.stage, snapshot_layers=request.snapshot_layers
+    )
     if request.agent == "oracle":
         raise AblationSpecError(
             "bench eval ablate needs an ACP agent: every branch child connects "

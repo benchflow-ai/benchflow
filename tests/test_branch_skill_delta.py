@@ -1,8 +1,9 @@
-"""Regression tests for executing skill_mode branch deltas.
+"""Regression tests for executing branch children at the env-ready boundary.
 
 Guards the skill-delta execution path ("feat(branch): execute skill_mode deltas
 as fresh rollouts from the env-ready snapshot"; docs/rollout-branching-rfc.md
-§3.3 / WS-4b; FrontierPhysics#73). PR number to be added on submission.
+§3.3 / WS-4b; FrontierPhysics#73) and its generalization to every child of that
+boundary. PR number to be added on submission.
 
 ``skill_mode`` was schema-stable but fail-closed: skills are deployed by
 ``install_agent()``, so a branch at the cursor forks a world that has already
@@ -13,6 +14,15 @@ the switched mode — as a *fresh* Rollout over the restored sandbox
 skills (the staged build context and the deploy call, not just a recorded
 label), that every other branch point still fails closed, and that lineage
 records the effective mode and the fresh-rollout execution.
+
+Section 5 pins the same property for children that carry *no* skill delta. The
+seam is the stage, not the delta: ``env-ready`` precedes ``install_agent()``,
+so a child restored there has no agent binary, no sandbox user, no seeded
+verifier workspace, no lockdown and no skill pack. An in-place child forked
+there — the shape an ``inject:<file>`` ablation arm used to take — either dies
+connecting to an agent the restore deleted or scores a world missing everything
+installation deploys, and reports it as an ordinary single-delta child. Every
+engine-run child of that boundary therefore runs as a fresh rollout.
 
 These are unit tests against fakes — no Docker, Daytona, or API keys.
 """
@@ -34,9 +44,11 @@ from benchflow.rollout import Rollout, RolloutConfig, Scene
 from benchflow.rollout_branch import (
     _EXECUTABLE_DELTA_FIELDS,
     _UNSUPPORTED_DELTA_FIELDS,
+    BranchChildExecutionNotSupported,
     BranchDeltaNotSupported,
 )
 from benchflow.sandbox.protocol import SandboxImage
+from benchflow.task.paths import RolloutPaths
 from benchflow.trajectories.tree import Step
 
 SKILL_BODY = "---\nname: demo\n---\n\nUse the demo skill.\n"
@@ -241,6 +253,11 @@ def _parent(
     run_dir = tmp_path / "run"
     run_dir.mkdir(exist_ok=True)
     rollout._rollout_dir = run_dir
+    # What setup() would have left behind. Without it an in-place branch child
+    # dies in verify() on a None _rollout_paths, which would let a test "pass"
+    # for an incidental reason instead of on the property under test.
+    rollout._rollout_paths = RolloutPaths(rollout_dir=run_dir)
+    rollout._rollout_paths.mkdir()
     return rollout
 
 
@@ -772,3 +789,211 @@ def test_child_config_keeps_a_strategy_user_materializable(tmp_path: Path):
     assert child.user is not None
     assert type(child.user) is type(parent.user)
     assert child.max_user_rounds == parent.max_user_rounds
+
+
+# 5. Every env-ready child is a fresh rollout — the delta does not decide it
+
+
+async def test_injected_prompt_child_at_env_ready_reinstalls_the_agent(
+    tmp_path: Path, monkeypatch
+):
+    """The WS-4c hole: an ``inject:<file>`` arm forked from ``env-ready``.
+
+    ``env-ready`` is captured before ``install_agent()``, so the restored world
+    has no agent binary, no sandbox user, no seeded verifier workspace, no
+    lockdown and no skill pack. Routing that child through the in-place default
+    runner called ``connect()`` on a world where nothing had been installed:
+    against a real sandbox it dies launching a deleted binary, and against one
+    where the agent survives in the base image it scores a skill-less,
+    lockdown-less world and the report calls it "the parent's world plus one
+    injected prompt".
+
+    The evidence that it is fixed is the deploy call itself — one per child,
+    the same call the skills arms are measured by. Under the old routing
+    ``planes.deployments`` is empty because no child ever re-installed.
+    """
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes, skill_mode="with-skill")
+    _fake_verifier(monkeypatch)
+    await _capture_env_ready(rollout)
+
+    value = await rollout.branch_at_stage(
+        "env-ready",
+        2,
+        deltas=[None, BranchDelta(injected_prompt="Follow PLAN.md verbatim.")],
+    )
+
+    assert value == 1.0
+    assert len(planes.deployments) == 2, (
+        "each env-ready child must re-run install_agent() for itself — an "
+        "in-place child connects to an agent the restore deleted"
+    )
+    # ... and re-installs the *parent's* mode: an inject arm is a zero delta on
+    # skills, so both children must carry the pack the parent ran with.
+    assert [deployment["skill_files"] for deployment in planes.deployments] == [
+        ["demo"],
+        ["demo"],
+    ]
+    assert len(rollout._env.restored) == 2  # one container roll-back per child
+
+
+async def test_zero_delta_child_at_env_ready_is_a_fresh_rollout_too(
+    tmp_path: Path, monkeypatch
+):
+    """No deltas at all is the same hole: nothing about a delta made the
+    in-place child unsound, the boundary did. Both children install."""
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes, skill_mode="no-skill")
+    _fake_verifier(monkeypatch)
+    await _capture_env_ready(rollout)
+
+    await rollout.branch_at_stage("env-ready", 2)
+
+    assert len(planes.deployments) == 2
+    assert [deployment["skills_dir"] for deployment in planes.deployments] == [
+        None,
+        None,
+    ]  # the parent's own recorded mode, re-installed unchanged
+    children_dir = rollout._rollout_dir / "branches" / "root" / "children"
+    configs = [
+        json.loads((child / "config.json").read_text())
+        for child in sorted(children_dir.iterdir())
+    ]
+    assert [cfg["skill_mode"] for cfg in configs] == ["no-skill", "no-skill"]
+    assert all((child / "result.json").exists() for child in children_dir.iterdir())
+
+
+async def test_injected_prompt_at_env_ready_reaches_the_fresh_child(
+    tmp_path: Path, monkeypatch
+):
+    """The injection is still the child's user-visible first message — routing
+    it through a fresh rollout must not swallow it."""
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
+    _fake_verifier(monkeypatch)
+    prompts: list[list[str]] = []
+
+    async def recording_execute(client, session, sent, timeout, **kwargs):
+        prompts.append(list(sent))
+        return list(AGENT_EVENTS), 1
+
+    planes.execute_prompts = recording_execute
+    await _capture_env_ready(rollout)
+
+    await rollout.branch_at_stage(
+        "env-ready",
+        2,
+        deltas=[None, BranchDelta(injected_prompt="Follow PLAN.md verbatim.")],
+    )
+
+    assert prompts == [["Solve the task."], ["Follow PLAN.md verbatim."]]
+
+
+async def test_env_ready_lineage_marks_every_child_fresh_rollout(
+    tmp_path: Path, monkeypatch
+):
+    """``delta_execution`` is a property of how the engine ran the child, so a
+    zero-delta env-ready child records it too — a reader cannot infer it from
+    the delta, which is empty."""
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
+    _fake_verifier(monkeypatch)
+    await _capture_env_ready(rollout)
+
+    await rollout.branch_at_stage(
+        "env-ready", 2, deltas=[None, BranchDelta(injected_prompt="plan")]
+    )
+
+    run_dir = rollout._rollout_dir
+    nodes = {
+        node["id"]: node
+        for node in json.loads((run_dir / "tree.json").read_text())["nodes"]
+    }
+    assert nodes["n2"]["delta_execution"] == "fresh-rollout"
+    assert nodes["n3"]["delta_execution"] == "fresh-rollout"
+    children_dir = run_dir / "branches" / "root" / "children"
+    assert [
+        json.loads((children_dir / cid / "provenance.json").read_text())[
+            "delta_execution"
+        ]
+        for cid in ("n2", "n3")
+    ] == ["fresh-rollout", "fresh-rollout"]
+
+
+async def test_env_ready_children_need_the_container_layer_without_any_delta(
+    tmp_path: Path,
+):
+    """An environment-state-only env-ready snapshot cannot undo one child's
+    installation before the next child installs, so the fork fails closed —
+    even with no deltas at all, where no skill-delta gate would fire."""
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
+    await _capture_env_ready(rollout, layers={"environment"})
+
+    with pytest.raises(BranchChildExecutionNotSupported, match="sandbox") as excinfo:
+        await rollout.branch_at_stage("env-ready", 2)
+
+    assert "install_agent" in str(excinfo.value)
+    assert isinstance(excinfo.value, NotImplementedError)
+    # fail closed before anything is restored or installed
+    assert rollout._environment.restored == []
+    assert rollout._env.restored == []
+    assert planes.deployments == []
+    assert [node for node in rollout.tree.nodes() if "delta" in node.state] == []
+
+
+async def test_a_caller_supplied_runner_at_env_ready_still_owns_execution(
+    tmp_path: Path,
+):
+    """The engine never second-guesses an explicit ``run_child`` — including
+    the layer gate, which exists only because *the engine* would install."""
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
+    await _capture_env_ready(rollout, layers={"environment"})
+    ran: list[str] = []
+
+    async def run_child(child):
+        ran.append(child.id)
+        return 1.0
+
+    value = await rollout.branch_at_stage("env-ready", 2, run_child=run_child)
+
+    assert value == 1.0
+    assert ran == ["n2", "n3"]
+    assert planes.deployments == []
+
+
+async def test_an_injected_prompt_after_install_still_runs_in_place(
+    tmp_path: Path, monkeypatch
+):
+    """The counterpart guard: ``pre-verify`` is captured *after*
+    ``install_agent()``, so its children continue the installed world in place
+    and must NOT re-install — re-installing there would be the second-order
+    version of the same bug, changing the world an inject arm measures."""
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
+    # The in-place runner replays the parent's own resolved prompts; the parent
+    # here never ran setup(), so seed them the way setup() would.
+    rollout._resolved_prompts = ["Solve the task."]
+    _fake_verifier(monkeypatch)
+    prompts: list[list[str] | None] = []
+
+    async def recording_execute(client, session, sent, timeout, **kwargs):
+        prompts.append(list(sent) if sent is not None else None)
+        return list(AGENT_EVENTS), 1
+
+    planes.execute_prompts = recording_execute
+    await rollout.mark_stage("pre-verify", snapshot_layers={"environment", "sandbox"})
+
+    value = await rollout.branch_at_stage(
+        "pre-verify", 2, deltas=[None, BranchDelta(injected_prompt="Retry the fix.")]
+    )
+
+    assert value == 1.0
+    assert planes.deployments == []  # nothing re-installed
+    assert prompts == [["Solve the task."], ["Retry the fix."]]
+    nodes = {
+        node["id"]: node
+        for node in json.loads((rollout._rollout_dir / "tree.json").read_text())["nodes"]
+    }
+    assert "delta_execution" not in nodes["n1"]
