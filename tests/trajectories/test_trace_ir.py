@@ -550,6 +550,7 @@ IR_FAMILY = (
     "ir_to_atif",
     "ir_from_atif",
     "ir_from_otel",
+    "ir_to_acp",
     "_otlp_anyvalue",
     "ir_round_trip",
 )

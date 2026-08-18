@@ -171,10 +171,10 @@ content blocks permissive for this reason.
 
 ### 2.4 Records in the file that the ACP-session emitter did not produce
 
-**FACT.** Two other sources can put records into `acp_trajectory.jsonl`. Neither
-goes through `_events_to_trajectory`, and the schema models neither. Note that
-the artifact *path* is the same in every mode, so the same filename can hold
-different record shapes depending on how the rollout ran.
+**FACT.** **Three** other sources can put records into `acp_trajectory.jsonl`.
+None goes through `_events_to_trajectory`, and the schema models none of them.
+Note that the artifact *path* is the same in every mode, so the same filename
+can hold different record shapes depending on how the rollout ran.
 
 **Session-factory Sessions.** `_snapshot_session_trajectory` duck-types on the
 ACP streaming attributes; a `benchflow.agents.protocol.Session` has none, so the
@@ -192,8 +192,40 @@ final write depends on the trajectory list the caller passes to
 mutually exclusive today, and **no production path emits a mixed ACP + oracle
 artifact**.
 
+**`hosted_env`, which writes the file directly.** `_reconstruct_trajectory`
+(`hosted_env.py:655`) rebuilds a trajectory from a vf-eval `results.jsonl` and
+`hosted_env.py:552` writes it to the artifact path **without going through
+`TrajectoryWriter`**. Its own docstrings call the output "ACP-shaped" and
+"ACP-style session events", and the resemblance is real but partial: the records
+reuse the `user_message` / `agent_message` type strings while carrying the text
+under **`content`** rather than `text`, adding `ts` and `example_index`, and
+introducing a **fourth type, `reward`**, with `value` and `source`
+(`hosted_env.py:720-767`). Every one of those records fails the §2.1 schema —
+on the required field, on `additionalProperties`, and for `reward` on the type
+enum. This is provenance-tagged: `trajectory_source="hosted_env"`.
+
+**A fourth record family is recognized by consumers, and nothing in this
+repository writes it.** `viewer.py:573` branches on
+`{session_meta, response_item, event_msg, turn_context}`, and
+`publish/traj_report.py:243-246` reads the same set. No site under `src/` emits
+those types. They are an **externally produced** shape: `cli/traj.py:549`
+identifies `session_meta` as a **Codex** payload, alongside Claude's `cwd`
+events, and that CLI uploads sessions recorded by those harnesses. So this is a
+foreign trace format the consumers tolerate, not a BenchFlow producer — worth
+separating, because "a consumer knows how to read it" and "something here writes
+it" are different facts and only the first is shown.
+
 So the file is not a superset of the ACP-session emitter's output; it holds one
 of several possible shapes, and no single site defines its full vocabulary.
+
+**There is, however, a partial typed contract nobody has connected to this
+schema**: `TrajectorySource = Literal["acp", "scraped", "partial_acp",
+"hosted_env"]` (`models.py:17`) records *which lineage produced the file* and
+reaches `result.json`. It has four members and covers neither the oracle records
+nor the family above — in oracle mode `"oracle"` is the **agent name**, not the
+trajectory source. So the artifact's provenance is typed while its *content* is
+not, which is the gap §2.1 describes from the other side.
+
 Whether `oracle` belongs in the ACP trajectory contract or is a separate
 downstream concern is an open question (see §6), and this document does not
 settle it.
@@ -623,9 +655,11 @@ Three design choices carry most of the weight:
 
 **`ACP → IR`** ([`ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)),
 **`IR → ATIF`** ([`ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py)),
-**`ATIF → IR`** ([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py))
-and **`OTLP/JSON → IR`**
-([`ir_from_otel.py`](../src/benchflow/trajectories/ir_from_otel.py)) **are
+**`ATIF → IR`** ([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py)),
+**`OTLP/JSON → IR`**
+([`ir_from_otel.py`](../src/benchflow/trajectories/ir_from_otel.py)) and
+**`IR → ACP capture events`**
+([`ir_to_acp.py`](../src/benchflow/trajectories/ir_to_acp.py)) **are
 implemented**, all unwired and still provisional. `IR → OTel` is not, and is
 deliberately not sketched — §8.11 lists the decisions it depends on.
 
@@ -689,10 +723,12 @@ trace length.
 unwired: `export_atif.py` is untouched and still the only writer of
 `trainer/atif.json`.
 
-**FACT — the hub reproduces the direct exporter.** For any conformant capture
-input, `ir_to_atif(acp_events_to_ir(events), prompts=P)` produces the same
-document as `trajectory_to_atif_record(events=events, prompts=P)`, with one
-deliberate exception (oracle, below). Asserted by
+**FACT — the hub reproduces the direct exporter on everything measured.**
+`ir_to_atif(acp_events_to_ir(events), prompts=P)` produces the same document as
+`trajectory_to_atif_record(events=events, prompts=P)`, with one deliberate
+exception (oracle, below). **Measured, not proved for all inputs**: the evidence
+is the corpus named next, and no argument here establishes the property for
+capture inputs outside it. Asserted by
 `tests/trajectories/test_ir_to_atif.py` over events driven through the
 production capture path and nine further shapes, and confirmed against the two
 real rollouts of §5.2: for both, the document produced through the hub is
@@ -951,6 +987,138 @@ the whole run, which a batch does not promise. When no span carries them at all,
 the same fields become `UNSUPPORTED` instead. Two different reasons for the same
 empty field, kept apart.
 
+#### IR → ACP capture events
+
+**Implemented** ([`ir_to_acp.py`](../src/benchflow/trajectories/ir_to_acp.py)),
+unwired, in memory only.
+
+**The target is the ACP-session capture event format, not the
+`acp_trajectory.jsonl` artifact.** §2.1 and §2.4 are the reason: the file holds
+records from four sources — the ACP-session emitter, `_run_oracle`,
+`hosted_env`, and whatever a session-factory `Session` puts in `steps` — plus a
+fifth family the viewer reads and nothing here writes. **No artifact-level
+contract exists**, so there is nothing for an edge to target at that level. The
+capture format *is* defined, by the §2.1 schema, and that is what this edge
+writes. Whether the artifact should acquire a contract is untouched by this
+slice.
+
+| IR | ACP capture | Class | Loss recorded |
+|---|---|---|---|
+| `USER_MESSAGE` / `AGENT_MESSAGE` / `AGENT_REASONING` + text | `text_event` with the matching `type` | preserved | — including an observed `""` |
+| `TOOL_CALL` with every required value | `tool_call_event` | preserved | — |
+| `TIMEOUT` with `outcome == "wall_clock_timeout"` and its three extension keys | `agent_timeout_event` | preserved | — recovered by name from `extensions` |
+| `tool_call.title` absent | `""` | **synthesized** | `events[i].tool_call.title` — the contract's own representation of an absent title |
+| `content[].raw` | the block, verbatim | preserved | `…content[i].kind` — the IR's text/opaque classification is not part of the wire shape |
+| several `reasoning_segments` | one `agent_thought` | dropped | `events[i].reasoning_segments` — §5 loss #10, in the writing direction |
+| `arguments`, `name_semantics`, per-event and per-call timestamps, `role`, `source_type`, `usage`, `extensions` | *(no slot)* | dropped | one record each, when the trace carries them |
+| `trace_id`, `session_id`, `started_at`, `finished_at`, `agent.*`, `usage`, `outcome.*`, trace `extensions` | *(no envelope at all)* | dropped | one record each |
+
+**Five things make an event unrepresentable, and each refuses rather than
+invents.** A tool call with no ACP `status`, no `tool_call_id` or no `kind`; a
+content block with no source block to write; a text event with no text; a
+timeout missing or mistyping any of its four required values; and an `ORACLE` or
+`UNKNOWN` event, which have no record shape in the contract at all.
+
+**`status` is the one that matters.** The ACP vocabulary is closed and every
+member asserts a lifecycle state, so there is no neutral value and the IR's
+`ToolStatus.UNKNOWN` has no counterpart. A synthesized status would reach the
+viewer and be displayed to a person as an observation. It is never written.
+
+**Fail closed.** A trace with one unrepresentable event yields **no** events —
+`AcpCaptureNotRepresentable`, a `ValueError` carrying the blocking
+`LossRecord`s. The target has no envelope, no count and no marker for "some
+events are missing", so a partial list is indistinguishable from a complete one
+the moment it leaves the converter.
+
+**Representability is decided by the data, never by the provenance.** An
+OTel-derived trace that carries every required value exports; an ACP-derived
+trace missing one does not. `Provenance` is not read, and a test asserts the
+module never references it. Today ACP-derived traces usually export and
+OTel-derived ones usually do not — that is an observation about what those edges
+currently carry, not a rule.
+
+**`name_semantics` is part of that data, and it gates the `kind` slot.** ACP's
+`kind` is a *category* — `ToolKind` calls itself "Category tag for tool calls",
+`_canonical_tool_kind` defaults an absent one to `other`, and the production
+values (`execute`, `edit`, `fetch`, `think`) are categories. ATIF's
+`function_name` and OTel's `gen_ai.tool.name` name *particular tools*. Writing
+one of those into `kind` would not be a normalization a reader could undo; it
+would assert a category nobody observed. So only `name_semantics == "acp_kind"`
+may be written, and **the string is never inspected** — a `function_name` of
+`read` coincides with a real `ToolKind` member and is refused anyway.
+
+**Why `content[].raw` is required, and what it costs.** The schema leaves
+`content_block` permissive (`type: object`), so this is **not** a constraint the
+contract imposes — it is a conservative choice not to invent wire structure. ACP
+stores `session/update.content` exactly as the wire delivered it, and two shapes
+are known to be consumed: the nested `{"type": "content", "content": {...}}` and
+the flat `{"text": …}`. A block that carries rendered text but no source block
+gives no way to choose between them.
+
+The cost is concrete and worth stating plainly: **`ATIF → IR` and `OTLP → IR`
+both produce content blocks with `text` and no `raw`, so a tool result that did
+not come from ACP is normally not representable today.** Relaxing this would
+require defining a canonical ACP content-block construction policy — which shape
+to write, and on whose authority. **No such policy is defined here**, and adding
+one is a decision rather than an implementation detail.
+
+**What the round trip has actually been measured on.** `ACP → IR → ACP`
+reproduces its input with **structural equality** on three corpora: the two
+captured rollouts of §5.2 — H1, five records, and H2, four records ending in a
+real wall-clock timeout — and the suite's conformant fixture of five records
+together with its five drop-one subsets. **Key-order preservation** and **schema
+validity** are checked separately, the second over six further shapes. Byte
+equality through `redact_acp_trajectory_jsonl` also holds, but adds nothing
+beyond key order: the serializer redacts both sides, so redaction cancels.
+
+**No universality is claimed or demonstrated.** There is no property test, and
+three corpora are three corpora: nothing here establishes the behaviour for
+conformant inputs outside them. What *is* structural is the alternative — the
+edge either reproduces its input or refuses, so an unmeasured input cannot
+silently produce a degraded record. It produces none.
+
+#### Human verification of the ACP edge
+
+**HUMAN E2E VERIFIED, 2026-08-18, G1–G10 all pass**, against
+`e2e-g/PROCEDURE.md`. Every step was carried out and judged by a person rather
+than by the suite.
+
+| | what was verified |
+|---|---|
+| G1 | H1 and H2 are real BenchFlow rollouts — `result.json` carries `trajectory_source: "acp"`, the typed lineage of `models.py:17`, and each record's keys are the emitter's literal writes |
+| G2 | `ACP → IR → ACP` read event by event: structural equality **and** key-order preservation on H1 (5 records) and H2 (4 records) |
+| G3 | every loss path resolves in the canonical encoding; **no unexpected synthesis**; `name_semantics: "acp_kind"` recorded `NORMALIZED`, not `DROPPED` |
+| G4 | the laundering path is closed — a `function_name` is refused even when its value spells `read`, `write`, `bash` or another real `ToolKind` member; the OTel fixture shows 8 blockers in four independent kinds |
+| G5 | fail-closed atomicity: the blocker is on the last event and **no partial prefix** is returned |
+| G6 | `title=None` → `""` with `SYNTHESIZED`; an observed empty title synthesizes nothing; `tool_call_id=None` is refused |
+| G7 | representability and output are independent of provenance, and an ACP-derived trace with an `UNKNOWN` status is still refused |
+| G8 | 12 emitted records validated, 0 errors, and all four negative controls rejected |
+| G9 | 27/27 mutations caught, no `MISSED`, no `SKIP`, exit 0; the files restored, proven by a green `tests/trajectories` |
+| G10 | no importer outside the IR family, no wiring, no file I/O; `uv.lock`, `ir.py`, the schema and the viewer unchanged |
+
+**The verification found two defects, both in the procedure, neither in the
+converter.** G4 described the OTel fixture's blockers as three independent kinds
+when there are four, and the inspector's G7 header said "two traces" while
+printing four. Both are corrected in the scaffolding, which lives outside the
+repository and is not part of this change.
+
+**What the sign-off does not extend to.** Each of these is unchanged by it:
+
+- **Not** that every conformant ACP document round-trips. The measured corpora
+  are H1, H2 and the suite fixture with its subsets.
+- **Not** that the `acp_trajectory.jsonl` **artifact** is supported. The target
+  is the capture *event format* of §2.1; that file also holds oracle records,
+  `hosted_env` records and session-factory `steps`, and §2.4 records that no
+  artifact-level contract exists.
+- **Not** that `ORACLE` or `UNKNOWN` events are exportable — they have no record
+  shape in the contract and are refused.
+- **Not** that ATIF or OTel tool results are generally exportable. Their content
+  blocks carry `text` and no `raw`, and their names are not ACP kinds.
+- **Not** that `OTel → Viewer` works. The OTel fixture is four independent kinds
+  of refusal away from exporting, and nothing here changes that.
+- **Not** that anything is wired. There is no runtime path, and this edge writes
+  no file — it returns records.
+
 #### IR → OpenTelemetry
 
 **Not implemented, and deliberately not sketched further.** The inbound edge
@@ -1207,9 +1375,12 @@ here.
 ### 8.7 Status
 
 - **Implemented:** the IR types, the loss model with its path spaces, the
-  invariants, the validation suite, this section, four converters — `ACP → IR`,
-  `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR` — each with its loss report, and
-  the round-trip measurement over the ATIF pair (§8.10).
+  invariants, the validation suite, this section, five converters — `ACP → IR`,
+  `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR`, `IR → ACP capture events` — each
+  with its loss report; the round-trip measurement over the ATIF pair (§8.10),
+  and the ACP pair's round-trip evidence in §8.3 and its test suite. There is no
+  §8.10-style measurement for the ACP pair: `ACP → IR → ACP` either reproduces
+  its input exactly or refuses, so there is no partial preservation to quantify.
 - **Deferred by a decision of ours, reversibly:** `IR → OTel` — see §8.12 for
   the reasoning and the conditions that end the deferral. The OTel direction is
   *implemented inbound and deferred outbound*, which is one state and not two
@@ -1222,8 +1393,8 @@ here.
 
 The isolation property is unchanged in substance and restated at a new boundary:
 `ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py`,
-`ir_from_otel.py`, `_otlp_anyvalue.py` and `ir_round_trip.py` form a closed
-family that may import each other, and
+`ir_from_otel.py`, `ir_to_acp.py`, `_otlp_anyvalue.py` and `ir_round_trip.py`
+form a closed family that may import each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
 `src/benchflow` imports any of them.
 
