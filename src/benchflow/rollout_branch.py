@@ -21,11 +21,13 @@ argument — ``Rollout.branch`` / ``Rollout.mark_stage`` /
 from what it recorded.
 
 Most children run *in place* on the parent Rollout (a fresh agent session over
-the restored world). A ``skill_mode`` delta cannot: skills are deployed by
-``install_agent()``, so the child has to re-run installation as its own
-Rollout over the restored ``env-ready`` sandbox. This module keeps the gates
-(:func:`_validate_skill_delta`); :mod:`benchflow.branch_skill` owns that
-child.
+the restored world). Children forked from ``env-ready`` cannot: that boundary
+precedes ``install_agent()``, so the restored world has no agent to connect to
+and none of the skills, sandbox user or lockdown installation deploys — each
+child re-runs installation as its own Rollout over the restored sandbox,
+whatever its delta. This module keeps the gates
+(:func:`_validate_skill_delta`, :func:`_validate_fresh_children`);
+:mod:`benchflow.branch_skill` owns that child.
 
 Isolation invariant (the architecture's "tree is additive / no-regression"):
 after :func:`branch` returns, the parent Rollout's linear state — ``_cursor``,
@@ -57,9 +59,11 @@ from benchflow.branch_delta import BranchDelta
 from benchflow.branch_lineage import write_branch_artifacts, write_stage_snapshots
 from benchflow.branch_skill import (
     EXECUTION_FRESH_ROLLOUT,
+    FRESH_CHILD_LAYER,
+    FRESH_CHILD_STAGE,
     SKILL_DELTA_LAYER,
     SKILL_DELTA_STAGE,
-    make_skill_child_runner,
+    make_fresh_child_runner,
     resolve_child_skill_policy,
 )
 from benchflow.branch_stage import (
@@ -114,6 +118,19 @@ class BranchDeltaNotSupported(NotImplementedError):
     request that does not satisfy those preconditions fails closed here,
     before any child runs, rather than running a child that silently ignores
     its delta or measures a world its restore could not roll back.
+    """
+
+
+class BranchChildExecutionNotSupported(NotImplementedError):
+    """The engine cannot run this fork's children safely (fail closed).
+
+    Raised when the *boundary*, not the delta, makes execution unsound: an
+    ``env-ready`` fork whose snapshot omits the container layer. Every child of
+    that stage re-runs ``install_agent()`` for itself (see
+    :mod:`benchflow.branch_skill`), and without the container layer the restore
+    cannot undo the previous child's installation — the second child would
+    install on top of the first and report the result as a controlled
+    comparison.
     """
 
 # The per-child runner: given the child's branch node, run its continuation and
@@ -309,6 +326,47 @@ def _validate_skill_delta(
     resolve_child_skill_policy(rollout._config, skill_mode)
 
 
+def _runs_fresh_children(at_stage: str | None, run_child: ChildRunner | None) -> bool:
+    """Whether the engine will run this fork's children as fresh rollouts.
+
+    True for every engine-run child of ``env-ready``, whatever its delta. That
+    boundary precedes ``install_agent()``, so the restored world has no agent
+    binary, no sandbox user, no seeded verifier workspace, no path lockdown and
+    no skill pack: an in-place child there connects to something the restore
+    deleted, or — when the agent happens to survive in the base image — scores
+    a world missing everything installation deploys and reports it as an
+    ordinary child under one recorded delta. A caller-supplied ``run_child``
+    owns its own execution and is left alone.
+    """
+    return run_child is None and at_stage == FRESH_CHILD_STAGE
+
+
+def _validate_fresh_children(layers: frozenset[str], *, at_stage: str) -> None:
+    """Gate a fresh-child fork before anything is quiesced.
+
+    One precondition beyond the per-delta gates: the stage snapshot must carry
+    the container layer. Every child re-runs ``install_agent()``, which writes
+    to the container filesystem, so an environment-state-only checkpoint cannot
+    put the world back between children — child *k+1* would install on top of
+    child *k*'s agent, user, lockdown and skill pack. The skill-delta gate says
+    the same thing in skill terms and fires first when a skill delta is
+    present; this covers the children that carry no skill delta at all.
+    """
+    if FRESH_CHILD_LAYER not in layers:
+        raise BranchChildExecutionNotSupported(
+            f"a branch at the {at_stage!r} stage boundary runs every child as "
+            f"a fresh rollout, which needs the {FRESH_CHILD_LAYER!r} layer in "
+            f"that snapshot; it captured layers={sorted(layers)!r}. "
+            f"{at_stage!r} precedes install_agent(), so each child installs "
+            "the agent (and its skills, user and lockdown) for itself, and an "
+            "environment-state-only checkpoint cannot roll that back between "
+            "children. Re-capture the stage with "
+            "snapshot_layers={'environment', 'sandbox'} (or {'sandbox'} alone "
+            "for a stateless environment), or supply your own run_child if "
+            "you are executing the children yourself."
+        )
+
+
 async def capture_stage(
     rollout: Rollout,
     stage: str,
@@ -468,15 +526,25 @@ async def branch(
     under (RFC §3.3) — one :class:`BranchDelta` (or ``None`` = zero delta)
     per child, validated before anything runs. Two fields execute.
     ``injected_prompt`` becomes the child's continuation prompt, delivered as
-    the child's user-visible first message through the default runner and
-    recorded in provenance as a content hash. ``skill_mode`` runs the child as
-    a *fresh rollout* over the restored sandbox (``use_prebuilt_env``), which
-    re-runs ``install_agent()`` under the switched mode — the with-skill /
-    no-skill ablation; it requires ``at_stage="env-ready"`` with the container
-    layer in that snapshot, and fails closed otherwise. The remaining fields
-    (``environment_ref``, ``config_override``) raise
-    :class:`BranchDeltaNotSupported` — fail closed before any child runs —
-    until the RFC follow-on executes them.
+    the child's user-visible first message and recorded in provenance as a
+    content hash. ``skill_mode`` re-runs ``install_agent()`` under the switched
+    mode — the with-skill / no-skill ablation; it requires
+    ``at_stage="env-ready"`` with the container layer in that snapshot, and
+    fails closed otherwise. The remaining fields (``environment_ref``,
+    ``config_override``) raise :class:`BranchDeltaNotSupported` — fail closed
+    before any child runs — until the RFC follow-on executes them.
+
+    **How a child is executed depends on the boundary, not on the delta.**
+    ``at_stage="env-ready"`` precedes ``install_agent()``, so every child the
+    engine runs from there is a *fresh rollout* over the restored sandbox
+    (``use_prebuilt_env``) that installs the agent for itself — including a
+    child with no delta at all, which re-installs the parent's own recorded
+    skill mode. An in-place child there would connect to an agent the restore
+    deleted, or score a world missing everything installation deploys and
+    report it as an ordinary single-delta child; that fork therefore requires
+    the container layer and raises
+    :class:`BranchChildExecutionNotSupported` without it. At every other
+    boundary the agent is already installed and children run in place.
 
     After this returns, ``rollout``'s linear state is exactly what it was
     before — the tree gained ``n`` children at the cursor, nothing else
@@ -548,6 +616,13 @@ async def branch(
                     "runner delivers it."
                 )
 
+    # The boundary's own gate: at ``env-ready`` every engine-run child is a
+    # fresh rollout (whatever its delta, including no delta), so the container
+    # layer is required even for a fork carrying no deltas at all.
+    fresh_children = _runs_fresh_children(at_stage, run_child)
+    if fresh_children:
+        _validate_fresh_children(layers, at_stage=str(at_stage))
+
     # Fail closed when a requested layer's plane or capability is missing
     # (#384). ``require_sandbox_snapshot`` keeps its original check-only
     # semantics; requesting the layer via ``snapshot_layers`` gates the same
@@ -617,10 +692,11 @@ async def branch(
             delta if delta is not None else BranchDelta()
         ).provenance_dict()
         # How the delta is executed, recorded on the node for the same reason:
-        # a skill_mode child re-runs installation as its own Rollout, and the
+        # an env-ready child re-runs installation as its own Rollout, and the
         # artifacts must say so rather than leaving a reader to infer it from
-        # the delta.
-        if delta is not None and delta.skill_mode is not None:
+        # the delta — which they could not, since a zero-delta child of that
+        # boundary is a fresh rollout too.
+        if fresh_children:
             child.state["delta_execution"] = EXECUTION_FRESH_ROLLOUT
         children.append(child)
 
@@ -634,27 +710,30 @@ async def branch(
         saved.restore_onto(rollout)
         rollout._cursor = child
 
-        # Pick the per-child runner (both cases validated above to not combine
-        # with an explicit run_child). A skill_mode delta runs the child as a
-        # fresh Rollout over the just-restored env-ready sandbox, because
-        # skills are deployed by install_agent() and only a re-install can
-        # vary them; an injected-prompt delta binds the child's continuation
+        # Pick the per-child runner (every case validated above to not combine
+        # with an explicit run_child). A child forked from ``env-ready`` runs
+        # as a fresh Rollout over the just-restored sandbox — that boundary
+        # precedes install_agent(), so there is no agent in the restored world
+        # to connect to and no installed skills to keep; the child re-runs
+        # installation for itself, under the delta's skill_mode when it has
+        # one and under the parent's own recorded mode when it does not.
+        # Everywhere else the agent is already installed and the child runs in
+        # place, with an injected-prompt delta binding the child's continuation
         # prompt into a per-child default runner — the formalized version of
         # the caller's per-child-prompt closure.
         child_runner = runner
-        if run_child is None and delta is not None:
-            if delta.skill_mode is not None:
-                child_runner = make_skill_child_runner(
-                    rollout,
-                    delta=delta,
-                    parent=parent,
-                    branch_stage=SKILL_DELTA_STAGE,
-                    run_dir=run_dir,
-                )
-            elif delta.injected_prompt is not None:
-                child_runner = make_default_runner(
-                    rollout, prompts=[delta.injected_prompt]
-                )
+        if fresh_children:
+            child_runner = make_fresh_child_runner(
+                rollout,
+                delta=delta,
+                parent=parent,
+                branch_stage=FRESH_CHILD_STAGE,
+                run_dir=run_dir,
+            )
+        elif (
+            run_child is None and delta is not None and delta.injected_prompt is not None
+        ):
+            child_runner = make_default_runner(rollout, prompts=[delta.injected_prompt])
 
         started = time.monotonic()
         unscored: str | None = None

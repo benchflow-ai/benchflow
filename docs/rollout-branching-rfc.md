@@ -118,6 +118,18 @@ Injection points dictate cost and validity:
   skill injection (#908); we do not reintroduce it — injection is always a recorded,
   first-class delta.
 
+**How a child executes is decided by the boundary, not by the delta.** `env-ready` is
+captured before `install_agent()`, so a world restored to it has no agent binary, no
+sandbox user, no seeded verifier workspace, no path lockdown and no skill pack. Every
+child the engine runs from that boundary is therefore a *fresh rollout* over the
+restored sandbox that installs for itself — including an `injected_prompt` child and a
+child with no delta at all, which re-installs the parent's own recorded skill mode. An
+in-place child there would either die connecting to an agent the restore deleted or
+score a differently-provisioned world and have it reported as a one-delta comparison;
+the fork requires the container layer in the stage snapshot and fails closed
+(`BranchChildExecutionNotSupported`) without it. At every later boundary the agent is
+already installed and children continue in place.
+
 ### 3.4 Lineage: branched runs must be auditable and trainable
 
 Today `RolloutTree` lives and dies in memory. This RFC makes branching leave the same

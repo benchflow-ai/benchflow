@@ -201,6 +201,54 @@ def test_skill_arms_are_rejected_away_from_env_ready() -> None:
         validate_arms_for_stage(arms, "pre-verify")
 
 
+def test_injection_arms_run_at_env_ready_and_at_later_boundaries(
+    tmp_path: Path,
+) -> None:
+    """An ``inject:<file>`` arm at ``env-ready`` is supported, not rejected.
+
+    WS-4c flagged that combination as unsound because the child was run in
+    place on a world where ``install_agent()`` had been rolled back. The
+    resolution routes it through the same fresh-rollout path the skills arms
+    use rather than banning it, so the pre-flight must keep accepting it —
+    a regression here would silently turn a supported ablation into a
+    spec error.
+    """
+    plan = tmp_path / "plan.md"
+    plan.write_text("Follow this plan.", encoding="utf-8")
+    other = tmp_path / "other.md"
+    other.write_text("Follow that plan.", encoding="utf-8")
+    arms = parse_arms(f"inject:{plan},no-skill")
+    assert validate_arms_for_stage(arms, "env-ready") == "env-ready"
+    inject_only = parse_arms(f"inject:{plan},inject:{other}")
+    assert validate_arms_for_stage(inject_only, "env-ready") == "env-ready"
+    assert validate_arms_for_stage(inject_only, "pre-verify") == "pre-verify"
+
+
+def test_env_ready_ablation_requires_the_container_layer(tmp_path: Path) -> None:
+    """Every arm of an ``env-ready`` ablation re-installs the agent for itself,
+    so the stage snapshot has to carry the container layer — the mirror of the
+    engine's own gate, paid before a full parent run instead of after it."""
+    plan = tmp_path / "plan.md"
+    plan.write_text("Follow this plan.", encoding="utf-8")
+    arms = parse_arms(f"inject:{plan},no-skill")
+
+    with pytest.raises(AblationSpecError, match="sandbox"):
+        validate_arms_for_stage(
+            arms, "env-ready", snapshot_layers=frozenset({"environment"})
+        )
+    assert (
+        validate_arms_for_stage(
+            arms, "env-ready", snapshot_layers=frozenset({"environment", "sandbox"})
+        )
+        == "env-ready"
+    )
+    # The command's own default is the container layer, so the CLI path is
+    # never the one that trips this.
+    assert AblationRequest(
+        task_path=tmp_path, arms=arms, agent="claude-agent-acp"
+    ).snapshot_layers == frozenset({"sandbox"})
+
+
 def test_tasks_dir_must_resolve_to_exactly_one_task(tmp_path: Path) -> None:
     """An ablation's axis is the arms; several tasks is a request it cannot
     answer, not a batch to expand."""
