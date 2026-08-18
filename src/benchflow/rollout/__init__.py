@@ -79,7 +79,12 @@ from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
 from benchflow.agents.registry import AGENTS
+from benchflow.branch import StageSnapshot
 from benchflow.branch_delta import BranchDelta
+from benchflow.branch_stage import STAGE_ENV_READY as STAGE_ENV_READY
+from benchflow.branch_stage import STAGE_POST_RESEARCH as STAGE_POST_RESEARCH
+from benchflow.branch_stage import STAGE_POST_VERIFY as STAGE_POST_VERIFY
+from benchflow.branch_stage import STAGE_PRE_VERIFY as STAGE_PRE_VERIFY
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -199,6 +204,7 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.rollout_branch import capture_stage as _capture_stage_engine
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -749,6 +755,15 @@ class Rollout:
         self._tree: RolloutTree = RolloutTree()
         self._cursor: RolloutNode = self._tree.root
 
+        # Stage-boundary snapshot registry (rollout-branching RFC §3.2):
+        # stage name -> the composed StageSnapshot taken at that boundary,
+        # plus the tree node it was taken on (the node a branch_at_stage()
+        # forks, since that node's checkpoint *is* the stage snapshot). Both
+        # stay empty unless config.snapshot_stages requests a stage or a
+        # caller calls mark_stage() — the default rollout takes no snapshot.
+        self._stage_snapshots: dict[str, StageSnapshot] = {}
+        self._stage_nodes: dict[str, RolloutNode] = {}
+
         # Populated by verify()
         self._rewards: dict | None = None
         # Canonical plan-review status/provenance, populated after verify().
@@ -1163,6 +1178,12 @@ class Rollout:
         await _run_environment_setup_commands(self._env, self._task)
 
         self._phase = "started"
+
+        # env-ready (RFC §3.2): the sandbox is up, the environment plane is
+        # provisioned and past its readiness gate, and install_agent() has NOT
+        # run — so a child forked here re-runs agent/skill installation from a
+        # skill-free world, which is what makes the skills ablation honest.
+        await self._capture_stage(STAGE_ENV_READY)
 
     # Phase 3: INSTALL AGENT
 
@@ -1857,6 +1878,98 @@ class Rollout:
             deltas=deltas,
         )
 
+    # Phase 3e: STAGE-BOUNDARY SNAPSHOTS (rollout-branching RFC §3.2)
+
+    @property
+    def stage_snapshots(self) -> dict[str, StageSnapshot]:
+        """The lifecycle boundaries this rollout has snapshotted, by stage name.
+
+        Empty unless ``RolloutConfig.snapshot_stages`` requested a stage or a
+        caller marked one — a default rollout takes no stage snapshot at all.
+        Each value is the composed :class:`~benchflow.branch.StageSnapshot`
+        recorded at that boundary, with ``.stage`` set; pass the stage name to
+        :meth:`branch_at_stage` to fork from it.
+        """
+        return dict(self._stage_snapshots)
+
+    async def _capture_stage(self, stage: str) -> None:
+        """Snapshot ``stage`` iff this run's config asked for it.
+
+        The lifecycle's own boundaries call this; a stage nobody requested
+        costs one set membership test and no snapshot call anywhere. A
+        capability gap (no Environment plane, a sandbox without
+        ``supports_snapshot``, a stateless environment) fails closed here with
+        a diagnostic naming the stage — the run does not continue past a
+        boundary it was told to checkpoint and could not.
+        """
+        if stage not in self._config.snapshot_stages:
+            return
+        await _capture_stage_engine(
+            self, stage, snapshot_layers=self._config.snapshot_layers
+        )
+
+    async def mark_stage(
+        self,
+        name: str,
+        *,
+        snapshot_layers: frozenset[str] | set[str] | None = None,
+    ) -> StageSnapshot:
+        """Snapshot the current point and register it under stage ``name``.
+
+        The explicit half of the stage policy: ``post-research`` is a
+        mid-``execute()`` boundary no lifecycle transition can detect, so the
+        caller/harness that knows when planning ended marks it. ``name`` must
+        be a taxonomy stage (``ValueError`` otherwise) but need not appear in
+        ``RolloutConfig.snapshot_stages`` — marking *is* the request. Quiescing
+        the agent first is the caller's job, exactly as it is for
+        :meth:`branch`.
+
+        ``snapshot_layers`` defaults to the run's configured layers.
+        """
+        return await _capture_stage_engine(
+            self,
+            name,
+            snapshot_layers=(
+                self._config.snapshot_layers
+                if snapshot_layers is None
+                else snapshot_layers
+            ),
+        )
+
+    async def branch_at_stage(
+        self,
+        stage: str,
+        n: int,
+        *,
+        deltas: Sequence[BranchDelta | None] | None = None,
+        run_child: ChildRunner | None = None,
+        snapshot_layers: frozenset[str] | set[str] | None = None,
+    ) -> float:
+        """Branch from a recorded stage boundary instead of from the cursor.
+
+        The counterfactual entry point (RFC §3.2): the children restore the
+        world ``stage`` was snapshotted in — not the world the cursor is in —
+        and fork at the node that stage was captured on, so V aggregates the
+        value of *that* state. Everything else is the ordinary branch path:
+        the same delta validation, the same lineage artifacts, and
+        ``branch_stage`` recorded in each child's provenance as the stage name
+        rather than the ``cursor:<node>`` fallback.
+
+        A stage that was never captured raises
+        :class:`~benchflow.branch_stage.BranchStageNotCaptured` listing the
+        stages that were. ``snapshot_layers`` defaults to the layers the stage
+        actually captured; passing a different set is rejected rather than
+        silently re-snapshotting.
+        """
+        return await _branch_engine(
+            self,
+            n,
+            run_child,
+            snapshot_layers=snapshot_layers,
+            deltas=deltas,
+            at_stage=stage,
+        )
+
     # Phase 4: VERIFY
 
     async def verify(self) -> dict | None:
@@ -1884,6 +1997,12 @@ class Rollout:
             self._env, self._trajectory, self._rollout_paths.agent_dir
         )
 
+        # pre-verify (RFC §3.2): the agent is quiesced and the workspace is
+        # still exactly as it left it — this is the last point before
+        # planes.harden_before_verify (inside _verify_rollout) kills processes
+        # and restores the verifier-owned workspace.
+        await self._capture_stage(STAGE_PRE_VERIFY)
+
         (
             self._rewards,
             self._verifier_error,
@@ -1901,6 +2020,11 @@ class Rollout:
             self._diagnostics.set(verifier_timeout_diag)
 
         self._phase = "verified"
+
+        # post-verify (RFC §3.2): the self-judgment stage of the cascade —
+        # the verifier has run, so a child forked here re-judges the same
+        # scored world.
+        await self._capture_stage(STAGE_POST_VERIFY)
         return self._rewards
 
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:

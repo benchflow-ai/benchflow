@@ -22,6 +22,7 @@ job; these primitives stay pure and independently testable.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,6 +89,19 @@ async def checkpoint_composed(
     snap = StageSnapshot(environment_ref=env_ref, sandbox_ref=sandbox_ref, stage=stage)
     node.state[_SNAPSHOT_KEY] = snap
     return snap
+
+
+def adopt_checkpoint(node: RolloutNode, snapshot: StageSnapshot) -> RolloutNode:
+    """Record an already-taken :class:`StageSnapshot` as ``node``'s roll-back point.
+
+    The stage-boundary policy (RFC §3.2) snapshots at a lifecycle boundary and
+    branches from it later; when it does, the recorded snapshot *is* the
+    node's checkpoint and must not be re-taken (the world has moved on since).
+    This is the one seam that writes a checkpoint the node did not take
+    itself, so the snapshot key stays private to this module.
+    """
+    node.state[_SNAPSHOT_KEY] = snapshot
+    return node
 
 
 def fork(tree: RolloutTree, node: RolloutNode, n: int) -> list[RolloutNode]:
@@ -178,14 +192,22 @@ async def branch(
     return fork(tree, node, n)
 
 
-def aggregate(node: RolloutNode) -> float:
+def aggregate(node: RolloutNode, *, over: Sequence[RolloutNode] | None = None) -> float:
     """V(node) — the mean of the children's returns.
 
     Each child carries its return in ``state["reward"]`` (written by the Reward
     plane after a child rollout is scored). Averaging them estimates the value
     of ``node``'s state — a reward function become a value function.
+
+    ``over`` narrows the average to one fork's children. It matters once a
+    branch point can be a node that already has children: a stage-boundary
+    branch (RFC §3.2) forks the node the stage was captured on, which may
+    already carry the linear continuation — and that linear child has no
+    ``reward``, so averaging over ``node.children`` would silently drag V
+    toward zero. ``None`` keeps the every-child default.
     """
-    if not node.children:
+    children = list(node.children if over is None else over)
+    if not children:
         raise ValueError(f"node {node.id!r} has no children to aggregate")
-    returns = [float(child.state.get(_REWARD_KEY, 0.0)) for child in node.children]
+    returns = [float(child.state.get(_REWARD_KEY, 0.0)) for child in children]
     return sum(returns) / len(returns)

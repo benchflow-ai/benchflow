@@ -1,8 +1,9 @@
-"""Branch lineage artifacts — ``tree.json`` and per-child provenance (RFC §3.4).
+"""Branch lineage artifacts — ``tree.json``, per-child provenance, stages.
 
 Today ``RolloutTree`` lives and dies in memory; branching must leave the same
 quality of evidence as a linear run. This module serializes the tree to a
-deterministic ``tree.json`` in the run folder and builds the
+deterministic ``tree.json`` in the run folder, writes the stage-snapshot
+registry (RFC §3.2) as ``stage_snapshots.json``, and builds the
 ``kind="benchflow-branch"`` source-provenance dict each branch child carries —
 the same seam ``benchflow-continue`` uses.
 
@@ -15,7 +16,7 @@ corrupts branch results.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,44 @@ def serialize_tree(
         "nodes": nodes_payload,
     }
     path = Path(run_dir) / "tree.json"
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    return path
+
+
+def stage_snapshots_payload(
+    snapshots: Mapping[str, StageSnapshot],
+) -> dict[str, dict[str, Any]]:
+    """The stage registry as a serializable ``stage -> refs`` mapping (RFC §3.2).
+
+    Each entry records the per-layer roll-back handles and the ``layers`` the
+    stage actually captured (sorted) — the set a stage branch restores.
+    """
+    payload: dict[str, dict[str, Any]] = {}
+    for stage, snap in snapshots.items():
+        refs = _snapshot_refs(snap) or {"environment": None, "sandbox": None}
+        payload[stage] = {
+            "environment_ref": refs["environment"],
+            "sandbox_ref": refs["sandbox"],
+            "layers": sorted(layer for layer, ref in refs.items() if ref is not None),
+        }
+    return payload
+
+
+def write_stage_snapshots(
+    *, run_dir: Path, snapshots: Mapping[str, StageSnapshot]
+) -> Path:
+    """Write ``<run_dir>/stage_snapshots.json`` — the recorded stage registry.
+
+    Deterministic like every other lineage artifact: sorted keys, indented,
+    trailing newline, no wall-clock timestamps. Rewritten in full on each
+    capture so a run that dies mid-lifecycle still leaves the stages it did
+    reach. The caller isolates failures.
+    """
+    path = Path(run_dir) / "stage_snapshots.json"
+    payload = {
+        "schema_version": _SCHEMA_VERSION,
+        "stages": stage_snapshots_payload(snapshots),
+    }
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     return path
 
