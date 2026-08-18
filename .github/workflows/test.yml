@@ -37,6 +37,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal --locked
 
+      # Without the browser binary the viewer's browser-level tests
+      # (tests/trajectories/test_viewer_browser.py) self-skip — this step is
+      # what makes them actually run in CI rather than silently pass.
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
+
       - name: Lint
         run: uv run ruff check src tests tools
 

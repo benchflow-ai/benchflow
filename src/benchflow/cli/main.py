@@ -1222,9 +1222,15 @@ def eval_metrics(
 @eval_app.command("view")
 def eval_view(
     rollout_dir: Annotated[
-        Path,
+        # A str, not a Path: hf:// specs must arrive verbatim — Path
+        # normalization would collapse the double slash into hf:/.
+        str,
         typer.Argument(
-            help="Rollout directory, job directory, or trajectory JSONL file"
+            help=(
+                "Rollout directory, job directory, trajectory JSONL file, or "
+                "an hf://<org>/<dataset> trajectory dataset "
+                "(optionally with /subpath)"
+            )
         ),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
@@ -1256,7 +1262,7 @@ def eval_view(
     from benchflow.trajectories import viewer
 
     decision = viewer.serve(
-        str(rollout_dir), port, confirm=confirm, redaction_summary=redaction_summary
+        rollout_dir, port, confirm=confirm, redaction_summary=redaction_summary
     )
     # Exit-code contract for --confirm: 0 approved, 3 rejected. 3 is chosen
     # so a rejection never collides with the CLI's existing error exits

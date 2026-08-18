@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Added
+- **ACP rollout directories render as an interactive reviewer page.**
+  `bench eval view <rollout>` now assembles a JSON payload (normalized
+  events + result/timing/verifier metadata) and renders it client-side in a
+  self-contained template (no build step, zero network requests): full
+  event stream with collapse instead of truncation, harness/model/skills
+  identity row, reward badge and `result.json` failure-diagnostic banners,
+  Verifier and Metrics tabs, Focus/Full modes, per-kind filters and hues,
+  text search, and per-event `#e42` anchors. Trajectory content is treated
+  as untrusted end to end (data-only embedding, `textContent` rendering).
+  Raw session JSONL files, the `--confirm` approve/reject contract, and the
+  legacy `turn*.txt` renderer are unchanged.
+- **Directories of rollouts serve a run catalog.** Pointing
+  `bench eval view` at a job directory (or a whole `jobs/` tree) serves a
+  browsable index: corpus counts, grouping by task or model + harness with
+  per-group pass/fail aggregates and pass rates, sorting by
+  name/reward/duration/cost, text filtering, collapsible groups with
+  incremental pagination, and URL-preserved state — selecting a run opens
+  the detail page and the back control restores the exact catalog view.
+  Traces load dynamically from `/api/rollout?id=…` (ids resolve only by
+  exact membership in a fresh directory scan, so crafted ids cannot reach
+  the filesystem) and `?run=<id>` deep-links a run. `--confirm` on a
+  multi-run directory errors out: a confirmation needs exactly one
+  trajectory.
+- **`hf://` sources browse HuggingFace trajectory datasets directly.**
+  `bench eval view hf://<org>/<dataset>[@revision][/subpath]` fetches the
+  viewer-relevant slice of a trajectory dataset into the shared
+  `huggingface_hub` cache and serves it through browse mode, making the
+  community ground-truth uploads reviewable with one command. The download
+  allowlist is exact — trajectories, result/timing/prompts, and the four
+  verifier sidecars the viewer renders — with no wildcards, so large run
+  artifacts and `llm_trajectory`/`trainer` exports are never fetched. The
+  CLI passes the spec as a string into a typed
+  `LocalPathSource | HfDatasetSource` parser (never through `pathlib.Path`,
+  whose normalization would mangle `hf://` into `hf:/`), and dataset
+  subpaths are validated.
+- **The viewer renders per-event timelines the moment captures provide
+  timestamps.** Steps gain a `+m:ss` offset chip and tool calls a duration
+  chip whenever events carry `ts` / `started_at` / `finished_at` fields;
+  with today's captures (which carry none) nothing changes visually.
+
 ## 0.7.4 — 2026-08-16
 
 ### Added
