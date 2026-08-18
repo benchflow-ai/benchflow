@@ -1210,8 +1210,12 @@ here.
   invariants, the validation suite, this section, four converters — `ACP → IR`,
   `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR` — each with its loss report, and
   the round-trip measurement over the ATIF pair (§8.10).
-- **Not implemented, deliberately:** `IR → OTel`, any wiring into a run path,
-  any on-disk artifact, any capture-layer enrichment.
+- **Deferred by a decision of ours, reversibly:** `IR → OTel` — see §8.12 for
+  the reasoning and the conditions that end the deferral. The OTel direction is
+  *implemented inbound and deferred outbound*, which is one state and not two
+  half-answers.
+- **Not implemented:** any wiring into a run path, any on-disk artifact, any
+  capture-layer enrichment.
 - **Unchanged:** every existing format, exporter, artifact and code path.
   `export_atif.py` in particular is untouched and remains the only writer of
   `trainer/atif.json`.
@@ -1221,10 +1225,14 @@ The isolation property is unchanged in substance and restated at a new boundary:
 `ir_from_otel.py`, `_otlp_anyvalue.py` and `ir_round_trip.py` form a closed
 family that may import each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
-`src/benchflow` imports any of them. Each converter imports one benchflow module
-— the IR — and reads or writes its own format as data; in particular
-`ir_to_atif` does not import `export_atif`, and pins the shared schema version by
-test instead.
+`src/benchflow` imports any of them.
+
+Every converter reads or writes its own format **as data**, never through the
+module that already handles it: `ir_to_atif` does not import `export_atif` and
+pins the shared schema version by test instead, and `ir_from_otel` imports no
+`opentelemetry` package at all. Each imports the IR, and `ir_from_otel` also
+imports `_otlp_anyvalue` — the decoder split out of it, which knows nothing
+about the hub and is the only family member that imports none of the others.
 
 ### 8.8 What the first converter showed
 
