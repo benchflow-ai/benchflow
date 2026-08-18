@@ -352,6 +352,61 @@ model endpoint; use a model id available to that provider. Provider-specific
 sampling options are not inferred; pass them explicitly with
 `--source-env-sampling-arg`.
 
+### bench eval ablate
+
+Run one task once, snapshot a lifecycle stage boundary as the run passes it,
+then fork that one world into a child per **arm** and compare the rewards. The
+mechanism is the rollout-branching design — see
+[the RFC](../rollout-branching-rfc.md) (§3.2 stage boundaries, §3.3 per-child
+deltas, §3.4 lineage artifacts). Every arm starts from a byte-identical world
+and differs by exactly one recorded delta, so the arms are comparable in a way
+two independent runs are not.
+
+```bash
+# the skills ablation: same env, one child installs the pack, one does not
+bench eval ablate --tasks-dir tasks/surface-ion-trap-shuttling \
+  --agent claude-agent-acp --model claude-sonnet-4-5 --sandbox docker
+
+# plan injection at the end of the agent's run, against the parent's own reward
+bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
+  --arms inject:oracle-plan.md,inject:decoy-plan.md --json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tasks-dir` | — | Task directory to ablate (or a collection holding exactly one task); several tasks fail closed — the arms are the axis, the task is fixed |
+| `--agent` | `claude-agent-acp` | Agent harness for the parent run and every arm (`oracle` is rejected: a branch child connects an agent session, and `solve.sh` has none) |
+| `--model` | agent registry | Model for the parent run and every arm |
+| `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
+| `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it |
+| `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`. At least two, no duplicates |
+| `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
+| `--json` | `false` | Emit the report as JSON on stdout instead of the table |
+
+Arm kinds map onto the two `BranchDelta` fields the branch engine executes:
+`with-skill` / `no-skill` set `skill_mode`, which re-runs `install_agent()` as
+a fresh child rollout over the restored snapshot — so they are only valid at
+`env-ready`, the boundary captured *before* installation. `inject:<file>` sets
+`injected_prompt`, delivered as that child's user-visible continuation prompt
+and recorded as a content hash only.
+
+The table shows one row per arm — reward, pass/fail, wall clock, and a
+one-line attribution such as *"fails (0.00) where with-skill passes (1.00) at
+env-ready — this delta decides the outcome when applied at env-ready (1 run per
+arm)"*. Wording is deliberately confined to the comparison that was run: the
+skills arms are read against each other, any other arm against the parent's own
+reward, and nothing is claimed about boundaries this invocation did not fork.
+Localizing a failure to a stage takes a second ablation at a second boundary.
+
+`ablation.json` carries the task id, the stage, the parent's own reward, and
+per arm its content-addressed delta provenance, reward, status, wall clock and
+the branch-child artifact directory (`<parent-run>/branches/<node>/children/<node>/`,
+holding that child's own `config.json` / `result.json` / `provenance.json`).
+Exit code is 1 when any arm errors or is skipped — a child failure propagates
+out of the branch, so the arms after it do not run and are never scored 0.0. A
+parent run that failed *after* the boundary is reported but does not fail the
+command: attributing a failed run is what the ablation is for.
+
 ## bench review
 
 Grade finished rollouts against a rubric with a reviewer agent. Reviews run
