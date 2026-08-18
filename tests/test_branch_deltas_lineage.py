@@ -542,11 +542,13 @@ def test_unsupported_delta_fields_are_derived_from_the_schema():
     """The blocklist is derived at import (all BranchDelta fields minus the
     executable set), so a future BranchDelta field is unsupported-by-default
     — the engine fails closed on it instead of silently ignoring it. Today
-    that derivation yields exactly the three records-only fields."""
+    that derivation yields the two records-only fields; ``skill_mode`` left
+    the set when it gained an execution path (a fresh child rollout from the
+    env-ready snapshot), and is gated per branch point instead — see
+    tests/test_branch_skill_delta.py."""
     assert set(_UNSUPPORTED_DELTA_FIELDS) == {
         "config_override",
         "environment_ref",
-        "skill_mode",
     }
 
 
