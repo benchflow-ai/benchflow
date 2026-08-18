@@ -549,6 +549,8 @@ IR_FAMILY = (
     "ir_from_acp",
     "ir_to_atif",
     "ir_from_atif",
+    "ir_from_otel",
+    "_otlp_anyvalue",
     "ir_round_trip",
 )
 """The unwired modules of the proposal: the IR and its converters.

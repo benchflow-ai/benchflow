@@ -275,6 +275,33 @@ not part of any run path"*. It converted **inbound only** (OTLP/JSON spans into
 parent/child relationships. It contained no emitter, and no other OTel-named
 module appears in the repository history.
 
+**What *is* pinned, and why it matters.** `uv.lock` resolves
+`opentelemetry-proto` **1.41.1**, `opentelemetry-sdk` **1.41.1** and
+`opentelemetry-semantic-conventions` **0.62b1**, transitively, as dependencies of
+`daytona` — the `sandbox-daytona` extra (`pyproject.toml:69-75`). None of them is
+a BenchFlow dependency, none is installed in the default dev environment, and
+nothing in `src/` imports them. They matter for one reason: they are artifacts
+this repository already names, at a version, with a hash. So a question about the
+OTLP wire shape or about a `gen_ai.*` attribute name has a *checkable* answer
+here, instead of an answer from recollection. §8.3's OTel edge is written against
+those two artifacts and records both versions in code.
+
+Two facts worth stating up front, because both bound what any OTel mapping can
+claim:
+
+- **The GenAI conventions are experimental even at the pinned version.** The
+  package puts every `gen_ai.*` name under `opentelemetry.semconv._incubating`,
+  and several are already marked deprecated in 0.62b1 — `gen_ai.system`,
+  `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`,
+  `gen_ai.prompt`, `gen_ai.completion`.
+- **The deleted collector's attribute names do not match it.** `otel.py` read
+  `gen_ai.usage.total_tokens`, which does not exist at 0.62b1, and
+  `gen_ai.usage.cache_read_input_tokens` / `…cache_creation_input_tokens`, which
+  are spelled `gen_ai.usage.cache_read.input_tokens` and
+  `gen_ai.usage.cache_creation.input_tokens`. Its `_parse_attributes` also read
+  `stringValue or intValue or doubleValue or boolValue`, which turns an observed
+  `""`, `0` or `false` into "no value".
+
 ---
 
 ## 5. Information loss in today's conversions
@@ -440,7 +467,11 @@ them.
    in `normalize_acp_usage`?
 5. Is OpenTelemetry wanted as an inbound receiver, an outbound emitter, or
    both? The only implementation ever written was inbound, and it was removed
-   deliberately.
+   deliberately. **Partly acted on, not answered:** §8.3 implements the inbound
+   half (`OTel → IR`) because it is useful whichever way the question is
+   resolved — it lets BenchFlow *read* traces from instrumented agents without
+   committing to emitting any. The emitter is not written, and §8.11 lists the
+   decisions it would depend on.
 
 **Still open.** §8 takes a *provisional* position on question 1 — a canonical
 hub — and implements it in isolation so it can be reviewed as code. That is a
@@ -588,17 +619,19 @@ Three design choices carry most of the weight:
    an outbound conversion returns its report alongside its document and leaves
    `trace.losses` untouched.
 
-### 8.3 Planned mapping
+### 8.3 Implemented mapping
 
 **`ACP → IR`** ([`ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)),
-**`IR → ATIF`** ([`ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py))
-and **`ATIF → IR`**
-([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py)) **are
-implemented**, all unwired and still provisional. The OTel direction is not, and
-stays blocked on open question 2.
+**`IR → ATIF`** ([`ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py)),
+**`ATIF → IR`** ([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py))
+and **`OTLP/JSON → IR`**
+([`ir_from_otel.py`](../src/benchflow/trajectories/ir_from_otel.py)) **are
+implemented**, all unwired and still provisional. `IR → OTel` is not, and is
+deliberately not sketched — §8.11 lists the decisions it depends on.
 
 With both ATIF edges in place the loop `ACP → IR → ATIF → IR′` closes, and §8.10
-reports what it measures.
+reports what it measures. The OTel edge is inbound only, so no loop closes
+through it and §8.11 reports what it showed instead.
 
 #### ACP-session capture events → IR
 
@@ -757,30 +790,6 @@ contract regardless of how often it is exercised.
 prices of its own, so a cost without the table that produced it is not
 comparable. Per-call cost stays out of scope.
 
-#### IR ↔ OpenTelemetry
-
-**PROPOSAL, and unverified.** §4.2 is FACT — there is no OTel dependency and no
-`gen_ai.*` handling in this repository — so the mapping below is a sketch
-against the OpenTelemetry GenAI semantic conventions **as remembered, not as
-vendored**: no version of that specification is pinned in this repo, nothing
-validates against it, and the conventions have been changing. It is written down
-to show the hub is reachable from OTel, not as a design to implement as-is.
-
-| IR | OTel sketch |
-|---|---|
-| `CanonicalTrace` | one root span per rollout |
-| `trace_id` | the OTel trace id — `None` until a source provides one; never invented |
-| `events[]` ordering | child span order / span events |
-| `tool_call` | a child span; `name` → `gen_ai.tool.name`, `call_id` → `gen_ai.tool.call.id` |
-| `usage` | `gen_ai.usage.input_tokens` / `.output_tokens` |
-| `agent.model` | `gen_ai.request.model` |
-| `outcome.status` | span status |
-| `extensions` | span attributes, verbatim |
-
-Which direction is wanted — receiver, emitter, or both — is **open question 5**
-and stays open. The IR is symmetric on purpose so the answer does not invalidate
-it.
-
 #### ATIF → IR
 
 **Implemented** ([`ir_from_atif.py`](../src/benchflow/trajectories/ir_from_atif.py)),
@@ -841,6 +850,115 @@ costs.
 followed by a message event: the blank-line join that produced it is not
 injective (§5 loss #10), so splitting it would invent a boundary. The fusion is
 reported by the event count instead.
+
+#### OTLP/JSON → IR
+
+**Implemented** ([`ir_from_otel.py`](../src/benchflow/trajectories/ir_from_otel.py)),
+unwired, inbound only. Asserted by `tests/trajectories/test_ir_from_otel.py`
+against a payload produced by `opentelemetry-proto` 1.41.1 itself — see §8.11 —
+plus documents no conformant producer writes.
+
+The mapping is written against the two artifacts §4.2 names, at the versions
+`uv.lock` pins, and the module records both in `OTLP_PROTO_VERSION` and
+`SEMCONV_VERSION`. It takes **no OTel dependency**: it reads JSON dictionaries,
+so `uv.lock` is untouched. Nothing here is written against the published
+specification text, which is not vendored.
+
+The rule the edge is built on: **a span is evidence of an operation, not a
+statement about an agent.** OTLP is a general tracing format; it says what was
+instrumented, when, and under what identifiers, and it does not say who spoke or
+what a turn was. So exactly one span shape maps onto a typed IR kind — the one
+the pinned vocabulary defines as a tool execution — and everything else becomes
+`UNKNOWN` with its whole content carried. What a plausible reading would have
+added instead is in §8.11 as an open decision.
+
+| OTLP | IR | Class | Loss recorded |
+|---|---|---|---|
+| span order in the payload | `events[].index`, dense from 0 | preserved | — **never sorted by time**; see below |
+| `span.traceId` | `trace_id`, **verbatim, never re-encoded** | preserved | — |
+| `span.spanId` / `.parentSpanId` / `.traceState` / `.flags` / `.kind` | `events[].extensions.otel.span`, verbatim | preserved | — the IR models no parent link |
+| `span.name` | `source_type` | preserved *(value)* | `events[].source_type` — the **value** is carried verbatim; what is unsupported is the absent-versus-empty *distinction*, because the field has no presence |
+| `span.attributes[]` | `extensions.otel.attributes`, decoded to a map | **normalized** | `events[].extensions` — values are preserved, the wire form is not; see below |
+| `span.events[]` / `span.links[]` | `extensions.otel.span`, verbatim | preserved | — |
+| `span.status` | `extensions.otel.span.status`, verbatim | normalized | `events[i].outcome` — the IR slot is free text with no vocabulary a status code maps into |
+| `span.startTimeUnixNano` / `.endTimeUnixNano` | `events[].started_at` / `.finished_at` | preserved | — unless not a whole microsecond, then normalized (see below) |
+| `resource` / `scope`, with schema URLs | `extensions.otel`, per event | preserved | — per event, not per trace: one payload mixes them |
+| envelope position (`resourceSpans[i].scopeSpans[j].spans[k]`) | `extensions.otel.envelope` | preserved | — absent when the caller did not read the span out of a payload |
+| `scope.name` | `events[].provenance.producer` | preserved | — |
+| `span.dropped*Count > 0` | *(nothing to carry)* | **unsupported** | `events[i].extensions` — the SDK discarded it before export |
+| `gen_ai.operation.name == "execute_tool"` | `kind = tool_call` | preserved | — the only typed mapping |
+| any other span | `kind = unknown`, everything carried | preserved | — |
+| `gen_ai.tool.name` | `tool_call.name` + `name_semantics="gen_ai.tool.name"` | preserved | — |
+| `gen_ai.tool.call.id` | `tool_call.call_id` | preserved | `events[i].tool_call.call_id` when absent — **no id is synthesized** |
+| `gen_ai.tool.call.arguments` (kvlist) | `tool_call.arguments`, **including `{}`** | preserved | — |
+| `gen_ai.tool.call.arguments` (JSON string) | *(kept in the attribute map)* | normalized | `events[i].tool_call.arguments` — **not parsed** |
+| `gen_ai.tool.call.result` (string / object) | `ContentBlock` `text` / `opaque` | preserved | `events[i].tool_call.content[0].raw` for a text block (the attribute *is* the text) · `…content[0].text` for an object block (the document holds no rendering) · `…tool_call.content` when the attribute is absent |
+| the span's own extent | `tool_call.started_at` / `.finished_at` | preserved | `events[i].tool_call.started_at` / `.finished_at` when the span carries no readable instant, or when nanoseconds are truncated — the first inbound edge that can *fill* these (§5 loss #3), and it declares them at their own path when it cannot |
+| `gen_ai.usage.input_tokens` / `.output_tokens` / `.cache_read.input_tokens` / `.cache_creation.input_tokens` | `events[].usage.*`, `source="otel_gen_ai_usage"` | preserved | — |
+| `gen_ai.usage.prompt_tokens` / `.completion_tokens` | the same fields | normalized | `events[i].usage.*` — read from a spelling the pinned package marks deprecated |
+| `gen_ai.agent.name` / `.version`, `gen_ai.request.model`, `gen_ai.provider.name` | `agent.*` | preserved | — |
+| `gen_ai.system` | `agent.provider` | normalized | `agent.provider` — deprecated spelling |
+| spans disagreeing on an `agent.*` value | the first is kept | dropped | `agent.<field>` |
+| `gen_ai.input.messages` / `.output.messages` / `gen_ai.prompt` / `.completion` | `extensions.otel.attributes` | normalized | `events[i].text` — **not read as text** |
+| *(none)* | `session_id`, `started_at`, `finished_at`, `outcome`, `usage`, `events[].role`, `.reasoning`, `.reasoning_segments`, `.source_type` (presence), `events[].tool_call.title`, the usage fields with no attribute | **unsupported** / **normalized** | one record each; see below |
+| a non-object entry at any envelope level | *(no span)* | dropped | `resourceSpans[i]…`, **source space** |
+| a non-string `traceId` | *(not read)* | dropped | `spans[i].traceId`, **source space** |
+
+**Order is preserved; causality is not inferred from it.** Document order is
+kept exactly and spans are never sorted by start time — siblings overlap, a
+batch may omit a parent, and two spans can share a start instant. The real
+structure is the `parentSpanId` edge set, and it is preserved per span. Because
+the IR has no parent field, it lives in `extensions`; adding one is a change to
+the hub and therefore a maintainer's decision (§8.11).
+
+**Two losses are structural and unavoidable, and both are declared.**
+`datetime` resolves to microseconds while OTLP counts nanoseconds, so a
+timestamp that is not a whole microsecond is truncated in the IR field — the
+exact integer stays in `extensions.otel.span`, so the value survives, but the
+canonical field no longer holds it. And OTLP models `name`, the timestamps,
+`parentSpanId`, `kind` and the `dropped*Count`s as protobuf scalars **without
+presence**, so an unset field and one holding the default are the same document:
+the IR's absent-versus-empty distinction is simply not recoverable for them.
+
+**Semantic preservation is not wire preservation, and the table says which one
+it means.** Attribute values are decoded out of their `AnyValue` wrappers into a
+plain map, and the canonical protobuf JSON mapping writes an `int64` as a
+*string* while much of the ecosystem writes it as a number. `{"intValue": "7"}`
+and `{"intValue": 7}` are therefore the same `7` afterwards, and the wrapper
+type is gone with them. No value is lost, so `attributes_raw` is *not* kept —
+that copy exists for the cases where a value would be, listed above — but the
+two payloads are indistinguishable, and an `IR → OTel` emitter could not
+reproduce either byte-for-byte. Declared once per conversion at
+`events[].extensions`, because it is a property of the decoding rather than of
+any one span.
+
+**The envelope partition is preserved as coordinates, not as structure.** One
+payload nests spans under `resourceSpans[] → scopeSpans[] → spans[]`, and
+reading it into one list of events flattens that: two spans the producer batched
+under *different* `ScopeSpans` objects that happen to carry an equal `scope`
+would otherwise become indistinguishable. `extensions.otel.envelope` keeps the
+three indices, so the grouping stays reconstructible without the IR growing a
+concept of an envelope. Spans a caller assembled itself carry no coordinates —
+there is no envelope position to record, and inventing one would claim a payload
+that never existed.
+
+**Trace-level absences carry the class that says where a fix would land.**
+`outcome`, `session_id` and `events[].role` are `UNSUPPORTED` — OTLP has nothing
+to read. `started_at`, `finished_at` and `usage` are `NORMALIZED` when spans
+carry the information per span: the values are preserved on the events, and
+deriving a run extent or a token total from them would assume this payload holds
+the whole run, which a batch does not promise. When no span carries them at all,
+the same fields become `UNSUPPORTED` instead. Two different reasons for the same
+empty field, kept apart.
+
+#### IR → OpenTelemetry
+
+**Not implemented, and deliberately not sketched further.** The inbound edge
+above establishes what OTLP can be read *as*; writing spans raises a different
+and larger set of questions — what a span tree for a BenchFlow rollout should
+look like, which ids to mint, which encoding to write them in, and whether
+emitting `gen_ai.*` attributes commits the project to an `_incubating`
+vocabulary. Those are in §8.11.
 
 ### 8.4 A worked example
 
@@ -1085,18 +1203,19 @@ here.
 ### 8.7 Status
 
 - **Implemented:** the IR types, the loss model with its path spaces, the
-  invariants, the validation suite, this section, all three converters —
-  `ACP → IR`, `IR → ATIF`, `ATIF → IR` — each with its loss report, and the
-  round-trip measurement over them (§8.10).
-- **Not implemented, deliberately:** any OTel work, any wiring into a run path,
+  invariants, the validation suite, this section, four converters — `ACP → IR`,
+  `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR` — each with its loss report, and
+  the round-trip measurement over the ATIF pair (§8.10).
+- **Not implemented, deliberately:** `IR → OTel`, any wiring into a run path,
   any on-disk artifact, any capture-layer enrichment.
 - **Unchanged:** every existing format, exporter, artifact and code path.
   `export_atif.py` in particular is untouched and remains the only writer of
   `trainer/atif.json`.
 
 The isolation property is unchanged in substance and restated at a new boundary:
-`ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py` and
-`ir_round_trip.py` form a closed family that may import each other, and
+`ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py`,
+`ir_from_otel.py`, `_otlp_anyvalue.py` and `ir_round_trip.py` form a closed
+family that may import each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
 `src/benchflow` imports any of them. Each converter imports one benchflow module
 — the IR — and reads or writes its own format as data; in particular
@@ -1274,3 +1393,319 @@ appear only in constructed test input, never in a captured rollout here; no
 artifact on hand carries a non-null cost, so `usage.cost_usd` round-trips in
 tests only; and the loop has been run over two rollouts from one agent, which is
 a demonstration, not a survey.
+
+### 8.11 What the OTel edge showed
+
+#### Where its ground truth comes from
+
+**FACT.** The three edges before this one could be checked against a producer in
+this repository. There is no OpenTelemetry producer here at all (§4.2), so the
+alternative to guessing was the lock file. The suite's fixture is the output of
+`google.protobuf.json_format.MessageToJson` over an `ExportTraceServiceRequest`
+built with `opentelemetry-proto` **1.41.1** — the version `uv.lock` pins, whose
+wheel hash matches the lock entry — and every `gen_ai.*` constant in the module
+is copied from `opentelemetry-semantic-conventions` **0.62b1**, likewise pinned.
+Neither package is imported, neither is added as a dependency, and `uv.lock` is
+untouched.
+
+Reading them settled four things that a mapping written from memory gets wrong,
+and the deleted `OTelCollector` got three of them wrong:
+
+- `intValue` is a JSON **string** in the canonical mapping (`"1204"`), not a
+  number, and `startTimeUnixNano` likewise. Both spellings are accepted on
+  parse, so a reader has to handle either.
+- An `AnyValue` writes its member explicitly even when the value is falsy:
+  `{"stringValue": ""}`, `{"boolValue": false}`, `{"doubleValue": 0.0}`. The
+  deleted collector's `stringValue or intValue or doubleValue or boolValue` read
+  all three as "no value".
+- `gen_ai.usage.total_tokens` **does not exist** at 0.62b1, and the cache
+  counters are spelled `gen_ai.usage.cache_read.input_tokens` /
+  `gen_ai.usage.cache_creation.input_tokens` — one dot away from the collector's
+  spelling, and never a match.
+- Enum fields serialize as member **names** by default (`"STATUS_CODE_ERROR"`)
+  and as integers under `use_integers_for_enums`. Both are accepted on parse, so
+  both are recognized here.
+
+#### The finding that decides how identity is handled
+
+`traceId` and `spanId` are `bytes` in the proto, and the protobuf canonical JSON
+mapping encodes bytes as **base64** — a 16-byte trace id becomes 24 characters
+ending in `==`. Much of the ecosystem writes lowercase hex instead. The two are
+**not reliably distinguishable**, and this is checkable rather than a worry:
+feeding the 32-character hex string `4bf92f35…` to the pinned JSON parser is
+accepted *as base64* and yields **24 bytes**, silently.
+
+So the edge carries identifiers **exactly as written** and re-encodes nothing.
+Any normalization would make identity depend on a heuristic, and a heuristic
+that is right most of the time is the worst possible property for an identifier.
+
+#### Two limits that are properties of OTLP, not of this converter
+
+- **Absent and default are the same document.** `name`, both timestamps,
+  `parentSpanId`, `kind` and the `dropped*Count`s are protobuf scalars *without
+  presence* — verified against the pinned descriptors — so a producer that never
+  set the field and one that set it to the default write identical JSON. The
+  IR's absent/`None`/observed-empty tri-state (§8.2) is therefore real on this
+  edge only for the fields OTLP models with presence, and the limit is declared
+  once per conversion rather than left to a reader to discover.
+- **Nanoseconds do not fit a `datetime`.** OTLP counts nanoseconds; `datetime`
+  resolves to microseconds. A span ending at `…1900000375` loses 375 ns from the
+  IR field. The exact integer stays in `extensions.otel.span`, so the value is
+  preserved — but the canonical field no longer holds it, which is a
+  normalization and is recorded as one.
+
+#### `UNSUPPORTED` and `NORMALIZED` for the same empty field
+
+The trace-level `started_at`, `finished_at` and `usage` are empty after every
+OTel conversion, and the class says *why*, which is where a fix would land:
+
+- when spans carry timestamps or token counters, the records are `NORMALIZED` —
+  the information is in the trace, per event, and deriving a run extent or a
+  token total from it would assume the payload holds the whole run. **An OTLP
+  export request is a batch**: it may carry several traces, it need not contain
+  the root span, and one trace may arrive across several requests.
+- when no span carries them, the same fields are `UNSUPPORTED` — there was
+  nothing to aggregate.
+
+The same reasoning keeps this edge from mapping a span status onto
+`outcome.status` or onto `ToolStatus`: a status is per span, and choosing one
+span's status as the run's needs a root the payload does not promise.
+
+#### What the report costs
+
+**MEASURED**, on the producer-derived fixture — five spans: an `invoke_agent`
+root, a `chat` child with usage, two `execute_tool` children, and a plain HTTP
+span.
+
+| | count |
+|---|---|
+| records total | 31 |
+| `unsupported` | 19 |
+| `normalized` | 12 |
+| `dropped` | **0 — see below** |
+| `synthesized` | **0 — see below** |
+| systemic (declared once) | 19 |
+| per-event | 12 |
+| envelope (source space) | 0 |
+
+**The two zeros are not the same kind of zero, and neither should be read as a
+property of the edge.**
+
+`synthesized` is **structurally unreachable**: the class does not appear
+anywhere in `ir_from_otel.py`, and it could not. It means "the *target* required
+a value the source did not have", and on an inbound edge the target is the
+canonical IR, whose only required fields are `provenance`, an event's `index`
+and `kind`, and a content block's `kind` — each derived from the input rather
+than invented. There is no slot this edge could be forced to fill. `ACP → IR`
+and `ATIF → IR` have zero sites for the same reason; `ir_to_atif`, which is
+outbound, has eight.
+
+`dropped` is **a property of this payload**, not of the edge. Four inputs reach
+a `DROPPED` site, and two of them are fully conformant OTLP *and* fully
+conformant semantic conventions:
+
+| input | validity | record |
+|---|---|---|
+| two spans with different `gen_ai.request.model` | valid OTLP, valid semconv | `agent.model` |
+| `gen_ai.usage.input_tokens` and the deprecated `gen_ai.usage.prompt_tokens` disagreeing | valid OTLP, both names in 0.62b1 | `events[i].usage.input_tokens` |
+| a token counter carried as a `doubleValue` or `bytesValue` | valid OTLP, violates semconv | `events[i].usage.<field>` |
+| a non-list `scopeSpans`, a non-object span entry, a non-string `traceId` | wire-invalid | source-space records |
+
+The fixture is a single-model trace with no deprecated spellings, so it reaches
+none of them. Reading its `0` as "this edge never drops anything" would be
+exactly the inference the loss model exists to prevent.
+
+Repeating the same five spans *k* times gives **31, 43, 67, 139** records for 5,
+10, 20 and 50 spans — `19 + 2.4n` for this payload's span mix. The systemic half
+is constant; only the per-span half grows, which is the same affordability
+property `ACP → IR` has (§8.8).
+
+#### The edge reaches two of the seven event kinds
+
+**FACT.** `gen_ai.operation.name` has eight values at `SEMCONV_VERSION`, read
+out of the pinned wheel: `chat`, `generate_content`, `text_completion`,
+`embeddings`, `retrieval`, `create_agent`, `invoke_agent`, `execute_tool`. Only
+the last becomes a typed IR kind. Everything else — including a span with no
+`gen_ai` attribute at all — becomes `UNKNOWN`, so of the IR's seven
+`EventKind` members this edge can emit exactly **`tool_call` and `unknown`**.
+`user_message`, `agent_message`, `agent_reasoning`, `timeout` and `oracle` are
+unreachable from OTLP.
+
+That is worth stating plainly, because it means **an OTel-derived trace is
+structurally poorer in the hub than an ACP-derived one**, and a consumer that
+assumes otherwise will be wrong.
+
+`UNKNOWN` does not mean nothing was read. A `chat` span still fills
+`agent.model`, `events[].usage.*`, both timestamps, the decoded attribute map
+and the whole span in `extensions`; what `UNKNOWN` withholds is the assertion of
+an *event type*. The reason splits in two:
+
+- for `invoke_agent`, `create_agent`, `embeddings` and `retrieval` there is **no
+  candidate**: the IR has no member that means any of them, so `UNKNOWN` is
+  forced rather than chosen;
+- for `chat`, `generate_content` and `text_completion` there *is* a candidate —
+  `agent_message` — and the blocker is checkable rather than a matter of taste.
+  Filling it means reading `gen_ai.input.messages` / `gen_ai.output.messages`,
+  whose structure the pinned package defines by reference to a JSON schema it
+  does not ship: the wheel contains 129 entries, none of them a `.json` file.
+  Mapping them would be writing against a document nobody in this repository
+  can check.
+
+#### What the guards caught, and what caught the guard
+
+**FACT.** Three rounds, each finding something the round before could not.
+
+**The contract guard, first version.** It derives the IR field list from the
+models and requires every field to be filled or declared. It found two **real
+undeclared absences** in the first working converter:
+`events[].reasoning_segments` and `events[].usage.cache_creation_tokens`. The
+second produced a distinction worth keeping — a usage field the edge *can* fill
+but this payload lacks reads differently from one no OTLP payload can carry, and
+the records now say which.
+
+**Twenty targeted mutations, twenty caught** — sorting spans by time,
+attributing every span to the agent, synthesizing a tool-call id, parsing a
+serialized arguments string, deriving the run extent, summing usage, normalizing
+a hex id, reproducing the deleted collector's falsy-value bug, among others. Two
+were green on the first run: one mutation was a no-op and was rewritten, and the
+other exposed a **real gap in the suite** — nothing asserted that
+`gen_ai.conversation.id` is not read as a session id, so a converter that read
+it stayed green. That test exists now.
+
+**A structural review of the finished slice found four more, and one of them was
+in the guard itself.** All four were invisible to a suite that was green
+throughout, which is the same lesson `ATIF → IR` produced (§8.10) in a different
+place.
+
+- **The guard was field-level, not instance-level.** It asked whether a path was
+  filled *somewhere* or declared *somewhere* in the trace. So a field the
+  fixture happens to fill was satisfied on every payload — including one where
+  it is empty and nothing declares it. `events[i].tool_call.started_at` was
+  exactly that: an `execute_tool` span with no readable instant left both
+  tool-call timestamps `None` with no record at any path beneath `tool_call`,
+  while `ACP → IR` and `ATIF → IR` both declare those two paths
+  unconditionally. The guard now checks **one instance at a time** — per event,
+  per content block — with two exemptions that are properties of the IR rather
+  than of a converter: a `tool_call` payload that invariant 3 *forbids* on a
+  non-tool event, and a field covered by a record on an outer node.
+- **The content blocks were outside the contract entirely.** The walker did not
+  descend into `list[ContentBlock]`, so `content[].kind`, `.text` and `.raw`
+  were never asked about. A text block read from a string result has no `raw`
+  and an object block has no rendered `text`; neither absence is structural, and
+  both are now declared at their own concrete path — the same path
+  `ATIF → IR` uses for `content[].raw`.
+- **The envelope partition was being flattened silently.** Two spans batched
+  under *different* `ScopeSpans` objects with an equal `scope` became
+  indistinguishable once the payload was read into one list. `§8.3` now carries
+  the three coordinates in `extensions.otel.envelope`.
+- **"Faithful" decoding was described as preserving the attributes.** It
+  preserves the *values*; the wire form goes. `{"intValue": "7"}` and
+  `{"intValue": 7}` are the same `7` afterwards. The table row is now
+  `normalized`, with a record to match.
+
+The point worth carrying forward: **a guard derived from the models still
+encodes a choice about what counts as an absence**, and that choice is not
+checked by the guard. Deriving the field list from code removed one class of
+blind spot and left another.
+
+#### Open maintainer decisions
+
+None of these is answered by the code, and each is a place where two readings
+are semantically plausible. They are listed rather than decided, because
+deciding one here would put the decision in the hub where every format inherits
+it.
+
+1. **Should the hub model causal structure?** OTLP's span tree is the first
+   source with real parentage. Today it is preserved verbatim in
+   `extensions.otel.span`; a `parent` field on `TraceEvent` would make it
+   canonical, and would oblige every other edge to have a position on it.
+2. **Which identifier encoding is canonical?** Hex or base64 — and should this
+   edge normalize to it, given the two are not distinguishable with certainty?
+3. **Is `gen_ai.conversation.id` a BenchFlow `session_id`?** The pinned package
+   calls it "a conversation (session, thread)", which is close enough to be
+   tempting and not close enough to be a fact.
+4. **Should spans other than `execute_tool` map to typed kinds?** A `chat` span
+   plausibly corresponds to an agent turn. Doing it needs a position on
+   `gen_ai.input.messages` / `gen_ai.output.messages`, whose structure the
+   pinned package defines by reference to a JSON schema it does not ship.
+5. **Should a serialized `gen_ai.tool.call.arguments` string be deserialized?**
+   The pinned text puts that obligation on the instrumentation. A reader that
+   does it anyway is deciding that a string which happens to be JSON was meant
+   as structure.
+6. **Should a span status map onto `ToolStatus` or `OutcomeStatus`?** See above:
+   plausible per span, unfounded for a run.
+7. **Is depending on `_incubating` conventions acceptable?** Every `gen_ai.*`
+   name is experimental at 0.62b1 and several are already deprecated. Copying
+   the constants (as here) keeps the lock file untouched but freezes a snapshot;
+   importing `opentelemetry-semantic-conventions` would track it and would make
+   the package a real dependency.
+8. **Is an `IR → OTel` emitter wanted at all?** Open question 5, still open for
+   the outbound half. It needs answers to 1, 2 and 4 before it can be written
+   without inventing a span tree for BenchFlow rollouts.
+
+#### Human verification
+
+**HUMAN E2E VERIFIED, 2026-08-18.** The procedure is `e2e-f/PROCEDURE.md`, and
+every step was carried out and judged by a person rather than by the suite:
+
+| | what was verified |
+|---|---|
+| F1 | fixture provenance and encoding, regenerated against the pinned `opentelemetry-proto==1.41.1` wheel with a hash matching `uv.lock` |
+| F2 | the mapping span by span — identity, parentage, ordering, tool calls, verbatim status retention, timestamp truncation, no trace-level aggregation, no conversation-to-session inference |
+| F3 | all 31 loss records read individually; every per-event path resolved |
+| F4 | the tri-state `AnyValue` behaviour |
+| F4b | the `resourceSpans`/`scopeSpans` partition surviving as coordinates |
+| F5 | every negative control biting as intended |
+| F5b | the mutation harness: every defined mutation applied and caught, no `MISSED`, no `SKIP`, exit 0, followed by a green `tests/trajectories` run |
+| F6 | the IR family still unwired — no external importers, no `opentelemetry` dependency, `uv.lock` unchanged |
+
+**The verification found two defects, both in the procedure and neither in the
+converter.** F3's scaling table and F5's resolvability check were still stating
+the counts a pre-review version of the edge produced. Both are corrected, and
+both criteria are now written as properties — a constant systemic half and a
+constant per-span rate; zero unresolved paths in the canonical encoding and more
+than zero under `exclude_none=True` — rather than as numbers that go stale the
+next time a record is added. That is the reusable part: **a count in a procedure
+is an expectation with a shelf life.**
+
+Nothing in the converter changed as a result, and no test was weakened to make a
+step pass.
+
+#### Not claimed
+
+The verification above is bounded by the following. None of them is a formality;
+each one names something a reader could otherwise reasonably assume, and none is
+narrowed by the fact that a person signed the steps off.
+
+- **Human verification does not extend past those limits.** What was checked is
+  that this edge does what §8.3 says it does, on the payloads named above. It is
+  not evidence about payloads nobody has seen.
+- **No OTLP payload emitted by a real agent has ever been read, including
+  during the human verification.** Nothing in BenchFlow emits spans, so there is
+  no rollout to check against — F1 verifies the fixture against the *library*,
+  which is the strongest available substitute and is not the same thing. The
+  fixture is
+  the output of `opentelemetry-proto` 1.41.1 itself, which makes its **encoding**
+  authoritative — base64 ids, `intValue` as a string, enums as member names,
+  defaults written as absence — and its **content** a construction: the five
+  spans, their attributes and their shape were chosen by hand, not observed.
+- **There is no `IR → OTel` emitter.** This edge is inbound only. Nothing in
+  this repository writes an OTLP span, and the outbound direction is not
+  designed, sketched or estimated here.
+- **There is no OTel round trip, and none is measured.** §8.10's
+  `ACP → IR → ATIF → IR′` loop closes because both ATIF edges exist. No loop
+  closes through OTel, so there is no preservation figure for this edge and none
+  is implied by the record counts above.
+- **`0 dropped` is a measurement of the fixture, not a property of the edge.**
+  See the table above: two fully conformant inputs produce `DROPPED` records.
+- **The mapping is checked against the pinned artifacts, not against the
+  specification.** Where the OpenTelemetry specification says something those
+  two packages do not express — the OTLP/JSON hex-identifier convention is the
+  clearest case — this edge implements nothing and says so.
+- **The GenAI semantic conventions are still `_incubating` at the pinned
+  version**, and several attributes read here are already deprecated in it. A
+  later version can move the ground under every `gen_ai.*` constant, and no
+  amount of verification against 0.62b1 prevents that.
+- **Nothing is wired.** `ir_from_otel.py` and `_otlp_anyvalue.py` join the
+  closed family of §8.7; no run path imports either, and no artifact changes
+  because they exist.
