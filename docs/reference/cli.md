@@ -429,10 +429,14 @@ per-tool durations; today's captures carry none, so nothing renders until the
 capture side starts writing them.
 
 Pointing the command at a directory **of** rollouts (a job directory, a whole
-`jobs/` tree) serves **browse mode** instead: a run sidebar
-(task, pass/fail, harness, model, skill mode) with traces loaded dynamically
-via `/api/rollouts` and `/api/rollout?id=…` — ids resolve only by exact
-membership in a fresh directory scan — plus `?run=<id>` deep links.
+`jobs/` tree) serves **browse mode** instead: a run catalog with corpus
+counts, grouping (by task, by model + harness, or none) with per-group
+pass/fail aggregates, sorting (name/reward/duration/cost), text filtering,
+collapsible groups with incremental "show more" pagination, and URL-preserved
+state — selecting a run opens the detail page and the back control restores
+the exact catalog view. Traces load dynamically via `/api/rollouts` and
+`/api/rollout?id=…` — ids resolve only by exact membership in a fresh
+directory scan — and `?run=<id>` deep-links a run.
 Discovery is capped at 500 runs by default (`BENCHFLOW_VIEWER_MAX_RUNS`
 overrides); truncation is never silent — the sidebar heading, the server
 startup line, and an `X-BenchFlow-Capped: 1` response header on

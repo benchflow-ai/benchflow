@@ -71,11 +71,14 @@ def _resolve_browse_rollout(base: Path, rid: str | None) -> Path | None:
 
 
 def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
-    """Sidebar row for one rollout: identity + score at a glance."""
+    """Catalog row for one rollout: identity, verdict, row-level stats."""
     d = base / rel_id
     result_data = _load_result_json(d)
     rewards = result_data.get("rewards")
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
+    timing = result_data.get("timing")
+    agent_result = result_data.get("agent_result")
+    usage = agent_result if isinstance(agent_result, dict) else {}
     return RunSummary(
         id=rel_id,
         name=d.name,
@@ -85,4 +88,8 @@ def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
         reward=reward,
         has_error=bool(result_data.get("error") or result_data.get("verifier_error")),
         skill_mode=result_data.get("skill_mode"),
+        duration_sec=(timing or {}).get("total") if isinstance(timing, dict) else None,
+        cost_usd=usage.get("cost_usd"),
+        total_tokens=usage.get("total_tokens"),
+        n_tool_calls=result_data.get("n_tool_calls"),
     ).to_payload()
