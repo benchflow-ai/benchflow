@@ -1,44 +1,101 @@
-"""Trajectory sources beyond the local filesystem (hf:// datasets)."""
+"""Trajectory sources: local paths and hf:// dataset slices, parsed and typed.
 
+The CLI hands ``bench eval view``'s argument here as a **string** — never
+through :class:`pathlib.Path`, whose normalization collapses ``hf://`` into
+``hf:/``. :func:`parse_source` turns it into an explicit
+``LocalPathSource | HfDatasetSource`` and validates dataset subpaths.
+"""
+
+import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from .payload import VERIFIER_SIDECARS
+
+# Exact files the viewer reads from a rollout dir — the hf:// download
+# allowlist. Precise paths only, no wildcards: a live resolution of the
+# example dataset with a ``verifier/*`` pattern pulled 418 files (~31 MB of
+# OBJ/MP4/PDF/NPZ artifacts) the viewer never consumes. The verifier portion
+# derives from payload.VERIFIER_SIDECARS so it cannot drift wider than what
+# payload._load_verifier actually reads; a regression test rejects widening.
 _HF_VIEWER_FILES = (
     "result.json",
     "timing.json",
     "prompts.json",
     "trajectory/acp_trajectory.jsonl",
-    "verifier/*",
+    *(f"verifier/{name}" for name in VERIFIER_SIDECARS),
 )
 
+_REPO_PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-def _parse_hf_spec(spec: str) -> tuple[str, str | None, str]:
-    """Split ``hf://org/name[@revision][/subpath]`` into its parts.
 
-    Tolerates ``hf:/`` (a Path round-trip collapses the double slash) and
-    returns ``(repo_id, revision, subpath)``.
+@dataclass(frozen=True)
+class LocalPathSource:
+    """A plain filesystem source: rollout dir, job tree, or session file."""
+
+    path: Path
+
+
+@dataclass(frozen=True)
+class HfDatasetSource:
+    """An ``hf://<org>/<name>[@revision][/subpath]`` dataset slice."""
+
+    repo_id: str
+    revision: str | None
+    subpath: str
+
+
+def parse_source(raw: str) -> LocalPathSource | HfDatasetSource:
+    """Parse a viewer source argument into its typed form.
+
+    Raises :class:`ValueError` on malformed HF specs — including the
+    ``hf:/`` spelling produced by a ``Path`` round trip, which gets a
+    pointed message instead of silent acceptance.
     """
-    raw = spec.split(":", 1)[1].lstrip("/")
-    parts = [p for p in raw.split("/") if p]
+    if raw.startswith("hf://"):
+        return _parse_hf(raw)
+    if raw.startswith("hf:"):
+        raise ValueError(
+            f"malformed HF spec {raw!r} — write hf://<org>/<name>[/subpath]. "
+            "(A pathlib.Path round trip collapses the double slash; keep the "
+            "spec a string.)"
+        )
+    return LocalPathSource(path=Path(raw))
+
+
+def _parse_hf(raw: str) -> HfDatasetSource:
+    parts = [p for p in raw[len("hf://") :].split("/") if p]
     if len(parts) < 2:
         raise ValueError(
-            f"invalid HF dataset spec {spec!r} — expected hf://<org>/<name>[/subpath]"
+            f"invalid HF dataset spec {raw!r} — expected hf://<org>/<name>[/subpath]"
         )
-    repo_id = "/".join(parts[:2])
-    revision = None
-    if "@" in parts[1]:
-        name, _, revision = parts[1].partition("@")
-        repo_id = f"{parts[0]}/{name}"
-    return repo_id, revision, "/".join(parts[2:])
+    org, name = parts[0], parts[1]
+    revision: str | None = None
+    if "@" in name:
+        name, _, revision = name.partition("@")
+        if not revision:
+            raise ValueError(f"empty revision in HF dataset spec {raw!r}")
+    for part in (org, name):
+        if not _REPO_PART_RE.match(part):
+            raise ValueError(f"invalid HF repo component {part!r} in {raw!r}")
+    subpath_parts = parts[2:]
+    for segment in subpath_parts:
+        if segment in (".", "..") or "\\" in segment:
+            raise ValueError(f"invalid dataset subpath segment {segment!r} in {raw!r}")
+    return HfDatasetSource(
+        repo_id=f"{org}/{name}",
+        revision=revision,
+        subpath="/".join(subpath_parts),
+    )
 
 
-def _resolve_hf_source(spec: str) -> Path:
+def resolve_hf_dataset(source: HfDatasetSource) -> Path:
     """Materialize the viewer-relevant slice of an HF dataset locally.
 
     Downloads (into the shared huggingface_hub cache, so repeat views are
-    incremental) only the files the viewer renders — trajectories plus
-    result/timing/prompts/verifier sidecars — and returns the local
-    directory to serve.
+    incremental) only the files the viewer renders — see _HF_VIEWER_FILES —
+    and returns the local directory to serve.
     """
     try:
         from huggingface_hub import snapshot_download
@@ -46,21 +103,24 @@ def _resolve_hf_source(spec: str) -> Path:
         print("huggingface_hub is required for hf:// sources")
         sys.exit(1)
 
-    repo_id, revision, subpath = _parse_hf_spec(spec)
-    scope = f"{subpath.rstrip('/')}/" if subpath else ""
+    scope = f"{source.subpath.rstrip('/')}/" if source.subpath else ""
     patterns = []
     for name in _HF_VIEWER_FILES:
         patterns.append(f"{scope}{name}")
         patterns.append(f"{scope}**/{name}")
-    print(f"Fetching {repo_id}" + (f" @ {revision}" if revision else "") + " …")
+    print(
+        f"Fetching {source.repo_id}"
+        + (f" @ {source.revision}" if source.revision else "")
+        + " …"
+    )
     local = snapshot_download(
-        repo_id=repo_id,
+        repo_id=source.repo_id,
         repo_type="dataset",
-        revision=revision,
+        revision=source.revision,
         allow_patterns=patterns,
     )
-    root = Path(local) / subpath if subpath else Path(local)
+    root = Path(local) / source.subpath if source.subpath else Path(local)
     if not root.is_dir():
-        print(f"No such path in dataset {repo_id}: {subpath}")
+        print(f"No such path in dataset {source.repo_id}: {source.subpath}")
         sys.exit(1)
     return root

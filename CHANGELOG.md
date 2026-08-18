@@ -24,11 +24,16 @@
   exactly one trajectory.
 - **`hf://` sources browse HuggingFace trajectory datasets directly.**
   `bench eval view hf://<org>/<dataset>[@revision][/subpath]` fetches the
-  viewer-relevant slice of a trajectory dataset (trajectories plus
-  result/timing/prompts/verifier sidecars — never the large
-  `llm_trajectory`/`trainer` exports) into the shared `huggingface_hub`
-  cache and serves it through browse mode, making the community
-  ground-truth uploads reviewable with one command.
+  viewer-relevant slice of a trajectory dataset into the shared
+  `huggingface_hub` cache and serves it through browse mode, making the
+  community ground-truth uploads reviewable with one command. The download
+  allowlist is exact — trajectories, result/timing/prompts, and the four
+  verifier sidecars the viewer renders — with no wildcards, so large run
+  artifacts and `llm_trajectory`/`trainer` exports are never fetched. The
+  CLI passes the spec as a string into a typed
+  `LocalPathSource | HfDatasetSource` parser (never through `pathlib.Path`,
+  whose normalization would mangle `hf://` into `hf:/`), and dataset
+  subpaths are validated.
 - **The viewer renders per-event timelines the moment captures provide
   timestamps.** Steps gain a `+m:ss` offset chip and tool calls a duration
   chip whenever events carry `ts` / `started_at` / `finished_at` fields;

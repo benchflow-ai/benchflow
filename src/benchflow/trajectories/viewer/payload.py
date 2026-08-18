@@ -312,11 +312,23 @@ def _build_meta(result_data: dict, timing: dict | None, steps: list[Step]) -> Me
     )
 
 
+# The exact verifier sidecars the viewer renders. Also the verifier/ portion
+# of the hf:// download allowlist (imported by .sources), so the fetch
+# surface can never drift wider than what this module actually reads.
+VERIFIER_SIDECARS = ("reward.txt", "test-stdout.txt", "test-stderr.txt", "ctrf.json")
+(
+    _VERIFIER_REWARD,
+    _VERIFIER_STDOUT,
+    _VERIFIER_STDERR,
+    _VERIFIER_CTRF,
+) = VERIFIER_SIDECARS
+
+
 def _load_verifier(rollout_dir: Path) -> VerifierArtifacts:
     vdir = rollout_dir / "verifier"
-    reward = _read_text(vdir / "reward.txt")
+    reward = _read_text(vdir / _VERIFIER_REWARD)
     ctrf_tests = None
-    ctrf = _load_json(vdir / "ctrf.json")
+    ctrf = _load_json(vdir / _VERIFIER_CTRF)
     if isinstance(ctrf, dict):
         raw_tests = (ctrf.get("results") or {}).get("tests")
         if isinstance(raw_tests, list):
@@ -331,8 +343,8 @@ def _load_verifier(rollout_dir: Path) -> VerifierArtifacts:
             ]
     return VerifierArtifacts(
         reward=reward.strip() if reward else None,
-        stdout=_read_text(vdir / "test-stdout.txt"),
-        stderr=_read_text(vdir / "test-stderr.txt"),
+        stdout=_read_text(vdir / _VERIFIER_STDOUT),
+        stderr=_read_text(vdir / _VERIFIER_STDERR),
         ctrf=ctrf_tests,
     )
 
