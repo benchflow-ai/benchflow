@@ -225,6 +225,312 @@ async def test_branch_does_not_require_sandbox_snapshot_by_default():
     assert value == pytest.approx(0.5)
 
 
+# 4b. Docker restore re-creates an equivalent container
+
+
+_LIVE_CONTAINER = {
+    "Id": "abc123",
+    "Config": {"WorkingDir": "/app", "User": "agent", "Env": ["FOO=bar"]},
+    "HostConfig": {
+        "NetworkMode": "bf-proj_default",
+        "NanoCpus": 2_000_000_000,
+        "Memory": 4294967296,
+    },
+    "Mounts": [
+        {
+            "Type": "bind",
+            "Source": "/host/jobs/run/verifier",
+            "Destination": "/logs/verifier",
+            "RW": True,
+        },
+        {
+            "Type": "bind",
+            "Source": "/host/jobs/run/agent",
+            "Destination": "/logs/agent",
+            "RW": True,
+        },
+        {
+            "Type": "bind",
+            "Source": "/host/readonly",
+            "Destination": "/opt/fixtures",
+            "RW": False,
+        },
+        {
+            "Type": "volume",
+            "Name": "pgdata",
+            "Source": "/var/lib/docker/volumes/pgdata/_data",
+            "Destination": "/var/lib/postgresql/data",
+            "RW": True,
+        },
+    ],
+}
+
+
+def _docker_sandbox(tmp_path):
+    """A DockerSandbox instance — construction only, no daemon contact."""
+    from benchflow.sandbox.docker import DockerSandbox
+    from benchflow.task.config import SandboxConfig
+    from benchflow.task.paths import RolloutPaths
+
+    env_dir = tmp_path / "environment"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "Dockerfile").write_text("FROM alpine:3.20\n")
+    rollout_paths = RolloutPaths(rollout_dir=tmp_path / "run")
+    rollout_paths.mkdir()
+    return DockerSandbox(
+        environment_dir=env_dir,
+        environment_name="snapshot-contract",
+        session_id="bf-snapshot-contract",
+        rollout_paths=rollout_paths,
+        task_env_config=SandboxConfig(),
+    )
+
+
+class TestReplayedRunArgs:
+    """The pure reconstruction: inspect output -> ``docker run`` flags."""
+
+    def test_bind_mounts_are_replayed_with_their_host_paths(self):
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        args = _replayed_run_args(_LIVE_CONTAINER, default_network="bf-proj_default")
+
+        assert "--mount" in args
+        specs = [args[i + 1] for i, a in enumerate(args) if a == "--mount"]
+        assert "type=bind,src=/host/jobs/run/verifier,dst=/logs/verifier" in specs
+        assert "type=bind,src=/host/jobs/run/agent,dst=/logs/agent" in specs
+
+    def test_a_read_only_bind_stays_read_only(self):
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        args = _replayed_run_args(_LIVE_CONTAINER, default_network="bf-proj_default")
+        specs = [args[i + 1] for i, a in enumerate(args) if a == "--mount"]
+
+        assert "type=bind,src=/host/readonly,dst=/opt/fixtures,readonly" in specs
+
+    def test_a_named_volume_is_replayed_by_name_not_by_its_data_path(self):
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        args = _replayed_run_args(_LIVE_CONTAINER, default_network="bf-proj_default")
+        specs = [args[i + 1] for i, a in enumerate(args) if a == "--mount"]
+
+        assert "type=volume,src=pgdata,dst=/var/lib/postgresql/data" in specs
+
+    def test_resource_limits_and_the_project_network_are_replayed(self):
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        args = _replayed_run_args(_LIVE_CONTAINER, default_network="bf-proj_default")
+
+        assert args[:2] == ["--network", "bf-proj_default"]
+        assert args[args.index("--cpus") + 1] == "2"
+        assert args[args.index("--memory") + 1] == "4294967296"
+
+    def test_a_container_with_no_network_does_not_get_one_back(self):
+        """A task that opted out of networking must stay opted out."""
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        container = {**_LIVE_CONTAINER, "HostConfig": {"NetworkMode": "none"}}
+
+        args = _replayed_run_args(container, default_network="bf-proj_default")
+
+        assert args[:2] == ["--network", "none"]
+        assert "bf-proj_default" not in args
+
+    def test_an_empty_host_config_replays_only_the_default_network(self):
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        args = _replayed_run_args({}, default_network="bf-proj_default")
+
+        assert args == ["--network", "bf-proj_default"]
+
+    def test_a_tmpfs_mount_is_replayed_as_tmpfs(self):
+        from benchflow.sandbox.docker import _replayed_run_args
+
+        container = {"Mounts": [{"Type": "tmpfs", "Destination": "/scratch"}]}
+
+        args = _replayed_run_args(container, default_network="net")
+
+        assert args[-2:] == ["--tmpfs", "/scratch"]
+
+
+class TestDockerRestoreRebuildsTheContainer:
+    """``restore()`` must produce a container equivalent to the one it replaces.
+
+    The live regression: the replacement was created with only ``--network``
+    and two labels, so the rollout's ``/logs`` bind mounts were dropped. The
+    verifier then wrote ``reward.txt`` into a container-local directory, the
+    host saw nothing, and the branch child was reported as ``0.00``.
+    """
+
+    async def _restore_with(self, tmp_path, monkeypatch, inspect_result):
+        import json as _json
+
+        from benchflow.sandbox._base import ExecResult
+
+        sandbox = _docker_sandbox(tmp_path)
+        calls: list[list[str]] = []
+
+        async def fake_main_container_id():
+            return "abc123"
+
+        async def fake_docker_cli(args, check=True):
+            calls.append(list(args))
+            if args[0] == "inspect":
+                if isinstance(inspect_result, int):
+                    return ExecResult(stdout="", stderr="boom", return_code=1)
+                return ExecResult(
+                    stdout=_json.dumps(inspect_result), stderr="", return_code=0
+                )
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        monkeypatch.setattr(sandbox, "_main_container_id", fake_main_container_id)
+        monkeypatch.setattr(sandbox, "_docker_cli", fake_docker_cli)
+        await sandbox.restore(SandboxImage(provider="docker", ref="bf-snap-x"))
+        return calls
+
+    async def test_restore_replays_the_original_bind_mounts(
+        self, tmp_path, monkeypatch
+    ):
+        calls = await self._restore_with(tmp_path, monkeypatch, [_LIVE_CONTAINER])
+
+        run_cmd = next(call for call in calls if call[0] == "run")
+        specs = [run_cmd[i + 1] for i, a in enumerate(run_cmd) if a == "--mount"]
+        assert "type=bind,src=/host/jobs/run/verifier,dst=/logs/verifier" in specs
+        assert "type=bind,src=/host/jobs/run/agent,dst=/logs/agent" in specs
+        # the compose identity the engine relies on is still there
+        assert "com.docker.compose.service=main" in run_cmd
+        assert run_cmd[-2:] == ["sleep", "infinity"]
+
+    async def test_the_container_is_inspected_before_it_is_removed(
+        self, tmp_path, monkeypatch
+    ):
+        """Ordering is the whole trick: a removed container has no host config."""
+        calls = await self._restore_with(tmp_path, monkeypatch, [_LIVE_CONTAINER])
+
+        verbs = [call[0] for call in calls]
+        assert verbs.index("inspect") < verbs.index("stop") < verbs.index("rm")
+
+    async def test_restore_fails_closed_when_the_container_cannot_be_inspected(
+        self, tmp_path, monkeypatch
+    ):
+        """Unknown host config is not a licence to create a container without one."""
+        with pytest.raises(RuntimeError, match="docker inspect"):
+            await self._restore_with(tmp_path, monkeypatch, 1)
+
+
+class TestVerifierMountDecisionIsLive:
+    """The "are the outputs already on the host" question is asked, not assumed."""
+
+    async def test_a_stale_is_mounted_declaration_falls_back_to_downloading(
+        self, tmp_path
+    ):
+        """``is_mounted`` is static; ``restore()`` can invalidate it mid-run."""
+        from benchflow.task.paths import RolloutPaths
+        from benchflow.task.verifier import Verifier
+
+        class _Sandbox:
+            is_mounted = True
+
+            async def has_host_mount(self, *, host_dir, container_dir) -> bool:
+                return False
+
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "run")
+        rollout_paths.mkdir()
+        verifier = Verifier(object(), rollout_paths, _Sandbox())
+
+        assert await verifier._verifier_outputs_are_mounted("main") is False
+
+    async def test_a_live_mount_still_skips_the_download(self, tmp_path):
+        from benchflow.task.paths import RolloutPaths
+        from benchflow.task.verifier import Verifier
+
+        class _Sandbox:
+            is_mounted = True
+
+            async def has_host_mount(self, *, host_dir, container_dir) -> bool:
+                return True
+
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "run")
+        rollout_paths.mkdir()
+        verifier = Verifier(object(), rollout_paths, _Sandbox())
+
+        assert await verifier._verifier_outputs_are_mounted("main") is True
+
+    async def test_a_live_check_that_raises_falls_back_to_downloading(self, tmp_path):
+        """Fail toward the download: redundant is cheap, skipped loses the score."""
+        from benchflow.task.paths import RolloutPaths
+        from benchflow.task.verifier import Verifier
+
+        class _Sandbox:
+            is_mounted = True
+
+            async def has_host_mount(self, *, host_dir, container_dir) -> bool:
+                raise RuntimeError("daemon unreachable")
+
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "run")
+        rollout_paths.mkdir()
+        verifier = Verifier(object(), rollout_paths, _Sandbox())
+
+        assert await verifier._verifier_outputs_are_mounted("main") is False
+
+    async def test_a_backend_without_a_live_check_keeps_its_declaration(self, tmp_path):
+        from benchflow.task.paths import RolloutPaths
+        from benchflow.task.verifier import Verifier
+
+        class _Sandbox:
+            is_mounted = True
+
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "run")
+        rollout_paths.mkdir()
+        verifier = Verifier(object(), rollout_paths, _Sandbox())
+
+        assert await verifier._verifier_outputs_are_mounted("main") is True
+        # a target service is never host-mounted, live check or not
+        assert await verifier._verifier_outputs_are_mounted("target") is False
+
+    async def test_docker_has_host_mount_reads_the_live_container(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json
+
+        from benchflow.sandbox._base import ExecResult
+
+        sandbox = _docker_sandbox(tmp_path)
+        mounted = tmp_path / "run" / "verifier"
+        container = {
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": str(mounted),
+                    "Destination": "/logs/verifier",
+                    "RW": True,
+                }
+            ]
+        }
+
+        async def fake_main_container_id():
+            return "abc123"
+
+        async def fake_docker_cli(args, check=True):
+            return ExecResult(stdout=_json.dumps([container]), stderr="", return_code=0)
+
+        monkeypatch.setattr(sandbox, "_main_container_id", fake_main_container_id)
+        monkeypatch.setattr(sandbox, "_docker_cli", fake_docker_cli)
+
+        assert (
+            await sandbox.has_host_mount(
+                host_dir=mounted, container_dir="/logs/verifier"
+            )
+            is True
+        )
+        # same destination, a different host directory: not our mount
+        assert (
+            await sandbox.has_host_mount(
+                host_dir=tmp_path / "elsewhere", container_dir="/logs/verifier"
+            )
+            is False
+        )
+
+
 # 5. Workspace helper is scope-renamed, alias preserved
 
 

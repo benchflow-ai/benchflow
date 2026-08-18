@@ -47,6 +47,7 @@ is deliberately kept so repeat runs hit the Docker build cache.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import uuid
@@ -65,7 +66,7 @@ from benchflow.sandbox.docker import (
     _sanitize_docker_compose_project_name,
 )
 from benchflow.task.config import SandboxConfig
-from benchflow.task.paths import RolloutPaths
+from benchflow.task.paths import RolloutPaths, SandboxPaths
 from benchflow.trajectories.tree import RolloutTree
 
 pytestmark = [pytest.mark.live]
@@ -444,4 +445,74 @@ async def test_zero_delta_reward_proxy_invariant(
         assert await _exec_value(sandbox, verifier) == "PASS", (
             "zero-delta restore must return the verifier to its pre-snapshot "
             "verdict — the reward-equality invariant"
+        )
+
+
+async def test_restore_keeps_the_rollout_bind_mounts_and_the_host_sees_writes(
+    docker_prereqs: None, environment_dir: Path, tmp_path: Path
+) -> None:
+    """T2 proof for the live regression: a restored container is still mounted.
+
+    ``DockerSandbox`` bind-mounts the rollout's ``verifier`` / ``agent`` /
+    ``artifacts`` directories into ``main``. ``restore()`` re-creates that
+    container outside compose, and a replacement created without those mounts
+    is silently broken: the verifier's ``reward.txt`` is written inside the
+    container, the host reads nothing, and the branch child is scored from a
+    file that does not exist (the run that reported two arms at ``0.00``).
+
+    Two assertions, in the order that matters: the mounts are *declared* on
+    the restored container (``docker inspect``), and they are *effective* — a
+    file written to the mounted path inside the container appears on the host,
+    which is the property the verifier actually depends on. The pre-restore
+    write proves the mount worked before, so a post-restore failure is
+    attributable to the restore.
+    """
+    rollout_dir = tmp_path / "mounted-run"
+    async with _live_sandbox(environment_dir, rollout_dir) as sandbox:
+        host_verifier_dir = (rollout_dir / "verifier").resolve()
+        container_verifier_dir = str(SandboxPaths.verifier_dir)
+
+        await _exec_ok(sandbox, f"echo pre > {container_verifier_dir}/reward.txt")
+        assert (host_verifier_dir / "reward.txt").read_text().strip() == "pre", (
+            "the compose-created container must bind-mount the verifier dir — "
+            "otherwise this test proves nothing about restore"
+        )
+
+        image = await sandbox.snapshot()
+        await sandbox.restore(image)
+
+        mounts = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{json .Mounts}}",
+                await sandbox._main_container_id() or "",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert mounts.returncode == 0, mounts.stderr
+        destinations = {
+            mount["Destination"] for mount in json.loads(mounts.stdout or "[]")
+        }
+        assert container_verifier_dir in destinations, (
+            "the restored container dropped the verifier bind mount: "
+            f"{sorted(destinations)}"
+        )
+        assert str(SandboxPaths.agent_dir) in destinations
+        assert str(SandboxPaths.artifacts_dir) in destinations
+
+        # Effective, not just declared: the host must see a post-restore write.
+        await _exec_ok(sandbox, f"echo 1.0 > {container_verifier_dir}/reward.txt")
+        assert (host_verifier_dir / "reward.txt").read_text().strip() == "1.0", (
+            "a file written to the mounted verifier path after restore must "
+            "appear on the host — this is the read the verifier depends on"
+        )
+
+        # And the live mount check agrees with reality.
+        assert await sandbox.has_host_mount(
+            host_dir=host_verifier_dir, container_dir=container_verifier_dir
         )
