@@ -518,79 +518,261 @@ function showLoadError(message) {
   main.appendChild(b);
 }
 
-/* ── browse mode: run sidebar + dynamic fetch ───────────── */
-function renderSidebar(rollouts, activeId) {
-  const side = document.getElementById("side");
-  side.textContent = "";
-  side.classList.remove("hidden");
-  const heading = BOOT.capped
-    ? "first " + rollouts.length + " runs (capped)"
-    : rollouts.length + " runs";
-  const h2 = el("h2", null, heading);
-  if (BOOT.capped) h2.title = "Raise BENCHFLOW_VIEWER_MAX_RUNS to discover more runs.";
-  side.appendChild(h2);
-  rollouts.forEach(r => {
-    const st = (r.reward === null || r.reward === undefined) ? "unscored" : (r.reward >= 1 ? "pass" : "fail");
-    const b = el("button", "run " + st);
-    b.setAttribute("aria-current", r.id === activeId ? "true" : "false");
-    b.dataset.id = r.id;
-    const name = el("div", "rname", r.task_name || r.name || r.id);
-    const sub = el("div", "rsub");
-    const dot = el("span", "dot " + st);
-    sub.appendChild(dot);
-    sub.appendChild(el("span", null,
-      (r.reward === null || r.reward === undefined ? (r.has_error ? "error" : "unscored") : (r.reward >= 1 ? "pass" : "fail " + r.reward))));
-    if (r.agent_name) sub.appendChild(el("span", null, r.agent_name));
-    if (r.model) sub.appendChild(el("span", "mono", r.model));
-    if (r.skill_mode) sub.appendChild(el("span", null, r.skill_mode));
-    b.appendChild(name); b.appendChild(sub);
-    b.addEventListener("click", () => selectRun(r.id, true));
-    side.appendChild(b);
+/* ── browse mode: run catalog ⇄ run detail ──────────────── */
+const ROLLOUTS = BOOT.mode === "browse" ? (BOOT.rollouts || []) : [];
+/* index state, mirrored into the URL so back/refresh restore the exact view */
+const ix = { group: "task", sort: "name", q: "", open: new Set(), page: {}, scrollY: 0 };
+const GROUPERS = {
+  task: r => r.task_name || "(unknown task)",
+  agent: r => [r.agent_name, r.model].filter(Boolean).join(" · ") || "(unknown agent)",
+  none: () => "",
+};
+const SORTS = {
+  name: (a, b) => String(a.task_name + a.name).localeCompare(String(b.task_name + b.name)),
+  reward: (a, b) => (b.reward ?? -1) - (a.reward ?? -1),
+  duration: (a, b) => (b.duration_sec ?? -1) - (a.duration_sec ?? -1),
+  cost: (a, b) => (b.cost_usd ?? -1) - (a.cost_usd ?? -1),
+};
+const PAGE_SIZE = 100;
+
+function runStatus(r) {
+  return r.reward === null || r.reward === undefined
+    ? "unscored"
+    : r.reward >= 1 ? "pass" : "fail";
+}
+function fmtCost(v) {
+  return v === null || v === undefined ? null : "$" + Number(v).toFixed(2);
+}
+
+function readURL() {
+  const p = new URLSearchParams(location.search);
+  ix.group = GROUPERS[p.get("group")] ? p.get("group") : "task";
+  ix.sort = SORTS[p.get("sort")] ? p.get("sort") : "name";
+  ix.q = p.get("q") || "";
+  ix.open = new Set((p.get("open") || "").split(",").filter(Boolean));
+  return p.get("run");
+}
+function writeURL(run, push) {
+  const p = new URLSearchParams();
+  if (ix.group !== "task") p.set("group", ix.group);
+  if (ix.sort !== "name") p.set("sort", ix.sort);
+  if (ix.q) p.set("q", ix.q);
+  if (ix.open.size) p.set("open", [...ix.open].join(","));
+  if (run) p.set("run", run);
+  const url = location.pathname + (p.toString() ? "?" + p.toString() : "");
+  if (push) history.pushState({}, "", url);
+  else history.replaceState({}, "", url);
+}
+
+function showIndex() {
+  document.getElementById("content").classList.add("hidden");
+  const main = document.getElementById("view-index");
+  main.classList.remove("hidden");
+  renderIndex();
+  window.scrollTo(0, ix.scrollY);
+}
+function showDetail() {
+  document.getElementById("view-index").classList.add("hidden");
+  document.getElementById("content").classList.remove("hidden");
+  document.getElementById("backbar").classList.remove("hidden");
+}
+
+function matchesQuery(r, q) {
+  if (!q) return true;
+  return [r.task_name, r.name, r.agent_name, r.model, r.skill_mode, runStatus(r)]
+    .filter(Boolean).join(" ").toLowerCase().includes(q);
+}
+
+function renderIndex() {
+  const main = document.getElementById("view-index");
+  main.textContent = "";
+
+  const rows = ROLLOUTS.filter(r => matchesQuery(r, ix.q.trim().toLowerCase()));
+  const counts = { pass: 0, fail: 0, unscored: 0 };
+  rows.forEach(r => counts[runStatus(r)]++);
+
+  /* corpus line */
+  const stats = el("div", null); stats.id = "ixstats";
+  const total = el("span", null, "");
+  total.appendChild(el("b", null, rows.length));
+  total.appendChild(document.createTextNode(
+    (rows.length === ROLLOUTS.length ? "" : " / " + ROLLOUTS.length) + " runs"
+    + (BOOT.capped ? " (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)" : "")));
+  stats.appendChild(total);
+  [["pass", counts.pass], ["fail", counts.fail], ["unscored", counts.unscored]].forEach(([k, n]) => {
+    const s = el("span", null, k + " ");
+    s.appendChild(el("b", null, n));
+    stats.appendChild(s);
+  });
+  main.appendChild(stats);
+
+  /* controls */
+  const ctl = el("div", null); ctl.id = "ixcontrols";
+  function select(labelText, options, value, onchange) {
+    ctl.appendChild(el("label", null, labelText));
+    const s = el("select");
+    options.forEach(([v, txt]) => {
+      const o = el("option", null, txt); o.value = v;
+      if (v === value) o.selected = true;
+      s.appendChild(o);
+    });
+    s.addEventListener("change", () => { onchange(s.value); writeURL(null, false); renderIndex(); });
+    ctl.appendChild(s);
+  }
+  select("group", [["task", "task"], ["agent", "model + harness"], ["none", "none"]],
+    ix.group, v => { ix.group = v; ix.page = {}; });
+  select("sort", [["name", "name"], ["reward", "reward"], ["duration", "duration"], ["cost", "cost"]],
+    ix.sort, v => { ix.sort = v; });
+  const q = el("input"); q.id = "ixsearch"; q.type = "search"; q.placeholder = "filter runs…";
+  q.value = ix.q;
+  q.addEventListener("input", () => { ix.q = q.value; ix.page = {}; writeURL(null, false); renderIndex(); refocus(q); });
+  ctl.appendChild(q);
+  main.appendChild(ctl);
+
+  if (!rows.length) {
+    const e = el("div", null, ROLLOUTS.length ? "No runs match the filter." : "No runs found.");
+    e.id = "ixempty";
+    main.appendChild(e);
+    return;
+  }
+
+  /* groups */
+  const grouper = GROUPERS[ix.group];
+  const groups = new Map();
+  rows.forEach(r => {
+    const key = grouper(r);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+  const defaultOpen = ix.group === "none" || keys.length <= 2;
+
+  keys.forEach(key => {
+    const members = groups.get(key).slice().sort(SORTS[ix.sort]);
+    const card = el("section", "group");
+    const isOpen = ix.group === "none" || defaultOpen || ix.open.has(key);
+
+    if (ix.group !== "none") {
+      const head = el("button", "group-head");
+      head.appendChild(el("span", "chev", isOpen ? "▾" : "▸"));
+      head.appendChild(el("span", "gname", key));
+      const g = { pass: 0, fail: 0, unscored: 0 };
+      members.forEach(r => g[runStatus(r)]++);
+      const gs = el("span", "gstats");
+      gs.appendChild(el("span", null, members.length + " runs"));
+      if (g.pass) gs.appendChild(el("span", "gpass", g.pass + " pass"));
+      if (g.fail) gs.appendChild(el("span", "gfail", g.fail + " fail"));
+      if (g.unscored) gs.appendChild(el("span", null, g.unscored + " unscored"));
+      if (g.pass + g.fail > 0) {
+        gs.appendChild(el("span", null, Math.round(100 * g.pass / (g.pass + g.fail)) + "%"));
+      }
+      head.appendChild(gs);
+      head.addEventListener("click", () => {
+        if (ix.open.has(key)) ix.open.delete(key); else ix.open.add(key);
+        writeURL(null, false);
+        renderIndex();
+      });
+      card.appendChild(head);
+    }
+
+    if (isOpen) {
+      const limit = PAGE_SIZE + (ix.page[key] || 0);
+      members.slice(0, limit).forEach(r => card.appendChild(runRow(r)));
+      if (members.length > limit) {
+        const more = el("button", "showmore",
+          "Show " + Math.min(PAGE_SIZE * 2, members.length - limit) + " more (" + (members.length - limit) + " hidden)");
+        more.addEventListener("click", () => {
+          ix.page[key] = (ix.page[key] || 0) + PAGE_SIZE * 2;
+          renderIndex();
+        });
+        card.appendChild(more);
+      }
+    }
+    main.appendChild(card);
   });
 }
-function markActive(id) {
-  document.querySelectorAll("#side .run").forEach(b =>
-    b.setAttribute("aria-current", b.dataset.id === id ? "true" : "false"));
+
+/* keep typing focus across re-renders triggered by the search box */
+function refocus(oldInput) {
+  const fresh = document.getElementById("ixsearch");
+  if (fresh && oldInput && document.activeElement !== fresh) {
+    fresh.focus();
+    fresh.setSelectionRange(fresh.value.length, fresh.value.length);
+  }
 }
+
+function runRow(r) {
+  const status = runStatus(r);
+  const b = el("button", "runrow");
+  b.appendChild(el("span", "dot " + status));
+  const mainCol = el("span", "rmain");
+  mainCol.appendChild(el("span", "rtitle", (ix.group === "task" ? r.name : r.task_name)));
+  const sub = el("span", "rsub");
+  if (ix.group !== "agent") {
+    if (r.agent_name) sub.appendChild(el("span", null, r.agent_name));
+    if (r.model) sub.appendChild(el("span", null, r.model));
+  }
+  if (r.skill_mode) sub.appendChild(el("span", null, r.skill_mode));
+  if (r.has_error) sub.appendChild(el("span", null, "error"));
+  mainCol.appendChild(sub);
+  b.appendChild(mainCol);
+  const st = el("span", "rstats");
+  st.appendChild(el("span", "rreward " + status,
+    status === "unscored" ? "—" : (status === "pass" ? "pass" : "fail " + r.reward)));
+  const dur = fmtDuration(r.duration_sec);
+  if (dur) st.appendChild(el("span", null, dur));
+  const tok = fmtTokens(r.total_tokens);
+  if (tok) st.appendChild(el("span", null, tok + " tok"));
+  const cost = fmtCost(r.cost_usd);
+  if (cost) st.appendChild(el("span", null, cost));
+  b.appendChild(st);
+  b.addEventListener("click", () => selectRun(r.id, true));
+  return b;
+}
+
 async function selectRun(id, push) {
-  markActive(id);
+  ix.scrollY = window.scrollY;
   try {
     const resp = await fetch("/api/rollout?id=" + encodeURIComponent(id));
-    if (!resp.ok) { showLoadError("HTTP " + resp.status + " loading run: " + id); return; }
-    const payload = await resp.json();
-    loadPayload(payload);
-    if (push) {
-      const url = new URL(location.href);
-      url.searchParams.set("run", id);
-      url.hash = "";
-      history.pushState({ run: id }, "", url);
+    if (!resp.ok) {
+      showDetail();
+      showLoadError("HTTP " + resp.status + " loading run: " + id);
+      return;
     }
+    const payload = await resp.json();
+    if (push) writeURL(id, true);
+    showDetail();
+    loadPayload(payload);
+    window.scrollTo(0, 0);
   } catch (err) {
+    showDetail();
     showLoadError("Failed to load run " + id + ": " + err);
+  }
+}
+
+function applyLocation(push) {
+  const run = readURL();
+  if (run && ROLLOUTS.some(r => r.id === run)) {
+    selectRun(run, false);
+  } else if (run) {
+    showDetail();
+    showLoadError(
+      'Run "' + run + '" is not among the ' + ROLLOUTS.length +
+      " discovered runs" +
+      (BOOT.capped ? " (list is capped — raise BENCHFLOW_VIEWER_MAX_RUNS)." : "."));
+  } else {
+    showIndex();
   }
 }
 
 /* ── boot ───────────────────────────────────────────────── */
 if (BOOT.mode === "browse") {
-  const rollouts = BOOT.rollouts || [];
-  const requested = new URLSearchParams(location.search).get("run");
-  if (requested && !rollouts.some(r => r.id === requested)) {
-    /* Never silently render a different run than the URL asked for. */
-    renderSidebar(rollouts, null);
-    showLoadError(
-      'Run "' + requested + '" is not among the ' + rollouts.length +
-      " discovered runs" +
-      (BOOT.capped ? " (list is capped — raise BENCHFLOW_VIEWER_MAX_RUNS)." : "."));
-  } else {
-    const initial = requested || (rollouts[0] && rollouts[0].id);
-    renderSidebar(rollouts, initial || null);
-    if (initial) selectRun(initial, false);
-    else showLoadError("No runs found under this directory.");
-  }
-  window.addEventListener("popstate", () => {
-    const id = new URLSearchParams(location.search).get("run");
-    if (id && rollouts.some(r => r.id === id)) selectRun(id, false);
+  document.getElementById("backbtn").addEventListener("click", () => {
+    writeURL(null, true);
+    showIndex();
   });
+  window.addEventListener("popstate", () => applyLocation(false));
+  applyLocation(false);
 } else {
   loadPayload(BOOT.payload || {});
 }

@@ -14,14 +14,18 @@
   as untrusted end to end (data-only embedding, `textContent` rendering).
   Raw session JSONL files, the `--confirm` approve/reject contract, and the
   legacy `turn*.txt` renderer are unchanged.
-- **Directories of rollouts serve a multi-run browser.** Pointing
+- **Directories of rollouts serve a run catalog.** Pointing
   `bench eval view` at a job directory (or a whole `jobs/` tree) serves a
-  run sidebar — task, pass/fail, harness, model, skill mode — with traces
-  loaded dynamically from `/api/rollout?id=…` (ids resolve only by exact
-  membership in a fresh directory scan, so crafted ids cannot reach the
-  filesystem) and `?run=<id>` deep links for citing a specific run.
-  `--confirm` on a multi-run directory errors out: a confirmation needs
-  exactly one trajectory.
+  browsable index: corpus counts, grouping by task or model + harness with
+  per-group pass/fail aggregates and pass rates, sorting by
+  name/reward/duration/cost, text filtering, collapsible groups with
+  incremental pagination, and URL-preserved state — selecting a run opens
+  the detail page and the back control restores the exact catalog view.
+  Traces load dynamically from `/api/rollout?id=…` (ids resolve only by
+  exact membership in a fresh directory scan, so crafted ids cannot reach
+  the filesystem) and `?run=<id>` deep-links a run. `--confirm` on a
+  multi-run directory errors out: a confirmation needs exactly one
+  trajectory.
 - **`hf://` sources browse HuggingFace trajectory datasets directly.**
   `bench eval view hf://<org>/<dataset>[@revision][/subpath]` fetches the
   viewer-relevant slice of a trajectory dataset into the shared

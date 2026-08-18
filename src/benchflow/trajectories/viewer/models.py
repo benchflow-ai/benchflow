@@ -236,7 +236,8 @@ class ViewerPayload:
 
 @dataclass
 class RunSummary:
-    """One browse-mode sidebar row."""
+    """One browse-mode catalog row: identity, verdict, and the row-level
+    stats the index sorts and displays (duration/cost/tokens/tool calls)."""
 
     id: str
     name: str
@@ -246,6 +247,10 @@ class RunSummary:
     reward: float | None
     has_error: bool
     skill_mode: str | None
+    duration_sec: float | None = None
+    cost_usd: float | None = None
+    total_tokens: int | None = None
+    n_tool_calls: int | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -257,4 +262,8 @@ class RunSummary:
             "reward": self.reward,
             "has_error": self.has_error,
             "skill_mode": self.skill_mode,
+            "duration_sec": self.duration_sec,
+            "cost_usd": self.cost_usd,
+            "total_tokens": self.total_tokens,
+            "n_tool_calls": self.n_tool_calls,
         }
