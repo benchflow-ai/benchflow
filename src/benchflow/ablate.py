@@ -523,7 +523,14 @@ def _outcomes(
     attached, so a failing arm leaves a node with no recorded reward and the
     arms after it leave no node at all: the arm that raised carries the branch
     error, the rest report as skipped.
+
+    An arm whose child ran but was never scored (the engine recorded
+    :data:`~benchflow.branch.UNSCORED_KEY` on the node) is an arm *error*
+    carrying the engine's reason — never a reward. A missing score is not an
+    observation, and an ablation that reports one as ``0.00`` invents its own
+    evidence.
     """
+    from benchflow.branch import UNSCORED_KEY
     from benchflow.branch_lineage import branch_child_dir
 
     outcomes: list[ArmOutcome] = []
@@ -545,7 +552,11 @@ def _outcomes(
                 )
             reward = node.state.get("reward")
             if reward is None:
-                outcome.error = branch_error or "the branch ended without a reward"
+                outcome.error = (
+                    node.state.get(UNSCORED_KEY)
+                    or branch_error
+                    or "the branch ended without a reward"
+                )
             else:
                 outcome.reward = float(reward)
         outcomes.append(outcome)

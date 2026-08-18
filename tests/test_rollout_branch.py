@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.branch import UNSCORED_KEY
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.environment.protocol import StateSnapshot
@@ -362,13 +363,16 @@ async def test_default_runner_uses_fresh_agent_per_child(tmp_path: Path, monkeyp
     assert value == 1.0
 
 
-async def test_default_runner_empty_reward_falls_back_to_zero(
+async def test_default_runner_empty_reward_is_unscored_not_zero(
     tmp_path: Path, monkeypatch
 ):
-    """SHOULD-FIX 9: the default runner returns 0.0 when verify() yields nothing.
+    """A child whose verify() yielded nothing is unscored — never a 0.0.
 
-    verify() can return None or an empty dict; the per-child runner must
-    treat both as a 0.0 return rather than crashing.
+    Supersedes the original SHOULD-FIX 9 expectation (both shapes fell back to
+    a 0.0 return). verify() returning ``None`` or ``{}`` still must not crash
+    the branch, but a fabricated zero is indistinguishable from a real failing
+    score — a lost reward would read as evidence. The child records why it is
+    unscored, carries no ``reward``, and V(parent) is undefined.
     """
     rollout = _rollout(tmp_path)
     rollout._environment = FakeEnvironment()
@@ -394,8 +398,15 @@ async def test_default_runner_empty_reward_falls_back_to_zero(
 
     value = await rollout.branch(2)
 
-    # both children scored 0.0 (None and {} both fall back), V(parent) = 0.0
-    assert value == 0.0
+    # neither child was scored (None and {} are both "no reward"), so there is
+    # nothing to average: V(parent) is undefined, not 0.0.
+    assert value is None
+    children = list(rollout.tree.root.children)
+    assert len(children) == 2
+    assert all("reward" not in child.state for child in children)
+    assert all(
+        "produced no verifier reward" in child.state[UNSCORED_KEY] for child in children
+    )
 
 
 async def test_linear_rollout_run_never_branches(tmp_path: Path, monkeypatch):

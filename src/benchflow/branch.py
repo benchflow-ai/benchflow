@@ -33,6 +33,30 @@ from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 _SNAPSHOT_KEY = "snapshot"
 _REWARD_KEY = "reward"
 
+#: Node-state key recording *why* a branch child produced no score. A node
+#: carries either ``reward`` (it was scored) or this key (it was not) — never
+#: both, and never a stand-in number for a score that does not exist.
+UNSCORED_KEY = "unscored"
+
+
+class UnscoredChildError(RuntimeError):
+    """A branch child ran to completion but produced no verifier reward.
+
+    The one failure mode a scalar return cannot express: the child's rollout
+    did not raise, so there is nothing to propagate, but ``verify()`` yielded
+    no rewards — the verifier crashed, its output never reached the host, or
+    the reward file was never written. Returning ``0.0`` there is worse than
+    returning nothing: a lost reward becomes indistinguishable from a real
+    failing score, and downstream (``bench eval ablate``) reports it as an
+    observation. Child runners raise this instead; the engine records the
+    reason on the child node (:data:`UNSCORED_KEY`), leaves the node's
+    ``reward`` unset, and refuses to aggregate a value out of it.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
 
 @dataclass(frozen=True)
 class StageSnapshot:
@@ -205,6 +229,10 @@ def aggregate(node: RolloutNode, *, over: Sequence[RolloutNode] | None = None) -
     already carry the linear continuation — and that linear child has no
     ``reward``, so averaging over ``node.children`` would silently drag V
     toward zero. ``None`` keeps the every-child default.
+
+    The engine never passes an *unscored* child (:data:`UNSCORED_KEY`) here:
+    a fork with one of those has no defined mean, so it records no value at
+    all rather than averaging a score nobody observed.
     """
     children = list(node.children if over is None else over)
     if not children:

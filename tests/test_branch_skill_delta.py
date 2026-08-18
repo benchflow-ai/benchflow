@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from benchflow.branch import UNSCORED_KEY
 from benchflow.branch_delta import BranchDelta
 from benchflow.branch_skill import child_skill_config, resolve_child_skill_policy
 from benchflow.environment.protocol import StateSnapshot
@@ -190,6 +191,26 @@ def _fake_verifier(monkeypatch, reward: float = 1.0) -> None:
 
     async def fake_verify_rollout(*_a, **_kw):
         return {"reward": reward}, None, None
+
+    monkeypatch.setattr(
+        "benchflow.rollout._publish_trajectory_for_verifier", fake_publish
+    )
+    monkeypatch.setattr("benchflow.rollout._verify_rollout", fake_verify_rollout)
+
+
+def _fake_verifier_without_reward(monkeypatch, *, error: str) -> None:
+    """Fake a verifier that ran but left no reward — the shape of the live bug.
+
+    ``_verify_rollout`` returns ``(rewards, verifier_error, timeout_diag)``;
+    when the reward file never reaches the host, ``rewards`` is ``None`` and
+    the error explains why. ``Rollout.verify()`` then returns ``None``.
+    """
+
+    async def fake_publish(*_a, **_kw):
+        return None
+
+    async def fake_verify_rollout(*_a, **_kw):
+        return None, error, None
 
     monkeypatch.setattr(
         "benchflow.rollout._publish_trajectory_for_verifier", fake_publish
@@ -419,6 +440,54 @@ async def test_skill_delta_child_delivers_an_injected_prompt(
     )
 
     assert prompts == [["Solve the task."], ["Follow PLAN.md."]]
+
+
+async def test_a_child_whose_verifier_produced_no_reward_is_never_scored_zero(
+    tmp_path: Path, monkeypatch
+):
+    """The real-world failure this guard exists for, in miniature.
+
+    A live ablation lost both children's rewards (the restored container had no
+    host-mounted ``/logs``, so the verifier's ``reward.txt`` was never
+    downloaded and ``verify()`` returned ``None``) and the run reported two
+    confident ``0.00``s. A child that produced no reward is *unscored*, not a
+    zero: the node carries the reason and no ``reward``, no ``reward.json`` is
+    fabricated for it, and V(parent) is undefined rather than averaged from
+    nothing.
+    """
+    planes = FakePlanes()
+    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
+    _fake_verifier_without_reward(
+        monkeypatch,
+        error=("No reward file found at /run/verifier/reward.txt or reward.json"),
+    )
+    await _capture_env_ready(rollout)
+
+    value = await rollout.branch_at_stage(
+        "env-ready",
+        2,
+        deltas=[
+            BranchDelta(skill_mode="with-skill"),
+            BranchDelta(skill_mode="no-skill"),
+        ],
+    )
+
+    children = [node for node in rollout.tree.nodes() if "delta" in node.state]
+    assert len(children) == 2
+    assert all("reward" not in child.state for child in children)
+    assert all(
+        "No reward file found" in child.state[UNSCORED_KEY] for child in children
+    )
+    assert value is None
+    assert "value" not in rollout.tree.root.state
+
+    children_dir = rollout._rollout_dir / "branches" / "root" / "children"
+    assert not any(
+        (child / "reward.json").exists() for child in sorted(children_dir.iterdir())
+    )
+    tree = json.loads((rollout._rollout_dir / "tree.json").read_text())
+    scored = [node for node in tree["nodes"] if "reward" in node]
+    assert scored == []
 
 
 # 2. Lineage: the effective mode and the fresh-rollout execution are recorded
