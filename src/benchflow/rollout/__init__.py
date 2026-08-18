@@ -1042,8 +1042,17 @@ class Rollout:
             and effective_task_path != cfg.task_path
         ):
             effective_skills_dir = task_bundled_skills_dir(effective_task_path)
-        if effective_skills_dir is not None and not _environment_uses_prebuilt_image(
-            env_config, cfg.environment_manifest
+        # A caller-owned sandbox (use_prebuilt_env — a branch child forking a
+        # stage snapshot) is never built from this Dockerfile, so injecting the
+        # COPY line there deploys nothing and makes deploy_skills believe the
+        # pack is already baked in, skipping the runtime upload the child
+        # actually needs. Leave the staged Dockerfile alone so the upload runs.
+        if (
+            effective_skills_dir is not None
+            and not self._env_externally_owned
+            and not _environment_uses_prebuilt_image(
+                env_config, cfg.environment_manifest
+            )
         ):
             self._planes.inject_skills_into_dockerfile(
                 effective_task_path,
