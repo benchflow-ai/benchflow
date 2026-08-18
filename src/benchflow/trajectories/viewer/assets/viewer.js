@@ -30,7 +30,9 @@ function fmtTokens(n) {
 }
 function fmtDuration(sec) {
   if (sec === null || sec === undefined || typeof sec !== "number") return null;
-  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  /* round once, then split — rounding the remainder alone yields "1m 60s" */
+  const total = Math.round(sec);
+  const m = Math.floor(total / 60), s = total % 60;
   return m ? m + "m " + s + "s" : s + "s";
 }
 /* timeline offset "+m:ss" (hours appear as needed) from the first
@@ -510,16 +512,26 @@ function loadPayload(p) {
   document.title = (p.meta && p.meta.task_name) || p.rollout_name || "benchflow trajectory";
 }
 function showLoadError(message) {
+  /* A failed load must never leave the previous run's header/tabs/panes on
+     screen, nor render the error into a pane a prior tab switch hid. */
+  CURRENT_RUN = null;
+  ["hdr", "tabs", "view-verifier", "view-metrics"].forEach(id => {
+    document.getElementById(id).textContent = "";
+  });
+  selectPane("trace");
+  document.getElementById("toolbar").classList.add("hidden");
   const main = document.getElementById("view-trace");
   main.textContent = "";
   const b = el("div", "errbox");
   b.appendChild(el("span", "elabel", "load error"));
   b.appendChild(el("span", "etext", message));
   main.appendChild(b);
+  document.title = "load error — benchflow trajectory";
 }
 
 /* ── browse mode: run catalog ⇄ run detail ──────────────── */
 const ROLLOUTS = BOOT.mode === "browse" ? (BOOT.rollouts || []) : [];
+let CURRENT_RUN = null; /* run id shown in the detail view, null in the catalog */
 /* index state, mirrored into the URL so back/refresh restore the exact view */
 /* toggled = groups whose open/closed state differs from the default */
 const ix = { group: "task", sort: "name", q: "", toggled: new Set(), page: {}, scrollY: 0 };
@@ -547,10 +559,13 @@ function fmtCost(v) {
 
 function readURL() {
   const p = new URLSearchParams(location.search);
-  ix.group = GROUPERS[p.get("group")] ? p.get("group") : "task";
-  ix.sort = SORTS[p.get("sort")] ? p.get("sort") : "name";
+  /* own-property checks: ?group=constructor must not walk the prototype */
+  const g = p.get("group"), s = p.get("sort");
+  ix.group = g && Object.hasOwn(GROUPERS, g) ? g : "task";
+  ix.sort = s && Object.hasOwn(SORTS, s) ? s : "name";
   ix.q = p.get("q") || "";
-  ix.toggled = new Set((p.get("toggled") || "").split(",").filter(Boolean));
+  const dec = t => { try { return decodeURIComponent(t); } catch { return t; } };
+  ix.toggled = new Set((p.get("toggled") || "").split(",").filter(Boolean).map(dec));
   return p.get("run");
 }
 function writeURL(run, push) {
@@ -558,7 +573,9 @@ function writeURL(run, push) {
   if (ix.group !== "task") p.set("group", ix.group);
   if (ix.sort !== "name") p.set("sort", ix.sort);
   if (ix.q) p.set("q", ix.q);
-  if (ix.toggled.size) p.set("toggled", [...ix.toggled].join(","));
+  /* group keys are user data (task names, "agent · model") — component-encode
+     each so a comma inside a name can't masquerade as the list delimiter */
+  if (ix.toggled.size) p.set("toggled", [...ix.toggled].map(encodeURIComponent).join(","));
   if (run) p.set("run", run);
   const url = location.pathname + (p.toString() ? "?" + p.toString() : "");
   if (push) history.pushState({}, "", url);
@@ -566,6 +583,7 @@ function writeURL(run, push) {
 }
 
 function showIndex() {
+  CURRENT_RUN = null;
   document.getElementById("content").classList.add("hidden");
   const main = document.getElementById("view-index");
   main.classList.remove("hidden");
@@ -588,12 +606,50 @@ function renderIndex() {
   const main = document.getElementById("view-index");
   main.textContent = "";
 
+  /* corpus line — content filled per filter change by renderRuns */
+  const stats = el("div", null); stats.id = "ixstats";
+  main.appendChild(stats);
+
+  /* controls — built once per index render; filter keystrokes re-render only
+     the stats and run list below, so the input (caret position, IME
+     composition) is never destroyed mid-typing */
+  const ctl = el("div", null); ctl.id = "ixcontrols";
+  function select(labelText, options, value, onchange) {
+    ctl.appendChild(el("label", null, labelText));
+    const s = el("select");
+    options.forEach(([v, txt]) => {
+      const o = el("option", null, txt); o.value = v;
+      if (v === value) o.selected = true;
+      s.appendChild(o);
+    });
+    s.addEventListener("change", () => { onchange(s.value); writeURL(null, false); renderRuns(); });
+    ctl.appendChild(s);
+  }
+  select("group", [["task", "task"], ["agent", "model + harness"], ["none", "none"]],
+    ix.group, v => { ix.group = v; ix.page = {}; });
+  select("sort", [["name", "name"], ["reward", "reward"], ["duration", "duration"], ["cost", "cost"]],
+    ix.sort, v => { ix.sort = v; });
+  const q = el("input"); q.id = "ixsearch"; q.type = "search"; q.placeholder = "filter runs…";
+  q.value = ix.q;
+  q.addEventListener("input", () => { ix.q = q.value; ix.page = {}; writeURL(null, false); renderRuns(); });
+  ctl.appendChild(q);
+  main.appendChild(ctl);
+
+  const list = el("div", null); list.id = "ixruns";
+  main.appendChild(list);
+  renderRuns();
+}
+
+function renderRuns() {
+  const stats = document.getElementById("ixstats");
+  const list = document.getElementById("ixruns");
+  stats.textContent = "";
+  list.textContent = "";
+
   const rows = ROLLOUTS.filter(r => matchesQuery(r, ix.q.trim().toLowerCase()));
   const counts = { pass: 0, fail: 0, unscored: 0 };
   rows.forEach(r => counts[runStatus(r)]++);
 
-  /* corpus line */
-  const stats = el("div", null); stats.id = "ixstats";
   const total = el("span", null, "");
   total.appendChild(el("b", null, rows.length));
   total.appendChild(document.createTextNode(
@@ -605,35 +661,11 @@ function renderIndex() {
     s.appendChild(el("b", null, n));
     stats.appendChild(s);
   });
-  main.appendChild(stats);
-
-  /* controls */
-  const ctl = el("div", null); ctl.id = "ixcontrols";
-  function select(labelText, options, value, onchange) {
-    ctl.appendChild(el("label", null, labelText));
-    const s = el("select");
-    options.forEach(([v, txt]) => {
-      const o = el("option", null, txt); o.value = v;
-      if (v === value) o.selected = true;
-      s.appendChild(o);
-    });
-    s.addEventListener("change", () => { onchange(s.value); writeURL(null, false); renderIndex(); });
-    ctl.appendChild(s);
-  }
-  select("group", [["task", "task"], ["agent", "model + harness"], ["none", "none"]],
-    ix.group, v => { ix.group = v; ix.page = {}; });
-  select("sort", [["name", "name"], ["reward", "reward"], ["duration", "duration"], ["cost", "cost"]],
-    ix.sort, v => { ix.sort = v; });
-  const q = el("input"); q.id = "ixsearch"; q.type = "search"; q.placeholder = "filter runs…";
-  q.value = ix.q;
-  q.addEventListener("input", () => { ix.q = q.value; ix.page = {}; writeURL(null, false); renderIndex(); refocus(q); });
-  ctl.appendChild(q);
-  main.appendChild(ctl);
 
   if (!rows.length) {
     const e = el("div", null, ROLLOUTS.length ? "No runs match the filter." : "No runs found.");
     e.id = "ixempty";
-    main.appendChild(e);
+    list.appendChild(e);
     return;
   }
 
@@ -646,14 +678,19 @@ function renderIndex() {
     groups.get(key).push(r);
   });
   const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-  const defaultOpen = keys.length <= 2;
+  /* default open/closed is a property of the whole corpus under this
+     grouping, not of the filtered subset — otherwise narrowing the filter
+     to ≤2 groups would invert every explicit toggle. While a filter is
+     active, matches are simply forced visible. */
+  const defaultOpen = new Set(ROLLOUTS.map(grouper)).size <= 2;
+  const filtering = ix.q.trim() !== "";
 
   keys.forEach(key => {
     const members = groups.get(key).slice().sort(SORTS[ix.sort]);
     const card = el("section", "group");
     /* default state XOR user toggle — small group sets start open but
        every group stays collapsible either way */
-    const isOpen = ix.group === "none" || defaultOpen !== ix.toggled.has(key);
+    const isOpen = ix.group === "none" || filtering || defaultOpen !== ix.toggled.has(key);
 
     if (ix.group !== "none") {
       const head = el("button", "group-head");
@@ -673,7 +710,7 @@ function renderIndex() {
       head.addEventListener("click", () => {
         if (ix.toggled.has(key)) ix.toggled.delete(key); else ix.toggled.add(key);
         writeURL(null, false);
-        renderIndex();
+        renderRuns();
       });
       card.appendChild(head);
     }
@@ -686,22 +723,13 @@ function renderIndex() {
           "Show " + Math.min(PAGE_SIZE * 2, members.length - limit) + " more (" + (members.length - limit) + " hidden)");
         more.addEventListener("click", () => {
           ix.page[key] = (ix.page[key] || 0) + PAGE_SIZE * 2;
-          renderIndex();
+          renderRuns();
         });
         card.appendChild(more);
       }
     }
-    main.appendChild(card);
+    list.appendChild(card);
   });
-}
-
-/* keep typing focus across re-renders triggered by the search box */
-function refocus(oldInput) {
-  const fresh = document.getElementById("ixsearch");
-  if (fresh && oldInput && document.activeElement !== fresh) {
-    fresh.focus();
-    fresh.setSelectionRange(fresh.value.length, fresh.value.length);
-  }
 }
 
 function runRow(r) {
@@ -735,6 +763,10 @@ function runRow(r) {
 
 async function selectRun(id, push) {
   ix.scrollY = window.scrollY;
+  /* URL first, before the fetch can fail: an error page must still carry
+     ?run=… so reload retries the same run instead of silently going back
+     to the catalog */
+  if (push) writeURL(id, true);
   try {
     const resp = await fetch("/api/rollout?id=" + encodeURIComponent(id));
     if (!resp.ok) {
@@ -743,9 +775,9 @@ async function selectRun(id, push) {
       return;
     }
     const payload = await resp.json();
-    if (push) writeURL(id, true);
     showDetail();
     loadPayload(payload);
+    CURRENT_RUN = id;
     window.scrollTo(0, 0);
   } catch (err) {
     showDetail();
@@ -774,7 +806,13 @@ if (BOOT.mode === "browse") {
     writeURL(null, true);
     showIndex();
   });
-  window.addEventListener("popstate", () => applyLocation(false));
+  window.addEventListener("popstate", () => {
+    /* hash-only traversal (in-trace #eN anchors) within the run already on
+       screen must not refetch and re-render the whole trace */
+    const run = new URLSearchParams(location.search).get("run");
+    if (run && run === CURRENT_RUN) return;
+    applyLocation(false);
+  });
   applyLocation(false);
 } else {
   loadPayload(BOOT.payload || {});

@@ -136,6 +136,13 @@ def _serve_single(
             self.end_headers()
             self.wfile.write(html_content.encode())
 
+        def do_HEAD(self):
+            # The inherited do_HEAD serves filesystem paths rooted at the
+            # process cwd; this server has exactly one page — mirror do_GET.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+
         def log_message(self, format, *args):
             pass
 
@@ -251,6 +258,17 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                 )
             else:
                 self._send(404, "text/plain; charset=utf-8", b"not found")
+
+        def do_HEAD(self):
+            # The inherited do_HEAD serves filesystem paths rooted at the
+            # process cwd, bypassing the rollout-id whitelist — answer only
+            # for the shell page and refuse everything else.
+            if urlsplit(self.path).path == "/":
+                self._send(200, "text/html; charset=utf-8", b"")
+            else:
+                self.send_response(405)
+                self.send_header("Allow", "GET")
+                self.end_headers()
 
         def log_message(self, format, *args):
             pass
