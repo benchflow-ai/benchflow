@@ -521,7 +521,8 @@ function showLoadError(message) {
 /* ── browse mode: run catalog ⇄ run detail ──────────────── */
 const ROLLOUTS = BOOT.mode === "browse" ? (BOOT.rollouts || []) : [];
 /* index state, mirrored into the URL so back/refresh restore the exact view */
-const ix = { group: "task", sort: "name", q: "", open: new Set(), page: {}, scrollY: 0 };
+/* toggled = groups whose open/closed state differs from the default */
+const ix = { group: "task", sort: "name", q: "", toggled: new Set(), page: {}, scrollY: 0 };
 const GROUPERS = {
   task: r => r.task_name || "(unknown task)",
   agent: r => [r.agent_name, r.model].filter(Boolean).join(" · ") || "(unknown agent)",
@@ -549,7 +550,7 @@ function readURL() {
   ix.group = GROUPERS[p.get("group")] ? p.get("group") : "task";
   ix.sort = SORTS[p.get("sort")] ? p.get("sort") : "name";
   ix.q = p.get("q") || "";
-  ix.open = new Set((p.get("open") || "").split(",").filter(Boolean));
+  ix.toggled = new Set((p.get("toggled") || "").split(",").filter(Boolean));
   return p.get("run");
 }
 function writeURL(run, push) {
@@ -557,7 +558,7 @@ function writeURL(run, push) {
   if (ix.group !== "task") p.set("group", ix.group);
   if (ix.sort !== "name") p.set("sort", ix.sort);
   if (ix.q) p.set("q", ix.q);
-  if (ix.open.size) p.set("open", [...ix.open].join(","));
+  if (ix.toggled.size) p.set("toggled", [...ix.toggled].join(","));
   if (run) p.set("run", run);
   const url = location.pathname + (p.toString() ? "?" + p.toString() : "");
   if (push) history.pushState({}, "", url);
@@ -645,12 +646,14 @@ function renderIndex() {
     groups.get(key).push(r);
   });
   const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-  const defaultOpen = ix.group === "none" || keys.length <= 2;
+  const defaultOpen = keys.length <= 2;
 
   keys.forEach(key => {
     const members = groups.get(key).slice().sort(SORTS[ix.sort]);
     const card = el("section", "group");
-    const isOpen = ix.group === "none" || defaultOpen || ix.open.has(key);
+    /* default state XOR user toggle — small group sets start open but
+       every group stays collapsible either way */
+    const isOpen = ix.group === "none" || defaultOpen !== ix.toggled.has(key);
 
     if (ix.group !== "none") {
       const head = el("button", "group-head");
@@ -668,7 +671,7 @@ function renderIndex() {
       }
       head.appendChild(gs);
       head.addEventListener("click", () => {
-        if (ix.open.has(key)) ix.open.delete(key); else ix.open.add(key);
+        if (ix.toggled.has(key)) ix.toggled.delete(key); else ix.toggled.add(key);
         writeURL(null, false);
         renderIndex();
       });
