@@ -400,3 +400,71 @@ class TestDiagnostics:
         payload = _extract_payload(render_rollout(rollout))
         levels = {e["level"] for e in payload["meta"]["errors"] if "level" in e}
         assert levels == {"error"}
+
+
+class TestTypedContract:
+    """The models.py contract is the single Python↔JS boundary."""
+
+    def test_tool_hue_is_classified_server_side(self, tmp_path):
+        events = [
+            {
+                "type": "tool_call",
+                "tool_call_id": "c1",
+                "kind": "other",
+                "title": "ToolSearch",
+                "status": "completed",
+                "content": [],
+            },
+            {
+                "type": "tool_call",
+                "tool_call_id": "c2",
+                "kind": "delete",
+                "title": "remove temp dir",
+                "status": "completed",
+                "content": [],
+            },
+            {
+                "type": "tool_call",
+                "tool_call_id": "c3",
+                "kind": "mystery",
+                "title": "??",
+                "status": "completed",
+                "content": [],
+            },
+        ]
+        payload = _extract_payload(render_rollout(_write_rollout(tmp_path, events)))
+        hues = [s["tool"]["hue"] for s in payload["steps"]]
+        assert hues == ["search", "edit", "other"]
+
+    def test_unknown_events_and_diagnostics_ship_untruncated(self, tmp_path):
+        big = "x" * 5000
+        rollout = _write_rollout(tmp_path, [{"type": "future_thing", "blob": big}])
+        (rollout / "result.json").write_text(
+            json.dumps({"error": "boom", "agent_timeout_info": {"detail": big}})
+        )
+        payload = _extract_payload(render_rollout(rollout))
+        assert big in payload["steps"][0]["text"]
+        (banner,) = [
+            e for e in payload["meta"]["errors"] if e["label"] == "agent timeout"
+        ]
+        assert big in banner["text"]
+
+    def test_payload_roundtrip_shape(self, tmp_path):
+        from benchflow.trajectories.viewer.payload import _build_acp_payload
+
+        rollout = _write_rollout(tmp_path, [{"type": "user_message", "text": "hello"}])
+        typed = _build_acp_payload(rollout, None)
+        wire = typed.to_payload()
+        assert set(wire) == {
+            "schema_version",
+            "rollout_name",
+            "meta",
+            "steps",
+            "verifier",
+        }
+        assert wire["steps"][0] == {
+            "i": 1,
+            "kind": "prompt",
+            "label": "PROMPT 1",
+            "text": "hello",
+        }

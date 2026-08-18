@@ -50,4 +50,6 @@ def _render_acp_trajectory(
     renders it exclusively via ``textContent``.
     """
     payload = _build_acp_payload(rollout_dir, prompts)
-    return _render_shell(rollout_dir.name, {"mode": "single", "payload": payload})
+    return _render_shell(
+        rollout_dir.name, {"mode": "single", "payload": payload.to_payload()}
+    )

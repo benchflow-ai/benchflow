@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .models import RunSummary
 from .payload import _is_acp_rollout_dir, _load_result_json
 
 
@@ -75,15 +76,13 @@ def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
     result_data = _load_result_json(d)
     rewards = result_data.get("rewards")
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    return {
-        "id": rel_id,
-        "name": d.name,
-        "task_name": result_data.get("task_name") or d.name,
-        "agent_name": result_data.get("agent_name") or result_data.get("agent"),
-        "model": result_data.get("model"),
-        "reward": reward,
-        "has_error": bool(
-            result_data.get("error") or result_data.get("verifier_error")
-        ),
-        "skill_mode": result_data.get("skill_mode"),
-    }
+    return RunSummary(
+        id=rel_id,
+        name=d.name,
+        task_name=result_data.get("task_name") or d.name,
+        agent_name=result_data.get("agent_name") or result_data.get("agent"),
+        model=result_data.get("model"),
+        reward=reward,
+        has_error=bool(result_data.get("error") or result_data.get("verifier_error")),
+        skill_mode=result_data.get("skill_mode"),
+    ).to_payload()

@@ -237,7 +237,7 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                         b'{"error": "unknown rollout id"}',
                     )
                     return
-                body = _safe_json(_build_acp_payload(rollout_dir, None))
+                body = _safe_json(_build_acp_payload(rollout_dir, None).to_payload())
                 self._send(
                     200,
                     "application/json; charset=utf-8",

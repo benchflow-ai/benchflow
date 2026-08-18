@@ -103,7 +103,9 @@ function renderHeader(p) {
     errs.forEach(e => {
       const b = el("div", "errbox" + (e.level === "info" ? " info" : ""));
       b.appendChild(el("span", "elabel", e.label));
-      b.appendChild(el("span", "etext", e.text));
+      /* full text ships in the payload; long diagnostics collapse instead
+         of the server truncating them */
+      collapsibleText(b, e.text, "etext");
       box.appendChild(b);
     });
     h.appendChild(box);
@@ -256,25 +258,11 @@ function buildCard(step) {
   let toolKind = null;
   if (step.kind === "tool") {
     const t = step.tool || {};
-    /* class names only from this fixed set — kind is untrusted input */
-    const KINDS = ["read", "edit", "execute", "fetch", "search", "think", "skill"];
-    let kk = KINDS.includes(t.kind) ? t.kind : "other";
-    if (kk === "other") {
-      /* ACP kinds are coarse ("other" covers Skill/Task/..., and kinds like
-         "delete"/"move" fall outside KINDS) — infer the hue from kind+title,
-         mirroring upstream's _tool_accent_class fallback chain. */
-      const hay = (String(t.kind || "") + " " + String(t.title || "")).toLowerCase();
-      const INFER = [
-        ["search", ["web", "search", "fetch", "grep", "glob", "browser"]],
-        ["execute", ["bash", "shell", "exec", "terminal", "command"]],
-        ["edit", ["write", "edit", "patch", "delete", "move", "notebook"]],
-        ["read", ["read", "cat", "view", "ls", "list"]],
-        ["skill", ["agent", "task", "skill", "oracle"]],
-      ];
-      for (const [hue, needles] of INFER) {
-        if (needles.some(n => hay.includes(n))) { kk = hue; break; }
-      }
-    }
+    /* The hue is classified once, server-side (models.tool_hue) and shipped
+       in the payload; this whitelist only guards the class attribute against
+       a crafted payload. */
+    const HUES = ["read", "edit", "execute", "fetch", "search", "think", "skill", "other"];
+    const kk = HUES.includes(t.hue) ? t.hue : "other";
     toolKind = kk;
     card.classList.add("tb-" + kk);
     head.appendChild(el("span", "kindbadge", t.kind || "tool"));
