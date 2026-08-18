@@ -11,6 +11,13 @@ _PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
 _TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
 
 
+def _theme_css() -> str:
+    """The shared design tokens (assets/theme.css) — one theme for the
+    interactive template and the inline legacy renderers alike."""
+    assets = resources.files("benchflow.trajectories.viewer") / "assets"
+    return (assets / "theme.css").read_text(encoding="utf-8")
+
+
 def _load_template() -> str:
     """Assemble the self-contained page from the packaged assets."""
     assets = resources.files("benchflow.trajectories.viewer") / "assets"

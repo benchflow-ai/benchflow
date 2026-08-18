@@ -429,9 +429,10 @@ function renderMetrics(p) {
     b.appendChild(el("h2", null, "Phase timing"));
     const max = Math.max(...phases.map(k => timing[k]), 1);
     /* strip tones from the shared accent palette */
+    /* canonical chart palette from the shared theme */
     const PHASE_COLOR = {
-      environment_setup: "#74bda0", agent_setup: "#6fb6ca",
-      agent_execution: "#7fa8d8", verifier: "#a78fd6",
+      environment_setup: "var(--chart-2)", agent_setup: "var(--chart-3)",
+      agent_execution: "var(--chart-1)", verifier: "var(--chart-5)",
     };
     phases.forEach(k => {
       const row = el("div", "barrow");

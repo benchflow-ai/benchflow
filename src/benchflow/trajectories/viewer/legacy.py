@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from .payload import _load_result_json, _parse_jsonl
-from .render import _render_acp_trajectory
+from .render import _render_acp_trajectory, _theme_css
 
 _THINKING_PREVIEW = 600  # max chars for thinking block preview
 _ARGS_PREVIEW = 300  # max chars for tool args display
@@ -27,30 +27,24 @@ _RESULT_PREVIEW = 300  # max chars for result summary
 # text + a soft left border strip) that read as annotations rather than
 # fighting the monochrome base. The dark #141414 code treatment is reserved
 # for terminal output of shell commands; everything else stays light.
-_VIEWER_CSS = """\
+_VIEWER_CSS = (
+    _theme_css()
+    + """\
 * { margin: 0; padding: 0; box-sizing: border-box; }
-:root {
-  --background: #fafafa; --card: #ffffff;
-  --ink: #0a0a0a; --ink-secondary: #404040; --muted: #737373; --faint: #a1a1a1;
-  --border: #e5e5e5; --rule-strong: #c7c7c7; --secondary: #f5f5f5;
-  --code-bg: #141414; --code-ink: #ececec;
-  --radius: 8px;
-  --font-sans: "Satoshi", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
+/* design tokens come from the shared theme (assets/theme.css) */
 body { font-family: var(--font-sans); background: var(--background); color: var(--ink); padding: 28px 20px 48px; max-width: 960px; margin: 0 auto; line-height: 1.6; -webkit-font-smoothing: antialiased; }
 ::selection { background: var(--secondary); color: var(--ink); }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 .wordmark { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .wordmark svg { width: 18px; height: 18px; flex: none; color: var(--ink); }
 .wordmark .brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); }
 .wordmark .app { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); border-radius: 9999px; padding: 3px 10px; }
 .header { border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
 .header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); margin-bottom: 10px; overflow-wrap: anywhere; }
-.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted-foreground); }
 .meta span { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); padding: 3px 9px; border-radius: 4px; border: 1px solid var(--border); }
 .step { margin-bottom: 8px; padding: 12px 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(10, 10, 10, 0.04); }
 .step.prompt { background: var(--secondary); border-color: var(--rule-strong); margin-bottom: 14px; }
@@ -64,23 +58,24 @@ body { font-family: var(--font-sans); background: var(--background); color: var(
 .label { display: inline-flex; align-items: center; font-family: var(--font-mono); padding: 2px 10px; border-radius: 9999px; font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
 .label.prompt { background: var(--ink); color: var(--background); }
 .label.result { background: var(--background); color: var(--ink); }
-.meta-inline { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.meta-inline { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
 .step.result .meta-inline { color: var(--faint); }
 .msg { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
-.thinking { font-size: 13px; color: var(--muted); font-style: italic; margin-bottom: 8px; padding: 8px 12px; background: var(--secondary); border-radius: 4px; border-left: 2px solid var(--rule-strong); white-space: pre-wrap; word-break: break-word; }
+.thinking { font-size: 13px; color: var(--muted-foreground); font-style: italic; margin-bottom: 8px; padding: 8px 12px; background: var(--secondary); border-radius: 4px; border-left: 2px solid var(--rule-strong); white-space: pre-wrap; word-break: break-word; }
 .tool { margin-bottom: 6px; }
 .tool-name { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--acc-ink, var(--ink)); background: var(--acc-bg, var(--secondary)); border: 1px solid var(--acc-line, var(--border)); padding: 2px 9px; border-radius: 4px; }
 .tool-args { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
 .step.tool-step { border-left: 3px solid var(--acc-strip, var(--rule-strong)); }
-.acc-bash  { --acc-bg: #f7efda; --acc-line: #ecdcb2; --acc-ink: #8a5a12; --acc-strip: #dcb45e; }
-.acc-edit  { --acc-bg: #e8f0fa; --acc-line: #d0dff1; --acc-ink: #1d4e89; --acc-strip: #7fa8d8; }
-.acc-read  { --acc-bg: #e5f2ec; --acc-line: #cbe3d7; --acc-ink: #1a6b52; --acc-strip: #74bda0; }
-.acc-agent { --acc-bg: #efeaf8; --acc-line: #ded3ef; --acc-ink: #5b3e96; --acc-strip: #a78fd6; }
-.acc-web   { --acc-bg: #e3f1f6; --acc-line: #c8e2ea; --acc-ink: #176478; --acc-strip: #6fb6ca; }
+.acc-bash  { --acc-bg: var(--kind-execute-bg); --acc-line: var(--kind-execute-line); --acc-ink: var(--kind-execute-ink); --acc-strip: var(--kind-execute-strip); }
+.acc-edit  { --acc-bg: var(--kind-edit-bg); --acc-line: var(--kind-edit-line); --acc-ink: var(--kind-edit-ink); --acc-strip: var(--kind-edit-strip); }
+.acc-read  { --acc-bg: var(--kind-read-bg); --acc-line: var(--kind-read-line); --acc-ink: var(--kind-read-ink); --acc-strip: var(--kind-read-strip); }
+.acc-agent  { --acc-bg: var(--kind-agent-bg); --acc-line: var(--kind-agent-line); --acc-ink: var(--kind-agent-ink); --acc-strip: var(--kind-agent-strip); }
+.acc-web  { --acc-bg: var(--kind-web-bg); --acc-line: var(--kind-web-line); --acc-ink: var(--kind-web-ink); --acc-strip: var(--kind-web-strip); }
 .acc-other { --acc-bg: var(--secondary); --acc-line: var(--border); --acc-ink: var(--ink-secondary); --acc-strip: var(--rule-strong); }
 .metrics { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-top: 4px; }
 .turn-divider { border-top: 1px solid var(--border); margin: 24px 0; }
 """
+)
 
 # Sticky bottom confirmation bar injected only in --confirm mode. Styling
 # reuses the page's CSS variables (white surface, top border, ink text, pill
@@ -99,7 +94,7 @@ body { padding-bottom: 104px; }
 .confirm-btn.approve:hover { background: #262626; }
 .confirm-btn.reject { background: var(--card); color: var(--ink); border: 1px solid var(--rule-strong); }
 .confirm-btn.reject:hover { background: var(--secondary); }
-.confirm-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
+.confirm-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted-foreground); }
 </style>
 <div class="confirm-bar">
 <div class="confirm-inner" id="confirm-inner">
