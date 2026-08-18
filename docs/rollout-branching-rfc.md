@@ -204,6 +204,36 @@ Three tiers, cheapest first; all deterministic and credential-free:
   produce the stage-attribution table (branch at `env-ready` with skills ⇒ pass;
   branch at `post-research` without ⇒ still fails execution).
 
+### Stage-level ablation (the T3 surface)
+
+T3 is not a script anyone re-derives per experiment: it is a command,
+`bench eval ablate` (flags in
+[docs/reference/cli.md](reference/cli.md#bench-eval-ablate)). One invocation
+runs the task once with `--at-stage` captured, forks that recorded world into
+one child per `--arms` entry (`with-skill`, `no-skill`, `inject:<file>` — the
+§3.3 deltas the engine executes), and writes `ablation.json` beside the
+per-child lineage artifacts of §3.4:
+
+```bash
+bench eval ablate --tasks-dir tasks/surface-ion-trap-shuttling \
+  --at-stage env-ready --arms with-skill,no-skill
+```
+
+Two properties keep the output publishable. **The arms are comparable:** they
+restore the same snapshot rather than re-running the task, so the world they
+differ in is exactly the recorded delta. **The verdict is an observation:**
+each row states the two rewards it compares, the boundary they were forked
+from, and that it rests on one run per arm — the cross-stage claim ("the
+intervention matters at or before stage X") is only earned by a *second*
+ablation at a second boundary, which is the T3 table, not one invocation of the
+command.
+
+Out of the command's reach in v1, by construction: `post-research` (only an
+explicit `Rollout.mark_stage()` records a mid-`execute()` cut point, §3.2),
+`environment_ref` / `config_override` arms (no execution path yet, §3.3), and
+repeated arms for variance — one run per arm is one observation, not an
+estimate.
+
 ## 6. Compatibility
 
 - Targets the #470 `Sandbox` contract as-is — stable across the 0.7 line (#827).

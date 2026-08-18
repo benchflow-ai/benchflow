@@ -44,6 +44,7 @@ from benchflow.cli._shared import (
     err_console,
     print_error,
 )
+from benchflow.cli.ablate import register_eval_ablate
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
@@ -189,6 +190,8 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
 register_eval_lift(eval_app)
+# Stage-level ablation over branch children (rollout-branching RFC §5).
+register_eval_ablate(eval_app)
 
 
 @eval_app.command("run")
