@@ -460,3 +460,153 @@ async def test_branch_drives_manifest_environment_snapshot_restore(tmp_path: Pat
     # the real restore path ran once per child: cp from the snapshot dir
     restore_cmds = [c for c in sandbox.exec_calls if c.startswith("cp ")]
     assert len(restore_cmds) == 2
+
+
+# The parent's on-disk evidence across a fork
+#
+# Children share the parent's sandbox, and the sandbox bind-mounts the parent
+# rollout's agent/artifacts/verifier directories into the container
+# (``DockerSandbox.__init__``: host_*_path -> /logs/*), with ``restore()``
+# deliberately replaying those mounts. So a child's writes to /logs/verifier
+# land in the *parent's* verifier directory on the host. These tests stand in
+# for that at the unit layer: the child runner writes to the same host paths a
+# mounted container would.
+
+
+def _mounted_rollout(tmp_path: Path) -> Rollout:
+    """A rollout whose run directory exists, with the parent's own evidence."""
+    from benchflow.task.paths import RolloutPaths
+
+    rollout = _rollout(tmp_path)
+    run_dir = tmp_path / "run"
+    rollout._rollout_dir = run_dir
+    paths = RolloutPaths(rollout_dir=run_dir)
+    paths.mkdir()
+    (paths.verifier_dir / "reward.txt").write_text("parent-1.0\n")
+    (paths.verifier_dir / "test-stdout.txt").write_text("parent verifier output\n")
+    (paths.agent_dir / "acp_trajectory.jsonl").write_text('{"parent": true}\n')
+    (paths.artifacts_dir / "answer.md").write_text("the parent's answer\n")
+    return rollout
+
+
+def _mounted_writer(rollout: Rollout, marks: list[str]):
+    """A child runner that writes through the shared mounts, as a child does."""
+    from benchflow.task.paths import RolloutPaths
+
+    paths = RolloutPaths(rollout_dir=rollout._rollout_dir)
+    order = iter(marks)
+
+    async def run_child(child):
+        mark = next(order)
+        # What a real child does first: clear_verifier_output_dir wipes
+        # /logs/verifier — which is the parent's directory — then the verifier
+        # writes the child's own files there.
+        for entry in sorted(paths.verifier_dir.iterdir()):
+            entry.unlink()
+        (paths.verifier_dir / "reward.txt").write_text(f"{mark}\n")
+        (paths.verifier_dir / f"{mark}-only.txt").write_text("child-scoped\n")
+        (paths.agent_dir / "acp_trajectory.jsonl").write_text(f'{{"child": "{mark}"}}\n')
+        (paths.artifacts_dir / "answer.md").write_text(f"{mark} answer\n")
+        return 1.0
+
+    return run_child
+
+
+async def test_branch_children_do_not_clobber_the_parents_verifier_evidence(
+    tmp_path: Path,
+):
+    """The parent's own scoring evidence must survive its children.
+
+    Without the fix the run ends with the last child's ``reward.txt`` sitting
+    where the parent's belongs — and, because a child clears /logs/verifier
+    before writing, the parent's other files are gone entirely. No reported
+    number is wrong, but the parent's row in the ablation table can no longer
+    be audited against anything on disk.
+    """
+    from benchflow.task.paths import RolloutPaths
+
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    paths = RolloutPaths(rollout_dir=rollout._rollout_dir)
+
+    value = await rollout.branch(
+        2, run_child=_mounted_writer(rollout, ["child-a", "child-b"])
+    )
+
+    assert value == 1.0
+    assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
+    assert (
+        paths.verifier_dir / "test-stdout.txt"
+    ).read_text() == "parent verifier output\n"
+    assert (paths.agent_dir / "acp_trajectory.jsonl").read_text() == '{"parent": true}\n'
+    assert (paths.artifacts_dir / "answer.md").read_text() == "the parent's answer\n"
+    # nothing of the children's is left mixed into the parent's directories
+    assert not (paths.verifier_dir / "child-a-only.txt").exists()
+    assert not (paths.verifier_dir / "child-b-only.txt").exists()
+
+
+async def test_each_child_keeps_the_output_it_wrote_to_the_shared_mounts(
+    tmp_path: Path,
+):
+    """Preserving the parent must not throw the children's evidence away.
+
+    Each child's mounted output is moved into its own artifact directory under
+    ``mounted/``, keyed by node id — so the two arms of an ablation each have
+    their verifier output, and neither is the other's.
+    """
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    await rollout.branch(2, run_child=_mounted_writer(rollout, ["child-a", "child-b"]))
+
+    children = rollout._rollout_dir / "branches" / "root" / "children"
+    first = children / "n1" / "mounted"
+    second = children / "n2" / "mounted"
+    assert (first / "verifier" / "reward.txt").read_text() == "child-a\n"
+    assert (second / "verifier" / "reward.txt").read_text() == "child-b\n"
+    assert (first / "agent" / "acp_trajectory.jsonl").read_text() == '{"child": "child-a"}\n'
+    assert (second / "artifacts" / "answer.md").read_text() == "child-b answer\n"
+    # each child's directory holds only its own files
+    assert not (first / "verifier" / "child-b-only.txt").exists()
+    assert not (second / "verifier" / "child-a-only.txt").exists()
+    # and the parent's entries are back at their canonical paths, with the
+    # transient hold directory gone (its presence would mean the fork died)
+    assert not (rollout._rollout_dir / "branches" / "root" / "parent").exists()
+
+
+async def test_a_child_that_raises_still_leaves_its_mounted_output(tmp_path: Path):
+    """A crashed child's verifier output is often the only evidence of why —
+    so the hand-off happens in the same finally that records its wall clock,
+    and the parent's evidence is restored even though branch() propagates."""
+    from benchflow.task.paths import RolloutPaths
+
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    paths = RolloutPaths(rollout_dir=rollout._rollout_dir)
+
+    async def run_child(child):
+        (paths.verifier_dir / "test-stdout.txt").write_text("boom: exit 137\n")
+        raise RuntimeError("verifier crashed")
+
+    with pytest.raises(RuntimeError, match="verifier crashed"):
+        await rollout.branch(2, run_child=run_child)
+
+    child_mounted = (
+        rollout._rollout_dir / "branches" / "root" / "children" / "n1" / "mounted"
+    )
+    assert (child_mounted / "verifier" / "test-stdout.txt").read_text() == (
+        "boom: exit 137\n"
+    )
+    assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
+
+
+async def test_a_rollout_without_a_run_directory_still_branches(tmp_path: Path):
+    """The custody is a no-op when there is nowhere to keep anything — a
+    branch-first rollout that never ran setup() must not start failing."""
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def run_child(child):
+        return 0.5
+
+    assert await rollout.branch(2, run_child=run_child) == 0.5
