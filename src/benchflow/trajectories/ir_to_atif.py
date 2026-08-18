@@ -407,6 +407,7 @@ def ir_to_atif(
                 )
 
     _declare_systemic_losses(trace, losses)
+    _declare_structural_metadata(steps, losses)
 
     record: dict[str, Any] = {"schema_version": ATIF_SCHEMA_VERSION}
     if trace.session_id:
@@ -415,6 +416,50 @@ def ir_to_atif(
     record["steps"] = steps
     record["final_metrics"] = final_metrics
     return record, losses
+
+
+def _declare_structural_metadata(
+    steps: list[dict[str, Any]], losses: LossReport
+) -> None:
+    """Declare the two values this edge writes that describe the *document*.
+
+    Neither is a statement about the run, and both are deterministic — one is a
+    constant, the other a position. That is precisely why they were easy to miss:
+    a value that is obviously not an observation still *becomes* one once a
+    reader takes it back into the hub. `ATIF → IR` puts `schema_version` into
+    the trace's ``extensions`` and each `step_id` into its event's, faithfully,
+    because they really are in the document it is reading. So the round trip
+    ends with two values the input never had, and only a declaration here
+    distinguishes them from an observation.
+
+    ``SYNTHESIZED`` rather than ``NORMALIZED``: there is no source value being
+    reshaped. Nothing in the IR corresponds to either of them.
+
+    The space is ``TARGET`` and the paths are the ATIF document's, because that
+    is where this edge writes them and neither has an IR antecedent. A hub path
+    would be a lie twice over — it would address a node the trace being
+    converted does not contain, and the resolvability guard would be right to
+    reject it.
+    """
+    losses.add(
+        "schema_version",
+        LossClass.SYNTHESIZED,
+        f"structural metadata of the ATIF document: the literal "
+        f"{ATIF_SCHEMA_VERSION!r} identifying the dialect, written on every "
+        "record. It is not an observation about the run, and the IR carries no "
+        "field for a target format's own version",
+        space=PathSpace.TARGET,
+    )
+    if steps:
+        losses.add(
+            "steps[].step_id",
+            LossClass.SYNTHESIZED,
+            f"structural metadata the exporter introduces: {len(steps)} step "
+            "positions, dense from 1 over the steps actually emitted. No id was "
+            "observed in the source — the IR's event index is a position in a "
+            "different sequence, and this is not that index renumbered",
+            space=PathSpace.TARGET,
+        )
 
 
 def _declare_systemic_losses(trace: CanonicalTrace, losses: LossReport) -> None:

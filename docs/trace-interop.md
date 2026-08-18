@@ -1378,7 +1378,8 @@ here.
   invariants, the validation suite, this section, five converters — `ACP → IR`,
   `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR`, `IR → ACP capture events` — each
   with its loss report; the round-trip measurement over the ATIF pair (§8.10),
-  and the ACP pair's round-trip evidence in §8.3 and its test suite. There is no
+  and the ACP pair's round-trip evidence in §8.3 and its test suite; and the
+  loss-bounded conformance gate that joins the two halves (§8.13). There is no
   §8.10-style measurement for the ACP pair: `ACP → IR → ACP` either reproduces
   its input exactly or refuses, so there is no partial preservation to quantify.
 - **Deferred by a decision of ours, reversibly:** `IR → OTel` — see §8.12 for
@@ -1393,8 +1394,8 @@ here.
 
 The isolation property is unchanged in substance and restated at a new boundary:
 `ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py`,
-`ir_from_otel.py`, `ir_to_acp.py`, `_otlp_anyvalue.py` and `ir_round_trip.py`
-form a closed family that may import each other, and
+`ir_from_otel.py`, `ir_to_acp.py`, `_otlp_anyvalue.py`, `ir_round_trip.py` and
+`ir_conformance.py` form a closed family that may import each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
 `src/benchflow` imports any of them.
 
@@ -1963,3 +1964,129 @@ the same contract every other outbound edge is held to (§8.3, `IR → ATIF`).
 Adding the edge later is cheap by construction: the outbound direction is one
 module and one loss report, exactly as `ir_to_atif.py` is, and the family test in
 §8.7 is what keeps that addition from quietly wiring anything.
+
+### 8.13 Loss-bounded conformance: is the observed divergence inside the declared contract?
+
+§8.10 measures **D** — what actually changed across a round trip, read off the
+two traces and never off the reports. Each converter separately produces **L** —
+what it declared it could not carry, or had to invent. The two are produced
+independently on purpose, and
+[`test_the_harness_reads_traces_and_not_reports`](../tests/trajectories/test_ir_round_trip.py)
+exists to keep the measurement from confirming the converters against
+themselves.
+
+[`ir_conformance.py`](../src/benchflow/trajectories/ir_conformance.py) is the
+third thing: the **join**. It answers one question — *is every observed
+divergence accounted for by something the contract declared?* — and it is
+deliberately not folded into either half, because a measurement that consulted
+the declarations would stop being a measurement.
+
+#### The naive form does not hold, for two reasons worth stating
+
+The obvious gate is `D(T, R(T)) ⊆ L(T)`. Implemented literally it fails on a
+correct round trip, and both failures are real properties of the model rather
+than bugs to paper over.
+
+**The two sides address different spaces.** D speaks in canonical *hub* paths of
+the IR. L speaks in three (`PathSpace`), and an outbound edge legitimately
+declares a value in `TARGET` space using its target's vocabulary. `ir_to_atif`
+writes `schema_version` into the ATIF document and declares it *there*, because
+at that moment the value has no IR antecedent: a hub path would address a node
+the trace being converted does not contain, and `ir.py`'s invariant that every
+hub record resolves in the trace would — correctly — reject it. Then
+`ir_from_atif` reads the value faithfully back into `extensions.schema_version`,
+and the round trip observes a value the input never had. **Neither edge lied.
+The fabrication is a property of the composition**, and the join is the only
+place that can see it.
+
+`TARGET_TO_HUB` is the bridge, three entries, each a fact about what
+`ir_from_atif` does rather than a convention:
+
+| declared at (target) | observed at (hub) | why |
+|---|---|---|
+| `schema_version` | `extensions.schema_version` | the inbound edge stores the document's dialect under the trace's extensions |
+| `steps[].step_id` | `events[].extensions.step_id` | ...and each step's id under its event's |
+| `steps[].message` | `events[].text` | an ATIF step message becomes the event's text |
+
+**This is a bridge, not an exemption.** Remove the `SYNTHESIZED` record and the
+gate fails; the map only lets a declaration made honestly in one space answer
+for the path it occupies in the other. `test_every_bridge_entry_is_real` runs a
+trip and checks each correspondence against actual values, so an entry cannot
+rot into a lie while still reading as coverage.
+
+**Not every divergence is a field-level fact.** When an event is fused away, the
+values it held stop appearing at *every* path it populated. Those divergences
+are caused by a change in the event sequence, not by a converter mishandling a
+field. `structure_explained` is how the join says so **without** exempting the
+paths involved: the values that went missing must be exactly values held by
+events of a kind that lost instances. It is per value, not per path — a kind
+vanishing does not license *any* change at a path those events touched. An edit
+to a surviving event leaves a missing value nobody was holding, and fails.
+
+#### The rules
+
+1. **Undeclared fabrication is always a violation.** Values coming back with
+   none going in requires a `SYNTHESIZED` record at that path, directly or
+   through the bridge. There is no allowlist, and **structural metadata is not
+   exempt**: `schema_version` and `steps[].step_id` are now declared by
+   `ir_to_atif` like anything else, and clear the gate the ordinary way.
+2. **A representable loss is a violation.** Values in, none out, at a path the
+   target *does* have a slot for, is a gap in our own edge.
+3. **A transformed path must account for both of its sides.** Values that
+   disappeared: declared, or structure-explained. Values that appeared:
+   declared. `TRANSFORMED` conflates the two, and a rule checking only the first
+   would let an arbitrary insertion through — a mutation confirms it does not.
+
+#### Why `schema_version` and `step_id` are `SYNTHESIZED` and not `NORMALIZED`
+
+`NORMALIZED` says a source value was reshaped. Neither of these has a source
+value: the ATIF dialect string is not an observation about the run, and the
+step positions are not the IR's event index renumbered — that index is a
+position in a different sequence, over events some of which never become steps.
+Calling them normalizations would assert a correspondence that does not exist,
+which is the same laundering §8.3 refuses for `name_semantics`.
+
+#### Human verification of the conformance gate
+
+**HUMAN E2E VERIFIED, 2026-08-18, H1–H8 all pass**, against
+`e2e-h/PROCEDURE.md`. Every step was carried out and judged by a person rather
+than by the suite.
+
+| | what was verified |
+|---|---|
+| H1 | the working tree is exactly the six files under review, and the family/isolation tests pass — nothing outside the IR family imports any of it |
+| H2 | `test_ir_conformance.py` green with **no skips**, so the two captured rollouts really ran rather than silently vanishing with the evidence tree |
+| H3 | `D`, `L`, `D ∩ L` and `D \ L` read by hand on both rollouts: the bridge reduces `D \ L(hub)` to `D \ L`, every residual is structure-explained, and the gate reports no violation |
+| H4 | each `TARGET_TO_HUB` entry corresponds to a real inbound/outbound behaviour, not to a convenience; the bridge tests pass |
+| H5 | the gate can be made to fail: removing the `schema_version` record, removing `steps[].step_id`, or relabelling `SYNTHESIZED` as `NORMALIZED` each make the trip non-conformant |
+| H6 | the structural rule is not a blanket exemption — an edit to an event that *survived* the trip is caught even though other events vanished |
+| H7 | mutation harness: baseline green, every mutation applied and every one caught, no `ANCHOR NOT FOUND`, no `MISSED`, the file restored and `git status` unchanged |
+| H8 | full suite on `HEAD` and on the working tree compared directly: the same pre-existing failures on both, empty diff, tree restored |
+
+**The verification found one defect, in the procedure, not in the gate.** H8's
+full-suite command could stop at an interactive GitHub credential prompt
+part-way through a long run, which reads as a hang rather than as a failure.
+`GIT_TERMINAL_PROMPT=0` is now on every H8 command so a credential problem
+fails visibly instead of blocking the step.
+
+#### What a green gate does not establish
+
+- **Not that the contract is *right*.** An edge that declares `SYNTHESIZED` on
+  a field and then invents it passes here. The gate checks that declaration and
+  observation **agree**; it cannot check that the declaration is true. It is a
+  consistency check between two independently produced artefacts, which is
+  exactly as much as a join can be.
+- **Not a universal property.** It was run on finite corpora — the two captured
+  rollouts of §5.2 and Slice E's fixture. A clean result is evidence about
+  those traces, and no corpus was built to make it come out that way.
+- **Nothing about OpenTelemetry.** There is no OTel round trip here because
+  there is no `IR → OTel` edge to close one with (§8.12). The OTel direction is
+  ingest-only, and a gate cannot measure a loop that does not exist.
+- **Little about ACP.** The `Representability` column travels from §8.10's ATIF
+  capability table, so rule 2 is meaningful for the ATIF pair and for nothing
+  else. The ACP loop is carried only as a **regression guard**, with that rule
+  filtered out where it does not apply, and the test says so.
+- **Nothing about a run.** No wiring was added. The gate reads two traces and
+  two loss reports that a test constructed; it is not on any run path, writes
+  no artifact, and `ir.py`, `ir_round_trip.py`, the viewer and every runtime
+  module are untouched by it.

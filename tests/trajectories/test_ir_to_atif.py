@@ -400,6 +400,12 @@ def test_target_only_values_are_declared_in_the_target_space():
         "steps[1]",
         "steps[].message",
         "final_metrics.total_steps",
+        # Structural metadata of the document. Deterministic and obviously not
+        # observations, which is why they were missed — but `ATIF → IR` reads
+        # both back into the hub, so the round trip ends with two values the
+        # input never had, and only these records tell them apart from data.
+        "schema_version",
+        "steps[].step_id",
     }
     assert all(
         r.loss_class is LossClass.SYNTHESIZED for r in report.by_space(PathSpace.TARGET)

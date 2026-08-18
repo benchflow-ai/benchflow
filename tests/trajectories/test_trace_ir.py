@@ -553,6 +553,7 @@ IR_FAMILY = (
     "ir_to_acp",
     "_otlp_anyvalue",
     "ir_round_trip",
+    "ir_conformance",
 )
 """The unwired modules of the proposal: the IR and its converters.
 
