@@ -121,10 +121,12 @@ def _ablate_command(
     The counterfactual entry point of the rollout-branching RFC: the task runs
     once, the requested stage boundary is snapshotted as it passes, and that
     one world is forked into a child per arm — ``with-skill`` / ``no-skill``
-    re-run agent installation from the ``env-ready`` snapshot, ``inject:<file>``
-    hands the child that file as its continuation prompt. Every arm therefore
-    starts from a byte-identical world and differs by exactly one recorded
-    delta. Results land in a table plus ``ablation.json``.
+    switch the skill mode, ``inject:<file>`` hands the child that file as its
+    continuation prompt. Every arm therefore starts from a byte-identical world
+    and differs by exactly one recorded delta. At ``--at-stage env-ready``
+    every arm re-runs agent installation as its own rollout (that boundary
+    precedes ``install_agent()``); at later boundaries the arms continue in
+    place. Results land in a table plus ``ablation.json``.
     """
     import asyncio
     import json
