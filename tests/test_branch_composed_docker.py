@@ -516,3 +516,75 @@ async def test_restore_keeps_the_rollout_bind_mounts_and_the_host_sees_writes(
         assert await sandbox.has_host_mount(
             host_dir=host_verifier_dir, container_dir=container_verifier_dir
         )
+
+
+async def test_a_childs_verifier_run_cannot_destroy_the_parents_evidence(
+    docker_prereqs: None, environment_dir: Path, tmp_path: Path
+) -> None:
+    """T2 proof for the shared-mount clobbering, on a real bind mount.
+
+    Because ``restore()`` replays the rollout's bind mounts (the test above),
+    every branch child writes ``/logs/verifier`` straight into the *parent's*
+    host directory — and a child whose own rollout paths differ sees
+    ``has_host_mount() == False``, so it runs ``clear_verifier_output_dir``
+    first, whose ``find /logs/verifier -mindepth 1 -exec rm -rf {} +`` empties
+    the parent's directory before writing anything of its own. That is the
+    exact command replayed here, in the container, against a live mount.
+
+    The three assertions are the three moves of
+    :class:`~benchflow.branch_artifacts.MountedArtifacts`: after ``hold`` the
+    parent's files are out of the blast radius (and the mount really did carry
+    the deletion through to the host, so this is not a vacuous test); after
+    ``hand_off`` the child's own output is under its node directory; after
+    ``release`` the parent's evidence is back at its canonical path with the
+    transient hold directory gone.
+    """
+    from benchflow.branch_artifacts import (
+        MountedArtifacts,
+        child_mount_dir,
+        parent_hold_dir,
+    )
+
+    rollout_dir = tmp_path / "branch-evidence-run"
+    async with _live_sandbox(environment_dir, rollout_dir) as sandbox:
+        host_verifier_dir = (rollout_dir / "verifier").resolve()
+        container_verifier_dir = str(SandboxPaths.verifier_dir)
+
+        # The parent's own verifier run, written through the mount.
+        await _exec_ok(sandbox, f"echo 1.0 > {container_verifier_dir}/reward.txt")
+        await _exec_ok(
+            sandbox, f"echo 'parent tests passed' > {container_verifier_dir}/stdout.txt"
+        )
+        assert (host_verifier_dir / "reward.txt").read_text().strip() == "1.0"
+
+        holder = MountedArtifacts.hold(run_dir=rollout_dir, parent_id="root")
+
+        # A child's verifier: clear the shared output dir, then score itself.
+        await _exec_ok(
+            sandbox,
+            f"find {container_verifier_dir} -mindepth 1 -exec rm -rf -- {{}} +",
+        )
+        assert not (host_verifier_dir / "reward.txt").exists(), (
+            "the child's clear must reach the host through the mount — "
+            "otherwise this test proves nothing about the clobbering"
+        )
+        assert (
+            parent_hold_dir(rollout_dir, "root") / "verifier" / "reward.txt"
+        ).read_text().strip() == "1.0"
+        await _exec_ok(sandbox, f"echo 0.0 > {container_verifier_dir}/reward.txt")
+
+        child_dir = child_mount_dir(rollout_dir, "root", "n1")
+        holder.hand_off(child_dir)
+        assert (child_dir / "verifier" / "reward.txt").read_text().strip() == "0.0"
+
+        holder.release()
+        assert (host_verifier_dir / "reward.txt").read_text().strip() == "1.0"
+        assert (
+            host_verifier_dir / "stdout.txt"
+        ).read_text().strip() == "parent tests passed"
+        assert not parent_hold_dir(rollout_dir, "root").exists()
+
+        # The mount still works after all that moving — the mount root was
+        # emptied, never removed.
+        await _exec_ok(sandbox, f"echo post > {container_verifier_dir}/after.txt")
+        assert (host_verifier_dir / "after.txt").read_text().strip() == "post"

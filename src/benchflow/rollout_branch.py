@@ -55,6 +55,7 @@ from benchflow.branch import checkpoint as _checkpoint_branch
 from benchflow.branch import checkpoint_composed as _checkpoint_composed
 from benchflow.branch import restore as _restore_branch
 from benchflow.branch import restore_composed as _restore_composed
+from benchflow.branch_artifacts import MountedArtifacts, child_mount_dir
 from benchflow.branch_delta import BranchDelta
 from benchflow.branch_lineage import write_branch_artifacts, write_stage_snapshots
 from benchflow.branch_skill import (
@@ -677,7 +678,120 @@ async def branch(
     # restore of this; the parent is restored to it at the end.
     saved = _LinearState.capture(rollout)
 
+    # The parent's *on-disk* state needs the same treatment, for the same
+    # reason. Children share the parent's sandbox, and the sandbox bind-mounts
+    # the parent rollout's agent/artifacts/verifier directories into the
+    # container — so without this every child's verifier writes (and clears)
+    # the parent's own evidence, and the run ends with the last child's
+    # reward.txt sitting where the parent's belongs. Held aside before the
+    # first child, handed to each child after it ran, put back in the finally
+    # below. :mod:`benchflow.branch_artifacts` isolates its own failures: a
+    # lost copy of the evidence must not cost the rewards.
+    holder = (
+        MountedArtifacts.hold(run_dir=run_dir, parent_id=parent.id)
+        if run_dir is not None
+        else None
+    )
+
     children: list[RolloutNode] = []
+    try:
+        await _run_children(
+            rollout,
+            n=n,
+            deltas=deltas,
+            parent=parent,
+            children=children,
+            saved=saved,
+            runner=runner,
+            run_child=run_child,
+            composed=composed,
+            snap_env=snap_env,
+            snap_sandbox=snap_sandbox,
+            fresh_children=fresh_children,
+            run_dir=run_dir,
+            holder=holder,
+        )
+    finally:
+        if holder is not None:
+            holder.release()
+
+    # restore the parent's linear state — the tree grew, nothing else moved.
+    saved.restore_onto(rollout)
+
+    # aggregate — per-child return -> V(parent), over *this* fork's children:
+    # a stage branch point can already carry the linear continuation, whose
+    # node has no reward to average. An unscored child makes V *undefined*:
+    # averaging it in as a zero would report a number computed from a score
+    # that was never observed, so the value is left unrecorded and returned
+    # as None.
+    unscored_children = [child for child in children if UNSCORED_KEY in child.state]
+    value: float | None
+    if unscored_children:
+        value = None
+        logger.error(
+            "branch at %s left %d of %d children unscored — V(parent) is "
+            "undefined and no value is recorded",
+            parent.id,
+            len(unscored_children),
+            len(children),
+        )
+    else:
+        value = _aggregate_branch(parent, over=children)
+        parent.state["value"] = value
+    rollout._phase = "branched"
+
+    # Lineage artifacts (RFC §3.4) — written only when the rollout knows its
+    # run directory, and failure-isolated: an artifact-write error is logged
+    # and never corrupts the branch result.
+    if run_dir is not None:
+        try:
+            write_branch_artifacts(
+                run_dir=run_dir,
+                tree=rollout._tree,
+                parent=parent,
+                children=children,
+            )
+            # Re-serialize the (restored) parent registry: a child that ran
+            # through a stage boundary of its own already overwrote the file.
+            stages = getattr(rollout, "_stage_snapshots", {})
+            if stages:
+                write_stage_snapshots(run_dir=run_dir, snapshots=stages)
+        except Exception:
+            logger.warning(
+                "branch lineage artifact write under %s failed — the branch "
+                "result is unaffected",
+                run_dir,
+                exc_info=True,
+            )
+    return value
+
+
+async def _run_children(
+    rollout: Rollout,
+    *,
+    n: int,
+    deltas: Sequence[BranchDelta | None] | None,
+    parent: RolloutNode,
+    children: list[RolloutNode],
+    saved: _LinearState,
+    runner: ChildRunner,
+    run_child: ChildRunner | None,
+    composed: bool,
+    snap_env: Any,
+    snap_sandbox: Any,
+    fresh_children: bool,
+    run_dir: Any,
+    holder: MountedArtifacts | None,
+) -> None:
+    """Run the fork's ``n`` children in order, appending them to ``children``.
+
+    Split out of :func:`branch` only so the mounted-artifact custody around the
+    loop reads as one bracket instead of burying the aggregation step inside a
+    ``try``. Every child is appended to ``children`` as soon as it is attached,
+    so a caller that catches a propagating child failure still sees the nodes
+    that were forked — which is how ``bench eval ablate`` reports the arm that
+    raised and the arms that never ran.
+    """
     for index in range(n):
         # Attach a *pending* branch-child node — its real continuation Step is
         # filled in place by the child's first execute(), so the child's work
@@ -746,63 +860,19 @@ async def branch(
             unscored = exc.reason
         finally:
             # Recorded in a finally so a child that raised still reports what
-            # it cost before it did.
+            # it cost before it did — and, for the same reason, a child that
+            # raised still hands off whatever it wrote to the shared mounts
+            # (a crashed child's verifier output is often the only evidence of
+            # why it crashed). Handing off also empties the mounts, so the
+            # next child cannot inherit this one's files.
             child.state[CHILD_WALL_CLOCK_KEY] = time.monotonic() - started
+            if holder is not None and run_dir is not None:
+                holder.hand_off(child_mount_dir(run_dir, parent.id, child.id))
         if unscored is not None:
             child.state[UNSCORED_KEY] = unscored
             logger.error("branch child %s is unscored: %s", child.id, unscored)
         else:
             child.state["reward"] = float(ret)
-
-    # restore the parent's linear state — the tree grew, nothing else moved.
-    saved.restore_onto(rollout)
-
-    # aggregate — per-child return -> V(parent), over *this* fork's children:
-    # a stage branch point can already carry the linear continuation, whose
-    # node has no reward to average. An unscored child makes V *undefined*:
-    # averaging it in as a zero would report a number computed from a score
-    # that was never observed, so the value is left unrecorded and returned
-    # as None.
-    unscored_children = [child for child in children if UNSCORED_KEY in child.state]
-    value: float | None
-    if unscored_children:
-        value = None
-        logger.error(
-            "branch at %s left %d of %d children unscored — V(parent) is "
-            "undefined and no value is recorded",
-            parent.id,
-            len(unscored_children),
-            len(children),
-        )
-    else:
-        value = _aggregate_branch(parent, over=children)
-        parent.state["value"] = value
-    rollout._phase = "branched"
-
-    # Lineage artifacts (RFC §3.4) — written only when the rollout knows its
-    # run directory, and failure-isolated: an artifact-write error is logged
-    # and never corrupts the branch result.
-    if run_dir is not None:
-        try:
-            write_branch_artifacts(
-                run_dir=run_dir,
-                tree=rollout._tree,
-                parent=parent,
-                children=children,
-            )
-            # Re-serialize the (restored) parent registry: a child that ran
-            # through a stage boundary of its own already overwrote the file.
-            stages = getattr(rollout, "_stage_snapshots", {})
-            if stages:
-                write_stage_snapshots(run_dir=run_dir, snapshots=stages)
-        except Exception:
-            logger.warning(
-                "branch lineage artifact write under %s failed — the branch "
-                "result is unaffected",
-                run_dir,
-                exc_info=True,
-            )
-    return value
 
 
 def make_default_runner(
