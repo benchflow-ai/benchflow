@@ -467,11 +467,11 @@ them.
    in `normalize_acp_usage`?
 5. Is OpenTelemetry wanted as an inbound receiver, an outbound emitter, or
    both? The only implementation ever written was inbound, and it was removed
-   deliberately. **Partly acted on, not answered:** §8.3 implements the inbound
-   half (`OTel → IR`) because it is useful whichever way the question is
-   resolved — it lets BenchFlow *read* traces from instrumented agents without
-   committing to emitting any. The emitter is not written, and §8.11 lists the
-   decisions it would depend on.
+   deliberately. **Still unanswered by anyone who owns the answer.** §8.3
+   implements the inbound half (`OTel → IR`); §8.12 records *our* decision to
+   scope this implementation to ingest and to defer the emitter, and is careful
+   to say that the decision is ours rather than a reading of this question. The
+   emitter is not written, and §8.11 lists the decisions it would depend on.
 
 **Still open.** §8 takes a *provisional* position on question 1 — a canonical
 hub — and implements it in isolation so it can be reviewed as code. That is a
@@ -959,6 +959,10 @@ and larger set of questions — what a span tree for a BenchFlow rollout should
 look like, which ids to mint, which encoding to write them in, and whether
 emitting `gen_ai.*` attributes commits the project to an `_incubating`
 vocabulary. Those are in §8.11.
+
+**This is a deferral we chose, not one we were given.** §8.12 records it as a
+scope decision with its reasoning and its reversal conditions, so a reader can
+tell it apart from the maintainer decision that is still outstanding.
 
 ### 8.4 A worked example
 
@@ -1641,7 +1645,8 @@ it.
    the package a real dependency.
 8. **Is an `IR → OTel` emitter wanted at all?** Open question 5, still open for
    the outbound half. It needs answers to 1, 2 and 4 before it can be written
-   without inventing a span tree for BenchFlow rollouts.
+   without inventing a span tree for BenchFlow rollouts. §8.12 defers it in the
+   meantime; deferring is not answering, and the question stays on this list.
 
 #### Human verification
 
@@ -1709,3 +1714,73 @@ narrowed by the fact that a person signed the steps off.
 - **Nothing is wired.** `ir_from_otel.py` and `_otlp_anyvalue.py` join the
   closed family of §8.7; no run path imports either, and no artifact changes
   because they exist.
+
+### 8.12 Scope decision: OpenTelemetry is ingest-only in this implementation
+
+> **DECISION — ours, current, and reversible.** This section records a choice
+> made by the author of this work. **It is not a maintainer ruling, and nothing
+> here should be read as one.** No maintainer has stated that `IR → OTel` is out
+> of scope, and none has stated that it is required.
+
+**The decision.** For this implementation, OpenTelemetry is an **ingest
+boundary**. The edge that exists is `OTLP/JSON → Canonical Trace IR` (§8.3).
+`Canonical Trace IR → OTel` is **deferred**, not rejected.
+
+#### Why defer rather than build
+
+Five observations, each checkable in the tree today, and none of them a
+statement about what the maintainers want:
+
+1. **No outbound OTel consumer exists in the repository.** Nothing reads spans
+   BenchFlow would produce.
+2. **No OTel exporter or backend is integrated.** There is no OTLP endpoint, no
+   collector configuration, and no observability backend referenced anywhere in
+   `src/` or `docs/`.
+3. **The OTel support that did exist was inbound.** The removed `OTelCollector`
+   (§4.2) was an OTLP/HTTP *receiver*; it contained no emitter.
+4. **The consumer named by the task's own issue body consumes ACP.** The Viewer
+   work reads `trajectory/acp_trajectory.jsonl` and explicitly declines to
+   become another trace schema.
+5. **There is no concrete contract to build the emitter against.** Without a
+   consumer, every question §8.11 lists — the span tree for a rollout, which ids
+   to mint, which encoding to write them in, whether to commit to an
+   `_incubating` vocabulary — would be answered by this implementation alone.
+   Those answers would be **speculative policy baked into the hub**, and the hub
+   is the one place where a wrong answer propagates to every other format.
+
+Building an edge against no consumer is how a format acquires conventions nobody
+chose. Deferring costs nothing that cannot be recovered; guessing does.
+
+#### What this decision explicitly does not claim
+
+- **It does not claim `IR → OTel` will never be needed.** It claims there is
+  nothing to build it against *today*.
+- **It does not reinterpret the `<->` in the task title.** That symbol is
+  ambiguous — it can mean bidirectional conversion on every edge, or simply "among
+  these three formats" — and this decision is **not** evidence that ingest-only
+  is what it meant. The ambiguity is unchanged and is still a maintainer's to
+  resolve (§6, question 5).
+- **It does not narrow the task.** If the answer comes back "both", the work is
+  an additional edge, not a redesign.
+
+#### Reversal conditions, and what must not happen first
+
+The deferral ends when **either** exists:
+
+- a **consumer** that would read BenchFlow-emitted spans — a collector, a
+  backend, a hosted viewer, a downstream tool; or
+- a **contract** that fixes the open questions independently of this
+  implementation — a maintainer decision, a vendored specification, or a
+  convention this project agrees to follow.
+
+Until then, **the IR must not be changed in anticipation of the emitter.** No
+span-tree field, no id-minting policy, no OTel-shaped slot may be added to
+`ir.py` on the argument that an emitter would want it. The hub is a superset of
+what BenchFlow can *observe* (§8.2), and a field added for a converter that does
+not exist is a field with no evidence behind it. When the emitter is written it
+takes the IR as it finds it and declares whatever it cannot express — which is
+the same contract every other outbound edge is held to (§8.3, `IR → ATIF`).
+
+Adding the edge later is cheap by construction: the outbound direction is one
+module and one loss report, exactly as `ir_to_atif.py` is, and the family test in
+§8.7 is what keeps that addition from quietly wiring anything.
