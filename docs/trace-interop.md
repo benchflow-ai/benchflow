@@ -1375,11 +1375,12 @@ here.
 ### 8.7 Status
 
 - **Implemented:** the IR types, the loss model with its path spaces, the
-  invariants, the validation suite, this section, five converters — `ACP → IR`,
-  `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR`, `IR → ACP capture events` — each
-  with its loss report; the round-trip measurement over the ATIF pair (§8.10),
-  and the ACP pair's round-trip evidence in §8.3 and its test suite; and the
-  loss-bounded conformance gate that joins the two halves (§8.13). There is no
+  invariants, the validation suite, this section, six converters — `ACP → IR`,
+  `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR`, `IR → ACP capture events`,
+  `IR → viewer trace steps` (§8.14) — each with its loss report; the round-trip
+  measurement over the ATIF pair (§8.10), and the ACP pair's round-trip evidence
+  in §8.3 and its test suite; and the loss-bounded conformance gate that joins
+  the two halves (§8.13). There is no
   §8.10-style measurement for the ACP pair: `ACP → IR → ACP` either reproduces
   its input exactly or refuses, so there is no partial preservation to quantify.
 - **Deferred by a decision of ours, reversibly:** `IR → OTel` — see §8.12 for
@@ -1394,8 +1395,9 @@ here.
 
 The isolation property is unchanged in substance and restated at a new boundary:
 `ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py`,
-`ir_from_otel.py`, `ir_to_acp.py`, `_otlp_anyvalue.py`, `ir_round_trip.py` and
-`ir_conformance.py` form a closed family that may import each other, and
+`ir_from_otel.py`, `ir_to_acp.py`, `_otlp_anyvalue.py`, `ir_round_trip.py`,
+`ir_conformance.py` and `ir_to_view.py` form a closed family that may import
+each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
 `src/benchflow` imports any of them.
 
@@ -2090,3 +2092,168 @@ fails visibly instead of blocking the step.
   two loss reports that a test constructed; it is not on any run path, writes
   no artifact, and `ir.py`, `ir_round_trip.py`, the viewer and every runtime
   module are untouched by it.
+
+### 8.14 `Canonical Trace IR → viewer trace steps`
+
+[`ir_to_view.py`](../src/benchflow/trajectories/ir_to_view.py) converts a trace
+into the step list a BenchFlow viewer page renders. It is unwired: no run path
+imports it, no page is built from it, and no artifact changes.
+
+#### It produces steps, and deliberately not a payload
+
+A viewer payload has five fields and only one of them is a function of the
+trace. `rollout_name` is a directory name; `verifier` is four sidecar files;
+`meta` is `result.json` and `timing.json`. The IR has no slot for `task_name`,
+`skill_mode`, `reward`, `partial_trajectory` or `trajectory_source` **at all**,
+so an edge that returned a whole payload would be **synthesizing run metadata
+to fill a shape** rather than converting a trace. The trace-level fields the IR
+*does* carry — `session_id`, `agent`, `usage`, `outcome`, the trace's own
+start and finish — are declared `UNSUPPORTED`, which says they are outside this
+edge's codomain rather than lost by it: the viewer shows them, from artifacts
+this edge never sees. Assembly belongs to the wiring slice, which has the
+directory.
+
+#### Where the shape comes from, and how provisional that is
+
+The wire shape is read from the viewer package proposed in
+`benchflow-ai/benchflow#1034`, at the commit recorded in `VIEW_SCHEMA_ORIGIN`.
+**Nothing is imported, vendored or fetched from that branch** — it is unmerged,
+and the family rule is the one §8.3 already follows for ATIF: read the target
+format as data, pin what matters by test, never reach into the module that
+handles it. `test_the_vocabularies_are_frozen` freezes our copy.
+
+Be clear about what that buys: it protects **our** contract from drifting. It
+cannot notice #1034 changing. That correspondence was checked by a person once,
+against the recorded commit, and re-checking it is a human step.
+
+#### The one addition
+
+`tool.name_semantics` is **ours**. #1034's `ToolCall` has six fields; this is a
+seventh, and it carries :attr:`ToolCall.name_semantics` through unchanged.
+Without it the viewer boundary cannot tell an ACP *category* from a *function
+name* from a *span name*, and that is exactly the gap #1034 fills by inference:
+
+```python
+_HUE_INFER = (("read", ("read", "cat", "view", "ls", "list")), ...)
+def tool_hue(kind: str, title: str) -> ToolHue:
+    if kind in _KNOWN_HUES: return kind
+    hay = f"{kind} {title}".lower()
+    for hue, needles in _HUE_INFER:
+        if any(needle in hay for needle in needles): return hue
+```
+
+On the three corpora that reads: an ACP `read` is a read (correct); an ATIF
+`function_name` of `execute` becomes the `execute` category (a name read as a
+category); an OTel `gen_ai.tool.name` of `read_file` becomes `read` (a category
+inferred from a substring). This edge does none of it. A hue is emitted only
+when the semantics say `acp_kind` **and** the value already **is** a member of
+the display vocabulary — membership, never inference — and otherwise the
+neutral `other`, which the renderer maps to the secondary/border tokens and
+which therefore asserts nothing. Emitting an extra key is additive, but it is a
+divergence from #1034's contract and not an agreed extension to it.
+
+#### Declare, don't refuse
+
+Unlike §8.3's ACP edge, this one never raises. A viewer is a display: an event
+it cannot type must still reach the page. **Every event produces exactly one
+step** — pinned by test on both captured rollouts and on hand-built traces —
+and what the shape cannot hold goes to the loss report.
+
+| IR event kind | step kind | how identity survives |
+|---|---|---|
+| `USER_MESSAGE` | `prompt` | observed `text` |
+| `AGENT_MESSAGE` | `message` | observed `text` |
+| `AGENT_REASONING` | `thought` | `reasoning`, not `text` |
+| `TOOL_CALL` | `tool` | the tool object, `name_semantics` included |
+| `TIMEOUT` | `timeout` | stays **typed**; `reason` from the event's terminal signal, the rest from `extensions` |
+| `ORACLE` | `unknown` | `type: "oracle"` — the vocabulary has no oracle member |
+| `UNKNOWN` | `unknown` | `type` = the source's own type string |
+
+`source_type` is carried for **every** kind, not only the untyped ones: a
+normalized kind whose source string was discarded is a lossy rename.
+
+For the two kinds with no typed slot the step's `text` is a serialization of
+the **canonical IR event**. #1034's own unknown branch serializes the raw ACP
+dict it read off disk; this edge has no such document, so what it renders
+carries IR field names, and the loss record says so. A page showing it must
+label it the same way — it is not the producer's payload.
+
+#### Absent is not observed-empty
+
+Six viewer slots have no null to write. Each substitution is declared on its
+own, and **only** when the source value was absent: an observed `""` title and
+a missing one both render as `""`, and the report is the only place that
+difference survives. Blocks are the same principle: a block the IR holds with
+no text contributes no string, declared and omitted, because rendering its
+`raw` as JSON would put tool output on the page that no tool ever produced. An
+observed empty string is kept — #1034 filters falsy strings out, and that is a
+small silent loss this edge does not reproduce.
+
+#### Measured on the three corpora
+
+**FACT — machine measurement, not a human verification.**
+
+| corpus | events → steps | tools (`kind`, `name_semantics`, `hue`) | loss records |
+|---|---|---|---|
+| ACP H1 | 5 → 5 | `execute`/`acp_kind`/**`execute`**, `read`/`acp_kind`/**`read`** | 17 |
+| ACP H2 | 4 → 4 | `think`/`acp_kind`/**`think`** | 17 |
+| ATIF (§8.10 fixture) | 3 → 3 | `execute`/`function_name`/**`other`** | 18 |
+| OTel (§8.11 fixture) | 5 → 5 | `read_file`, `write_file` / `gen_ai.tool.name` / **`other`** | 23 |
+
+The third and fourth rows are the point. `execute` is spelled identically in
+rows one and three and gets a category in one and not the other, because the
+difference is in the semantics and not in the string.
+
+OTel is also the only corpus with timestamps — all five steps carry `t` and
+`dur` — and the only one whose untyped events carry the whole span in
+`extensions`, `parentSpanId` included. It is also the only one with real tool
+arguments, which the viewer shape has no slot for and which are declared
+`DROPPED`: an observed value reaching no field.
+
+Counts here are snapshots of these fixtures, not thresholds.
+
+#### Human verification of the viewer edge
+
+**HUMAN E2E VERIFIED, 2026-08-19, V1–V10 all pass**, against
+`e2e-view/PROCEDURE.md`. Every step was carried out and judged by a person
+reading the values the edge produced, not by re-running the suite.
+
+| | what was verified |
+|---|---|
+| V1 | the working tree is exactly the four files under review; `ir.py`, `ir_round_trip.py`, the existing `viewer.py` and every runtime module untouched; the family/import test green |
+| V2 | steps are 1-based and dense, no `label` is ever written, `type` is preserved on the **known** kinds too, absent optionals are omitted rather than nulled, and the tool object carries seven keys including `name_semantics` |
+| V3 | ACP H1 5→5, ACP H2 4→4, ATIF 3→3, OTel 5→5 — one step per event on every corpus, no silent drop |
+| V4 | a real `acp_kind` can produce a semantic hue; `function_name` and `gen_ai.tool.name` stay `other`; no substring and no title inference, checked with titles deliberately stuffed with category words |
+| V5 | `ORACLE` and `UNKNOWN` both reach the page; the diagnostic text is declared a serialization of the canonical IR event and not a raw source record; OTel parentage survives inside `extensions` |
+| V6 | absent and observed-empty are distinguishable **only** through the loss report, and are; H2's real timeout is carried, not synthesized; an opaque block with no text is `DROPPED` rather than invented |
+| V7 | `role`, `content[].kind`/`raw`, per-event usage, `reasoning_segments` and `arguments` are declared `DROPPED`; trace-level fields are `UNSUPPORTED` as outside this edge's codomain; no run metadata appears on any step |
+| V8 | 13 valid mutations applied and caught, no `ANCHOR NOT FOUND`, no `MISSED`, no collection error, restore green |
+| V9 | 752 collected = 699 baseline + 53 new; a node-id comparison against `HEAD` shows no pre-existing test missing; ruff, format and `ty` green |
+| V10 | the same four files at the end; `e2e-view/` never wrote into the clone |
+
+**The verification found three defects, all in the mutation harness, none in
+the converter.** Two mutations were no-ops — one kept the declaration it was
+meant to remove, the other was overwritten by a later dict entry. The third
+rewrote a `losses.add(` call into a tuple display, which is a `SyntaxError`
+once the call's `space=` keyword is inside it: the module stopped importing and
+pytest reported a **collection error** rather than a failure, so the harness
+counted as "caught" a run that only proved a broken file will not import. All
+three were rewritten outside the repo, and the procedure now names `error`
+instead of `failed` as a second way a mutation can fail to mean what it claims.
+
+#### What this verification does not cover
+
+- **No wiring, and no page.** Nothing imports this edge from a run path, no
+  renderer was run, no HTML was produced, and no artifact on disk changes. That
+  the steps are correct is not evidence that they *render* correctly.
+- **The contract pin protects our side only.** `VIEW_STEP_KINDS`,
+  `VIEW_TOOL_HUES` and the emitted key sets are frozen by test, which stops
+  *this* edge from drifting. It cannot notice `benchflow-ai/benchflow#1034`
+  changing — that branch is unmerged and moving, and re-checking the
+  correspondence to `VIEW_SCHEMA_ORIGIN` is a human step.
+- **`name_semantics` is ours.** It is a seventh key on an object #1034 defines
+  with six: additive, and a divergence from that contract rather than a
+  maintainer-approved extension to it.
+- **`ORACLE` stays `unknown`.** It keeps its identity in `type`, but it will
+  remain an untyped step until the viewer contract gains a member for it —
+  which is a change to propose upstream, not one to assume.

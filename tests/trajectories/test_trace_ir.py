@@ -554,6 +554,7 @@ IR_FAMILY = (
     "_otlp_anyvalue",
     "ir_round_trip",
     "ir_conformance",
+    "ir_to_view",
 )
 """The unwired modules of the proposal: the IR and its converters.
 
