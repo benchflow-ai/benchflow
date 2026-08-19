@@ -278,8 +278,8 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--retry-attempts must be >= 0")
     if request.retry_concurrency is not None and request.retry_concurrency < 1:
         raise EvalPlanError("--retry-concurrency must be >= 1")
-    if request.hf_prefix and not request.publish_hf:
-        raise EvalPlanError("--hf-prefix requires --publish-hf")
+    if request.hf_prefix and not (request.publish_hf or request.publish_bucket):
+        raise EvalPlanError("--hf-prefix requires --publish-hf or --publish-bucket")
     if request.eval_results_model and not (
         request.eval_results_dataset and request.eval_results_task
     ):

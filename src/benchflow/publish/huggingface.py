@@ -91,8 +91,11 @@ def publish_folder_to_bucket(
     try:
         from huggingface_hub import create_bucket, sync_bucket
         from huggingface_hub.errors import HfHubHTTPError
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
-        raise ValueError("huggingface_hub is required for --publish-bucket") from exc
+    except ImportError as exc:  # pragma: no cover - depends on env
+        raise ValueError(
+            "huggingface_hub with bucket support (create_bucket/sync_bucket) is "
+            "required for --publish-bucket; upgrade huggingface_hub"
+        ) from exc
     try:
         create_bucket(bucket_id, private=private)
     except HfHubHTTPError as exc:
@@ -123,7 +126,7 @@ def open_eval_results_pr(
     try:
         import yaml
         from huggingface_hub import CommitOperationAdd, HfApi
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
+    except ImportError as exc:  # pragma: no cover - depends on env
         raise ValueError(
             "huggingface_hub is required for --eval-results-model"
         ) from exc

@@ -188,6 +188,11 @@ def postprocess_eval_artifacts(
                 print_error(str(exc))
                 raise typer.Exit(1) from None
             console.print(f"[green]Eval-results PR:[/green] {escape(pr_url or '')}")
+        else:
+            console.print(
+                "[yellow]--eval-results-model set but no scored rollouts were "
+                "found; skipping eval-results PR[/yellow]"
+            )
 
 
 def _load_eval_matrix(path: Path) -> dict[str, dict]:
