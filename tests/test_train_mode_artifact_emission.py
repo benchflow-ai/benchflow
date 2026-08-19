@@ -541,7 +541,7 @@ def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
 
 
 def test_results_jsonl_preserves_all_registered_typed_diagnostics(tmp_path):
-    """Guards issue #1037: trainer rows retain structured failure evidence."""
+    """Guards PR #1038 (issue #1037): retain structured failure evidence."""
     cases = [
         IdleTimeoutDiagnostic(
             idle_timeout_sec=120,
@@ -613,7 +613,7 @@ def test_results_jsonl_preserves_all_registered_typed_diagnostics(tmp_path):
 
 
 def test_results_jsonl_omits_untrusted_structured_diagnostic_values(tmp_path):
-    """Guards issue #1037: trainer diagnostics omit raw secret-bearing fields."""
+    """Guards PR #1038 (issue #1037): omit raw secret-bearing fields."""
     rollout_dir = tmp_path / "rollout-diagnostic-redaction"
     rollout_dir.mkdir()
     diagnostics = RolloutDiagnostics()
@@ -654,7 +654,7 @@ def test_results_jsonl_omits_untrusted_structured_diagnostic_values(tmp_path):
 
 
 def test_results_jsonl_separates_agent_and_verifier_diagnostics(tmp_path):
-    """Guards issue #1037: agent and verifier channels remain independent."""
+    """Guards PR #1038 (issue #1037): keep diagnostic channels independent."""
     rollout_dir = tmp_path / "rollout-both-diagnostic-channels"
     rollout_dir.mkdir()
     diagnostics = RolloutDiagnostics()
@@ -695,7 +695,7 @@ def test_results_jsonl_separates_agent_and_verifier_diagnostics(tmp_path):
 
 
 def test_results_jsonl_preserves_category_without_typed_event(tmp_path):
-    """Guards issue #1037: fallback categories survive without event details."""
+    """Guards PR #1038 (issue #1037): keep categories without event details."""
     row = build_rollout_results_record(
         tmp_path,
         task_name="category-only-task",
@@ -720,7 +720,7 @@ def test_results_jsonl_preserves_category_without_typed_event(tmp_path):
 
 
 def test_results_jsonl_uses_registry_precedence_for_same_channel(tmp_path):
-    """Guards issue #1037: event ordering cannot change the chosen category."""
+    """Guards PR #1038 (issue #1037): preserve registry category precedence."""
     rollout_dir = tmp_path / "rollout-diagnostic-precedence"
     rollout_dir.mkdir()
     diagnostics = RolloutDiagnostics()
@@ -1415,7 +1415,7 @@ def test_write_job_results_jsonl_groups_example_ids_by_task(tmp_path):
 
 
 def test_write_job_results_jsonl_preserves_diagnostics_block(tmp_path):
-    """Guards issue #1037: job aggregation retains per-rollout diagnostics."""
+    """Guards PR #1038 (issue #1037): aggregation retains diagnostics."""
     job_dir = tmp_path / "job"
     rollout_dir = job_dir / "task-a__trial-1"
     rollout_dir.mkdir(parents=True)

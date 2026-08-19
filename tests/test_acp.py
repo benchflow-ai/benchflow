@@ -1893,7 +1893,7 @@ class TestDiagnosticRegistry:
             assert empty[diag_cls.field] is None
 
     def test_results_jsonl_export_policy_omits_untrusted_fields(self) -> None:
-        """Guards issue #1037: trainer diagnostics use a strict safe policy."""
+        """Guards PR #1038 (issue #1037): use a strict safe export policy."""
         from benchflow.diagnostics import (
             AgentPromptTimeoutDiagnostic,
             IdleTimeoutDiagnostic,
@@ -1961,7 +1961,7 @@ class TestDiagnosticRegistry:
         )
 
     def test_results_jsonl_export_policy_covers_the_registry(self) -> None:
-        """Guards issue #1037: every registered event exports fail-closed."""
+        """Guards PR #1038 (issue #1037): registry export stays fail-closed."""
         from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, RolloutDiagnostics
 
         for diagnostic_cls in DIAGNOSTIC_REGISTRY:
