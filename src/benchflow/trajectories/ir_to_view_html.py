@@ -453,7 +453,7 @@ def render_trace(
 
 
 # ---------------------------------------------------------------------------
-# A way to look at one, without wiring anything into a run path
+# Reading a rollout directory
 # ---------------------------------------------------------------------------
 
 
@@ -461,6 +461,64 @@ def _load(path: Any) -> Any:
     from pathlib import Path
 
     return json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
+
+
+def rollout_to_trace(rollout_dir: Any) -> tuple[CanonicalTrace, str] | None:
+    """Rebuild a canonical trace from what the rollout directory actually holds.
+
+    The ACP capture first — it is the artifact the viewer has always rendered —
+    then ``trainer/atif.json``, whose path is read from ``export_atif`` rather
+    than restated here. ``None`` when the directory holds neither.
+
+    OTLP is absent on purpose: nothing in this repository writes spans into a
+    rollout directory, so there is no filename to look for. That format reaches
+    the page through :func:`render_trace` with a trace already in hand.
+    """
+    from pathlib import Path
+
+    from benchflow.trajectories.export_atif import ROLLOUT_ATIF_RELPATH
+    from benchflow.trajectories.ir_from_acp import acp_events_to_ir
+    from benchflow.trajectories.ir_from_atif import atif_to_ir
+
+    rollout_dir = Path(rollout_dir)
+    acp = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+    if acp.exists():
+        try:
+            text = acp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        return acp_events_to_ir(viewer._parse_jsonl(text)), "acp capture"
+
+    atif = rollout_dir / ROLLOUT_ATIF_RELPATH
+    if atif.exists():
+        document = _load(atif)
+        if not isinstance(document, dict):
+            return None
+        return atif_to_ir(document), ROLLOUT_ATIF_RELPATH
+    return None
+
+
+def render_rollout_page(
+    rollout_dir: Any, prompts: list[str] | None = None
+) -> RenderedTrace | None:
+    """One rollout directory as a canonical-IR page, or ``None`` if it has none.
+
+    The run summary comes from ``result.json`` through the viewer's own card,
+    and the prompts from the caller — neither is a function of the trace.
+    """
+    from pathlib import Path
+
+    rollout_dir = Path(rollout_dir)
+    built = rollout_to_trace(rollout_dir)
+    if built is None:
+        return None
+    trace, _source = built
+    return render_trace(
+        rollout_dir.name,
+        trace,
+        viewer._load_result_json(rollout_dir),
+        prompts=prompts,
+    )
 
 
 def _main(argv: list[str]) -> int:
@@ -491,25 +549,16 @@ def _main(argv: list[str]) -> int:
     traces: list[CanonicalTrace] = []
 
     if path.is_dir():
-        result_path = path / "result.json"
-        if result_path.exists():
-            loaded = _load(result_path)
-            result_data = loaded if isinstance(loaded, dict) else {}
+        result_data = viewer._load_result_json(path)
         prompts_path = path / "prompts.json"
         if prompts_path.exists():
             loaded = _load(prompts_path)
             prompts = loaded if isinstance(loaded, list) else None
-        acp = path / "trajectory" / "acp_trajectory.jsonl"
-        atif = path / ROLLOUT_ATIF_RELPATH
-        if acp.exists():
-            traces = [
-                acp_events_to_ir(viewer._parse_jsonl(acp.read_text(encoding="utf-8")))
-            ]
-        elif atif.exists():
-            traces = [atif_to_ir(_load(atif))]
-        else:
+        built = rollout_to_trace(path)
+        if built is None:
             print(f"no ACP capture and no {ROLLOUT_ATIF_RELPATH} in {path}")
             return 1
+        traces = [built[0]]
     elif path.suffix == ".jsonl":
         traces = [
             acp_events_to_ir(viewer._parse_jsonl(path.read_text(encoding="utf-8")))

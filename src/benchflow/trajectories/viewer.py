@@ -6,6 +6,7 @@ and with a raw session JSONL file. No ATIF conversion.
 
 import html
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -370,6 +371,43 @@ def _parse_jsonl(text: str) -> list[dict]:
     return events
 
 
+TRACE_IR_ENV = "BENCHFLOW_VIEWER_TRACE_IR"
+"""Opt-in: render a rollout through the canonical Trace IR instead of the
+ACP branch below. Unset — the default — leaves every page exactly as it was."""
+
+_TRACE_IR_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _trace_ir_page(rollout_dir: Path, prompts: list[str] | None) -> str | None:
+    """The canonical-IR page for this rollout, or None to keep the ACP path.
+
+    This is the whole wiring surface: one function, returning None whenever the
+    switch is off, so the branch order in `render_rollout` is unchanged without
+    it. The import is lazy and inside the branch — this module has no
+    module-level dependency on `benchflow.trajectories.ir_to_view_html`, and
+    deleting that family cannot stop this file from importing.
+
+    A conversion that raises falls back to the ACP path with a line on stderr.
+    A viewer that stops showing a run because a converter broke is worse than
+    one that says so and shows it the old way.
+    """
+    if os.environ.get(TRACE_IR_ENV, "").strip().lower() not in _TRACE_IR_TRUTHY:
+        return None
+    try:
+        from benchflow.trajectories.ir_to_view_html import render_rollout_page
+
+        rendered = render_rollout_page(rollout_dir, prompts)
+    except Exception as exc:
+        print(
+            f"{TRACE_IR_ENV} is set but the canonical IR path failed for "
+            f"{rollout_dir.name} ({type(exc).__name__}: {exc}); "
+            f"falling back to the ACP renderer",
+            file=sys.stderr,
+        )
+        return None
+    return None if rendered is None else rendered.html
+
+
 def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     """Render a full trial (multiple turns) as HTML.
 
@@ -390,6 +428,13 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     # Auto-detect format
     turn_files = sorted(rollout_dir.glob("turn*.txt"))
     acp_traj = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+
+    # Opt-in (see TRACE_IR_ENV): source -> canonical Trace IR -> viewer step
+    # list -> the cards below. None with the switch off, which is the default.
+    if not turn_files:
+        page = _trace_ir_page(rollout_dir, prompts)
+        if page is not None:
+            return page
 
     if not turn_files and acp_traj.exists():
         return _render_acp_trajectory(rollout_dir, acp_traj, prompts)

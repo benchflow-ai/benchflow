@@ -566,6 +566,17 @@ converter joins the family; it is not a way to let a run path in.
 
 IR_FAMILY_PATHS = {f"src/benchflow/trajectories/{name}.py" for name in IR_FAMILY}
 
+WIRING_SITES = frozenset({"src/benchflow/trajectories/viewer.py"})
+"""The modules outside the family that are allowed to reach into it.
+
+Slice I wires the IR into one run path — the trajectory viewer — through a
+single opt-in branch (`viewer.TRACE_IR_ENV`). Naming that site here is the
+deliberate, narrowed end of the "nothing imports this" claim: a second importer
+appearing anywhere still fails :func:`test_only_the_ir_family_imports_the_ir`,
+the import at the listed site is lazy and inside the branch, and removing the
+branch is still enough to unwire the family completely.
+"""
+
 
 def _imported_ir_modules(path: Path) -> set[str]:
     """Which members of :data:`IR_FAMILY` *path* imports, read by AST."""
@@ -591,6 +602,24 @@ def _imported_ir_modules(path: Path) -> set[str]:
     return found
 
 
+def _imported_ir_modules_from_node(node: ast.stmt) -> set[str]:
+    """The same question asked of a single import statement."""
+    found: set[str] = set()
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            for name in IR_FAMILY:
+                if alias.name == f"benchflow.trajectories.{name}":
+                    found.add(name)
+    elif isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        for name in IR_FAMILY:
+            if module == f"benchflow.trajectories.{name}":
+                found.add(name)
+        if module == "benchflow.trajectories":
+            found.update(alias.name for alias in node.names if alias.name in IR_FAMILY)
+    return found
+
+
 def test_only_the_ir_family_imports_the_ir():
     """The proposal is reversible: deleting it cannot break a run path.
 
@@ -607,8 +636,38 @@ def test_only_the_ir_family_imports_the_ir():
         for path in sorted(SRC_ROOT.rglob("*.py"))
         if _imported_ir_modules(path)
     }
-    outside = importers - IR_FAMILY_PATHS
+    outside = importers - IR_FAMILY_PATHS - WIRING_SITES
     assert outside == set(), sorted(outside)
+
+
+def test_the_wiring_sites_are_exactly_the_declared_ones():
+    """The allowlist is a statement about the tree, not a standing licence.
+
+    A file that stops importing the family has to leave this set, or the next
+    module to take that path would inherit an exemption nobody granted it.
+    """
+    for site in sorted(WIRING_SITES):
+        path = REPO_ROOT / site
+        assert path.exists(), site
+        assert _imported_ir_modules(path), site
+
+
+def test_the_wiring_is_opt_in_and_lazy():
+    """The one property that keeps the wiring reversible.
+
+    The import sits inside the function that the switch guards, so importing
+    the viewer never imports the IR, and an unset environment leaves the ACP
+    path untouched.
+    """
+    viewer_path = REPO_ROOT / "src/benchflow/trajectories/viewer.py"
+    tree = ast.parse(viewer_path.read_text(encoding="utf-8"))
+    module_level = {
+        node
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and _imported_ir_modules_from_node(node)
+    }
+    assert module_level == set(), "the viewer must not import the IR at module level"
 
 
 def test_every_ir_family_module_exists():

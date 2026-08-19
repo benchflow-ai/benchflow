@@ -1389,8 +1389,11 @@ here.
   the reasoning and the conditions that end the deferral. The OTel direction is
   *implemented inbound and deferred outbound*, which is one state and not two
   half-answers.
-- **Not implemented:** any wiring into a run path, any on-disk artifact, any
-  capture-layer enrichment.
+- **Wired, opt-in and reversibly:** one branch in `render_rollout`, off unless
+  `BENCHFLOW_VIEWER_TRACE_IR` is set, with a lazy import inside it (§8.15).
+  That is the family's only reach into a run path.
+- **Not implemented:** any on-disk artifact, any capture-layer enrichment, any
+  change to a default code path.
 - **Unchanged:** every existing format, exporter, artifact and code path.
   `export_atif.py` in particular is untouched and remains the only writer of
   `trainer/atif.json`.
@@ -1401,7 +1404,8 @@ The isolation property is unchanged in substance and restated at a new boundary:
 `ir_conformance.py`, `ir_to_view.py` and `ir_to_view_html.py` form a closed
 family that may import each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
-`src/benchflow` imports any of them.
+`src/benchflow` imports any of them **except the one site named in
+`WIRING_SITES`** — `viewer.py`, whose opt-in branch is described in §8.15.
 
 `ir_to_view_html` is the one member that imports a runtime module — it renders
 through `viewer`'s card builders rather than copying their markup — and the
@@ -2383,12 +2387,40 @@ This is also the one edge in the family with the IR on *neither* side, so
 `TARGET` the page it produced, and no record of this edge can be joined to a
 hub path by mistake.
 
-#### Status
+#### Wiring: one opt-in branch, and what it costs
 
-- **Unwired in this section.** Nothing under `src/benchflow` calls it. The way
-  to look at a page is
-  `python -m benchflow.trajectories.ir_to_view_html <rollout_dir|acp.jsonl|atif.json|otlp.json> [out.html]`,
-  which is an entry point rather than a run path.
+`render_rollout` gains a single branch, guarded by `BENCHFLOW_VIEWER_TRACE_IR`:
+
+```python
+if not turn_files:
+    page = _trace_ir_page(rollout_dir, prompts)   # None whenever the switch is off
+    if page is not None:
+        return page
+```
+
+`_trace_ir_page` is the whole wiring surface. The import of
+`ir_to_view_html` is **lazy and inside the function**, so importing the viewer
+never imports the IR and deleting the family cannot stop `viewer.py` from
+importing; a conversion that raises falls back to the ACP page with a line on
+stderr, because a viewer that stops showing a run when a converter breaks is
+worse than one that says so and shows it the old way. Removing this branch
+unwires the family completely.
+
+With the switch set, an ACP rollout renders through the hub and an ATIF-only
+rollout — which the ACP path answers with `<p>No trajectory files found</p>` —
+gets a page. `bench eval view` needs no flag and no change; `serve` writes
+whatever `render_rollout` returned into `trajectory.html` as it always has.
+
+This is the point where the reversibility claim of §8.7 narrows rather than
+ends. `test_only_the_ir_family_imports_the_ir` now carries a `WIRING_SITES`
+allowlist naming `viewer.py` and nothing else, a second test asserts that every
+listed site really does import the family, and a third asserts the viewer holds
+**no module-level** import of it.
+
+There is also an entry point that wires nothing:
+`python -m benchflow.trajectories.ir_to_view_html <rollout_dir|acp.jsonl|atif.json|otlp.json> [out.html]`,
+which is how an ATIF document or an OTLP payload gets looked at — neither has a
+route through `bench eval view`, and OTLP has no rollout artifact at all.
 - **The viewer refactor that precedes it is pure.** `_page`, `_prompt_block`,
   `_message_block`, `_thought_block` and `_result_block` were lifted out of
   `_render_acp_events` unchanged; six pages rendered from the captured
