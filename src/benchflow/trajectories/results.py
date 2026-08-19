@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
+from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
@@ -41,6 +42,30 @@ logger = logging.getLogger(__name__)
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
     redacted = redact_trajectory_obj(scrub_non_finite(record))
     return json.dumps(redacted, default=str, allow_nan=False)
+
+
+def _structured_diagnostics_info(
+    *,
+    error_category: str | None,
+    verifier_error_category: str | None,
+    diagnostics: RolloutDiagnostics | None,
+) -> dict[str, Any]:
+    """Build the optional, redacted trainer-facing diagnostics envelope.
+
+    ``result.json`` remains the full rollout-status artifact. This compact
+    envelope carries the same typed failure evidence into the canonical
+    ``results.jsonl`` row without changing its existing error or stop fields.
+    Callers that do not provide structured diagnostics retain the historical
+    row shape.
+    """
+    block = (diagnostics or RolloutDiagnostics()).to_results_jsonl_block(
+        error_category=error_category,
+        verifier_error_category=verifier_error_category,
+    )
+    if block is None:
+        return {}
+    safe_block = redact_trajectory_obj(scrub_non_finite(block))
+    return {"diagnostics": safe_block}
 
 
 def _reward_value(rewards: dict[str, Any] | None) -> float:
@@ -433,6 +458,9 @@ def build_rollout_results_record(
     rewards: dict[str, Any] | None,
     error: str | None,
     verifier_error: str | None,
+    error_category: str | None = None,
+    verifier_error_category: str | None = None,
+    diagnostics: RolloutDiagnostics | None = None,
     export_error: str | None = None,
     timing: dict[str, Any] | None = None,
     agent_result: dict[str, Any] | None = None,
@@ -534,6 +562,11 @@ def build_rollout_results_record(
             "rollout_dir": str(rollout_path),
             "training_ready": training_ready,
             "training_ready_reason": training_ready_reason,
+            **_structured_diagnostics_info(
+                error_category=error_category,
+                verifier_error_category=verifier_error_category,
+                diagnostics=diagnostics,
+            ),
             **(
                 {"reward_details": rewards.get("details")}
                 if isinstance(rewards, dict)
