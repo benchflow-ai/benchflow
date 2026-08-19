@@ -179,6 +179,18 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     )
 
 
+# Human-facing redaction categories. Every canonical pattern below is tagged
+# with the kind of secret its rule actually detects, so the upload preview can
+# tell contributors WHAT was masked ("2 API keys, 1 bearer token") instead of
+# only how many values. The taxonomy names the real rules — there is no
+# PII/email detection, so no such category exists.
+REDACTION_CATEGORY_API_KEY = "API key"
+REDACTION_CATEGORY_BEARER_TOKEN = "bearer token"
+REDACTION_CATEGORY_PRIVATE_KEY = "private key block"
+REDACTION_CATEGORY_PASSWORD = "password"
+REDACTION_CATEGORY_URL_CREDENTIAL = "URL credential"
+REDACTION_CATEGORY_CREDENTIAL_FIELD = "credential-bearing field value"
+
 # Quote atom for the header/key-value carriers below: a run of 0-8 optional
 # backslashes followed by an optional quote. This makes every carrier fire on raw
 # text (``"k": "v"``), Python dict-repr (``'k': 'v'``), AND json.dumps-escaped
@@ -202,7 +214,7 @@ _SECVAL = r"[^\"'\s,}\\*&]+"
 # ``{0,64}`` makes each match attempt O(1) → overall O(n) (#830 ReDoS fix).
 _NAME = r"[A-Za-z0-9_]{0,64}"
 
-_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # PEM private-key blocks (GCP/Vertex service-account JSON, RSA keys). Redact
     # the whole armored block incl. the base64 body; the carriers below stop at
     # the first space and would leave the key material. Lazy + length-capped body
@@ -214,17 +226,23 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----"
         ),
         "***REDACTED***",
+        REDACTION_CATEGORY_PRIVATE_KEY,
     ),
     # --- Token families: redacted WHOLE (prefix included) so the v0.5 leak audit
     # greps (``AIzaSy``/``dtn_``…) see no live-key shape (#537/#585). ---
     # Anthropic: sk-ant-api03-...
-    (re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    (
+        re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # BenchFlow proxy master key (sk-benchflow-<token_urlsafe(24)>), OpenAI service
     # account (sk-svcacct-), OpenRouter (sk-or-v1-): rare labels that won't appear
     # in a normal kebab slug, so the hyphen-permitting entropy class is safe here.
     (
         re.compile(r"sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"),
         "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
     # OpenAI org-scoped sk-proj-/sk-admin-: `proj`/`admin` ARE common identifier
     # words, so a bare hyphen class would redact kebab slugs like
@@ -236,33 +254,58 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"sk-(?:proj|admin)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
         ),
         "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
     # OpenAI / generic sk- (alphanumeric only — widening to include `-` would
     # match common slugs like `task-sk-us-east-1-...`)
-    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***"),
+    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
     # Google AI / Gemini: AIzaSy... (≥20 char suffix avoids matching `AIzaSy`
     # alone). Prefix is redacted too so the audit grep for `AIzaSy` is clean.
-    (re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"), "***REDACTED***"),
+    (
+        re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # AWS access keys: AKIA/ASIA + exactly 16 chars; length anchor avoids
     # matching English words like "ASIAPACIFIC".
-    (re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"), "***REDACTED***"),
+    (
+        re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # Daytona SDK tokens: dtn_... — ≥16 char suffix avoids short ids (`dtn_v2`).
-    (re.compile(r"dtn_[A-Za-z0-9_]{16,}"), "***REDACTED***"),
+    (
+        re.compile(r"dtn_[A-Za-z0-9_]{16,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # GitHub tokens: PATs / OAuth / app / refresh (ghp_/gho_/ghu_/ghs_/ghr_) and
     # fine-grained PATs (github_pat_...). ≥20 char suffix avoids short slugs.
-    (re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "***REDACTED***"),
+    (
+        re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
+    (
+        re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # Slack tokens: bot/user/app/refresh/legacy (xoxb-/xoxp-/xoxa-/xoxr-/xoxs-).
-    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "***REDACTED***"),
+    (
+        re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+        "***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
+    ),
     # Other provider key families with distinctive prefixes — caught here for the
     # bare-token-in-prose form that no NAME=value carrier sees (a provider
     # exception that echoes the key). Groq gsk_, xAI xai-, Replicate r8_,
     # HuggingFace hf_, Fireworks fw_. ≥20-char anchors avoid short ids (#830).
-    (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"xai-[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"r8_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"hf_[A-Za-z0-9]{20,}"), "***REDACTED***"),
-    (re.compile(r"fw_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"xai-[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"r8_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"hf_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
+    (re.compile(r"fw_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
     # JSON Web Tokens (session/bearer creds): three base64url segments split by
     # dots. The ``eyJ`` prefix is base64url of ``{"`` — a JWT header. The 3rd
     # (signature) segment requires ≥20 chars (real HS256/RS256 sigs are 43+) so
@@ -275,6 +318,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"eyJ[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{6,512}\.[A-Za-z0-9_-]{20,512}"
         ),
         "***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
     # --- URL credentials ---
     # Credentials in a URL's userinfo (scheme://user:pass@host) for KNOWN
@@ -293,6 +337,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"[^\s/?#:@]{0,256}:[^\s/?#]{0,256}@"
         ),
         r"\1***REDACTED***@",
+        REDACTION_CATEGORY_URL_CREDENTIAL,
     ),
     # Secrets carried as URL query params. Curated EXACT param names (anchored to
     # `?`/`&` with `=` right after the name) so non-secret params (`?page=`,
@@ -303,6 +348,9 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # `?key=` is still caught by its token-family pattern above. Includes AWS
     # SigV4 / Azure SAS / access-key names. Placed BEFORE the carriers below so the
     # `*token*` carrier can't over-consume the rest of the query string past `&`.
+    # Like _SECVAL, the value class excludes `*` so an already-redacted
+    # `?access_token=***REDACTED***` isn't re-counted — a re-match here made the
+    # publish-layer stability loop diverge and the server rescan reject (#1008).
     (
         re.compile(
             r"([?&](?:"
@@ -310,18 +358,21 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"session_id|sessionid|client_secret|aws_secret_access_key|account_key|"
             r"secret|password_hash|password|passwd|"
             r"signature|x-amz-signature|x-amz-credential|x-amz-security-token|sas"
-            r")=)[^&\s\"']+",
+            r")=)[^&\s\"'*]+",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_URL_CREDENTIAL,
     ),
     # Azure SAS `?sig=<token>` — bare `sig` is excluded from the curated list above
     # (a `?sig=v2` scheme-version flag is a common non-secret), so gate on a
     # high-entropy value length: a real SAS signature is a 40+ char base64 HMAC,
-    # while a version flag is short (#830).
+    # while a version flag is short (#830). Excludes `*` like the curated params
+    # above so the 14-char `***REDACTED***` marker can never re-match (#1008).
     (
-        re.compile(r"([?&]sig=)[^&\s\"']{16,}", re.IGNORECASE),
+        re.compile(r"([?&]sig=)[^&\s\"'*]{16,}", re.IGNORECASE),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_URL_CREDENTIAL,
     ),
     # --- Header / key-value secret carriers ---
     # Match `name: value` / `name=value` in raw, JSON, Python dict-repr
@@ -336,6 +387,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
     # Underscore form `api_key`. No leading boundary: namespaced env dumps like
     # `GEMINI_API_KEY=secret` / JSON keys such as `"openai_api_key"` must redact
@@ -345,6 +397,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             rf"({_ESCQ}api_key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_API_KEY,
     ),
     # `master_key`/`master-key` and `private_key`/`private-key` carriers — the
     # BenchFlow proxy master key and GCP/Vertex service-account private-key field
@@ -355,6 +408,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_CREDENTIAL_FIELD,
     ),
     # Bearer-token env vars whose NAME has BEARER_TOKEN in the MIDDLE, e.g.
     # `AWS_BEARER_TOKEN_BEDROCK=` — the secret-suffix rule below anchors its marker
@@ -367,6 +421,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
     # Generic secret-NAME-suffix carriers: names ending in TOKEN/SECRET/PASSWORD or
     # a specific *secret* key suffix (ACCESS_KEY/SECRET_KEY/ACCOUNT_KEY/…). The KEY
@@ -384,6 +439,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_CREDENTIAL_FIELD,
     ),
     # authorization header WITH a scheme (Bearer/Token/Basic/…): keep scheme.
     (
@@ -393,6 +449,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
     # authorization header with a bare value (no recognized scheme). The negative
     # lookahead skips scheme-prefixed values already handled above, so
@@ -405,6 +462,7 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
+        REDACTION_CATEGORY_BEARER_TOKEN,
     ),
 ]
 
@@ -419,9 +477,30 @@ def redact_trajectory_text(text: str) -> str:
     forms; this includes generic ``*TOKEN*``/``*SECRET*`` carriers so a
     ``GITHUB_TOKEN=...`` env dump is scrubbed even without a known prefix.
     """
-    for pattern, replacement in _REDACTION_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+    return redact_trajectory_text_with_count(text)[0]
+
+
+def redact_trajectory_text_with_count(text: str) -> tuple[str, int]:
+    """Apply the canonical patterns and report how many matches were replaced."""
+    text, categories = redact_trajectory_text_with_categories(text)
+    return text, sum(categories.values())
+
+
+def redact_trajectory_text_with_categories(text: str) -> tuple[str, dict[str, int]]:
+    """Apply the canonical patterns and report replacements per category.
+
+    Categories name the kind of secret each rule actually detects (API key,
+    bearer token, private key block, URL credential, credential-bearing field
+    value) so upload previews can itemize what was masked without inventing
+    detection that does not exist. The total replacement count is the sum of
+    the returned values.
+    """
+    categories: dict[str, int] = {}
+    for pattern, replacement, category in _REDACTION_PATTERNS:
+        text, count = pattern.subn(replacement, text)
+        if count:
+            categories[category] = categories.get(category, 0) + count
+    return text, categories
 
 
 def redact_trajectory_obj(obj: Any) -> Any:

@@ -1,0 +1,10 @@
+using './main.bicep'
+
+param location = 'westus2'
+param storageAccountName = 'tasksminerdata'
+param containerRegistryName = 'tasksminerregistry'
+param containerAppsEnvironmentName = 'tasksminer-upload'
+param brokerAppName = 'tasksminer-traj-broker'
+param validatorJobName = 'tasksminer-traj-validator'
+param validationQueueName = 'trajectory-validation'
+param uploadLedgerTableName = 'trajectoryuploads'

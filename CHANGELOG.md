@@ -2,6 +2,236 @@
 
 ## [Unreleased]
 
+## 0.7.4 — 2026-08-16
+
+### Added
+- **Uploads are confirmed all the way into cloud storage.** After the
+  progress bar finishes, `bench traj upload` now polls the contribution
+  service's new `GET /v1/uploads/{digest}` capture-status endpoint (the
+  validation ledger) until the validator's verdict: `✓ Verified in cloud
+  storage` once the capture is promoted to `sources/community/<digest>/`, a
+  concise exit-1 error with the fixable detail if the validator rejects it,
+  and a `bench traj status sha256:<digest>` handoff line if validation is
+  still running when the budget (default 240 s, `BENCHFLOW_TRAJ_WAIT_SECONDS`
+  override, `--no-wait` opt-out) runs out. A handshake 409 ("already
+  submitted") prints the verified line immediately, and a deployed broker
+  that predates the endpoint (404) keeps today's behavior unchanged. The new
+  `bench traj status DIGEST` command runs one check on demand. Status polls
+  consume a separate, higher rate-limit budget (`TRAJ_STATUS_RATE_LIMIT`,
+  default 720/hour/IP) and reveal only the ledger state, the bounded
+  rejection detail, and the public promotion prefix — never contributor
+  identity or quarantine internals. The broker must be redeployed
+  (`deploy-trajectory-upload` workflow or `scripts/deploy.sh`) before the
+  endpoint answers in production; the CLI degrades gracefully until then.
+- **The `bench traj` family shares one polished terminal design language.**
+  A new presentation-only kit (`cli/_traj_tui.py`) gives `traj setup`,
+  `traj upload`, and `traj status` a coherent look: a `◆ benchflow · <command>`
+  banner, styled `◇` input prompts, an arrow-key recent-session picker (↑/↓,
+  1-9 jump, esc to fall back to typing a path) on real terminals, colored
+  step kinds in the report preview matching the browser viewer's palette,
+  and rounded panels. Every interactive affordance degrades to the exact
+  previous prompt-driven flow off-TTY (agents, pipes, CI, Windows), and all
+  machine-read lines (`Masked for you:`, `Digest:`, `Repo:`) stay plain.
+- **Uploads can carry the session's workspace folder as a zip attachment.**
+  `bench traj upload` reads the session's recorded working directory (the
+  same Claude `cwd` / Codex `session_meta` provenance as repo tagging) and
+  archives it into the capture as `workspace/<name>.zip`, printing
+  `Workspace: <path> (from session cwd; use --no-workspace to omit)` and a
+  `Workspace attached:` line with size, file count, and exclusion count.
+  VCS internals, dependency trees, caches, symlinks, and secret-shaped
+  filenames (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.netrc`, …) never enter
+  the archive; everything else is archived as-is without content redaction,
+  and the attach line says so. Workspaces over 1 GiB (measured before
+  compression, so the zip is never created), over 50,000 files, missing, or
+  empty are skipped with a printed reason instead of failing the upload.
+  When detection fails on a real terminal, one optional prompt accepts a
+  folder or skips on Enter; `--workspace-dir` overrides detection and
+  `--no-workspace` opts out. The archive is staged in the upload's
+  temporary directory and always deleted afterwards. Server side, the
+  contribution service accepts the new `workspace/*.zip` namespace with a
+  1 GiB per-archive cap (trajectory JSONL keeps 128 MiB), allows at most
+  one archive per capture and never an archive alone, verifies the zip
+  container format instead of JSONL strictness, promotes it with an
+  `application/zip` content type, and scopes trajectory-report
+  cross-checks to trajectory artifacts so an attachment cannot fail
+  report equality.
+
+## 0.7.3 — 2026-08-16
+
+### Added
+- **`bench traj upload` waits out short rate-limit responses instead of
+  failing.** When the contribution service answers 429 with a short
+  `Retry-After`, the handshake now sleeps it out with jitter and retries up
+  to three times (two-minute cap per wait), so a crowd of simultaneous
+  contributors self-heals instead of surfacing errors. Longer waits still
+  fail fast with the actionable retry-after message. (#1027)
+
+### Changed
+- **The contribution service rate-limits per contributor, not per venue.**
+  Upload budgets are token buckets keyed on contributor identity with a
+  wide per-IP abuse backstop, refill continuously, and answer 429 with
+  seconds-until-next-token instead of the remainder of the clock hour, so
+  many contributors behind one NAT no longer starve each other. Contended
+  bucket updates back off with jitter rather than shedding simultaneous
+  crowds. (#1027, #1028)
+
+## 0.7.2 — 2026-08-16
+
+### Added
+- **The upload preview itemizes what redaction masked, by kind.** The
+  redactor now categorizes every replacement by the rule that fired — API
+  keys, bearer tokens, private key blocks, passwords, URL credentials, and
+  credential-bearing field values — and the terminal trajectory report shows
+  a `Masked for you: 2 API keys, 1 bearer token — originals never leave this
+  machine` breakdown under the masked-count row, plus a reassurance that
+  redaction ran locally and the server independently rescans staged
+  artifacts (or `No secrets or personal identifiers detected — nothing
+  needed masking.` when nothing matched). `bench traj upload --dry-run`
+  prints the same breakdown as a plain `Masked for you:` line, and
+  `bench eval view --confirm` gains a display-only `--redaction-summary`
+  flag that renders it in the confirm bar next to the Approve button; the
+  `benchflow-traj-upload` skill stages a dry run first and passes the line
+  through. The total `redaction_replacements` count and the manifest
+  `trajectory_report` contract are unchanged (the server validates the
+  report with a closed schema and exact recompute equality, so per-category
+  counts stay display-only).
+- **The trajectory viewer can collect the eval-prize confirmation in the
+  browser.** `bench eval view PATH --confirm` renders the normal page plus a
+  sticky site-styled bottom bar ("Submit this trajectory to the BenchFlow
+  eval prize?") with **Approve & submit** / **Not this one** buttons. A click
+  POSTs to `/decision`; the server prints a machine-readable
+  `DECISION: approved` or `DECISION: rejected` line to stdout, shuts down,
+  and the CLI exits `0` on approve and `3` on reject (non-1/2 so rejection
+  never collides with error or usage exits). Without the flag, behavior is
+  unchanged (no bar, no endpoint, Ctrl+C to stop). The
+  `benchflow-traj-upload` skill now prefers the button flow and falls back
+  to chat confirmation on CLIs older than 0.7.2.
+- **Trajectory uploads are tagged with the session's repository by
+  default.** Unless `--source-id` is given, `bench traj upload` reads the
+  session's recorded working directory (Claude `cwd` events, Codex
+  `session_meta`), resolves its git `origin` remote, and stores
+  `repo/<owner>/<name>` as the manifest source id, printing
+  `Repo: owner/name (from session cwd /path; use --no-repo to omit)` (the
+  local path is terminal output only, never uploaded). `--no-repo` opts out
+  — the `benchflow-traj-upload` skill now surfaces the detected tag during
+  the confirm step so contributors can decline it for private repos — and
+  undetectable repos fall back silently to the path-derived source id.
+
+### Fixed
+- **The repo tag derives only from the session's own recorded cwd.** The
+  initial repo-tagging implementation (#1015) fell back to the upload
+  invocation directory's git remote when the session cwd yielded nothing; a
+  collector-side audit showed this mis-attributes provenance — a session
+  recorded in a non-repo directory, uploaded from the benchflow checkout,
+  was tagged `repo/benchflow-ai/benchflow` (two community-dataset entries
+  carry the mis-tag). The fallback is removed: no session cwd, a missing
+  directory, or no GitHub remote now mean no repo tag, exactly like
+  `--no-repo`.
+- **The trajectory viewer header no longer shows `?` badges on real Claude
+  Code sessions.** `bench eval view` on a `~/.claude` session JSONL rendered
+  `model: ?`, `session: ?...`, `claude code: ?`, and `total cost: $0.0000`
+  because the header only read a `type: system` event that real session
+  files don't contain. The header now derives its metadata from what the
+  file actually carries (first assistant event's `message.model`, per-event
+  `version` / `sessionId`, the filename stem as a session fallback) and
+  hides any badge whose value is unknown — including the cost badge when no
+  event carries cost data. Presentation only.
+- **Upload progress no longer claims the broker is waking up.** A warm
+  retry printed `Uploading… the first request can take a minute while the
+  service wakes up` even when the service was already up. The line is now
+  `Uploading… this can take up to a minute; retries are safe.`
+- **`bench traj setup --list` no longer wraps session paths mid-token.**
+  Each hit prints index/source/time, then the path on its own line, then
+  the snippet, via plain `print` so Rich does not split a long JSONL path
+  and break copy-paste.
+
+### Changed
+- **Trajectory viewer tool calls are color-coded and backgrounds are light.**
+  Each tool kind now gets a muted GitHub-label-style accent on its name pill
+  and a left border strip on the card: shell/exec → amber, write/edit → blue,
+  read → teal, agent/task/skill → purple, web/search/fetch → cyan, everything
+  else → neutral gray. Tool arguments and tool outputs render on light
+  surfaces (`#f5f5f5` / white with dark ink) instead of near-black blocks;
+  the dark `#141414` terminal treatment is reserved for shell-command output
+  only, and the ink-black result card stays as the deliberate bento-ink
+  accent. Presentation only (CSS classes + a tool-name→accent mapping);
+  content strings and behavior are unchanged. Applies to all three viewer
+  templates, which share one stylesheet since #1019.
+- **The contributor prompt now tells the agent to upgrade BenchFlow first.**
+  `CONTRIBUTOR_PROMPT` (kept in sync in `README.md`, `docs/traj-upload.md`,
+  and the `benchflow-traj-upload` skill evals) is a three-line block that
+  says to run `uv tool install --python 3.12 --upgrade --force benchflow`
+  before reading the skill, so agents that skim the skill or hit a stale copy
+  still install the latest CLI. The prompt also names OpenCode and Cursor
+  sessions and the re:Agent hackathon 72-hour window; README/docs render it
+  as a blockquote (soft-wraps on GitHub) behind an explicit "send this to
+  your coding agent" framing, and `bench traj setup` prints the same framing.
+  The skill's Discover step gains best-effort Cursor
+  (`~/.cursor/projects/*/agent-transcripts/`) and OpenCode
+  (`~/.local/share/opencode/opencode.db`, `opencode db path`) locations plus
+  a prefer-recent-matching-sessions note. Follow-up to the version
+  precondition from #1013/#1014.
+- **Trajectory viewer restyled to match www.benchflow.ai.** All three
+  `bench eval view` pages (stream-json/JSONL, ACP events, multi-turn trial)
+  now share one inline stylesheet with the site's design language: light
+  monochrome palette (`#fafafa` page, white cards, `#0a0a0a` ink, dark
+  `#141414` code blocks), Satoshi/Google Sans Code font stacks with
+  system-safe fallbacks, mono pill badges, and a small BenchFlow wordmark
+  header with the inline SVG logo. Pages remain fully offline (no external
+  font or CDN requests) and content/structure semantics are unchanged;
+  follows the contributor paste-line flow from #1013.
+
+## 0.7.1 — 2026-08-16
+
+### Added
+- **`bench traj setup` / `bench traj upload` print an upgrade hint when
+  outdated.** Both commands start with a lightweight PyPI latest-version
+  check (2 s timeout, completely silent on any network or parse failure) and
+  print a one-line `uv tool install --python 3.12 --upgrade --force
+  benchflow` hint when the installed version is older than the latest
+  release; dev/prereleases of a newer-or-equal base are not outdated.
+  `BENCHFLOW_SKIP_UPDATE_CHECK=1` disables the check. The
+  `benchflow-traj-upload` skill and docs now tell contributors to upgrade to
+  the latest BenchFlow (0.7.1+) before using the trajectory-upload flow.
+
+### Changed
+- **Trajectory contribution is a copy-paste line, plus optional setup.**
+  Contributors paste one line into their agent; the agent reads
+  `benchflow-traj-upload`, opens the viewer, then uploads. Optional setup is
+  `npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload` or
+  `bench traj setup`. `bench eval view` accepts a raw session JSONL file and
+  does not write `trajectory.html` next to it. The CLI infers GitHub
+  username and email from `gh` / `git` before prompting, prints `Submitted` /
+  `Already submitted` plus a digest for public uploads (not a private Azure
+  inbox URL), waits up to 90s for broker cold start, and treats Azure
+  `403 UnauthorizedBlobOverwrite` as an idempotent skip. (#1008's interactive
+  report, local secret masking to `<XXX-benchflow-key-values-XXX>`, schema-1.2
+  manifest report binding, and byte progress are included; the PR #1008
+  operator manual now lives at `benchflow-traj-upload-ops` so the public skill
+  name stays contributor-facing.)
+
+## 0.6.9 — 2026-08-15
+
+### Changed
+- **Trajectory uploads require contributor provenance.** The single
+  `bench traj upload` command now requires `--github-id` and `--email`; both
+  values are validated locally and server-side and stored in `manifest.json`
+  under the structured `contributor` field. Existing 0.6.8 manifests remain
+  readable by the validator during the client transition.
+
+## 0.6.8 — 2026-08-15
+
+### Added
+- **Public trajectory contribution.** `bench traj upload PATH` validates and
+  structurally redacts trajectory JSONL, creates a content-addressed manifest,
+  and uploads through the built-in public broker. Azure Blob quarantine,
+  versioning, short-lived create-only user-delegation SAS grants, and an
+  event-driven fail-closed validator keep untrusted captures out of the
+  community namespace until hashes, sizes, strict JSONL (including duplicate-key
+  and non-finite-number rejection), and artifact/manifest secret scans pass.
+  Replaying an ingested digest is a no-op; trusted operators can opt into direct
+  Azure upload with the `azure` extra and `--direct`.
+
 ### Changed
 - **BREAKING (task.md): the `environment:` frontmatter key is renamed to
   `sandbox:`.** The native task-config surface now accepts only `sandbox:`
@@ -25,6 +255,29 @@
   (`--environment-manifest`, `benchflow.environment.manifest`, the
   eval-config `environment:` docker/daytona selector) is a different
   subsystem and is unchanged.
+
+### Fixed
+- **Coherent integration coverage for code-and-fixture changes.** The
+  credential-free fixture job now tests pull-request source together with its
+  task fixtures, while the secret-bearing smoke job retains trusted fixtures;
+  the release gate requires both results. (#969)
+- **Retryable Daytona transport failures stay retryable.** Transient SDK
+  transport errors are stamped while their vendor type is still available,
+  empty exception messages retain useful type information, and permanent
+  errors remain outside the retry policy. (#970)
+- **Live token counters no longer freeze behind callback-log reads.** Larger,
+  bounded ranged reads distinguish EOF from read failure, expose lag, and keep
+  terminal phase labels from moving backwards. (#971)
+- **Fresh OpenClaw installs and GPT-5.4 calls use compatible limits.** OpenClaw
+  is pinned to a Node-compatible runtime, and raw plus ACP-alias GPT-5.4 model
+  IDs clamp output tokens to the provider's 128,000-token limit. (#977, #986)
+- **Anthropic Vertex routes include their required runtime.** The gateway now
+  installs the Google Cloud Vertex AI SDK used by LiteLLM's Anthropic Vertex
+  path. (#978)
+- **ACP subprocess diagnostics survive normal teardown.** A bounded, redacted
+  stderr tail is retained even when stdout remains open; stderr drain failures
+  cannot mask the structured transport diagnosis, and repeated process close
+  calls are idempotent. (#980)
 
 ## 0.6.7 — 2026-08-09
 

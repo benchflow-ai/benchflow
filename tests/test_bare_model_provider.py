@@ -25,6 +25,7 @@ These tests pin the registry-driven bare-model routing:
 import pytest
 
 from benchflow.agents.openclaw_acp_shim import (
+    _default_max_tokens,
     _infer_provider_prefix,
     _resolve_bare_model_prefix,
     _setup_bare_custom_provider,
@@ -33,6 +34,12 @@ from benchflow.agents.providers import (
     find_provider,
     find_provider_for_bare_model,
 )
+from benchflow.providers.litellm_config import safe_model_alias
+
+
+@pytest.mark.parametrize("model", ["gpt-5.4", "openai/gpt-5.4"])
+def test_gpt54_proxy_alias_has_supported_token_cap(model):
+    assert _default_max_tokens(safe_model_alias(model)) == 128000
 
 
 class TestFindProviderForBareModel:

@@ -272,6 +272,21 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-data-tables"
+version = "12.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+    { name = "yarl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ad/b8/e76cfa7f5f847722664c6f8108c391deadcb9d9aad579650c128affd4669/azure_data_tables-12.7.0.tar.gz", hash = "sha256:b14fc94a3223a2835ff5688e17d8e107b27c7cd7c4114138f2ac81373723705d", size = 258650, upload-time = "2025-05-06T17:51:06.323Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/3e/2b8da274b49402659cd732def2ae217f2e86312278feb56b55ccbffbbc26/azure_data_tables-12.7.0-py3-none-any.whl", hash = "sha256:24ed9b5690aa46c213182e32bb1b39a68dd9f526d84f447c287e3a401b437c10", size = 133178, upload-time = "2025-05-06T17:51:07.65Z" },
+]
+
+[[package]]
 name = "azure-identity"
 version = "1.25.3"
 source = { registry = "https://pypi.org/simple" }
@@ -300,6 +315,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/59/25/fdcf1e381922dbab8ba23d6fd78d397fe6cbac6b480310218834b7bc91fe/azure_storage_blob-12.29.0.tar.gz", hash = "sha256:2824ddd7ebc9056034ebc76b17971a38e9aa5835abb0d565b9700493f2a6c657", size = 611359, upload-time = "2026-05-15T03:34:59.865Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/2c/6ddee6a3e42d0236ba9259e4df7fa97fdc415ff0802b736c634baaf4b285/azure_storage_blob-12.29.0-py3-none-any.whl", hash = "sha256:ccf8a1bcd5e49df83ab85aab793b579e5ba2eeea2ad8900b2f62ca3a37dc391f", size = 434823, upload-time = "2026-05-15T03:35:01.837Z" },
+]
+
+[[package]]
+name = "azure-storage-queue"
+version = "12.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "cryptography" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/84/7d/babb616eb1ed1ac5f13cbb336875fd91c9c6f8b1702bf2ff860b222cb833/azure_storage_queue-12.17.0.tar.gz", hash = "sha256:6eb108a88554be371feb2eba9715fa0e3f7baca7b3f00c19ec417fc7ce5b3834", size = 203777, upload-time = "2026-06-08T18:03:16.393Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/e3/6aee19df63974d87e55dc0ddf5bb18eb1022cd290b125a46792594a00673/azure_storage_queue-12.17.0-py3-none-any.whl", hash = "sha256:aaef08ee2613f84a3a85e60a059d29567361e5a2af455298bb0e529f0b47d5a1", size = 189526, upload-time = "2026-06-08T18:03:19.139Z" },
 ]
 
 [[package]]
@@ -332,7 +362,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "0.6.8.dev0"
+version = "0.7.4"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -349,6 +379,17 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+azure = [
+    { name = "azure-identity" },
+    { name = "azure-storage-blob" },
+]
+azure-service = [
+    { name = "azure-data-tables" },
+    { name = "azure-identity" },
+    { name = "azure-storage-blob" },
+    { name = "azure-storage-queue" },
+    { name = "uvicorn" },
+]
 bedrock = [
     { name = "boto3" },
 ]
@@ -397,6 +438,12 @@ requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.10" },
     { name = "anthropic", marker = "extra == 'judge'", specifier = ">=0.40" },
     { name = "anyio", specifier = ">=4.0" },
+    { name = "azure-data-tables", marker = "extra == 'azure-service'", specifier = ">=12.5" },
+    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.16" },
+    { name = "azure-identity", marker = "extra == 'azure-service'", specifier = ">=1.16" },
+    { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12.19" },
+    { name = "azure-storage-blob", marker = "extra == 'azure-service'", specifier = ">=12.19" },
+    { name = "azure-storage-queue", marker = "extra == 'azure-service'", specifier = ">=12.9" },
     { name = "bedrock-agentcore", marker = "extra == 'sandbox-agentcore'", specifier = ">=1.18" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.40" },
     { name = "boto3", marker = "extra == 'sandbox-agentcore'", specifier = ">=1.43.31" },
@@ -429,8 +476,9 @@ requires-dist = [
     { name = "trl", marker = "extra == 'trl'", specifier = ">=1.8.0,<2" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
     { name = "typer", specifier = ">=0.9" },
+    { name = "uvicorn", marker = "extra == 'azure-service'", specifier = ">=0.30" },
 ]
-provides-extras = ["dev", "train", "trl", "sandbox-daytona", "sandbox-modal", "sandbox-agentcore", "bedrock", "judge", "deepagents"]
+provides-extras = ["azure", "azure-service", "dev", "train", "trl", "sandbox-daytona", "sandbox-modal", "sandbox-agentcore", "bedrock", "judge", "deepagents"]
 
 [[package]]
 name = "boto3"

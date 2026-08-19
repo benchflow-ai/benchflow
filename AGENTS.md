@@ -29,3 +29,23 @@ uv run ruff check .
 - **Opus-4.8 (and other Claude 4.8+) on Bedrock needs the adaptive-thinking patch.** Without it the first call 400s (`thinking.type.enabled is not supported … use thinking.type.adaptive`). It ships in the LiteLLM proxy as `src/benchflow/providers/litellm_bedrock_patch.py` (loaded into the proxy process via `sitecustomize`), so it applies the same way on both backends — there is no separate host Bedrock proxy. Model string is `aws-bedrock/us.anthropic.claude-opus-4-8` with `AWS_REGION=us-west-2`. The run defaults to adaptive `high`; current LiteLLM Bedrock support also clamps requested `xhigh`/`max` to `high` for Claude 4.8 models. Verify the applied value in `trajectory/llm_trajectory.jsonl` rather than trusting a requested-effort label.
 - Use Huggingface as the ground truth of tasks traj database. The target is making sure number_of_tasks * 2 (with/without skills) * number_of_trials (usually 3 / 5) for each model + each harness is complete. Each traj on Huggingface must be "healthy" - "healthy" means 1. the trial has complete traj information (agent pass / fail / timeout the task); 2. the trial has complete meta information (for example: token usage; timing; etc.). For each traj, we should use subagents to audit 1. whether the fail / timeout is due to agent capability instead of task config or env setting; 2. there is no reward hacking behavior; 3. in "no-skill" trials the agents do not have access to any skill files or accessed any skill files in traj.
 - When reviewing task-run result trajectories, agents must use the installed `benchflow-experiment-review` skill from the active harness's skill root; in this repo the canonical copy lives at `.agents/skills/benchflow-experiment-review`, with `.claude/skills` kept as a symlink for Claude Code compatibility.
+
+## Skill catalog (`.agents/skills`, mirrored at `.claude/skills`)
+
+| Skill | Use it for |
+| --- | --- |
+| `benchflow` | Running benchmarks, creating tasks, inspecting results via the CLI/SDK. |
+| `benchflow-experiment-review` | Auditing **already-published run trajectories** — traj health, reward hacking, no-skill leakage, Daytona/Docker parity. Wired into `.github/scripts/codex_review.py` and `integration-final-review.yml`. |
+| `benchflow-traj-upload` | Uploading trajectories to the HuggingFace/GCS traj database. |
+| `skill-creator` | Creating, improving, evaluating, and packaging reusable skills. Vendored from [anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator). |
+| `task-creator` | Authoring a new **SkillsBench** task, idea → submission-ready PR. |
+| `task-review` | Reviewing a **SkillsBench task PR** pre-merge — track routing, policy checks, oracle+agent benchmarks, report bundle. |
+| `thermo-nuclear-code-quality-review` | Deliberately harsh maintainability review of a branch. User-invoked only (`disable-model-invocation: true`). |
+
+`task-creator` and `task-review` are verbatim copies from
+[benchflow-ai/skillsbench](https://github.com/benchflow-ai/skillsbench); they operate on a
+skillsbench checkout, not on this repo. Re-sync by copying `.agents/skills/{task-creator,task-review}`
+from there. `skill-creator` is a verbatim copy from
+[anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator).
+Keep the two review skills distinct: **`task-review` is pre-merge task-PR review,
+`benchflow-experiment-review` is post-run trajectory auditing.**

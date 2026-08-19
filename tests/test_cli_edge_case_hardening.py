@@ -653,6 +653,170 @@ def test_eval_view_empty_dir_fails_fast_without_writing(tmp_path):
     assert not (tmp_path / "trajectory.html").exists()
 
 
+def test_eval_view_empty_jsonl_fails_fast_without_writing(tmp_path):
+    """Guards skill-first traj review: a raw session file must not drop sidecar HTML."""
+    session = tmp_path / "session.jsonl"
+    session.write_text("")
+    res = runner.invoke(app, ["eval", "view", str(session), "--port", "0"])
+    assert res.exit_code == 1
+    assert "No trajectories found" in res.output
+    assert not (tmp_path / "trajectory.html").exists()
+
+
+def test_render_jsonl_file_claude_and_codex_sessions(tmp_path):
+    """Guards skill-first traj review: viewer accepts Claude and Codex session JSONL."""
+    from benchflow.trajectories.viewer import render_jsonl_file
+
+    claude = tmp_path / "claude.jsonl"
+    claude.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "submit this prize session"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "opening the viewer"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    claude_html = render_jsonl_file(claude)
+    assert "submit this prize session" in claude_html
+    assert "opening the viewer" in claude_html
+
+    codex = tmp_path / "codex.jsonl"
+    codex.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"id": "sess-1", "cwd": "/tmp/demo"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "audit the pack"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"ls"}',
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "looking now"},
+            }
+        )
+        + "\n"
+    )
+    codex_html = render_jsonl_file(codex)
+    assert "audit the pack" in codex_html
+    assert "exec_command" in codex_html
+    assert "looking now" in codex_html
+
+
+def test_viewer_header_reads_real_session_metadata_and_hides_unknown_badges(
+    tmp_path,
+):
+    """Guards the viewer-header fix from the collector-side audit (follow-up
+    to PR #1021's approve flow): real ``~/.claude`` session JSONL carries no
+    ``type: system`` event, so the header rendered ``model: ?``,
+    ``session: ?...``, ``claude code: ?``, and ``total cost: $0.0000`` right
+    at the approve moment. The header must derive model from the first
+    assistant event's ``message.model``, session/version from the per-event
+    ``sessionId``/``version`` fields, and hide any badge — including the cost
+    badge — whose value the file does not contain."""
+    from benchflow.trajectories.viewer import render_jsonl_file
+
+    session = tmp_path / "real-session.jsonl"
+    session.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "f684cfbe-1051-4d94-92ad-f8b558dd98cd",
+                "version": "2.1.233",
+                "cwd": "/private/tmp/bio-dogfood",
+                "message": {"role": "user", "content": "run the analysis"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "f684cfbe-1051-4d94-92ad-f8b558dd98cd",
+                "version": "2.1.233",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-5",
+                    "content": [{"type": "text", "text": "on it"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    html_out = render_jsonl_file(session)
+    assert "model: claude-opus-5" in html_out
+    assert "session: f684cfbe-1051-4d..." in html_out
+    assert "claude code: 2.1.233" in html_out
+    assert ": ?" not in html_out  # no unknown badge ever renders a "?"
+    assert "total cost" not in html_out  # no cost data → no $0.0000 badge
+
+    # A session with no metadata at all: only the filename-stem session badge
+    # remains; nothing renders as "?" or as a fictional zero cost.
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(
+        json.dumps({"type": "user", "message": {"content": "review me"}}) + "\n"
+    )
+    bare_html = render_jsonl_file(bare)
+    assert "session: bare" in bare_html
+    assert "model:" not in bare_html
+    assert "claude code:" not in bare_html
+    assert "total cost" not in bare_html
+    assert ": ?" not in bare_html
+
+
+def test_serve_jsonl_does_not_write_sidecar(tmp_path, monkeypatch):
+    """Guards skill-first traj review: viewing ~/.claude sessions must not write HTML beside them."""
+    from benchflow.trajectories.viewer import serve
+
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"content": "do not write sidecar html"},
+            }
+        )
+        + "\n"
+    )
+
+    class _StopBeforeListen:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("stop before listen")
+
+    monkeypatch.setattr("http.server.HTTPServer", _StopBeforeListen)
+    with pytest.raises(RuntimeError, match="stop before listen"):
+        serve(str(session), port=0)
+    assert not (tmp_path / "trajectory.html").exists()
+
+
 def test_print_error_echoes_colon_tokens_verbatim_no_emoji(monkeypatch):
     """Guards PR #789 (CLI error-handling hardening)."""
     # P3: print_error rendered user input through Rich with emoji=True, so a
