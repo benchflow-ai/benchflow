@@ -555,6 +555,7 @@ IR_FAMILY = (
     "ir_round_trip",
     "ir_conformance",
     "ir_to_view",
+    "ir_to_view_html",
 )
 """The unwired modules of the proposal: the IR and its converters.
 

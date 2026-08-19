@@ -1377,7 +1377,9 @@ here.
 - **Implemented:** the IR types, the loss model with its path spaces, the
   invariants, the validation suite, this section, six converters — `ACP → IR`,
   `IR → ATIF`, `ATIF → IR`, `OTLP/JSON → IR`, `IR → ACP capture events`,
-  `IR → viewer trace steps` (§8.14) — each with its loss report; the round-trip
+  `IR → viewer trace steps` (§8.14) — each with its loss report; the page edge
+  that renders those steps through the current viewer's own cards (§8.15); the
+  round-trip
   measurement over the ATIF pair (§8.10), and the ACP pair's round-trip evidence
   in §8.3 and its test suite; and the loss-bounded conformance gate that joins
   the two halves (§8.13). There is no
@@ -1396,10 +1398,15 @@ here.
 The isolation property is unchanged in substance and restated at a new boundary:
 `ir.py`, `ir_from_acp.py`, `ir_to_atif.py`, `ir_from_atif.py`,
 `ir_from_otel.py`, `ir_to_acp.py`, `_otlp_anyvalue.py`, `ir_round_trip.py`,
-`ir_conformance.py` and `ir_to_view.py` form a closed family that may import
-each other, and
+`ir_conformance.py`, `ir_to_view.py` and `ir_to_view_html.py` form a closed
+family that may import each other, and
 `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
 `src/benchflow` imports any of them.
+
+`ir_to_view_html` is the one member that imports a runtime module — it renders
+through `viewer`'s card builders rather than copying their markup — and the
+dependency runs one way only: no part of `viewer` imports any part of the
+family.
 
 Every converter reads or writes its own format **as data**, never through the
 module that already handles it: `ir_to_atif` does not import `export_atif` and
@@ -2257,3 +2264,136 @@ instead of `failed` as a second way a mutation can fail to mean what it claims.
 - **`ORACLE` stays `unknown`.** It keeps its identity in `type`, but it will
   remain an untyped step until the viewer contract gains a member for it —
   which is a change to propose upstream, not one to assume.
+
+### 8.15 `viewer trace steps → a page the current viewer renders`
+
+[`ir_to_view_html.py`](../src/benchflow/trajectories/ir_to_view_html.py) closes
+the chain §8.14 opened. It takes the step list and produces one HTML page,
+using the card builders `benchflow/trajectories/viewer.py` already renders its
+ACP page with:
+
+```
+<format> → ir_from_* → CanonicalTrace → ir_to_view_steps → ir_to_view_html → page
+```
+
+It is written against the viewer **on `main`**, not against the reviewer-grade
+package proposed in `benchflow-ai/benchflow#1034`. That branch is a design
+reference for the step vocabulary (§8.14) and nothing more: no code is
+imported, vendored or fetched from it, and this edge composes with the current
+renderer whether or not that PR ever lands.
+
+#### The direction of the dependency
+
+One way, and it is the point. `ir_to_view_html` imports `viewer`; `viewer`
+imports no part of the IR family. What crosses the boundary is a step list — a
+plain document of six kinds and named keys — so the renderer stays a renderer
+and the hub stays format-neutral. `test_only_the_ir_family_imports_the_ir`
+still passes unchanged: this module joins the closed family rather than opening
+it.
+
+#### What it refuses to do
+
+It does not rebuild steps into ACP capture events and hand them to
+`_render_acp_events`. That would be a lie in the middle of the chain: the IR
+holds records ACP has no type for (`oracle`, and anything `unknown`), a status
+ACP cannot spell, and a tool name whose *semantics* are the whole reason the
+hub exists. Forging capture events would launder all three straight back into
+the assumption the conversion was built to stop.
+
+#### What the current page does not show, measured
+
+Against `viewer._render_acp_events` on the two captured rollouts of §8.3:
+
+| | legacy ACP page | this edge |
+|---|---|---|
+| H1 (5 events) | 5 cards | 5 cards |
+| H2 (4 events, ends in a real timeout) | **3 cards**, and the word "timeout" appears nowhere in the page | 4 cards, one of them a typed timeout |
+| H2 + one unrecognized record | **3 cards** | 5 cards, the last one a labelled diagnostic |
+| tool output | not on the page at all | shown when the block carried text |
+| ATIF-only rollout directory | `<p>No trajectory files found</p>` (32 bytes) | 5 cards |
+
+None of that is a bug being fixed. `_render_acp_events` has four branches —
+`user_message`, `tool_call`, `agent_message`, `agent_thought` — and an
+`agent_timeout` or an unknown record simply reaches none of them. This edge has
+six step kinds to place, so it places them, and declares the difference instead
+of presenting it as a repair. Three tests in
+`tests/trajectories/test_viewer_primitives.py` pin the legacy behaviour as a
+fact, so the day a branch is added, this edge's reason for existing is
+revisited with it.
+
+#### Classification: a table, not a substring
+
+`viewer._tool_accent_class` scans the tool kind for needles and, failing that,
+the human title. Executed on `main`: `read_file → acc-read`,
+`bash -lc 'ls -la' → acc-bash`. It is not imported here, and an AST test
+asserts the name never appears in this module.
+
+Instead the hue that `ir_to_view` already decided — by membership, only when
+the source said the string *is* a category — is mapped through `HUE_ACCENT`,
+a table over the eight display hues. Two of them resolve to the neutral accent
+for opposite reasons, and only one of the two is a loss:
+
+- `other` — no category was observed. Nothing is lost; neutral is the claim.
+- `think` — a real ACP kind the current stylesheet has no accent for. Declared
+  `DROPPED` at `steps[i].tool.hue`, with the note that the category is still
+  legible because it is the card's own label. Adding an accent for it is a
+  viewer decision, not one to take inside a converter.
+
+The same run, converted two ways, is the whole slice on one screen: H1's
+`execute` arrives as an ACP `kind` and gets `acc-bash`; the identical string in
+that run's `trainer/atif.json` arrives as a `function_name` and stays neutral.
+OTel's `read_file` and `write_file` stay neutral for the same reason.
+
+#### `name_semantics` on the page
+
+The page has no payload, so preserving `name_semantics` means rendering it. It
+appears twice per tool card: in the metrics line (`completed ·
+name_semantics: acp_kind`), so a reader sees what kind of name they are looking
+at, and as `data-name-semantics`, so a browser-level check can assert it
+without parsing prose. `data-hue`, `data-tool-id` and `data-source-type` ride
+along the same way.
+
+#### Diagnostics say which document they are showing
+
+A step with no typed slot is rendered under the label **`Canonical IR
+representation`**, followed by its source type and the serialized event. The
+label is not decoration: §8.14 emits the body of those steps as a
+serialization of the *canonical IR event*, because the IR holds no source
+record — and the legacy path's unknown branch, when it grows one, will be
+showing the raw capture entry instead. A page that displayed ours under the
+source's own type would claim a document that does not exist.
+
+#### Cuts are announced
+
+The legacy card cuts message text at 500 characters silently, and escapes
+before cutting — so a long prompt can lose an entity to the knife. This edge
+keeps the same 500 for message-shaped text (2000 for tool output, 4000 for a
+diagnostic body), cuts **before** escaping, appends
+`… [truncated, N more characters]` to the page, and records the cut as
+`NORMALIZED`. The legacy asymmetry is pinned by a test and left alone: changing
+it is a behaviour change to that renderer and belongs to its own commit.
+
+#### Two reports, not one
+
+`render_trace` returns the page and **both** reports — `ir->view` from §8.14 and
+`view->html` from here — without merging them. They address different
+documents, and a merged report would have to name a space neither edge has.
+This is also the one edge in the family with the IR on *neither* side, so
+`PathSpace.HUB` is never used: `SOURCE` addresses the step list it was given,
+`TARGET` the page it produced, and no record of this edge can be joined to a
+hub path by mistake.
+
+#### Status
+
+- **Unwired in this section.** Nothing under `src/benchflow` calls it. The way
+  to look at a page is
+  `python -m benchflow.trajectories.ir_to_view_html <rollout_dir|acp.jsonl|atif.json|otlp.json> [out.html]`,
+  which is an entry point rather than a run path.
+- **The viewer refactor that precedes it is pure.** `_page`, `_prompt_block`,
+  `_message_block`, `_thought_block` and `_result_block` were lifted out of
+  `_render_acp_events` unchanged; six pages rendered from the captured
+  rollouts and from raw ACP and Codex session files have the same SHA-256
+  before and after.
+- **Not claimed:** no human end-to-end verification of the rendered pages, and
+  no browser-level check of any kind. The pages have been produced and read as
+  text; that is not the same as looking at them.
