@@ -2484,6 +2484,70 @@ route through `bench eval view`, and OTLP has no rollout artifact at all.
   `_render_acp_events` unchanged; six pages rendered from the captured
   rollouts and from raw ACP and Codex session files have the same SHA-256
   before and after.
-- **Not claimed:** no human end-to-end verification of the rendered pages, and
-  no browser-level check of any kind. The pages have been produced and read as
-  text; that is not the same as looking at them.
+- **Human-verified in a browser**, V1–V12 and V4b, 2026-08-19 — the table
+  below, and the limits it does not extend past.
+
+#### Human verification of the viewer path
+
+**HUMAN E2E VERIFIED 2026-08-19 — V1–V12 and V4b, all PASS**, in a browser,
+against `e2e-i/PROCEDURE.md`. The corpora are the two captured rollouts of
+§5.2, the ATIF document one of them actually exported, a constructed
+unrecognized record, and the producer-derived OTLP payload.
+
+| | what a person confirmed |
+|---|---|
+| V1 | H1 legacy and canonical show the same six cards; `execute`/`read` keep the same accents; the canonical page adds `name_semantics` and the tool output |
+| V2 | on the real timeout rollout the `agent_timeout` is **absent from the legacy page** and typed on the canonical one |
+| V3 | an unrecognized record is invisible on the legacy page and labelled `Canonical IR representation` on the canonical one |
+| V4 | the same `execute` is sand-coloured as an ACP `kind` and neutral as an ATIF `function_name` |
+| V4b | after the fix below, the ATIF tool-call step shows its reasoning inside the same card — one `.thinking` block, no invented card, tool still neutral |
+| V5 | OTel `read_file` / `write_file` neutral, `name_semantics: gen_ai.tool.name` |
+| V6 | all three untyped spans present as labelled diagnostics |
+| V7 | tool output on the canonical page, absent from the legacy one |
+| V8 | the diagnostic label appears only on untyped events |
+| V9 | with the switch off the HTML is **byte-identical** to the pre-refactor baseline |
+| V10 | `bench eval view` on the same corpus changes path only with `BENCHFLOW_VIEWER_TRACE_IR=1` |
+| V11 | DevTools Network after reload: one request, the document itself |
+| V12 | on the real H2 rollout the legacy page accents a `think` call as bash/execute, from the word "Commands" in its title; the canonical page keeps it neutral |
+
+**The verification found a real defect, and the suite had not.** `reasoning`
+observed on an event that is not a reasoning event reached no step key and no
+loss record — see *A silent loss, and how it was found* in §8.14. Fixed before
+the sign-off; V4b is the re-run that closed it. The pattern is the same one
+§8.3 and §8.11 record: a green suite is not evidence that a document is right.
+
+**What the sign-off does not extend to.** The pages were rendered from four
+corpora on one machine, in one browser. The OTLP page's *content* is still a
+construction — no BenchFlow run has ever emitted spans (§8.11) — and oracle
+events and non-text content blocks remain test-only, as they have been since
+§8.3. Nothing here verifies the browse-mode or hf:// surfaces, which do not
+exist on `main`.
+
+**Incidental, not attributed here.** A `BrokenPipeError` was seen from the
+stdlib HTTP server during V10 while a browser tab was closed mid-response. It
+is a property of `serve()`'s single-page handler, predates this work, and was
+not investigated as part of Slice I. It is recorded so the observation is not
+lost, not as a finding about this edge.
+
+#### What this slice does and does not depend on
+
+- **PR #984 does not depend on `benchflow-ai/benchflow#1034`.** That branch is
+  a design reference for the step vocabulary (§8.14) and nothing else: no code
+  is imported, vendored or fetched from it, and every commit here targets
+  `viewer.py` as it stands on `upstream/main`. If #1034 never lands, this works
+  unchanged; if it lands, the content transfers to its payload — the hue by
+  membership, `name_semantics`, `reasoning`, the labelled diagnostics, the
+  timeout and unknown events — because none of it is HTML-specific.
+- **The wiring is opt-in**, `BENCHFLOW_VIEWER_TRACE_IR=1`, one branch with a
+  lazy import (above). Switch **off** is the legacy ACP path, byte-identical.
+  Switch **on** is `source → CanonicalTrace → ir_to_view_steps → the cards`, and
+  never through forged ACP capture events.
+- **`IR → OTel` stays deferred** on the terms of §8.12 — a decision of ours,
+  current and reversible, ended by a consumer or a contract. Ingest is
+  implemented, emission is not, and this slice changes neither.
+- **The ATIF document's two identical `user` steps are not touched.**
+  `acp_events_to_atif_steps` writes one `user` step per prompt *and* one per
+  captured `user_message`, so a real export opens with the same text twice
+  (§5.2). Our own `ir_to_atif` does not do this. The page shows the document it
+  was given, which is the correct behaviour for a viewer, and V4 confirmed it
+  by eye. Changing the exporter is a separate proposal.
