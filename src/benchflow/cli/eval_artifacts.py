@@ -68,6 +68,7 @@ def postprocess_eval_artifacts(
         TaskManifestOptions,
         build_health_summary,
         materialize_canonical_job,
+        render_run_summary_markdown,
         write_canonical_selection,
         write_health_summary,
         write_task_manifest,
@@ -139,6 +140,12 @@ def postprocess_eval_artifacts(
             console.print(
                 f"[green]Canonical jobs:[/green] {escape(str(req.canonical_jobs_dir))}"
             )
+    if req.publish_hf is not None or req.publish_bucket is not None:
+        (job_dir / "README.md").write_text(
+            render_run_summary_markdown(
+                job_dir, agent=eval_config.agent, model=eval_config.model
+            )
+        )
     if req.publish_hf is not None:
         from benchflow.publish.huggingface import publish_folder_to_hf
 

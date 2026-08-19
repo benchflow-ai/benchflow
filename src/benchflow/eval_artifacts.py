@@ -268,6 +268,47 @@ def write_health_summary(path: Path, job_dir: Path) -> dict[str, Any]:
     return summary
 
 
+def _escape_md_cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def render_run_summary_markdown(
+    job_dir: Path, *, agent: str | None = None, model: str | None = None
+) -> str:
+    """Render a Markdown run summary (results + issues) for publish folders."""
+    summary = build_health_summary(job_dir)
+    rows = summary["rows"]
+    rewards = [row["reward"] for row in rows if row["scored"]]
+    mean_reward = sum(rewards) / len(rewards) if rewards else None
+
+    lines = ["# BenchFlow run summary", ""]
+    if agent:
+        lines.append(f"- Agent: `{agent}`")
+    if model:
+        lines.append(f"- Model: `{model}`")
+    lines += [
+        f"- Tasks: {summary['total_rows']}",
+        f"- Scored: {summary['scored_rows']} / Unscored: {summary['unscored_rows']}",
+        f"- Mean reward: {mean_reward:.3f}"
+        if mean_reward is not None
+        else "- Mean reward: n/a",
+        f"- Rows with tool calls: {summary['rows_with_tool_calls']}",
+        "",
+        "## Tasks",
+        "",
+        "| Task | Reward | Tool calls | Issue |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        reward = f"{row['reward']:.3f}" if isinstance(row["reward"], float) else "—"
+        issue = row.get("error") or row.get("verifier_error") or ""
+        lines.append(
+            f"| {_escape_md_cell(str(row['task_id']))} | {reward} | "
+            f"{row['tool_calls']} | {_escape_md_cell(str(issue))} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _canonical_score(row: dict[str, Any]) -> tuple[int, float, int]:
     scored = 1 if row["scored"] else 0
     reward = row["reward"] if isinstance(row["reward"], float) else float("-inf")
