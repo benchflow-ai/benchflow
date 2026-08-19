@@ -482,6 +482,65 @@ def _load_result_json(rollout_dir: Path) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# ── Page primitives ───────────────────────────────────────────────────
+#
+# The markup below was inline inside _render_acp_events. It is factored out
+# unchanged so a second producer of blocks can emit the same page without
+# copying the markup — and so that changing a card means changing one place.
+#
+# Each block builder takes text that the caller has already escaped and
+# truncated. That is deliberate: the two prompt sites differ in the order they
+# do those two things (one slices then escapes, the other escapes then slices),
+# and a helper that picked one would change the other's output. Escaping stays
+# the caller's responsibility, at the site that knows what the value is.
+
+
+def _page(title: str, blocks: list[str]) -> str:
+    """The shared page shell: one stylesheet, a wordmark header, the blocks."""
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>benchflow — {html.escape(title)}</title>
+<style>
+{_VIEWER_CSS}</style></head><body>
+<div class="header">{_WORDMARK_HTML}<h1>{html.escape(title)}</h1></div>
+{"".join(blocks)}
+</body></html>"""
+
+
+def _prompt_block(label: str, escaped_text: str) -> str:
+    """A prompt card. *label* and *escaped_text* are emitted as given."""
+    return (
+        f'<div class="step prompt">'
+        f'<div class="step-header"><span class="label prompt">{label}</span></div>'
+        f'<div class="msg">{escaped_text}</div>'
+        f"</div>"
+    )
+
+
+def _message_block(escaped_text: str) -> str:
+    """An agent message card."""
+    return f'<div class="step agent"><div class="msg">{escaped_text}</div></div>'
+
+
+def _thought_block(escaped_text: str) -> str:
+    """An agent reasoning card."""
+    return f'<div class="step agent"><div class="thinking">{escaped_text}</div></div>'
+
+
+def _result_block(result_data: dict) -> str:
+    """The run summary card, read from result.json rather than from a trace."""
+    agent = html.escape(result_data.get("agent_name", "?"))
+    rewards = result_data.get("rewards", {})
+    n_tools = result_data.get("n_tool_calls", 0)
+    n_prompts = result_data.get("n_prompts", 0)
+    return (
+        f'<div class="step result">'
+        f'<div class="step-header"><span class="label result">RESULT</span></div>'
+        f'<div class="msg">Agent: {agent} | Rewards: {rewards} | '
+        f"Tool calls: {n_tools} | Prompts: {n_prompts}</div>"
+        f"</div>"
+    )
+
+
 def _render_acp_events(
     title: str,
     events: list[dict],
@@ -495,12 +554,7 @@ def _render_acp_events(
     has_inline_prompts = any(e.get("type") == "user_message" for e in events)
     if not has_inline_prompts:
         for i, prompt in enumerate(prompts or []):
-            blocks.append(
-                f'<div class="step prompt">'
-                f'<div class="step-header"><span class="label prompt">PROMPT {i + 1}</span></div>'
-                f'<div class="msg">{html.escape(prompt[:500])}</div>'
-                f"</div>"
-            )
+            blocks.append(_prompt_block(f"PROMPT {i + 1}", html.escape(prompt[:500])))
 
     # Show events
     prompt_counter = 0
@@ -509,12 +563,7 @@ def _render_acp_events(
         if etype == "user_message":
             prompt_counter += 1
             text = html.escape(event.get("text", ""))
-            blocks.append(
-                f'<div class="step prompt">'
-                f'<div class="step-header"><span class="label prompt">PROMPT {prompt_counter}</span></div>'
-                f'<div class="msg">{text[:500]}</div>'
-                f"</div>"
-            )
+            blocks.append(_prompt_block(f"PROMPT {prompt_counter}", text[:500]))
         elif etype == "tool_call":
             kind = html.escape(event.get("kind", ""))
             event_title = html.escape(event.get("title", ""))
@@ -532,36 +581,16 @@ def _render_acp_events(
             )
         elif etype == "agent_message":
             text = html.escape(event.get("text", ""))
-            blocks.append(
-                f'<div class="step agent"><div class="msg">{text[:500]}</div></div>'
-            )
+            blocks.append(_message_block(text[:500]))
         elif etype == "agent_thought":
             text = html.escape(event.get("text", ""))
-            blocks.append(
-                f'<div class="step agent"><div class="thinking">{text[:500]}</div></div>'
-            )
+            blocks.append(_thought_block(text[:500]))
 
     # Result summary
     if result_data:
-        agent = html.escape(result_data.get("agent_name", "?"))
-        rewards = result_data.get("rewards", {})
-        n_tools = result_data.get("n_tool_calls", 0)
-        n_prompts = result_data.get("n_prompts", 0)
-        blocks.append(
-            f'<div class="step result">'
-            f'<div class="step-header"><span class="label result">RESULT</span></div>'
-            f'<div class="msg">Agent: {agent} | Rewards: {rewards} | '
-            f"Tool calls: {n_tools} | Prompts: {n_prompts}</div>"
-            f"</div>"
-        )
+        blocks.append(_result_block(result_data))
 
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>benchflow — {html.escape(title)}</title>
-<style>
-{_VIEWER_CSS}</style></head><body>
-<div class="header">{_WORDMARK_HTML}<h1>{html.escape(title)}</h1></div>
-{"".join(blocks)}
-</body></html>"""
+    return _page(title, blocks)
 
 
 def _join_with_divider(blocks: list[str]) -> str:
