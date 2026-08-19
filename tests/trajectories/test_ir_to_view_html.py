@@ -473,3 +473,131 @@ def test_the_page_names_the_renderer_that_produced_it():
         r.field == "provenance" and r.loss_class is LossClass.SYNTHESIZED
         for r in rendered.page_losses.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Reasoning that arrives with an action
+# ---------------------------------------------------------------------------
+
+
+def _steps_html(*steps, **kwargs) -> str:
+    page, _ = view_steps_to_html("t", list(steps), **kwargs)
+    return page
+
+
+def test_reasoning_rides_inside_the_card_it_belongs_to():
+    """One card, not two: the source declared no separate thought event."""
+    page = _steps_html(
+        {
+            "i": 1,
+            "kind": "tool",
+            "reasoning": "REASONING-TEXT",
+            "tool": {
+                "id": "c1",
+                "kind": "execute",
+                "title": "ls",
+                "status": "completed",
+                "content": [],
+                "hue": "execute",
+                "name_semantics": "acp_kind",
+            },
+        }
+    )
+    assert page.count('<div class="step ') == 1
+    assert '<div class="thinking">REASONING-TEXT</div>' in page
+    # ...and above the tool line inside that same card. Compare inside the
+    # body: `.tool-name` also occurs in the stylesheet, far earlier.
+    body = page.split("</style>", 1)[1]
+    assert body.index("REASONING-TEXT") < body.index('<span class="tool-name">')
+
+
+def test_a_message_card_with_reasoning_is_the_primitive_plus_one_block():
+    """The adapter's copy of the markup, pinned against the original."""
+    plain = viewer._message_block("BODY")
+    expected = plain.replace(
+        '<div class="msg">', '<div class="thinking">WHY</div><div class="msg">', 1
+    )
+    page = _steps_html({"i": 1, "kind": "message", "text": "BODY", "reasoning": "WHY"})
+    assert expected in page
+
+
+def test_a_prompt_card_with_reasoning_is_the_primitive_plus_one_block():
+    plain = viewer._prompt_block("PROMPT 1", "BODY")
+    expected = plain.replace(
+        '<div class="msg">', '<div class="thinking">WHY</div><div class="msg">', 1
+    )
+    page = _steps_html({"i": 1, "kind": "prompt", "text": "BODY", "reasoning": "WHY"})
+    assert expected in page
+
+
+def test_a_card_without_reasoning_is_exactly_the_primitive():
+    page = _steps_html({"i": 1, "kind": "message", "text": "BODY"})
+    assert viewer._message_block("BODY") in page
+    assert "thinking" not in page.split("</style>")[1]
+
+
+def test_a_timeout_card_carries_its_reasoning_too():
+    page = _steps_html(
+        {
+            "i": 1,
+            "kind": "timeout",
+            "reasoning": "REASONING-TEXT",
+            "timeout": {
+                "reason": "wall_clock_timeout",
+                "timeout_sec": 90.0,
+                "pending": [],
+                "complete": True,
+            },
+        }
+    )
+    assert page.count('<div class="step ') == 1
+    assert '<div class="thinking">REASONING-TEXT</div>' in page
+
+
+def test_reasoning_is_escaped_and_truncated_like_any_other_text():
+    payload = "<script>x</script>" + "y" * 600
+    page, losses = view_steps_to_html(
+        "t", [{"i": 1, "kind": "message", "text": "b", "reasoning": payload}]
+    )
+    assert "<script>" not in page
+    assert "&lt;script&gt;" in page
+    assert "[truncated," in page
+    assert any(r.field.endswith(".reasoning") for r in losses.records)
+
+
+def test_the_thought_of_a_captured_rollout_survives_the_atif_round_trip():
+    """The V4 regression, end to end on the real H1 corpus.
+
+    ATIF folds the thought into the agent step, so it arrives on a TOOL_CALL
+    event. It must be legible on the page, the tool must stay neutral, and the
+    document's two identical `user` steps — which are `export_atif`'s doing and
+    not ours — must still render as two prompts.
+    """
+    events = _captured("h1")
+    thought = next(e["text"] for e in events if e["type"] == "agent_thought")
+
+    # The document that run actually exported, not one this test built: only
+    # the production exporter writes the two `user` steps, and V4 was run
+    # against that file.
+    shipped = EVIDENCE / "h1" / "atif.json"
+    if not shipped.is_file():
+        pytest.skip("the captured ATIF export is not in this tree")
+    document = json.loads(shipped.read_text(encoding="utf-8"))
+    page = _page(atif_to_ir(document))
+
+    import html as _html
+
+    assert f'<div class="thinking">{_html.escape(thought)}</div>' in page
+    assert set(_accents(page)) == {NEUTRAL_ACCENT}
+    assert set(_semantics(page)) == {"function_name"}
+    assert page.count('<div class="thinking">') == 1
+
+    # The duplicated prompt is the exporter's, documented in §5.2, and the
+    # page must keep showing it exactly as the document has it.
+    assert [s["source"] for s in document["steps"]].count("user") == 2
+    assert page.count(">PROMPT 1<") == 1 and page.count(">PROMPT 2<") == 1
+
+    # Our own outbound edge does not duplicate it, which is why the fixture
+    # for this property has to be the shipped file.
+    ours, _ = ir_to_atif(acp_events_to_ir(events))
+    assert [s["source"] for s in ours["steps"]].count("user") == 1

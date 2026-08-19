@@ -37,6 +37,15 @@ None of that is broken: those are the four branches that renderer has. This
 edge has six step kinds to place, so it places them, and declares the
 difference rather than presenting it as a repair.
 
+## Reasoning that arrives with an action
+
+A step may carry `reasoning` without being a reasoning step — the shape ATIF
+produces, since it folds a thought into the agent step it precedes. That value
+is rendered **inside the same card**, above the card's own content, in the
+stylesheet's existing `.thinking` style. It does not become a second card:
+`ir_to_view` refuses to invent an event boundary the source never declared, and
+inventing one here instead would be the same fabrication one layer down.
+
 ## The classification rule
 
 The hue arrives already decided by `ir_to_view`, which emits a category only
@@ -165,6 +174,57 @@ def _data_attrs(pairs: dict[str, Any]) -> str:
     return "".join(out)
 
 
+def _reasoning_html(step: dict[str, Any], where: str, losses: LossReport) -> str:
+    """The `steps[].reasoning` block, in the stylesheet's own thinking style.
+
+    It rides **inside** the card of the step that carried it, above that step's
+    own content. Reasoning observed alongside an action is not a second event —
+    `ir_to_view` refuses to invent one — so it must not become a second card
+    here either.
+    """
+    reasoning = step.get("reasoning")
+    if reasoning is None:
+        return ""
+    return (
+        f'<div class="thinking">'
+        f"{_esc(str(reasoning), TEXT_PREVIEW, f'{where}.reasoning', losses)}"
+        f"</div>"
+    )
+
+
+def _prompt_card(
+    label: str, escaped_text: str, step: dict[str, Any], where: str, losses: LossReport
+) -> str:
+    """The viewer's prompt card, with a reasoning block when the step has one.
+
+    Without reasoning this *is* `viewer._prompt_block`. With it, the same
+    markup gains one `.thinking` div before the message — a test pins the two
+    against each other so this copy cannot drift from the original.
+    """
+    reasoning = _reasoning_html(step, where, losses)
+    if not reasoning:
+        return viewer._prompt_block(label, escaped_text)
+    return (
+        f'<div class="step prompt">'
+        f'<div class="step-header"><span class="label prompt">{label}</span></div>'
+        f'{reasoning}<div class="msg">{escaped_text}</div>'
+        f"</div>"
+    )
+
+
+def _message_card(
+    escaped_text: str, step: dict[str, Any], where: str, losses: LossReport
+) -> str:
+    """The viewer's agent-message card, with a reasoning block when present."""
+    reasoning = _reasoning_html(step, where, losses)
+    if not reasoning:
+        return viewer._message_block(escaped_text)
+    return (
+        f'<div class="step agent">{reasoning}'
+        f'<div class="msg">{escaped_text}</div></div>'
+    )
+
+
 def _tool_card(step: dict[str, Any], where: str, losses: LossReport) -> str:
     """A tool call: the legacy card's three fields, plus what it has no slot for.
 
@@ -212,6 +272,7 @@ def _tool_card(step: dict[str, Any], where: str, losses: LossReport) -> str:
     )
     return (
         f'<div class="step agent tool-step {accent}"{attrs}>'
+        f"{_reasoning_html(step, where, losses)}"
         f'<div class="tool"><span class="tool-name">{kind}</span> {title}</div>'
         f'<div class="metrics">{meta}</div>'
         f"{body}"
@@ -234,6 +295,7 @@ def _timeout_card(step: dict[str, Any], where: str, losses: LossReport) -> str:
     attrs = _data_attrs({"step-kind": "timeout", "source-type": step.get("type")})
     return (
         f'<div class="step agent tool-step {NEUTRAL_ACCENT}"{attrs}>'
+        f"{_reasoning_html(step, where, losses)}"
         f'<div class="tool"><span class="tool-name">agent timeout</span> {reason}</div>'
         f'<div class="metrics">{" · ".join(details)}</div>'
         f"</div>"
@@ -317,7 +379,7 @@ def view_steps_to_html(
         if kind == "prompt":
             prompt_counter += 1
             blocks.append(
-                viewer._prompt_block(
+                _prompt_card(
                     f"PROMPT {prompt_counter}",
                     _esc(
                         str(step.get("text") or ""),
@@ -325,17 +387,23 @@ def view_steps_to_html(
                         f"{where}.text",
                         losses,
                     ),
+                    step,
+                    where,
+                    losses,
                 )
             )
         elif kind == "message":
             blocks.append(
-                viewer._message_block(
+                _message_card(
                     _esc(
                         str(step.get("text") or ""),
                         TEXT_PREVIEW,
                         f"{where}.text",
                         losses,
-                    )
+                    ),
+                    step,
+                    where,
+                    losses,
                 )
             )
         elif kind == "thought":

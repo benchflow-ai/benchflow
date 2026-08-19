@@ -2137,7 +2137,22 @@ Be clear about what that buys: it protects **our** contract from drifting. It
 cannot notice #1034 changing. That correspondence was checked by a person once,
 against the recorded commit, and re-checking it is a human step.
 
-#### The one addition
+#### The additions
+
+Two keys of ours, neither of them in `VIEW_SCHEMA_ORIGIN`'s shape. Both are
+additive: a renderer that does not know a key ignores it and loses nothing it
+had before.
+
+`steps[].reasoning` carries reasoning observed on an event that is **not**
+itself a reasoning event. ATIF folds a thought into the agent step it precedes
+(`reasoning_content` beside `tool_calls`), so a faithful reading of one gives a
+`TOOL_CALL` event that carries reasoning — and the first version of this edge
+read `reasoning` only under `AGENT_REASONING`, so that value reached no step key
+**and no loss record**. See *A silent loss, and how it was found* below. Two
+other placements were available and both are refused: a second `thought` step
+would invent an event boundary and an ordering the source never declared, and
+`steps[].text` would keep the string while losing the one thing that makes it
+different from a message. Strings are never joined to fit a slot.
 
 `tool.name_semantics` is **ours**. #1034's `ToolCall` has six fields; this is a
 seventh, and it carries :attr:`ToolCall.name_semantics` through unchanged.
@@ -2262,12 +2277,45 @@ instead of `failed` as a second way a mutation can fail to mean what it claims.
   *this* edge from drifting. It cannot notice `benchflow-ai/benchflow#1034`
   changing — that branch is unmerged and moving, and re-checking the
   correspondence to `VIEW_SCHEMA_ORIGIN` is a human step.
-- **`name_semantics` is ours.** It is a seventh key on an object #1034 defines
-  with six: additive, and a divergence from that contract rather than a
-  maintainer-approved extension to it.
+- **`name_semantics` and `reasoning` are ours.** A seventh key on an object
+  #1034 defines with six, and a step key it does not define at all: additive,
+  and divergences from that contract rather than maintainer-approved extensions
+  to it.
 - **`ORACLE` stays `unknown`.** It keeps its identity in `type`, but it will
   remain an untyped step until the viewer contract gains a member for it —
   which is a change to propose upstream, not one to assume.
+
+#### A silent loss, and how it was found
+
+The first version of this edge read one text-bearing field per kind: `text` for
+messages, `reasoning` only under `AGENT_REASONING`, the serialized event for the
+diagnostic kinds. Everything else on an event fell through with **no slot and no
+record** — the one thing the loss model exists to make impossible.
+
+It surfaced during a human browser check of the ATIF page (§8.15's V4), not from
+the suite, which was green throughout: on the ACP corpus a thought is its own
+event, so the hole never opened. It took a document where the *same run* stores
+the same thought differently.
+
+Measured on the captured H1 rollout, through the ATIF export that run actually
+wrote:
+
+| | ACP capture | its `trainer/atif.json` |
+|---|---|---|
+| the thought | `agent_thought` event → `AGENT_REASONING` → `thought` step | `reasoning_content` on step 3 → `TOOL_CALL` event with `reasoning` → **lost** |
+
+The fix is the `steps[].reasoning` key above, plus a per-event record for the
+two remaining cases with no honest slot: a reasoning event that *also* carries
+user-visible text (the step's one text slot is already holding the reasoning),
+and a terminal signal on an event that is not the timeout.
+
+What keeps it from happening again is not those three lines but the guard beside
+them: **every string-bearing field of `TraceEvent`, on every `EventKind`, must
+either reach the emitted step or be named by a record.** The field list is
+derived from the model, so a new string field on the IR fails the guard until
+somebody gives it a disposition. Both halves of that sentence are load-bearing —
+the earlier suite pinned the fields it knew about, and the field it did not know
+about is exactly the one that got lost.
 
 ### 8.15 `viewer trace steps → a page the current viewer renders`
 
@@ -2366,6 +2414,16 @@ serialization of the *canonical IR event*, because the IR holds no source
 record — and the legacy path's unknown branch, when it grows one, will be
 showing the raw capture entry instead. A page that displayed ours under the
 source's own type would claim a document that does not exist.
+
+#### Reasoning that arrives with an action
+
+`steps[].reasoning` is rendered **inside the card of the step that carried it**,
+above that step's own content, in the stylesheet's existing `.thinking` style —
+the same treatment `agent_thought` already gets, in the card that observed it.
+It does not become a second card: §8.14 refuses to invent an event boundary the
+source never declared, and inventing one here instead would be the same
+fabrication one layer down. On the captured H1 ATIF export that is one
+`.thinking` block on the `execute` tool card, and the tool stays neutral.
 
 #### Cuts are announced
 

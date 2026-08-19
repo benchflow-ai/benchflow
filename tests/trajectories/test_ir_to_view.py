@@ -23,6 +23,7 @@ from benchflow.trajectories.ir import (
     ContentBlockKind,
     EventKind,
     LossClass,
+    LossReport,
     PathSpace,
     Provenance,
     Role,
@@ -817,3 +818,284 @@ def test_the_otel_fixture_converts_and_keeps_what_it_has():
         for step in unknown:
             body = json.loads(step["text"])
             assert body["extensions"]["otel"]["span"]["name"] == step["type"]
+
+
+# ---------------------------------------------------------------------------
+# Consume or declare — every observed string on an event
+# ---------------------------------------------------------------------------
+
+
+def _event_string_fields() -> list[str]:
+    """The `TraceEvent` fields that hold observed text, read off the model.
+
+    Derived rather than listed so a new string field on the IR fails the guard
+    below until somebody gives it a disposition — a slot on the step, or a
+    record saying why it has none.
+    """
+    out = []
+    for name, field in TraceEvent.model_fields.items():
+        annotation = str(field.annotation)
+        if annotation == "str | None" or "list[str]" in annotation:
+            out.append(name)
+    return out
+
+
+def _declared_for(report, index: int, field: str) -> bool:
+    """Whether a record addresses *field* on event *index*, per-event or systemic."""
+    return any(
+        record.field in (f"events[{index}].{field}", f"events[].{field}")
+        for record in report.records
+    )
+
+
+def _unconsumed(steps, report, index: int, markers: dict[str, str]) -> list[str]:
+    """The fields whose observed value reached neither the step nor a record.
+
+    The guard's whole content, as a function, so it can be shown to bite: a
+    predicate only asserted in the positive direction is a predicate nobody has
+    tested.
+    """
+    emitted = json.dumps(steps[index], ensure_ascii=False)
+    return sorted(
+        name
+        for name, marker in markers.items()
+        if marker not in emitted and not _declared_for(report, index, name)
+    )
+
+
+def test_the_guard_predicate_notices_a_field_that_reaches_neither():
+    """Negative control for :func:`_unconsumed`.
+
+    A step and a report that mention nothing must make every field violate; a
+    step that carries the value, and a report that names it, must not.
+    """
+    markers = {"text": "MARKER-TEXT", "reasoning": "MARKER-REASONING"}
+    empty = LossReport(direction="probe")
+
+    assert _unconsumed([{"i": 1, "kind": "tool"}], empty, 0, markers) == [
+        "reasoning",
+        "text",
+    ]
+
+    on_the_wire = [{"i": 1, "kind": "tool", "text": "MARKER-TEXT"}]
+    assert _unconsumed(on_the_wire, empty, 0, markers) == ["reasoning"]
+
+    declared = LossReport(direction="probe")
+    declared.add("events[0].reasoning", LossClass.DROPPED, "x")
+    assert _unconsumed(on_the_wire, declared, 0, markers) == []
+
+    systemic = LossReport(direction="probe")
+    systemic.add("events[].reasoning", LossClass.DROPPED, "x")
+    assert _unconsumed(on_the_wire, systemic, 0, markers) == []
+
+
+def test_the_model_gives_the_expected_string_fields():
+    """A stale derivation would make the guard below quietly weaker."""
+    assert set(_event_string_fields()) == {
+        "source_type",
+        "text",
+        "reasoning",
+        "reasoning_segments",
+        "outcome",
+    }
+
+
+@pytest.mark.parametrize("kind", list(EventKind))
+def test_every_observed_string_is_consumed_or_declared(kind):
+    """The contract this edge broke once, as an executable property.
+
+    An ATIF document folds a thought into the agent step it precedes, so a
+    faithful reading of one produces a `TOOL_CALL` event carrying `reasoning`.
+    That value reached no step key and no loss record: information observed in
+    the hub left the conversion with nothing said about it. The guard is
+    written over *every* kind and *every* string field, not over that one case,
+    because the hole was in the shape of the code and not in the field.
+    """
+    markers = {name: f"MARKER-{name.upper()}" for name in _event_string_fields()}
+    event = _event(
+        0,
+        kind=kind,
+        source_type=markers["source_type"],
+        text=markers["text"],
+        reasoning=markers["reasoning"],
+        reasoning_segments=[markers["reasoning_segments"]],
+        outcome=markers["outcome"],
+        extensions={"timeout_sec": 1.0, "pending_tool_call_ids": []},
+        tool_call=ToolCall(
+            call_id="c1",
+            name="execute",
+            name_semantics=ACP_KIND_SEMANTICS,
+            title="ls",
+            status=ToolStatus.COMPLETED,
+        )
+        if kind is EventKind.TOOL_CALL
+        else None,
+    )
+    steps, report = ir_to_view_steps(_trace(event))
+
+    assert _unconsumed(steps, report, 0, markers) == [], (
+        f"{kind.value}: observed values that reached no step key and no record"
+    )
+
+
+def test_reasoning_beside_an_action_keeps_its_own_key():
+    """The ATIF shape: a tool call whose step also carries the thought."""
+    event = _tool_event(0, name="execute", name_semantics=ACP_KIND_SEMANTICS)
+    event = event.model_copy(update={"reasoning": "why I am doing this"})
+    steps, report = ir_to_view_steps(_trace(event))
+
+    assert steps[0]["reasoning"] == "why I am doing this"
+    assert steps[0]["kind"] == "tool", "no second step was invented"
+    assert len(steps) == 1
+    assert "why I am doing this" not in str(steps[0].get("text"))
+
+    record = _records_at(report, "steps[].reasoning")
+    assert len(record) == 1
+    assert record[0].loss_class is LossClass.NORMALIZED
+    assert record[0].space is PathSpace.TARGET
+
+
+@pytest.mark.parametrize(
+    "kind", [EventKind.USER_MESSAGE, EventKind.AGENT_MESSAGE, EventKind.TIMEOUT]
+)
+def test_reasoning_survives_on_every_kind_that_is_not_a_thought(kind):
+    steps, _ = ir_to_view_steps(
+        _trace(_event(0, kind=kind, text="visible", reasoning="internal"))
+    )
+    assert steps[0]["reasoning"] == "internal"
+    if kind is not EventKind.TIMEOUT:
+        assert steps[0]["text"] == "visible"
+
+
+def test_text_and_reasoning_land_in_different_slots_and_are_never_joined():
+    steps, _ = ir_to_view_steps(
+        _trace(
+            _event(
+                0,
+                kind=EventKind.TOOL_CALL,
+                text="observed text",
+                reasoning="internal",
+                tool_call=ToolCall(name="execute", name_semantics=ACP_KIND_SEMANTICS),
+            )
+        )
+    )
+    assert steps[0]["text"] == "observed text"
+    assert steps[0]["reasoning"] == "internal"
+    assert steps[0]["text"] != steps[0]["reasoning"]
+
+
+def test_a_reasoning_event_keeps_the_shape_it_already_had():
+    """The verified contract for a real thought event does not move."""
+    steps, report = ir_to_view_steps(
+        _trace(
+            _event(
+                0,
+                kind=EventKind.AGENT_REASONING,
+                source_type="agent_thought",
+                reasoning="hm",
+            )
+        )
+    )
+    assert steps[0] == {
+        "i": 1,
+        "kind": "thought",
+        "type": "agent_thought",
+        "text": "hm",
+    }
+    assert "reasoning" not in steps[0]
+    assert _records_at(report, "steps[].reasoning") == []
+
+
+def test_a_thought_that_also_carries_text_declares_the_text():
+    """One text slot, already holding the reasoning — so say what happened."""
+    steps, report = ir_to_view_steps(
+        _trace(
+            _event(
+                0, kind=EventKind.AGENT_REASONING, reasoning="internal", text="visible"
+            )
+        )
+    )
+    assert steps[0]["text"] == "internal"
+    record = _records_at(report, "events[0].text")
+    assert len(record) == 1
+    assert record[0].loss_class is LossClass.DROPPED
+    assert "would present them as one utterance" in record[0].detail
+
+
+def test_a_thought_whose_text_repeats_the_reasoning_declares_nothing():
+    """The value is on the page; a record would claim a loss that did not happen."""
+    steps, report = ir_to_view_steps(
+        _trace(_event(0, kind=EventKind.AGENT_REASONING, reasoning="same", text="same"))
+    )
+    assert steps[0]["text"] == "same"
+    assert _records_at(report, "events[0].text") == []
+
+
+def test_a_diagnostic_step_does_not_repeat_its_reasoning_in_a_key():
+    """The whole canonical event is already the body of that card."""
+    steps, _ = ir_to_view_steps(
+        _trace(_event(0, kind=EventKind.UNKNOWN, source_type="x", reasoning="internal"))
+    )
+    assert "reasoning" not in steps[0]
+    assert "internal" in steps[0]["text"]
+
+
+def test_reasoning_segments_keep_the_policy_they_already_had():
+    steps, report = ir_to_view_steps(
+        _trace(
+            _event(
+                0,
+                kind=EventKind.AGENT_REASONING,
+                reasoning="a b",
+                reasoning_segments=["a", "b"],
+            )
+        )
+    )
+    assert "reasoning_segments" not in steps[0]
+    record = _records_at(report, "events[].reasoning_segments")
+    assert len(record) == 1
+    assert record[0].loss_class is LossClass.DROPPED
+
+
+def test_a_terminal_signal_outside_a_timeout_is_declared():
+    steps, report = ir_to_view_steps(
+        _trace(_event(0, kind=EventKind.AGENT_MESSAGE, text="hi", outcome="stopped"))
+    )
+    assert "stopped" not in json.dumps(steps[0])
+    record = _records_at(report, "events[0].outcome")
+    assert len(record) == 1
+    assert record[0].loss_class is LossClass.DROPPED
+
+
+def test_a_timeout_consumes_its_own_outcome_without_a_record():
+    steps, report = ir_to_view_steps(
+        _trace(_event(0, kind=EventKind.TIMEOUT, outcome="wall_clock_timeout"))
+    )
+    assert steps[0]["timeout"]["reason"] == "wall_clock_timeout"
+    assert _records_at(report, "events[0].outcome") == []
+
+
+def test_the_atif_shape_of_a_captured_rollout_keeps_its_thought():
+    """H1, exported to ATIF and read back: the regression this guard exists for.
+
+    `export_atif` writes an `agent_thought` as `reasoning_content` on the agent
+    step it precedes, so the thought arrives on a TOOL_CALL event rather than
+    on one of its own. It must still reach the page.
+    """
+    events = _rollout("h1")
+    thought = next(e["text"] for e in events if e["type"] == "agent_thought")
+    document, _ = ir_to_atif(acp_events_to_ir(events))
+    trace = atif_to_ir(document)
+
+    carrier = next(e for e in trace.events if e.reasoning is not None)
+    assert carrier.kind is EventKind.TOOL_CALL
+    assert carrier.reasoning == thought
+
+    steps, report = ir_to_view_steps(trace)
+    assert len(steps) == len(trace.events)
+    assert [s for s in steps if s.get("reasoning") == thought], (
+        "the thought reached no step"
+    )
+    assert (
+        _records_at(report, "steps[].reasoning")[0].loss_class is LossClass.NORMALIZED
+    )

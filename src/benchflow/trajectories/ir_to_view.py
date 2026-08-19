@@ -26,7 +26,18 @@ handles it. The constants below are our copy of that vocabulary, and
 `tests/trajectories/test_ir_to_view.py` freezes them. That protects **our**
 contract from drifting; it cannot notice #1034 changing.
 
-## The one addition, and why it is here
+## The two additions, and why they are here
+
+Both are keys #1034's shape does not define, and both are additive: a renderer
+that does not know them ignores them and loses nothing it had before.
+
+``steps[].reasoning`` carries reasoning observed on an event that is **not**
+itself a reasoning event — the shape ATIF produces, since it folds a thought
+into the agent step it precedes. Without the key that value reached no slot and
+no record, which is the one thing this family is not allowed to do. A second
+`thought` step was refused (it would invent an event boundary the source never
+declared) and so was `steps[].text` (it would keep the string and lose that it
+is reasoning). See :func:`_carry_reasoning`.
 
 ``tool.name_semantics`` is **ours** — #1034's ``ToolCall`` has six fields and
 this is a seventh. It carries :attr:`ToolCall.name_semantics` through
@@ -427,6 +438,21 @@ def _declare_systemic(losses: LossReport, trace: CanonicalTrace) -> None:
             "no usage slot, so a per-event observation reaches no field",
             space=PathSpace.HUB,
         )
+    if any(
+        event.reasoning is not None
+        and event.kind is not EventKind.AGENT_REASONING
+        and event.kind not in DIAGNOSTIC_KINDS
+        for event in trace.events
+    ):
+        losses.add(
+            "steps[].reasoning",
+            LossClass.NORMALIZED,
+            "reasoning observed alongside a non-reasoning event keeps its own "
+            "key on that step rather than becoming a separate thought step: "
+            "the source declared no such event, and the value stays labelled "
+            "as reasoning instead of being merged into the step's text",
+            space=PathSpace.TARGET,
+        )
     if any(event.reasoning_segments for event in trace.events):
         losses.add(
             "events[].reasoning_segments",
@@ -467,6 +493,74 @@ def _declare_systemic(losses: LossReport, trace: CanonicalTrace) -> None:
             "of the **canonical IR event**. It is not a raw source record — the "
             "IR does not hold one — and a page showing it must say so",
             space=PathSpace.TARGET,
+        )
+
+
+def _carry_reasoning(
+    event: TraceEvent, step: dict[str, Any], where: str, losses: LossReport
+) -> None:
+    """Reasoning observed on an event that is not itself a reasoning event.
+
+    ATIF folds a thought into the agent step it precedes
+    (``reasoning_content`` beside ``tool_calls``), so a faithful reading of one
+    produces a `TOOL_CALL` event that carries reasoning. Three ways to place
+    that value were available and two are refused:
+
+    - a second `thought` step would invent an event boundary and an ordering
+      the source never declared;
+    - `steps[].text` would keep the string and lose the one thing that makes
+      it different from a message — that it is reasoning. Concatenating it
+      into a neighbouring slot does the same, worse.
+
+    So it gets its own key. Like `tool.name_semantics` this is **additive to**
+    :data:`VIEW_SCHEMA_ORIGIN`'s shape, not part of it: a renderer that does
+    not know the key ignores it and loses nothing it had before.
+
+    Diagnostic kinds are excluded: their whole event is already serialized into
+    the step, reasoning included, and a second copy would show it twice.
+    """
+    if event.reasoning is None:
+        return
+    if event.kind is EventKind.AGENT_REASONING or event.kind in DIAGNOSTIC_KINDS:
+        return
+    step["reasoning"] = event.reasoning
+
+
+def _declare_unconsumed_text(
+    event: TraceEvent, step: dict[str, Any], where: str, losses: LossReport
+) -> None:
+    """Per-event records for observed text this shape has no slot for.
+
+    Two cases, both real rather than defensive: a reasoning event that also
+    carries user-visible text (the step's one text slot is already holding the
+    reasoning), and a terminal signal on an event that is not the timeout —
+    only the timeout step has somewhere to put one.
+    """
+    if (
+        event.kind is EventKind.AGENT_REASONING
+        and event.text is not None
+        and event.text != step.get("text")
+    ):
+        losses.add(
+            f"{where}.text",
+            LossClass.DROPPED,
+            "a reasoning event carrying user-visible text as well; the step "
+            "has one text slot and it is holding the reasoning, and joining "
+            "the two strings would present them as one utterance",
+            space=PathSpace.HUB,
+        )
+
+    if (
+        event.outcome is not None
+        and event.kind is not EventKind.TIMEOUT
+        and event.kind not in DIAGNOSTIC_KINDS
+    ):
+        losses.add(
+            f"{where}.outcome",
+            LossClass.DROPPED,
+            "a terminal signal on an event that is not the timeout; only the "
+            "timeout step has a slot for one, so the value reaches no field",
+            space=PathSpace.HUB,
         )
 
 
@@ -514,6 +608,9 @@ def ir_to_view_steps(trace: CanonicalTrace) -> tuple[list[dict[str, Any]], LossR
             step["text"] = _diagnostic_text(event)
         elif event.text is not None:
             step["text"] = event.text
+
+        _carry_reasoning(event, step, where, losses)
+        _declare_unconsumed_text(event, step, where, losses)
 
         if event.kind is EventKind.TOOL_CALL:
             if event.tool_call is None:
