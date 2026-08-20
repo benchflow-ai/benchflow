@@ -772,10 +772,16 @@ async def branch(
     # averaging it in as a zero would report a number computed from a score
     # that was never observed, so the value is left unrecorded and returned
     # as None.
+    #
+    # "Unrecorded" has to mean *removed*, not merely "not written": a node can
+    # be branched more than once, and skipping the write would leave the
+    # previous fork's V sitting on the node — ``branch()`` returning None while
+    # ``tree.json`` publishes a number for a fork that has none.
     unscored_children = [child for child in children if UNSCORED_KEY in child.state]
     value: float | None
     if unscored_children:
         value = None
+        parent.state.pop("value", None)
         logger.error(
             "branch at %s left %d of %d children unscored — V(parent) is "
             "undefined and no value is recorded",
