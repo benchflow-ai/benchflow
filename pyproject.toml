@@ -59,6 +59,11 @@ dev = [
     # AgentCore's CodeBuild path must reproduce Docker's ignore rules in tests
     # even when the optional AWS backend is not installed.
     "pathspec>=0.12",
+    # Validates the ACP trajectory conformance corpus against
+    # src/benchflow/trajectories/schemas/acp-capture-event-v1.schema.json. Already
+    # resolved as a litellm transitive; declared here so the test suite does not
+    # depend on another package's dependency tree.
+    "jsonschema>=4.20",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
