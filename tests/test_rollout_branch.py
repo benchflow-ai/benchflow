@@ -11,6 +11,7 @@ live e2e is a separate task.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -407,6 +408,75 @@ async def test_default_runner_empty_reward_is_unscored_not_zero(
     assert all(
         "produced no verifier reward" in child.state[UNSCORED_KEY] for child in children
     )
+
+
+async def test_a_second_fork_with_an_unscored_child_clears_the_first_forks_value(
+    tmp_path: Path,
+):
+    """An undefined V must not leave the previous fork's V behind.
+
+    Guards the fix from "fix(branch): clear a stale branch value when V is
+    undefined". A node can be branched more than once. The unscored path set
+    the local ``value = None`` and skipped *writing* ``parent.state["value"]``
+    — but never removed the one the earlier fork wrote, so ``branch()``
+    returned ``None`` while ``tree.json`` still published the first fork's
+    number as the value of a fork that has no value. The stale number is the
+    dangerous half: the API's ``None`` is at least honest.
+    """
+    from benchflow.branch import UnscoredChildError
+    from benchflow.branch_lineage import serialize_tree
+
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    parent = rollout._cursor
+
+    async def scored(child):
+        return 1.0
+
+    async def unscored(child):
+        raise UnscoredChildError("the verifier never reported a reward")
+
+    assert await rollout.branch(2, run_child=scored) == 1.0
+    assert parent.state["value"] == 1.0
+
+    assert await rollout.branch(2, run_child=unscored) is None
+
+    assert "value" not in parent.state
+    run_dir = tmp_path / "lineage"
+    run_dir.mkdir()
+    serialize_tree(rollout.tree, run_dir=run_dir)
+    nodes = {
+        node["id"]: node
+        for node in json.loads((run_dir / "tree.json").read_text())["nodes"]
+    }
+    assert "value" not in nodes[parent.id]
+
+
+async def test_a_rescored_fork_still_records_its_own_value(tmp_path: Path):
+    """The counterpart: clearing an undefined V must not clear a defined one.
+
+    Guards the fix from "fix(branch): clear a stale branch value when V is
+    undefined" against being written as an unconditional ``pop`` — a second
+    fork whose children *were* scored publishes its own V, overwriting the
+    first fork's.
+    """
+    from benchflow.branch import UnscoredChildError
+
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    parent = rollout._cursor
+
+    async def unscored(child):
+        raise UnscoredChildError("the verifier never reported a reward")
+
+    async def scored(child):
+        return 0.5
+
+    assert await rollout.branch(2, run_child=unscored) is None
+    assert "value" not in parent.state
+
+    assert await rollout.branch(2, run_child=scored) == 0.5
+    assert parent.state["value"] == 0.5
 
 
 async def test_linear_rollout_run_never_branches(tmp_path: Path, monkeypatch):
