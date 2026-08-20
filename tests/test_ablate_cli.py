@@ -440,6 +440,28 @@ async def test_run_ablation_forks_one_child_per_arm_and_reads_their_rewards(
     assert "decides the outcome when applied at env-ready" in report.arms[0].verdict
 
 
+async def test_the_ablation_parent_states_the_no_skill_mode_the_gate_requires(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The parent an ablation runs is ``no-skill`` by statement, not by default.
+
+    Guards the fix from "fix(branch): gate skill deltas on the parent's own
+    skill mode". The arms fork the parent's own ``env-ready`` image, and a
+    ``with-skill`` parent bakes its pack into that image — a ``no-skill`` arm
+    would restore the pack and still be labelled ``no-skill``. The branch
+    engine now refuses that fork, so this command was correct only for as long
+    as ``RolloutConfig.from_legacy`` happened to default ``skill_mode`` to
+    ``no-skill``. It says so itself now, and a change to that default cannot
+    quietly move every ablation to the wrong side of the gate.
+    """
+    built = _patch_rollout(monkeypatch)
+
+    await run_ablation(_request(tmp_path))
+
+    assert built[0].config.skill_mode == "no-skill"
+    assert built[0].config.recorded_skill_mode == "no-skill"
+
+
 async def test_run_ablation_cleans_up_and_isolates_a_failing_arm(
     tmp_path: Path, monkeypatch
 ) -> None:

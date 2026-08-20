@@ -1976,9 +1976,18 @@ class Rollout:
         ``sandbox`` layer so the container rolls back too — a
         ``BranchDelta(skill_mode=...)`` child runs as a fresh rollout over the
         restored sandbox and re-runs skill deployment under the switched mode.
-        Give *every* child of that fork an explicit ``skill_mode`` so the arms
-        are symmetric; a ``None`` delta would run in place on this rollout
-        instead.
+        **The rollout being branched must itself be a ``no-skill`` run.** A
+        ``with-skill`` parent bakes its pack into the image its ``setup()``
+        builds, and the ``env-ready`` snapshot is a commit of that image — so
+        a ``no-skill`` child would restore the pack, deploy nothing on top of
+        it, and be reported as ``no-skill`` while running with the parent's
+        skills. The engine refuses that fork
+        (:class:`~benchflow.rollout_branch.BranchParentSkillModeConflict`);
+        run the parent ``no-skill`` and let each arm's delta deploy its own
+        skills. Every engine-run child of ``env-ready`` is a fresh rollout
+        whatever its delta, so a ``None`` delta is a genuine control arm — it
+        re-installs the parent's own recorded mode rather than running in
+        place.
         """
         return await _branch_engine(
             self,
