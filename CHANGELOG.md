@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.5 — 2026-08-19
+
 ### Added
 
 - **Weighted rubric-review contract (v0.2).** `bench review` now accepts the
@@ -14,6 +16,12 @@
   their `pass` / `fail` / `not_applicable` behavior unchanged. Docker runs now
   probe whether verifier-log bind mounts are genuinely visible to the container
   and fall back to explicit copy-out when path translation is unavailable.
+
+### Fixed
+
+- **Linked-worktree `.git` pointer files stay out of workspace attachments.**
+  Workspace capture now excludes `.git` files as well as directories, preventing
+  local absolute worktree metadata from entering uploaded archives. (#1032)
 
 ## 0.7.4 — 2026-08-16
 
