@@ -386,12 +386,24 @@ required with it (a run without one exits with an actionable error).
 | `--allow-open-network` | `false` | Run reviewers without the no-internet declaration (required on backends that cannot enforce isolation, e.g. agentcore; recorded in the report) |
 | `--out-dir`, `-o` | `jobs/review-<ts>` | Review output directory |
 
-A rubric is a JSON object with one `criteria` list; each criterion is three
-strings —
-`name` (identifier; becomes a structured-output field), `description`
-(author-facing documentation, never shown to the reviewer), and `guidance`
-(the grading contract the reviewer follows). The reviewer answers each
-criterion with `pass` / `fail` / `not_applicable` plus an explanation.
+A rubric is a versionless JSON object with one `criteria` list. BenchFlow
+supports two backward-compatible shapes:
+
+- Legacy v0.1 criteria contain exactly `name`, `description`, and `guidance`;
+  the reviewer returns `pass`, `fail`, or `not_applicable` plus an explanation.
+- Weighted v0.2 criteria all add strict integer `blocker` (`0` or `1`) and
+  `weight` (`1` through `10`) fields. Blockers return `pass` or `fail`; scored
+  criteria return `0`, `1`, or `2`. Blocker weights do not enter the quality
+  calculation.
+
+For v0.2, `raw_quality` is the weighted scored points divided by twice the
+sum of non-blocker weights. The deterministic reward and all blocker verdicts
+gate that quality: if either gate fails, `gated_quality` is zero and the result
+is `not_publishable`. Otherwise, quality `>= 0.80` is `publishable`, quality
+`>= 0.65` is `presentable_with_revisions`, and lower quality is
+`not_publishable`. The wrapper reward still means only that the review is
+structurally valid; it is not a quality or publication score. See
+[Rubric review](../rubric-review.md) for the full contract and report shape.
 
 ### bench eval list
 

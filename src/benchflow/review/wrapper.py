@@ -13,15 +13,15 @@ synthetic task built here on the host:
   the agent-UID egress firewall, and the no-web agent policy end to end);
 - the instruction body is the rendered review prompt plus the structured
   output contract;
-- ``tests/`` holds a stdlib-only validator plus the criterion-name list, so
-  the wrapper's own reward means exactly "the reviewer produced a
+- ``tests/`` holds a stdlib-only validator plus the rubric contract
+  metadata, so the wrapper's own reward means exactly "the reviewer produced a
   structurally valid result file" — never "the reviewed run was good".
 
 The rubric file itself never enters the sandbox.  Only its derivatives do:
 guidance lines inside the instruction, criterion names inside the output
-schema, and the same names inside ``tests/criteria.json``.  Task evidence is
-sanitized: skills and any shipped ``rubric.json`` are excluded, and symlinks
-anywhere in the evidence are dropped rather than dereferenced.
+schema, and non-prompt contract metadata inside ``tests/criteria.json``. Task
+evidence is sanitized: skills and any shipped ``rubric.json`` are excluded,
+and symlinks anywhere in the evidence are dropped rather than dereferenced.
 """
 
 from __future__ import annotations
@@ -91,12 +91,17 @@ import json
 import sys
 from pathlib import Path
 
-OUTCOMES = {"pass", "fail", "not_applicable"}
+LEGACY_OUTCOMES = {"pass", "fail", "not_applicable"}
+BLOCKER_OUTCOMES = {"pass", "fail"}
 
 
 def main() -> int:
     result_path = Path(sys.argv[1])
-    names = set(json.loads(Path(sys.argv[2]).read_text(encoding="utf-8")))
+    rubric = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    criteria = rubric["criteria"]
+    specs = {criterion["name"]: criterion for criterion in criteria}
+    names = set(specs)
+    weighted = rubric.get("contract") == "v0.2"
 
     if not result_path.is_file():
         print(f"result file not found: {result_path}")
@@ -111,6 +116,12 @@ def main() -> int:
         return 1
 
     problems = []
+    expected_top_level = {"trial_name", "summary", "checks"}
+    for name in sorted(expected_top_level - data.keys()):
+        problems.append(f"result is missing key: {name}")
+    if weighted:
+        for name in sorted(data.keys() - expected_top_level):
+            problems.append(f"result has unexpected key: {name}")
     expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8")
     if data.get("trial_name") != expected_trial:
         problems.append(
@@ -132,8 +143,32 @@ def main() -> int:
         if not isinstance(check, dict):
             problems.append(f"{name}: value must be an object")
             continue
-        if check.get("outcome") not in OUTCOMES:
-            problems.append(f"{name}: outcome must be one of {sorted(OUTCOMES)}")
+        blocker = specs[name].get("blocker")
+        if blocker is None:
+            expected_keys = {"outcome", "explanation"}
+            outcome = check.get("outcome")
+            if not isinstance(outcome, str) or outcome not in LEGACY_OUTCOMES:
+                problems.append(
+                    f"{name}: outcome must be one of {sorted(LEGACY_OUTCOMES)}"
+                )
+        elif blocker == 1:
+            expected_keys = {"outcome", "explanation"}
+            outcome = check.get("outcome")
+            if not isinstance(outcome, str) or outcome not in BLOCKER_OUTCOMES:
+                problems.append(
+                    f"{name}: blocker outcome must be one of "
+                    f"{sorted(BLOCKER_OUTCOMES)}"
+                )
+        else:
+            expected_keys = {"score", "explanation"}
+            score = check.get("score")
+            if isinstance(score, bool) or not isinstance(score, int) or score not in {0, 1, 2}:
+                problems.append(f"{name}: score must be the integer 0, 1, or 2")
+        if weighted:
+            for key in sorted(expected_keys - check.keys()):
+                problems.append(f"{name}: check is missing key: {key}")
+            for key in sorted(check.keys() - expected_keys):
+                problems.append(f"{name}: check has unexpected key: {key}")
         explanation = check.get("explanation")
         if not isinstance(explanation, str) or not explanation.strip():
             problems.append(f"{name}: explanation must be a non-empty string")
@@ -303,7 +338,7 @@ def assemble_review_task(
     )
     (tests_dir / "validate.py").write_text(_VALIDATOR, encoding="utf-8")
     (tests_dir / "criteria.json").write_text(
-        json.dumps([criterion.name for criterion in rubric.criteria], indent=2),
+        json.dumps(rubric.metadata(), indent=2),
         encoding="utf-8",
     )
     # Bind the verdict to the rollout under review: a reviewer that reports
