@@ -267,6 +267,8 @@ def _format_acp_model(model: str, agent: str) -> str:
             return f"litellm/{model}"
         return model if find_provider(model) else bare
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
+        if agent == "gemini" and bare.startswith("google/gemini-"):
+            return bare.removeprefix("google/")
         return bare
     # Already has a slash — assume it's provider/model already
     if "/" in bare:

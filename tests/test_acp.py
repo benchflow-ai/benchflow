@@ -1176,22 +1176,28 @@ class TestConnectAcpModelSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "model_in, expected_model",
+        "agent, model_in, expected_model",
         [
             # Registered vllm/ prefix stripped; HF org/model intact — this is
             # what pi-acp and other ACP agents need for downstream routing.
-            ("vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
-            ("zai/glm-5", "glm-5"),
+            ("test-agent", "vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
+            ("test-agent", "zai/glm-5", "glm-5"),
             # Bare HF ID (no registered prefix) passes through unchanged.
-            ("Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
+            ("test-agent", "Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
             # Vertex ADC provider — prefix stripped like any other registered one.
-            ("anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("test-agent", "anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
             # No prefix at all — unchanged.
-            ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("test-agent", "claude-sonnet-4-6", "claude-sonnet-4-6"),
+            # Gemini CLI expects a bare model ID, unlike models.dev agents.
+            (
+                "gemini",
+                "google/gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite-preview",
+            ),
         ],
-        ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix"],
+        ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix", "gemini-google"],
     )
-    async def test_model_id_selection(self, model_in, expected_model, tmp_path):
+    async def test_model_id_selection(self, agent, model_in, expected_model, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
@@ -1203,7 +1209,7 @@ class TestConnectAcpModelSelection:
         ):
             await connect_acp(
                 env=mock_env,
-                agent="test-agent",
+                agent=agent,
                 agent_launch="test-agent",
                 agent_env={},
                 sandbox_user=None,
