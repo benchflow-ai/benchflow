@@ -52,7 +52,7 @@ class TestEnvMappingField:
         """Same @agentclientprotocol family as claude — pin so a floating latest
         can't silently break activation when upstream drops session/set_model."""
         cfg = AGENTS["codex-acp"]
-        assert "@agentclientprotocol/codex-acp@0.0.45" in cfg.install_cmd
+        assert "@agentclientprotocol/codex-acp@1.6.0" in cfg.install_cmd
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]
