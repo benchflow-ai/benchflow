@@ -567,6 +567,62 @@ async def test_branch_at_stage_rejects_layers_the_stage_did_not_capture(
         )
 
 
+class RefLessEnv(FakeEnv):
+    """An Environment plane whose ``snapshot()`` yields no ref.
+
+    A third-party plane, not the shipped ``ManifestEnvironment``. Nothing
+    between the protocol and ``checkpoint_composed`` requires the returned
+    handle to be non-``None``, so a plane shaped like this produces a
+    ``StageSnapshot`` with no layer refs at all.
+    """
+
+    async def snapshot(self) -> StateSnapshot:  # type: ignore[override]
+        self.calls.append("env.snapshot")
+        return None  # type: ignore[return-value]
+
+
+async def test_branch_at_stage_rejects_a_stage_that_captured_no_layer(
+    tmp_path: Path,
+):
+    """A stage branch enforces the non-empty layer check the cursor path does.
+
+    Guards the fix from "fix(branch): stage branches enforce the non-empty
+    layer check". ``_resolve_layers`` — which rejects an empty layer set — ran
+    only on the cursor arm. On the ``at_stage`` arm the layers were *derived*
+    from the recorded snapshot's refs, and a snapshot carrying neither ref
+    derived the empty set: the capability gate then had nothing to check,
+    ``restore_composed(environment=None, sandbox=None)`` rolled nothing back
+    before each child, and provenance recorded a clean stage fork. Every child
+    would have run in the world the previous one left, and the fork would have
+    published a V computed across them.
+
+    ``pre-verify`` rather than ``env-ready``: at ``env-ready`` the
+    fresh-children gate already demands the container layer, so the hole is
+    only reachable at a boundary whose children run in place.
+    """
+    rollout = _rollout(tmp_path)
+    env = RefLessEnv()
+    rollout._environment, rollout._env = env, FakeSnapSandbox()
+    await rollout.mark_stage("pre-verify")
+    recorded = rollout.stage_snapshots["pre-verify"]
+    assert recorded.environment_ref is None and recorded.sandbox_ref is None
+
+    ran: list[str] = []
+
+    async def run_child(child):
+        ran.append(child.id)
+        return 1.0
+
+    with pytest.raises(ValueError, match="at least one layer") as excinfo:
+        await rollout.branch_at_stage("pre-verify", 2, run_child=run_child)
+
+    assert "pre-verify" in str(excinfo.value)  # names the fork that has no point
+    # fail closed: nothing restored, no child run, no fork recorded
+    assert env.restored == []
+    assert ran == []
+    assert rollout.tree.root.children == []
+
+
 async def test_branch_at_stage_composes_both_layers_when_the_stage_did(
     tmp_path: Path,
 ):

@@ -223,10 +223,17 @@ class _LinearState:
 
 
 def _resolve_layers(snapshot_layers: Iterable[str], *, subject: str) -> frozenset[str]:
-    """Validate a requested layer set — the one gate both snapshot paths use.
+    """Validate a layer set — the one gate every snapshot path uses.
 
     ``subject`` names the operation in the diagnostic ("branch", "stage
-    snapshot 'env-ready'").
+    snapshot 'env-ready'", "branch_at_stage('pre-verify'): the recorded stage
+    snapshot").
+
+    Called on *requested* layers by the cursor branch and by
+    :func:`capture_stage`, and on the layers a stage branch *derived* from its
+    recorded snapshot — the empty set is the same fail-open either way, so it
+    is rejected in one place rather than trusted because it came from a
+    checkpoint that was already taken.
     """
     layers = frozenset(snapshot_layers)
     unknown = layers - _SNAPSHOT_LAYERS
@@ -237,8 +244,10 @@ def _resolve_layers(snapshot_layers: Iterable[str], *, subject: str) -> frozense
         )
     if not layers:
         raise ValueError(
-            "snapshot_layers must request at least one layer — a "
-            f"{subject} without a checkpoint has no roll-back point"
+            f"{subject} needs at least one layer — a fork whose checkpoint "
+            "captures nothing has no roll-back point, so nothing is restored "
+            "between children and every child runs in the world the previous "
+            "one left"
         )
     return layers
 
@@ -489,6 +498,15 @@ def _recorded_stage_checkpoint(
     layers are derived from the recorded snapshot; an explicit
     ``snapshot_layers`` that disagrees is a caller bug, not a request to
     re-snapshot.
+
+    Derived is not the same as trusted: a snapshot carrying *neither* ref
+    derives the empty set, which the layer gates below then have nothing to
+    check — the fork would restore nothing between children and still record a
+    clean stage fork. So the derived set goes through :func:`_resolve_layers`,
+    the same non-empty gate the cursor branch runs on its requested set, and
+    it runs before the disagreement check: an empty capture is broken however
+    it is described, and ``snapshot_layers=set()`` would otherwise "agree"
+    with it.
     """
     validate_stage(stage)
     registry: dict[str, StageSnapshot] = getattr(rollout, "_stage_snapshots", {})
@@ -500,13 +518,16 @@ def _recorded_stage_checkpoint(
             "RolloutConfig(snapshot_stages={...}), or record it at the cut "
             "point with Rollout.mark_stage()."
         )
-    layers = frozenset(
-        layer
-        for layer, ref in (
-            ("environment", snapshot.environment_ref),
-            ("sandbox", snapshot.sandbox_ref),
-        )
-        if ref is not None
+    layers = _resolve_layers(
+        (
+            layer
+            for layer, ref in (
+                ("environment", snapshot.environment_ref),
+                ("sandbox", snapshot.sandbox_ref),
+            )
+            if ref is not None
+        ),
+        subject=f"branch_at_stage({stage!r}): the recorded stage snapshot",
     )
     if snapshot_layers is not None and frozenset(snapshot_layers) != layers:
         raise ValueError(
