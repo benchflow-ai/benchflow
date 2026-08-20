@@ -25,43 +25,88 @@ _REVIEW_OUTCOME_STYLES = {
     "not_applicable": "grey50",
 }
 
+_REVIEW_SCORE_STYLES = {
+    0: "red",
+    1: "yellow",
+    2: "green",
+}
+
 
 def _render_trial_review(trial) -> None:
     table = Table(title=f"Review: {escape(str(trial.trial_name))}", show_lines=True)
     table.add_column("Criterion")
-    table.add_column("Outcome")
+    table.add_column("Result")
     table.add_column("Explanation")
     for name, check in (trial.checks or {}).items():
-        outcome = str(check.get("outcome", ""))
+        if "score" in check:
+            raw_score = check.get("score")
+            result = str(raw_score)
+            style = (
+                _REVIEW_SCORE_STYLES.get(raw_score, "white")
+                if type(raw_score) is int
+                else "white"
+            )
+        else:
+            result = str(check.get("outcome", ""))
+            style = _REVIEW_OUTCOME_STYLES.get(result, "white")
         table.add_row(
             escape(str(name).replace("_", " ").title()),
-            escape(outcome),
+            escape(result),
             escape(str(check.get("explanation", ""))),
-            style=_REVIEW_OUTCOME_STYLES.get(outcome, "white"),
+            style=style,
         )
     if trial.summary:
         console.print(f"\n[bold]Summary:[/bold] {escape(str(trial.summary))}\n")
+    scoring = getattr(trial, "scoring", None)
+    if scoring is not None:
+        console.print(
+            "[bold]Weighted quality:[/bold] "
+            f"{scoring.raw_quality:.3f} raw / {scoring.gated_quality:.3f} gated "
+            f"— {escape(scoring.decision.value)}\n"
+        )
     console.print(table)
 
 
 def _render_review_overview(trials) -> None:
     table = Table(title="Rubric Reviews", show_lines=True)
-    for column in ("Run", "Pass", "Fail", "N/A", "Valid"):
+    for column in ("Run", "Pass", "Fail", "N/A", "Quality", "Decision", "Valid"):
         table.add_column(column)
     for trial in trials:
         if trial.error and not trial.checks:
             table.add_row(
-                escape(str(trial.trial_name)), "-", "-", "-", "no", style="red"
+                escape(str(trial.trial_name)),
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "no",
+                style="red",
             )
             continue
         counts = trial.outcome_counts()
+        scoring = getattr(trial, "scoring", None)
+        quality = f"{scoring.raw_quality:.3f}" if scoring is not None else "-"
+        decision = scoring.decision.value if scoring is not None else "-"
+        if (
+            not trial.review_valid
+            or counts["fail"]
+            or (scoring is not None and decision == "not_publishable")
+        ):
+            style = "red"
+        elif scoring is not None and decision == "presentable_with_revisions":
+            style = "yellow"
+        else:
+            style = "white"
         table.add_row(
             escape(str(trial.trial_name)),
             str(counts["pass"]),
             str(counts["fail"]),
             str(counts["not_applicable"]),
+            quality,
+            escape(decision),
             "yes" if trial.review_valid else "no",
-            style="red" if counts["fail"] or not trial.review_valid else "white",
+            style=style,
         )
     console.print(table)
     for trial in trials:

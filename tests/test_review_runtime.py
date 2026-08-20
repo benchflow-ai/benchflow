@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +13,7 @@ from benchflow.review.config import REVIEW_RESULT_FILENAME
 from benchflow.review.runner import (
     REVIEW_REPORT_FILENAME,
     ReviewRunError,
+    TrialReview,
     _lock_review_evidence,
     _task_digest_issue,
     discover_rollouts,
@@ -28,6 +28,32 @@ RUBRIC = {
             "description": "d",
             "guidance": "PASS when sound; FAIL otherwise.",
         }
+    ]
+}
+
+WEIGHTED_RUBRIC = {
+    "criteria": [
+        {
+            "name": "safety_gate",
+            "blocker": 1,
+            "weight": 10,
+            "description": "d",
+            "guidance": "PASS when safe; FAIL otherwise.",
+        },
+        {
+            "name": "method_quality",
+            "blocker": 0,
+            "weight": 3,
+            "description": "d",
+            "guidance": "Score 2, 1, or 0.",
+        },
+        {
+            "name": "evidence_quality",
+            "blocker": 0,
+            "weight": 2,
+            "description": "d",
+            "guidance": "Score 2, 1, or 0.",
+        },
     ]
 }
 
@@ -65,7 +91,12 @@ def make_rollout(
     return rollout
 
 
-def make_task(root: Path, *, with_rubric: bool = False) -> Path:
+def make_task(
+    root: Path,
+    *,
+    with_rubric: bool = False,
+    rubric_data: dict | None = None,
+) -> Path:
     """Create a task inside a *trusted tasks root* (see ``--tasks-root``).
 
     Task evidence is only included when the caller names a trusted root: a
@@ -77,7 +108,8 @@ def make_task(root: Path, *, with_rubric: bool = False) -> Path:
     (task / "task.md").write_text("---\n---\nbody", encoding="utf-8")
     if with_rubric:
         (task / "verifier" / "rubric.json").write_text(
-            json.dumps(RUBRIC), encoding="utf-8"
+            json.dumps(RUBRIC if rubric_data is None else rubric_data),
+            encoding="utf-8",
         )
     return task
 
@@ -133,6 +165,18 @@ def good_review(name: str = "rollout-a") -> dict:
         "trial_name": name,
         "summary": "Reviewed fine.",
         "checks": {"method_soundness": {"explanation": "ok", "outcome": "pass"}},
+    }
+
+
+def good_weighted_review(name: str = "rollout-a") -> dict:
+    return {
+        "trial_name": name,
+        "summary": "Weighted review complete.",
+        "checks": {
+            "safety_gate": {"explanation": "safe", "outcome": "pass"},
+            "method_quality": {"explanation": "complete", "score": 2},
+            "evidence_quality": {"explanation": "partial", "score": 1},
+        },
     }
 
 
@@ -199,6 +243,173 @@ class TestRunReviews:
             t["checks"]["method_soundness"]["outcome"] == "pass" for t in data["trials"]
         )
         assert len(fake.configs) == 2
+
+    @pytest.mark.asyncio
+    async def test_weighted_review_is_scored_and_recorded(self, tmp_path, monkeypatch):
+        task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+        rollout = make_rollout(
+            tmp_path / "jobs", "rollout-a", reward=1.0, task_path=task
+        )
+        source_result_before = (rollout / "result.json").read_bytes()
+        monkeypatch.setattr(
+            benchflow,
+            "run",
+            FakeRun(review_payload=good_weighted_review()),
+        )
+
+        report, report_path = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
+
+        trial = report.trials[0]
+        assert trial.review_valid is True
+        assert trial.rubric_contract == "v0.2"
+        assert trial.criterion_metadata == [
+            {"name": "safety_gate", "blocker": 1, "weight": 10},
+            {"name": "method_quality", "blocker": 0, "weight": 3},
+            {"name": "evidence_quality", "blocker": 0, "weight": 2},
+        ]
+        assert trial.checks["method_quality"]["score"] == 2
+        assert trial.scoring is not None
+        assert trial.scoring.weighted_points == 8
+        assert trial.scoring.max_weighted_points == 10
+        assert trial.scoring.raw_quality == pytest.approx(0.8)
+        assert trial.scoring.gated_quality == pytest.approx(0.8)
+        assert trial.scoring.decision == "publishable"
+        assert (rollout / "result.json").read_bytes() == source_result_before
+
+        serialized = json.loads(report_path.read_text(encoding="utf-8"))
+        serialized_trial = serialized["trials"][0]
+        assert serialized["rubric"]["contracts"] == ["v0.2"]
+        assert serialized_trial["rubric_contract"] == "v0.2"
+        assert serialized_trial["criterion_metadata"] == trial.criterion_metadata
+        assert serialized_trial["scoring"] == {
+            "deterministic_pass": True,
+            "all_blockers_pass": True,
+            "failed_blockers": [],
+            "weighted_points": 8,
+            "max_weighted_points": 10,
+            "raw_quality": 0.8,
+            "gated_quality": 0.8,
+            "decision": "publishable",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reward", "error"),
+        [(0.0, None), (1.0, "source agent failed")],
+    )
+    async def test_source_deterministic_failure_gates_weighted_quality(
+        self, tmp_path, monkeypatch, reward, error
+    ):
+        task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+        rollout = make_rollout(
+            tmp_path / "jobs",
+            "rollout-a",
+            reward=reward,
+            error=error,
+            task_path=task,
+        )
+        monkeypatch.setattr(
+            benchflow,
+            "run",
+            FakeRun(review_payload=good_weighted_review()),
+        )
+
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
+
+        scoring = report.trials[0].scoring
+        assert scoring is not None
+        assert scoring.deterministic_pass is False
+        assert scoring.raw_quality == pytest.approx(0.8)
+        assert scoring.gated_quality == 0.0
+        assert scoring.decision == "not_publishable"
+
+    @pytest.mark.asyncio
+    async def test_failed_blocker_gates_weighted_quality(self, tmp_path, monkeypatch):
+        task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+        rollout = make_rollout(
+            tmp_path / "jobs", "rollout-a", reward=1.0, task_path=task
+        )
+        payload = good_weighted_review()
+        payload["checks"]["safety_gate"]["outcome"] = "fail"
+        monkeypatch.setattr(benchflow, "run", FakeRun(review_payload=payload))
+
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
+
+        scoring = report.trials[0].scoring
+        assert scoring is not None
+        assert scoring.all_blockers_pass is False
+        assert scoring.failed_blockers == ("safety_gate",)
+        assert scoring.raw_quality == pytest.approx(0.8)
+        assert scoring.gated_quality == 0.0
+        assert scoring.decision == "not_publishable"
+
+    @pytest.mark.asyncio
+    async def test_invalid_weighted_review_never_aggregates(
+        self, tmp_path, monkeypatch
+    ):
+        task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+        rollout = make_rollout(
+            tmp_path / "jobs", "rollout-a", reward=1.0, task_path=task
+        )
+        monkeypatch.setattr(
+            benchflow,
+            "run",
+            FakeRun(reward=0.0, review_payload=good_weighted_review()),
+        )
+
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
+
+        trial = report.trials[0]
+        assert trial.review_valid is False
+        assert trial.scoring is None
+
+    @pytest.mark.asyncio
+    async def test_host_validation_gates_weighted_scoring(self, tmp_path, monkeypatch):
+        """Guards FrontierPhysics PR #109 when wrapper reward and artifact diverge."""
+
+        task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+        rollout = make_rollout(
+            tmp_path / "jobs", "rollout-a", reward=1.0, task_path=task
+        )
+        payload = good_weighted_review()
+        payload["checks"]["method_quality"]["unexpected"] = "must fail closed"
+        monkeypatch.setattr(
+            benchflow,
+            "run",
+            FakeRun(reward=1.0, review_payload=payload),
+        )
+
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
+
+        trial = report.trials[0]
+        assert trial.review_valid is False
+        assert trial.scoring is None
+        assert "host-side structural validation" in (trial.error or "")
 
     @pytest.mark.asyncio
     async def test_wrapper_config_shape(self, tmp_path, monkeypatch):
@@ -360,7 +571,10 @@ class TestRunReviews:
             out_dir=tmp_path / "out",
             tasks_root=tmp_path / "tasks",
         )
-        assert seen["criteria"] == ["override_only"]
+        assert seen["criteria"] == {
+            "contract": "v0.1",
+            "criteria": [{"name": "override_only", "blocker": None, "weight": None}],
+        }
 
     @pytest.mark.asyncio
     async def test_task_rubric_used_when_no_override(self, tmp_path, monkeypatch):
@@ -381,7 +595,10 @@ class TestRunReviews:
             out_dir=tmp_path / "out",
             tasks_root=tmp_path / "tasks",
         )
-        assert seen["criteria"] == ["method_soundness"]
+        assert seen["criteria"] == {
+            "contract": "v0.1",
+            "criteria": [{"name": "method_soundness", "blocker": None, "weight": None}],
+        }
 
     @pytest.mark.asyncio
     async def test_default_rubric_when_task_ships_none(self, tmp_path, monkeypatch):
@@ -402,7 +619,13 @@ class TestRunReviews:
             out_dir=tmp_path / "out",
             tasks_root=tmp_path / "tasks",
         )
-        assert seen["criteria"] == ["reward_hacking", "task_specification"]
+        assert seen["criteria"] == {
+            "contract": "v0.1",
+            "criteria": [
+                {"name": "reward_hacking", "blocker": None, "weight": None},
+                {"name": "task_specification", "blocker": None, "weight": None},
+            ],
+        }
 
     @pytest.mark.asyncio
     async def test_bad_explicit_rubric_fails_fast(self, tmp_path, monkeypatch):
@@ -431,7 +654,7 @@ class TestRunReviews:
         make_rollout(tmp_path / "jobs", "rollout-b")
         rubric_path = tmp_path / "rubric.json"
         rubric_path.write_text(json.dumps(RUBRIC), encoding="utf-8")
-        seen: list[list[str]] = []
+        seen: list[dict] = []
 
         async def mutate_after_first_wrapper(config: RolloutConfig):
             criteria = json.loads(
@@ -463,7 +686,11 @@ class TestRunReviews:
             out_dir=tmp_path / "out",
         )
 
-        assert seen == [["method_soundness"], ["method_soundness"]]
+        expected_metadata = {
+            "contract": "v0.1",
+            "criteria": [{"name": "method_soundness", "blocker": None, "weight": None}],
+        }
+        assert seen == [expected_metadata, expected_metadata]
         assert report.criteria == ["method_soundness"]
         assert all(t.criteria == ["method_soundness"] for t in report.trials)
 
@@ -523,6 +750,37 @@ class TestRunReviews:
             tmp_path / "jobs", agent="gemini", out_dir=tmp_path / "out"
         )
         assert report.job_summary is None
+
+    @pytest.mark.asyncio
+    async def test_weighted_job_summary_labels_binary_counts(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards FrontierPhysics PR #109 against omitting scored criteria silently."""
+
+        task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+        make_rollout(tmp_path / "jobs", "a", task_path=task)
+        make_rollout(tmp_path / "jobs", "b", task_path=task)
+
+        async def weighted_run(config: RolloutConfig):
+            trial_name = Path(config.task_path).name.removeprefix("review-")
+            return await FakeRun(review_payload=good_weighted_review(trial_name))(
+                config
+            )
+
+        monkeypatch.setattr(benchflow, "run", weighted_run)
+        report, _ = await run_reviews(
+            tmp_path / "jobs",
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
+
+        assert report.job_summary is not None
+        assert "Binary judgments (legacy criteria and weighted blockers only)" in (
+            report.job_summary
+        )
+        assert "across all criteria" not in report.job_summary
+        assert "weighted reviews: average raw quality 0.800" in report.job_summary
 
 
 class TestTaskDigestAdmission:
@@ -606,13 +864,17 @@ def test_cli_rendering_escapes_untrusted_review_fields(monkeypatch):
         "console",
         Console(file=output, force_terminal=True, color_system=None),
     )
-    trial = SimpleNamespace(
+    trial = TrialReview(
         trial_name="[/bold]",
-        checks={"[/red]": {"outcome": "[/green]", "explanation": "[x]"}},
+        source_rollout="diagnostic",
+        checks={
+            "[/red]": {"outcome": "[/green]", "explanation": "[x]"},
+            "hostile_outcome": {"outcome": {}, "explanation": "diagnostic"},
+            "hostile_score": {"score": [], "explanation": "diagnostic"},
+        },
         summary="[/bold]",
         error="[/red]",
         review_valid=False,
-        outcome_counts=lambda: {"pass": 0, "fail": 0, "not_applicable": 0},
     )
     review_cli._render_trial_review(trial)
     review_cli._render_review_overview([trial])
