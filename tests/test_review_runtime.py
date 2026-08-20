@@ -300,11 +300,12 @@ class TestRunReviews:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("reward", "error"),
-        [(0.0, None), (1.0, "source agent failed")],
+        [(0.0, None), (1.0, "source agent failed"), (True, None)],
     )
     async def test_source_deterministic_failure_gates_weighted_quality(
         self, tmp_path, monkeypatch, reward, error
     ):
+        """Guards PR #1040: boolean rewards never open the numeric pass gate."""
         task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
         rollout = make_rollout(
             tmp_path / "jobs",

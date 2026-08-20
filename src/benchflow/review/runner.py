@@ -167,7 +167,12 @@ def _is_passing(rollout_dir: Path) -> bool:
         return False
     rewards = result.get("rewards")
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    return reward == 1.0 and result.get("error") is None
+    return (
+        isinstance(reward, int | float)
+        and not isinstance(reward, bool)
+        and reward == 1.0
+        and result.get("error") is None
+    )
 
 
 def discover_rollouts(
