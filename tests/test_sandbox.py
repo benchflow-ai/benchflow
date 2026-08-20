@@ -102,6 +102,54 @@ class TestSandboxDirs:
         assert all(d.startswith(".") for d in dirs)
 
 
+class TestDockerVerifierLogMountProbe:
+    @pytest.mark.asyncio
+    async def test_untranslated_bind_mount_uses_copy_out(self, tmp_path):
+        """Guards PR #1040 against raw Docker sockets losing WSL path translation."""
+        from unittest.mock import AsyncMock
+
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.rollout_paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+        sandbox._logs_are_mounted = True
+        sandbox.logger = docker_module.logger
+        sandbox.exec = AsyncMock(
+            return_value=ExecResult(stdout="", stderr="", return_code=1)
+        )
+
+        await sandbox._probe_verifier_log_mount()
+
+        assert sandbox.is_mounted is False
+        assert not list(sandbox.rollout_paths.verifier_dir.iterdir())
+        command = sandbox.exec.await_args.args[0]
+        assert command.startswith("test -f /logs/verifier/.benchflow-mount-probe-")
+
+    @pytest.mark.asyncio
+    async def test_visible_bind_mount_keeps_mounted_fast_path(self, tmp_path):
+        """Guards PR #1040 by preserving Docker's normal mounted fast path."""
+        from unittest.mock import AsyncMock
+
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.rollout_paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+        sandbox._logs_are_mounted = True
+        sandbox.logger = docker_module.logger
+        sandbox.exec = AsyncMock(
+            return_value=ExecResult(stdout="", stderr="", return_code=0)
+        )
+
+        await sandbox._probe_verifier_log_mount()
+
+        assert sandbox.is_mounted is True
+        assert not list(sandbox.rollout_paths.verifier_dir.iterdir())
+
+
 class TestDockerExecEnvSecrecy:
     """DockerSandbox.exec must not leak env vars via `-e KEY=VALUE` flags.
 

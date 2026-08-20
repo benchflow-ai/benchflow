@@ -11,7 +11,9 @@
   `0` / `1` / `2` scores with raw and gated quality plus publication bands in
   the report. Blocker weights are excluded from quality, and the wrapper reward
   remains a structural-validity signal. Existing three-field v0.1 rubrics keep
-  their `pass` / `fail` / `not_applicable` behavior unchanged.
+  their `pass` / `fail` / `not_applicable` behavior unchanged. Docker runs now
+  probe whether verifier-log bind mounts are genuinely visible to the container
+  and fall back to explicit copy-out when path translation is unavailable.
 
 ## 0.7.4 — 2026-08-16
 
