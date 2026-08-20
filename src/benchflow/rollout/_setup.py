@@ -437,7 +437,14 @@ async def _publish_trajectory_for_verifier(
     payload = redact_acp_trajectory_jsonl(trajectory) + "\n"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "acp_trajectory.jsonl").write_text(payload)
-    await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
+    # Only defensive: mounted backends already have /logs/agent from the bind
+    # mount, and remote ones fail loudly on the upload below if it is missing.
+    # Publishing runs after the agent finished, so a slow or failing exec here
+    # must not discard an otherwise complete rollout.
+    try:
+        await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
+    except Exception as exc:
+        logger.warning(f"Could not pre-create /logs/agent, publishing anyway: {exc}")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         f.write(payload)
         tmp_path = f.name
