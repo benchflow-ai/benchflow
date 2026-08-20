@@ -852,10 +852,16 @@ class DockerSandbox(BaseSandbox):
         branch child's verifier wrote its ``reward.txt`` into a container-local
         directory nobody read, and the run reported a fabricated 0.0.
 
-        Fails closed: if the live container cannot be inspected, restore raises
-        rather than creating a container whose host config is unknown.
+        Fails closed: if the live container cannot be resolved or inspected,
+        restore raises :class:`~benchflow.sandbox.protocol.SandboxRestoreHostConfigUnavailable`
+        rather than creating a container whose host config is unknown. Both
+        halves matter — there is no host config to read once ``main`` is gone,
+        and a mountless replacement is the exact regression above.
         """
-        from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
+        from benchflow.sandbox.protocol import (
+            SandboxRestoreHostConfigUnavailable,
+            SandboxSnapshotNotSupported,
+        )
 
         if image.provider != "docker":
             raise SandboxSnapshotNotSupported(
@@ -868,23 +874,31 @@ class DockerSandbox(BaseSandbox):
         default_network = f"{project_name}_default"
 
         container_id = await self._main_container_id()
-        if container_id:
-            # Inspected *before* removal — the host config only exists while
-            # the container does.
-            replayed = _replayed_run_args(
-                await self._inspect_container(container_id),
-                default_network=default_network,
+        if not container_id:
+            raise SandboxRestoreHostConfigUnavailable(
+                f"DockerSandbox.restore({image.ref!r}) cannot resolve the "
+                f"'main' container of compose project {project_name!r}: "
+                "`docker compose ps -q main` named none, so its bind mounts, "
+                "network and resource limits cannot be read and the "
+                "replacement cannot be made equivalent to it. Restoring "
+                "anyway would create a mountless container that looks healthy "
+                "while every file the sandbox writes to /logs stays inside "
+                "it. The container was live when snapshot() committed this "
+                "image; something removed it since."
             )
-            await self._docker_cli(["stop", container_id])
-            await self._docker_cli(["rm", "-f", container_id])
-        else:
-            replayed = ["--network", default_network]
-            self.logger.warning(
-                "No live 'main' container to inspect before restoring %s — the "
-                "replacement is created with no bind mounts, so anything the "
-                "sandbox writes to a mounted path stays inside the container",
-                image.ref,
-            )
+        # Inspected *before* removal — the host config only exists while
+        # the container does.
+        try:
+            inspected = await self._inspect_container(container_id)
+        except RuntimeError as exc:
+            raise SandboxRestoreHostConfigUnavailable(
+                f"DockerSandbox.restore({image.ref!r}) cannot read the host "
+                f"config of the 'main' container {container_id!r}, so the "
+                f"replacement cannot be made equivalent to it: {exc}"
+            ) from exc
+        replayed = _replayed_run_args(inspected, default_network=default_network)
+        await self._docker_cli(["stop", container_id])
+        await self._docker_cli(["rm", "-f", container_id])
 
         new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
 
