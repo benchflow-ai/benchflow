@@ -361,7 +361,9 @@ class TestDockerRestoreRebuildsTheContainer:
     host saw nothing, and the branch child was reported as ``0.00``.
     """
 
-    async def _restore_with(self, tmp_path, monkeypatch, inspect_result):
+    async def _restore_with(
+        self, tmp_path, monkeypatch, inspect_result, container_id="abc123"
+    ):
         import json as _json
 
         from benchflow.sandbox._base import ExecResult
@@ -370,7 +372,7 @@ class TestDockerRestoreRebuildsTheContainer:
         calls: list[list[str]] = []
 
         async def fake_main_container_id():
-            return "abc123"
+            return container_id
 
         async def fake_docker_cli(args, check=True):
             calls.append(list(args))
@@ -415,6 +417,63 @@ class TestDockerRestoreRebuildsTheContainer:
         """Unknown host config is not a licence to create a container without one."""
         with pytest.raises(RuntimeError, match="docker inspect"):
             await self._restore_with(tmp_path, monkeypatch, 1)
+
+    async def test_restore_fails_closed_when_there_is_no_container_to_inspect(
+        self, tmp_path, monkeypatch
+    ):
+        """The other half of "fails closed" — no ``main`` container at all.
+
+        Guards the fix from "fix(sandbox): restore fails closed when the
+        container cannot be inspected". The inspect-failure path above raised,
+        but the *unresolvable* path logged a warning and fell through to
+        ``replayed = ["--network", default_network]`` — a container with no
+        bind mounts, which is precisely the regression the mount replay was
+        added to fix: the verifier writes ``reward.txt`` into a container-local
+        ``/logs``, the host sees nothing, and the branch child is reported as
+        ``0.00``. A restore that cannot read the host config cannot reproduce
+        it, so it must not create the replacement.
+        """
+        from benchflow.sandbox.protocol import SandboxRestoreHostConfigUnavailable
+
+        with pytest.raises(SandboxRestoreHostConfigUnavailable) as excinfo:
+            await self._restore_with(
+                tmp_path, monkeypatch, [_LIVE_CONTAINER], container_id=None
+            )
+
+        # names what could not be resolved, not just that something failed
+        assert "'main'" in str(excinfo.value)
+        assert "bf-snap-x" in str(excinfo.value)
+        assert isinstance(excinfo.value, RuntimeError)
+
+    async def test_a_restore_that_fails_closed_leaves_no_container_behind(
+        self, tmp_path, monkeypatch
+    ):
+        """Failing closed means nothing was created *or* destroyed.
+
+        Guards the fix from "fix(sandbox): restore fails closed when the
+        container cannot be inspected". A raise that had already run ``rm -f``
+        would trade a mountless container for no container at all.
+        """
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.protocol import SandboxRestoreHostConfigUnavailable
+
+        sandbox = _docker_sandbox(tmp_path)
+        calls: list[list[str]] = []
+
+        async def fake_main_container_id():
+            return None
+
+        async def fake_docker_cli(args, check=True):
+            calls.append(list(args))
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        monkeypatch.setattr(sandbox, "_main_container_id", fake_main_container_id)
+        monkeypatch.setattr(sandbox, "_docker_cli", fake_docker_cli)
+
+        with pytest.raises(SandboxRestoreHostConfigUnavailable):
+            await sandbox.restore(SandboxImage(provider="docker", ref="bf-snap-x"))
+
+        assert calls == []
 
 
 class TestVerifierMountDecisionIsLive:
