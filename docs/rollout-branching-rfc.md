@@ -85,6 +85,12 @@ No new phase system. The four cascade stages pin to existing transitions in
 
 `env-ready` deliberately precedes `install_agent()` so skills-on/off branches re-run
 skill deployment from a skill-free world (skills are baked in at install time).
+That world is skill-free only when the *branched run itself* is `no-skill`: a
+`with-skill` run's `setup()` injects the pack into the Dockerfile it builds, so its
+`env-ready` image already carries `/skills` and a `no-skill` child would restore the
+pack, deploy nothing on top of it, and still be labelled `no-skill` everywhere. A
+`skill_mode` delta therefore requires a `no-skill` parent and fails closed
+(`BranchParentSkillModeConflict`) otherwise.
 Mid-`execute()` boundaries are cursor positions in the existing tree — the branch
 engine already forks at the cursor; this RFC adds *named* cut-points recorded as
 stage-tagged exchange indices (§3.5).

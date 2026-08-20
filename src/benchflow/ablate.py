@@ -668,6 +668,12 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
         jobs_dir=Path(request.out_dir),
         job_name=PARENT_JOB_NAME,
         rollout_name=task_path.name,
+        # Stated, not defaulted: the arms fork the parent's own ``env-ready``
+        # image, and a with-skill parent bakes its pack into that image — a
+        # ``no-skill`` arm would restore the pack and still be labelled
+        # no-skill. The branch engine refuses that fork; pinning the parent
+        # here is what keeps every ablation on the side of the gate that runs.
+        skill_mode=SKILL_MODE_NO_SKILL,
         snapshot_stages={stage},
         snapshot_layers=request.snapshot_layers,
     )

@@ -73,6 +73,7 @@ from benchflow.branch_stage import (
     validate_stage,
 )
 from benchflow.models import TrajectorySource
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.trajectories.tree import RolloutNode
 
 if TYPE_CHECKING:
@@ -115,10 +116,32 @@ class BranchDeltaNotSupported(NotImplementedError):
     Two cases. ``environment_ref`` and ``config_override`` are schema- and
     provenance-stable but have no execution path at all yet. ``skill_mode``
     does — as a fresh child rollout — but only from the ``env-ready`` stage
-    snapshot, and only when that snapshot carries the container layer; a
-    request that does not satisfy those preconditions fails closed here,
-    before any child runs, rather than running a child that silently ignores
-    its delta or measures a world its restore could not roll back.
+    snapshot, only when that snapshot carries the container layer, and only
+    when the parent itself ran ``no-skill`` (see
+    :class:`BranchParentSkillModeConflict`); a request that does not satisfy
+    those preconditions fails closed here, before any child runs, rather than
+    running a child that silently ignores its delta or measures a world its
+    restore could not roll back.
+    """
+
+
+class BranchParentSkillModeConflict(BranchDeltaNotSupported):
+    """A ``skill_mode`` delta forked from a parent carrying a baked-in pack.
+
+    The precondition the other skill gates cannot see: the *parent's own*
+    skill mode. A ``with-skill`` parent's ``setup()`` injects the pack into
+    the Dockerfile it builds, so the pack is in the image — and the
+    ``env-ready`` snapshot is a commit of that image. A ``no-skill`` child
+    restoring it finds ``/skills`` already there, ``deploy_skills`` correctly
+    deploys nothing on top, and the arm is reported as ``no-skill`` while the
+    agent runs *with* the parent's skills. Nothing downstream can detect that:
+    the child's config, provenance and ablation row all say ``no-skill``.
+
+    So the delta is refused unless the snapshot's world provably carries no
+    pack — i.e. the parent's own recorded skill mode is ``no-skill``, the one
+    mode whose skill policy resolves no host directory and therefore never
+    reaches ``inject_skills_into_dockerfile``. Each arm then deploys its own
+    skills (or none) at install time, over a pack-free image.
     """
 
 
@@ -278,7 +301,7 @@ def _validate_skill_delta(
 ) -> None:
     """Gate a ``skill_mode`` delta before anything is quiesced (RFC §3.3).
 
-    Three preconditions, each a way the delta would otherwise measure nothing:
+    Four preconditions, each a way the delta would otherwise measure nothing:
 
     * **the stage** — skills are deployed by ``install_agent()``, so only the
       ``env-ready`` boundary (captured before it) can vary them; a cursor
@@ -286,6 +309,13 @@ def _validate_skill_delta(
     * **the container layer** — skills live in the container filesystem, so an
       environment-state-only checkpoint cannot roll the parent's pack back and
       a ``no-skill`` child would still find it mounted.
+    * **the parent's own skill mode** — the layer above rolls the container
+      back *to the parent's env-ready image*, and a ``with-skill`` parent
+      baked the pack into that image at build time. Rolling back to it hands
+      a ``no-skill`` child the pack it is supposed to be running without, and
+      every artifact still labels the arm ``no-skill``. Only a parent whose
+      recorded mode is ``no-skill`` provably carries no pack, so anything else
+      raises :class:`BranchParentSkillModeConflict`.
     * **the runner** — a caller-supplied ``run_child`` owns the child's
       execution, so it, not the engine, would decide what the child installs.
 
@@ -315,6 +345,21 @@ def _validate_skill_delta(
             "child would re-install against the parent's skills. Re-capture "
             "the stage with snapshot_layers={'environment', 'sandbox'} (or "
             "{'sandbox'} alone for a stateless environment)."
+        )
+    parent_mode = rollout._config.recorded_skill_mode
+    if parent_mode != SKILL_MODE_NO_SKILL:
+        raise BranchParentSkillModeConflict(
+            f"deltas[{index}].skill_mode={skill_mode!r} cannot fork a parent "
+            f"whose own skill mode is {parent_mode!r}: only a "
+            f"{SKILL_MODE_NO_SKILL!r} parent provably bakes no skill pack "
+            f"into the image its setup() builds, and the "
+            f"{SKILL_DELTA_STAGE!r} snapshot every child restores is a commit "
+            "of that image. A 'no-skill' child of a parent that did bake one "
+            "restores the pack, deploys nothing on top of it, runs *with* the "
+            "parent's skills, and is still recorded as 'no-skill' in its "
+            "config, its provenance and its ablation row. Run the parent with "
+            f"skill_mode={SKILL_MODE_NO_SKILL!r} and let each arm's delta "
+            "deploy its own skills at install time."
         )
     if run_child is not None:
         raise ValueError(
@@ -530,8 +575,11 @@ async def branch(
     the child's user-visible first message and recorded in provenance as a
     content hash. ``skill_mode`` re-runs ``install_agent()`` under the switched
     mode — the with-skill / no-skill ablation; it requires
-    ``at_stage="env-ready"`` with the container layer in that snapshot, and
-    fails closed otherwise. The remaining fields (``environment_ref``,
+    ``at_stage="env-ready"`` with the container layer in that snapshot **and a
+    parent whose own recorded skill mode is ``no-skill``** (a with-skill
+    parent baked its pack into the image the snapshot commits, so a no-skill
+    child would restore it and be mislabeled), and fails closed otherwise.
+    The remaining fields (``environment_ref``,
     ``config_override``) raise :class:`BranchDeltaNotSupported` — fail closed
     before any child runs — until the RFC follow-on executes them.
 

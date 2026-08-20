@@ -46,6 +46,7 @@ from benchflow.rollout_branch import (
     _UNSUPPORTED_DELTA_FIELDS,
     BranchChildExecutionNotSupported,
     BranchDeltaNotSupported,
+    BranchParentSkillModeConflict,
 )
 from benchflow.sandbox.protocol import SandboxImage
 from benchflow.task.paths import RolloutPaths
@@ -655,6 +656,135 @@ async def test_skill_delta_needs_the_container_layer_in_the_snapshot(
     assert "container filesystem" in str(excinfo.value)
     assert rollout._environment.restored == []
     assert planes.deployments == []
+
+
+async def test_skill_delta_cannot_fork_a_parent_that_baked_its_pack_in(
+    tmp_path: Path, monkeypatch
+):
+    """The mislabeled-arm hole: a ``no-skill`` arm of a ``with-skill`` parent.
+
+    Guards the fix from "fix(branch): gate skill deltas on the parent's own
+    skill mode". The gates below it check the stage, the layer and the runner —
+    none of them look at what the *parent* installed. A ``with-skill`` parent's
+    ``setup()`` calls ``inject_skills_into_dockerfile``, so the pack is in the
+    image, and the ``env-ready`` snapshot is a commit of that image. The
+    ``no-skill`` child then restored the pack, resolved no host directory,
+    deployed nothing on top of it — and ran *with* the skills while its
+    ``config.json``, its provenance and the ablation row all said ``no-skill``.
+
+    The first assertion is the mechanism, taken from the parent's own real
+    ``setup()``: the pack is baked into the image the snapshot commits. The
+    rest is the gate.
+    """
+    planes = FakePlanes()
+    task = _task_dir(tmp_path)
+    rollout = _parent(task, tmp_path, planes=planes, skill_mode="with-skill")
+    await rollout.setup()
+    assert planes.dockerfile_injections != [], (
+        "precondition: a with-skill parent bakes the pack into the image its "
+        "env-ready snapshot commits"
+    )
+    _fake_verifier(monkeypatch)
+    await _capture_env_ready(rollout)
+
+    with pytest.raises(BranchParentSkillModeConflict) as excinfo:
+        await rollout.branch_at_stage(
+            "env-ready",
+            2,
+            deltas=[
+                BranchDelta(skill_mode="with-skill"),
+                BranchDelta(skill_mode="no-skill"),
+            ],
+        )
+
+    assert "'with-skill'" in str(excinfo.value)  # names the parent's own mode
+    assert "no-skill" in str(excinfo.value)  # and the mode it must be run in
+    assert isinstance(excinfo.value, BranchDeltaNotSupported)
+    # fail closed before anything is restored, installed or forked
+    assert rollout._env.restored == []
+    assert rollout._environment.restored == []
+    assert planes.deployments == []
+    assert [node for node in rollout.tree.nodes() if "delta" in node.state] == []
+
+
+@pytest.mark.parametrize("parent_mode", ["with-skill", "self-gen"])
+@pytest.mark.parametrize(
+    "deltas",
+    [
+        ["with-skill", "no-skill"],
+        [None, "no-skill"],
+        ["no-skill", None],
+        ["no-skill", "no-skill"],
+    ],
+    ids=["both-arms", "control-then-no-skill", "no-skill-then-control", "both-no-skill"],
+)
+async def test_no_arm_forked_from_a_skilled_parent_can_claim_no_skill(
+    tmp_path: Path, parent_mode: str, deltas: list[str | None]
+):
+    """A mislabeled arm is unobtainable, not merely unlikely.
+
+    Guards the fix from "fix(branch): gate skill deltas on the parent's own
+    skill mode". ``bench eval ablate`` only ever built a ``no-skill`` parent,
+    so the hole was reachable solely through the Python API — which is exactly
+    the caller that has no CLI default protecting it. Every shape of that call
+    that could produce a ``no-skill``-labelled arm over a parent that may have
+    baked a pack in is refused here, and none of them leaves a forked child
+    behind to be reported.
+    """
+    planes = FakePlanes()
+    rollout = _parent(
+        _task_dir(tmp_path), tmp_path, planes=planes, skill_mode=parent_mode
+    )
+    await _capture_env_ready(rollout)
+
+    with pytest.raises(BranchParentSkillModeConflict, match=parent_mode):
+        await rollout.branch_at_stage(
+            "env-ready",
+            2,
+            deltas=[
+                None if mode is None else BranchDelta(skill_mode=mode)
+                for mode in deltas
+            ],
+        )
+
+    assert planes.deployments == []
+    assert [node for node in rollout.tree.nodes() if "delta" in node.state] == []
+
+
+async def test_a_no_skill_parent_is_the_one_the_ablation_forks_from(
+    tmp_path: Path, monkeypatch
+):
+    """The other half of the gate: the parent it *does* accept bakes nothing.
+
+    Guards the fix from "fix(branch): gate skill deltas on the parent's own
+    skill mode" against being tightened into a gate nothing can pass. The
+    accepted parent's own ``setup()`` injects no skills into the Dockerfile, so
+    the image the arms restore carries no pack and each arm's own
+    ``deploy_skills`` is the only thing that puts one there.
+    """
+    planes = FakePlanes()
+    rollout = _parent(
+        _task_dir(tmp_path), tmp_path, planes=planes, skill_mode="no-skill"
+    )
+    await rollout.setup()
+    assert planes.dockerfile_injections == []  # nothing baked into the image
+    _fake_verifier(monkeypatch)
+    await _capture_env_ready(rollout)
+
+    value = await rollout.branch_at_stage(
+        "env-ready",
+        2,
+        deltas=[
+            BranchDelta(skill_mode="with-skill"),
+            BranchDelta(skill_mode="no-skill"),
+        ],
+    )
+
+    assert value == 1.0
+    with_skill, no_skill = planes.deployments
+    assert with_skill["skill_files"] == ["demo"]
+    assert no_skill["skills_dir"] is None
+    assert planes.dockerfile_injections == []  # still nothing built with a pack
 
 
 async def test_skill_delta_with_an_explicit_run_child_is_rejected(tmp_path: Path):
