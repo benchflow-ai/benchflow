@@ -390,6 +390,67 @@ def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) 
     return agent_env.get(mapped_model_env, model)
 
 
+def _codex_launch_config_model(agent_env: dict[str, str]) -> str | None:
+    """The model BenchFlow's own launch config injected into codex, if any.
+
+    ``apply_codex_provider_config`` writes the gateway route into the
+    ``CODEX_CONFIG`` env var (``{"model": <alias>, "model_providers": ...}``),
+    and ``@agentclientprotocol/codex-acp`` applies it at startup — the session
+    then advertises that model as ``currentModelId``.
+    """
+    import json
+
+    from benchflow.agents.codex_config import CODEX_CONFIG_ENV
+
+    raw = agent_env.get(CODEX_CONFIG_ENV)
+    if not raw:
+        return None
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(config, dict):
+        return None
+    model = config.get("model")
+    return model if isinstance(model, str) and model else None
+
+
+def _codex_current_model_id(session: object | None) -> str | None:
+    state = getattr(session, "model_state", None)
+    if not isinstance(state, dict):
+        return None
+    current = state.get("currentModelId")
+    return current if isinstance(current, str) and current else None
+
+
+def _codex_model_owned_by_launch_config(
+    agent: str,
+    acp_model_id: str,
+    session: object | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """True when set_model is doomed AND the launch config already routed it.
+
+    codex-acp@1.6.0 validates ``session/set_model`` strictly against its
+    built-in catalog: a model with no advertised ``model[effort]`` variant is
+    rejected outright — bare ids with "Unsupported format of modelId",
+    suffixed ids with "Unknown model", even when that exact id is already the
+    session's *current* model (verified live 2026-08-21 against
+    ``gpt-5.4-mini``, which 1.6.0 dropped from the catalog). When
+    ``_codex_session_model_id`` found no variant (the id stayed bare) the call
+    can only fail; when BenchFlow's own ``CODEX_CONFIG`` injection is what the
+    session already runs as current, the call is also *unnecessary* — the
+    gateway route is in place, so skip it instead of failing the rollout.
+    """
+    if agent != "codex-acp" or "[" in acp_model_id:
+        return False
+    launch_model = _codex_launch_config_model(agent_env)
+    if launch_model is None:
+        return False
+    current = _codex_current_model_id(session)
+    return current is not None and _codex_model_name(current) == launch_model
+
+
 def _session_config_option_ids(session: object | None) -> set[str]:
     options = getattr(session, "config_options", None)
     if not isinstance(options, (list, tuple)):
@@ -526,6 +587,26 @@ async def _configure_acp_session(
                 config_id=model_option_id,
                 value=acp_model_id,
                 label="model",
+            )
+        elif _codex_model_owned_by_launch_config(
+            agent, acp_model_id, session, agent_env
+        ):
+            # codex-acp@1.6.0 rejects session/set_model for any model outside
+            # its built-in catalog, and BenchFlow's CODEX_CONFIG injection has
+            # already made the gateway route the session's current model — the
+            # call would fail the rollout to request a state that is already
+            # in place. A requested effort is satisfied only if the injected
+            # current id carries it; otherwise the effort step below fails
+            # closed exactly as before.
+            current_model_id = _codex_current_model_id(session)
+            logger.info(
+                f"Skipping ACP session/set_model for {agent} — launch config "
+                f"already owns the session model ({current_model_id!r})"
+            )
+            effort_in_model_id = bool(
+                reasoning_effort
+                and current_model_id is not None
+                and _codex_reasoning_effort(current_model_id) == reasoning_effort
             )
         elif not agent_cfg or agent_cfg.supports_acp_set_model:
             # No model config option advertised/declared — use the legacy

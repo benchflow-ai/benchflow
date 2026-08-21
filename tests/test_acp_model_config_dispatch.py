@@ -114,6 +114,154 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_codex_off_catalog_model_owned_by_launch_config_skips_set_model(
+    tmp_path,
+):
+    """Guards the fix for codex-acp@1.6.0 catalog-validated set_model.
+
+    1.6.0 rejects ``session/set_model`` for any model absent from its built-in
+    catalog ("Unknown model gpt-5.4-mini[medium]", verified live 2026-08-21) —
+    even when that model is already the session's current model via the
+    ``CODEX_CONFIG`` injection ``apply_codex_provider_config`` writes for the
+    LiteLLM gateway route. When the requested model maps to no advertised
+    ``model[effort]`` variant and the session already runs BenchFlow's own
+    injected route, the runtime must skip the doomed call instead of failing
+    the whole rollout."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.6-sol[medium]"},
+                {"modelId": "gpt-5.5[medium]"},
+            ],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="us-openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            LITELLM_MODEL_ALIAS_ENV: "benchflow-us-openai-gpt-5.4-mini",
+            "CODEX_CONFIG": json.dumps(
+                {
+                    "model": "benchflow-us-openai-gpt-5.4-mini",
+                    "model_provider": "benchflow-litellm",
+                }
+            ),
+        },
+    )
+
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_off_catalog_skip_satisfies_effort_carried_by_launch_config(
+    tmp_path,
+):
+    """A requested effort that the CODEX_CONFIG-injected current model already
+    carries is satisfied by the skip — the effort step must not fail closed
+    for an effort that is in place."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [{"modelId": "gpt-5.6-sol[medium]"}],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[xhigh]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="us-openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        reasoning_effort="xhigh",
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": json.dumps({"model": "benchflow-us-openai-gpt-5.4-mini"}),
+        },
+    )
+
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_off_catalog_skip_with_unsatisfied_effort_fails_closed(
+    tmp_path,
+):
+    """When the launch config owns an off-catalog model but does NOT carry the
+    requested effort, there is no channel left to deliver it — the existing
+    effort step must still fail closed rather than silently drop it."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [{"modelId": "gpt-5.6-sol[medium]"}],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[medium]",
+        },
+    )
+    with pytest.raises(RuntimeError, match="does not declare an ACP effort"):
+        await _connect(
+            mock_acp,
+            agent="codex-acp",
+            model="us-openai/gpt-5.4-mini",
+            tmp_path=tmp_path,
+            reasoning_effort="xhigh",
+            agent_env={
+                LITELLM_MODEL_VIA_ENV: "1",
+                "CODEX_CONFIG": json.dumps(
+                    {"model": "benchflow-us-openai-gpt-5.4-mini"}
+                ),
+            },
+        )
+
+    mock_acp.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_in_catalog_model_still_uses_set_model_despite_launch_config(
+    tmp_path,
+):
+    """An in-catalog model keeps the set_model path even when CODEX_CONFIG
+    injected a gateway route: the skip is only for models set_model cannot
+    express (no advertised variant), so the 62cc7e41 bare→``model[effort]``
+    mapping must not regress."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.4-mini[low]"},
+                {"modelId": "gpt-5.4-mini[medium]"},
+            ],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="us-openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": json.dumps({"model": "benchflow-us-openai-gpt-5.4-mini"}),
+        },
+    )
+
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.4-mini[medium]")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_codex_with_model_option_still_uses_set_model(tmp_path):
     """codex-acp@1.6.0 advertises a 'model' config option whose values reject
     the ``model[effort]`` ids its own session/set_model requires (-32602
