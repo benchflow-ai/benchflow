@@ -346,7 +346,9 @@ def test_stage_tag_below_one_fails_closed(bad_tag):
     """A stage tag is a 1-based completed-exchange count — 0/negative is a
     caller bug, rejected as ReplayCutPointError at resolve time."""
     with pytest.raises(ReplayCutPointError, match="1-based"):
-        resolve_cut_point(None, stage_tags={"env-ready": bad_tag}, cut_stage="env-ready")
+        resolve_cut_point(
+            None, stage_tags={"env-ready": bad_tag}, cut_stage="env-ready"
+        )
 
 
 def test_resolve_cut_point_passthrough_without_stage():

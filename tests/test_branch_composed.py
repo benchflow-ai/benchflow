@@ -95,9 +95,7 @@ class NoSnapshotSandbox:
 
     async def snapshot(self, name: str | None = None) -> SandboxImage:
         self.calls.append("sandbox.snapshot")
-        raise SandboxSnapshotNotSupported(
-            "NoSnapshotSandbox does not support snapshot"
-        )
+        raise SandboxSnapshotNotSupported("NoSnapshotSandbox does not support snapshot")
 
     async def restore(self, image: SandboxImage) -> None:
         self.calls.append("sandbox.restore")
@@ -405,9 +403,7 @@ async def test_sandbox_only_branching_on_a_stateless_environment(tmp_path: Path)
     async def run_child(child):
         return next(returns)
 
-    value = await rollout.branch(
-        2, run_child=run_child, snapshot_layers={"sandbox"}
-    )
+    value = await rollout.branch(2, run_child=run_child, snapshot_layers={"sandbox"})
 
     assert value == 0.5
     # one container checkpoint, one restore per child, all from the same image

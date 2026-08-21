@@ -575,7 +575,9 @@ def _mounted_writer(rollout: Rollout, marks: list[str]):
             entry.unlink()
         (paths.verifier_dir / "reward.txt").write_text(f"{mark}\n")
         (paths.verifier_dir / f"{mark}-only.txt").write_text("child-scoped\n")
-        (paths.agent_dir / "acp_trajectory.jsonl").write_text(f'{{"child": "{mark}"}}\n')
+        (paths.agent_dir / "acp_trajectory.jsonl").write_text(
+            f'{{"child": "{mark}"}}\n'
+        )
         (paths.artifacts_dir / "answer.md").write_text(f"{mark} answer\n")
         return 1.0
 
@@ -608,7 +610,9 @@ async def test_branch_children_do_not_clobber_the_parents_verifier_evidence(
     assert (
         paths.verifier_dir / "test-stdout.txt"
     ).read_text() == "parent verifier output\n"
-    assert (paths.agent_dir / "acp_trajectory.jsonl").read_text() == '{"parent": true}\n'
+    assert (
+        paths.agent_dir / "acp_trajectory.jsonl"
+    ).read_text() == '{"parent": true}\n'
     assert (paths.artifacts_dir / "answer.md").read_text() == "the parent's answer\n"
     # nothing of the children's is left mixed into the parent's directories
     assert not (paths.verifier_dir / "child-a-only.txt").exists()
@@ -634,7 +638,9 @@ async def test_each_child_keeps_the_output_it_wrote_to_the_shared_mounts(
     second = children / "n2" / "mounted"
     assert (first / "verifier" / "reward.txt").read_text() == "child-a\n"
     assert (second / "verifier" / "reward.txt").read_text() == "child-b\n"
-    assert (first / "agent" / "acp_trajectory.jsonl").read_text() == '{"child": "child-a"}\n'
+    assert (
+        first / "agent" / "acp_trajectory.jsonl"
+    ).read_text() == '{"child": "child-a"}\n'
     assert (second / "artifacts" / "answer.md").read_text() == "child-b answer\n"
     # each child's directory holds only its own files
     assert not (first / "verifier" / "child-b-only.txt").exists()
