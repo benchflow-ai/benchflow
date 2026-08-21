@@ -838,36 +838,42 @@ async def test_with_skill_against_a_task_without_skills_fails_before_any_child(
     assert planes.deployments == []
 
 
-async def test_an_environment_ref_delta_still_fails_closed(tmp_path: Path):
-    """``environment_ref`` remains the one axis without an execution path in
-    this module's scope — it still fails closed at the env-ready boundary too.
-    (``config_override`` graduated in "feat(branch): execute config_override
-    deltas as fresh rollouts from env-ready" — see
-    tests/test_branch_config_delta.py.)"""
+async def test_an_environment_ref_delta_needs_a_manifest_bound_parent(
+    tmp_path: Path,
+):
+    """``environment_ref`` executes only as a variation of the parent's own
+    bound manifest ("feat(branch): execute service-level environment_ref
+    deltas from env-ready") — a parent with no Environment plane fails closed
+    at the env-ready boundary too, before anything is restored. The executed
+    slice is pinned in tests/test_branch_environment_delta.py."""
     planes = FakePlanes()
     rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
     await _capture_env_ready(rollout)
 
-    with pytest.raises(BranchDeltaNotSupported, match="use_prebuilt_env"):
+    with pytest.raises(BranchDeltaNotSupported, match="no environment manifest"):
         await rollout.branch_at_stage(
             "env-ready", 2, deltas=[None, BranchDelta(environment_ref="env0@outage")]
         )
 
     assert planes.deployments == []
+    assert rollout._env.restored == []
 
 
-def test_the_executable_delta_set_now_contains_config_override():
+def test_every_delta_field_is_executable_and_the_blocklist_is_empty():
     """The blocklist is derived from the schema minus the executable set, so
-    graduating an axis is one edit and every other field stays
-    unsupported-by-default. ``config_override`` joined ``skill_mode`` and
-    ``injected_prompt`` in "feat(branch): execute config_override deltas as
-    fresh rollouts from env-ready"."""
+    graduating an axis is one edit and a future field stays
+    unsupported-by-default. ``config_override`` and ``environment_ref``
+    graduated last ("feat(branch): execute config_override deltas as fresh
+    rollouts from env-ready" / "feat(branch): execute service-level
+    environment_ref deltas from env-ready"), leaving the derived blocklist
+    empty — but still load-bearing the day BranchDelta grows a field."""
     assert set(_EXECUTABLE_DELTA_FIELDS) == {
         "injected_prompt",
         "skill_mode",
         "config_override",
+        "environment_ref",
     }
-    assert set(_UNSUPPORTED_DELTA_FIELDS) == {"environment_ref"}
+    assert set(_UNSUPPORTED_DELTA_FIELDS) == set()
 
 
 # 4. The derived child config

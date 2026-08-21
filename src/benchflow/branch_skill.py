@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from benchflow._utils.config_override import deep_merge
 from benchflow.branch import UnscoredChildError
+from benchflow.branch_delta import BranchDeltaNotSupported
 from benchflow.branch_lineage import branch_child_dir, child_provenance
 from benchflow.branch_stage import STAGE_ENV_READY
 from benchflow.skill_policy import (
@@ -59,6 +60,7 @@ from benchflow.skill_policy import (
 
 if TYPE_CHECKING:
     from benchflow.branch_delta import BranchDelta
+    from benchflow.environment.manifest import EnvironmentManifest
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.trajectories.tree import RolloutNode
 
@@ -87,6 +89,141 @@ SKILL_DELTA_LAYER = FRESH_CHILD_LAYER
 #: ``delta_execution`` in lineage: the child was run as its own Rollout rather
 #: than in place on the parent instance. Absent = the ordinary in-place child.
 EXECUTION_FRESH_ROLLOUT = "fresh-rollout"
+
+
+class BranchEnvironmentImageConflict(BranchDeltaNotSupported):
+    """An ``environment_ref`` delta whose manifest changes the *image*.
+
+    Branching from a snapshot restores the **parent's** container — a commit
+    of the image the parent's manifest named. A child manifest that names a
+    different image (or per-task base image) is asking for a world that
+    snapshot never contained: honoring it would need a rebuild-and-reprovision
+    path, which contradicts branching from a snapshot (the arms would no
+    longer share a byte-identical starting world). Fails closed naming both
+    images; an image-changing environment comparison is two independent runs,
+    not a branch.
+    """
+
+
+def resolve_environment_ref_delta(
+    parent_manifest: EnvironmentManifest | None,
+    environment_ref: str,
+    *,
+    subject: str = "environment_ref delta",
+) -> EnvironmentManifest:
+    """Resolve an ``environment_ref`` delta into the child's manifest (RFC §3.3).
+
+    The executable slice is the documented tool-outage pattern (``env0@prod``
+    vs ``env0@outage``): the *same* image with a *different
+    framework-started service set*. The env-ready snapshot restores the
+    parent's container, whose entrypoint starts nothing when
+    ``owns_lifecycle = false`` — so the running services of the restored world
+    are exactly what the framework provisions, and provisioning the child
+    manifest's set over the restore executes the delta soundly. Everything
+    outside that slice fails closed here, before anything is quiesced:
+
+    * a parent with **no bound manifest** — there is no Environment plane to
+      swap, and the child would run a world the snapshot never contained;
+    * a ref that does not resolve (registry spec or manifest path, through the
+      same :func:`~benchflow.environment.manifest.load_manifest` every run
+      binds with, so the delta stays content-addressed);
+    * a manifest that changes the **image**
+      (:class:`BranchEnvironmentImageConflict` — see its docstring);
+    * an **entrypoint-owned lifecycle** on either side: the restored
+      container's entrypoint (re)starts whatever the image bakes in, so the
+      framework can neither subtract a service from an ``owns_lifecycle``
+      parent nor hand lifecycle ownership to a same-image child — the delta
+      would be recorded but not enforced.
+
+    ``subject`` names the caller's delta in every diagnostic
+    (``deltas[1].environment_ref``, ``arm 'env:env0@outage'``).
+    """
+    from benchflow.environment.manifest import load_manifest
+
+    if parent_manifest is None:
+        raise BranchDeltaNotSupported(
+            f"{subject}={environment_ref!r} cannot execute: the parent bound "
+            "no environment manifest, so there is no Environment plane to "
+            "swap — the child would run against a world its snapshot never "
+            "contained. Bind the parent's world with "
+            "RolloutConfig(environment_manifest=...) (or declare it in "
+            "task.md) and make the delta a variation of it."
+        )
+    try:
+        child_manifest = load_manifest(environment_ref)
+    except Exception as exc:
+        raise BranchDeltaNotSupported(
+            f"{subject}={environment_ref!r} does not resolve to an "
+            f"environment manifest: {exc}"
+        ) from exc
+    if (child_manifest.image, child_manifest.base_image) != (
+        parent_manifest.image,
+        parent_manifest.base_image,
+    ):
+        raise BranchEnvironmentImageConflict(
+            f"{subject}={environment_ref!r} changes the environment image "
+            f"(parent manifest {parent_manifest.name!r} runs "
+            f"image={parent_manifest.image!r} / "
+            f"base_image={parent_manifest.base_image!r}; child manifest "
+            f"{child_manifest.name!r} names image={child_manifest.image!r} / "
+            f"base_image={child_manifest.base_image!r}). A branch child "
+            "restores the parent's committed container, so an image-changing "
+            "environment delta needs a rebuild path — which contradicts "
+            "branching from a snapshot. Run the two environments as "
+            "independent evaluations instead."
+        )
+    if parent_manifest.owns_lifecycle or child_manifest.owns_lifecycle:
+        raise BranchDeltaNotSupported(
+            f"{subject}={environment_ref!r} needs framework-started services "
+            "on both sides (owns_lifecycle = false), got parent "
+            f"owns_lifecycle={parent_manifest.owns_lifecycle} / child "
+            f"owns_lifecycle={child_manifest.owns_lifecycle}: the restored "
+            "container's entrypoint (re)starts whatever the image bakes in, "
+            "so the framework cannot vary an entrypoint-owned service set — "
+            "the delta would be recorded in provenance but not enforced in "
+            "the world. Only the service-level slice (same image, different "
+            "[[environment.services]]) is executable from a snapshot."
+        )
+    return child_manifest
+
+
+async def provision_child_environment(
+    child_rollout: Rollout, manifest: EnvironmentManifest
+) -> None:
+    """Provision ``manifest``'s environment plane over the child's sandbox.
+
+    The fresh-child counterpart of the ``start()`` provisioning step the child
+    deliberately skips: the engine has already restored the parent's container
+    (killing every framework-started service with it) and rolled back the
+    declared environment state, so what runs *now* decides the child's service
+    topology. Building the plane from the **child's own** manifest is what
+    executes a service-level ``environment_ref`` delta — and re-provisioning
+    the parent's manifest for every other child is what keeps the control arm
+    honest: without it, a zero-delta arm of a framework-started environment
+    scores a world with no services at all and calls itself the baseline.
+
+    Mirrors ``start()`` exactly: provision, then gate on readiness before the
+    agent is installed. The provisioned plane is attached as the child's own
+    ``_environment`` (before the readiness gate, so ``cleanup()`` tears its
+    services down even when the gate fails).
+    """
+    environment = child_rollout._planes.manifest_environment(
+        manifest, sandbox=child_rollout.env
+    )
+    child_rollout._environment = environment
+    await environment.provision(ctx={"task_id": child_rollout._config.task_path.name})
+    probe = await environment.readiness()
+    if not probe.ready:
+        raise RuntimeError(
+            f"environment plane not ready for branch child "
+            f"{child_rollout._config.rollout_name}: {probe.error} "
+            f"(checked: {probe.checked})"
+        )
+    logger.info(
+        "branch child environment '%s' ready (%d probe(s))",
+        manifest.name,
+        len(probe.checked),
+    )
 
 
 def fresh_child_skill_mode(config: RolloutConfig, skill_mode: str | None) -> str:
@@ -163,6 +300,7 @@ def child_skill_config(
     rollout_name: str,
     source_provenance: dict[str, Any] | None = None,
     config_override: dict[str, Any] | None = None,
+    environment_manifest: EnvironmentManifest | None = None,
 ) -> RolloutConfig:
     """The parent's config with the delta's fields replaced — nothing else moved.
 
@@ -185,6 +323,12 @@ def child_skill_config(
     merged keys + sha exactly as a run-level overlay is recorded (#790).
     ``None`` inherits the parent's overlay unchanged — the zero delta.
 
+    ``environment_manifest`` is the child's *resolved* ``environment_ref``
+    delta (see :func:`resolve_environment_ref_delta`): when set it replaces
+    the parent's manifest wholesale, so the child's ``config.json`` records
+    the world it actually provisioned; ``None`` inherits the parent's — every
+    non-environment child re-provisions the parent's own manifest.
+
     The user is re-materialized from ``loop_strategy`` when the parent's was
     strategy-built — ``RolloutConfig`` rejects carrying both, and the strategy
     rebuilds an identical user — and left alone otherwise.
@@ -202,6 +346,11 @@ def child_skill_config(
         job_name=job_name,
         rollout_name=rollout_name,
         config_override=merged_override,
+        environment_manifest=(
+            environment_manifest
+            if environment_manifest is not None
+            else config.environment_manifest
+        ),
         user=None if config.loop_strategy_spec is not None else config.user,
         source_provenance=source_provenance,
     )
@@ -220,7 +369,12 @@ async def run_fresh_child(
     (``use_prebuilt_env``) and re-runs installation from it: this is the call
     that installs the agent binary the restore removed and redeploys — or
     refuses to deploy — the skill pack. ``start()`` is skipped (see the module
-    docstring).
+    docstring) — except for its one piece the restore undoes: when the child's
+    config binds an environment manifest, the manifest's plane is provisioned
+    over the restored sandbox and gated on readiness before ``install_agent()``
+    (:func:`provision_child_environment`), which is both how a service-level
+    ``environment_ref`` delta executes and how every other child gets the
+    parent's own services back.
 
     ``cleanup()`` always runs, including on failure: it releases the child's own
     resources (its LiteLLM runtime, its staged task copy) and, because the
@@ -247,6 +401,10 @@ async def run_fresh_child(
     rewards: dict | None = None
     try:
         await child_rollout.setup()
+        if config.environment_manifest is not None:
+            await provision_child_environment(
+                child_rollout, config.environment_manifest
+            )
         await child_rollout.install_agent()
         await child_rollout.connect()
         await child_rollout.execute(prompts)
@@ -310,6 +468,17 @@ def make_fresh_child_runner(
     )
     injected_prompt = delta.injected_prompt if delta is not None else None
     config_override = delta.config_override if delta is not None else None
+    environment_ref = delta.environment_ref if delta is not None else None
+    # Resolved through the same gates the engine validated the delta against
+    # (one source of truth), so a registry that changed between validation and
+    # run still cannot hand the child an unbranchable manifest.
+    environment_manifest = (
+        resolve_environment_ref_delta(
+            rollout._config.environment_manifest, environment_ref
+        )
+        if environment_ref is not None
+        else None
+    )
 
     async def _runner(child: RolloutNode) -> float:
         jobs_dir, job_name, rollout_name = child_run_location(
@@ -325,6 +494,7 @@ def make_fresh_child_runner(
             job_name=job_name,
             rollout_name=rollout_name,
             config_override=config_override,
+            environment_manifest=environment_manifest,
             source_provenance=child_provenance(
                 str(run_dir) if run_dir is not None else str(rollout._config.task_path),
                 branch_stage=branch_stage,
@@ -334,12 +504,17 @@ def make_fresh_child_runner(
             ),
         )
         logger.info(
-            "branch child %s runs as a fresh rollout with skill_mode=%s%s",
+            "branch child %s runs as a fresh rollout with skill_mode=%s%s%s",
             child.id,
             skill_mode,
             (
                 f" config_override_keys={sorted(config_override)}"
                 if config_override
+                else ""
+            ),
+            (
+                f" environment_ref={environment_ref!r}"
+                if environment_ref is not None
                 else ""
             ),
         )
