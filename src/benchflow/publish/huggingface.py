@@ -79,6 +79,77 @@ def publish_folder_to_hf(
     )
 
 
+def publish_folder_to_bucket(
+    folder: Path,
+    *,
+    bucket_id: str,
+    path_in_repo: str = "",
+    private: bool = False,
+) -> HfPublishResult:
+    if not folder.is_dir():
+        raise ValueError(f"publish source folder not found: {folder}")
+    try:
+        from huggingface_hub import create_bucket, sync_bucket
+        from huggingface_hub.errors import HfHubHTTPError
+    except ImportError as exc:  # pragma: no cover - depends on env
+        raise ValueError(
+            "huggingface_hub with bucket support (create_bucket/sync_bucket) is "
+            "required for --publish-bucket; upgrade huggingface_hub"
+        ) from exc
+    try:
+        create_bucket(bucket_id, private=private)
+    except HfHubHTTPError as exc:
+        if exc.response is None or exc.response.status_code != 409:
+            raise
+    prefix = path_in_repo.strip("/")
+    remote = (
+        f"hf://buckets/{bucket_id}/{prefix}" if prefix else f"hf://buckets/{bucket_id}"
+    )
+    sync_bucket(str(folder), remote)
+    return HfPublishResult(
+        repo_id=bucket_id,
+        repo_type="bucket",
+        path_in_repo=prefix,
+        url=f"https://huggingface.co/buckets/{bucket_id}/resolve/{prefix}",
+    )
+
+
+def open_eval_results_pr(
+    *,
+    model_repo: str,
+    dataset_id: str,
+    task_id: str,
+    value: float,
+    source_url: str | None = None,
+    notes: str | None = None,
+) -> str | None:
+    try:
+        import yaml
+        from huggingface_hub import CommitOperationAdd, HfApi
+    except ImportError as exc:  # pragma: no cover - depends on env
+        raise ValueError(
+            "huggingface_hub is required for --eval-results-model"
+        ) from exc
+    entry: dict = {"dataset": {"id": dataset_id, "task_id": task_id}, "value": value}
+    if source_url:
+        entry["source"] = {"url": source_url}
+    if notes:
+        entry["notes"] = notes
+    content = yaml.safe_dump([entry], sort_keys=False).encode("utf-8")
+    commit = HfApi().create_commit(
+        repo_id=model_repo,
+        repo_type="model",
+        operations=[
+            CommitOperationAdd(
+                path_in_repo=".eval_results/benchflow.yaml", path_or_fileobj=content
+            )
+        ],
+        commit_message=f"Add {dataset_id} eval results",
+        create_pr=True,
+    )
+    return commit.pr_url
+
+
 def publish_file_to_hf(
     file_path: Path,
     *,

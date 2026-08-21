@@ -142,6 +142,69 @@ def test_eval_run_writes_manifest_health_and_canonical_artifacts(
     assert (canonical_jobs / "task-a__abc" / "result.json").is_file()
 
 
+def test_eval_run_publish_bucket_writes_readme_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """--publish-bucket writes a README.md run summary into job_dir before upload."""
+    tasks = tmp_path / "tasks"
+    _write_task(tasks / "task-a")
+
+    async def fake_run(self):
+        job_dir = self._jobs_dir / self._job_name
+        _write_rollout(job_dir / "task-a__abc", "task-a")
+        return SimpleNamespace(
+            job_name=self._job_name,
+            passed=1,
+            failed=0,
+            errored=0,
+            verifier_errored=0,
+            total=1,
+            score=1.0,
+            score_excl_errors=1.0,
+        )
+
+    monkeypatch.setattr(Evaluation, "run", fake_run)
+
+    captured: dict[str, Path] = {}
+
+    def fake_publish_folder_to_bucket(
+        folder, *, bucket_id, path_in_repo="", private=False
+    ):
+        captured["folder"] = folder
+        return SimpleNamespace(url=f"https://huggingface.co/buckets/{bucket_id}")
+
+    import benchflow.publish.huggingface as hf_publish
+
+    monkeypatch.setattr(
+        hf_publish, "publish_folder_to_bucket", fake_publish_folder_to_bucket
+    )
+
+    jobs_dir = tmp_path / "jobs"
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(tasks),
+            "--agent",
+            "oracle",
+            "--jobs-dir",
+            str(jobs_dir),
+            "--publish-bucket",
+            "org/some-bucket",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    readme = captured["folder"] / "README.md"
+    assert readme.is_file()
+    text = readme.read_text()
+    assert "task-a" in text
+    assert "Mean reward: 1.000" in text
+    assert "`oracle`" in text
+
+
 def test_sharded_health_and_selection_discover_worker_shards(tmp_path: Path) -> None:
     jobs_dir = tmp_path / "jobs"
     advertised_job_dir = jobs_dir / "worker-sharded"

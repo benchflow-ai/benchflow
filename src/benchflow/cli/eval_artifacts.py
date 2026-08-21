@@ -66,7 +66,9 @@ def postprocess_eval_artifacts(
     eval_config = _apply_source_sidecar(eval_config, resolved_tasks_dir)
     from benchflow.eval_artifacts import (
         TaskManifestOptions,
+        build_health_summary,
         materialize_canonical_job,
+        render_run_summary_markdown,
         write_canonical_selection,
         write_health_summary,
         write_task_manifest,
@@ -138,6 +140,12 @@ def postprocess_eval_artifacts(
             console.print(
                 f"[green]Canonical jobs:[/green] {escape(str(req.canonical_jobs_dir))}"
             )
+    if req.publish_hf is not None or req.publish_bucket is not None:
+        (job_dir / "README.md").write_text(
+            render_run_summary_markdown(
+                job_dir, agent=eval_config.agent, model=eval_config.model
+            )
+        )
     if req.publish_hf is not None:
         from benchflow.publish.huggingface import publish_folder_to_hf
 
@@ -154,6 +162,44 @@ def postprocess_eval_artifacts(
             print_error(str(exc))
             raise typer.Exit(1) from None
         console.print(f"[green]Published HF artifacts:[/green] {escape(published.url)}")
+    if req.publish_bucket is not None:
+        from benchflow.publish.huggingface import publish_folder_to_bucket
+
+        prefix = req.hf_prefix or job_dir.name
+        try:
+            published = publish_folder_to_bucket(
+                job_dir, bucket_id=req.publish_bucket, path_in_repo=prefix
+            )
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
+        console.print(f"[green]Published HF bucket:[/green] {escape(published.url)}")
+    if req.eval_results_model is not None:
+        from benchflow.publish.huggingface import open_eval_results_pr
+
+        rewards = [
+            row["reward"]
+            for row in build_health_summary(job_dir)["rows"]
+            if row["scored"]
+        ]
+        if rewards:
+            value = round(100.0 * sum(rewards) / len(rewards), 2)
+            try:
+                pr_url = open_eval_results_pr(
+                    model_repo=req.eval_results_model,
+                    dataset_id=cast(str, req.eval_results_dataset),
+                    task_id=cast(str, req.eval_results_task),
+                    value=value,
+                )
+            except ValueError as exc:
+                print_error(str(exc))
+                raise typer.Exit(1) from None
+            console.print(f"[green]Eval-results PR:[/green] {escape(pr_url or '')}")
+        else:
+            console.print(
+                "[yellow]--eval-results-model set but no scored rollouts were "
+                "found; skipping eval-results PR[/yellow]"
+            )
 
 
 def _load_eval_matrix(path: Path) -> dict[str, dict]:
