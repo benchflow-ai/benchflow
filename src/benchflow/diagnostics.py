@@ -334,6 +334,36 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
         )
 
 
+@dataclass
+class NoToolCallCompletionDiagnostic(Diagnostic):
+    """Chat-only completion: the agent produced model output (tokens and at
+    least one agent message) but ended its turn without issuing a single tool
+    call (#988). Unlike the api-error verdicts this is agent/model BEHAVIOR,
+    not an infrastructure failure — the reward and error channels are left
+    untouched (``category`` stays None), so the slot remains a scored fail.
+    The diagnostic only makes the no-op visible in result.json, the CLI line,
+    and the job summary so baseline sweeps don't read these rollouts as
+    genuine attempts."""
+
+    total_tokens: int = 0
+    n_output_tokens: int = 0
+    n_agent_messages: int = 0
+    n_message_chars: int = 0
+
+    field: ClassVar[str] = "no_tool_call_completion_info"
+    category: ClassVar[str | None] = None
+    summary_description: ClassVar[str] = (
+        "completed without a single tool call (chat-only)"
+    )
+
+    def format_issue(self, task_name: str) -> str:
+        return (
+            f"{task_name}: chat-only completion — agent produced "
+            f"{self.n_output_tokens or self.total_tokens} tokens across "
+            f"{self.n_agent_messages} message(s) but made 0 tool calls"
+        )
+
+
 # Public registry — every diagnostic kind goes here exactly once.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     IdleTimeoutDiagnostic,
@@ -343,6 +373,7 @@ DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     VerifierTimeoutDiagnostic,
     ProviderApiErrorDiagnostic,
     SuspectedApiErrorDiagnostic,
+    NoToolCallCompletionDiagnostic,
 )
 
 # field_name → Diagnostic class, for check_results lookup.

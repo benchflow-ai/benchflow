@@ -89,6 +89,7 @@ from benchflow.contracts import (
 from benchflow.contracts import RoundResult as RoundResult
 from benchflow.diagnostics import (
     AgentPromptTimeoutError,
+    NoToolCallCompletionDiagnostic,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
@@ -2625,6 +2626,77 @@ class Rollout:
         # excluded from score denominators (rerun-able, never counted).
         self._rewards = None
 
+    def _maybe_flag_no_tool_completion(self) -> None:
+        """Flag a chat-only completion: model output but zero tool calls (#988).
+
+        The complement of the zero-signal heuristic above: the agent DID
+        respond (tokens, agent messages) yet ended its turn without a single
+        tool call — typically narrating intent ("Proceeding to add ...") and
+        stopping. That is agent/model behavior, not an infrastructure
+        failure, so unlike the api-error verdicts this leaves reward and
+        error untouched (the slot stays a scored fail); it only records a
+        diagnostic so result.json, the CLI line, and the job summary make
+        the no-op visible instead of letting baseline sweeps read it as a
+        genuine attempt.
+        """
+        if self._error is not None:
+            return
+        # Same rationale as _maybe_classify_api_error: only judge rollouts
+        # where the agent actually ran (#389).
+        if not getattr(self, "_executed_prompts", None):
+            return
+        if getattr(self, "_n_tool_calls", 0):
+            return
+        config = getattr(self, "_config", None)
+        # Oracle rollouts run the reference solution directly — zero tool
+        # calls is their normal shape (they also record no executed prompts,
+        # so this is belt-and-braces).
+        if config is not None and config.primary_agent == "oracle":
+            return
+        # Same guard as _maybe_classify_api_error: agents whose trajectories
+        # carry no tool telemetry (e.g. omnigent's flat session events) look
+        # tool-free on every healthy run, so the zero-tool signal is
+        # meaningless there. TODO(#988): swap for a per-adapter
+        # tool-telemetry capability flag if maintainers prefer that gate.
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        if config is not None and uses_native_subscription_auth(
+            config.agent,
+            config.model,
+            getattr(self, "_agent_env", None) or {},
+        ):
+            return
+        trajectory = getattr(self, "_trajectory", None) or []
+        # The tool-call counter and the trajectory can disagree on salvage
+        # paths: the scraped-trajectory fallback (e.g. gemini's native
+        # trajectory file) rebuilds tool_call events the ACP session never
+        # counted, so _n_tool_calls stays 0 while the trajectory shows real
+        # tool activity. Any tool_call event means the agent DID act.
+        if any(
+            isinstance(e, dict) and e.get("type") == "tool_call" for e in trajectory
+        ):
+            return
+        agent_messages = [
+            e
+            for e in trajectory
+            if isinstance(e, dict) and e.get("type") == "agent_message"
+        ]
+        # No agent messages either: that is a zero-signal/capture question
+        # owned by the verdicts above (#982), not a chat-only completion.
+        if not agent_messages:
+            return
+        usage_metrics = getattr(self, "_usage_metrics", None) or {}
+        self._diagnostics.set(
+            NoToolCallCompletionDiagnostic(
+                total_tokens=_as_nonnegative_int(usage_metrics.get("total_tokens")),
+                n_output_tokens=_as_nonnegative_int(
+                    usage_metrics.get("n_output_tokens")
+                ),
+                n_agent_messages=len(agent_messages),
+                n_message_chars=sum(len(e.get("text") or "") for e in agent_messages),
+            )
+        )
+
     def _loop_strategy_metadata(self) -> dict[str, Any] | None:
         """Loop-strategy run summary for the result.json ``loop`` block.
 
@@ -2649,6 +2721,7 @@ class Rollout:
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         self._maybe_classify_api_error()
+        self._maybe_flag_no_tool_completion()
         # For Scene/multi-turn rollouts, each execute() call records the
         # prompt(s) it sent into self._executed_prompts. Use that as the
         # authoritative prompt list so n_prompts and prompts.json reflect

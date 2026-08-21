@@ -1164,20 +1164,21 @@ class Evaluation:
         finally:
             _PRUNE_LOCK.release()
 
-    def _enrich_payload_with_persisted_timing(
+    def _enrich_payload_with_persisted_fields(
         self, payload: dict, result: RolloutResult
     ) -> None:
-        """Copy ``timing`` from the rollout's on-disk result.json into payload.
+        """Copy persisted-only fields from the rollout's on-disk result.json.
 
-        ``RolloutResult`` does not carry phase timing, but the rollout writer
-        (``rollout.py``) persists it under ``rollout_dir/result.json``. Reading
-        it back lets ``phase_timing_summary`` aggregate phase totals for fresh
-        runs (issue #501). Best-effort: legacy SDK paths that mock the writer
-        — or any case where no rollout_name is set — silently leave timing
-        absent rather than crash summary generation.
+        ``RolloutResult`` does not carry phase timing or the structured
+        diagnostic payloads, but the rollout writer (``rollout.py``) persists
+        both under ``rollout_dir/result.json``. Reading them back lets
+        ``phase_timing_summary`` (issue #501) and the diagnostic counters
+        (#988) aggregate fresh runs the same way they cover resumed tasks,
+        which are read straight from result.json. Best-effort: legacy SDK
+        paths that mock the writer — or any case where no rollout_name is
+        set — silently leave the fields absent rather than crash summary
+        generation.
         """
-        if "timing" in payload:
-            return
         rollout_name = getattr(result, "rollout_name", "") or ""
         if not rollout_name:
             return
@@ -1187,11 +1188,15 @@ class Evaluation:
         try:
             persisted = json.loads(rfile.read_text())
         except (json.JSONDecodeError, OSError) as e:
-            logger.debug("Could not read persisted timing from %s: %s", rfile, e)
+            logger.debug("Could not read persisted fields from %s: %s", rfile, e)
             return
         timing = persisted.get("timing")
-        if isinstance(timing, dict):
+        if "timing" not in payload and isinstance(timing, dict):
             payload["timing"] = timing
+        for diag_cls in DIAGNOSTIC_REGISTRY:
+            info = persisted.get(diag_cls.field)
+            if diag_cls.field not in payload and isinstance(info, dict):
+                payload[diag_cls.field] = info
 
     async def _run_single_task(
         self, task_dir: Path, cfg: EvaluationConfig
@@ -1403,8 +1408,11 @@ class Evaluation:
             if isinstance(reward, (int, float)) and not isinstance(reward, bool)
             else ""
         )
+        # Chat-only completions (#988): the agent answered but never called a
+        # tool — mark the line so a sweep log shows the no-op at a glance.
+        no_op = ", no-op" if getattr(result, "no_tool_completion", False) else ""
         logger.info(
-            f"[{status}] {td.name} ({reward_part}tools={result.n_tool_calls}){err}"
+            f"[{status}] {td.name} ({reward_part}tools={result.n_tool_calls}{no_op}){err}"
         )
         self._fire_progress(self._on_result, td.name, result)
 
@@ -1799,10 +1807,11 @@ class Evaluation:
                 task_name=name,
             )
             # ``rollout_result_payload`` is RolloutResult-driven and so cannot
-            # see ``timing`` (it lives only in the persisted result.json).
-            # Pull it from disk so phase-timing aggregates cover fresh pairs
-            # the same way they cover resumed tasks (issue #501).
-            self._enrich_payload_with_persisted_timing(payload, result)
+            # see ``timing`` or the diagnostic payloads (they live only in
+            # the persisted result.json). Pull them from disk so phase-timing
+            # (#501) and diagnostic aggregates (#988) cover fresh pairs the
+            # same way they cover resumed tasks.
+            self._enrich_payload_with_persisted_fields(payload, result)
             all_results[name] = payload
 
         # EvaluationResult is the score/invariant view. summary.json is the
@@ -1890,6 +1899,9 @@ class Evaluation:
             "error": audit_counts["errored"],
             "verifier_errored": audit_counts["verifier_errored"],
             "idle_timeout": error_category_counts.get(IDLE_TIMEOUT, 0),
+            "no_tool_call_completions": sum(
+                1 for r in all_results.values() if r.get("no_tool_call_completion_info")
+            ),
             "error_categories": error_category_counts or None,
             "verifier_error_categories": verifier_error_category_counts or None,
             "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
@@ -1968,13 +1980,17 @@ class Evaluation:
         # new diagnostic class adds its warning automatically (issue #503).
         for diag_cls in DIAGNOSTIC_REGISTRY:
             if diag_cls.category is None:
-                continue
-            counts = (
-                error_category_counts
-                if diag_cls.channel == "error"
-                else verifier_error_category_counts
-            )
-            count = counts.get(diag_cls.category, 0)
+                # Category-less diagnostics are behavior flags (e.g. chat-only
+                # completions, #988) that surface no error channel — count
+                # them by field presence in result.json instead.
+                count = sum(1 for r in all_results.values() if r.get(diag_cls.field))
+            else:
+                counts = (
+                    error_category_counts
+                    if diag_cls.channel == "error"
+                    else verifier_error_category_counts
+                )
+                count = counts.get(diag_cls.category, 0)
             if count > 0:
                 logger.warning(summary_warning(diag_cls, count, job_result.total))
 
