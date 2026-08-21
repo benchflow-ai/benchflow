@@ -389,6 +389,11 @@ def stitched_trajectory_lines(
     the source file can neither appear in the stitched prefix nor shift the
     cut. The live suffix is the exchanges the proxy captured after the
     cut-point, redacted on the way out.
+
+    ``max_recorded`` is the prefix that was *served*, which is the configured
+    cut only when the agent consumed all of it — callers pass the router's
+    served count in host proxy mode, so a run the agent abandoned early does
+    not get recorded responses it never received appended to its trajectory.
     """
     lines = list(recorded_lines)
     if max_recorded is not None:
@@ -427,7 +432,13 @@ def _usage_int(usage: dict[str, Any], *keys: str) -> int:
 def summarize_llm_trajectory_usage(
     trajectory_path: Path, *, n_recorded: int
 ) -> ContinuedUsageSummary:
-    """Recover aggregate token usage from provider responses in a trajectory."""
+    """Recover aggregate token usage from provider responses in a trajectory.
+
+    ``n_recorded`` is the recorded/live boundary inside the stitched file and
+    must be the same prefix length that produced it (the served count in host
+    proxy mode, the configured one in sandbox mode) — otherwise live tokens
+    are billed as replayed, or the reverse.
+    """
     input_tokens = 0
     output_tokens = 0
     cache_read = 0
@@ -557,6 +568,48 @@ def update_continued_metadata(
     result_path.write_text(json.dumps(result, indent=2) + "\n")
 
 
+def write_continuation_artifacts(
+    rollout_dir: Path,
+    run: RunFolder,
+    live_exchanges: list[LLMExchange],
+    *,
+    n_recorded: int,
+    cut_point: dict[str, Any],
+    live_model: str | None,
+) -> Path:
+    """Write the stitched trajectory and its metadata on one replay basis.
+
+    The three artifacts a continuation leaves behind only make sense together:
+    the stitched ``llm_trajectory.jsonl`` (recorded prefix + live suffix), the
+    recorded-vs-live token split derived from it, and the ``cut_point``
+    provenance block. Producing them here, from a single ``n_recorded``,
+    is what keeps them from disagreeing — a prefix length used for two of the
+    three and a different one for the last leaves artifacts no experiment can
+    be run on.
+
+    The caller chooses the basis and passes the matching block: host proxy
+    mode reads the prefix the live router actually *served*
+    (:func:`served_cut_point`), sandbox proxy mode uploads a recording already
+    truncated to the *configured* prefix and keeps that
+    (:func:`cut_point_provenance`). The block's ``accounting`` field is what
+    tells a reader which of the two produced these numbers.
+    """
+    stitched_path = write_stitched_trajectory(
+        rollout_dir,
+        run.exchange_lines,
+        live_exchanges,
+        max_recorded=n_recorded,
+    )
+    update_continued_metadata(
+        rollout_dir,
+        live_model=live_model,
+        usage=summarize_llm_trajectory_usage(stitched_path, n_recorded=n_recorded),
+        environment=run.environment,
+        cut_point=cut_point,
+    )
+    return stitched_path
+
+
 def _host_proxy_binding(environment: str) -> tuple[str, str]:
     """(bind_host, advertise_host) so a Docker agent can reach the host proxy.
 
@@ -652,7 +705,11 @@ async def continue_run(
     max_exchanges, branch_stage = resolve_cut_point(
         max_exchanges, stage_tags=stage_tags, cut_stage=cut_stage
     )
-    n_replay = validate_max_exchanges(max_exchanges, run.n_recorded_exchanges)
+    # Fail closed on an out-of-range cut here, before anything runs. Each proxy
+    # mode then resolves its own replay basis: host mode reads the served count
+    # off the live router after the run, sandbox mode uploads a recording
+    # truncated to the configured prefix and keeps that basis.
+    validate_max_exchanges(max_exchanges, run.n_recorded_exchanges)
     task_path = resolve_task_path(run, tasks_dir)
 
     live_model = model or run.model
@@ -720,20 +777,19 @@ async def continue_run(
     finally:
         proxy.stop()
 
-    stitched_path = write_stitched_trajectory(
+    # The served prefix, not the configured one, is what the agent actually
+    # consumed: an agent that exits or errors before reaching the cut leaves
+    # ``n_replayed_exchanges < n_replay``. Stitching the configured prefix
+    # would append recorded responses the agent never received, and the usage
+    # split would bill those tokens as "replayed" — while the cut_point block
+    # below reported the smaller served count, contradicting both. One basis
+    # for all three (``accounting: "served"`` names it in the artifact).
+    n_served = router.n_replayed_exchanges
+    write_continuation_artifacts(
         rollout_dir,
-        run.exchange_lines,
+        run,
         router.live_exchanges,
-        max_recorded=n_replay,
-    )
-    update_continued_metadata(
-        rollout_dir,
-        live_model=live_model,
-        usage=summarize_llm_trajectory_usage(
-            stitched_path,
-            n_recorded=n_replay,
-        ),
-        environment=run.environment,
+        n_recorded=n_served,
         # Reconcile the configured cut_point block with what the live router
         # actually served — host mode's post-run accounting.
         cut_point=served_cut_point(
@@ -741,13 +797,14 @@ async def continue_run(
             configured_max_exchanges=max_exchanges,
             branch_stage=branch_stage,
         ),
+        live_model=live_model,
     )
 
     return ContinueResult(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=n_replay,
+        n_recorded=n_served,
         n_live=len(router.live_exchanges),
         divergences=router.divergences,
     )
@@ -806,20 +863,22 @@ async def _continue_run_with_sandbox_proxy(
             return
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
-        stitched_path = write_stitched_trajectory(
+        write_continuation_artifacts(
             rollout_dir,
-            run.exchange_lines,
+            run,
             live_exchanges,
-            max_recorded=n_replay,
-        )
-        update_continued_metadata(
-            rollout_dir,
-            live_model=live_model,
-            usage=summarize_llm_trajectory_usage(
-                stitched_path,
-                n_recorded=n_replay,
+            n_recorded=n_replay,
+            # No live router on this side to read a served count off: the
+            # in-sandbox proxy is handed a recording already truncated to the
+            # configured prefix, so configured accounting is the honest basis
+            # here — and the artifact says so, rather than leaving the reader
+            # to infer which basis produced the numbers beside it.
+            cut_point=cut_point_provenance(
+                run.exchanges,
+                max_exchanges=max_exchanges,
+                branch_stage=branch_stage,
             ),
-            environment=run.environment,
+            live_model=live_model,
         )
         artifacts_written = True
 

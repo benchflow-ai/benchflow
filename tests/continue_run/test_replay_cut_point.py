@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from typer.testing import CliRunner
@@ -28,12 +30,14 @@ from benchflow.cli.main import app
 from benchflow.continue_run.orchestrator import (
     build_agent_env,
     build_rollout_config,
+    continue_run,
     cut_point_provenance,
     resolve_cut_point,
     served_cut_point,
     stitched_trajectory_lines,
     summarize_llm_trajectory_usage,
     update_continued_metadata,
+    write_continuation_artifacts,
     write_stitched_trajectory,
 )
 from benchflow.continue_run.replay_proxy import (
@@ -455,3 +459,196 @@ def test_cli_out_of_range_cut_exits_clean(tmp_path):
     assert res.exit_code == 1
     assert "max_exchanges must be in 1..2" in res.output
     assert "Traceback (most recent call last)" not in res.output
+
+
+# ── one replay basis: stitched prefix, usage split and provenance agree ───
+
+
+class _AbandoningRollout:
+    """A run whose agent asks for fewer exchanges than the cut configured.
+
+    Stands in for the real failure: the agent errors (or simply stops asking)
+    after turn 1 of a 2-exchange cut. ``run()`` drives the live router the way
+    the agent's proxy requests would, then writes the config/result pair a real
+    Rollout leaves behind — including the config-time ``cut_point`` block the
+    orchestrator is expected to reconcile.
+    """
+
+    served: ClassVar[int] = 1
+
+    def __init__(self, config) -> None:
+        self._config = config
+        self._rollout_dir = str(
+            Path(config.jobs_dir) / str(config.job_name) / str(config.rollout_name)
+        )
+
+    @classmethod
+    async def create(cls, config):
+        return cls(config)
+
+    async def run(self):
+        for i in range(self.served):
+            _ROUTERS[0].next_response(_request(i))
+        directory = Path(self._rollout_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        source = dict(self._config.source_provenance)
+        for name in ("config.json", "result.json"):
+            (directory / name).write_text(
+                json.dumps({"model": None, "source": source, "agent_result": {}})
+            )
+        return SimpleNamespace(rewards=None, error="Agent connection lost")
+
+
+_ROUTERS: list[ReplayRouter] = []
+
+
+class _CapturingProxy:
+    """A ReplayProxy stand-in — no socket, but the same router seam."""
+
+    def __init__(self, router, **kwargs) -> None:
+        self.router = router
+        _ROUTERS.append(router)
+
+    def start(self):
+        return self
+
+    @property
+    def base_url(self) -> str:
+        return "http://127.0.0.1:1/v1"
+
+    def stop(self) -> None:
+        return None
+
+
+def _host_mode_run(tmp_path, monkeypatch, recorded):
+    """Wire continue_run's host path onto the fakes above."""
+    import benchflow.continue_run.orchestrator as orch
+    import benchflow.rollout as rollout_module
+
+    _ROUTERS.clear()
+    folder = write_run_folder(tmp_path / "run", exchanges=recorded)
+    tasks_dir = tmp_path / "tasks"
+    (tasks_dir / "demo-task").mkdir(parents=True)
+    monkeypatch.setattr(orch, "ReplayProxy", _CapturingProxy)
+    monkeypatch.setattr(
+        orch, "_host_proxy_binding", lambda env: ("127.0.0.1", "127.0.0.1")
+    )
+    monkeypatch.setattr(rollout_module, "Rollout", _AbandoningRollout)
+    return folder, tasks_dir
+
+
+async def test_host_mode_stitches_and_bills_only_the_exchanges_served(
+    tmp_path, monkeypatch
+):
+    """An agent that stops short of the cut leaves consistent artifacts.
+
+    Guards "fix(continue): stitch and account for the exchanges actually
+    served". In host proxy mode the stitched prefix, the recorded-vs-live token
+    split and the ``cut_point`` block were built on two different bases: the
+    first two on the *configured* K, the last on what the router had actually
+    served. An agent that exited after 1 of a configured 2 exchanges therefore
+    got a trajectory containing a recorded response it never received, that
+    response's tokens billed as replayed, and provenance that disagreed with
+    both — artifacts no experiment can be run on.
+    """
+    recorded = _recorded(3)
+    folder, tasks_dir = _host_mode_run(tmp_path, monkeypatch, recorded)
+
+    result = await continue_run(
+        folder,
+        tasks_dir=tasks_dir,
+        output_dir=tmp_path / "continued",
+        proxy_mode="host",
+        replay_only=True,
+        max_exchanges=2,
+    )
+
+    # the agent consumed one exchange, so one exchange is the whole trajectory
+    stitched = (result.rollout_dir / "trajectory" / "llm_trajectory.jsonl").read_text()
+    lines = stitched.splitlines()
+    assert len(lines) == 1
+    assert (
+        json.loads(lines[0])["response"]["body"]["choices"][0]["message"]["content"]
+        == "turn-0"
+    )
+    assert "turn-1" not in stitched
+
+    payload = json.loads((result.rollout_dir / "result.json").read_text())
+    # the usage split is on the same basis: 1 replayed exchange x 2 tokens
+    assert payload["agent_result"]["usage_details"] == {
+        "source": "stitched_llm_trajectory",
+        "recorded_total_tokens": 2,
+        "live_total_tokens": 0,
+    }
+    assert payload["agent_result"]["total_tokens"] == 2
+    # and so is the provenance — served, with the request K still visible
+    assert payload["source"]["cut_point"] == {
+        "n_replayed_exchanges": 1,
+        "cut_point_digest": request_body_digest(recorded[0].request.body),
+        "accounting": "served",
+        "configured_max_exchanges": 2,
+    }
+    assert result.n_recorded == 1
+
+
+async def test_host_mode_full_consumption_is_unchanged(tmp_path, monkeypatch):
+    """The control: when the agent consumes the cut, nothing moves.
+
+    The other half of "fix(continue): stitch and account for the exchanges
+    actually served" — served and configured coincide for every run that
+    reached its cut, which is the ordinary case, and those artifacts must read
+    exactly as they did before.
+    """
+    recorded = _recorded(3)
+    monkeypatch.setattr(_AbandoningRollout, "served", 2)
+    folder, tasks_dir = _host_mode_run(tmp_path, monkeypatch, recorded)
+
+    result = await continue_run(
+        folder,
+        tasks_dir=tasks_dir,
+        output_dir=tmp_path / "continued",
+        proxy_mode="host",
+        replay_only=True,
+        max_exchanges=2,
+    )
+
+    stitched = (result.rollout_dir / "trajectory" / "llm_trajectory.jsonl").read_text()
+    assert len(stitched.splitlines()) == 2
+    payload = json.loads((result.rollout_dir / "result.json").read_text())
+    assert payload["agent_result"]["usage_details"]["recorded_total_tokens"] == 4
+    assert payload["source"]["cut_point"]["n_replayed_exchanges"] == 2
+    assert result.n_recorded == 2
+
+
+def test_continuation_artifacts_are_written_on_one_basis(tmp_path):
+    """Stitch, usage split and provenance come from a single prefix length.
+
+    The structural half of "fix(continue): stitch and account for the exchanges
+    actually served": the two proxy modes pick different bases (served vs
+    configured) but each writes all three artifacts through this one call, so a
+    future caller cannot reintroduce a per-artifact basis. Here the basis is
+    the sandbox one — configured, truncated upload, no live router — and the
+    block says so.
+    """
+    recorded = _recorded(3)
+    folder = write_run_folder(tmp_path / "run", exchanges=recorded)
+    run = load_run_folder(folder)
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+    (rollout_dir / "result.json").write_text(json.dumps({"model": None}))
+
+    stitched = write_continuation_artifacts(
+        rollout_dir,
+        run,
+        [exchange(completion(content="LIVE"))],
+        n_recorded=2,
+        cut_point=cut_point_provenance(run.exchanges, max_exchanges=2),
+        live_model="gemini-3.1-flash-lite-preview",
+    )
+
+    assert len(stitched.read_text().splitlines()) == 3
+    payload = json.loads((rollout_dir / "result.json").read_text())
+    assert payload["agent_result"]["usage_details"]["recorded_total_tokens"] == 4
+    assert payload["agent_result"]["usage_details"]["live_total_tokens"] == 2
+    assert payload["source"]["cut_point"]["accounting"] == "configured"
+    assert payload["source"]["cut_point"]["n_replayed_exchanges"] == 2
