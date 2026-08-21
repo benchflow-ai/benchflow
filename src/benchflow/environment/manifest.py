@@ -232,6 +232,46 @@ def load_manifest(path: str | Path) -> EnvironmentManifest:
     return EnvironmentManifest.model_validate_path(p)
 
 
+def manifest_from_task_document(task_dir: Path) -> EnvironmentManifest | None:
+    """The manifest ``task_dir``'s ``task.md`` declares, or ``None``.
+
+    A task binds its own world by declaring ``benchflow.environment.manifest``
+    in its task document; the value is a manifest path relative to the task
+    directory (absolute paths and registry ``name@version`` specs also resolve,
+    via :func:`load_manifest`). Every command that runs a task resolves it
+    through *this* function — ``bench eval`` for a normal evaluation
+    (:mod:`benchflow.evaluation`) and ``bench eval ablate`` for the parent its
+    arms fork from (:mod:`benchflow.ablate`) — so the two cannot drift into
+    running the same task against different environments.
+
+    A declaration that is present but unusable raises rather than degrading to
+    ``None``: a task that says it needs an image, services and readiness gates
+    must not silently run without them.
+    """
+    task_md = task_dir / "task.md"
+    if not task_md.is_file():
+        return None
+
+    from benchflow.task.document import TaskDocument
+
+    document = TaskDocument.from_path(task_md)
+    environment = document.benchflow.get("environment")
+    if environment is None:
+        return None
+    if not isinstance(environment, dict):
+        raise ValueError("task.md benchflow.environment must be a mapping")
+    manifest = environment.get("manifest")
+    if manifest is None:
+        return None
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise ValueError("task.md benchflow.environment.manifest must be a path")
+
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = task_dir / manifest_path
+    return load_manifest(manifest_path)
+
+
 def resolve_manifest_runtime_env(
     manifest: EnvironmentManifest,
     *,

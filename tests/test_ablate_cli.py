@@ -1272,3 +1272,146 @@ def test_json_output_carries_the_per_test_maps_and_the_difference_section(
         "with-skill": "failed",
     }
     assert "─" not in result.output
+
+
+# 7. The task's declared environment reaches the parent and every arm
+
+
+_ABLATE_MANIFEST = """\
+environment:
+  name: ablate-declared-env
+  image: example/ablate-declared:latest
+"""
+
+
+def _manifest_task_dir(
+    tmp_path: Path,
+    *,
+    declares: str = "environment.yaml",
+    write_manifest: bool = True,
+) -> Path:
+    """A task whose ``task.md`` declares ``benchflow.environment.manifest``."""
+    task = _task_dir(tmp_path)
+    (task / "task.md").write_text(
+        "---\n"
+        'schema_version: "1.3"\n'
+        "task:\n"
+        "  name: benchflow/ablate-manifest-demo\n"
+        "  description: A task that declares its own environment\n"
+        "benchflow:\n"
+        "  environment:\n"
+        f"    manifest: {declares}\n"
+        "---\n"
+        "Solve it.\n",
+        encoding="utf-8",
+    )
+    if write_manifest:
+        (task / "environment.yaml").write_text(_ABLATE_MANIFEST, encoding="utf-8")
+    return task
+
+
+async def test_the_task_declared_environment_reaches_the_parent_and_the_arms(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A manifest-backed task is ablated in the world it declares.
+
+    Guards "fix(ablate): resolve a task-declared environment manifest for
+    parent and arms". ``bench eval`` resolves ``benchflow.environment.manifest``
+    per task before building the rollout config; ``bench eval ablate`` left
+    ``environment_manifest=None``, so the parent — and therefore every arm
+    forked from its snapshot — ran without the task's required image,
+    services, provisioning and readiness gates, and the report compared a
+    different environment than a normal evaluation of the same task.
+
+    Both halves are asserted: the parent config the command builds, and the
+    child config the branch engine derives from it for a fresh ``env-ready``
+    child (:func:`benchflow.branch_skill.make_fresh_child_runner`, the
+    production path for every arm at that boundary).
+    """
+    from types import SimpleNamespace
+
+    import benchflow.branch_skill as branch_skill
+    from benchflow.branch_skill import make_fresh_child_runner
+
+    task = _manifest_task_dir(tmp_path)
+    built = _patch_rollout(monkeypatch)
+    request = AblationRequest(
+        task_path=task,
+        arms=parse_arms("with-skill,no-skill"),
+        agent="claude-agent-acp",
+        model="claude-sonnet",
+        out_dir=tmp_path / "out",
+    )
+
+    await run_ablation(request)
+
+    manifest = built[0].config.environment_manifest
+    assert manifest is not None
+    assert (manifest.name, manifest.image) == (
+        "ablate-declared-env",
+        "example/ablate-declared:latest",
+    )
+
+    child_configs: list[Any] = []
+
+    async def _capture_fresh_child(rollout, config, *, prompts=None):
+        child_configs.append(config)
+        return 1.0
+
+    monkeypatch.setattr(branch_skill, "run_fresh_child", _capture_fresh_child)
+    tree = RolloutTree()
+    child = tree.attach(tree.root)
+    for arm in request.arms:
+        run_child = make_fresh_child_runner(
+            cast(Any, SimpleNamespace(_config=built[0].config)),
+            delta=arm.delta,
+            parent=tree.root,
+            branch_stage="env-ready",
+            run_dir=built[0]._rollout_dir,
+        )
+        await run_child(child)
+
+    assert [cfg.environment_manifest for cfg in child_configs] == [manifest, manifest]
+
+
+async def test_a_task_without_a_declared_environment_still_binds_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The control for the fix: no declaration, no manifest — nothing invented.
+
+    Guards "fix(ablate): resolve a task-declared environment manifest for
+    parent and arms" from over-reaching: a task that declares no environment
+    must keep running on the plain sandbox, exactly as before.
+    """
+    built = _patch_rollout(monkeypatch)
+
+    await run_ablation(_request(tmp_path))
+
+    assert built[0].config.environment_manifest is None
+
+
+async def test_an_unresolvable_declared_environment_fails_before_the_parent_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A declaration that cannot be resolved is fatal, not silently dropped.
+
+    Guards "fix(ablate): resolve a task-declared environment manifest for
+    parent and arms". Degrading to ``None`` would run the whole experiment —
+    parent and arms — in a world the task says is wrong and report it as if it
+    were the right one, so the request fails closed before the parent run costs
+    anything.
+    """
+    task = _manifest_task_dir(tmp_path, declares="missing.yaml", write_manifest=False)
+    built = _patch_rollout(monkeypatch)
+    request = AblationRequest(
+        task_path=task,
+        arms=parse_arms("with-skill,no-skill"),
+        agent="claude-agent-acp",
+        model="claude-sonnet",
+        out_dir=tmp_path / "out",
+    )
+
+    with pytest.raises(AblationSpecError, match="environment manifest"):
+        await run_ablation(request)
+
+    assert built == []
