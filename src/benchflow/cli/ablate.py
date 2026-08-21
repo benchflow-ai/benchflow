@@ -34,6 +34,49 @@ _STATUS_STYLES = {
 DEFAULT_ARMS = "with-skill,no-skill"
 
 
+_TEST_STATUS_STYLES = {"passed": "green", "failed": "red", "skipped": "grey50"}
+
+
+def _render_sub_test_attribution(report) -> None:
+    """Print the sub-test section: only the tests whose outcome differs.
+
+    The second half of the attribution, and the half a scalar tie hides. Tying
+    tests are counted, never listed — they are noise for attribution — and the
+    section always ends on the summary line, so a reader is told *why* there is
+    no table (all tests tie / no per-test data was mined) rather than left to
+    read the absence.
+    """
+    from benchflow.ablate import sub_test_attribution
+
+    section = sub_test_attribution(report.arms)
+    differing = section["differing_tests"]
+    if differing:
+        arms = section["arms_with_tests"]
+        table = Table(
+            title=f"Sub-test outcomes that differ ({len(differing)})",
+            show_lines=True,
+        )
+        table.add_column("Test")
+        for arm in arms:
+            table.add_column(escape(arm))
+        for entry in differing:
+            cells = []
+            for arm in arms:
+                outcome = entry["outcomes"].get(arm)
+                style = _TEST_STATUS_STYLES.get(outcome or "", "yellow")
+                cells.append(
+                    f"[{style}]{escape(outcome) if outcome else 'not reported'}[/{style}]"
+                )
+            table.add_row(escape(entry["test"]), *cells)
+        console.print(table)
+        if section["tying_tests"]:
+            console.print(
+                f"[dim]{len(section['tying_tests'])} test(s) tie across the "
+                "arms and are omitted.[/dim]"
+            )
+    console.print(f"[bold]Sub-test attribution:[/bold] {escape(section['summary'])}")
+
+
 def _render_ablation(report) -> None:
     """Print the parent's own reward, then one row per arm."""
     parent = "n/a" if report.parent_reward is None else f"{report.parent_reward:.2f}"
@@ -63,6 +106,7 @@ def _render_ablation(report) -> None:
             style=_STATUS_STYLES.get(arm.status, "white"),
         )
     console.print(table)
+    _render_sub_test_attribution(report)
     if report.value is not None:
         console.print(f"[bold]V(parent) over the arms:[/bold] {report.value:.2f}")
 
@@ -126,7 +170,9 @@ def _ablate_command(
     and differs by exactly one recorded delta. At ``--at-stage env-ready``
     every arm re-runs agent installation as its own rollout (that boundary
     precedes ``install_agent()``); at later boundaries the arms continue in
-    place. Results land in a table plus ``ablation.json``.
+    place. Results land in a table plus ``ablation.json``, followed by a second
+    table naming the sub-tests whose outcome differs across the arms — the
+    behavioral difference a tied scalar reward would otherwise hide.
     """
     import asyncio
     import json

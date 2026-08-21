@@ -13,6 +13,11 @@ deterministic, per-arm errors are isolated (the arms that ran keep their
 rewards) and exit 1, and the attribution line stays an observation rather than
 a causal claim.
 
+Section 6 guards "feat(ablate): per-test attribution so a scalar tie cannot
+hide a behavioral difference" — the measured case where both arms of a skills
+ablation scored 0.00 while their two sub-tests flipped in opposite directions,
+and the tool printed "no difference in this comparison".
+
 Unit tests against fakes and a patched engine — no Docker, Daytona, or API
 keys.
 """
@@ -37,10 +42,12 @@ from benchflow.ablate import (
     AblationSpecError,
     ArmOutcome,
     attribute,
+    differing_tests,
     parse_arm,
     parse_arms,
     resolve_ablation_task,
     run_ablation,
+    sub_test_attribution,
     validate_arms_for_stage,
     write_ablation_report,
 )
@@ -828,3 +835,328 @@ def test_ablate_is_documented_next_to_the_rfc() -> None:
     assert "rollout-branching-rfc" in section
     rfc = (_REPO_ROOT / "docs" / "rollout-branching-rfc.md").read_text()
     assert "bench eval ablate" in rfc
+
+
+# 6. Per-test (sub-outcome) attribution: a scalar tie cannot hide a difference
+
+
+def _ctrf(tests: dict[str, str]) -> str:
+    """A CTRF report (pytest-json-ctrf shape) naming ``{node id -> status}``."""
+    return json.dumps(
+        {
+            "reportFormat": "CTRF",
+            "results": {
+                "tool": {"name": "pytest"},
+                "tests": [
+                    {"name": name, "status": status} for name, status in tests.items()
+                ],
+            },
+        }
+    )
+
+
+def _tested_outcomes(
+    with_skill: dict[str, str] | None, no_skill: dict[str, str] | None
+) -> list[ArmOutcome]:
+    """The measured lake-warming pair: both arms 0.00, per-test maps attached."""
+    arms = _skill_outcomes(with_skill=0.0, no_skill=0.0)
+    arms[0].tests = with_skill
+    arms[1].tests = no_skill
+    return arms
+
+
+class _CtrfRollout(_FakeRollout):
+    """A fork whose children leave a CTRF report in their own verifier dirs.
+
+    The shape a real branch child leaves: its artifact directory *is* its
+    rollout directory, so ``<child>/verifier/ctrf.json`` is where the verifier
+    writes. ``per_child`` is indexed by fork order; ``None`` writes no report
+    at all (the verifier emitted no per-test data).
+    """
+
+    rewards: ClassVar[list[Any]] = [0.0, 0.0]
+    per_child: ClassVar[list[dict[str, str] | None]] = [
+        {"::T::test_trend_result": "passed", "::T::test_dominant_factor": "failed"},
+        {"::T::test_trend_result": "failed", "::T::test_dominant_factor": "passed"},
+    ]
+
+    async def branch_at_stage(self, stage, n, *, deltas=None):
+        from benchflow.branch_lineage import branch_child_dir
+
+        value = await super().branch_at_stage(stage, n, deltas=deltas)
+        children = [node for node in self.tree.nodes() if "delta" in node.state]
+        for child, tests in zip(children, self.per_child, strict=True):
+            if tests is None:
+                continue
+            verifier = (
+                branch_child_dir(self._rollout_dir, child.parent.id, child.id)
+                / "verifier"
+            )
+            verifier.mkdir(parents=True, exist_ok=True)
+            (verifier / "ctrf.json").write_text(_ctrf(tests), encoding="utf-8")
+        return value
+
+
+async def test_per_test_outcomes_are_mined_from_each_child_verifier_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards "feat(ablate): per-test attribution so a scalar tie cannot hide a
+    behavioral difference": every arm carries the outcome map its own verifier
+    reported, read through the CLI's existing CTRF parser (no second parser,
+    and the ``ClassName::test`` node ids are displayed by test name)."""
+    _patch_rollout(monkeypatch, _CtrfRollout)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert [arm.reward for arm in report.arms] == [0.0, 0.0]
+    assert report.arms[0].tests == {
+        "test_dominant_factor": "failed",
+        "test_trend_result": "passed",
+    }
+    assert report.arms[1].tests == {
+        "test_dominant_factor": "passed",
+        "test_trend_result": "failed",
+    }
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert [arm["tests"] for arm in payload["arms"]] == [
+        {"test_dominant_factor": "failed", "test_trend_result": "passed"},
+        {"test_dominant_factor": "passed", "test_trend_result": "failed"},
+    ]
+
+
+def test_only_the_tests_whose_outcome_differs_are_attributed() -> None:
+    """Tying tests are noise for attribution: they are counted, never listed.
+
+    Guards the differences table of "feat(ablate): per-test attribution …" —
+    a table that reprinted every test would bury the two rows that carry the
+    signal.
+    """
+    arms = _tested_outcomes(
+        {"test_a": "passed", "test_b": "failed", "test_same": "passed"},
+        {"test_a": "failed", "test_b": "passed", "test_same": "passed"},
+    )
+
+    differences = differing_tests(arms)
+    section = sub_test_attribution(arms)
+
+    assert differences == [
+        {"test": "test_a", "outcomes": {"no-skill": "failed", "with-skill": "passed"}},
+        {"test": "test_b", "outcomes": {"no-skill": "passed", "with-skill": "failed"}},
+    ]
+    assert section["tying_tests"] == ["test_same"]
+    assert section["arms_with_tests"] == ["with-skill", "no-skill"]
+    assert section["arms_without_tests"] == []
+    assert section["scalar_tie"] is True
+
+
+def test_a_test_reported_for_one_arm_only_is_a_difference_not_a_failure() -> None:
+    """A test the other arm never reported is recorded as ``None``.
+
+    Guards "feat(ablate): per-test attribution …" against inventing rows: the
+    honest reading of a missing entry is "not observed for that arm", never
+    "failed there".
+    """
+    arms = _tested_outcomes(
+        {"test_a": "passed"}, {"test_a": "passed", "test_b": "failed"}
+    )
+
+    assert differing_tests(arms) == [
+        {"test": "test_b", "outcomes": {"no-skill": "failed", "with-skill": None}}
+    ]
+
+
+def test_scalar_tie_with_differing_sub_tests_says_so_in_the_verdict() -> None:
+    """The exact regression: two arms at 0.00 whose sub-tests flip oppositely.
+
+    Guards "feat(ablate): per-test attribution so a scalar tie cannot hide a
+    behavioral difference". The measured lake-warming ablation printed "no
+    difference in this comparison" while ``test_trend_result`` flipped with the
+    skill pack and ``test_dominant_factor`` flipped against it. That wording
+    must be unreachable whenever a sub-test difference was observed.
+    """
+    arms = _tested_outcomes(
+        {"test_trend_result": "passed", "test_dominant_factor": "failed"},
+        {"test_trend_result": "failed", "test_dominant_factor": "passed"},
+    )
+
+    attribute(arms, parent_reward=0.0, stage="env-ready")
+
+    assert arms[0].verdict == (
+        "matches no-skill at env-ready (both 0.00) — scalar rewards tie, but 2 "
+        "sub-test outcome(s) differ: test_dominant_factor, test_trend_result"
+    )
+    assert all("no difference in this comparison" not in a.verdict for a in arms)
+    assert sub_test_attribution(arms)["summary"] == (
+        "scalar rewards tie, but 2 sub-test outcome(s) differ: "
+        "test_dominant_factor, test_trend_result"
+    )
+
+
+def test_a_genuine_tie_keeps_todays_no_difference_wording() -> None:
+    """Sub-tests that were observed *and* tie are not a difference.
+
+    The other half of "feat(ablate): per-test attribution …": the qualification
+    fires on measured disagreement only, so an ablation where nothing moved
+    still reads as it always has.
+    """
+    arms = _tested_outcomes({"test_a": "failed"}, {"test_a": "failed"})
+
+    attribute(arms, parent_reward=0.0, stage="env-ready")
+
+    assert arms[0].verdict == (
+        "matches no-skill at env-ready (both 0.00) — no difference in this comparison"
+    )
+    assert sub_test_attribution(arms)["summary"] == (
+        "2 arms reported per-test outcomes and all 1 tie — no sub-test "
+        "difference in this comparison"
+    )
+
+
+async def test_a_child_without_per_test_data_degrades_to_scalar_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A verifier that emits no CTRF report yields no rows, and says so.
+
+    Guards the degradation path of "feat(ablate): per-test attribution …":
+    ``tests`` stays ``None`` (not ``{}``, not a fabricated row), the section
+    names the arms it could not read, and the scalar verdict is left alone —
+    nothing was measured to qualify it with.
+    """
+    monkeypatch.setattr(_CtrfRollout, "per_child", [{"::T::test_a": "passed"}, None])
+    _patch_rollout(monkeypatch, _CtrfRollout)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert report.arms[0].tests == {"test_a": "passed"}
+    assert report.arms[1].tests is None
+    section = sub_test_attribution(report.arms)
+    assert section["arms_with_tests"] == ["with-skill"]
+    assert section["arms_without_tests"] == ["no-skill"]
+    assert section["differing_tests"] == []
+    assert section["summary"] == (
+        "scalar-only attribution — 1 of 2 arms reported per-test outcomes, so "
+        "no sub-test comparison was made"
+    )
+    assert "no difference in this comparison" in report.arms[0].verdict
+
+
+def test_test_attribution_is_deterministic_and_carries_no_wall_clock(
+    tmp_path: Path,
+) -> None:
+    """Same input, byte-identical report — the determinism guarantee of
+    "feat(ablate): per-test attribution …" extended to the new section: test
+    names sort, arm order follows the request, and nothing is stamped."""
+    arms = _tested_outcomes(
+        {"test_z": "failed", "test_a": "passed"},
+        {"test_a": "failed", "test_z": "passed"},
+    )
+    report = _report(arms=arms, parent_reward=0.0, value=0.0)
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+
+    first = write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    second = write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+
+    assert first == second
+    payload = json.loads(first)
+    assert [
+        entry["test"] for entry in payload["test_attribution"]["differing_tests"]
+    ] == [
+        "test_a",
+        "test_z",
+    ]
+    assert list(payload["arms"][0]["tests"]) == ["test_a", "test_z"]
+
+
+def test_table_lists_the_differing_sub_tests_and_omits_the_tying_ones(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The console half of "feat(ablate): per-test attribution …".
+
+    A reader of the table must be able to see the behavioral difference the
+    two 0.00s hide, and must not have to scan tying rows to find it.
+    """
+    arms = _tested_outcomes(
+        {
+            "test_trend_result": "passed",
+            "test_dominant_factor": "failed",
+            "test_boring": "passed",
+        },
+        {
+            "test_trend_result": "failed",
+            "test_dominant_factor": "passed",
+            "test_boring": "passed",
+        },
+    )
+    report = _report(arms=arms, parent_reward=0.0, value=0.0)
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    _patched_run(monkeypatch, report)
+    monkeypatch.setenv("COLUMNS", "300")
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--out-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    out = _flat(result.output)
+    assert "Sub-test outcomes that differ (2)" in out
+    assert "test_trend_result" in out and "test_dominant_factor" in out
+    assert "test_boring" not in out
+    assert "1 test(s) tie across the arms and are omitted." in out
+    assert "scalar rewards tie, but 2 sub-test outcome(s) differ" in out
+    assert "no difference in this comparison" not in out
+
+
+def test_json_output_carries_the_per_test_maps_and_the_difference_section(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``--json`` stays machine-readable and complete for "feat(ablate):
+    per-test attribution …": the per-arm maps and the differences section both
+    round-trip through stdout."""
+    arms = _tested_outcomes(
+        {"test_trend_result": "passed", "test_dominant_factor": "failed"},
+        {"test_trend_result": "failed", "test_dominant_factor": "passed"},
+    )
+    report = _report(arms=arms, parent_reward=0.0, value=0.0)
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    _patched_run(monkeypatch, report)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["arms"][0]["tests"] == {
+        "test_dominant_factor": "failed",
+        "test_trend_result": "passed",
+    }
+    section = payload["test_attribution"]
+    assert section["scalar_tie"] is True
+    assert [entry["test"] for entry in section["differing_tests"]] == [
+        "test_dominant_factor",
+        "test_trend_result",
+    ]
+    assert section["differing_tests"][0]["outcomes"] == {
+        "no-skill": "passed",
+        "with-skill": "failed",
+    }
+    assert "─" not in result.output

@@ -6,7 +6,10 @@ rollout's verifier artifacts for a one-line explanation. Lives in its own
 module so ``cli/_shared.py`` stays the side-effect-free display helpers it
 advertises. Also home of :func:`metric_breakdown`, the one canonical
 rewards-dict flattening — shared by ``_shared.py``'s in-memory metric tier and
-the ``reward.json`` probe here, so the two render identically.
+the ``reward.json`` probe here, so the two render identically. The CTRF report
+this mines for a failure line is also the source of the *whole* per-test
+outcome map (:func:`ctrf_test_outcomes`, :func:`artifact_test_outcomes`) that
+``bench eval ablate`` attributes sub-outcomes with — one parser, two readings.
 
 Contract (the engine stays file-free — these reads are CLI-side, report-time
 only):
@@ -167,6 +170,79 @@ def _bounded_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _ctrf_tests(ctrf_path: Path) -> list[dict[str, Any]]:
+    """The CTRF report's test entries — the one place ``ctrf.json`` is read.
+
+    Both consumers of the report (the failure one-liner below and the per-test
+    outcome map :func:`ctrf_test_outcomes` mines for ablation attribution) go
+    through here, so there is exactly one notion of "the tests this verifier
+    reported": the ``results.tests`` array, non-object entries dropped. A file
+    that is missing, oversized or not a CTRF object yields no tests rather than
+    raising — the callers each decide what an empty report means for them.
+    """
+    data = _bounded_json(ctrf_path)
+    if data is None:
+        return []
+    raw_tests = (data.get("results") or {}).get("tests") or []
+    return [test for test in raw_tests if isinstance(test, dict)]
+
+
+def ctrf_test_outcomes(ctrf_path: Path) -> dict[str, str]:
+    """``{test name -> CTRF status}`` for every test the report names, sorted.
+
+    The per-test half of the same report :func:`_ctrf_failure_line` mines for
+    its one-liner: every entry, not just the failures, because attribution
+    needs the passes too (a test that flips *to* passing is as much evidence as
+    one that flips away from it). Statuses are passed through verbatim —
+    ``passed`` / ``failed`` / ``skipped`` / ``pending`` / ``other`` are CTRF's
+    own vocabulary and this is a reporter, not a classifier.
+
+    Names are shortened by :func:`_display_test_name` only when that stays
+    injective across the report: two files holding a same-named test would
+    otherwise collapse into one row and silently hide a difference, so such a
+    report keeps its raw node ids. Sorted keys, first entry wins on an exact
+    duplicate — the map has to be byte-stable across runs of the same input.
+    """
+    named = [
+        (str(test["name"]), str(test["status"]))
+        for test in _ctrf_tests(ctrf_path)
+        if isinstance(test.get("name"), str)
+        and test["name"].strip()
+        and isinstance(test.get("status"), str)
+        and test["status"].strip()
+    ]
+    display = {raw: _display_test_name(raw) for raw, _ in named}
+    injective = len(set(display.values())) == len(set(display))
+    outcomes: dict[str, str] = {}
+    for raw, status in named:
+        outcomes.setdefault(display[raw] if injective else raw, status)
+    return dict(sorted(outcomes.items()))
+
+
+def artifact_test_outcomes(rollout_dir: Path) -> dict[str, str] | None:
+    """One rollout's per-test outcomes, or ``None`` when it reported none.
+
+    The rollout-dir twin of :func:`artifact_failure_evidence`, for callers that
+    need the whole outcome map rather than one failure line — ``bench eval
+    ablate`` reads it per branch child, whose child directory *is* its rollout
+    directory. CTRF is the only source: a verifier that emits no report yields
+    ``None`` (say so and attribute on the scalar), never an invented row.
+    Never raises.
+    """
+    # Local import: RolloutPaths pulls in the task package (see
+    # artifact_failure_evidence).
+    from benchflow.task.paths import RolloutPaths
+
+    try:
+        ctrf_path = RolloutPaths(rollout_dir=rollout_dir).verifier_dir / "ctrf.json"
+        if not ctrf_path.is_file():
+            return None
+        outcomes = ctrf_test_outcomes(ctrf_path)
+    except Exception:
+        return None
+    return outcomes or None
+
+
 def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
     """``<test> failed[: <assertion>]`` from the first failed CTRF test.
 
@@ -178,11 +254,7 @@ def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
     carries a count suffix (``(+N more failures; P/T checks passed)``) so the
     console never under-reports how much is broken.
     """
-    data = _bounded_json(ctrf_path)
-    if data is None:
-        return None
-    raw_tests = (data.get("results") or {}).get("tests") or []
-    tests = [test for test in raw_tests if isinstance(test, dict)]
+    tests = _ctrf_tests(ctrf_path)
     failed = [test for test in tests if test.get("status") == "failed"]
     if not failed:
         return None

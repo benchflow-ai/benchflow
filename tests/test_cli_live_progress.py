@@ -1249,3 +1249,57 @@ def test_fire_progress_swallows_callback_errors():
     Evaluation._fire_progress(boom, "task-x")  # must NOT raise
     Evaluation._fire_progress(None)  # None callback is a no-op
     assert seen == [("task-x",)]
+
+
+def test_ctrf_outcome_map_reports_every_test_not_only_the_failures(tmp_path):
+    """Guards "feat(ablate): per-test attribution so a scalar tie cannot hide a
+    behavioral difference": the per-test reading of the same CTRF report the
+    failure line mines. Passes are evidence too — an ablation arm that flips a
+    test *to* passing is exactly the difference a 0.00/0.00 scalar tie hides —
+    and CTRF statuses pass through verbatim rather than being re-classified.
+    """
+    from benchflow.cli._failure_evidence import artifact_test_outcomes
+
+    rollout = tmp_path / "lake__ab12cd34"
+    _write_ctrf_tests(
+        rollout / "verifier",
+        [
+            {"name": "::TestLake::test_trend_result", "status": "passed"},
+            {"name": "::TestLake::test_dominant_factor", "status": "failed"},
+            {"name": "::TestLake::test_optional", "status": "skipped"},
+        ],
+    )
+
+    assert artifact_test_outcomes(rollout) == {
+        "test_dominant_factor": "failed",
+        "test_optional": "skipped",
+        "test_trend_result": "passed",
+    }
+    # No CTRF report at all is "not observed", never an empty map: the caller
+    # has to be able to say "scalar-only attribution" instead of "all tie".
+    assert artifact_test_outcomes(tmp_path / "missing__ab12cd34") is None
+
+
+def test_ctrf_outcome_map_keeps_raw_node_ids_when_short_names_collide(tmp_path):
+    """Same-named tests in two files must not collapse into one row.
+
+    Guards "feat(ablate): per-test attribution …": the display shortening that
+    keeps the failure line inside its char budget is only safe while it stays
+    injective — collapsing ``a.py::test_x`` and ``b.py::test_x`` would hide one
+    arm's outcome behind the other's.
+    """
+    from benchflow.cli._failure_evidence import artifact_test_outcomes
+
+    rollout = tmp_path / "collide__ab12cd34"
+    _write_ctrf_tests(
+        rollout / "verifier",
+        [
+            {"name": "tests/test_a.py::test_x", "status": "passed"},
+            {"name": "tests/test_b.py::test_x", "status": "failed"},
+        ],
+    )
+
+    assert artifact_test_outcomes(rollout) == {
+        "tests/test_a.py::test_x": "passed",
+        "tests/test_b.py::test_x": "failed",
+    }
