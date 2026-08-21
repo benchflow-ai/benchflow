@@ -16,6 +16,7 @@ The ``Verifier`` class is kept whole here; its self-coupled ``_verify_*`` /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -291,6 +292,53 @@ class Verifier:
             return await self._verify_llm_judge()
         return await self._verify_test_script()
 
+    async def _verifier_outputs_are_mounted(self, service: str) -> bool:
+        """Whether the verifier's output dir is already visible on the host.
+
+        ``True`` skips both the pre-run clear and the post-run download: the
+        container writes straight into the rollout directory. Getting it wrong
+        in that direction is silent and expensive — the verifier's
+        ``reward.txt`` stays inside the container and the rollout is scored
+        from a file that was never written — so the answer is taken from the
+        *live* container when the backend can supply it
+        (``Sandbox.has_host_mount``), not from the static ``is_mounted``
+        declaration, which a ``restore()`` between start and verify can
+        invalidate. Anything unknown answers ``False``: a redundant download
+        costs a round trip, a skipped one costs the score.
+        """
+        # Only the agent's ``main`` container ever has the rollout dir
+        # bind-mounted; a target service (#248) never does.
+        if service != "main" or not getattr(self._sandbox, "is_mounted", False):
+            return False
+        live_check = getattr(self._sandbox, "has_host_mount", None)
+        if not asyncio.iscoroutinefunction(live_check):
+            # Backend supplies no live check (or a stub that is not one): the
+            # static declaration is all there is.
+            return True
+        try:
+            mounted = bool(
+                await live_check(
+                    host_dir=self._rollout_paths.verifier_dir,
+                    container_dir=str(SandboxPaths.verifier_dir),
+                )
+            )
+        except Exception as e:
+            self._logger.warning(
+                "Could not confirm the verifier output mount (%s); downloading "
+                "the verifier directory instead",
+                e,
+            )
+            return False
+        if not mounted:
+            self._logger.warning(
+                "The sandbox declares host-mounted verifier outputs but the "
+                "live container has no mount of %s at %s — downloading the "
+                "verifier directory instead",
+                self._rollout_paths.verifier_dir,
+                SandboxPaths.verifier_dir,
+            )
+        return mounted
+
     def _selected_verifier_document(self) -> VerifierDocument | None:
         paths = getattr(self._task, "paths", None)
         verifier_dir = getattr(paths, "tests_dir", None)
@@ -358,9 +406,7 @@ class Verifier:
         DB modifications — instead of only the agent workspace (#248).
         """
         service = self._task.config.verifier.service
-        verifier_outputs_are_mounted = service == "main" and getattr(
-            self._sandbox, "is_mounted", False
-        )
+        verifier_outputs_are_mounted = await self._verifier_outputs_are_mounted(service)
         if not verifier_outputs_are_mounted:
             try:
                 await clear_verifier_output_dir(
@@ -745,9 +791,7 @@ class Verifier:
     ) -> VerifierResult:
         """Run a verifier-scoped Reward Kit runner inside the sandbox."""
         service = self._task.config.verifier.service
-        verifier_outputs_are_mounted = service == "main" and getattr(
-            self._sandbox, "is_mounted", False
-        )
+        verifier_outputs_are_mounted = await self._verifier_outputs_are_mounted(service)
         if not verifier_outputs_are_mounted:
             try:
                 await clear_verifier_output_dir(

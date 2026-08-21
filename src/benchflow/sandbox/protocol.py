@@ -46,6 +46,24 @@ class SandboxSnapshotNotSupported(NotImplementedError):
     """
 
 
+class SandboxRestoreHostConfigUnavailable(RuntimeError):
+    """Restore could not resolve the live container's host configuration.
+
+    A container-level restore replaces the running container with one built
+    from the snapshot, and the replacement is only equivalent if it carries
+    the host config the original had — above all the bind mounts, without
+    which everything the sandbox writes to a mounted path stays inside the
+    container and the host reads an empty verifier directory. That config
+    exists only while the original container does, so a restore that cannot
+    read it has no way to reproduce it and must not create the replacement
+    anyway: raising loses the branch child, guessing loses the evidence.
+
+    Lives in the core protocol module, next to :class:`SandboxStartupError`
+    and for the same reason: a base install can catch it without pulling in
+    any provider SDK.
+    """
+
+
 class SandboxStartupError(RuntimeError):
     """Raised when sandbox creation fails or times out.
 

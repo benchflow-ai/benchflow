@@ -7,6 +7,7 @@ Only flag/type/help combinations that recur identically across commands are
 factored here; one-off variants stay inline in ``main.py``.
 """
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -14,6 +15,20 @@ import typer
 from benchflow.sandbox.providers import providers_phrase
 
 AgentOption = Annotated[str, typer.Option("--agent", help="Agent name")]
+EnvironmentManifestOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--environment-manifest",
+        help=(
+            "Environment-plane manifest applied to every rollout: a path to "
+            "an environment.toml, OR a 'name@version' registry spec (the S "
+            "axis) resolved via $BENCHFLOW_ENV_REGISTRY when set, else the "
+            "built-in registry shipped with benchflow (env0@prod, "
+            "env0@outage). The manifest-declared stateful environment is "
+            "provisioned, gated on readiness, and torn down."
+        ),
+    ),
+]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Model")]
 SandboxOption = Annotated[
     str, typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}")

@@ -85,6 +85,66 @@ def _is_compose_up_network_race_error(message: str) -> bool:
     return is_compose_up_network_race_error(message)
 
 
+def _replayed_run_args(container: dict[str, Any], *, default_network: str) -> list[str]:
+    """``docker run`` flags that re-create ``container``'s *host* configuration.
+
+    Input is one object from ``docker inspect``. The split is what ``docker
+    commit`` can and cannot carry into a snapshot image:
+
+    * **Not replayed, because commit already carries it** — ``Env``,
+      ``WorkingDir``, ``User``, ``Entrypoint``, ``Labels`` and the rest of
+      ``Config`` are recorded *in the committed image*, so a container created
+      from it inherits them. Replaying them would be redundant and would let
+      the two sources disagree.
+    * **Replayed, because commit cannot carry it** — the host configuration:
+      bind mounts and volumes (the reason this function exists: a restored
+      container without them writes into itself, and everything the host
+      expected to see, above all the verifier's reward file, is lost),
+      ``none`` networking (a task that opted out of the network must not get
+      one back through a restore), and the CPU/memory limits.
+
+    Deliberately *not* replayed, and therefore not equivalent: published
+    ports, capabilities / ``privileged`` / ``security-opt`` / ``sysctls``,
+    devices, ulimits, extra hosts, restart policy, and membership of more than
+    one network (``docker run`` attaches one at creation; the compose project
+    network is used unless the container had none).
+    """
+    args: list[str] = []
+    host_config = container.get("HostConfig") or {}
+
+    if str(host_config.get("NetworkMode") or "") == "none":
+        args += ["--network", "none"]
+    else:
+        args += ["--network", default_network]
+
+    for mount in container.get("Mounts") or []:
+        destination = mount.get("Destination")
+        if not destination:
+            continue
+        kind = mount.get("Type")
+        if kind == "tmpfs":
+            args += ["--tmpfs", str(destination)]
+            continue
+        # A volume's source is its name; a bind's is the host path.
+        source = mount.get("Name") if kind == "volume" else mount.get("Source")
+        if not source:
+            continue
+        spec = f"type={kind},src={source},dst={destination}"
+        if mount.get("RW") is False:
+            spec += ",readonly"
+        args += ["--mount", spec]
+
+    # Resource limits: a restored container that ignored the task's caps could
+    # starve the host the rest of the run shares.
+    nano_cpus = host_config.get("NanoCpus") or 0
+    if nano_cpus:
+        args += ["--cpus", f"{nano_cpus / 1_000_000_000:g}"]
+    memory = host_config.get("Memory") or 0
+    if memory:
+        args += ["--memory", str(memory)]
+    return args
+
+
 class DockerSandboxEnvVars(BaseModel):
     main_image_name: str
     context_dir: str
@@ -264,6 +324,34 @@ class DockerSandbox(BaseSandbox):
                 "Docker verifier-log bind mount is not visible inside the "
                 "container; verifier outputs will be copied back explicitly."
             )
+
+    async def has_host_mount(self, *, host_dir: Path, container_dir: str) -> bool:
+        """Whether the *live* ``main`` container really mounts ``host_dir``.
+
+        :attr:`is_mounted` is a static declaration about how this backend
+        starts containers; it stays ``True`` for the lifetime of the object.
+        The container underneath can be replaced — :meth:`restore` re-creates
+        it — so a caller about to skip a download because "it is mounted
+        anyway" asks the daemon instead of the declaration. Any failure
+        answers ``False``: a redundant download is cheap, a skipped one loses
+        the file.
+        """
+        container_id = await self._main_container_id()
+        if not container_id:
+            return False
+        try:
+            container = await self._inspect_container(container_id)
+        except RuntimeError as exc:
+            self.logger.warning("Could not inspect %s: %s", container_id, exc)
+            return False
+        expected = Path(host_dir).resolve()
+        for mount in container.get("Mounts") or []:
+            if str(mount.get("Destination") or "") != str(container_dir):
+                continue
+            source = mount.get("Source")
+            if source and Path(source).resolve() == expected:
+                return True
+        return False
 
     @property
     def _dockerfile_path(self) -> Path:
@@ -751,12 +839,29 @@ class DockerSandbox(BaseSandbox):
     async def restore(self, image: SandboxImage) -> None:
         """Restore the ``main`` container from a previously committed image.
 
-        Stops and removes the current ``main`` container, then ``docker
-        run``s a replacement from ``image.ref``. Sibling compose services
-        are untouched — they keep running as before, matching the
-        documented container-only scope of the Sandbox layer.
+        Inspects the live ``main`` container, stops and removes it, then
+        ``docker run``s a replacement from ``image.ref`` **carrying the host
+        configuration the inspection recorded** — above all the bind mounts.
+        Sibling compose services are untouched — they keep running as before,
+        matching the documented container-only scope of the Sandbox layer.
+
+        The mounts are the whole point: compose bind-mounts the rollout's
+        ``verifier`` / ``agent`` / ``artifacts`` directories into the
+        container, and a replacement created without them looks healthy while
+        silently dropping every file the sandbox writes to those paths — a
+        branch child's verifier wrote its ``reward.txt`` into a container-local
+        directory nobody read, and the run reported a fabricated 0.0.
+
+        Fails closed: if the live container cannot be resolved or inspected,
+        restore raises :class:`~benchflow.sandbox.protocol.SandboxRestoreHostConfigUnavailable`
+        rather than creating a container whose host config is unknown. Both
+        halves matter — there is no host config to read once ``main`` is gone,
+        and a mountless replacement is the exact regression above.
         """
-        from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
+        from benchflow.sandbox.protocol import (
+            SandboxRestoreHostConfigUnavailable,
+            SandboxSnapshotNotSupported,
+        )
 
         if image.provider != "docker":
             raise SandboxSnapshotNotSupported(
@@ -765,12 +870,36 @@ class DockerSandbox(BaseSandbox):
                 "across providers."
             )
 
-        container_id = await self._main_container_id()
-        if container_id:
-            await self._docker_cli(["stop", container_id])
-            await self._docker_cli(["rm", "-f", container_id])
-
         project_name = _sanitize_docker_compose_project_name(self.session_id)
+        default_network = f"{project_name}_default"
+
+        container_id = await self._main_container_id()
+        if not container_id:
+            raise SandboxRestoreHostConfigUnavailable(
+                f"DockerSandbox.restore({image.ref!r}) cannot resolve the "
+                f"'main' container of compose project {project_name!r}: "
+                "`docker compose ps -q main` named none, so its bind mounts, "
+                "network and resource limits cannot be read and the "
+                "replacement cannot be made equivalent to it. Restoring "
+                "anyway would create a mountless container that looks healthy "
+                "while every file the sandbox writes to /logs stays inside "
+                "it. The container was live when snapshot() committed this "
+                "image; something removed it since."
+            )
+        # Inspected *before* removal — the host config only exists while
+        # the container does.
+        try:
+            inspected = await self._inspect_container(container_id)
+        except RuntimeError as exc:
+            raise SandboxRestoreHostConfigUnavailable(
+                f"DockerSandbox.restore({image.ref!r}) cannot read the host "
+                f"config of the 'main' container {container_id!r}, so the "
+                f"replacement cannot be made equivalent to it: {exc}"
+            ) from exc
+        replayed = _replayed_run_args(inspected, default_network=default_network)
+        await self._docker_cli(["stop", container_id])
+        await self._docker_cli(["rm", "-f", container_id])
+
         new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
 
         run_cmd = [
@@ -778,12 +907,11 @@ class DockerSandbox(BaseSandbox):
             "--detach",
             "--name",
             new_name,
-            "--network",
-            f"{project_name}_default",
             "--label",
             f"com.docker.compose.project={project_name}",
             "--label",
             "com.docker.compose.service=main",
+            *replayed,
             image.ref,
             "sleep",
             "infinity",
@@ -794,7 +922,32 @@ class DockerSandbox(BaseSandbox):
                 f"docker run from snapshot {image.ref!r} failed: "
                 f"{result.stderr or result.stdout}"
             )
-        self.logger.info(f"Snapshot restored: {image.ref} -> {new_name}")
+        self.logger.info(
+            "Snapshot restored: %s -> %s (replayed host config: %s)",
+            image.ref,
+            new_name,
+            " ".join(replayed) or "none",
+        )
+
+    async def _inspect_container(self, container_id: str) -> dict[str, Any]:
+        """``docker inspect`` one container as a dict — raises if it cannot."""
+        result = await self._docker_cli(["inspect", container_id], check=False)
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"docker inspect {container_id!r} failed: "
+                f"{result.stderr or result.stdout}"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"docker inspect {container_id!r} returned unparseable JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, list) or not payload:
+            raise RuntimeError(
+                f"docker inspect {container_id!r} returned no container object"
+            )
+        return payload[0]
 
     async def _main_container_id(self) -> str | None:
         """Return the container id of the ``main`` compose service, or None."""

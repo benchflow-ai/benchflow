@@ -34,7 +34,12 @@ from benchflow.cli._live_progress import (
     live_session,
     progress_enabled,
 )
-from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
+from benchflow.cli._options import (
+    AgentOption,
+    EnvironmentManifestOption,
+    ModelOption,
+    SkillModeOption,
+)
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _exit_if_evaluation_had_errors,
@@ -44,6 +49,7 @@ from benchflow.cli._shared import (
     err_console,
     print_error,
 )
+from benchflow.cli.ablate import register_eval_ablate
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
@@ -189,6 +195,8 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
 register_eval_lift(eval_app)
+# Stage-level ablation over branch children (rollout-branching RFC §5).
+register_eval_ablate(eval_app)
 
 
 @eval_app.command("run")
@@ -292,20 +300,7 @@ def eval_run(
             ),
         ),
     ] = None,
-    environment_manifest: Annotated[
-        Path | None,
-        typer.Option(
-            "--environment-manifest",
-            help=(
-                "Environment-plane manifest applied to every rollout: a path to "
-                "an environment.toml, OR a 'name@version' registry spec (the S "
-                "axis) resolved via $BENCHFLOW_ENV_REGISTRY when set, else the "
-                "built-in registry shipped with benchflow (env0@prod, "
-                "env0@outage). The manifest-declared stateful environment is "
-                "provisioned, gated on readiness, and torn down."
-            ),
-        ),
-    ] = None,
+    environment_manifest: EnvironmentManifestOption = None,
     state: Annotated[
         str | None,
         typer.Option(

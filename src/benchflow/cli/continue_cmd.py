@@ -95,6 +95,14 @@ def register_continue(
                 "(no live model needed) — useful for testing.",
             ),
         ] = False,
+        max_exchanges: Annotated[
+            int | None,
+            typer.Option(
+                "--max-exchanges",
+                help="Replay only the first K recorded LLM exchanges, then go "
+                "live (default: all recorded).",
+            ),
+        ] = None,
         proxy_mode: Annotated[
             str,
             typer.Option(
@@ -108,6 +116,7 @@ def register_continue(
     ) -> None:
         """Resume a previous unfinished (timed-out) openhands run to completion."""
         from benchflow.continue_run.orchestrator import continue_run
+        from benchflow.continue_run.replay_proxy import ReplayCutPointError
         from benchflow.continue_run.run_folder import RunFolderError
 
         _apply_dotenv_to_process_env()
@@ -124,9 +133,10 @@ def register_continue(
                     strict_divergence=strict_divergence,
                     replay_only=replay_only,
                     proxy_mode=proxy_mode,
+                    max_exchanges=max_exchanges,
                 )
             )
-        except RunFolderError as exc:
+        except (RunFolderError, ReplayCutPointError) as exc:
             # Command-agnostic prefix: the same callback backs both the canonical
             # `bench eval continue` and the deprecated top-level `bench continue`.
             typer.secho(f"benchflow: {exc}", fg=typer.colors.RED, err=True)

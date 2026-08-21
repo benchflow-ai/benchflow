@@ -31,7 +31,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.text import describe_exception
-from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
+from benchflow.continue_run.replay_proxy import (
+    ReplayCutPointError,
+    ReplayProxy,
+    ReplayRouter,
+    request_body_digest,
+    validate_max_exchanges,
+)
 from benchflow.continue_run.run_folder import RunFolder, RunFolderError, load_run_folder
 from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
@@ -87,6 +93,113 @@ def continued_rollout_name(run: RunFolder) -> str:
     if not cleaned:
         cleaned = run.task_name or "run"
     return f"{cleaned}__continued"
+
+
+def resolve_cut_point(
+    max_exchanges: int | None,
+    *,
+    stage_tags: dict[str, int] | None = None,
+    cut_stage: str | None = None,
+) -> tuple[int | None, str | None]:
+    """Resolve an optional stage-named cut into a ``max_exchanges`` value.
+
+    ``stage_tags[stage]`` is the 1-based count of exchanges that had completed
+    when the stage closed — a cut at that stage replays exactly that many
+    exchanges. (Rollout-branching RFC §3.5 — externally supplied; recording
+    stage tags at run time is a named follow-on.) With ``cut_stage`` given,
+    the cut resolves to ``stage_tags[cut_stage]``; every misuse — combining
+    ``cut_stage`` with ``max_exchanges``, a missing ``stage_tags`` mapping, an
+    unknown stage, or a tag below 1 — fails closed with
+    :class:`ReplayCutPointError`. Returns ``(max_exchanges, branch_stage)``.
+    """
+    if cut_stage is None:
+        return max_exchanges, None
+    if max_exchanges is not None:
+        raise ReplayCutPointError(
+            "pass either max_exchanges or cut_stage, not both — a stage-named "
+            "cut resolves max_exchanges from stage_tags."
+        )
+    if not stage_tags:
+        raise ReplayCutPointError(
+            f"cut_stage={cut_stage!r} given but no stage_tags were provided; a "
+            "stage-named cut needs the stage-name → completed-exchange-count "
+            "mapping."
+        )
+    if cut_stage not in stage_tags:
+        raise ReplayCutPointError(
+            f"unknown cut stage {cut_stage!r}; available stages: "
+            f"{', '.join(sorted(stage_tags))}."
+        )
+    resolved = stage_tags[cut_stage]
+    if resolved < 1:
+        raise ReplayCutPointError(
+            f"stage_tags[{cut_stage!r}] must be >= 1 — a stage tag is the "
+            f"1-based count of exchanges completed when the stage closed, got "
+            f"{resolved}."
+        )
+    return resolved, cut_stage
+
+
+def cut_point_provenance(
+    exchanges: list[LLMExchange],
+    *,
+    max_exchanges: int | None = None,
+    branch_stage: str | None = None,
+) -> dict[str, Any]:
+    """The configured ``cut_point`` block recorded in source_provenance (RFC §3.5).
+
+    ``n_replayed_exchanges`` is the replay prefix the run is *configured* to
+    serve (the natural end when ``max_exchanges`` is ``None``) and
+    ``cut_point_digest`` the canonical-JSON sha256 of the last replayed
+    exchange's request — both computed from the recording at config time, so
+    the block carries ``accounting: "configured"``. In sandbox proxy mode the
+    uploaded recording is truncated to exactly this prefix, so configured
+    accounting is the honest basis there; in host proxy mode the orchestrator
+    reconciles the block after the run with what the live router actually
+    served (:func:`served_cut_point`). ``branch_stage`` is recorded only for
+    a stage-named cut.
+    """
+    n_replayed = validate_max_exchanges(max_exchanges, len(exchanges))
+    block: dict[str, Any] = {
+        "n_replayed_exchanges": n_replayed,
+        "cut_point_digest": (
+            request_body_digest(exchanges[n_replayed - 1].request.body)
+            if n_replayed > 0
+            else None
+        ),
+        "accounting": "configured",
+    }
+    if branch_stage is not None:
+        block["branch_stage"] = branch_stage
+    return block
+
+
+def served_cut_point(
+    router: ReplayRouter,
+    *,
+    configured_max_exchanges: int | None = None,
+    branch_stage: str | None = None,
+) -> dict[str, Any]:
+    """The post-run ``cut_point`` block reconciled with what was served.
+
+    Host proxy mode keeps the live :class:`ReplayRouter` in-process, so after
+    the run the block can record the replay prefix the proxy *actually*
+    served — ``n_replayed_exchanges`` and ``cut_point_digest`` as observed
+    (``accounting: "served"``) rather than as configured. When an explicit
+    cut was requested, ``configured_max_exchanges`` preserves the requested
+    K so a served/configured divergence (e.g. the agent stopped asking before
+    the cut) stays visible; ``branch_stage`` is kept for a stage-named cut.
+    """
+    block: dict[str, Any] = {
+        "n_replayed_exchanges": router.n_replayed_exchanges,
+        "cut_point_digest": router.cut_point_digest,
+        "accounting": "served",
+    }
+    if configured_max_exchanges is not None:
+        block["configured_max_exchanges"] = configured_max_exchanges
+    if branch_stage is not None:
+        block["branch_stage"] = branch_stage
+    return block
 
 
 @dataclass(frozen=True)
@@ -161,6 +274,8 @@ def build_rollout_config(
     timeout: int | None,
     output_dir: str | Path,
     rollout_name: str,
+    max_exchanges: int | None = None,
+    branch_stage: str | None = None,
 ) -> Any:
     """Assemble the RolloutConfig that re-runs the task through the proxy.
 
@@ -198,6 +313,11 @@ def build_rollout_config(
             "original_model": run.model,
             "live_model": live_model,
             "n_recorded_exchanges": run.n_recorded_exchanges,
+            "cut_point": cut_point_provenance(
+                run.exchanges,
+                max_exchanges=max_exchanges,
+                branch_stage=branch_stage,
+            ),
         },
     )
 
@@ -254,19 +374,30 @@ class LiteLLMLiveForwarder:
 
 
 def stitched_trajectory_lines(
-    original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
+    recorded_lines: list[str],
+    live_exchanges: list[LLMExchange],
+    *,
+    max_recorded: int | None = None,
 ) -> list[str]:
     """Build the continuous llm_trajectory: recorded prefix + live suffix.
 
-    The recorded prefix is taken verbatim from the source file (already redacted
-    and byte-identical to what the agent replayed); the live suffix is the
-    exchanges the proxy captured after the cut-point, redacted on the way out.
+    ``recorded_lines`` are the *parsed* exchanges' verbatim source lines
+    (:func:`~benchflow.continue_run.run_folder.load_llm_exchanges_with_lines`
+    — already redacted and byte-identical to what the agent replayed). The
+    replay counts parsed exchanges, so ``max_recorded`` selects exactly the
+    first K replayed exchanges' lines — a malformed (never-replayed) line in
+    the source file can neither appear in the stitched prefix nor shift the
+    cut. The live suffix is the exchanges the proxy captured after the
+    cut-point, redacted on the way out.
+
+    ``max_recorded`` is the prefix that was *served*, which is the configured
+    cut only when the agent consumed all of it — callers pass the router's
+    served count in host proxy mode, so a run the agent abandoned early does
+    not get recorded responses it never received appended to its trajectory.
     """
-    lines: list[str] = []
-    if original_llm_trajectory.is_file():
-        for raw in original_llm_trajectory.read_text().splitlines():
-            if raw.strip():
-                lines.append(raw)
+    lines = list(recorded_lines)
+    if max_recorded is not None:
+        lines = lines[:max_recorded]
     for exchange in live_exchanges:
         raw = json.dumps(exchange.model_dump(mode="json"), default=str)
         lines.append(redact_trajectory_text(raw))
@@ -274,12 +405,18 @@ def stitched_trajectory_lines(
 
 
 def write_stitched_trajectory(
-    rollout_dir: Path, original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
+    rollout_dir: Path,
+    recorded_lines: list[str],
+    live_exchanges: list[LLMExchange],
+    *,
+    max_recorded: int | None = None,
 ) -> Path:
     """Write the stitched continuous trajectory into the new rollout folder."""
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = stitched_trajectory_lines(original_llm_trajectory, live_exchanges)
+    lines = stitched_trajectory_lines(
+        recorded_lines, live_exchanges, max_recorded=max_recorded
+    )
     out.write_text("\n".join(lines) + ("\n" if lines else ""))
     return out
 
@@ -295,7 +432,13 @@ def _usage_int(usage: dict[str, Any], *keys: str) -> int:
 def summarize_llm_trajectory_usage(
     trajectory_path: Path, *, n_recorded: int
 ) -> ContinuedUsageSummary:
-    """Recover aggregate token usage from provider responses in a trajectory."""
+    """Recover aggregate token usage from provider responses in a trajectory.
+
+    ``n_recorded`` is the recorded/live boundary inside the stitched file and
+    must be the same prefix length that produced it (the served count in host
+    proxy mode, the configured one in sandbox mode) — otherwise live tokens
+    are billed as replayed, or the reverse.
+    """
     input_tokens = 0
     output_tokens = 0
     cache_read = 0
@@ -351,6 +494,7 @@ def update_continued_metadata(
     live_model: str | None,
     usage: ContinuedUsageSummary,
     environment: str,
+    cut_point: dict[str, Any] | None = None,
 ) -> None:
     """Patch output metadata that Rollout could not know while model=None.
 
@@ -358,12 +502,19 @@ def update_continued_metadata(
     provider resolution does not clobber the replay proxy. After the run, the
     HF-compatible artifacts still need the actual live model and token usage.
     The stitched LLM trajectory is authoritative for provider usage.
+
+    ``cut_point`` (host proxy mode) replaces the configured ``cut_point``
+    block in both files' ``source`` with the served-accounting block
+    (:func:`served_cut_point`) — reconciling provenance with what the live
+    router actually replayed.
     """
     config_path = rollout_dir / "config.json"
     if config_path.is_file():
         config = json.loads(config_path.read_text())
         config["model"] = live_model
         config.setdefault("source", {})["usage_source"] = "stitched_llm_trajectory"
+        if cut_point is not None:
+            config.setdefault("source", {})["cut_point"] = cut_point
         config["usage_tracking"] = {
             "requested": "required",
             "status": (
@@ -384,6 +535,12 @@ def update_continued_metadata(
         return
     result = json.loads(result_path.read_text())
     result["model"] = live_model
+    if cut_point is not None:
+        source = result.get("source")
+        if not isinstance(source, dict):
+            source = {}
+            result["source"] = source
+        source["cut_point"] = cut_point
     agent_result = result.setdefault("agent_result", {})
     if isinstance(agent_result, dict):
         agent_result.update(usage.as_agent_result_patch())
@@ -409,6 +566,48 @@ def update_continued_metadata(
             else usage_tracking.get("status", "off")
         )
     result_path.write_text(json.dumps(result, indent=2) + "\n")
+
+
+def write_continuation_artifacts(
+    rollout_dir: Path,
+    run: RunFolder,
+    live_exchanges: list[LLMExchange],
+    *,
+    n_recorded: int,
+    cut_point: dict[str, Any],
+    live_model: str | None,
+) -> Path:
+    """Write the stitched trajectory and its metadata on one replay basis.
+
+    The three artifacts a continuation leaves behind only make sense together:
+    the stitched ``llm_trajectory.jsonl`` (recorded prefix + live suffix), the
+    recorded-vs-live token split derived from it, and the ``cut_point``
+    provenance block. Producing them here, from a single ``n_recorded``,
+    is what keeps them from disagreeing — a prefix length used for two of the
+    three and a different one for the last leaves artifacts no experiment can
+    be run on.
+
+    The caller chooses the basis and passes the matching block: host proxy
+    mode reads the prefix the live router actually *served*
+    (:func:`served_cut_point`), sandbox proxy mode uploads a recording already
+    truncated to the *configured* prefix and keeps that
+    (:func:`cut_point_provenance`). The block's ``accounting`` field is what
+    tells a reader which of the two produced these numbers.
+    """
+    stitched_path = write_stitched_trajectory(
+        rollout_dir,
+        run.exchange_lines,
+        live_exchanges,
+        max_recorded=n_recorded,
+    )
+    update_continued_metadata(
+        rollout_dir,
+        live_model=live_model,
+        usage=summarize_llm_trajectory_usage(stitched_path, n_recorded=n_recorded),
+        environment=run.environment,
+        cut_point=cut_point,
+    )
+    return stitched_path
 
 
 def _host_proxy_binding(environment: str) -> tuple[str, str]:
@@ -486,6 +685,9 @@ async def continue_run(
     strict_divergence: bool = False,
     replay_only: bool = False,
     proxy_mode: str = "auto",
+    max_exchanges: int | None = None,
+    stage_tags: dict[str, int] | None = None,
+    cut_stage: str | None = None,
 ) -> ContinueResult:
     """Resume ``folder`` to completion via record-replay + live continuation.
 
@@ -493,8 +695,21 @@ async def continue_run(
     ``gemini-3.1-flash-lite-preview``); defaults to the original run's model.
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
     the replay without provider credentials.
+    ``max_exchanges`` replays only the first K recorded exchanges, then goes
+    live (the RFC §3.5 cut-point). ``stage_tags`` + ``cut_stage`` name the cut
+    by recorded stage instead: ``stage_tags[stage]`` is the 1-based count of
+    exchanges that had completed when the stage closed — a cut at that stage
+    replays exactly that many exchanges.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
+    max_exchanges, branch_stage = resolve_cut_point(
+        max_exchanges, stage_tags=stage_tags, cut_stage=cut_stage
+    )
+    # Fail closed on an out-of-range cut here, before anything runs. Each proxy
+    # mode then resolves its own replay basis: host mode reads the served count
+    # off the live router after the run, sandbox mode uploads a recording
+    # truncated to the configured prefix and keeps that basis.
+    validate_max_exchanges(max_exchanges, run.n_recorded_exchanges)
     task_path = resolve_task_path(run, tasks_dir)
 
     live_model = model or run.model
@@ -528,12 +743,15 @@ async def continue_run(
             output_dir=out_root,
             rollout_name=rollout_name,
             strict_divergence=strict_divergence,
+            max_exchanges=max_exchanges,
+            branch_stage=branch_stage,
         )
 
     router = ReplayRouter(
         run.exchanges,
         live_forwarder=live_forwarder,
         strict_divergence=strict_divergence,
+        max_exchanges=max_exchanges,
     )
 
     bind_host, advertise_host = _host_proxy_binding(run.environment)
@@ -550,6 +768,8 @@ async def continue_run(
             timeout=timeout if timeout is not None else run.timeout_sec,
             output_dir=out_root,
             rollout_name=rollout_name,
+            max_exchanges=max_exchanges,
+            branch_stage=branch_stage,
         )
         rollout = await Rollout.create(config)
         result = await rollout.run()
@@ -557,26 +777,34 @@ async def continue_run(
     finally:
         proxy.stop()
 
-    stitched_path = write_stitched_trajectory(
+    # The served prefix, not the configured one, is what the agent actually
+    # consumed: an agent that exits or errors before reaching the cut leaves
+    # ``n_replayed_exchanges < n_replay``. Stitching the configured prefix
+    # would append recorded responses the agent never received, and the usage
+    # split would bill those tokens as "replayed" — while the cut_point block
+    # below reported the smaller served count, contradicting both. One basis
+    # for all three (``accounting: "served"`` names it in the artifact).
+    n_served = router.n_replayed_exchanges
+    write_continuation_artifacts(
         rollout_dir,
-        run.path / "trajectory" / "llm_trajectory.jsonl",
+        run,
         router.live_exchanges,
-    )
-    update_continued_metadata(
-        rollout_dir,
-        live_model=live_model,
-        usage=summarize_llm_trajectory_usage(
-            stitched_path,
-            n_recorded=run.n_recorded_exchanges,
+        n_recorded=n_served,
+        # Reconcile the configured cut_point block with what the live router
+        # actually served — host mode's post-run accounting.
+        cut_point=served_cut_point(
+            router,
+            configured_max_exchanges=max_exchanges,
+            branch_stage=branch_stage,
         ),
-        environment=run.environment,
+        live_model=live_model,
     )
 
     return ContinueResult(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=n_served,
         n_live=len(router.live_exchanges),
         divergences=router.divergences,
     )
@@ -591,6 +819,8 @@ async def _continue_run_with_sandbox_proxy(
     output_dir: Path,
     rollout_name: str,
     strict_divergence: bool,
+    max_exchanges: int | None = None,
+    branch_stage: str | None = None,
 ) -> ContinueResult:
     """Run continuation with replay and provider proxies inside the sandbox."""
     from benchflow.providers.runtime import (
@@ -599,6 +829,10 @@ async def _continue_run_with_sandbox_proxy(
     )
     from benchflow.rollout import Rollout
 
+    # The in-sandbox proxy replays exactly the recording it is given, so a cut
+    # is threaded by truncating the uploaded prefix — the switch to live then
+    # happens exactly as if the recording had ended there.
+    n_replay = validate_max_exchanges(max_exchanges, run.n_recorded_exchanges)
     config = build_rollout_config(
         run,
         task_path=task_path,
@@ -607,6 +841,8 @@ async def _continue_run_with_sandbox_proxy(
         timeout=timeout if timeout is not None else run.timeout_sec,
         output_dir=output_dir,
         rollout_name=rollout_name,
+        max_exchanges=max_exchanges,
+        branch_stage=branch_stage,
     )
     rollout = await Rollout.create(config)
     replay_proxy: SandboxReplayProxy | None = None
@@ -627,19 +863,22 @@ async def _continue_run_with_sandbox_proxy(
             return
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
-        stitched_path = write_stitched_trajectory(
+        write_continuation_artifacts(
             rollout_dir,
-            run.path / "trajectory" / "llm_trajectory.jsonl",
+            run,
             live_exchanges,
-        )
-        update_continued_metadata(
-            rollout_dir,
-            live_model=live_model,
-            usage=summarize_llm_trajectory_usage(
-                stitched_path,
-                n_recorded=run.n_recorded_exchanges,
+            n_recorded=n_replay,
+            # No live router on this side to read a served count off: the
+            # in-sandbox proxy is handed a recording already truncated to the
+            # configured prefix, so configured accounting is the honest basis
+            # here — and the artifact says so, rather than leaving the reader
+            # to infer which basis produced the numbers beside it.
+            cut_point=cut_point_provenance(
+                run.exchanges,
+                max_exchanges=max_exchanges,
+                branch_stage=branch_stage,
             ),
-            environment=run.environment,
+            live_model=live_model,
         )
         artifacts_written = True
 
@@ -661,7 +900,7 @@ async def _continue_run_with_sandbox_proxy(
         )
         replay_proxy = await SandboxReplayProxy.start(
             sandbox=rollout.env,
-            recorded=run.exchanges,
+            recorded=run.exchanges[:n_replay],
             upstream_url=provider_env["LLM_BASE_URL"],
             upstream_api_key=provider_env["LLM_API_KEY"],
             upstream_model=provider_env["LLM_MODEL"],
@@ -741,7 +980,7 @@ async def _continue_run_with_sandbox_proxy(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=n_replay,
         n_live=len(live_exchanges),
         divergences=0,
     )
