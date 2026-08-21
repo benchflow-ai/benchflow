@@ -388,16 +388,23 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--model` | agent registry | Model for the parent run and every arm |
 | `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
 | `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it |
-| `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`. At least two, no duplicates |
+| `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators |
 | `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
 | `--json` | `false` | Emit the report as JSON on stdout instead of the table |
 
-Arm kinds map onto the two `BranchDelta` fields the branch engine executes:
+Arm kinds map onto the `BranchDelta` fields the branch engine executes:
 `with-skill` / `no-skill` set `skill_mode`, which re-runs `install_agent()`
 under the switched mode — so they are only valid at `env-ready`, the boundary
 captured *before* installation. `inject:<file>` sets `injected_prompt`,
 delivered as that child's user-visible continuation prompt and recorded as a
-content hash only.
+content hash only. `config:<patch>` sets `config_override`: the arm runs as a
+fresh rollout whose config is the parent's with the patch deep-merged on top
+through the run-level overlay machinery (#790) — same value-or-`@file` form,
+same fail-closed allowlist (never the scorer: a `verifier`/`reward` key is
+rejected at parse time), same content addressing (the arm's provenance records
+the patch's sha256 and its allowlisted keys, and the child's `config.json`
+records the merged overlay). Like the skills arms it is only valid at
+`env-ready`, because the child's own `setup()` is what applies the patch.
 
 *How* an arm runs depends on `--at-stage`, not on its kind. `env-ready`
 precedes `install_agent()`, so **every** arm forked there runs as a fresh child

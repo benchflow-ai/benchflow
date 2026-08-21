@@ -177,10 +177,14 @@ async def test_deltas_length_must_match_n(tmp_path: Path):
 async def test_unsupported_delta_fields_fail_closed_before_any_child_runs(
     tmp_path: Path, delta: BranchDelta
 ):
-    """environment_ref/config_override/skill_mode raise BranchDeltaNotSupported.
+    """environment_ref/config_override/skill_mode raise BranchDeltaNotSupported
+    at a *cursor* branch.
 
-    The typed error names the field, points at the RFC follow-on, and fires
-    before quiesce/checkpoint — no snapshot taken, no child forked or run.
+    ``skill_mode`` and ``config_override`` execute only from the ``env-ready``
+    stage snapshot (their gates name that boundary and the fresh-child path);
+    ``environment_ref`` has no execution path at all. Either way the typed
+    error names the field and fires before quiesce/checkpoint — no snapshot
+    taken, no child forked or run.
     """
     rollout = _rollout(tmp_path)
     env = FakeEnvironment()
@@ -540,14 +544,12 @@ def test_unsupported_delta_fields_are_derived_from_the_schema():
     """The blocklist is derived at import (all BranchDelta fields minus the
     executable set), so a future BranchDelta field is unsupported-by-default
     — the engine fails closed on it instead of silently ignoring it. Today
-    that derivation yields the two records-only fields; ``skill_mode`` left
-    the set when it gained an execution path (a fresh child rollout from the
-    env-ready snapshot), and is gated per branch point instead — see
-    tests/test_branch_skill_delta.py."""
-    assert set(_UNSUPPORTED_DELTA_FIELDS) == {
-        "config_override",
-        "environment_ref",
-    }
+    that derivation yields the one records-only field; ``skill_mode`` and then
+    ``config_override`` left the set when they gained an execution path (a
+    fresh child rollout from the env-ready snapshot), and are gated per branch
+    point instead — see tests/test_branch_skill_delta.py and
+    tests/test_branch_config_delta.py."""
+    assert set(_UNSUPPORTED_DELTA_FIELDS) == {"environment_ref"}
 
 
 # 6. "branched" is a terminal phase and the result is real
