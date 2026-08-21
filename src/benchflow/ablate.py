@@ -56,6 +56,7 @@ from benchflow.rollout_branch import CHILD_WALL_CLOCK_KEY
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
 
 if TYPE_CHECKING:
+    from benchflow.environment.manifest import EnvironmentManifest
     from benchflow.trajectories.tree import RolloutNode, RolloutTree
 
 logger = logging.getLogger(__name__)
@@ -309,6 +310,39 @@ def resolve_ablation_task(tasks_dir: Path) -> Path:
             "the task directory itself"
         )
     return tasks[0]
+
+
+def resolve_ablation_environment_manifest(
+    task_path: Path,
+) -> EnvironmentManifest | None:
+    """The environment the task declares — the same one ``bench eval`` binds.
+
+    A stateful task declares its world in ``task.md``
+    (``benchflow.environment.manifest``: the image, the services the framework
+    starts, the readiness probes). ``bench eval`` resolves that declaration per
+    task before building the rollout config
+    (:func:`~benchflow.environment.manifest.manifest_from_task_document`); an
+    ablation that skipped it would run the parent — and therefore every arm
+    forked from it — in a *different* environment than the run it is meant to
+    explain, and would report the comparison as if it were the same one.
+
+    Resolution failures are fatal here rather than degrading to ``None``: an
+    ablation whose declared environment could not be built is not an ablation
+    that ran without services, and it fails before the parent run costs
+    anything.
+    """
+    from benchflow._utils.text import describe_exception
+    from benchflow.environment.manifest import manifest_from_task_document
+
+    try:
+        return manifest_from_task_document(task_path)
+    except Exception as exc:
+        raise AblationSpecError(
+            f"{task_path.name} declares an environment manifest in its task.md "
+            f"that could not be resolved: {describe_exception(exc)}. Every arm "
+            "forks the parent's environment, so this ablation would compare "
+            "arms in a world the task says is the wrong one"
+        ) from exc
 
 
 # Request / report
@@ -845,11 +879,18 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
         )
     task_path = Path(request.task_path)
     model = effective_model(request.agent, request.model)
+    environment_manifest = resolve_ablation_environment_manifest(task_path)
     config = RolloutConfig.from_legacy(
         task_path=task_path,
         agent=request.agent,
         model=model,
         environment=request.sandbox,
+        # The task's own declared world, resolved exactly as a normal
+        # evaluation resolves it. Every arm forks the parent's snapshot and
+        # (at ``env-ready``) re-runs from the parent's config, so binding it
+        # here binds it for the whole experiment — see
+        # :func:`resolve_ablation_environment_manifest`.
+        environment_manifest=environment_manifest,
         jobs_dir=Path(request.out_dir),
         job_name=PARENT_JOB_NAME,
         rollout_name=task_path.name,
