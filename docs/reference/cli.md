@@ -406,10 +406,35 @@ skills arms are read against each other, any other arm against the parent's own
 reward, and nothing is claimed about boundaries this invocation did not fork.
 Localizing a failure to a stage takes a second ablation at a second boundary.
 
+**Sub-test attribution.** A binary reward is a lossy summary of what an arm
+did: two arms can both score 0.00 while one passes `test_a` and fails `test_b`
+and the other does the reverse — a large, reproducible behavioral difference
+that nets to exactly zero on the scalar. So a second table follows the first,
+listing **only the tests whose outcome differs across the arms**, with each
+arm's status per test; tying tests are counted and omitted. Outcomes are read
+from each branch child's own verifier CTRF report
+(`<child>/verifier/ctrf.json`), the same artifact the eval report mines its
+failure lines from — statuses (`passed` / `failed` / `skipped`) pass through
+verbatim, and a test one arm's report does not name at all shows as *not
+reported* rather than as a failure.
+
+When the sub-tests disagree while the rewards tie, the arm's own attribution
+line says so — *"matches no-skill at env-ready (both 0.00) — scalar rewards
+tie, but 2 sub-test outcome(s) differ: test_dominant_factor,
+test_trend_result"* — so "no difference in this comparison" can never be
+printed over a difference that was measured. A verifier that emits no CTRF
+report yields no rows and no invented ones: the section says *scalar-only
+attribution* and names the arms it could not read.
+
 `ablation.json` carries the task id, the stage, the parent's own reward, and
-per arm its content-addressed delta provenance, reward, status, wall clock and
-the branch-child artifact directory (`<parent-run>/branches/<node>/children/<node>/`,
+per arm its content-addressed delta provenance, reward, status, wall clock,
+per-test outcome map (`tests`, `null` when that arm's verifier reported none)
+and the branch-child artifact directory
+(`<parent-run>/branches/<node>/children/<node>/`,
 holding that child's own `config.json` / `result.json` / `provenance.json`).
+The top-level `test_attribution` section repeats the differing tests with their
+per-arm outcomes, the tying test names, which arms reported per-test data at
+all, and whether the scalar rewards tied.
 Exit code is 1 when any arm errors or is skipped — a child failure propagates
 out of the branch, so the arms after it do not run and are never scored 0.0. A
 parent run that failed *after* the boundary is reported but does not fail the

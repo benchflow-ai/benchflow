@@ -15,6 +15,14 @@ into all arms, and turns the per-arm rewards into an :class:`AblationReport` —
 a deterministic ``ablation.json`` plus a one-line, observation-only verdict per
 arm.
 
+Attribution runs at two granularities, because a binary reward is a lossy
+summary of what an arm did: the scalar comparison, and the per-test outcomes
+mined from each arm's own verifier report (:func:`differing_tests`,
+:func:`sub_test_attribution`). A measured skills ablation that scored 0.00/0.00
+had *both* its sub-tests flip in opposite directions — attributing on the
+scalar alone would have reported "no difference" about a large, reproducible
+behavioral one.
+
 Everything decidable from the request alone is decided *before* the parent
 rollout runs (:func:`parse_arms`, :func:`validate_arms_for_stage`): an ablation
 costs a full task run before the branch, so a request the branch engine would
@@ -326,7 +334,14 @@ class AblationRequest:
 
 @dataclass
 class ArmOutcome:
-    """What one arm did: its reward, its cost, and its recorded delta."""
+    """What one arm did: its reward, its cost, and its recorded delta.
+
+    ``tests`` is the arm's per-test outcome map (``{test name -> status}``)
+    mined from its own verifier artifacts, or ``None`` when that verifier
+    reported none. ``None`` and ``{}`` are not the same thing here and the
+    distinction is load-bearing: a missing map means *not observed*, and no
+    sub-test claim may be made about that arm.
+    """
 
     name: str
     kind: str
@@ -337,6 +352,7 @@ class ArmOutcome:
     delta_execution: str | None = None
     node_id: str | None = None
     artifacts: str | None = None
+    tests: dict[str, str] | None = None
     error: str | None = None
     reference: str | None = None
     verdict: str = ""
@@ -368,6 +384,7 @@ class ArmOutcome:
             "wall_clock_sec": self.wall_clock_sec,
             "node": self.node_id,
             "artifacts": self.artifacts,
+            "tests": None if self.tests is None else dict(sorted(self.tests.items())),
             "error": self.error,
             "reference": self.reference,
             "verdict": self.verdict,
@@ -408,11 +425,15 @@ class AblationReport:
         """The ``ablation.json`` payload.
 
         Deterministic given the same rewards: arms keep request order, every
-        delta is the engine's own content-addressed provenance dict, and no
-        wall-clock *timestamp* is recorded anywhere. Per-arm
+        delta is the engine's own content-addressed provenance dict, test names
+        sort, and no wall-clock *timestamp* is recorded anywhere. Per-arm
         ``wall_clock_sec`` is a measured duration — the one field that varies
         between identical runs, carried because an ablation's cost per arm is
         part of its result.
+
+        ``test_attribution`` is derived, not stored: it is a reading of the
+        arms' own ``tests`` maps, so the section can never disagree with the
+        rows it summarizes.
         """
         return {
             "schema_version": SCHEMA_VERSION,
@@ -430,6 +451,7 @@ class AblationReport:
             "value": self.value,
             "error": self.error,
             "arms": [arm.to_dict() for arm in self.arms],
+            "test_attribution": sub_test_attribution(self.arms),
         }
 
 
@@ -451,8 +473,118 @@ def write_ablation_report(report: AblationReport, out_dir: Path) -> Path:
 # Attribution
 
 
+#: How many differing test names a one-line verdict spells out before it rolls
+#: the rest up as ``(+N more)`` — a verdict is a line, not a list.
+_VERDICT_TEST_NAMES = 3
+
+
 def _score(reward: float) -> str:
     return f"{reward:.2f}"
+
+
+def _tested(arms: Sequence[ArmOutcome]) -> list[ArmOutcome]:
+    """The arms whose verifier actually reported per-test outcomes.
+
+    An arm with ``tests is None`` was not observed at this granularity, so it
+    is excluded from every sub-test comparison rather than being treated as an
+    arm where nothing ran — otherwise one CTRF-less arm would make every test
+    of its counterpart look like a difference.
+    """
+    return [arm for arm in arms if arm.tests is not None]
+
+
+def _name_list(names: Sequence[str]) -> str:
+    """Up to :data:`_VERDICT_TEST_NAMES` names, the rest rolled up as a count."""
+    shown = ", ".join(names[:_VERDICT_TEST_NAMES])
+    extra = len(names) - _VERDICT_TEST_NAMES
+    return f"{shown} (+{extra} more)" if extra > 0 else shown
+
+
+def differing_tests(arms: Sequence[ArmOutcome]) -> list[dict[str, Any]]:
+    """The tests whose outcome is not identical across the arms that reported
+    one, sorted by test name.
+
+    This is the sub-outcome an ablation's scalar reward can hide: two arms can
+    both score 0.00 while one passes ``test_a`` and fails ``test_b`` and the
+    other does the reverse. Each entry is ``{"test": name, "outcomes": {arm ->
+    status}}``, with ``None`` for an arm whose report does not name that test
+    at all — a real difference (the test was reported for one arm and not the
+    other), stated as a missing observation rather than invented as a failure.
+
+    Comparison needs at least two observed arms; with fewer there is nothing to
+    differ *from* and the result is empty.
+    """
+    tested = _tested(arms)
+    if len(tested) < 2:
+        return []
+    differences: list[dict[str, Any]] = []
+    for name in sorted({test for arm in tested for test in arm.tests or {}}):
+        outcomes = {arm.name: (arm.tests or {}).get(name) for arm in tested}
+        if len(set(outcomes.values())) > 1:
+            differences.append(
+                {"test": name, "outcomes": dict(sorted(outcomes.items()))}
+            )
+    return differences
+
+
+def _scalar_tie(arms: Sequence[ArmOutcome]) -> bool:
+    """Whether every arm that produced a reward produced the *same* reward.
+
+    The condition under which the per-arm verdicts read "no difference" — and
+    therefore the condition the per-test section exists to qualify.
+    """
+    rewards = [arm.reward for arm in arms if arm.reward is not None]
+    return len(rewards) >= 2 and len(set(rewards)) == 1
+
+
+def sub_test_attribution(arms: Sequence[ArmOutcome]) -> dict[str, Any]:
+    """The report's ``test_attribution`` section: which sub-outcomes differ.
+
+    Always present, and always honest about its own coverage: it names the
+    arms that reported per-test outcomes *and* the arms that did not, so a
+    reader can tell "the tests tie" from "no test data was mined". Only the
+    differing tests are listed with their per-arm outcomes; tying tests are
+    noise for attribution and appear as names only. Deterministic — sorted
+    names throughout, no wall-clock anywhere.
+    """
+    tested = _tested(arms)
+    differing = differing_tests(arms)
+    differing_names = [entry["test"] for entry in differing]
+    differing_set = set(differing_names)
+    tying = [
+        name
+        for name in sorted({test for arm in tested for test in arm.tests or {}})
+        if name not in differing_set
+    ]
+    scalar_tie = _scalar_tie(arms)
+    if len(tested) < 2:
+        summary = (
+            f"scalar-only attribution — {len(tested)} of {len(arms)} arms "
+            "reported per-test outcomes, so no sub-test comparison was made"
+        )
+    elif not differing:
+        summary = (
+            f"{len(tested)} arms reported per-test outcomes and all "
+            f"{len(tying)} tie — no sub-test difference in this comparison"
+        )
+    elif scalar_tie:
+        summary = (
+            f"scalar rewards tie, but {len(differing_names)} sub-test "
+            f"outcome(s) differ: {_name_list(differing_names)}"
+        )
+    else:
+        summary = (
+            f"{len(differing_names)} sub-test outcome(s) differ: "
+            f"{_name_list(differing_names)}"
+        )
+    return {
+        "arms_with_tests": [arm.name for arm in tested],
+        "arms_without_tests": [arm.name for arm in arms if arm.tests is None],
+        "differing_tests": differing,
+        "tying_tests": tying,
+        "scalar_tie": scalar_tie,
+        "summary": summary,
+    }
 
 
 def _reference_for(
@@ -488,6 +620,14 @@ def attribute(
     one run per arm. Nothing is inferred about boundaries that were not forked
     — localizing a failure to a stage takes a second ablation at a second
     boundary (RFC §5, T3).
+
+    One qualification the scalar cannot make on its own: when two arms tie on
+    reward but their verifiers disagree per test, the verdict says so and names
+    the tests instead of reading "no difference in this comparison". A binary
+    reward can net two opposite-signed sub-outcomes to exactly zero, and a tool
+    that printed "no difference" there would be true about the reward and false
+    about the behavior. The unqualified wording survives only where the
+    sub-tests were observed and tie, or were never observed at all.
     """
     by_name = {outcome.name: outcome for outcome in outcomes}
     for arm in outcomes:
@@ -506,9 +646,20 @@ def attribute(
                 "parent reward to compare against"
             )
         elif reward == ref_reward:
+            other = by_name.get(ref_name)
+            differing = (
+                [entry["test"] for entry in differing_tests([arm, other])]
+                if other is not None
+                else []
+            )
+            tail = (
+                f"scalar rewards tie, but {len(differing)} sub-test outcome(s) "
+                f"differ: {_name_list(differing)}"
+                if differing
+                else "no difference in this comparison"
+            )
             arm.verdict = (
-                f"matches {ref_name} at {stage} (both {_score(reward)}) — no "
-                "difference in this comparison"
+                f"matches {ref_name} at {stage} (both {_score(reward)}) — {tail}"
             )
         elif (reward >= PASS_REWARD) != (ref_reward >= PASS_REWARD):
             passes = reward >= PASS_REWARD
@@ -559,9 +710,20 @@ def _outcomes(
     carrying the engine's reason — never a reward. A missing score is not an
     observation, and an ablation that reports one as ``0.00`` invents its own
     evidence.
+
+    Each child's per-test outcomes are mined from its own verifier artifacts
+    here, where the child directory is known — a branch child's artifact
+    directory *is* its rollout directory, so the CLI's existing CTRF reader
+    serves it unchanged. Report-time reads only: the engine stays file-free,
+    and a child whose verifier emitted no CTRF report keeps ``tests = None``.
     """
     from benchflow.branch import UNSCORED_KEY
     from benchflow.branch_lineage import branch_child_dir
+
+    # Local import for the same reason the CLI's report block does it lazily:
+    # verifier-artifact mining is report-time, and RolloutPaths underneath
+    # pulls in the task package.
+    from benchflow.cli._failure_evidence import artifact_test_outcomes
 
     outcomes: list[ArmOutcome] = []
     for index, arm in enumerate(arms):
@@ -577,9 +739,9 @@ def _outcomes(
             outcome.delta_execution = node.state.get("delta_execution")
             outcome.wall_clock_sec = node.state.get(CHILD_WALL_CLOCK_KEY)
             if run_dir is not None and node.parent is not None:
-                outcome.artifacts = str(
-                    branch_child_dir(run_dir, node.parent.id, node.id)
-                )
+                child_dir = branch_child_dir(run_dir, node.parent.id, node.id)
+                outcome.artifacts = str(child_dir)
+                outcome.tests = artifact_test_outcomes(child_dir)
             reward = node.state.get("reward")
             if reward is None:
                 outcome.error = (
