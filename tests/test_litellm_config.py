@@ -37,6 +37,16 @@ def test_bedrock_model_honors_max_thinking_effort_env():
     assert route.litellm_params["reasoning_effort"] == "high"
 
 
+def test_vertex_route_passes_project_and_location_to_litellm():
+    route = resolve_litellm_route(
+        "anthropic-vertex/claude-sonnet-4-6",
+        {"GOOGLE_CLOUD_PROJECT": "skillsbench", "GOOGLE_CLOUD_LOCATION": "global"},
+    )
+
+    assert route.litellm_params["vertex_project"] == "skillsbench"
+    assert route.litellm_params["vertex_location"] == "global"
+
+
 def test_azure_openai_route_uses_resource_and_preview_version():
     route = resolve_litellm_route(
         "azure-foundry-openai/gpt-5.5",

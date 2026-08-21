@@ -275,7 +275,11 @@ def _route_registered_provider(
         )
 
     if provider_cfg.auth_type == "adc":
-        params = {"model": f"vertex_ai/{bare}"}
+        params = {
+            "model": f"vertex_ai/{bare}",
+            "vertex_project": env.get("GOOGLE_CLOUD_PROJECT", ""),
+            "vertex_location": env.get("GOOGLE_CLOUD_LOCATION", ""),
+        }
         return LiteLLMRoute(
             requested_model=model,
             model_alias=safe_model_alias(model),
