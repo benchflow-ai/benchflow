@@ -144,7 +144,7 @@ def _ablate_command(
             help=(
                 "Comma-separated arms, one branch child each: 'with-skill', "
                 "'no-skill', 'inject:<path-to-file>', "
-                "'config:<inline-json-or-@file>'"
+                "'config:<inline-json-or-@file>', 'env:<registry-ref>'"
             ),
         ),
     ] = DEFAULT_ARMS,
@@ -168,7 +168,9 @@ def _ablate_command(
     one world is forked into a child per arm — ``with-skill`` / ``no-skill``
     switch the skill mode, ``inject:<file>`` hands the child that file as its
     continuation prompt, ``config:<patch>`` runs the child under the parent's
-    config with the allowlisted patch deep-merged on top (#790 machinery).
+    config with the allowlisted patch deep-merged on top (#790 machinery),
+    ``env:<ref>`` provisions a different registry manifest's service set over
+    the restored world (same image only — the tool-outage pattern).
     Every arm therefore starts from a byte-identical world
     and differs by exactly one recorded delta. At ``--at-stage env-ready``
     every arm re-runs agent installation as its own rollout (that boundary

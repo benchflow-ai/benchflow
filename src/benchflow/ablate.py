@@ -77,9 +77,14 @@ INJECT_PREFIX = "inject:"
 #: the same dual "value or ref" form as the run-level ``--config-override``.
 CONFIG_PREFIX = "config:"
 
+#: Arm spec prefix for an environment arm: ``env:<registry-ref-or-path>``
+#: (the ``env0@prod`` vs ``env0@outage`` tool-outage pattern).
+ENV_PREFIX = "env:"
+
 ARM_KIND_SKILL_MODE = "skill-mode"
 ARM_KIND_INJECT = "inject"
 ARM_KIND_CONFIG = "config-override"
+ARM_KIND_ENV = "environment-ref"
 
 #: Reward at or above which a rollout counts as a pass — the framework's
 #: binary convention (``bench eval metrics`` and ``bench review`` both read
@@ -103,8 +108,9 @@ CAPTURABLE_STAGES: tuple[str, ...] = tuple(
 _SKILL_ARM_NAMES = (SKILL_MODE_WITH_SKILL, SKILL_MODE_NO_SKILL)
 _ARM_SPEC_HELP = (
     f"supported arms are {SKILL_MODE_WITH_SKILL!r}, {SKILL_MODE_NO_SKILL!r}, "
-    f"'{INJECT_PREFIX}<path-to-file>', and "
-    f"'{CONFIG_PREFIX}<inline-json-or-@file>'"
+    f"'{INJECT_PREFIX}<path-to-file>', "
+    f"'{CONFIG_PREFIX}<inline-json-or-@file>', and "
+    f"'{ENV_PREFIX}<registry-ref>'"
 )
 
 
@@ -148,16 +154,19 @@ class AblationArm:
 def parse_arm(spec: str) -> AblationArm:
     """Parse one arm spec into an :class:`AblationArm` (fail closed).
 
-    Four kinds, each mapping onto exactly one executable
+    Five kinds, each mapping onto exactly one executable
     :class:`BranchDelta` field: ``with-skill`` / ``no-skill`` become
     ``skill_mode`` (the child re-runs installation as a fresh rollout from the
     ``env-ready`` snapshot), ``inject:<path>`` reads the file and becomes
     ``injected_prompt`` (the child's user-visible continuation prompt) — which
     at ``--at-stage env-ready`` is *also* delivered by a fresh rollout, since
-    every child of that boundary installs the agent for itself — and
+    every child of that boundary installs the agent for itself —
     ``config:<inline-or-@file>`` parses through the run-level overlay loader
     and becomes ``config_override`` (the child runs fresh under the parent's
-    config with the allowlisted patch deep-merged on top, #790). An
+    config with the allowlisted patch deep-merged on top, #790), and
+    ``env:<registry-ref>`` becomes ``environment_ref`` (the service-level
+    environment swap; resolution against the parent's manifest happens in
+    :func:`run_ablation`, where the parent's manifest is known). An
     unknown kind, an empty spec, an injection file that is missing or blank,
     or a config patch that is unparsable or touches a non-allowlisted section
     raises :class:`AblationSpecError` — a silently dropped arm would publish an
@@ -173,6 +182,17 @@ def parse_arm(spec: str) -> AblationArm:
         )
     if name.startswith(CONFIG_PREFIX):
         return _parse_config_arm(name)
+    if name.startswith(ENV_PREFIX):
+        ref = name[len(ENV_PREFIX) :].strip()
+        if not ref:
+            raise AblationSpecError(
+                f"arm {name!r} names no environment — the environment arm is "
+                f"'{ENV_PREFIX}<registry-ref>' (e.g. '{ENV_PREFIX}env0@outage') "
+                "or a manifest file path"
+            )
+        return AblationArm(
+            name=name, kind=ARM_KIND_ENV, delta=BranchDelta(environment_ref=ref)
+        )
     if name.startswith(INJECT_PREFIX):
         raw = name[len(INJECT_PREFIX) :].strip()
         if not raw:
@@ -323,6 +343,11 @@ def validate_arms_for_stage(
     * a ``config:`` arm executes only at ``env-ready`` for the same shape of
       reason: the overlay is applied by the child's own ``setup()``, which
       only a fresh child of that boundary re-runs.
+    * an ``env:`` arm executes only at ``env-ready`` likewise: the child
+      manifest's services are provisioned over the restored snapshot by the
+      fresh child. (Its *content* gates — resolvable ref, same image,
+      framework-started services — need the parent's manifest and run in
+      :func:`run_ablation`, still before the parent run.)
     * an ``env-ready`` ablation runs *every* arm as a fresh rollout — that
       boundary precedes ``install_agent()``, so each child installs the agent
       for itself — which needs the container layer in the stage snapshot. The
@@ -354,6 +379,14 @@ def validate_arms_for_stage(
                 f"setup(), and by {stage!r} the parent's config has already "
                 "been consumed — the arm would record the override and run "
                 "without it"
+            )
+        if arm.kind == ARM_KIND_ENV and stage != FRESH_CHILD_STAGE:
+            raise AblationSpecError(
+                f"arm {arm.name!r} needs --at-stage {FRESH_CHILD_STAGE!r}, not "
+                f"{stage!r}: the child manifest's services are provisioned "
+                "over the restored snapshot by the fresh child rollout, and "
+                f"by {stage!r} the parent's provisioned services survive the "
+                "fork — the arm would record the swap and run without it"
             )
     if (
         stage == FRESH_CHILD_STAGE
@@ -972,6 +1005,22 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
     task_path = Path(request.task_path)
     model = effective_model(request.agent, request.model)
     environment_manifest = resolve_ablation_environment_manifest(task_path)
+    # Pre-flight the env arms' content gates now that the parent's manifest is
+    # known: an unresolvable ref, an image-changing manifest, or an
+    # entrypoint-owned lifecycle is decidable from the request alone, and the
+    # branch engine would reject it only after a full parent run.
+    from benchflow.branch_skill import resolve_environment_ref_delta
+
+    for arm in request.arms:
+        if arm.kind == ARM_KIND_ENV and arm.delta.environment_ref is not None:
+            try:
+                resolve_environment_ref_delta(
+                    environment_manifest,
+                    arm.delta.environment_ref,
+                    subject=f"arm {arm.name!r}",
+                )
+            except NotImplementedError as exc:
+                raise AblationSpecError(str(exc)) from exc
     config = RolloutConfig.from_legacy(
         task_path=task_path,
         agent=request.agent,

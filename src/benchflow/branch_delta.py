@@ -28,6 +28,23 @@ from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
 _BRANCH_SKILL_MODES = frozenset({SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL})
 
 
+class BranchDeltaNotSupported(NotImplementedError):
+    """A BranchDelta a branch request cannot execute as asked (fail closed).
+
+    Every executable field has preconditions — ``skill_mode`` /
+    ``config_override`` / ``environment_ref`` run only as fresh child rollouts
+    from the ``env-ready`` stage snapshot, ``skill_mode`` additionally needs a
+    ``no-skill`` parent, and ``environment_ref`` needs a same-image,
+    framework-started-services manifest pair (the outage pattern) — and a
+    request that does not satisfy them fails closed *before any child runs*,
+    rather than running a child that silently ignores its delta or measures a
+    world its restore could not roll back. Defined here, beside the schema,
+    so both the branch engine (:mod:`benchflow.rollout_branch`) and the
+    fresh-child module (:mod:`benchflow.branch_skill`) can raise and subclass
+    it without a circular import; the engine re-exports it.
+    """
+
+
 @dataclass(frozen=True)
 class BranchDelta:
     """The exactly-one-controlled-change a branch child runs under (RFC §3.3).
