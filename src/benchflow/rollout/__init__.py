@@ -77,6 +77,7 @@ from benchflow._utils.scoring import classify_error as classify_error
 from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.env import MissingAgentCredentialError
 from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
@@ -2192,6 +2193,9 @@ class Rollout:
             # placeholder during cleanup.
             self._error = str(e)
             logger.error(str(e))
+        except MissingAgentCredentialError as e:
+            self._error = f"Missing credential: {e}"
+            logger.error(self._error)
         except Exception as e:
             # describe_exception, not str(e): this is the funnel every
             # unclassified rollout failure lands in, and some SDK errors
