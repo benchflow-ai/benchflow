@@ -1516,3 +1516,330 @@ async def test_an_unresolvable_declared_environment_fails_before_the_parent_runs
         await run_ablation(request)
 
     assert built == []
+
+
+# 8. Ablation self-description: the bound environment and the stage snapshot
+
+
+def _request_with_manifest(
+    tmp_path: Path,
+    task: Path,
+    *,
+    arms: str = "with-skill,no-skill",
+    environment_manifest: Path | str | None = None,
+) -> AblationRequest:
+    return AblationRequest(
+        task_path=task,
+        arms=parse_arms(arms),
+        agent="claude-agent-acp",
+        model="claude-sonnet",
+        out_dir=tmp_path / "out",
+        environment_manifest=environment_manifest,
+    )
+
+
+async def test_an_explicit_environment_manifest_beats_the_task_declared_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """--environment-manifest wins over task.md, same precedence as the run path.
+
+    Guards "feat(ablate): bind an explicit environment manifest and stamp the
+    bound environment". ``bench eval run`` consults
+    ``manifest_from_task_document`` only when no explicit manifest was bound
+    (``benchflow.evaluation``); the ablation must mirror that, or the same
+    flag would mean two different worlds on the two commands.
+    """
+    from benchflow._utils.content_address import sha256_prefixed
+
+    task = _manifest_task_dir(tmp_path)  # declares environment.yaml
+    override = tmp_path / "override.yaml"
+    override.write_text(
+        "environment:\n  name: ablate-flag-env\n  image: example/flag:latest\n",
+        encoding="utf-8",
+    )
+    built = _patch_rollout(monkeypatch)
+
+    report = await run_ablation(
+        _request_with_manifest(tmp_path, task, environment_manifest=override)
+    )
+
+    manifest = built[0].config.environment_manifest
+    assert (manifest.name, manifest.image) == ("ablate-flag-env", "example/flag:latest")
+    assert report.environment == {
+        "name": "ablate-flag-env",
+        "ref": str(override),
+        "env_hash": sha256_prefixed(override.read_bytes()),
+        "image": "example/flag:latest",
+        "base_image": None,
+    }
+
+
+async def test_the_task_declared_environment_is_stamped_deterministically(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The report says which world the arms compared in, machine-independently.
+
+    Guards "feat(ablate): bind an explicit environment manifest and stamp the
+    bound environment" — the reviewer's open question. The stamp's ``ref`` is
+    the ``task.md`` declaration verbatim (never the resolved absolute path,
+    which would make ablation.json differ per machine) and ``env_hash`` is the
+    manifest's sha256 content address, the same identity the registry uses.
+    """
+    from benchflow._utils.content_address import sha256_prefixed
+
+    task = _manifest_task_dir(tmp_path)
+    _patch_rollout(monkeypatch)
+
+    report = await run_ablation(_request_with_manifest(tmp_path, task))
+
+    assert report.environment == {
+        "name": "ablate-declared-env",
+        "ref": "environment.yaml",
+        "env_hash": sha256_prefixed((task / "environment.yaml").read_bytes()),
+        "image": "example/ablate-declared:latest",
+        "base_image": None,
+    }
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert payload["environment"]["ref"] == "environment.yaml"
+    assert str(tmp_path) not in json.dumps(payload["environment"])
+
+
+async def test_a_manifest_less_ablation_stamps_no_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No bound world, no stamp — nothing invented."""
+    _patch_rollout(monkeypatch)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert report.environment is None
+    assert all(arm.environment is None for arm in report.arms)
+
+
+async def test_an_unresolvable_explicit_manifest_fails_before_the_parent_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The flag fails closed exactly like a broken task declaration."""
+    built = _patch_rollout(monkeypatch)
+    request = _request_with_manifest(
+        tmp_path,
+        _task_dir(tmp_path),
+        environment_manifest=tmp_path / "nope.yaml",
+    )
+
+    with pytest.raises(AblationSpecError, match="--environment-manifest"):
+        await run_ablation(request)
+
+    assert built == []
+
+
+def test_the_environment_manifest_flag_reaches_the_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The CLI threads --environment-manifest through to the request — the
+    same flag name and value forms as ``bench eval run``."""
+    report = _report(arms=_skill_outcomes(with_skill=1.0, no_skill=0.0))
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    seen = _patched_run(monkeypatch, report)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--environment-manifest",
+            "env0@prod",
+            "--out-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen[0].environment_manifest == Path("env0@prod")
+
+
+_ABLATE_PROD_MANIFEST = """\
+environment:
+  name: ablate-prod
+  base_image: example/claws:latest
+  owns_lifecycle: false
+  services:
+    - name: gmail
+      command: serve-gmail
+      port: 9001
+    - name: gcal
+      command: serve-gcal
+      port: 9002
+"""
+
+_ABLATE_OUTAGE_MANIFEST = """\
+environment:
+  name: ablate-outage
+  base_image: example/claws:latest
+  owns_lifecycle: false
+  services:
+    - name: gmail
+      command: serve-gmail
+      port: 9001
+"""
+
+
+async def test_an_env_arms_swapped_environment_is_stamped_on_its_row(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An ``env:`` arm's row names the world its delta swapped in.
+
+    Guards "feat(ablate): bind an explicit environment manifest and stamp the
+    bound environment": the top-level stamp is the parent's world, and the one
+    arm that ran a *different* manifest carries its own stamp — name, the ref
+    exactly as the arm spec wrote it, and the child manifest's content hash —
+    while every inheriting arm carries none.
+    """
+    from benchflow._utils.content_address import sha256_prefixed
+
+    task = _task_dir(tmp_path)
+    prod = tmp_path / "prod.yaml"
+    prod.write_text(_ABLATE_PROD_MANIFEST, encoding="utf-8")
+    outage = tmp_path / "outage.yaml"
+    outage.write_text(_ABLATE_OUTAGE_MANIFEST, encoding="utf-8")
+    (task / "task.md").write_text(
+        "---\n"
+        'schema_version: "1.3"\n'
+        "task:\n"
+        "  name: benchflow/ablate-env-arm-demo\n"
+        "  description: A task with a swappable service set\n"
+        "benchflow:\n"
+        "  environment:\n"
+        f"    manifest: {prod}\n"
+        "---\n"
+        "Solve it.\n",
+        encoding="utf-8",
+    )
+    _patch_rollout(monkeypatch)
+
+    report = await run_ablation(
+        _request_with_manifest(tmp_path, task, arms=f"no-skill,env:{outage}")
+    )
+
+    assert report.environment is not None
+    assert report.environment["name"] == "ablate-prod"
+    assert report.arms[0].environment is None
+    assert report.arms[1].environment == {
+        "name": "ablate-outage",
+        "ref": str(outage),
+        "env_hash": sha256_prefixed(outage.read_bytes()),
+        "image": None,
+        "base_image": "example/claws:latest",
+    }
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert payload["arms"][1]["environment"]["name"] == "ablate-outage"
+
+
+# 9. Stage UX: the snapshot refs travel with the report, and the post-research
+#    rejection teaches the SDK path
+
+
+class _StageRefRollout(_FakeRollout):
+    """A fork that records its stage registry the way the real engine does."""
+
+    async def branch_at_stage(self, stage, n, *, deltas=None):
+        from benchflow.branch import StageSnapshot
+        from benchflow.sandbox.protocol import SandboxImage
+
+        self._stage_snapshots = {
+            stage: StageSnapshot(
+                environment_ref=None,
+                sandbox_ref=SandboxImage(provider="fake", ref="bf-snap-root-1"),
+                stage=stage,
+            )
+        }
+        return await super().branch_at_stage(stage, n, deltas=deltas)
+
+
+async def test_the_branched_stages_snapshot_refs_are_stamped_into_the_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ablation.json records the stage's roll-back handles.
+
+    Guards "feat(ablate): bind an explicit environment manifest and stamp the
+    bound environment" (the stage-UX half): the committed sandbox image ref of
+    the branched boundary is what a reader needs to restore that world and
+    re-branch it by hand later, so it travels in the report — same refs as the
+    parent run's ``stage_snapshots.json``, no second source of truth.
+    """
+    _patch_rollout(monkeypatch, _StageRefRollout)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert report.stage_snapshot == {
+        "environment_ref": None,
+        "sandbox_ref": "bf-snap-root-1",
+        "layers": ["sandbox"],
+    }
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert payload["stage_snapshot"]["sandbox_ref"] == "bf-snap-root-1"
+
+
+def test_the_table_prints_the_environment_and_the_snapshot_refs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The self-description reaches the human surface, not only the JSON."""
+    report = _report(arms=_skill_outcomes(with_skill=1.0, no_skill=0.0))
+    report.environment = {
+        "name": "ablate-prod",
+        "ref": "env0@prod",
+        "env_hash": "sha256:abc123",
+        "image": None,
+        "base_image": "example/claws:latest",
+    }
+    report.stage_snapshot = {
+        "environment_ref": None,
+        "sandbox_ref": "bf-snap-root-1",
+        "layers": ["sandbox"],
+    }
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    _patched_run(monkeypatch, report)
+    monkeypatch.setenv("COLUMNS", "300")
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--out-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    out = _flat(result.output)
+    assert "Environment: ablate-prod (env0@prod, sha256:abc123)" in out
+    assert "Stage snapshot: sandbox=bf-snap-root-1" in out
+
+
+def test_post_research_rejection_names_the_sdk_branching_path() -> None:
+    """The rejection teaches how post-research branching IS done.
+
+    Guards "feat(ablate): bind an explicit environment manifest and stamp the
+    bound environment" (the stage-UX half): the CLI keeps refusing the stage
+    it cannot capture, but the message now states the working recipe —
+    ``mark_stage`` at the cut point, then ``branch_at_stage`` — instead of a
+    bare pointer at "the Python API".
+    """
+    arms = parse_arms("with-skill,no-skill")
+    with pytest.raises(AblationSpecError) as excinfo:
+        validate_arms_for_stage(arms, "post-research")
+    message = str(excinfo.value)
+    assert "cannot be captured by this command" in message
+    assert "rollout.mark_stage('post-research')" in message
+    assert "rollout.branch_at_stage('post-research'" in message

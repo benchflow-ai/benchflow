@@ -56,7 +56,7 @@ from benchflow.rollout_branch import CHILD_WALL_CLOCK_KEY
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
 
 if TYPE_CHECKING:
-    from benchflow.environment.manifest import EnvironmentManifest
+    from benchflow.environment.manifest import ManifestBinding
     from benchflow.trajectories.tree import RolloutNode, RolloutTree
 
 logger = logging.getLogger(__name__)
@@ -362,7 +362,10 @@ def validate_arms_for_stage(
         raise AblationSpecError(
             f"--at-stage {stage!r} cannot be captured by this command: it is a "
             "mid-execute() cut point only an explicit Rollout.mark_stage() call "
-            "can record. Mark it through the Python API, or ablate one of "
+            "can record. To branch there, drive the run through the SDK — "
+            f"await rollout.mark_stage({stage!r}) at the cut point during the "
+            f"agent's run, then await rollout.branch_at_stage({stage!r}, n, "
+            "deltas=[...]) — or ablate one of "
             f"{list(CAPTURABLE_STAGES)!r}"
         )
     for arm in arms:
@@ -437,30 +440,45 @@ def resolve_ablation_task(tasks_dir: Path) -> Path:
     return tasks[0]
 
 
-def resolve_ablation_environment_manifest(
-    task_path: Path,
-) -> EnvironmentManifest | None:
-    """The environment the task declares — the same one ``bench eval`` binds.
+def resolve_ablation_environment_binding(
+    task_path: Path, *, explicit: Path | str | None = None
+) -> ManifestBinding | None:
+    """The environment the ablation binds — flag first, then the task's own.
 
-    A stateful task declares its world in ``task.md``
-    (``benchflow.environment.manifest``: the image, the services the framework
-    starts, the readiness probes). ``bench eval`` resolves that declaration per
-    task before building the rollout config
-    (:func:`~benchflow.environment.manifest.manifest_from_task_document`); an
-    ablation that skipped it would run the parent — and therefore every arm
-    forked from it — in a *different* environment than the run it is meant to
-    explain, and would report the comparison as if it were the same one.
+    ``explicit`` is the ``--environment-manifest`` value (a manifest path or a
+    ``name@version`` registry spec): when given it wins outright and the
+    task-declared manifest is not even resolved — the same precedence ``bench
+    eval run`` applies (an explicit run-level manifest suppresses
+    ``manifest_from_task_document``). Otherwise the task's own ``task.md``
+    declaration is resolved
+    (:func:`~benchflow.environment.manifest.manifest_binding_from_task_document`),
+    exactly as a normal evaluation resolves it; a stateful task ablated
+    without it would run the parent — and therefore every arm forked from it —
+    in a *different* environment than the run it is meant to explain.
 
-    Resolution failures are fatal here rather than degrading to ``None``: an
-    ablation whose declared environment could not be built is not an ablation
-    that ran without services, and it fails before the parent run costs
-    anything.
+    The returned :class:`~benchflow.environment.manifest.ManifestBinding`
+    keeps the ref verbatim and the manifest's content address, which is what
+    :func:`environment_stamp` writes into ``ablation.json``. Resolution
+    failures are fatal rather than degrading to ``None``: an ablation whose
+    declared environment could not be built is not an ablation that ran
+    without services, and it fails before the parent run costs anything.
     """
     from benchflow._utils.text import describe_exception
-    from benchflow.environment.manifest import manifest_from_task_document
+    from benchflow.environment.manifest import (
+        load_manifest_binding,
+        manifest_binding_from_task_document,
+    )
 
+    if explicit is not None:
+        try:
+            return load_manifest_binding(explicit)
+        except Exception as exc:
+            raise AblationSpecError(
+                f"--environment-manifest {str(explicit)!r} does not resolve to "
+                f"an environment manifest: {describe_exception(exc)}"
+            ) from exc
     try:
-        return manifest_from_task_document(task_path)
+        return manifest_binding_from_task_document(task_path)
     except Exception as exc:
         raise AblationSpecError(
             f"{task_path.name} declares an environment manifest in its task.md "
@@ -468,6 +486,27 @@ def resolve_ablation_environment_manifest(
             "forks the parent's environment, so this ablation would compare "
             "arms in a world the task says is the wrong one"
         ) from exc
+
+
+def environment_stamp(binding: ManifestBinding | None) -> dict[str, Any] | None:
+    """The report's record of a bound environment, deterministic by design.
+
+    Name, the ref exactly as the caller wrote it (flag value, arm spec, or
+    ``task.md`` declaration — never a machine-local resolved path), the
+    manifest's ``sha256`` content address, and the image(s) it names. This is
+    the report-side answer to "which environment did this ablation compare
+    arms in", readable without the registry.
+    """
+    if binding is None:
+        return None
+    manifest = binding.manifest
+    return {
+        "name": manifest.name,
+        "ref": binding.ref,
+        "env_hash": binding.env_hash,
+        "image": manifest.image,
+        "base_image": manifest.base_image,
+    }
 
 
 # Request / report
@@ -484,6 +523,11 @@ class AblationRequest:
     model: str | None = None
     sandbox: str = "docker"
     out_dir: Path = Path("jobs")
+    # Explicit environment binding (``--environment-manifest``): a manifest
+    # path or ``name@version`` registry spec. Beats the task-declared
+    # manifest — the same precedence as ``bench eval run``. ``None`` = bind
+    # whatever the task declares (or nothing).
+    environment_manifest: Path | str | None = None
     # The layers the stage snapshot composes (RFC §3.1). The container layer is
     # mandatory for a skills arm and sufficient on its own; the environment
     # layer needs an Environment plane, which this command does not bind, so
@@ -500,6 +544,11 @@ class ArmOutcome:
     reported none. ``None`` and ``{}`` are not the same thing here and the
     distinction is load-bearing: a missing map means *not observed*, and no
     sub-test claim may be made about that arm.
+
+    ``environment`` is the :func:`environment_stamp` of the manifest this
+    arm's delta swapped in — set only for an ``env:`` arm, absent for every
+    arm that inherits the parent's bound environment (which the report stamps
+    once at the top level).
     """
 
     name: str
@@ -515,6 +564,7 @@ class ArmOutcome:
     error: str | None = None
     reference: str | None = None
     verdict: str = ""
+    environment: dict[str, Any] | None = None
 
     @property
     def status(self) -> str:
@@ -547,12 +597,21 @@ class ArmOutcome:
             "error": self.error,
             "reference": self.reference,
             "verdict": self.verdict,
+            "environment": self.environment,
         }
 
 
 @dataclass
 class AblationReport:
-    """The ablation's result: the parent's own run plus one row per arm."""
+    """The ablation's result: the parent's own run plus one row per arm.
+
+    ``environment`` is the :func:`environment_stamp` of the world the parent
+    (and therefore every arm that carries no environment delta) ran in —
+    ``None`` when no manifest was bound. ``stage_snapshot`` is the branched
+    stage's recorded snapshot refs (the committed sandbox image ref and the
+    environment snapshot id, plus the layers captured), the handles a reader
+    needs to restore that world and re-branch it by hand later.
+    """
 
     task_id: str
     task_path: str
@@ -567,6 +626,8 @@ class AblationReport:
     parent_run_dir: str | None = None
     value: float | None = None
     error: str | None = None
+    environment: dict[str, Any] | None = None
+    stage_snapshot: dict[str, Any] | None = None
 
     @property
     def has_errors(self) -> bool:
@@ -599,9 +660,11 @@ class AblationReport:
             "task": {"id": self.task_id, "path": self.task_path},
             "stage": self.stage,
             "snapshot_layers": sorted(self.snapshot_layers),
+            "stage_snapshot": self.stage_snapshot,
             "agent": self.agent,
             "model": self.model,
             "sandbox": self.sandbox,
+            "environment": self.environment,
             "parent": {
                 "reward": self.parent_reward,
                 "error": self.parent_error,
@@ -884,6 +947,7 @@ def _outcomes(
     *,
     run_dir: Path | None,
     branch_error: str | None,
+    environment_stamps: dict[str, dict[str, Any]] | None = None,
 ) -> list[ArmOutcome]:
     """Pair each arm with the child node the engine forked for it.
 
@@ -915,6 +979,9 @@ def _outcomes(
             kind=arm.kind,
             delta=arm.delta.provenance_dict(),
             source=arm.source,
+            # The swapped-in environment an env: arm declares — request-level
+            # provenance, stamped whether or not the arm got to run.
+            environment=(environment_stamps or {}).get(arm.name),
         )
         if node is not None:
             outcome.node_id = node.id
@@ -1004,13 +1071,22 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
         )
     task_path = Path(request.task_path)
     model = effective_model(request.agent, request.model)
-    environment_manifest = resolve_ablation_environment_manifest(task_path)
+    environment_binding = resolve_ablation_environment_binding(
+        task_path, explicit=request.environment_manifest
+    )
+    environment_manifest = (
+        None if environment_binding is None else environment_binding.manifest
+    )
     # Pre-flight the env arms' content gates now that the parent's manifest is
     # known: an unresolvable ref, an image-changing manifest, or an
     # entrypoint-owned lifecycle is decidable from the request alone, and the
-    # branch engine would reject it only after a full parent run.
+    # branch engine would reject it only after a full parent run. An arm that
+    # passes the gate is stamped with the environment it swaps in, so its
+    # report row names the world it ran against.
     from benchflow.branch_skill import resolve_environment_ref_delta
+    from benchflow.environment.manifest import load_manifest_binding
 
+    environment_stamps: dict[str, dict[str, Any]] = {}
     for arm in request.arms:
         if arm.kind == ARM_KIND_ENV and arm.delta.environment_ref is not None:
             try:
@@ -1021,16 +1097,20 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
                 )
             except NotImplementedError as exc:
                 raise AblationSpecError(str(exc)) from exc
+            stamp = environment_stamp(load_manifest_binding(arm.delta.environment_ref))
+            if stamp is not None:
+                environment_stamps[arm.name] = stamp
     config = RolloutConfig.from_legacy(
         task_path=task_path,
         agent=request.agent,
         model=model,
         environment=request.sandbox,
-        # The task's own declared world, resolved exactly as a normal
+        # The bound world — an explicit ``--environment-manifest`` when given,
+        # else the task's own declaration, resolved exactly as a normal
         # evaluation resolves it. Every arm forks the parent's snapshot and
         # (at ``env-ready``) re-runs from the parent's config, so binding it
         # here binds it for the whole experiment — see
-        # :func:`resolve_ablation_environment_manifest`.
+        # :func:`resolve_ablation_environment_binding`.
         environment_manifest=environment_manifest,
         jobs_dir=Path(request.out_dir),
         job_name=PARENT_JOB_NAME,
@@ -1054,6 +1134,7 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
         model=model,
         sandbox=request.sandbox,
         arms=[],
+        environment=environment_stamp(environment_binding),
     )
     branch_error: str | None = None
     try:
@@ -1070,11 +1151,21 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
 
     run_dir = getattr(rollout, "_rollout_dir", None)
     report.parent_run_dir = None if run_dir is None else str(run_dir)
+    # The branched stage's recorded snapshot refs — the committed sandbox
+    # image and environment snapshot id a reader needs to restore this world
+    # and re-branch it by hand later (RFC §3.2; also on disk in the parent
+    # run's stage_snapshots.json).
+    stage_registry = getattr(rollout, "_stage_snapshots", None)
+    if stage_registry:
+        from benchflow.branch_lineage import stage_snapshots_payload
+
+        report.stage_snapshot = stage_snapshots_payload(stage_registry).get(stage)
     report.arms = _outcomes(
         request.arms,
         _branch_children(rollout.tree),
         run_dir=run_dir,
         branch_error=branch_error,
+        environment_stamps=environment_stamps,
     )
     if branch_error is not None and all(arm.error is None for arm in report.arms):
         # The branch failed before it forked anything (an uncaptured stage, a

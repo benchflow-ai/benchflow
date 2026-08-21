@@ -387,7 +387,8 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--agent` | `claude-agent-acp` | Agent harness for the parent run and every arm (`oracle` is rejected: a branch child connects an agent session, and `solve.sh` has none) |
 | `--model` | agent registry | Model for the parent run and every arm |
 | `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
-| `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it |
+| `--environment-manifest` | task-declared | Environment-plane manifest for the parent and every arm — a manifest path or a `name@version` registry spec, same semantics as `bench eval run`. An explicit flag beats the task-declared `benchflow.environment.manifest` (the run path's precedence), and the bound environment is stamped into `ablation.json` |
+| `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it — the rejection names the SDK path (`mark_stage` at the cut point, then `branch_at_stage`) |
 | `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`, `env:<registry-ref>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators |
 | `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
 | `--json` | `false` | Emit the report as JSON on stdout instead of the table |
@@ -456,8 +457,17 @@ printed over a difference that was measured. A verifier that emits no CTRF
 report yields no rows and no invented ones: the section says *scalar-only
 attribution* and names the arms it could not read.
 
-`ablation.json` carries the task id, the stage, the parent's own reward, and
+`ablation.json` carries the task id, the stage, the parent's own reward, the
+**bound environment** (`environment`: manifest name, the ref exactly as
+given — flag value or `task.md` declaration, never a machine-local path — its
+`sha256` content address, and the image it names; `null` when no manifest was
+bound), the **branched stage's snapshot refs** (`stage_snapshot`: the
+committed sandbox image ref, the environment snapshot id, and the captured
+layers — the handles to restore that world and re-branch it by hand later,
+also on disk in the parent run's `stage_snapshots.json`), and
 per arm its content-addressed delta provenance, reward, status, wall clock,
+the swapped-in environment stamp when an `env:` delta changed it
+(`environment`, absent for arms that inherit the parent's),
 per-test outcome map (`tests`, `null` when that arm's verifier reported none)
 and the branch-child artifact directory
 (`<parent-run>/branches/<node>/children/<node>/`,

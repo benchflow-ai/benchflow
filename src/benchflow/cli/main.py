@@ -34,7 +34,12 @@ from benchflow.cli._live_progress import (
     live_session,
     progress_enabled,
 )
-from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
+from benchflow.cli._options import (
+    AgentOption,
+    EnvironmentManifestOption,
+    ModelOption,
+    SkillModeOption,
+)
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _exit_if_evaluation_had_errors,
@@ -295,20 +300,7 @@ def eval_run(
             ),
         ),
     ] = None,
-    environment_manifest: Annotated[
-        Path | None,
-        typer.Option(
-            "--environment-manifest",
-            help=(
-                "Environment-plane manifest applied to every rollout: a path to "
-                "an environment.toml, OR a 'name@version' registry spec (the S "
-                "axis) resolved via $BENCHFLOW_ENV_REGISTRY when set, else the "
-                "built-in registry shipped with benchflow (env0@prod, "
-                "env0@outage). The manifest-declared stateful environment is "
-                "provisioned, gated on readiness, and torn down."
-            ),
-        ),
-    ] = None,
+    environment_manifest: EnvironmentManifestOption = None,
     state: Annotated[
         str | None,
         typer.Option(
