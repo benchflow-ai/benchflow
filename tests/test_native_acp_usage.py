@@ -93,6 +93,95 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
     }
 
 
+def test_acp_session_records_usage_from_session_update():
+    """Guards PR #934 / issue #933: timeout accounting uses update usage."""
+    from benchflow.acp.session import ACPSession
+
+    session = ACPSession("session-1")
+
+    session.handle_update(
+        {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "working"},
+            "usage": {
+                "inputTokens": 10,
+                "outputTokens": 4,
+                "totalTokens": 16,
+                "cachedReadTokens": 2,
+                "cachedWriteTokens": 1,
+                "thoughtTokens": 1,
+            },
+        }
+    )
+
+    assert session.latest_usage_totals() == {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "total_tokens": 16,
+        "cached_read_tokens": 2,
+        "cached_write_tokens": 1,
+        "thought_tokens": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_collects_update_usage_after_timed_out_prompt(tmp_path):
+    """Guards PR #934 / issue #933: cleanup preserves streamed usage."""
+    from benchflow.acp.session import ACPSession
+    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.rollout._usage import _zero_native_acp_usage_metrics
+
+    session = ACPSession("session-1")
+    session.handle_update(
+        {
+            "sessionUpdate": "usage",
+            "usage": {
+                "inputTokens": 20,
+                "outputTokens": 7,
+                "totalTokens": 30,
+                "cachedReadTokens": 1,
+                "cachedWriteTokens": 2,
+                "thoughtTokens": 3,
+            },
+        }
+    )
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._session = session
+    rollout._acp_client = SimpleNamespace(session=session)
+    rollout._trajectory = []
+    rollout._session_traj_count = 0
+    rollout._session_tool_count = 0
+    rollout._terminal_timeout = True
+    rollout._partial_trajectory = False
+    rollout._trajectory_source = "none"
+    rollout._n_tool_calls = 0
+    rollout._usage_runtime = None
+    rollout._usage_metrics = {"usage_source": "unavailable"}
+    rollout._native_usage_checkpoint = None
+    rollout._native_usage_metrics = _zero_native_acp_usage_metrics()
+    rollout._agent_launch = ""
+    rollout._env = None
+    rollout._environment = None
+    rollout._error = None
+    rollout._config = RolloutConfig(task_path=tmp_path)
+
+    await rollout.cleanup()
+
+    assert rollout._session is None
+    assert rollout._usage_metrics == {
+        "n_input_tokens": 20,
+        "n_output_tokens": 7,
+        "n_cache_read_tokens": 1,
+        "n_cache_creation_tokens": 2,
+        "total_tokens": 30,
+        "cost_usd": None,
+        "usage_source": "agent_native_acp",
+        "price_source": None,
+        "usage_details": {"thought_tokens": 3},
+    }
+
+
 def test_rollout_provider_usage_wins_over_native_acp_usage():
     """Guards PR #613 follow-up: LiteLLM provider telemetry remains authoritative."""
     from benchflow.rollout import Rollout
