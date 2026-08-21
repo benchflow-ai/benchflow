@@ -756,6 +756,97 @@ async def test_a_child_that_raises_still_leaves_its_mounted_output(tmp_path: Pat
     assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
 
 
+async def test_a_child_that_raises_still_leaves_the_partial_lineage(tmp_path: Path):
+    """A fork that died mid-way must still be auditable.
+
+    Guards the fix from "fix(branch): persist partial lineage when a branch
+    child raises". A child failure other than UnscoredChildError propagates
+    out of _run_children, and control never reached the lineage write below —
+    so the run had no tree.json and no per-child provenance at all, while
+    ``run_ablation`` (which catches exactly this exception) went on to report
+    the arm that scored, the arm that raised and the arms that never ran. The
+    partial tree is what those reported arms are evidence *of*.
+    """
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    parent = rollout._cursor
+    ran: list[str] = []
+
+    async def run_child(child):
+        ran.append(child.id)
+        if len(ran) == 1:
+            return 1.0
+        raise RuntimeError("agent connection lost")
+
+    with pytest.raises(RuntimeError, match="agent connection lost"):
+        await rollout.branch(3, run_child=run_child)
+
+    run_dir = rollout._rollout_dir
+    nodes = {
+        node["id"]: node
+        for node in json.loads((run_dir / "tree.json").read_text())["nodes"]
+    }
+    # Two children were attached before the fork died; the third never was.
+    first, second = (child.id for child in parent.children)
+    assert len(parent.children) == 2
+    assert nodes[first]["reward"] == 1.0
+    # The failing child is in the tree with neither a reward nor an unscored
+    # reason, and the parent carries no V — that is what marks it partial.
+    assert "reward" not in nodes[second]
+    assert "value" not in nodes[parent.id]
+
+    children_dir = run_dir / "branches" / parent.id / "children"
+    provenance = json.loads((children_dir / first / "provenance.json").read_text())
+    assert provenance["kind"] == "benchflow-branch"
+    assert json.loads((children_dir / first / "reward.json").read_text()) == {
+        "reward": 1.0
+    }
+    # The child that raised has its provenance too — it is the arm the caller
+    # reports as errored — and no reward.json, because it produced no reward.
+    assert (children_dir / second / "provenance.json").is_file()
+    assert not (children_dir / second / "reward.json").exists()
+
+
+async def test_nothing_on_the_failure_path_masks_the_child_failure(
+    tmp_path: Path, monkeypatch
+):
+    """The isolation half of "fix(branch): persist partial lineage when a
+    branch child raises": both steps taken on the way out — restoring the
+    parent and persisting the evidence — are best-effort, and neither may
+    replace the caller's real diagnosis. A full disk must not turn "agent
+    connection lost" into "OSError".
+    """
+    from benchflow.rollout_branch import _LinearState
+
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    def boom(**_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("benchflow.rollout_branch.write_branch_artifacts", boom)
+
+    # Restore #1 is the per-child one before the child runs (it must work, or
+    # the child never gets to fail); #2 is the one on the failure path.
+    restores = {"n": 0}
+    real_restore = _LinearState.restore_onto
+
+    def flaky_restore(self, target):
+        restores["n"] += 1
+        if restores["n"] >= 2:
+            raise RuntimeError("restore exploded")
+        real_restore(self, target)
+
+    monkeypatch.setattr(_LinearState, "restore_onto", flaky_restore)
+
+    async def run_child(child):
+        raise RuntimeError("agent connection lost")
+
+    with pytest.raises(RuntimeError, match="agent connection lost"):
+        await rollout.branch(2, run_child=run_child)
+    assert restores["n"] == 2
+
+
 async def test_a_rollout_without_a_run_directory_still_branches(tmp_path: Path):
     """The custody is a no-op when there is nowhere to keep anything — a
     branch-first rollout that never ran setup() must not start failing."""
