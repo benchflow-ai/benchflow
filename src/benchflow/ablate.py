@@ -73,8 +73,13 @@ PARENT_JOB_NAME = "ablation"
 #: Arm spec prefix for a plan-injection arm: ``inject:<path-to-file>``.
 INJECT_PREFIX = "inject:"
 
+#: Arm spec prefix for a config-override arm: ``config:<inline-or-@file>`` —
+#: the same dual "value or ref" form as the run-level ``--config-override``.
+CONFIG_PREFIX = "config:"
+
 ARM_KIND_SKILL_MODE = "skill-mode"
 ARM_KIND_INJECT = "inject"
+ARM_KIND_CONFIG = "config-override"
 
 #: Reward at or above which a rollout counts as a pass — the framework's
 #: binary convention (``bench eval metrics`` and ``bench review`` both read
@@ -98,7 +103,8 @@ CAPTURABLE_STAGES: tuple[str, ...] = tuple(
 _SKILL_ARM_NAMES = (SKILL_MODE_WITH_SKILL, SKILL_MODE_NO_SKILL)
 _ARM_SPEC_HELP = (
     f"supported arms are {SKILL_MODE_WITH_SKILL!r}, {SKILL_MODE_NO_SKILL!r}, "
-    f"and '{INJECT_PREFIX}<path-to-file>'"
+    f"'{INJECT_PREFIX}<path-to-file>', and "
+    f"'{CONFIG_PREFIX}<inline-json-or-@file>'"
 )
 
 
@@ -142,16 +148,21 @@ class AblationArm:
 def parse_arm(spec: str) -> AblationArm:
     """Parse one arm spec into an :class:`AblationArm` (fail closed).
 
-    Three v1 kinds, each mapping onto exactly one executable
+    Four kinds, each mapping onto exactly one executable
     :class:`BranchDelta` field: ``with-skill`` / ``no-skill`` become
     ``skill_mode`` (the child re-runs installation as a fresh rollout from the
-    ``env-ready`` snapshot), and ``inject:<path>`` reads the file and becomes
+    ``env-ready`` snapshot), ``inject:<path>`` reads the file and becomes
     ``injected_prompt`` (the child's user-visible continuation prompt) — which
     at ``--at-stage env-ready`` is *also* delivered by a fresh rollout, since
-    every child of that boundary installs the agent for itself. An
-    unknown kind, an empty spec, or an injection file that is missing or blank
+    every child of that boundary installs the agent for itself — and
+    ``config:<inline-or-@file>`` parses through the run-level overlay loader
+    and becomes ``config_override`` (the child runs fresh under the parent's
+    config with the allowlisted patch deep-merged on top, #790). An
+    unknown kind, an empty spec, an injection file that is missing or blank,
+    or a config patch that is unparsable or touches a non-allowlisted section
     raises :class:`AblationSpecError` — a silently dropped arm would publish an
-    ablation table with a missing comparison.
+    ablation table with a missing comparison, and a scorer-touching patch must
+    die here, before the parent run costs anything.
     """
     name = spec.strip()
     if not name:
@@ -160,6 +171,8 @@ def parse_arm(spec: str) -> AblationArm:
         return AblationArm(
             name=name, kind=ARM_KIND_SKILL_MODE, delta=BranchDelta(skill_mode=name)
         )
+    if name.startswith(CONFIG_PREFIX):
+        return _parse_config_arm(name)
     if name.startswith(INJECT_PREFIX):
         raw = name[len(INJECT_PREFIX) :].strip()
         if not raw:
@@ -189,6 +202,74 @@ def parse_arm(spec: str) -> AblationArm:
     raise AblationSpecError(f"unknown arm {name!r} — {_ARM_SPEC_HELP}")
 
 
+def _parse_config_arm(name: str) -> AblationArm:
+    """Parse a ``config:<inline-or-@file>`` arm through the #790 loader.
+
+    The value after the prefix is exactly what ``--config-override`` accepts —
+    inline JSON/YAML/TOML or an ``@file`` ref — parsed by the same
+    :func:`~benchflow._utils.config_override.load_config_override` so the two
+    surfaces cannot drift. The allowlist runs *here*, at parse time: an arm
+    that patches the scorer must fail before the parent run costs anything,
+    exactly as the branch engine would fail it at fork time.
+    """
+    from benchflow._utils.config_override import load_config_override, validate_overlay
+
+    raw = name[len(CONFIG_PREFIX) :].strip()
+    if not raw:
+        raise AblationSpecError(
+            f"arm {name!r} carries no patch — the config arm is "
+            f"'{CONFIG_PREFIX}<inline-json-or-@file>' (e.g. "
+            f"""'{CONFIG_PREFIX}{{"agent": {{"timeout_sec": 60}}}}' or """
+            f"'{CONFIG_PREFIX}@overlay.yaml')"
+        )
+    try:
+        overlay = load_config_override(raw)
+    except (ValueError, OSError) as exc:
+        raise AblationSpecError(
+            f"arm {name!r} cannot load its config patch: {exc}"
+        ) from None
+    if not overlay:
+        raise AblationSpecError(
+            f"arm {name!r} parses to an empty patch — a config arm must "
+            "change at least one allowlisted section"
+        )
+    try:
+        validate_overlay(overlay)
+    except ValueError as exc:
+        raise AblationSpecError(f"arm {name!r} is not executable: {exc}") from None
+    return AblationArm(
+        name=name,
+        kind=ARM_KIND_CONFIG,
+        delta=BranchDelta(config_override=overlay),
+        source=raw[1:] if raw.startswith("@") else None,
+    )
+
+
+def _split_arm_specs(spec: str) -> list[str]:
+    """Split ``--arms`` on commas, ignoring commas nested in JSON braces.
+
+    A ``config:`` arm may carry inline JSON (``config:{"agent": {"a": 1,
+    "b": 2}}``) whose commas are content, not separators. Depth counting over
+    ``{}``/``[]`` keeps every historical spec splitting exactly as before —
+    no other arm kind can contain a brace.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in spec:
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return parts
+
+
 def parse_arms(spec: str) -> list[AblationArm]:
     """Parse a comma-separated ``--arms`` value into ordered arms.
 
@@ -203,7 +284,7 @@ def parse_arms(spec: str) -> list[AblationArm]:
             "--arms is empty — pass at least two arms, e.g. "
             f"'{SKILL_MODE_WITH_SKILL},{SKILL_MODE_NO_SKILL}'"
         )
-    arms = [parse_arm(entry) for entry in spec.split(",")]
+    arms = [parse_arm(entry) for entry in _split_arm_specs(spec)]
     seen: set[str] = set()
     for arm in arms:
         if arm.name in seen:
@@ -230,7 +311,7 @@ def validate_arms_for_stage(
 ) -> str:
     """Reject a stage/arm combination before the parent rollout runs.
 
-    Three pre-flight gates, each mirroring a rule that lives elsewhere:
+    Pre-flight gates, each mirroring a rule that lives elsewhere:
 
     * ``post-research`` is a mid-``execute()`` cut point only an explicit
       ``Rollout.mark_stage()`` can record (RFC §3.2). This command drives the
@@ -239,6 +320,9 @@ def validate_arms_for_stage(
     * a ``skill_mode`` arm executes only at ``env-ready``, because skills are
       deployed by ``install_agent()`` (RFC §3.3). The branch engine fails
       closed on this too; here it costs nothing instead of a full run.
+    * a ``config:`` arm executes only at ``env-ready`` for the same shape of
+      reason: the overlay is applied by the child's own ``setup()``, which
+      only a fresh child of that boundary re-runs.
     * an ``env-ready`` ablation runs *every* arm as a fresh rollout — that
       boundary precedes ``install_agent()``, so each child installs the agent
       for itself — which needs the container layer in the stage snapshot. The
@@ -262,6 +346,14 @@ def validate_arms_for_stage(
                 f"arm {arm.name!r} needs --at-stage {SKILL_DELTA_STAGE!r}, not "
                 f"{stage!r}: skills are deployed by install_agent(), which has "
                 f"already run by {stage!r}, so the arm would measure nothing"
+            )
+        if arm.kind == ARM_KIND_CONFIG and stage != FRESH_CHILD_STAGE:
+            raise AblationSpecError(
+                f"arm {arm.name!r} needs --at-stage {FRESH_CHILD_STAGE!r}, not "
+                f"{stage!r}: the config patch is applied by the child's own "
+                f"setup(), and by {stage!r} the parent's config has already "
+                "been consumed — the arm would record the override and run "
+                "without it"
             )
     if (
         stage == FRESH_CHILD_STAGE

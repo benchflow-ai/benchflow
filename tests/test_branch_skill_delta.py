@@ -838,35 +838,36 @@ async def test_with_skill_against_a_task_without_skills_fails_before_any_child(
     assert planes.deployments == []
 
 
-@pytest.mark.parametrize(
-    "delta",
-    [
-        BranchDelta(environment_ref="env0@outage"),
-        BranchDelta(config_override={"agent": {"timeout_sec": 60}}),
-    ],
-    ids=["environment_ref", "config_override"],
-)
-async def test_the_other_delta_fields_still_fail_closed(
-    tmp_path: Path, delta: BranchDelta
-):
-    """Only skill_mode graduated — the remaining axes have no execution path
-    and still fail closed at the env-ready boundary too."""
+async def test_an_environment_ref_delta_still_fails_closed(tmp_path: Path):
+    """``environment_ref`` remains the one axis without an execution path in
+    this module's scope — it still fails closed at the env-ready boundary too.
+    (``config_override`` graduated in "feat(branch): execute config_override
+    deltas as fresh rollouts from env-ready" — see
+    tests/test_branch_config_delta.py.)"""
     planes = FakePlanes()
     rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes)
     await _capture_env_ready(rollout)
 
     with pytest.raises(BranchDeltaNotSupported, match="use_prebuilt_env"):
-        await rollout.branch_at_stage("env-ready", 2, deltas=[None, delta])
+        await rollout.branch_at_stage(
+            "env-ready", 2, deltas=[None, BranchDelta(environment_ref="env0@outage")]
+        )
 
     assert planes.deployments == []
 
 
-def test_the_executable_delta_set_now_contains_skill_mode():
+def test_the_executable_delta_set_now_contains_config_override():
     """The blocklist is derived from the schema minus the executable set, so
-    graduating skill_mode is one edit and every other field stays
-    unsupported-by-default."""
-    assert set(_EXECUTABLE_DELTA_FIELDS) == {"injected_prompt", "skill_mode"}
-    assert set(_UNSUPPORTED_DELTA_FIELDS) == {"config_override", "environment_ref"}
+    graduating an axis is one edit and every other field stays
+    unsupported-by-default. ``config_override`` joined ``skill_mode`` and
+    ``injected_prompt`` in "feat(branch): execute config_override deltas as
+    fresh rollouts from env-ready"."""
+    assert set(_EXECUTABLE_DELTA_FIELDS) == {
+        "injected_prompt",
+        "skill_mode",
+        "config_override",
+    }
+    assert set(_UNSUPPORTED_DELTA_FIELDS) == {"environment_ref"}
 
 
 # 4. The derived child config

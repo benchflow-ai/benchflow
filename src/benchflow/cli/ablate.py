@@ -143,7 +143,8 @@ def _ablate_command(
             "--arms",
             help=(
                 "Comma-separated arms, one branch child each: 'with-skill', "
-                "'no-skill', 'inject:<path-to-file>'"
+                "'no-skill', 'inject:<path-to-file>', "
+                "'config:<inline-json-or-@file>'"
             ),
         ),
     ] = DEFAULT_ARMS,
@@ -166,7 +167,9 @@ def _ablate_command(
     once, the requested stage boundary is snapshotted as it passes, and that
     one world is forked into a child per arm — ``with-skill`` / ``no-skill``
     switch the skill mode, ``inject:<file>`` hands the child that file as its
-    continuation prompt. Every arm therefore starts from a byte-identical world
+    continuation prompt, ``config:<patch>`` runs the child under the parent's
+    config with the allowlisted patch deep-merged on top (#790 machinery).
+    Every arm therefore starts from a byte-identical world
     and differs by exactly one recorded delta. At ``--at-stage env-ready``
     every arm re-runs agent installation as its own rollout (that boundary
     precedes ``install_agent()``); at later boundaries the arms continue in

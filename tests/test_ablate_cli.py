@@ -35,6 +35,7 @@ import typer
 from typer.testing import CliRunner
 
 from benchflow.ablate import (
+    ARM_KIND_CONFIG,
     ARM_KIND_INJECT,
     ARM_KIND_SKILL_MODE,
     AblationReport,
@@ -229,6 +230,64 @@ def test_injection_arms_run_at_env_ready_and_at_later_boundaries(
     inject_only = parse_arms(f"inject:{plan},inject:{other}")
     assert validate_arms_for_stage(inject_only, "env-ready") == "env-ready"
     assert validate_arms_for_stage(inject_only, "pre-verify") == "pre-verify"
+
+
+def test_config_arm_specs_map_onto_config_override_deltas(tmp_path: Path) -> None:
+    """``config:<inline-or-@file>`` lowers to the config_override delta.
+
+    Guards "feat(branch): execute config_override deltas as fresh rollouts
+    from env-ready": the arm parses through the same loader as the run-level
+    override (inline JSON or an ``@file`` ref), its commas stay content when
+    nested in JSON braces, and its provenance records the #790 sha + keys —
+    never the raw patch.
+    """
+    inline = 'config:{"agent": {"timeout_sec": 7}, "metadata": {"x": 1}}'
+    overlay_file = tmp_path / "overlay.json"
+    overlay_file.write_text('{"agent": {"timeout_sec": 9}}', encoding="utf-8")
+
+    arms = parse_arms(f"with-skill,{inline},config:@{overlay_file}")
+
+    assert [arm.kind for arm in arms] == [
+        ARM_KIND_SKILL_MODE,
+        ARM_KIND_CONFIG,
+        ARM_KIND_CONFIG,
+    ]
+    assert arms[1].name == inline  # the spec survives the comma-aware split
+    assert arms[1].delta.config_override == {
+        "agent": {"timeout_sec": 7},
+        "metadata": {"x": 1},
+    }
+    assert arms[2].delta.config_override == {"agent": {"timeout_sec": 9}}
+    assert arms[2].source == str(overlay_file)
+    provenance = arms[1].delta.provenance_dict()
+    assert provenance["config_override_sha256"].startswith("sha256:")
+    assert provenance["config_override_keys"] == ["agent", "metadata"]
+
+
+def test_malformed_config_arm_specs_fail_closed(tmp_path: Path) -> None:
+    """An unparsable, empty, or scorer-touching config arm dies at parse time
+    — before the parent run costs anything, exactly where the engine's own
+    allowlist gate would kill the fork."""
+    with pytest.raises(AblationSpecError, match="carries no patch"):
+        parse_arm("config:")
+    with pytest.raises(AblationSpecError, match="cannot load its config patch"):
+        parse_arm(f"config:@{tmp_path / 'missing.yaml'}")
+    with pytest.raises(AblationSpecError, match="empty patch"):
+        parse_arm("config:{}")
+    with pytest.raises(AblationSpecError, match="may only patch"):
+        parse_arm('config:{"verifier": {"timeout_sec": 1}}')
+
+
+def test_config_arms_are_rejected_away_from_env_ready() -> None:
+    """The engine's own stage gate (the child's setup() applies the patch),
+    applied before the ablation pays for a full parent run."""
+    arms = parse_arms('no-skill,config:{"agent": {"timeout_sec": 7}}')
+    assert validate_arms_for_stage(arms, "env-ready") == "env-ready"
+    config_only = parse_arms(
+        'config:{"agent": {"timeout_sec": 7}},config:{"agent": {"timeout_sec": 9}}'
+    )
+    with pytest.raises(AblationSpecError, match="needs --at-stage 'env-ready'"):
+        validate_arms_for_stage(config_only, "pre-verify")
 
 
 def test_env_ready_ablation_requires_the_container_layer(tmp_path: Path) -> None:
@@ -643,6 +702,11 @@ def test_bad_arm_stage_and_empty_arms_fail_without_a_traceback(
         (["--arms", "with-skill,turbo"], "unknown arm 'turbo'"),
         (["--arms", ""], "--arms is empty"),
         (["--arms", "with-skill"], "at least two arms"),
+        (["--arms", "with-skill,config:"], "carries no patch"),
+        (
+            ["--arms", 'with-skill,config:{"verifier": {"timeout_sec": 1}}'],
+            "may only patch",
+        ),
         (["--at-stage", "mid-flight"], "unknown --at-stage 'mid-flight'"),
         (["--at-stage", "post-research"], "cannot be captured by this command"),
         (["--at-stage", "pre-verify"], "needs --at-stage 'env-ready'"),

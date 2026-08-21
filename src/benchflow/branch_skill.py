@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from benchflow._utils.config_override import deep_merge
 from benchflow.branch import UnscoredChildError
 from benchflow.branch_lineage import branch_child_dir, child_provenance
 from benchflow.branch_stage import STAGE_ENV_READY
@@ -161,8 +162,9 @@ def child_skill_config(
     job_name: str,
     rollout_name: str,
     source_provenance: dict[str, Any] | None = None,
+    config_override: dict[str, Any] | None = None,
 ) -> RolloutConfig:
-    """The parent's config with the skill mode replaced — nothing else moved.
+    """The parent's config with the delta's fields replaced — nothing else moved.
 
     Both ``skill_mode`` and ``artifact_skill_mode`` are written: the skill
     policy resolves from ``recorded_skill_mode`` (``artifact_skill_mode or
@@ -173,10 +175,23 @@ def child_skill_config(
     child forked *from* a stage does not re-checkpoint the parent's boundaries
     (its environment plane belongs to the parent).
 
+    ``config_override`` is the child's *delta* overlay (RFC §3.3): it is
+    deep-merged **over the parent's own overlay** so the child's effective
+    C-axis patch is "everything the parent ran under, plus the one recorded
+    change" — dropping the parent's overlay would silently vary two things.
+    The merged dict rides the existing seam: the child's ``setup()`` applies
+    it through :func:`~benchflow._utils.config_override.apply_config_override`
+    (same allowlist, same re-validation) and its ``config.json`` records the
+    merged keys + sha exactly as a run-level overlay is recorded (#790).
+    ``None`` inherits the parent's overlay unchanged — the zero delta.
+
     The user is re-materialized from ``loop_strategy`` when the parent's was
     strategy-built — ``RolloutConfig`` rejects carrying both, and the strategy
     rebuilds an identical user — and left alone otherwise.
     """
+    merged_override = config.config_override
+    if config_override:
+        merged_override = deep_merge(merged_override or {}, config_override)
     return dataclasses.replace(
         config,
         skill_mode=skill_mode,
@@ -186,6 +201,7 @@ def child_skill_config(
         jobs_dir=jobs_dir,
         job_name=job_name,
         rollout_name=rollout_name,
+        config_override=merged_override,
         user=None if config.loop_strategy_spec is not None else config.user,
         source_provenance=source_provenance,
     )
@@ -285,12 +301,15 @@ def make_fresh_child_runner(
     ``result.json`` record which rollout it forked from, at which stage, from
     which snapshot refs, and that it ran as a fresh rollout. An
     ``injected_prompt`` on the delta is delivered as the child's continuation
-    prompt, exactly as the default runner delivers it.
+    prompt, exactly as the default runner delivers it; a ``config_override``
+    is deep-merged over the parent's own overlay into the child's config (see
+    :func:`child_skill_config`) and applied by the child's own ``setup()``.
     """
     skill_mode = fresh_child_skill_mode(
         rollout._config, delta.skill_mode if delta is not None else None
     )
     injected_prompt = delta.injected_prompt if delta is not None else None
+    config_override = delta.config_override if delta is not None else None
 
     async def _runner(child: RolloutNode) -> float:
         jobs_dir, job_name, rollout_name = child_run_location(
@@ -305,6 +324,7 @@ def make_fresh_child_runner(
             jobs_dir=jobs_dir,
             job_name=job_name,
             rollout_name=rollout_name,
+            config_override=config_override,
             source_provenance=child_provenance(
                 str(run_dir) if run_dir is not None else str(rollout._config.task_path),
                 branch_stage=branch_stage,
@@ -314,9 +334,14 @@ def make_fresh_child_runner(
             ),
         )
         logger.info(
-            "branch child %s runs as a fresh rollout with skill_mode=%s",
+            "branch child %s runs as a fresh rollout with skill_mode=%s%s",
             child.id,
             skill_mode,
+            (
+                f" config_override_keys={sorted(config_override)}"
+                if config_override
+                else ""
+            ),
         )
         return await run_fresh_child(
             rollout,
