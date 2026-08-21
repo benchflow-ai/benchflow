@@ -242,9 +242,7 @@ async def test_injected_prompt_becomes_the_childs_continuation_prompt(
     _fake_agent_boundary(monkeypatch, received)
 
     prompt = "Execute PLAN.md verbatim; do not re-research."
-    value = await rollout.branch(
-        2, deltas=[None, BranchDelta(injected_prompt=prompt)]
-    )
+    value = await rollout.branch(2, deltas=[None, BranchDelta(injected_prompt=prompt)])
 
     assert value == 1.0
     assert received == [None, [prompt]]
@@ -434,9 +432,9 @@ async def test_second_branch_at_the_same_parent_never_misattributes(
 
     children_dir = run_dir / "branches" / "root" / "children"
     shas = {
-        child_id: json.loads(
-            (children_dir / child_id / "provenance.json").read_text()
-        )["delta"]["injected_prompt_sha256"]
+        child_id: json.loads((children_dir / child_id / "provenance.json").read_text())[
+            "delta"
+        ]["injected_prompt_sha256"]
         for child_id in ("n1", "n2", "n3", "n4")
     }
     # first event: n1 zero-delta, n2 first prompt; second event: n3 second
@@ -485,12 +483,12 @@ async def test_two_branch_points_keep_per_node_delta_provenance(
     # n3 (children n4, n5)
     root_children = run_dir / "branches" / "root" / "children"
     deep_children = run_dir / "branches" / "n3" / "children"
-    assert json.loads((root_children / "n2" / "provenance.json").read_text())[
-        "delta"
-    ]["injected_prompt_sha256"] == sha256_prefixed(first.encode())
-    assert json.loads((deep_children / "n4" / "provenance.json").read_text())[
-        "delta"
-    ]["injected_prompt_sha256"] == sha256_prefixed(second.encode())
+    assert json.loads((root_children / "n2" / "provenance.json").read_text())["delta"][
+        "injected_prompt_sha256"
+    ] == sha256_prefixed(first.encode())
+    assert json.loads((deep_children / "n4" / "provenance.json").read_text())["delta"][
+        "injected_prompt_sha256"
+    ] == sha256_prefixed(second.encode())
 
     nodes = {
         node["id"]: node

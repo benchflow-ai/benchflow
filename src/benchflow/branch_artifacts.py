@@ -134,7 +134,9 @@ class MountedArtifacts:
     @classmethod
     def hold(cls, *, run_dir: Path, parent_id: str) -> MountedArtifacts:
         """Move the parent's mounted entries aside, before any child runs."""
-        guard = cls(rollout_dir=Path(run_dir), hold_dir=parent_hold_dir(run_dir, parent_id))
+        guard = cls(
+            rollout_dir=Path(run_dir), hold_dir=parent_hold_dir(run_dir, parent_id)
+        )
         for source in mounted_artifact_dirs(guard.rollout_dir):
             try:
                 if _move_entries(source, guard.hold_dir / source.name):

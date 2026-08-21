@@ -716,7 +716,12 @@ async def test_skill_delta_cannot_fork_a_parent_that_baked_its_pack_in(
         ["no-skill", None],
         ["no-skill", "no-skill"],
     ],
-    ids=["both-arms", "control-then-no-skill", "no-skill-then-control", "both-no-skill"],
+    ids=[
+        "both-arms",
+        "control-then-no-skill",
+        "no-skill-then-control",
+        "both-no-skill",
+    ],
 )
 async def test_no_arm_forked_from_a_skilled_parent_can_claim_no_skill(
     tmp_path: Path, parent_mode: str, deltas: list[str | None]
@@ -943,7 +948,9 @@ async def test_injected_prompt_child_at_env_ready_reinstalls_the_agent(
     ``planes.deployments`` is empty because no child ever re-installed.
     """
     planes = FakePlanes()
-    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes, skill_mode="with-skill")
+    rollout = _parent(
+        _task_dir(tmp_path), tmp_path, planes=planes, skill_mode="with-skill"
+    )
     _fake_verifier(monkeypatch)
     await _capture_env_ready(rollout)
 
@@ -973,7 +980,9 @@ async def test_zero_delta_child_at_env_ready_is_a_fresh_rollout_too(
     """No deltas at all is the same hole: nothing about a delta made the
     in-place child unsound, the boundary did. Both children install."""
     planes = FakePlanes()
-    rollout = _parent(_task_dir(tmp_path), tmp_path, planes=planes, skill_mode="no-skill")
+    rollout = _parent(
+        _task_dir(tmp_path), tmp_path, planes=planes, skill_mode="no-skill"
+    )
     _fake_verifier(monkeypatch)
     await _capture_env_ready(rollout)
 
@@ -1124,6 +1133,8 @@ async def test_an_injected_prompt_after_install_still_runs_in_place(
     assert prompts == [["Solve the task."], ["Retry the fix."]]
     nodes = {
         node["id"]: node
-        for node in json.loads((rollout._rollout_dir / "tree.json").read_text())["nodes"]
+        for node in json.loads((rollout._rollout_dir / "tree.json").read_text())[
+            "nodes"
+        ]
     }
     assert "delta_execution" not in nodes["n1"]

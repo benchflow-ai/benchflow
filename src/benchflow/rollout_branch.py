@@ -104,9 +104,7 @@ CHILD_WALL_CLOCK_KEY = "wall_clock_sec"
 # here instead of being silently ignored. Sorted for deterministic errors.
 _EXECUTABLE_DELTA_FIELDS = frozenset({"injected_prompt", "skill_mode"})
 _UNSUPPORTED_DELTA_FIELDS = tuple(
-    sorted(
-        {f.name for f in dataclasses.fields(BranchDelta)} - _EXECUTABLE_DELTA_FIELDS
-    )
+    sorted({f.name for f in dataclasses.fields(BranchDelta)} - _EXECUTABLE_DELTA_FIELDS)
 )
 
 
@@ -156,6 +154,7 @@ class BranchChildExecutionNotSupported(NotImplementedError):
     install on top of the first and report the result as a controlled
     comparison.
     """
+
 
 # The per-child runner: given the child's branch node, run its continuation and
 # return the scalar return. No ``int`` index — a caller that needs per-child
@@ -920,7 +919,9 @@ async def _run_children(
                 run_dir=run_dir,
             )
         elif (
-            run_child is None and delta is not None and delta.injected_prompt is not None
+            run_child is None
+            and delta is not None
+            and delta.injected_prompt is not None
         ):
             child_runner = make_default_runner(rollout, prompts=[delta.injected_prompt])
 
