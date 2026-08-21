@@ -866,12 +866,19 @@ def _tested_outcomes(
 
 
 class _CtrfRollout(_FakeRollout):
-    """A fork whose children leave a CTRF report in their own verifier dirs.
+    """A fork whose children leave a CTRF report where their kind leaves one.
 
-    The shape a real branch child leaves: its artifact directory *is* its
-    rollout directory, so ``<child>/verifier/ctrf.json`` is where the verifier
-    writes. ``per_child`` is indexed by fork order; ``None`` writes no report
-    at all (the verifier emitted no per-test data).
+    A **fresh-rollout** child (every child of ``env-ready``) has a run
+    directory of its own, and that run directory *is* its artifact directory,
+    so ``<child>/verifier/ctrf.json`` is where its verifier writes. An
+    **in-place** child (``pre-verify`` / ``post-verify``) has no run directory:
+    it writes through the parent's bind mounts, and the branch engine archives
+    what it wrote under ``<child>/mounted/verifier/`` — the layout
+    :mod:`benchflow.branch_artifacts` owns, which is why both paths are asked
+    for here rather than spelled out.
+
+    ``per_child`` is indexed by fork order; ``None`` writes no report at all
+    (the verifier emitted no per-test data).
     """
 
     rewards: ClassVar[list[Any]] = [0.0, 0.0]
@@ -879,22 +886,39 @@ class _CtrfRollout(_FakeRollout):
         {"::T::test_trend_result": "passed", "::T::test_dominant_factor": "failed"},
         {"::T::test_trend_result": "failed", "::T::test_dominant_factor": "passed"},
     ]
+    #: ``True`` runs the children the way a ``pre-verify`` fork does — in
+    #: place, with their output preserved under ``mounted/``.
+    in_place: ClassVar[bool] = False
 
-    async def branch_at_stage(self, stage, n, *, deltas=None):
+    def _child_verifier_dir(self, child) -> Path:
+        from benchflow.branch_artifacts import child_mount_dir
         from benchflow.branch_lineage import branch_child_dir
 
+        if self.in_place:
+            return (
+                child_mount_dir(self._rollout_dir, child.parent.id, child.id)
+                / "verifier"
+            )
+        return (
+            branch_child_dir(self._rollout_dir, child.parent.id, child.id) / "verifier"
+        )
+
+    async def branch_at_stage(self, stage, n, *, deltas=None):
         value = await super().branch_at_stage(stage, n, deltas=deltas)
         children = [node for node in self.tree.nodes() if "delta" in node.state]
         for child, tests in zip(children, self.per_child, strict=True):
             if tests is None:
                 continue
-            verifier = (
-                branch_child_dir(self._rollout_dir, child.parent.id, child.id)
-                / "verifier"
-            )
+            verifier = self._child_verifier_dir(child)
             verifier.mkdir(parents=True, exist_ok=True)
             (verifier / "ctrf.json").write_text(_ctrf(tests), encoding="utf-8")
         return value
+
+
+class _InPlaceCtrfRollout(_CtrfRollout):
+    """The ``pre-verify`` fork: children run in place, artifacts under ``mounted/``."""
+
+    in_place: ClassVar[bool] = True
 
 
 async def test_per_test_outcomes_are_mined_from_each_child_verifier_report(
@@ -923,6 +947,94 @@ async def test_per_test_outcomes_are_mined_from_each_child_verifier_report(
     assert [arm["tests"] for arm in payload["arms"]] == [
         {"test_dominant_factor": "failed", "test_trend_result": "passed"},
         {"test_dominant_factor": "passed", "test_trend_result": "failed"},
+    ]
+
+
+def _in_place_request(tmp_path: Path) -> AblationRequest:
+    """A ``pre-verify`` ablation: two injection arms, children run in place."""
+    first = tmp_path / "plan-a.md"
+    first.write_text("Warm the lake first.\n", encoding="utf-8")
+    second = tmp_path / "plan-b.md"
+    second.write_text("Cool the lake first.\n", encoding="utf-8")
+    return AblationRequest(
+        task_path=_task_dir(tmp_path),
+        arms=parse_arms(f"inject:{first},inject:{second}"),
+        agent="claude-agent-acp",
+        model="claude-sonnet",
+        stage="pre-verify",
+        out_dir=tmp_path / "out",
+    )
+
+
+async def test_per_test_outcomes_are_mined_from_an_in_place_childs_mounted_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An in-place branch child keeps its per-test attribution.
+
+    Guards the fix from "fix(ablate): read per-test outcomes from preserved
+    in-place child artifacts", reproduced live by @Galius5136 at ``--at-stage
+    pre-verify``. A child that runs in place has no rollout directory of its
+    own — its verifier output is the ``mounted/`` archive of what it wrote to
+    the parent's shared bind mounts (the artifact isolation from "fix(branch):
+    branch children no longer clobber the parent's artifacts"). The reader
+    looked only at ``<child>/verifier/ctrf.json``, so the report fell back to
+    scalar-only attribution while the per-test data sat one directory down.
+    """
+    _patch_rollout(monkeypatch, _InPlaceCtrfRollout)
+
+    report = await run_ablation(_in_place_request(tmp_path))
+
+    assert [arm.reward for arm in report.arms] == [0.0, 0.0]
+    assert report.arms[0].tests == {
+        "test_dominant_factor": "failed",
+        "test_trend_result": "passed",
+    }
+    assert report.arms[1].tests == {
+        "test_dominant_factor": "passed",
+        "test_trend_result": "failed",
+    }
+    section = sub_test_attribution(report.arms)
+    assert section["arms_without_tests"] == []
+    assert section["summary"] == (
+        "scalar rewards tie, but 2 sub-test outcome(s) differ: "
+        "test_dominant_factor, test_trend_result"
+    )
+
+
+async def test_a_fresh_childs_own_verifier_output_wins_over_its_mounted_copy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Both roots can exist; the child's own run directory is authoritative.
+
+    Guards the ordering in "fix(ablate): read per-test outcomes from preserved
+    in-place child artifacts". A fresh-rollout child writes through the
+    restored parent mounts *and* downloads its artifacts into its own run
+    directory, so the ``mounted/`` archive can hold a second, staler copy —
+    reading that one instead would attribute the wrong outcomes to the arm.
+    """
+    from benchflow.branch_artifacts import child_mount_dir
+
+    class _BothRoots(_CtrfRollout):
+        async def branch_at_stage(self, stage, n, *, deltas=None):
+            value = await super().branch_at_stage(stage, n, deltas=deltas)
+            for child in (node for node in self.tree.nodes() if "delta" in node.state):
+                mounted = (
+                    child_mount_dir(self._rollout_dir, child.parent.id, child.id)
+                    / "verifier"
+                )
+                mounted.mkdir(parents=True, exist_ok=True)
+                (mounted / "ctrf.json").write_text(
+                    _ctrf({"::T::test_stale": "failed"}), encoding="utf-8"
+                )
+            return value
+
+    _patch_rollout(monkeypatch, _BothRoots)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert [sorted(arm.tests or {}) for arm in report.arms] == [
+        ["test_dominant_factor", "test_trend_result"],
+        ["test_dominant_factor", "test_trend_result"],
     ]
 
 
