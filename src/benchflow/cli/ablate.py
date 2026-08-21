@@ -21,7 +21,12 @@ from rich.markup import escape
 from rich.table import Table
 
 from benchflow.branch_stage import BRANCH_STAGES, STAGE_ENV_READY
-from benchflow.cli._options import AgentOption, ModelOption, SandboxOption
+from benchflow.cli._options import (
+    AgentOption,
+    EnvironmentManifestOption,
+    ModelOption,
+    SandboxOption,
+)
 from benchflow.cli._shared import _apply_dotenv_to_process_env, console, print_error
 
 _STATUS_STYLES = {
@@ -85,6 +90,22 @@ def _render_ablation(report) -> None:
         f"[bold]stage:[/bold] {escape(report.stage)}  "
         f"[bold]parent reward:[/bold] {parent}"
     )
+    if report.environment:
+        env = report.environment
+        world = env.get("env_hash") or env.get("image") or env.get("base_image")
+        console.print(
+            f"[bold]Environment:[/bold] {escape(str(env.get('name')))} "
+            f"({escape(str(env.get('ref')))}, {escape(str(world))})"
+        )
+    if report.stage_snapshot:
+        # The recorded roll-back handles of the branched stage — enough to
+        # restore this world and re-branch it by hand later.
+        snap = report.stage_snapshot
+        console.print(
+            f"[bold]Stage snapshot:[/bold] "
+            f"sandbox={escape(str(snap.get('sandbox_ref') or '-'))}  "
+            f"environment={escape(str(snap.get('environment_ref') or '-'))}"
+        )
     if report.parent_error:
         console.print(
             f"[yellow]Parent run error:[/yellow] "
@@ -125,6 +146,7 @@ def _ablate_command(
     agent: AgentOption = "claude-agent-acp",
     model: ModelOption = None,
     sandbox: SandboxOption = "docker",
+    environment_manifest: EnvironmentManifestOption = None,
     at_stage: Annotated[
         str,
         typer.Option(
@@ -175,9 +197,13 @@ def _ablate_command(
     and differs by exactly one recorded delta. At ``--at-stage env-ready``
     every arm re-runs agent installation as its own rollout (that boundary
     precedes ``install_agent()``); at later boundaries the arms continue in
-    place. Results land in a table plus ``ablation.json``, followed by a second
-    table naming the sub-tests whose outcome differs across the arms — the
-    behavioral difference a tied scalar reward would otherwise hide.
+    place. ``--environment-manifest`` binds the parent's (and therefore every
+    arm's) environment explicitly, beating the task-declared manifest — the
+    same precedence as ``bench eval run``. Results land in a table plus
+    ``ablation.json`` — which stamps the bound environment (name, ref,
+    content hash) and the branched stage's snapshot refs — followed by a
+    second table naming the sub-tests whose outcome differs across the arms:
+    the behavioral difference a tied scalar reward would otherwise hide.
     """
     import asyncio
     import json
@@ -222,6 +248,7 @@ def _ablate_command(
                     model=model,
                     sandbox=sandbox,
                     out_dir=out_dir,
+                    environment_manifest=environment_manifest,
                 )
             )
         )

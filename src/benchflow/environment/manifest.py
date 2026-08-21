@@ -22,10 +22,13 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+from benchflow._utils.content_address import sha256_prefixed
 
 logger = logging.getLogger(__name__)
 
@@ -201,17 +204,32 @@ class EnvironmentManifest(BaseModel):
         return cls.model_validate_toml(text)
 
 
-def load_manifest(path: str | Path) -> EnvironmentManifest:
-    """Load and validate an environment manifest.
+@dataclass(frozen=True)
+class ManifestBinding:
+    """A loaded manifest plus the provenance of how it was bound.
 
-    ``path`` is either a TOML file path (the historical behavior) or a registry
-    spec ``name@version`` resolved via ``$BENCHFLOW_ENV_REGISTRY`` when set,
-    else the built-in registry shipped inside the wheel
-    (``benchflow/environment/_registry/``). The spec form
-    lets a run bind its environment (the ``S`` axis) by name at the command line —
-    decoupled from the task and swappable per run, like ``--agent`` / ``--model``
-    / ``--sandbox``. Resolution is content-addressed so the bound world is
-    recorded for replay.
+    ``ref`` is the caller's reference verbatim — a manifest path, a registry
+    ``name@version`` spec, or the string a ``task.md`` declared — which stays
+    deterministic across machines in a way a resolved absolute path is not.
+    ``env_hash`` is the registry's content address (``sha256:<hex>`` of the
+    manifest file bytes), computed for file refs too, so the bound world is
+    identifiable even when it never went through the registry. ``bench eval
+    ablate`` stamps both into ``ablation.json``, answering "which environment
+    did this run compare arms in" from the report alone.
+    """
+
+    manifest: EnvironmentManifest
+    ref: str
+    env_hash: str
+
+
+def load_manifest_binding(path: str | Path) -> ManifestBinding:
+    """Load a manifest and keep the provenance of its resolution.
+
+    Same resolution as :func:`load_manifest` — a manifest file path or a
+    registry ``name@version`` spec — returning the manifest together with the
+    verbatim ref and its content address, for callers that record which world
+    they bound (:class:`ManifestBinding`).
     """
     p = Path(path)
     if not p.is_file():
@@ -228,25 +246,42 @@ def load_manifest(path: str | Path) -> EnvironmentManifest:
                 resolved.manifest_path,
                 resolved.env_hash,
             )
-            return EnvironmentManifest.model_validate_path(resolved.manifest_path)
-    return EnvironmentManifest.model_validate_path(p)
+            return ManifestBinding(
+                manifest=EnvironmentManifest.model_validate_path(
+                    resolved.manifest_path
+                ),
+                ref=str(path),
+                env_hash=resolved.env_hash,
+            )
+    manifest = EnvironmentManifest.model_validate_path(p)
+    return ManifestBinding(
+        manifest=manifest, ref=str(path), env_hash=sha256_prefixed(p.read_bytes())
+    )
 
 
-def manifest_from_task_document(task_dir: Path) -> EnvironmentManifest | None:
-    """The manifest ``task_dir``'s ``task.md`` declares, or ``None``.
+def load_manifest(path: str | Path) -> EnvironmentManifest:
+    """Load and validate an environment manifest.
 
-    A task binds its own world by declaring ``benchflow.environment.manifest``
-    in its task document; the value is a manifest path relative to the task
-    directory (absolute paths and registry ``name@version`` specs also resolve,
-    via :func:`load_manifest`). Every command that runs a task resolves it
-    through *this* function — ``bench eval`` for a normal evaluation
-    (:mod:`benchflow.evaluation`) and ``bench eval ablate`` for the parent its
-    arms fork from (:mod:`benchflow.ablate`) — so the two cannot drift into
-    running the same task against different environments.
+    ``path`` is either a TOML file path (the historical behavior) or a registry
+    spec ``name@version`` resolved via ``$BENCHFLOW_ENV_REGISTRY`` when set,
+    else the built-in registry shipped inside the wheel
+    (``benchflow/environment/_registry/``). The spec form
+    lets a run bind its environment (the ``S`` axis) by name at the command line —
+    decoupled from the task and swappable per run, like ``--agent`` / ``--model``
+    / ``--sandbox``. Resolution is content-addressed so the bound world is
+    recorded for replay (:func:`load_manifest_binding` returns that record).
+    """
+    return load_manifest_binding(path).manifest
 
-    A declaration that is present but unusable raises rather than degrading to
-    ``None``: a task that says it needs an image, services and readiness gates
-    must not silently run without them.
+
+def manifest_binding_from_task_document(task_dir: Path) -> ManifestBinding | None:
+    """The bound manifest ``task_dir``'s ``task.md`` declares, or ``None``.
+
+    The binding-returning form of :func:`manifest_from_task_document` — same
+    extraction, same resolution, same fail-closed behavior — with the
+    declared string kept verbatim as the binding's ``ref`` (never the resolved
+    absolute path, which would vary by machine), for callers that stamp which
+    world the task bound.
     """
     task_md = task_dir / "task.md"
     if not task_md.is_file():
@@ -269,7 +304,27 @@ def manifest_from_task_document(task_dir: Path) -> EnvironmentManifest | None:
     manifest_path = Path(manifest)
     if not manifest_path.is_absolute():
         manifest_path = task_dir / manifest_path
-    return load_manifest(manifest_path)
+    return replace(load_manifest_binding(manifest_path), ref=manifest)
+
+
+def manifest_from_task_document(task_dir: Path) -> EnvironmentManifest | None:
+    """The manifest ``task_dir``'s ``task.md`` declares, or ``None``.
+
+    A task binds its own world by declaring ``benchflow.environment.manifest``
+    in its task document; the value is a manifest path relative to the task
+    directory (absolute paths and registry ``name@version`` specs also resolve,
+    via :func:`load_manifest`). Every command that runs a task resolves it
+    through *this* function — ``bench eval`` for a normal evaluation
+    (:mod:`benchflow.evaluation`) and ``bench eval ablate`` for the parent its
+    arms fork from (:mod:`benchflow.ablate`) — so the two cannot drift into
+    running the same task against different environments.
+
+    A declaration that is present but unusable raises rather than degrading to
+    ``None``: a task that says it needs an image, services and readiness gates
+    must not silently run without them.
+    """
+    binding = manifest_binding_from_task_document(task_dir)
+    return None if binding is None else binding.manifest
 
 
 def resolve_manifest_runtime_env(
