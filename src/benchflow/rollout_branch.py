@@ -50,6 +50,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from benchflow._utils.config_override import validate_overlay
@@ -63,6 +64,10 @@ from benchflow.branch import restore_composed as _restore_composed
 from benchflow.branch_artifacts import MountedArtifacts, child_mount_dir
 from benchflow.branch_delta import BranchDelta, BranchDeltaNotSupported
 from benchflow.branch_lineage import write_branch_artifacts, write_stage_snapshots
+from benchflow.branch_result import (
+    scope_child_result_state,
+    write_in_place_child_result,
+)
 from benchflow.branch_skill import (
     EXECUTION_FRESH_ROLLOUT,
     FRESH_CHILD_LAYER,
@@ -1123,7 +1128,17 @@ async def _run_children(
     so a caller that catches a propagating child failure still sees the nodes
     that were forked — which is how ``bench eval ablate`` reports the arm that
     raised and the arms that never ran.
+
+    An **in-place** child of a run-dir-bearing rollout additionally leaves its
+    own ``result.json`` set (:mod:`benchflow.branch_result`): its
+    result-bearing state is scoped to zero before it runs — so what the fields
+    hold afterwards is the child's own, never the parent's showing through —
+    and the result is synthesized from that state after the child completes,
+    *before* the next restore discards it. A fresh-rollout child writes its own
+    result already and is left alone; a child that raised ends the fork and is
+    evidenced by its ``mounted/`` archive instead.
     """
+    in_place_results = not fresh_children and run_dir is not None
     for index in range(n):
         # Attach a *pending* branch-child node — its real continuation Step is
         # filled in place by the child's first execute(), so the child's work
@@ -1155,6 +1170,12 @@ async def _run_children(
             await _restore_branch(parent, rollout._environment)
         saved.restore_onto(rollout)
         rollout._cursor = child
+        started_wall = datetime.now()
+        if in_place_results:
+            # The restore just put the *parent's* result-bearing values back;
+            # zero them so the child's result below reports only what the
+            # child itself produced. The next restore brings the parent's back.
+            scope_child_result_state(rollout)
 
         # Pick the per-child runner (every case validated above to not combine
         # with an explicit run_child). A child forked from ``env-ready`` runs
@@ -1207,6 +1228,21 @@ async def _run_children(
             logger.error("branch child %s is unscored: %s", child.id, unscored)
         else:
             child.state["reward"] = float(ret)
+        if in_place_results:
+            # The instance still carries the child's own state (the restore
+            # happens on the next iteration / at the end of the fork), so this
+            # is the one window where a first-class result can be built for an
+            # in-place child. Best-effort by contract: never raises.
+            write_in_place_child_result(
+                rollout,
+                parent=parent,
+                child=child,
+                run_dir=run_dir,
+                started_at=started_wall,
+                base_trajectory_len=len(saved.trajectory),
+                base_prompt_count=len(saved.executed_prompts),
+                base_tool_calls=saved.n_tool_calls,
+            )
 
 
 def make_default_runner(
