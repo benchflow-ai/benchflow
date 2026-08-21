@@ -32,15 +32,19 @@ whatever its delta. This module keeps the gates
 Isolation invariant (the architecture's "tree is additive / no-regression"):
 after :func:`branch` returns, the parent Rollout's linear state — ``_cursor``,
 ``_trajectory``, ``_rewards``, ``_phase``, ``_n_tool_calls`` (and the session
-bookkeeping) — is *exactly* what it was before. A branch child never
-re-entrantly mutates the shared instance: it runs against a scoped snapshot of
-that state, captured before and restored after each child, and its real
-continuation Steps attach to a *pending* branch-child node so the reward and
-value land on the right node.
+bookkeeping) — is *exactly* what it was before, and so is the result-bearing
+state an in-place child writes on its way through (``_timing``,
+``_verifier_error``, ``_diagnostics``, the usage counters — see
+:data:`_RESULT_STATE_FIELDS`): the parent's own ``result.json`` describes the
+parent's run, never the last arm's. A branch child never re-entrantly mutates
+the shared instance: it runs against a scoped snapshot of that state, captured
+before and restored after each child, and its real continuation Steps attach to
+a *pending* branch-child node so the reward and value land on the right node.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 import time
@@ -162,6 +166,55 @@ class BranchChildExecutionNotSupported(NotImplementedError):
 ChildRunner = Callable[[RolloutNode], Awaitable[float]]
 
 
+#: The result-bearing Rollout attributes a child mutates that are not part of
+#: the linear execution state above. Derived from an audit of everything
+#: :meth:`Rollout._build_result` reads, against what a child's
+#: ``connect() -> execute() -> verify() -> disconnect()`` writes:
+#:
+#: * ``_timing`` — ``execute()`` *accumulates* ``agent_execution`` and
+#:   ``verify()`` writes into the same dict, so without this the parent's
+#:   ``timing.json`` reported the parent's time plus every arm's (observed
+#:   live by @Galius5136 on a two-arm ``pre-verify`` ablation).
+#: * ``_verifier_error`` — ``verify()`` assigns it unconditionally, so a
+#:   clean parent inherited the last child's verifier failure, and a failed
+#:   parent had its own diagnostic erased by a child that scored cleanly.
+#: * ``_diagnostics`` — ``execute()`` records prompt-timeout diagnostics and
+#:   ``verify()`` records verifier-timeout ones; a child's timeout would
+#:   surface in the parent's ``result.json`` as the parent's own.
+#: * ``_native_usage_metrics`` / ``_native_usage_checkpoint`` — ``execute()``
+#:   accumulates native ACP token usage into the first and re-bases the
+#:   second; ``cleanup()``'s ``_finalize_usage_metrics`` then promotes the
+#:   first into ``_usage_metrics``, i.e. the children's tokens are billed to
+#:   the parent. The same accumulation bug as ``_timing``, one field further
+#:   from the result.
+#:
+#: The remaining four are result-bearing and reachable from a caller-supplied
+#: ``run_child`` (which may drive any phase it likes), so they are scoped for
+#: the same reason even though the engine's own runners do not write them:
+#: ``_error``, ``_export_error``, ``_evolved_skills``, ``_usage_metrics``.
+#:
+#: Audited and deliberately *not* scoped: ``_rollout_dir`` / ``_rollout_name``
+#: / ``_resolved_prompts`` / ``_task_skill_policy`` (written by ``setup()``,
+#: which no child re-runs on the shared instance), ``_agent_name`` (written by
+#: ``connect()``, but from the parent's own config — a child cannot change what
+#: it resolves to), ``_started_at`` (the parent's start is the parent's start,
+#: and rolling it back per child would be wrong anyway), ``_terminal_timeout``
+#: (only ``_record_agent_timeout`` writes it, which lives in ``run()``), and
+#: the ``_provider_*_cached`` trio (written by ``cleanup()`` only). A
+#: fresh-rollout child touches none of these: it drives a Rollout of its own.
+_RESULT_STATE_FIELDS: tuple[str, ...] = (
+    "_timing",
+    "_verifier_error",
+    "_diagnostics",
+    "_native_usage_metrics",
+    "_native_usage_checkpoint",
+    "_error",
+    "_export_error",
+    "_evolved_skills",
+    "_usage_metrics",
+)
+
+
 @dataclass
 class _LinearState:
     """A scoped snapshot of a Rollout's linear (non-tree) execution state.
@@ -172,6 +225,21 @@ class _LinearState:
     scoped the same way: a child that runs through its own ``pre-verify``
     boundary records that snapshot on its own node, and it must not become the
     *parent's* pre-verify — a later branch there would fork the child's world.
+
+    Two kinds of state, scoped for two different reasons. The named fields are
+    the *execution* state — where the rollout is and what it has done. The
+    ``result_state`` bag is the **result-bearing** state
+    (:data:`_RESULT_STATE_FIELDS`): fields no child needs but every in-place
+    child writes, which end up in the parent's own ``result.json`` /
+    ``timing.json`` if they are left where the last child put them. An
+    in-place child continues the *shared* Rollout, so "the parent's linear
+    state is exactly what it was before" has to cover what the parent
+    *reports*, not only where its cursor sits.
+
+    Everything mutable in that bag is deep-copied in both directions.
+    ``restore_onto`` runs once per child — not only at the end — so handing a
+    child the captured dict itself would let child *k* mutate the snapshot
+    child *k+1* and the parent are both restored from.
     """
 
     cursor: RolloutNode
@@ -186,6 +254,7 @@ class _LinearState:
     executed_prompts: list[str]
     stage_snapshots: dict[str, StageSnapshot]
     stage_nodes: dict[str, RolloutNode]
+    result_state: dict[str, Any]
 
     @classmethod
     def capture(cls, rollout: Rollout) -> _LinearState:
@@ -195,7 +264,7 @@ class _LinearState:
             trajectory=list(rollout._trajectory),
             n_tool_calls=rollout._n_tool_calls,
             phase=rollout._phase,
-            rewards=rollout._rewards,
+            rewards=copy.deepcopy(rollout._rewards),
             trajectory_source=rollout._trajectory_source,
             partial_trajectory=rollout._partial_trajectory,
             session_tool_count=getattr(rollout, "_session_tool_count", 0),
@@ -203,6 +272,15 @@ class _LinearState:
             executed_prompts=list(rollout._executed_prompts),
             stage_snapshots=dict(getattr(rollout, "_stage_snapshots", {})),
             stage_nodes=dict(getattr(rollout, "_stage_nodes", {})),
+            # hasattr, not a default: tests build a Rollout through
+            # ``__new__()`` (the established pattern in rollout.py), and
+            # inventing an attribute the instance never had would be a
+            # different kind of mutation. What is absent stays absent.
+            result_state={
+                name: copy.deepcopy(getattr(rollout, name))
+                for name in _RESULT_STATE_FIELDS
+                if hasattr(rollout, name)
+            },
         )
 
     def restore_onto(self, rollout: Rollout) -> None:
@@ -211,7 +289,7 @@ class _LinearState:
         rollout._trajectory = list(self.trajectory)
         rollout._n_tool_calls = self.n_tool_calls
         rollout._phase = self.phase
-        rollout._rewards = self.rewards
+        rollout._rewards = copy.deepcopy(self.rewards)
         rollout._trajectory_source = self.trajectory_source
         rollout._partial_trajectory = self.partial_trajectory
         rollout._session_tool_count = self.session_tool_count
@@ -219,6 +297,8 @@ class _LinearState:
         rollout._executed_prompts = list(self.executed_prompts)
         rollout._stage_snapshots = dict(self.stage_snapshots)
         rollout._stage_nodes = dict(self.stage_nodes)
+        for name, value in self.result_state.items():
+            setattr(rollout, name, copy.deepcopy(value))
 
 
 def _resolve_layers(snapshot_layers: Iterable[str], *, subject: str) -> frozenset[str]:

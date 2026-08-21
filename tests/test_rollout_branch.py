@@ -229,6 +229,86 @@ async def test_branch_does_not_corrupt_the_parent_rollout(tmp_path: Path, monkey
     assert rollout._rewards == rewards_before
 
 
+async def test_branch_restores_the_parents_result_bearing_state(
+    tmp_path: Path, monkeypatch
+):
+    """The parent's *reported* state survives its in-place children too.
+
+    Guards the fix from "fix(branch): restore result-bearing rollout state
+    after in-place children", found live by @Galius5136 on a two-arm
+    ``pre-verify`` ablation: ``_rewards`` was scoped, but ``_timing``,
+    ``_verifier_error``, ``_diagnostics`` and the native-usage counters were
+    not — so the parent's ``timing.json`` carried its own ``agent_execution``
+    plus both arms', and its ``result.json`` carried the last child's verifier
+    error and diagnostics as if they were the parent's own.
+
+    The children here mutate those fields the way the real phases do: in
+    place, on the shared dicts (``execute()`` accumulates ``agent_execution``,
+    ``_verify_rollout`` writes into the same ``_timing``), which is also what
+    makes the deep copy load-bearing — a captured reference would be corrupted
+    by the first child and restore nothing for the second.
+    """
+    from benchflow.diagnostics import TransportClosedDiagnostic
+
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def fake_execute_prompts(*_a, **_kw):
+        return [{"role": "agent", "text": "parent-step"}], 1
+
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
+    rollout._acp_client = object()
+    await rollout.execute(["p1"])
+
+    # The parent's own result-bearing state, as a linear run leaves it.
+    rollout._verifier_error = "parent verifier: 1 test failed"
+    rollout._error = "parent agent: idle for 600s"
+    rollout._diagnostics.set(
+        TransportClosedDiagnostic(raw_message="parent", transport_diagnosis="unknown")
+    )
+    rollout._native_usage_metrics = {"total_tokens": 100}
+    timing_before = dict(rollout._timing)
+    assert "agent_execution" in timing_before
+    diagnostics_before = rollout._diagnostics.to_result_fields()
+    usage_before = dict(rollout._native_usage_metrics)
+    parent = rollout._cursor
+
+    async def fake_connect_inner(self):
+        self._acp_client = object()
+
+    async def fake_disconnect_inner(self):
+        self._acp_client = None
+
+    async def fake_verify_inner(self):
+        # Exactly the writes the real phases make: in place, on the parent's
+        # own dicts, plus the two error channels verify() assigns outright.
+        self._timing["verification"] = 99.0
+        self._native_usage_metrics["total_tokens"] += 1_000
+        self._verifier_error = "child verifier: exit 137"
+        self._error = "child agent: transport closed"
+        self._diagnostics.set(
+            TransportClosedDiagnostic(raw_message="child", transport_diagnosis="child")
+        )
+        self._rewards = {"reward": 1.0}
+        return self._rewards
+
+    monkeypatch.setattr(Rollout, "connect", fake_connect_inner)
+    monkeypatch.setattr(Rollout, "disconnect", fake_disconnect_inner)
+    monkeypatch.setattr(Rollout, "verify", fake_verify_inner)
+
+    assert await rollout.branch(2) == 1.0
+
+    # No accumulation, no inherited verdicts: every field is the parent's own.
+    assert rollout._timing == timing_before
+    assert rollout._verifier_error == "parent verifier: 1 test failed"
+    assert rollout._error == "parent agent: idle for 600s"
+    assert rollout._diagnostics.to_result_fields() == diagnostics_before
+    assert rollout._native_usage_metrics == usage_before
+    # ... and the children did run through those fields (two children, each
+    # writing once), so the assertions above are not passing on an empty fork.
+    assert [child.state["reward"] for child in parent.children] == [1.0, 1.0]
+
+
 async def test_post_branch_execute_grows_off_the_parent_cursor(
     tmp_path: Path, monkeypatch
 ):
