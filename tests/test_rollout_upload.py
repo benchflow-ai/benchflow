@@ -381,6 +381,63 @@ async def test_publish_trajectory_for_verifier_uploads_acp_jsonl(
     ]
 
 
+class FakeTimingOutMkdirEnv(FakeUploadEnv):
+    """Loaded backend whose bookkeeping ``exec`` blows its client-side timeout."""
+
+    async def exec(
+        self, command: str, user: str | None = None, timeout_sec: int | None = None
+    ) -> None:
+        await super().exec(command, user, timeout_sec)
+        raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
+
+@pytest.mark.asyncio
+async def test_publish_trajectory_survives_mkdir_timeout(tmp_path: Path) -> None:
+    """Guards issue #948: a timed-out ``mkdir -p /logs/agent`` discarded rollouts.
+
+    Publishing runs after the agent already finished, so a client-side timeout
+    on that bookkeeping exec used to throw away a completed rollout — a ~40
+    minute run lost to a 10 second budget on a step that does no work on
+    mounted backends. Both trajectory copies must still be published.
+    """
+    env = FakeTimingOutMkdirEnv()
+    agent_dir = tmp_path / "agent"
+
+    await _publish_trajectory_for_verifier(
+        env, [{"type": "agent_message", "text": "ok"}], agent_dir
+    )
+
+    expected = '{"type": "agent_message", "text": "ok"}\n'
+    assert ("mkdir -p /logs/agent", "root", 10) in env.exec_calls
+    assert env.uploaded_file_contents == [
+        (expected, "/logs/agent/acp_trajectory.jsonl")
+    ]
+    assert (agent_dir / "acp_trajectory.jsonl").read_text() == expected
+
+
+@pytest.mark.asyncio
+async def test_publish_trajectory_still_raises_on_upload_failure(
+    tmp_path: Path,
+) -> None:
+    """Guards issue #948 against over-suppression: only the mkdir is defensive.
+
+    A genuinely missing ``/logs/agent`` surfaces through the upload, which must
+    stay fatal — otherwise the rollout would claim a trajectory the verifier
+    never received.
+    """
+
+    class FailingUploadEnv(FakeTimingOutMkdirEnv):
+        async def upload_file(self, source: Path | str, target: str) -> None:
+            raise RuntimeError("upload boom")
+
+    with pytest.raises(RuntimeError, match="upload boom"):
+        await _publish_trajectory_for_verifier(
+            FailingUploadEnv(),
+            [{"type": "agent_message", "text": "ok"}],
+            tmp_path / "agent",
+        )
+
+
 class FakeMountedUploadEnv(FakeUploadEnv):
     """Docker-like backend: ``/logs/agent`` is bind-mounted to the host agent dir."""
 
