@@ -702,6 +702,14 @@ async def branch(
     ``branches/<branch-node-id>/children/<child-node-id>/``), with any
     artifact-write failure logged and isolated from the branch result.
 
+    A child that raises anything other than
+    :class:`~benchflow.branch.UnscoredChildError` ends the fork and propagates
+    — but the parent's state is restored and the *partial* lineage is written
+    on the way out, because the caller may report on it: ``bench eval ablate``
+    catches that exception and publishes the completed, failed and skipped
+    arms, and an experiment that reports arms it cannot evidence is worse than
+    one that reports none.
+
     ``at_stage`` branches from a recorded stage boundary instead of
     checkpointing at the cursor (RFC §3.2): the stage's :class:`StageSnapshot`
     becomes the roll-back point every child restores to, the fork happens at
@@ -843,25 +851,56 @@ async def branch(
 
     children: list[RolloutNode] = []
     try:
-        await _run_children(
-            rollout,
-            n=n,
-            deltas=deltas,
-            parent=parent,
-            children=children,
-            saved=saved,
-            runner=runner,
-            run_child=run_child,
-            composed=composed,
-            snap_env=snap_env,
-            snap_sandbox=snap_sandbox,
-            fresh_children=fresh_children,
-            run_dir=run_dir,
-            holder=holder,
-        )
-    finally:
-        if holder is not None:
-            holder.release()
+        try:
+            await _run_children(
+                rollout,
+                n=n,
+                deltas=deltas,
+                parent=parent,
+                children=children,
+                saved=saved,
+                runner=runner,
+                run_child=run_child,
+                composed=composed,
+                snap_env=snap_env,
+                snap_sandbox=snap_sandbox,
+                fresh_children=fresh_children,
+                run_dir=run_dir,
+                holder=holder,
+            )
+        finally:
+            if holder is not None:
+                holder.release()
+    except BaseException:
+        # A child raised something other than UnscoredChildError (an agent
+        # connection failure, a verifier crash) and the fork ends here. The
+        # caller may well survive it — ``run_ablation`` catches exactly this
+        # and reports the completed, failed and skipped arms — so the evidence
+        # for the arms that *did* run has to be on disk before the exception
+        # leaves: without this, a partially completed experiment reported arms
+        # whose tree.json and per-child provenance were never written.
+        #
+        # Same two steps as the success path, minus the aggregate: a fork that
+        # did not finish has no V, and the failing child carries neither a
+        # reward nor an unscored reason — which is what marks the tree partial.
+        # The linear-state restore comes first so the parent's own state (and
+        # its stage registry, re-serialized below) is the parent's again
+        # before anything reads it.
+        #
+        # Nothing on this path may raise: the exception on its way out is the
+        # caller's diagnosis, and neither best-effort step is worth replacing
+        # it with. (On the success path a failed restore is loud, as it should
+        # be — there is no more important failure to preserve there.)
+        try:
+            saved.restore_onto(rollout)
+        except Exception:
+            logger.warning(
+                "branch could not restore the parent's linear state after a "
+                "child failed — the parent's own result may carry the child's",
+                exc_info=True,
+            )
+        _write_lineage(rollout, run_dir=run_dir, parent=parent, children=children)
+        raise
 
     # restore the parent's linear state — the tree grew, nothing else moved.
     saved.restore_onto(rollout)
@@ -894,30 +933,52 @@ async def branch(
         parent.state["value"] = value
     rollout._phase = "branched"
 
-    # Lineage artifacts (RFC §3.4) — written only when the rollout knows its
-    # run directory, and failure-isolated: an artifact-write error is logged
-    # and never corrupts the branch result.
-    if run_dir is not None:
-        try:
-            write_branch_artifacts(
-                run_dir=run_dir,
-                tree=rollout._tree,
-                parent=parent,
-                children=children,
-            )
-            # Re-serialize the (restored) parent registry: a child that ran
-            # through a stage boundary of its own already overwrote the file.
-            stages = getattr(rollout, "_stage_snapshots", {})
-            if stages:
-                write_stage_snapshots(run_dir=run_dir, snapshots=stages)
-        except Exception:
-            logger.warning(
-                "branch lineage artifact write under %s failed — the branch "
-                "result is unaffected",
-                run_dir,
-                exc_info=True,
-            )
+    _write_lineage(rollout, run_dir=run_dir, parent=parent, children=children)
     return value
+
+
+def _write_lineage(
+    rollout: Rollout,
+    *,
+    run_dir: Any,
+    parent: RolloutNode,
+    children: Sequence[RolloutNode],
+) -> None:
+    """Write the fork's lineage artifacts (RFC §3.4), failure-isolated.
+
+    Written only when the rollout knows its run directory, and never allowed
+    to propagate: an artifact-write error is logged and neither corrupts the
+    branch result nor — on the partial path, where this is called from an
+    ``except`` block — masks the child failure that is on its way out. That
+    isolation is the reason this is a plain ``except Exception`` rather than a
+    chained re-raise: the exception being carried is the one the caller has to
+    see, and it is the more important of the two.
+
+    Called on both paths, so a fork that died mid-way leaves the same shape of
+    evidence as one that finished: ``tree.json`` for the nodes that exist and
+    per-child ``provenance.json`` / ``reward.json`` for the children that were
+    attached, plus the parent's own stage registry (a child that ran through a
+    stage boundary of its own already overwrote the file with its version).
+    """
+    if run_dir is None:
+        return
+    try:
+        write_branch_artifacts(
+            run_dir=run_dir,
+            tree=rollout._tree,
+            parent=parent,
+            children=children,
+        )
+        stages = getattr(rollout, "_stage_snapshots", {})
+        if stages:
+            write_stage_snapshots(run_dir=run_dir, snapshots=stages)
+    except Exception:
+        logger.warning(
+            "branch lineage artifact write under %s failed — the branch "
+            "result is unaffected",
+            run_dir,
+            exc_info=True,
+        )
 
 
 async def _run_children(
