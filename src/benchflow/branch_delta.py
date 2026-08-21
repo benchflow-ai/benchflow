@@ -70,8 +70,15 @@ class BranchDelta:
         (``sort_keys=True``, the run-level overlay's exact hash) and
         ``injected_prompt`` over its UTF-8 text. No raw prompt text ever
         appears in provenance. Unset fields serialize as ``null``.
+
+        A set ``config_override`` additionally records its *top-level keys*
+        (sorted) as ``config_override_keys`` — the same ``keys`` + ``sha256``
+        record the run-level overlay leaves in ``config.json`` (#790), so a
+        reader can see *which* allowlisted sections the arm patched without
+        the hash preimage. The key is present only when the field is set, so
+        every other delta keeps the provenance shape it has always had.
         """
-        return {
+        provenance: dict[str, Any] = {
             "environment_ref": self.environment_ref,
             "config_override_sha256": (
                 overlay_hash(self.config_override)
@@ -85,3 +92,6 @@ class BranchDelta:
                 else None
             ),
         }
+        if self.config_override is not None:
+            provenance["config_override_keys"] = sorted(self.config_override)
+        return provenance

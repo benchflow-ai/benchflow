@@ -52,6 +52,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from benchflow._utils.config_override import validate_overlay
 from benchflow.branch import UNSCORED_KEY, StageSnapshot, UnscoredChildError
 from benchflow.branch import adopt_checkpoint as _adopt_checkpoint
 from benchflow.branch import aggregate as _aggregate_branch
@@ -100,13 +101,16 @@ CHILD_WALL_CLOCK_KEY = "wall_clock_sec"
 
 # The BranchDelta fields the engine executes vs records-only.
 # ``injected_prompt`` runs in place on the parent's rollout; ``skill_mode``
-# runs the child as a fresh rollout from the env-ready snapshot (RFC §3.3,
-# gated by :func:`_validate_skill_delta`). The rest exist in the schema and
-# provenance so the artifact format is stable, and fail closed here.
+# and ``config_override`` run the child as a fresh rollout from the env-ready
+# snapshot (RFC §3.3, gated by :func:`_validate_skill_delta` /
+# :func:`_validate_config_delta`). Any remaining field exists in the schema
+# and provenance so the artifact format is stable, and fails closed here.
 # Derived from the schema (all BranchDelta fields minus the executable set)
 # so a future BranchDelta field is unsupported-by-default — it fails closed
 # here instead of being silently ignored. Sorted for deterministic errors.
-_EXECUTABLE_DELTA_FIELDS = frozenset({"injected_prompt", "skill_mode"})
+_EXECUTABLE_DELTA_FIELDS = frozenset(
+    {"injected_prompt", "skill_mode", "config_override"}
+)
 _UNSUPPORTED_DELTA_FIELDS = tuple(
     sorted({f.name for f in dataclasses.fields(BranchDelta)} - _EXECUTABLE_DELTA_FIELDS)
 )
@@ -115,15 +119,14 @@ _UNSUPPORTED_DELTA_FIELDS = tuple(
 class BranchDeltaNotSupported(NotImplementedError):
     """A BranchDelta a branch request cannot execute as asked (fail closed).
 
-    Two cases. ``environment_ref`` and ``config_override`` are schema- and
-    provenance-stable but have no execution path at all yet. ``skill_mode``
-    does — as a fresh child rollout — but only from the ``env-ready`` stage
-    snapshot, only when that snapshot carries the container layer, and only
-    when the parent itself ran ``no-skill`` (see
-    :class:`BranchParentSkillModeConflict`); a request that does not satisfy
-    those preconditions fails closed here, before any child runs, rather than
-    running a child that silently ignores its delta or measures a world its
-    restore could not roll back.
+    ``skill_mode`` and ``config_override`` execute as fresh child rollouts —
+    but only from the ``env-ready`` stage snapshot, only when that snapshot
+    carries the container layer, and (for ``skill_mode``) only when the parent
+    itself ran ``no-skill`` (see :class:`BranchParentSkillModeConflict`);
+    ``environment_ref`` is schema- and provenance-stable but has no execution
+    path yet. A request that does not satisfy the preconditions fails closed
+    here, before any child runs, rather than running a child that silently
+    ignores its delta or measures a world its restore could not roll back.
     """
 
 
@@ -460,6 +463,57 @@ def _validate_skill_delta(
     resolve_child_skill_policy(rollout._config, skill_mode)
 
 
+def _validate_config_delta(
+    overlay: dict[str, Any],
+    *,
+    index: int,
+    at_stage: str | None,
+    run_child: ChildRunner | None,
+) -> None:
+    """Gate a ``config_override`` delta before anything is quiesced (RFC §3.3).
+
+    Three preconditions, each a way the delta would otherwise measure nothing
+    (or worse, measure the wrong thing):
+
+    * **the stage** — the C-axis overlay is deep-merged into the task's
+      resolved config by ``setup()``, which only a fresh child rollout re-runs;
+      by any later boundary the parent's config has already been consumed
+      (its timeout enforced, its prompts resolved, its sandbox built), so a
+      child there would record the override and run without it.
+    * **the allowlist** — the same fail-closed allowlist the run-level overlay
+      passes through (#790): scorer-touching sections (``verifier`` /
+      ``reward`` / ``solution`` / ``oracle``) are rejected *here*, before the
+      parent is quiesced, not at child setup after a snapshot was restored.
+    * **the runner** — a caller-supplied ``run_child`` owns the child's
+      execution, so the engine cannot run the child under the merged config.
+    """
+    where = f"stage {at_stage!r}" if at_stage is not None else "the cursor"
+    if at_stage != FRESH_CHILD_STAGE:
+        raise BranchDeltaNotSupported(
+            f"deltas[{index}].config_override executes only at the "
+            f"{FRESH_CHILD_STAGE!r} stage boundary, but this branch forks from "
+            f"{where}: the overlay is deep-merged into the task's resolved "
+            "config by the child's own setup(), which only a fresh child "
+            "rollout (use_prebuilt_env) re-runs — by any later boundary the "
+            "parent's config has already been consumed. Capture the boundary "
+            "with RolloutConfig(snapshot_stages={'env-ready'}, "
+            "snapshot_layers={'environment', 'sandbox'}) and fork with "
+            "branch_at_stage('env-ready', ...)."
+        )
+    if run_child is not None:
+        raise ValueError(
+            f"deltas[{index}].config_override cannot be combined with an "
+            "explicit run_child — the caller's runner owns the child's "
+            "execution, so the engine cannot run setup() under the merged "
+            "config. Drop run_child so the fresh-rollout runner executes the "
+            "delta, or apply the override inside your own runner."
+        )
+    try:
+        validate_overlay(overlay)
+    except ValueError as exc:
+        raise ValueError(f"deltas[{index}].config_override: {exc}") from None
+
+
 def _runs_fresh_children(at_stage: str | None, run_child: ChildRunner | None) -> bool:
     """Whether the engine will run this fork's children as fresh rollouts.
 
@@ -670,7 +724,7 @@ async def branch(
 
     ``deltas`` records the exactly-one-controlled-change each child runs
     under (RFC §3.3) — one :class:`BranchDelta` (or ``None`` = zero delta)
-    per child, validated before anything runs. Two fields execute.
+    per child, validated before anything runs. Three fields execute.
     ``injected_prompt`` becomes the child's continuation prompt, delivered as
     the child's user-visible first message and recorded in provenance as a
     content hash. ``skill_mode`` re-runs ``install_agent()`` under the switched
@@ -679,9 +733,14 @@ async def branch(
     parent whose own recorded skill mode is ``no-skill``** (a with-skill
     parent baked its pack into the image the snapshot commits, so a no-skill
     child would restore it and be mislabeled), and fails closed otherwise.
-    The remaining fields (``environment_ref``,
-    ``config_override``) raise :class:`BranchDeltaNotSupported` — fail closed
-    before any child runs — until the RFC follow-on executes them.
+    ``config_override`` runs the child as a fresh rollout whose config is the
+    parent's with the allowlisted C-axis overlay deep-merged on top (#790
+    machinery — same allowlist, same content addressing); it executes only
+    from ``at_stage="env-ready"`` (the child's own ``setup()`` is what applies
+    the overlay) and a non-allowlisted key fails closed before any child runs.
+    The remaining field (``environment_ref``) raises
+    :class:`BranchDeltaNotSupported` — fail closed before any child runs —
+    until the RFC follow-on executes it.
 
     **How a child is executed depends on the boundary, not on the delta.**
     ``at_stage="env-ready"`` precedes ``install_agent()``, so every child the
@@ -754,6 +813,13 @@ async def branch(
                         "use_prebuilt_env). The field is already recorded in "
                         "the schema and provenance; drop it to branch today."
                     )
+            if delta.config_override is not None:
+                _validate_config_delta(
+                    delta.config_override,
+                    index=index,
+                    at_stage=at_stage,
+                    run_child=run_child,
+                )
             skill_mode = delta.skill_mode
             if skill_mode is not None:
                 _validate_skill_delta(
