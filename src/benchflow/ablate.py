@@ -691,6 +691,34 @@ def _branch_children(tree: RolloutTree) -> list[RolloutNode]:
     return [node for node in tree.nodes() if "delta" in node.state]
 
 
+def _child_test_outcomes(child_dir: Path) -> dict[str, str] | None:
+    """One branch child's per-test outcomes, whichever way the engine ran it.
+
+    The child kinds keep their verifier output in different places — a
+    fresh-rollout child in its own run directory, an in-place child in the
+    ``mounted/`` archive of what it wrote to the parent's shared bind mounts —
+    and :func:`~benchflow.branch_artifacts.child_artifact_roots` is the one
+    place that knows both. Each candidate is read with the CLI's existing CTRF
+    reader (one parser, no branch-specific copy), and the first root that
+    reports outcomes wins; ``None`` when neither does, which is a real
+    observation ("this arm's verifier emitted no per-test data") and keeps the
+    arm out of every sub-test comparison.
+
+    Without the ``mounted/`` fallback an in-place ablation (``--at-stage
+    pre-verify`` / ``post-verify``) fell back to scalar-only attribution while
+    the per-test data sat on disk one directory down — the exact difference
+    the sub-test section exists to expose.
+    """
+    from benchflow.branch_artifacts import child_artifact_roots
+    from benchflow.cli._failure_evidence import artifact_test_outcomes
+
+    for root in child_artifact_roots(child_dir):
+        outcomes = artifact_test_outcomes(root)
+        if outcomes is not None:
+            return outcomes
+    return None
+
+
 def _outcomes(
     arms: Sequence[AblationArm],
     children: Sequence[RolloutNode],
@@ -712,18 +740,13 @@ def _outcomes(
     evidence.
 
     Each child's per-test outcomes are mined from its own verifier artifacts
-    here, where the child directory is known — a branch child's artifact
-    directory *is* its rollout directory, so the CLI's existing CTRF reader
-    serves it unchanged. Report-time reads only: the engine stays file-free,
-    and a child whose verifier emitted no CTRF report keeps ``tests = None``.
+    here, where the child directory is known — see :func:`_child_test_outcomes`
+    for the two places a child's verifier output can live. Report-time reads
+    only: the engine stays file-free, and a child whose verifier emitted no
+    CTRF report keeps ``tests = None``.
     """
     from benchflow.branch import UNSCORED_KEY
     from benchflow.branch_lineage import branch_child_dir
-
-    # Local import for the same reason the CLI's report block does it lazily:
-    # verifier-artifact mining is report-time, and RolloutPaths underneath
-    # pulls in the task package.
-    from benchflow.cli._failure_evidence import artifact_test_outcomes
 
     outcomes: list[ArmOutcome] = []
     for index, arm in enumerate(arms):
@@ -741,7 +764,7 @@ def _outcomes(
             if run_dir is not None and node.parent is not None:
                 child_dir = branch_child_dir(run_dir, node.parent.id, node.id)
                 outcome.artifacts = str(child_dir)
-                outcome.tests = artifact_test_outcomes(child_dir)
+                outcome.tests = _child_test_outcomes(child_dir)
             reward = node.state.get("reward")
             if reward is None:
                 outcome.error = (

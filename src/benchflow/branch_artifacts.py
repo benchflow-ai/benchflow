@@ -92,6 +92,37 @@ def child_mount_dir(run_dir: Path, parent_id: str, child_id: str) -> Path:
     return branch_child_dir(Path(run_dir), parent_id, child_id) / CHILD_MOUNT_DIRNAME
 
 
+def child_artifact_roots(child_dir: Path) -> tuple[Path, ...]:
+    """Rollout-shaped roots holding one child's own output, best first.
+
+    A branch child's verifier output lands in one of two places, and *which*
+    one depends on how the engine ran the child — which a report-time reader
+    should not have to know:
+
+    * a **fresh-rollout** child (every child of ``env-ready``) has a run
+      directory of its own, and that run directory *is* its artifact
+      directory, so its verifier output is downloaded to ``<child_dir>/verifier``;
+    * an **in-place** child (``pre-verify`` / ``post-verify``) never had one.
+      It wrote through the parent's bind mounts, and :meth:`MountedArtifacts.hand_off`
+      archived what it wrote under ``<child_dir>/mounted/`` — same
+      ``agent``/``artifacts``/``verifier`` shape, one level down.
+
+    Both roots are :class:`~benchflow.task.paths.RolloutPaths`-shaped, so a
+    reader tries them in order and takes the first that carries what it wants.
+    Order is the child's *own* directory first: a fresh-rollout child can have
+    both (it writes through the restored parent mounts too, and the hand-off
+    archives that), and the copy it downloaded into its run directory is the
+    authoritative one.
+
+    This is the one place that knows the layout — ``bench eval ablate`` reads
+    per-test outcomes through it rather than re-deriving ``mounted/`` for
+    itself, so a change to :data:`CHILD_MOUNT_DIRNAME` cannot leave a second
+    hard-coded path behind.
+    """
+    child_dir = Path(child_dir)
+    return (child_dir, child_dir / CHILD_MOUNT_DIRNAME)
+
+
 def _move_entries(source: Path, target: Path) -> int:
     """Move every entry of ``source`` into ``target``; return how many moved.
 
