@@ -93,8 +93,8 @@ class Diagnostic:
     summary_description: ClassVar[str] = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize for result.json — drops Nones is the caller's choice."""
-        return asdict(self)
+        """Serialize for result.json, omitting unpopulated optional fields."""
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
     def format_issue(self, task_name: str) -> str:
         """Render the per-task line check_results emits for this diagnostic."""
@@ -237,24 +237,7 @@ class TransportClosedDiagnostic(Diagnostic):
         the same way so result.json stays compact and tests that compare
         explicit dicts continue to work.
         """
-        raw = asdict(self)
-        out: dict[str, Any] = {}
-        for k, v in raw.items():
-            if v is None and k in {
-                "stderr_snippet",
-                "process_pid",
-                "sandbox_reachable",
-                "sandbox_probe_rc",
-                "sandbox_probe_stdout",
-                "sandbox_probe_error",
-                "sandbox_probe_error_type",
-                "sandbox_probe_traceback",
-            }:
-                continue
-            if k == "raw_message" and not v:
-                continue
-            out[k] = v
-        return out
+        return {k: v for k, v in super().to_dict().items() if k != "raw_message" or v}
 
 
 @dataclass
