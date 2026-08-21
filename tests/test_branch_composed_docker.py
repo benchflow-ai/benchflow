@@ -339,7 +339,9 @@ async def test_composed_two_layer_round_trip(
     file_digest = _digest_command(exclude_glob="env.db*")
 
     async with _live_sandbox(environment_dir, tmp_path) as sandbox:
-        await _exec_ok(sandbox, "mkdir -p /app/t2 && echo file-plane > /app/t2/file.txt")
+        await _exec_ok(
+            sandbox, "mkdir -p /app/t2 && echo file-plane > /app/t2/file.txt"
+        )
         await _exec_ok(
             sandbox,
             f"sqlite3 {db_path} "
@@ -380,7 +382,7 @@ async def test_composed_two_layer_round_trip(
 
         # Destructive mutation on both planes.
         await _exec_ok(
-            sandbox, f'sqlite3 {db_path} "UPDATE kv SET v=\'after\' WHERE k=\'phase\';"'
+            sandbox, f"sqlite3 {db_path} \"UPDATE kv SET v='after' WHERE k='phase';\""
         )
         await _exec_ok(
             sandbox,
