@@ -461,7 +461,14 @@ per arm its content-addressed delta provenance, reward, status, wall clock,
 per-test outcome map (`tests`, `null` when that arm's verifier reported none)
 and the branch-child artifact directory
 (`<parent-run>/branches/<node>/children/<node>/`,
-holding that child's own `config.json` / `result.json` / `provenance.json`).
+holding that child's own `result.json` / `timing.json` / `provenance.json` —
+a fresh-rollout child adds the `config.json` its own `setup()` wrote, an
+in-place child the `mounted/` archive of what it wrote through the parent's
+bind mounts. An in-place child's `result.json` is synthesized from the
+child's own scoped state, so fields the child did not produce — token usage,
+a run-level error — are `null` rather than inherited from the parent; either
+way the child directory answers "what happened in this arm" without reading
+`tree.json`).
 The top-level `test_attribution` section repeats the differing tests with their
 per-arm outcomes, the tying test names, which arms reported per-test data at
 all, and whether the scalar rewards tied.
