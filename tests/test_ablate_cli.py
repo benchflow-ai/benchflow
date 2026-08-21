@@ -36,6 +36,7 @@ from typer.testing import CliRunner
 
 from benchflow.ablate import (
     ARM_KIND_CONFIG,
+    ARM_KIND_ENV,
     ARM_KIND_INJECT,
     ARM_KIND_SKILL_MODE,
     AblationReport,
@@ -288,6 +289,42 @@ def test_config_arms_are_rejected_away_from_env_ready() -> None:
     )
     with pytest.raises(AblationSpecError, match="needs --at-stage 'env-ready'"):
         validate_arms_for_stage(config_only, "pre-verify")
+
+
+def test_env_arm_specs_map_onto_environment_ref_deltas() -> None:
+    """``env:<registry-ref>`` lowers to the environment_ref delta verbatim.
+
+    Guards "feat(branch): execute service-level environment_ref deltas from
+    env-ready": the ref is recorded exactly as written (the registry
+    content-addresses it at resolution), an empty ref fails at parse time,
+    and the arm is env-ready-only like every fresh-child delta.
+    """
+    arms = parse_arms("no-skill,env:env0@outage")
+    assert arms[1].kind == ARM_KIND_ENV
+    assert arms[1].delta == BranchDelta(environment_ref="env0@outage")
+    assert arms[1].delta.provenance_dict()["environment_ref"] == "env0@outage"
+    with pytest.raises(AblationSpecError, match="names no environment"):
+        parse_arm("env:")
+    env_only = parse_arms("env:env0@prod,env:env0@outage")
+    assert validate_arms_for_stage(env_only, "env-ready") == "env-ready"
+    with pytest.raises(AblationSpecError, match="needs --at-stage 'env-ready'"):
+        validate_arms_for_stage(env_only, "post-verify")
+
+
+async def test_an_env_arm_against_a_manifest_less_task_fails_before_the_parent_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The env arm's content gates need the parent's manifest, so they run in
+    run_ablation — but still *before* the parent run: a task that declares no
+    environment has no plane to swap, and the request dies without building a
+    single rollout."""
+    built = _patch_rollout(monkeypatch)
+    request = _request(tmp_path, "no-skill,env:env0@outage")
+
+    with pytest.raises(AblationSpecError, match="no environment manifest"):
+        await run_ablation(request)
+
+    assert built == []  # nothing ran, nothing was paid for
 
 
 def test_env_ready_ablation_requires_the_container_layer(tmp_path: Path) -> None:

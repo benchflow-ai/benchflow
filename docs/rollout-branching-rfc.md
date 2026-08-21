@@ -116,9 +116,21 @@ Injection points dictate cost and validity:
 
 - `skill_mode` / tool-set deltas ⇒ branch from `env-ready` (install re-runs).
 - `config_override` ⇒ applied at child setup, same allowlist and hash trail as #790
-  (never the scorer).
+  (never the scorer). Since the child's own `setup()` is what applies the overlay,
+  the delta executes only from `env-ready` — the fresh-child boundary — and a
+  non-allowlisted key fails closed before any child runs.
 - `environment_ref` with `[[services]]` changes ⇒ service stop/start bracketing around
-  state restore (§3.1).
+  state restore (§3.1). **The image-vs-services boundary:** the executable slice is
+  *service topology only* — same image, `owns_lifecycle = false` on both sides (the
+  `env0@prod` → `env0@outage` outage pattern), because the restored container's
+  entrypoint starts nothing and the fresh child's provisioning step decides the
+  running services. A manifest that changes the image breaks the
+  restore-the-parent-container premise — it would need a rebuild path, which
+  contradicts branching from a snapshot — and fails closed
+  (`BranchEnvironmentImageConflict`); an entrypoint-owned lifecycle on either side
+  fails closed too, since the framework cannot subtract a service the entrypoint
+  restarts. Image-changing environment comparisons are two independent runs, not a
+  branch.
 - `injected_prompt` ⇒ delivered as an explicit user-visible message in the child's
   session and recorded in provenance. Precedent: 0.6.5 removed silent prompt-level
   skill injection (#908); we do not reintroduce it — injection is always a recorded,
@@ -267,11 +279,13 @@ intervention matters at or before stage X") is only earned by a *second*
 ablation at a second boundary, which is the T3 table, not one invocation of the
 command.
 
-Out of the command's reach in v1, by construction: `post-research` (only an
+Out of the command's reach, by construction: `post-research` (only an
 explicit `Rollout.mark_stage()` records a mid-`execute()` cut point, §3.2),
-`environment_ref` / `config_override` arms (no execution path yet, §3.3), and
+image-changing `env:` arms (the image-vs-services boundary, §3.3 — an image
+delta needs a rebuild, which contradicts branching from a snapshot), and
 repeated arms for variance — one run per arm is one observation, not an
-estimate.
+estimate. `config:` and service-level `env:` arms execute (§3.3) at
+`env-ready`, riding the same fresh-child path as the skills arms.
 
 ## 6. Compatibility
 

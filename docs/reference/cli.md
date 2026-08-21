@@ -388,7 +388,7 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--model` | agent registry | Model for the parent run and every arm |
 | `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
 | `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it |
-| `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators |
+| `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`, `env:<registry-ref>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators |
 | `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
 | `--json` | `false` | Emit the report as JSON on stdout instead of the table |
 
@@ -405,6 +405,20 @@ rejected at parse time), same content addressing (the arm's provenance records
 the patch's sha256 and its allowlisted keys, and the child's `config.json`
 records the merged overlay). Like the skills arms it is only valid at
 `env-ready`, because the child's own `setup()` is what applies the patch.
+
+`env:<ref>` sets `environment_ref`: the arm runs against a *different
+environment-registry manifest* — the documented `env0@prod` vs `env0@outage`
+tool-outage pattern. The executable slice is **service-level only**: the child
+manifest must name the same image as the parent's and both must use
+framework-started services (`owns_lifecycle = false`); the arm then restores
+the parent's container and provisions the child manifest's service set over
+it. A manifest that changes the image fails closed — the snapshot commits the
+parent's image, so an image-changing environment delta would need a rebuild,
+which contradicts branching from a snapshot — as does an entrypoint-owned
+lifecycle on either side (the framework cannot subtract a service the
+entrypoint restarts). These gates run before the parent run costs anything,
+and the arm is only valid at `env-ready`, where the fresh child provisions its
+own environment plane.
 
 *How* an arm runs depends on `--at-stage`, not on its kind. `env-ready`
 precedes `install_agent()`, so **every** arm forked there runs as a fresh child

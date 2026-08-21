@@ -61,7 +61,7 @@ from benchflow.branch import checkpoint_composed as _checkpoint_composed
 from benchflow.branch import restore as _restore_branch
 from benchflow.branch import restore_composed as _restore_composed
 from benchflow.branch_artifacts import MountedArtifacts, child_mount_dir
-from benchflow.branch_delta import BranchDelta
+from benchflow.branch_delta import BranchDelta, BranchDeltaNotSupported
 from benchflow.branch_lineage import write_branch_artifacts, write_stage_snapshots
 from benchflow.branch_skill import (
     EXECUTION_FRESH_ROLLOUT,
@@ -71,6 +71,7 @@ from benchflow.branch_skill import (
     SKILL_DELTA_STAGE,
     make_fresh_child_runner,
     resolve_child_skill_policy,
+    resolve_environment_ref_delta,
 )
 from benchflow.branch_stage import (
     BranchStageNotCaptured,
@@ -100,34 +101,22 @@ _SNAPSHOT_LAYERS = frozenset({"environment", "sandbox"})
 CHILD_WALL_CLOCK_KEY = "wall_clock_sec"
 
 # The BranchDelta fields the engine executes vs records-only.
-# ``injected_prompt`` runs in place on the parent's rollout; ``skill_mode``
-# and ``config_override`` run the child as a fresh rollout from the env-ready
-# snapshot (RFC §3.3, gated by :func:`_validate_skill_delta` /
-# :func:`_validate_config_delta`). Any remaining field exists in the schema
-# and provenance so the artifact format is stable, and fails closed here.
-# Derived from the schema (all BranchDelta fields minus the executable set)
-# so a future BranchDelta field is unsupported-by-default — it fails closed
-# here instead of being silently ignored. Sorted for deterministic errors.
+# ``injected_prompt`` runs in place on the parent's rollout; ``skill_mode``,
+# ``config_override`` and ``environment_ref`` run the child as a fresh rollout
+# from the env-ready snapshot (RFC §3.3, gated by
+# :func:`_validate_skill_delta` / :func:`_validate_config_delta` /
+# :func:`_validate_environment_delta`). Any remaining field exists in the
+# schema and provenance so the artifact format is stable, and fails closed
+# here. Derived from the schema (all BranchDelta fields minus the executable
+# set) so a future BranchDelta field is unsupported-by-default — it fails
+# closed here instead of being silently ignored. Sorted for deterministic
+# errors; empty today, and load-bearing the day a field is added.
 _EXECUTABLE_DELTA_FIELDS = frozenset(
-    {"injected_prompt", "skill_mode", "config_override"}
+    {"injected_prompt", "skill_mode", "config_override", "environment_ref"}
 )
 _UNSUPPORTED_DELTA_FIELDS = tuple(
     sorted({f.name for f in dataclasses.fields(BranchDelta)} - _EXECUTABLE_DELTA_FIELDS)
 )
-
-
-class BranchDeltaNotSupported(NotImplementedError):
-    """A BranchDelta a branch request cannot execute as asked (fail closed).
-
-    ``skill_mode`` and ``config_override`` execute as fresh child rollouts —
-    but only from the ``env-ready`` stage snapshot, only when that snapshot
-    carries the container layer, and (for ``skill_mode``) only when the parent
-    itself ran ``no-skill`` (see :class:`BranchParentSkillModeConflict`);
-    ``environment_ref`` is schema- and provenance-stable but has no execution
-    path yet. A request that does not satisfy the preconditions fails closed
-    here, before any child runs, rather than running a child that silently
-    ignores its delta or measures a world its restore could not roll back.
-    """
 
 
 class BranchParentSkillModeConflict(BranchDeltaNotSupported):
@@ -514,6 +503,55 @@ def _validate_config_delta(
         raise ValueError(f"deltas[{index}].config_override: {exc}") from None
 
 
+def _validate_environment_delta(
+    rollout: Rollout,
+    environment_ref: str,
+    *,
+    index: int,
+    at_stage: str | None,
+    run_child: ChildRunner | None,
+) -> None:
+    """Gate an ``environment_ref`` delta before anything is quiesced (RFC §3.3).
+
+    The stage and runner gates mirror the other fresh-child deltas: the child
+    manifest binds at *provision* time, and provisioning happens only on the
+    fresh-child path a ``env-ready`` fork runs (an in-place child at a later
+    boundary would keep the parent's provisioned services no matter what its
+    delta records). The delta's own content gates — a manifest-bound parent,
+    a resolvable ref, the same image, framework-started services on both
+    sides — live in :func:`~benchflow.branch_skill.resolve_environment_ref_delta`,
+    which the child runner re-derives its manifest through, so validation and
+    execution cannot drift.
+    """
+    where = f"stage {at_stage!r}" if at_stage is not None else "the cursor"
+    if at_stage != FRESH_CHILD_STAGE:
+        raise BranchDeltaNotSupported(
+            f"deltas[{index}].environment_ref={environment_ref!r} executes "
+            f"only at the {FRESH_CHILD_STAGE!r} stage boundary, but this "
+            f"branch forks from {where}: the manifest's environment plane is "
+            "provisioned over the restored sandbox by the fresh child rollout "
+            "(use_prebuilt_env), and at any later boundary the parent's "
+            "provisioned services survive the fork — the delta would be "
+            "recorded but not enforced. Capture the boundary with "
+            "RolloutConfig(snapshot_stages={'env-ready'}, "
+            "snapshot_layers={'environment', 'sandbox'}) and fork with "
+            "branch_at_stage('env-ready', ...)."
+        )
+    if run_child is not None:
+        raise ValueError(
+            f"deltas[{index}].environment_ref cannot be combined with an "
+            "explicit run_child — the caller's runner owns the child's "
+            "execution, so the engine cannot provision the child manifest's "
+            "services. Drop run_child so the fresh-rollout runner executes "
+            "the delta, or provision inside your own runner."
+        )
+    resolve_environment_ref_delta(
+        rollout._config.environment_manifest,
+        environment_ref,
+        subject=f"deltas[{index}].environment_ref",
+    )
+
+
 def _runs_fresh_children(at_stage: str | None, run_child: ChildRunner | None) -> bool:
     """Whether the engine will run this fork's children as fresh rollouts.
 
@@ -738,9 +776,14 @@ async def branch(
     machinery — same allowlist, same content addressing); it executes only
     from ``at_stage="env-ready"`` (the child's own ``setup()`` is what applies
     the overlay) and a non-allowlisted key fails closed before any child runs.
-    The remaining field (``environment_ref``) raises
-    :class:`BranchDeltaNotSupported` — fail closed before any child runs —
-    until the RFC follow-on executes it.
+    ``environment_ref`` swaps the child onto a different environment-registry
+    manifest — the *service-level* slice only (same image, different
+    framework-started services: the ``env0@prod`` vs ``env0@outage`` pattern);
+    the fresh child provisions the child manifest's services over the restored
+    container, and a manifest that changes the image or an entrypoint-owned
+    lifecycle fails closed
+    (:class:`~benchflow.branch_skill.BranchEnvironmentImageConflict` /
+    :class:`BranchDeltaNotSupported`) before any child runs.
 
     **How a child is executed depends on the boundary, not on the delta.**
     ``at_stage="env-ready"`` precedes ``install_agent()``, so every child the
@@ -816,6 +859,14 @@ async def branch(
             if delta.config_override is not None:
                 _validate_config_delta(
                     delta.config_override,
+                    index=index,
+                    at_stage=at_stage,
+                    run_child=run_child,
+                )
+            if delta.environment_ref is not None:
+                _validate_environment_delta(
+                    rollout,
+                    delta.environment_ref,
                     index=index,
                     at_stage=at_stage,
                     run_child=run_child,
