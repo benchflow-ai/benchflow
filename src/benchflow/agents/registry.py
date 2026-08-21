@@ -52,6 +52,7 @@ import base64
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from benchflow._utils.text import describe_exception
 
@@ -491,6 +492,11 @@ class AgentConfig:
     acp_model_config_id: str = ""
     # ACP session config option id used for reasoning/thinking effort.
     acp_effort_config_id: str = ""
+    # Extension metadata sent as ``_meta`` on ``session/new``. ACP reserves
+    # ``_meta`` for agent-specific options that the protocol itself does not
+    # model, so this keeps per-agent knobs in the registry instead of an
+    # ``if agent == ...`` in the runtime.
+    acp_session_meta: dict[str, Any] = field(default_factory=dict)
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
@@ -553,6 +559,18 @@ AGENTS: dict[str, AgentConfig] = {
         supports_acp_set_model=False,
         acp_model_config_id="model",
         acp_effort_config_id="effort",
+        # Ask for thinking summaries. The Claude Agent SDK defaults adaptive
+        # thinking to `display: "omitted"` on models that support it, so the
+        # agent still reasons but the bridge relays `agent_thought_chunk` with
+        # an empty text — reasoning happens and the trajectory cannot show it.
+        # `effort` controls thinking *depth*, and MAX_THINKING_TOKENS its
+        # *budget*; neither turns the text back on. Verified against
+        # @anthropic-ai/claude-agent-sdk 0.3.160's ThinkingAdaptive type.
+        acp_session_meta={
+            "claudeCode": {
+                "options": {"thinking": {"type": "adaptive", "display": "summarized"}}
+            }
+        },
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
