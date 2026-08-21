@@ -71,7 +71,10 @@ from benchflow._utils.scoring import (
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
-from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.environment.manifest import (
+    EnvironmentManifest,
+    manifest_from_task_document,
+)
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -110,35 +113,6 @@ BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 # false install_failure errors. Non-blocking acquire: if a prune is already in
 # flight, skip — there's nothing new to clean since the in-flight one started.
 _PRUNE_LOCK = threading.Lock()
-
-
-def _environment_manifest_from_task_document(
-    task_dir: Path,
-) -> EnvironmentManifest | None:
-    task_md = task_dir / "task.md"
-    if not task_md.is_file():
-        return None
-
-    from benchflow.environment.manifest import load_manifest
-    from benchflow.task.document import TaskDocument
-
-    document = TaskDocument.from_path(task_md)
-    environment = document.benchflow.get("environment")
-    if environment is None:
-        return None
-    if not isinstance(environment, dict):
-        raise ValueError("task.md benchflow.environment must be a mapping")
-    manifest = environment.get("manifest")
-    if manifest is None:
-        return None
-    if not isinstance(manifest, str) or not manifest.strip():
-        raise ValueError("task.md benchflow.environment.manifest must be a path")
-
-    manifest_path = Path(manifest)
-    if not manifest_path.is_absolute():
-        manifest_path = task_dir / manifest_path
-    return load_manifest(manifest_path)
-
 
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
@@ -1239,7 +1213,7 @@ class Evaluation:
         )
         environment_manifest = cfg.environment_manifest
         if environment_manifest is None:
-            environment_manifest = _environment_manifest_from_task_document(task_dir)
+            environment_manifest = manifest_from_task_document(task_dir)
         rollout_config = RolloutConfig.from_legacy(
             task_path=task_dir,
             agent=cfg.agent,
