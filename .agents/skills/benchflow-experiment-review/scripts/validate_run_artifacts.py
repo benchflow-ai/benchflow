@@ -15,6 +15,10 @@ BenchFlow model result:
   Prime-RL/Verifiers-shaped training-readiness row backed by the LLM trajectory.
 - token usage, timing, and tool usage metadata are present.
 
+The explicit ``--allow-native-subscription-without-llm`` mode accepts only a
+healthy ``agent_native_acp`` evidence row that is completed but not
+training-ready. It does not relax the default model-training artifact gate.
+
 Any violation makes that rollout unhealthy. The script exits 1 if any checked
 rollout is unhealthy.
 """
@@ -541,6 +545,7 @@ def validate_results_row(
     row_path: str,
     result: dict[str, Any],
     llm_summary: dict[str, Any] | None,
+    native_subscription_without_llm: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     leaked = sorted(BANNED_TRAINING_ROW_KEYS.intersection(row))
@@ -565,7 +570,11 @@ def validate_results_row(
         issues.append(
             f"{row_path}: terminal errored/partial rollout marked training_ready=true"
         )
-    if not result_has_terminal_error(result) and training_ready is False:
+    if (
+        not result_has_terminal_error(result)
+        and training_ready is False
+        and not native_subscription_without_llm
+    ):
         issues.append(f"{row_path}: healthy rollout marked training_ready=false")
 
     row_error = row.get("error")
@@ -589,14 +598,62 @@ def validate_results_row(
             issues.append(
                 f"{row_path}: non-training-ready row lacks training_ready_reason"
             )
-        if row_error is None:
+        if row_error is None and not native_subscription_without_llm:
             issues.append(f"{row_path}: non-training-ready row lacks error payload")
 
-    messages = normalize_training_messages(row, row_path, issues)
+    if native_subscription_without_llm:
+        expected_reason = "missing_healthy_structured_llm_trajectory"
+        if training_ready is not False:
+            issues.append(f"{row_path}: native subscription row must not be training-ready")
+        if info.get("training_ready_reason") != expected_reason:
+            issues.append(
+                f"{row_path}: native subscription row has unexpected training_ready_reason"
+            )
+        if row_error is not None:
+            issues.append(f"{row_path}: native subscription row carries non-null error")
+        if row.get("is_completed") is not True:
+            issues.append(f"{row_path}: native subscription row is not completed")
+        if row.get("is_truncated") is not False:
+            issues.append(f"{row_path}: native subscription row is truncated")
+        if row.get("stop_condition") != "agent_completed":
+            issues.append(
+                f"{row_path}: native subscription row has unexpected stop_condition"
+            )
+        if row.get("completion") is not None or row.get("trajectory") != []:
+            issues.append(
+                f"{row_path}: native subscription row must not synthesize training data"
+            )
+        token_usage = row.get("token_usage")
+        if not isinstance(token_usage, dict):
+            issues.append(f"{row_path}: missing object token_usage")
+        elif not (
+            (
+                positive_number(token_usage.get("final_input_tokens"))
+                or positive_number(token_usage.get("input_tokens"))
+            )
+            and (
+                positive_number(token_usage.get("final_output_tokens"))
+                or positive_number(token_usage.get("output_tokens"))
+            )
+        ):
+            issues.append(
+                f"{row_path}: native subscription row lacks positive token components"
+            )
+        if row.get("reward") is None and row.get("score") is None:
+            issues.append(f"{row_path}: missing reward/score")
+
+    messages = (
+        []
+        if native_subscription_without_llm
+        else normalize_training_messages(row, row_path, issues)
+    )
     tools, tool_error = normalize_tool_defs(row, row_path)
     if tool_error:
         issues.append(tool_error)
-    issues.extend(validate_training_messages(messages, tools=tools, row_path=row_path))
+    if not native_subscription_without_llm:
+        issues.extend(
+            validate_training_messages(messages, tools=tools, row_path=row_path)
+        )
 
     if training_ready:
         for field in ("prompt", "completion", "trajectory"):
@@ -700,6 +757,7 @@ def validate_results_jsonl(
     *,
     result: dict[str, Any],
     llm_summary: dict[str, Any] | None,
+    native_subscription_without_llm: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     path = root / "results.jsonl"
     if not path.is_file():
@@ -717,6 +775,7 @@ def validate_results_jsonl(
                 row_path=f"{path}:{idx}",
                 result=result,
                 llm_summary=llm_summary,
+                native_subscription_without_llm=native_subscription_without_llm,
             )
         )
     summary = {
@@ -751,7 +810,10 @@ def load_run_config(root: Path) -> dict[str, Any] | None:
 
 
 def validate_rollout(
-    root: Path, *, allow_oracle_without_llm: bool = False
+    root: Path,
+    *,
+    allow_oracle_without_llm: bool = False,
+    allow_native_subscription_without_llm: bool = False,
 ) -> dict[str, Any]:
     result_path = root / "result.json"
     result, result_error = read_json(result_path)
@@ -768,6 +830,13 @@ def validate_rollout(
     llm_path = root / "trajectory" / "llm_trajectory.jsonl"
     artifact_summary: dict[str, Any] = {}
     llm_summary: dict[str, Any] | None = None
+    agent_result = result.get("agent_result")
+    native_subscription_without_llm = bool(
+        allow_native_subscription_without_llm
+        and isinstance(agent_result, dict)
+        and agent_result.get("usage_source") == "agent_native_acp"
+        and not llm_path.is_file()
+    )
 
     if not acp_path.is_file():
         issues.append(f"missing required artifact: {acp_path}")
@@ -779,6 +848,10 @@ def validate_rollout(
 
     if oracle and allow_oracle_without_llm:
         warnings.append("oracle rollout: llm_trajectory requirement bypassed by flag")
+    elif native_subscription_without_llm:
+        warnings.append(
+            "native subscription rollout: llm_trajectory requirement bypassed by flag"
+        )
     elif not llm_path.is_file():
         issues.append(f"missing required artifact: {llm_path}")
     else:
@@ -793,6 +866,7 @@ def validate_rollout(
         root,
         result=result,
         llm_summary=llm_summary,
+        native_subscription_without_llm=native_subscription_without_llm,
     )
     issues.extend(results_issues)
     if results_summary:
@@ -862,6 +936,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Treat oracle reward-only runs as out of scope for LLM trajectory capture.",
     )
     parser.add_argument(
+        "--allow-native-subscription-without-llm",
+        action="store_true",
+        help=(
+            "Accept a healthy agent_native_acp rollout without provider LLM capture "
+            "as completed but not training-ready."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON instead of a concise text report.",
@@ -877,6 +959,9 @@ def main(argv: list[str] | None = None) -> int:
         validate_rollout(
             rollout,
             allow_oracle_without_llm=args.allow_oracle_without_llm,
+            allow_native_subscription_without_llm=(
+                args.allow_native_subscription_without_llm
+            ),
         )
         for rollout in deduped
     ]
