@@ -133,6 +133,84 @@ def test_validator_accepts_training_ready_results_jsonl(tmp_path: Path) -> None:
     }
 
 
+def _declare_separate_verifier(rollout: Path) -> None:
+    benchguard = rollout / "benchguard"
+    benchguard.mkdir()
+    (benchguard / "preflight.json").write_text(
+        json.dumps(
+            {
+                "report": {
+                    "task_binding": {
+                        "facts": {"verifier_environment_mode": "separate"}
+                    }
+                }
+            }
+        )
+    )
+
+
+def test_validator_rejects_separate_verifier_without_sidecar_actions(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1049 follow-up: masked main-container verification is unhealthy."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    _declare_separate_verifier(rollout)
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is False
+    assert any("lacks action evidence" in issue for issue in report["issues"])
+
+
+def test_validator_accepts_structural_separate_verifier_actions(tmp_path: Path) -> None:
+    """Guards PR #1049 follow-up using action records, not verifier stdout text."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    _declare_separate_verifier(rollout)
+    _write_jsonl(
+        rollout / "benchguard" / "action_records.jsonl",
+        [
+            {
+                "event_type": "StartBenchGuardVerifierService",
+                "phase": "Verify",
+                "service": "benchguard-verifier",
+                "status": "ok",
+            },
+            {
+                "event_type": "SandboxExec",
+                "phase": "Verify",
+                "service": "benchguard-verifier",
+                "status": "ok",
+            },
+        ],
+    )
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["separate_verifier"] == {
+        "sidecar_started": True,
+        "verify_exec": True,
+    }
+
+
+def test_validator_recognizes_legacy_separate_verifier_waiver(tmp_path: Path) -> None:
+    """Guards PR #1049 follow-up for runs predating structured preflight facts."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    benchguard = rollout / "benchguard"
+    benchguard.mkdir()
+    (benchguard / "runtime_capability_waivers.json").write_text(
+        json.dumps({"waived": [{"path": "verifier.environment_mode"}]})
+    )
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is False
+    assert any("lacks action evidence" in issue for issue in report["issues"])
+
+
 def test_validator_oracle_mode_accepts_reward_only_rollout(tmp_path: Path) -> None:
     """Guards BenchFlow PR #1049's explicit oracle artifact exception."""
     validator = _load_validator()

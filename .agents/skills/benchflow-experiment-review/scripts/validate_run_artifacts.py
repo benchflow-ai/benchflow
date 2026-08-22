@@ -814,6 +814,52 @@ def load_run_config(root: Path) -> dict[str, Any] | None:
     return None
 
 
+def separate_verifier_declared(root: Path) -> bool:
+    preflight, _ = read_json(root / "benchguard" / "preflight.json")
+    facts = (
+        preflight.get("report", {}).get("task_binding", {}).get("facts", {})
+        if isinstance(preflight, dict)
+        else {}
+    )
+    if isinstance(facts, dict) and facts.get("verifier_environment_mode") == "separate":
+        return True
+
+    waivers, _ = read_json(root / "benchguard" / "runtime_capability_waivers.json")
+    rows = waivers.get("waived", []) if isinstance(waivers, dict) else []
+    return any(
+        isinstance(row, dict) and row.get("path") == "verifier.environment_mode"
+        for row in rows
+    )
+
+
+def validate_separate_verifier_actions(
+    root: Path,
+) -> tuple[list[str], dict[str, Any]]:
+    path = root / "benchguard" / "action_records.jsonl"
+    if not path.is_file():
+        return [f"separate verifier lacks action evidence: {path}"], {}
+    rows, issues = read_jsonl(path)
+    started = any(
+        row.get("event_type") == "StartBenchGuardVerifierService"
+        and row.get("service") == "benchguard-verifier"
+        and row.get("phase") == "Verify"
+        and row.get("status") == "ok"
+        for row in rows
+    )
+    verified = any(
+        row.get("event_type") == "SandboxExec"
+        and row.get("service") == "benchguard-verifier"
+        and row.get("phase") == "Verify"
+        and row.get("status") == "ok"
+        for row in rows
+    )
+    if not started:
+        issues.append(f"{path}: no successful verifier sidecar start action")
+    if not verified:
+        issues.append(f"{path}: no successful Verify exec on benchguard-verifier")
+    return issues, {"sidecar_started": started, "verify_exec": verified}
+
+
 def validate_rollout(
     root: Path,
     *,
@@ -878,6 +924,11 @@ def validate_rollout(
     issues.extend(results_issues)
     if results_summary:
         artifact_summary["results"] = results_summary
+
+    if separate_verifier_declared(root):
+        action_issues, action_summary = validate_separate_verifier_actions(root)
+        issues.extend(action_issues)
+        artifact_summary["separate_verifier"] = action_summary
 
     tokens = numeric_token_total(result)
     if not oracle_without_llm and (not tokens or tokens <= 0):
