@@ -240,6 +240,92 @@ def test_validator_rejects_unready_results_for_healthy_rollout(tmp_path: Path) -
     assert any("training_ready=false" in issue for issue in report["issues"])
 
 
+def _native_subscription_rollout(tmp_path: Path) -> Path:
+    rollout = _rollout(tmp_path)
+    (rollout / "trajectory" / "llm_trajectory.jsonl").unlink()
+    result = json.loads((rollout / "result.json").read_text())
+    result["agent_result"]["usage_source"] = "agent_native_acp"
+    (rollout / "result.json").write_text(json.dumps(result))
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row.update(
+        {
+            "completion": None,
+            "error": None,
+            "is_completed": True,
+            "trajectory": [],
+        }
+    )
+    row["info"].update(
+        {
+            "training_ready": False,
+            "training_ready_reason": "missing_healthy_structured_llm_trajectory",
+        }
+    )
+    _write_jsonl(rollout / "results.jsonl", [row])
+    return rollout
+
+
+def test_validator_accepts_explicit_native_subscription_mode(tmp_path: Path) -> None:
+    """Guards this PR's explicit native-subscription evidence mode."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+
+    strict = validator.validate_rollout(rollout)
+    native = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert strict["healthy"] is False
+    assert native["healthy"] is True
+    assert any("native subscription rollout" in item for item in native["warnings"])
+
+
+def test_validator_native_mode_rejects_wrong_usage_source(tmp_path: Path) -> None:
+    """Guards this PR against widening subscription mode to other runs."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+    result = json.loads((rollout / "result.json").read_text())
+    result["agent_result"]["usage_source"] = "provider_response"
+    (rollout / "result.json").write_text(json.dumps(result))
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("missing required artifact" in issue for issue in report["issues"])
+
+
+def test_validator_native_mode_requires_token_components(tmp_path: Path) -> None:
+    """Guards this PR against accepting usage-free subscription evidence."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["token_usage"] = {"total_tokens": 17}
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("positive token components" in issue for issue in report["issues"])
+
+
+def test_validator_native_mode_rejects_malformed_present_llm(tmp_path: Path) -> None:
+    """Guards this PR against bypassing malformed provider evidence."""
+    validator = _load_validator()
+    rollout = _native_subscription_rollout(tmp_path)
+    (rollout / "trajectory" / "llm_trajectory.jsonl").write_text("{\n")
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("JSON parse error" in issue for issue in report["issues"])
+
+
 def test_validator_rejects_results_with_dropped_successful_exchange(
     tmp_path: Path,
 ) -> None:

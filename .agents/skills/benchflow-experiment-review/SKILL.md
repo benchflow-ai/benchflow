@@ -57,6 +57,16 @@ counts, or a plausible final answer is still unhealthy if either required
 trajectory file or `results.jsonl` is missing, empty, truncated, unparsable, or
 usage-only without recoverable request/response evidence.
 
+One explicit evidence-only exception exists for native ACP subscription auth,
+where provider HTTP capture is unavailable by construction. With
+`--allow-native-subscription-without-llm`, the validator may accept a missing
+LLM trajectory only when `agent_result.usage_source == "agent_native_acp"`, ACP
+events and native token usage are healthy, timing and reward are complete, and
+`results.jsonl` marks the rollout completed but not training-ready with reason
+`missing_healthy_structured_llm_trajectory`. This exception never creates
+training data, never accepts an empty/malformed present LLM trajectory, and is
+off by default.
+
 `results.jsonl` must be reviewed as a training artifact, not just a sidecar. For
 a healthy model rollout it should contain a parseable row with
 `info.training_ready == true`, non-empty `prompt`, `completion`, and
