@@ -671,8 +671,6 @@ def _patch_docker_dind() -> None:
     def _patched(self, include_os_env=True):  # type: ignore[override]
         env = _original(self, include_os_env=include_os_env)
         for key in (
-            "CONTEXT_DIR",
-            "BENCHGUARD_VERIFIER_CONTEXT_DIR",
             "HOST_VERIFIER_LOGS_PATH",
             "HOST_AGENT_LOGS_PATH",
             "HOST_ARTIFACTS_PATH",

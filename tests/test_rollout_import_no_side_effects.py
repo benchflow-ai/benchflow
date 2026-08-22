@@ -180,7 +180,7 @@ def test_dind_patch_translates_context_and_output_paths() -> None:
             env_artifacts_path="/artifacts",
         ).to_env_dict(include_os_env=False)
 
-        assert env["CONTEXT_DIR"] == "/host/work/repo/environment"
+        assert env["CONTEXT_DIR"] == "/workspace/repo/environment"
         assert env["HOST_VERIFIER_LOGS_PATH"] == "/host/work/jobs/verifier"
         assert env["HOST_AGENT_LOGS_PATH"] == "/host/work/jobs/agent"
         assert env["HOST_ARTIFACTS_PATH"] == "/host/work/jobs/artifacts"
