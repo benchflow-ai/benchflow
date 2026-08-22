@@ -546,6 +546,7 @@ def validate_results_row(
     result: dict[str, Any],
     llm_summary: dict[str, Any] | None,
     native_subscription_without_llm: bool = False,
+    oracle_without_llm: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     leaked = sorted(BANNED_TRAINING_ROW_KEYS.intersection(row))
@@ -573,7 +574,7 @@ def validate_results_row(
     if (
         not result_has_terminal_error(result)
         and training_ready is False
-        and not native_subscription_without_llm
+        and not (native_subscription_without_llm or oracle_without_llm)
     ):
         issues.append(f"{row_path}: healthy rollout marked training_ready=false")
 
@@ -598,7 +599,9 @@ def validate_results_row(
             issues.append(
                 f"{row_path}: non-training-ready row lacks training_ready_reason"
             )
-        if row_error is None and not native_subscription_without_llm:
+        if row_error is None and not (
+            native_subscription_without_llm or oracle_without_llm
+        ):
             issues.append(f"{row_path}: non-training-ready row lacks error payload")
 
     if native_subscription_without_llm:
@@ -644,13 +647,13 @@ def validate_results_row(
 
     messages = (
         []
-        if native_subscription_without_llm
+        if native_subscription_without_llm or oracle_without_llm
         else normalize_training_messages(row, row_path, issues)
     )
     tools, tool_error = normalize_tool_defs(row, row_path)
     if tool_error:
         issues.append(tool_error)
-    if not native_subscription_without_llm:
+    if not (native_subscription_without_llm or oracle_without_llm):
         issues.extend(
             validate_training_messages(messages, tools=tools, row_path=row_path)
         )
@@ -758,6 +761,7 @@ def validate_results_jsonl(
     result: dict[str, Any],
     llm_summary: dict[str, Any] | None,
     native_subscription_without_llm: bool = False,
+    oracle_without_llm: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     path = root / "results.jsonl"
     if not path.is_file():
@@ -776,6 +780,7 @@ def validate_results_jsonl(
                 result=result,
                 llm_summary=llm_summary,
                 native_subscription_without_llm=native_subscription_without_llm,
+                oracle_without_llm=oracle_without_llm,
             )
         )
     summary = {
@@ -825,6 +830,7 @@ def validate_rollout(
 
     run_config = load_run_config(root)
     oracle = is_oracle_result(result, run_config)
+    oracle_without_llm = bool(oracle and allow_oracle_without_llm)
 
     acp_path = root / "trajectory" / "acp_trajectory.jsonl"
     llm_path = root / "trajectory" / "llm_trajectory.jsonl"
@@ -846,7 +852,7 @@ def validate_rollout(
         issues.extend(validate_acp(acp_rows, acp_path))
         artifact_summary["acp_events"] = len(acp_rows)
 
-    if oracle and allow_oracle_without_llm:
+    if oracle_without_llm:
         warnings.append("oracle rollout: llm_trajectory requirement bypassed by flag")
     elif native_subscription_without_llm:
         warnings.append(
@@ -867,18 +873,19 @@ def validate_rollout(
         result=result,
         llm_summary=llm_summary,
         native_subscription_without_llm=native_subscription_without_llm,
+        oracle_without_llm=oracle_without_llm,
     )
     issues.extend(results_issues)
     if results_summary:
         artifact_summary["results"] = results_summary
 
     tokens = numeric_token_total(result)
-    if not tokens or tokens <= 0:
+    if not oracle_without_llm and (not tokens or tokens <= 0):
         issues.append("missing or zero token usage in result metadata")
     if not timing_present(result):
         issues.append("missing timing metadata")
     tools = tool_usage_count(result)
-    if tools is None or tools <= 0:
+    if not oracle_without_llm and (tools is None or tools <= 0):
         issues.append("missing or zero tool usage metadata")
     if not reward_present(result):
         issues.append("missing verifier reward/score")
