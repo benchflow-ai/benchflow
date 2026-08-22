@@ -1101,6 +1101,83 @@ def test_build_rollout_result_results_jsonl_is_unhealthy_without_llm(tmp_path):
     assert row["stop_condition"] == "partial_trajectory"
 
 
+def test_native_subscription_without_llm_is_completed_but_not_training_ready(
+    tmp_path,
+):
+    """Guards this PR's native-subscription result semantics."""
+    rollout_dir = tmp_path / "native-subscription"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="subscription-task",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="Claude Agent",
+        model="claude-opus-5",
+        n_tool_calls=1,
+        prompts=["Solve this."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={"agent_execution": 1.0, "verifier": 1.0},
+        n_input_tokens=11,
+        n_output_tokens=6,
+        total_tokens=17,
+        usage_source="agent_native_acp",
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"] is None
+    assert row["trajectory"] == []
+    assert row["info"]["training_ready"] is False
+    assert (
+        row["info"]["training_ready_reason"]
+        == "missing_healthy_structured_llm_trajectory"
+    )
+    assert row["error"] is None
+    assert row["is_completed"] is True
+    assert row["is_truncated"] is False
+    assert row["stop_condition"] == "agent_completed"
+
+
+def test_native_subscription_without_llm_preserves_terminal_errors(tmp_path):
+    """Guards this PR against hiding native-subscription verifier failures."""
+    rollout_dir = tmp_path / "native-subscription-error"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="subscription-task",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="Claude Agent",
+        model="claude-opus-5",
+        n_tool_calls=1,
+        prompts=["Solve this."],
+        error=None,
+        verifier_error="verifier crashed",
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={"agent_execution": 1.0},
+        n_input_tokens=11,
+        n_output_tokens=6,
+        total_tokens=17,
+        usage_source="agent_native_acp",
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["error"]["error"] == "verifier_error"
+    assert row["is_completed"] is False
+
+
 def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
     """Guards PR #828: total-only telemetry still feeds Prime-RL token batches."""
     rollout_dir = tmp_path / "rollout-total-only"

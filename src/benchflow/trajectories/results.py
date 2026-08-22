@@ -30,6 +30,7 @@ from benchflow.trajectories.export_prime_sft import (
     validate_prime_sft_row,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_FILENAME = "results.jsonl"
@@ -465,6 +466,12 @@ def build_rollout_results_record(
         export_error=effective_export_error,
     )
     terminal_health_error = bool(error or verifier_error or partial_trajectory)
+    native_subscription_without_llm = bool(
+        (agent_result or {}).get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
+        and not (rollout_path / "trajectory" / "llm_trajectory.jsonl").exists()
+        and effective_export_error is None
+        and not terminal_health_error
+    )
     training_ready = bool(
         steps
         and completion
@@ -493,7 +500,7 @@ def build_rollout_results_record(
             training_ready_reason = "verifier_error"
         else:
             training_ready_reason = "missing_healthy_structured_llm_trajectory"
-        if error_obj is None:
+        if error_obj is None and not native_subscription_without_llm:
             error_name = (
                 training_ready_reason
                 if training_ready_reason
