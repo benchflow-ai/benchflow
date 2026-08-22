@@ -607,7 +607,9 @@ def validate_results_row(
     if native_subscription_without_llm:
         expected_reason = "missing_healthy_structured_llm_trajectory"
         if training_ready is not False:
-            issues.append(f"{row_path}: native subscription row must not be training-ready")
+            issues.append(
+                f"{row_path}: native subscription row must not be training-ready"
+            )
         if info.get("training_ready_reason") != expected_reason:
             issues.append(
                 f"{row_path}: native subscription row has unexpected training_ready_reason"
@@ -816,11 +818,9 @@ def load_run_config(root: Path) -> dict[str, Any] | None:
 
 def separate_verifier_declared(root: Path) -> bool:
     preflight, _ = read_json(root / "benchguard" / "preflight.json")
-    facts = (
-        preflight.get("report", {}).get("task_binding", {}).get("facts", {})
-        if isinstance(preflight, dict)
-        else {}
-    )
+    report = preflight.get("report") if isinstance(preflight, dict) else None
+    task_binding = report.get("task_binding") if isinstance(report, dict) else None
+    facts = task_binding.get("facts") if isinstance(task_binding, dict) else None
     if isinstance(facts, dict) and facts.get("verifier_environment_mode") == "separate":
         return True
 

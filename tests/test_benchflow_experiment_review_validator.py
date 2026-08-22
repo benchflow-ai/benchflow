@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 SCRIPT = (
     Path(__file__).resolve().parents[1]
     / ".agents"
@@ -140,9 +142,7 @@ def _declare_separate_verifier(rollout: Path) -> None:
         json.dumps(
             {
                 "report": {
-                    "task_binding": {
-                        "facts": {"verifier_environment_mode": "separate"}
-                    }
+                    "task_binding": {"facts": {"verifier_environment_mode": "separate"}}
                 }
             }
         )
@@ -209,6 +209,32 @@ def test_validator_recognizes_legacy_separate_verifier_waiver(tmp_path: Path) ->
 
     assert report["healthy"] is False
     assert any("lacks action evidence" in issue for issue in report["issues"])
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        None,
+        [],
+        {"task_binding": None},
+        {"task_binding": []},
+        {"task_binding": {"facts": None}},
+        {"task_binding": {"facts": []}},
+    ],
+)
+def test_validator_tolerates_malformed_optional_preflight_nesting(
+    tmp_path: Path, report: object
+) -> None:
+    """Guards PR #1050: optional malformed preflight fields cannot crash review."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    benchguard = rollout / "benchguard"
+    benchguard.mkdir()
+    (benchguard / "preflight.json").write_text(json.dumps({"report": report}))
+
+    result = validator.validate_rollout(rollout)
+
+    assert result["healthy"] is True
 
 
 def test_validator_oracle_mode_accepts_reward_only_rollout(tmp_path: Path) -> None:
