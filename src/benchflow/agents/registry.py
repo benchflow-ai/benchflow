@@ -122,6 +122,8 @@ OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
+# fx release pin, passed to the fx.sh installer (`bash -s -- <version>`).
+_FX_VERSION = "v0.0.5"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -985,6 +987,30 @@ AGENTS: dict[str, AgentConfig] = {
             '> "$BENCHFLOW_AGENT_HOME/.openhands/config.toml"'
         ),
         disallow_web_tools_owned_paths=["$HOME/.openhands"],
+    ),
+    "fx": AgentConfig(
+        name="fx",
+        description="Vercel fx agent via ACP (native binary; models served "
+        "through the Vercel AI Gateway)",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            # Shared prefix so the sandbox user inherits the binary.
+            "export FX_INSTALL_DIR=/usr/local/bin && "
+            f"curl -fsSL https://fx.sh/setup.sh | bash -s -- {_FX_VERSION} && "
+            "command -v fx >/dev/null 2>&1"
+        ),
+        launch_cmd="fx acp",
+        protocol="acp",
+        requires_env=["AI_GATEWAY_API_KEY"],
+        # fx speaks the AI SDK gateway wire protocol, so the proxy is skipped
+        # via _NATIVE_PROTOCOL_AGENTS in providers/litellm_runtime.py.
+        env_mapping={
+            "BENCHFLOW_PROVIDER_API_KEY": "AI_GATEWAY_API_KEY",
+            "BENCHFLOW_PROVIDER_MODEL": "FX_MODEL",
+        },
+        supports_acp_set_model=False,
     ),
 }
 
