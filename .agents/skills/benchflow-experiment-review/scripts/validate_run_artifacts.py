@@ -248,6 +248,40 @@ def validate_acp(rows: list[dict[str, Any]], path: Path) -> list[str]:
     return issues
 
 
+def validate_terminal_timeout(rows: list[dict[str, Any]], path: Path) -> list[str]:
+    issues: list[str] = []
+    timeout_complete = False
+    for index, row in enumerate(rows, start=1):
+        if row.get("type") == "agent_timeout":
+            timeout_complete = row.get("terminal_trajectory_complete") is True
+        if row.get("type") != "tool_call":
+            continue
+        if row.get("status") in {"pending", "in_progress"}:
+            issues.append(f"{path}:{index}: timeout trajectory has pending tool")
+        if row.get("terminal_source") == "benchflow" and (
+            row.get("status") != "cancelled" or row.get("effects") != "unknown"
+        ):
+            issues.append(f"{path}:{index}: invalid BenchFlow timeout terminalization")
+    if not timeout_complete:
+        issues.append(f"{path}: missing complete terminal timeout event")
+    return issues
+
+
+def is_normal_timeout_result(result: dict[str, Any]) -> bool:
+    info = result.get("agent_timeout_info")
+    return bool(
+        isinstance(info, dict)
+        and info.get("reason") == "wall_clock_timeout"
+        and info.get("terminal_event_recorded") is True
+        and info.get("terminal_trajectory_complete") is True
+        and result.get("error_category") == "timeout"
+        and bool(result.get("error"))
+        and result.get("partial_trajectory") is False
+        and result.get("trajectory_source") == "acp"
+        and result.get("verifier_error") is None
+    )
+
+
 def validate_llm(
     rows: list[dict[str, Any]], path: Path
 ) -> tuple[list[str], dict[str, Any]]:
@@ -606,6 +640,7 @@ def validate_results_row(
 
     if native_subscription_without_llm:
         expected_reason = "missing_healthy_structured_llm_trajectory"
+        normal_timeout = is_normal_timeout_result(result)
         if training_ready is not False:
             issues.append(
                 f"{row_path}: native subscription row must not be training-ready"
@@ -614,13 +649,22 @@ def validate_results_row(
             issues.append(
                 f"{row_path}: native subscription row has unexpected training_ready_reason"
             )
-        if row_error is not None:
-            issues.append(f"{row_path}: native subscription row carries non-null error")
-        if row.get("is_completed") is not True:
-            issues.append(f"{row_path}: native subscription row is not completed")
+        if normal_timeout:
+            if row_error is None:
+                issues.append(f"{row_path}: normal timeout row lacks error payload")
+            if row.get("is_completed") is not False:
+                issues.append(f"{row_path}: normal timeout row is completed")
+        else:
+            if row_error is not None:
+                issues.append(
+                    f"{row_path}: native subscription row carries non-null error"
+                )
+            if row.get("is_completed") is not True:
+                issues.append(f"{row_path}: native subscription row is not completed")
         if row.get("is_truncated") is not False:
             issues.append(f"{row_path}: native subscription row is truncated")
-        if row.get("stop_condition") != "agent_completed":
+        expected_stop = "agent_error" if normal_timeout else "agent_completed"
+        if row.get("stop_condition") != expected_stop:
             issues.append(
                 f"{row_path}: native subscription row has unexpected stop_condition"
             )
@@ -900,6 +944,8 @@ def validate_rollout(
         acp_rows, acp_issues = read_jsonl(acp_path)
         issues.extend(acp_issues)
         issues.extend(validate_acp(acp_rows, acp_path))
+        if is_normal_timeout_result(result):
+            issues.extend(validate_terminal_timeout(acp_rows, acp_path))
         artifact_summary["acp_events"] = len(acp_rows)
 
     if oracle_without_llm:

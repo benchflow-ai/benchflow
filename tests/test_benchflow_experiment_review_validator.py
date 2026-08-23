@@ -478,6 +478,82 @@ def test_validator_accepts_explicit_native_subscription_mode(tmp_path: Path) -> 
     assert any("native subscription rollout" in item for item in native["warnings"])
 
 
+def _native_subscription_timeout_rollout(tmp_path: Path) -> Path:
+    rollout = _native_subscription_rollout(tmp_path)
+    result = json.loads((rollout / "result.json").read_text())
+    result.update(
+        {
+            "error": "Agent prompt exceeded wall-clock budget 45s",
+            "error_category": "timeout",
+            "partial_trajectory": False,
+            "trajectory_source": "acp",
+            "verifier_error": None,
+            "agent_timeout_info": {
+                "reason": "wall_clock_timeout",
+                "terminal_event_recorded": True,
+                "terminal_trajectory_complete": True,
+            },
+        }
+    )
+    (rollout / "result.json").write_text(json.dumps(result))
+    _write_jsonl(
+        rollout / "trajectory" / "acp_trajectory.jsonl",
+        [
+            {
+                "type": "tool_call",
+                "status": "cancelled",
+                "effects": "unknown",
+                "terminal_source": "benchflow",
+            },
+            {"type": "agent_timeout", "terminal_trajectory_complete": True},
+        ],
+    )
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row.update(
+        {
+            "error": {"error": "agent_error"},
+            "is_completed": False,
+            "stop_condition": "agent_error",
+        }
+    )
+    _write_jsonl(rollout / "results.jsonl", [row])
+    return rollout
+
+
+def test_validator_accepts_complete_native_subscription_timeout(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1050: complete native timeouts are countable, not trainable."""
+    validator = _load_validator()
+    rollout = _native_subscription_timeout_rollout(tmp_path)
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is True
+
+
+def test_validator_rejects_pending_native_subscription_timeout(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1050: timeout evidence must terminalize every tool."""
+    validator = _load_validator()
+    rollout = _native_subscription_timeout_rollout(tmp_path)
+    rows = [
+        {"type": "tool_call", "status": "in_progress"},
+        {"type": "agent_timeout", "terminal_trajectory_complete": True},
+    ]
+    _write_jsonl(rollout / "trajectory" / "acp_trajectory.jsonl", rows)
+
+    report = validator.validate_rollout(
+        rollout, allow_native_subscription_without_llm=True
+    )
+
+    assert report["healthy"] is False
+    assert any("pending tool" in issue for issue in report["issues"])
+
+
 def test_validator_native_mode_rejects_wrong_usage_source(tmp_path: Path) -> None:
     """Guards this PR against widening subscription mode to other runs."""
     validator = _load_validator()
