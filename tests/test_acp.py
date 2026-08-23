@@ -833,7 +833,7 @@ class TestACPInterleaving:
 class TestACPIdleWatchdog:
     @pytest.mark.asyncio
     async def test_idle_timeout_requests_graceful_acp_cancel(self, monkeypatch) -> None:
-        """Guards PR #1050 follow-up: idle timeout drains ACP cancellation."""
+        """Guards PR #1051: idle timeout drains ACP cancellation."""
         from types import SimpleNamespace
 
         from benchflow.acp import runtime
@@ -1167,7 +1167,7 @@ class TestIdleTimeoutDiagnostics:
     async def test_noncooperative_acp_cancel_preserves_partial_timeout(
         self, monkeypatch
     ) -> None:
-        """Guards PR #1050 follow-up: hard-cancel fallback stays partial."""
+        """Guards PR #1051: hard-cancel fallback stays partial."""
         from benchflow.acp import runtime
         from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
 

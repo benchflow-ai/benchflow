@@ -98,7 +98,7 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
 async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
     tmp_path, monkeypatch
 ):
-    """Guards PR #1050 follow-up: cancelled prompt usage reaches result state."""
+    """Guards PR #1051: cancelled prompt usage reaches result state."""
     from benchflow.acp import runtime
     from benchflow.acp.session import ACPSession
     from benchflow.acp.types import StopReason
