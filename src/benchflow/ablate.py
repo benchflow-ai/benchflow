@@ -271,13 +271,30 @@ def _split_arm_specs(spec: str) -> list[str]:
     A ``config:`` arm may carry inline JSON (``config:{"agent": {"a": 1,
     "b": 2}}``) whose commas are content, not separators. Depth counting over
     ``{}``/``[]`` keeps every historical spec splitting exactly as before —
-    no other arm kind can contain a brace.
+    no other arm kind can contain a brace. Inside a JSON string literal,
+    braces, brackets and commas are content too, so the walk tracks quote
+    state (with ``\\``-escape handling) and ignores structure until the
+    string closes. Commas in a ``config:@<path>`` file path remain
+    unrepresentable — that grammar limit is documented on ``--arms``.
     """
     parts: list[str] = []
     current: list[str] = []
     depth = 0
+    in_string = False
+    escaped = False
     for char in spec:
-        if char in "{[":
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            current.append(char)
+            continue
+        if char == '"' and depth > 0:
+            in_string = True
+        elif char in "{[":
             depth += 1
         elif char in "}]":
             depth = max(0, depth - 1)
