@@ -105,12 +105,6 @@ _LIVE_CAPTURE_INTERVAL_SEC = 1.0
 # frozen-but-plausible token count.
 _LIVE_CAPTURE_STALL_WARN_TICKS = 30
 
-# Agents that cannot make model calls through LiteLLM. ``oracle`` has no model
-# at all. ``fx`` speaks the Vercel AI SDK gateway wire protocol
-# (/v3/ai/language-model), which the proxy does not expose.
-# Gemini is routable through LiteLLM's native Google GenerateContent
-# endpoints; keeping it behind the proxy is required for no-web reviewer runs.
-_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "fx"})
 # Providers whose mandatory LiteLLM proxy runs inside the sandbox. Keeping this
 # placement policy in the canonical provider registry prevents a new backend from
 # accidentally handing an in-sandbox agent a host-loopback endpoint.
@@ -648,8 +642,16 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
 
 
 def needs_litellm_runtime(agent: str, model: str | None) -> bool:
-    """True when an agent/model pair should be routed through LiteLLM."""
-    return bool(model) and agent not in _NATIVE_PROTOCOL_AGENTS
+    """True when an agent/model pair should be routed through LiteLLM.
+
+    ``oracle`` has no model; ``native_protocol`` agents speak a wire protocol
+    the proxy does not expose. Gemini stays behind the proxy (LiteLLM's native
+    GenerateContent endpoints) — required for no-web reviewer runs.
+    """
+    if not model or agent == "oracle":
+        return False
+    cfg = AGENTS.get(agent)
+    return cfg is None or not cfg.native_protocol
 
 
 def _find_free_port() -> int:
@@ -1643,8 +1645,11 @@ async def ensure_litellm_runtime(
     whether the proxy runs — it only governs whether trusted telemetry is
     *required* (``required`` fails closed when usage cannot be captured at all).
     The only agents that skip the proxy are those that physically cannot be
-    routed through it: ``oracle`` (no model) and native-subscription auth (no
-    API key to proxy). Gemini uses LiteLLM's native GenerateContent endpoints.
+    routed through it: ``oracle`` (no model), native-subscription auth (no
+    API key to proxy), and ``native_protocol`` agents (wire protocol the proxy
+    does not expose; raw key reaches the agent, usage is ACP-reported only,
+    ``required`` usage tracking fails closed). Gemini uses LiteLLM's native
+    GenerateContent endpoints.
     """
     # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
     # upstream routing or credentials. Restore controller-held source config.
