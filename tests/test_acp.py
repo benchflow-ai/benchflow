@@ -832,15 +832,67 @@ class TestACPInterleaving:
 
 class TestACPIdleWatchdog:
     @pytest.mark.asyncio
+    async def test_idle_timeout_requests_graceful_acp_cancel(self, monkeypatch) -> None:
+        """Guards PR #1050 follow-up: idle timeout drains ACP cancellation."""
+        from types import SimpleNamespace
+
+        from benchflow.acp import runtime
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.1)
+        session = ACPSession("graceful-idle-session")
+
+        class GracefulClient:
+            def __init__(self) -> None:
+                self.cancelled = asyncio.Event()
+                self.cancel_calls = 0
+
+            async def prompt(self, _prompt: str):
+                await self.cancelled.wait()
+                session.record_prompt_usage(
+                    SimpleNamespace(
+                        input_tokens=11,
+                        output_tokens=3,
+                        total_tokens=14,
+                    )
+                )
+                return SimpleNamespace(stop_reason=StopReason.CANCELLED)
+
+            async def cancel(self) -> None:
+                self.cancel_calls += 1
+                self.cancelled.set()
+
+        client = GracefulClient()
+        with pytest.raises(IdleTimeoutError):
+            await execute_prompts(
+                client,  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=30,
+                idle_timeout=1,
+            )
+
+        assert client.cancel_calls == 1
+        assert session.latest_usage_totals() == {
+            "input_tokens": 11,
+            "output_tokens": 3,
+            "total_tokens": 14,
+            "cached_read_tokens": None,
+            "cached_write_tokens": None,
+            "thought_tokens": None,
+        }
+
+    @pytest.mark.asyncio
     async def test_idle_watchdog_returns_even_when_prompt_cancel_drain_stalls(
-        self,
+        self, monkeypatch
     ) -> None:
         """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain.
 
-        When the idle watchdog fires it cancels the prompt task and drains it.
-        A non-cooperative agent — here one that swallows the cancellation and
-        blocks on an event that never arrives — must not be able to wedge the
-        watchdog: it bounds the drain and raises ``IdleTimeoutError`` anyway.
+        When the idle watchdog fires it requests ACP cancellation, then
+        hard-cancels and drains the prompt task if the agent does not respond.
+        A non-cooperative agent — here one that ignores the ACP request, swallows
+        local cancellation, and blocks on an event that never arrives — must not
+        wedge the watchdog: it bounds the drain and raises ``IdleTimeoutError``.
 
         Determinism: this asserts the *behaviour* (idle error raised; the stuck
         prompt task abandoned while still pending) rather than a wall-clock upper
@@ -850,7 +902,10 @@ class TestACPIdleWatchdog:
         load can never trip it, while a regression to an unbounded drain hangs
         past it and fails.
         """
+        from benchflow.acp import runtime
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.05)
 
         # release is never set while the watchdog runs, so the prompt task stays
         # wedged in its cancellation handler — exactly the stuck-drain scenario.
@@ -867,11 +922,14 @@ class TestACPIdleWatchdog:
                     await self.release.wait()
                     raise
 
+            async def cancel(self) -> None:
+                pass
+
         client = StubbornPromptClient()
         session = ACPSession("idle-session")
 
-        # Loose hang guard: ~4x the real runtime (1s idle detect + 0.25s bounded
-        # drain). Not a tight assertion — it only catches a true hang/regression.
+        # Loose hang guard: far above 1s idle detect + bounded graceful/hard
+        # drains. Not a tight assertion — it only catches a true hang/regression.
         hang_guard_sec = 5.0
 
         try:
@@ -1104,6 +1162,49 @@ class TestIdleTimeoutDiagnostics:
             "agent_timeout",
         ]
         assert exc_info.value.trajectory[1]["status"] == ToolCallStatus.PENDING.value
+
+    @pytest.mark.asyncio
+    async def test_noncooperative_acp_cancel_preserves_partial_timeout(
+        self, monkeypatch
+    ) -> None:
+        """Guards PR #1050 follow-up: hard-cancel fallback stays partial."""
+        from benchflow.acp import runtime
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.01)
+        session = ACPSession("noncooperative-wall-clock-session")
+
+        class NoncooperativeClient:
+            def __init__(self) -> None:
+                self.cancel_calls = 0
+
+            async def prompt(self, _prompt: str):
+                session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stuck",
+                        "title": "stuck command",
+                        "kind": "bash",
+                    }
+                )
+                await asyncio.Future()
+
+            async def cancel(self) -> None:
+                self.cancel_calls += 1
+
+        client = NoncooperativeClient()
+        with pytest.raises(AgentPromptTimeoutError) as exc_info:
+            await execute_prompts(
+                client,  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=0.01,  # type: ignore[arg-type]
+                idle_timeout=None,
+            )
+
+        assert client.cancel_calls == 1
+        assert exc_info.value.terminal_trajectory_complete is False
+        assert exc_info.value.diagnostic.pending_tool_call_ids == ["tc_stuck"]
 
 
 class TestAcpHandshakeTimeout:

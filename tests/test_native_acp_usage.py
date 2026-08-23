@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -91,6 +92,74 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
         "price_source": None,
         "usage_details": {"thought_tokens": 3},
     }
+
+
+@pytest.mark.asyncio
+async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
+    tmp_path, monkeypatch
+):
+    """Guards PR #1050 follow-up: cancelled prompt usage reaches result state."""
+    from benchflow.acp import runtime
+    from benchflow.acp.session import ACPSession
+    from benchflow.acp.types import StopReason
+    from benchflow.diagnostics import AgentPromptTimeoutError
+    from benchflow.rollout import Rollout, RolloutConfig, Scene
+
+    monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.1)
+    session = ACPSession("rollout-timeout-session")
+
+    class GracefulClient:
+        def __init__(self) -> None:
+            self.cancelled = asyncio.Event()
+
+        async def prompt(self, _prompt: str):
+            session.handle_update(
+                {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc_cancelled",
+                    "title": "long command",
+                    "kind": "bash",
+                }
+            )
+            await self.cancelled.wait()
+            session.handle_update(
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc_cancelled",
+                    "status": "cancelled",
+                }
+            )
+            session.record_prompt_usage(
+                SimpleNamespace(
+                    input_tokens=17,
+                    output_tokens=5,
+                    total_tokens=22,
+                )
+            )
+            return SimpleNamespace(stop_reason=StopReason.CANCELLED)
+
+        async def cancel(self) -> None:
+            self.cancelled.set()
+
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            scenes=[Scene.single(agent="dummy")],
+            agent_idle_timeout=None,
+        )
+    )
+    rollout._acp_client = GracefulClient()
+    rollout._session = session
+    rollout._timeout = 0.01
+
+    with pytest.raises(AgentPromptTimeoutError) as exc_info:
+        await rollout.execute(["solve"])
+
+    assert exc_info.value.terminal_trajectory_complete is True
+    assert rollout._partial_trajectory is False
+    assert rollout._trajectory_source == "acp"
+    assert rollout._native_usage_metrics["usage_source"] == "agent_native_acp"
+    assert rollout._native_usage_metrics["total_tokens"] == 22
 
 
 def test_rollout_provider_usage_wins_over_native_acp_usage():
