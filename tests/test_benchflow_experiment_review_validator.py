@@ -195,6 +195,35 @@ def test_validator_accepts_structural_separate_verifier_actions(tmp_path: Path) 
     }
 
 
+def test_validator_does_not_require_sidecar_for_undeclared_default(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1050: undeclared verifier defaults continue on main in audit."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    benchguard = rollout / "benchguard"
+    benchguard.mkdir()
+    (benchguard / "preflight.json").write_text(
+        json.dumps(
+            {
+                "report": {
+                    "task_binding": {
+                        "facts": {
+                            "verifier_environment_mode": "separate",
+                            "verifier_environment_mode_declared": False,
+                        },
+                    }
+                }
+            }
+        )
+    )
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert "separate_verifier" not in report["artifacts"]
+
+
 def test_validator_recognizes_legacy_separate_verifier_waiver(tmp_path: Path) -> None:
     """Guards PR #1049 follow-up for runs predating structured preflight facts."""
     validator = _load_validator()

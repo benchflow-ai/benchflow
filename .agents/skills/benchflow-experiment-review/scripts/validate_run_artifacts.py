@@ -821,8 +821,12 @@ def separate_verifier_declared(root: Path) -> bool:
     report = preflight.get("report") if isinstance(preflight, dict) else None
     task_binding = report.get("task_binding") if isinstance(report, dict) else None
     facts = task_binding.get("facts") if isinstance(task_binding, dict) else None
-    if isinstance(facts, dict) and facts.get("verifier_environment_mode") == "separate":
-        return True
+    if (
+        isinstance(task_binding, dict)
+        and isinstance(facts, dict)
+        and facts.get("verifier_environment_mode") == "separate"
+    ):
+        return facts.get("verifier_environment_mode_declared") is not False
 
     waivers, _ = read_json(root / "benchguard" / "runtime_capability_waivers.json")
     rows = waivers.get("waived", []) if isinstance(waivers, dict) else []
