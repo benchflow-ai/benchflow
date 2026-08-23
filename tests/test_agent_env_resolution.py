@@ -128,5 +128,22 @@ class TestResolveAgentEnvGemini:
         assert result["GEMINI_API_KEY"] == "explicit"
 
 
+class TestResolveAgentEnvFx:
+    def test_vendor_named_gateway_model_uses_gateway_key(self, monkeypatch, tmp_path):
+        """Guards PR #1053: vercel/ models authenticate fx via AI_GATEWAY_API_KEY."""
+        _clear_keys(monkeypatch)
+        _patch_no_subscription(monkeypatch, tmp_path)
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(tmp_path / "no.env"))
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "vck-test")
+
+        result = resolve_agent_env(
+            agent="fx",
+            model="vercel/anthropic/claude-sonnet-4.5",
+            agent_env=None,
+        )
+        assert result["AI_GATEWAY_API_KEY"] == "vck-test"
+        assert result["FX_MODEL"] == "anthropic/claude-sonnet-4.5"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])
