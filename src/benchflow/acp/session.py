@@ -304,6 +304,7 @@ class ACPSession:
     def record_agent_timeout(
         self,
         *,
+        reason: str = "wall_clock_timeout",
         timeout_sec: float,
         pending_tool_call_ids: list[str],
         terminal_trajectory_complete: bool,
@@ -314,7 +315,7 @@ class ACPSession:
         self.events.append(
             {
                 "type": "agent_timeout",
-                "reason": "wall_clock_timeout",
+                "reason": reason,
                 "timeout_sec": timeout_sec,
                 "pending_tool_call_ids": list(pending_tool_call_ids),
                 "terminal_trajectory_complete": terminal_trajectory_complete,

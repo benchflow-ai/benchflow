@@ -46,10 +46,9 @@ class AgentPromptTimeoutError(TimeoutError):
     """BenchFlow-owned prompt wall-clock timeout with captured ACP state.
 
     This is distinct from provider/client ``TimeoutError`` exceptions. It is
-    raised only when BenchFlow's prompt budget expires and the ACP prompt task
-    can be cancelled/drained cleanly enough to snapshot the session. The
-    attached diagnostic says whether that snapshot is a complete terminal
-    timeout trajectory or still has pending tool calls and must remain partial.
+    raised only when BenchFlow's prompt budget expires. The attached diagnostic
+    says whether the cancellation produced a complete terminal trajectory or
+    left pending tool calls and must remain partial.
     """
 
     def __init__(
@@ -357,14 +356,26 @@ DIAGNOSTIC_BY_FIELD: dict[str, type[Diagnostic]] = {
 class IdleTimeoutError(TimeoutError):
     """Raised by the idle watchdog when the agent stops producing activity.
 
-    Carries an :class:`IdleTimeoutDiagnostic` instance via ``.diagnostic`` —
-    serialize via ``exc.diagnostic.to_dict()`` to recover the result.json
-    payload (issue #503).
+    Carries an :class:`IdleTimeoutDiagnostic` plus the cancellation-time ACP
+    snapshot used to preserve terminal updates and native usage (PR #1051).
     """
 
-    def __init__(self, message: str, diagnostic: IdleTimeoutDiagnostic) -> None:
+    def __init__(
+        self,
+        message: str,
+        diagnostic: IdleTimeoutDiagnostic,
+        *,
+        trajectory: list[dict] | None = None,
+        n_tool_calls: int = 0,
+        terminal_trajectory_complete: bool = False,
+        executed_prompts: list[str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.diagnostic: IdleTimeoutDiagnostic = diagnostic
+        self.trajectory = trajectory or []
+        self.n_tool_calls = n_tool_calls
+        self.terminal_trajectory_complete = terminal_trajectory_complete
+        self.executed_prompts = executed_prompts or []
 
 
 class TransportClosedError(ConnectionError):

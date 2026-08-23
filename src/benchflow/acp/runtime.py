@@ -725,7 +725,7 @@ async def execute_prompts(
                 prompt_result = await _prompt_with_wall_clock_budget(
                     acp_client, session, prompt, timeout
                 )
-            except AgentPromptTimeoutError as e:
+            except (AgentPromptTimeoutError, IdleTimeoutError) as e:
                 e.executed_prompts = prompts[: i + 1]
                 raise
         else:
@@ -733,7 +733,7 @@ async def execute_prompts(
                 prompt_result = await _prompt_with_idle_watchdog(
                     acp_client, session, prompt, timeout, idle_timeout
                 )
-            except AgentPromptTimeoutError as e:
+            except (AgentPromptTimeoutError, IdleTimeoutError) as e:
                 e.executed_prompts = prompts[: i + 1]
                 raise
         session.mark_prompt_end()
@@ -777,16 +777,18 @@ async def _request_cancel_and_drain_prompt_task(
     """Ask the ACP agent to stop, then hard-cancel if it does not respond."""
     if prompt_task.done():
         return True
+    deadline = asyncio.get_running_loop().time() + _PROMPT_CANCEL_GRACE_TIMEOUT_SEC
     try:
-        await acp_client.cancel()
+        await asyncio.wait_for(
+            acp_client.cancel(), timeout=_PROMPT_CANCEL_GRACE_TIMEOUT_SEC
+        )
     except Exception:
         logger.warning(
             "ACP session/cancel failed; hard-cancelling prompt", exc_info=True
         )
     else:
-        done, _pending = await asyncio.wait(
-            {prompt_task}, timeout=_PROMPT_CANCEL_GRACE_TIMEOUT_SEC
-        )
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        done, _pending = await asyncio.wait({prompt_task}, timeout=remaining)
         if done:
             with contextlib.suppress(BaseException):
                 prompt_task.result()
@@ -818,6 +820,28 @@ def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutErro
         f"Agent prompt exceeded wall-clock budget {timeout}s",
         trajectory=_capture_session_trajectory(session),
         diagnostic=diagnostic,
+    )
+
+
+def _idle_timeout_error(session, diagnostic: IdleTimeoutDiagnostic) -> IdleTimeoutError:
+    session.mark_prompt_end()
+    pending_tool_call_ids = session.pending_tool_call_ids()
+    terminal_complete = not pending_tool_call_ids
+    session.record_agent_timeout(
+        reason="idle_timeout",
+        timeout_sec=float(diagnostic.idle_timeout_sec),
+        pending_tool_call_ids=pending_tool_call_ids,
+        terminal_trajectory_complete=terminal_complete,
+    )
+    return IdleTimeoutError(
+        f"Agent idle for {diagnostic.idle_timeout_sec}s with no new tool call, "
+        f"message, or thought "
+        f"(last activity {diagnostic.idle_duration_sec}s ago, "
+        f"{len(session.tool_calls)} tool calls so far)",
+        diagnostic,
+        trajectory=_capture_session_trajectory(session),
+        n_tool_calls=len(session.tool_calls),
+        terminal_trajectory_complete=terminal_complete,
     )
 
 
@@ -919,13 +943,7 @@ async def _prompt_with_idle_watchdog(
                 )
                 await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
                 cleanup_attempted = True
-                raise IdleTimeoutError(
-                    f"Agent idle for {idle_timeout}s with no new tool call, "
-                    f"message, or thought "
-                    f"(last activity {int(now - last_progress)}s ago, "
-                    f"{len(session.tool_calls)} tool calls so far)",
-                    diag,
-                )
+                raise _idle_timeout_error(session, diag)
             if now > deadline:
                 await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
                 cleanup_attempted = True

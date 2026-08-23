@@ -863,7 +863,7 @@ class TestACPIdleWatchdog:
                 self.cancelled.set()
 
         client = GracefulClient()
-        with pytest.raises(IdleTimeoutError):
+        with pytest.raises(IdleTimeoutError) as exc_info:
             await execute_prompts(
                 client,  # type: ignore[arg-type]
                 session,
@@ -873,6 +873,15 @@ class TestACPIdleWatchdog:
             )
 
         assert client.cancel_calls == 1
+        assert exc_info.value.terminal_trajectory_complete is True
+        assert exc_info.value.executed_prompts == ["solve"]
+        assert exc_info.value.trajectory[-1] == {
+            "type": "agent_timeout",
+            "reason": "idle_timeout",
+            "timeout_sec": 1.0,
+            "pending_tool_call_ids": [],
+            "terminal_trajectory_complete": True,
+        }
         assert session.latest_usage_totals() == {
             "input_tokens": 11,
             "output_tokens": 3,

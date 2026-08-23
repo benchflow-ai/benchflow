@@ -89,6 +89,7 @@ from benchflow.contracts import (
 from benchflow.contracts import RoundResult as RoundResult
 from benchflow.diagnostics import (
     AgentPromptTimeoutError,
+    IdleTimeoutError,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
@@ -1615,7 +1616,7 @@ class Rollout:
                     timeout,
                     idle_timeout=idle_timeout,
                 )
-        except AgentPromptTimeoutError as e:
+        except (AgentPromptTimeoutError, IdleTimeoutError) as e:
             self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
                 trajectory=e.trajectory,
@@ -2069,17 +2070,15 @@ class Rollout:
         for 600s with no new tool call ...") when it raised one, falling
         back to the generic wall-clock message only when there's no detail.
 
-        A BenchFlow-owned wall-clock prompt timeout (``AgentPromptTimeoutError``)
-        that fired with no pending tool calls is a *clean terminal* timeout:
-        the trajectory is complete, not a rerunnable partial. Record that so
-        the partial-capture path leaves ``_partial_trajectory`` False (#640).
+        A BenchFlow-owned prompt timeout that ended with no pending tool calls
+        is a *clean terminal* timeout: the trajectory is complete, not a
+        rerunnable partial. Record that so partial capture leaves
+        ``_partial_trajectory`` False (#640, #1051).
         """
         detail = str(e).strip()
         self._error = detail or f"Agent timed out after {self._timeout}s"
         self._diagnostics.capture_idle(e)
-        if isinstance(e, AgentPromptTimeoutError) and getattr(
-            e, "terminal_trajectory_complete", False
-        ):
+        if getattr(e, "terminal_trajectory_complete", False):
             self._terminal_timeout = True
         logger.error(self._error)
 

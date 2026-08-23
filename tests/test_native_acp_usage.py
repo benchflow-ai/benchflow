@@ -95,14 +95,15 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_kind", ["wall", "idle"])
 async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, timeout_kind
 ):
-    """Guards PR #1051: cancelled prompt usage reaches result state."""
+    """Guards PR #1051: cancelled wall/idle usage reaches result state."""
     from benchflow.acp import runtime
     from benchflow.acp.session import ACPSession
     from benchflow.acp.types import StopReason
-    from benchflow.diagnostics import AgentPromptTimeoutError
+    from benchflow.diagnostics import AgentPromptTimeoutError, IdleTimeoutError
     from benchflow.rollout import Rollout, RolloutConfig, Scene
 
     monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.1)
@@ -113,22 +114,24 @@ async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
             self.cancelled = asyncio.Event()
 
         async def prompt(self, _prompt: str):
-            session.handle_update(
-                {
-                    "sessionUpdate": "tool_call",
-                    "toolCallId": "tc_cancelled",
-                    "title": "long command",
-                    "kind": "bash",
-                }
-            )
+            if timeout_kind == "wall":
+                session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_cancelled",
+                        "title": "long command",
+                        "kind": "bash",
+                    }
+                )
             await self.cancelled.wait()
-            session.handle_update(
-                {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "tc_cancelled",
-                    "status": "cancelled",
-                }
-            )
+            if timeout_kind == "wall":
+                session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc_cancelled",
+                        "status": "cancelled",
+                    }
+                )
             session.record_prompt_usage(
                 SimpleNamespace(
                     input_tokens=17,
@@ -145,19 +148,22 @@ async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
         RolloutConfig(
             task_path=tmp_path / "task",
             scenes=[Scene.single(agent="dummy")],
-            agent_idle_timeout=None,
+            agent_idle_timeout=1 if timeout_kind == "idle" else None,
         )
     )
     rollout._acp_client = GracefulClient()
     rollout._session = session
-    rollout._timeout = 0.01
+    rollout._timeout = 30 if timeout_kind == "idle" else 0.01
 
-    with pytest.raises(AgentPromptTimeoutError) as exc_info:
+    error_type = IdleTimeoutError if timeout_kind == "idle" else AgentPromptTimeoutError
+    with pytest.raises(error_type) as exc_info:
         await rollout.execute(["solve"])
 
     assert exc_info.value.terminal_trajectory_complete is True
     assert rollout._partial_trajectory is False
     assert rollout._trajectory_source == "acp"
+    expected_reason = "idle_timeout" if timeout_kind == "idle" else "wall_clock_timeout"
+    assert rollout._trajectory[-1]["reason"] == expected_reason
     assert rollout._native_usage_metrics["usage_source"] == "agent_native_acp"
     assert rollout._native_usage_metrics["total_tokens"] == 22
 
