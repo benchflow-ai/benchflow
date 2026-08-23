@@ -265,6 +265,33 @@ def test_config_arm_specs_map_onto_config_override_deltas(tmp_path: Path) -> Non
     assert provenance["config_override_keys"] == ["agent", "metadata"]
 
 
+def test_braces_and_commas_inside_quoted_json_strings_stay_content() -> None:
+    """The arm splitter tracks JSON string state, not just brace depth.
+
+    Guards the quote-aware ``_split_arm_specs`` fix for the review finding on
+    PR #1046: braces, brackets and commas inside a quoted inline-JSON string
+    value are content — ``{"metadata": {"note": "a{b,c]d"}}`` is one arm, and
+    an escaped quote (``\\"``) does not end the string. A bare quote at depth
+    zero (e.g. in an ``inject:`` path) keeps its historical literal meaning.
+    """
+    # The close-braces inside the string zero out a depth-only counter, so the
+    # comma right after them split the spec mid-JSON before the fix.
+    spooky = 'config:{"metadata": {"close": "}}", "note": "a{b,c]d", "quote": "say \\"hi\\", ok"}}'
+    arms = parse_arms(f"no-skill,{spooky}")
+    assert [arm.kind for arm in arms] == [ARM_KIND_SKILL_MODE, ARM_KIND_CONFIG]
+    assert arms[1].delta.config_override == {
+        "metadata": {"close": "}}", "note": "a{b,c]d", "quote": 'say "hi", ok'}
+    }
+
+    from benchflow.ablate import _split_arm_specs
+
+    # A bare quote at depth zero never opens a string: the comma still splits.
+    assert _split_arm_specs('inject:some"quoted.md,no-skill') == [
+        'inject:some"quoted.md',
+        "no-skill",
+    ]
+
+
 def test_malformed_config_arm_specs_fail_closed(tmp_path: Path) -> None:
     """An unparsable, empty, or scorer-touching config arm dies at parse time
     — before the parent run costs anything, exactly where the engine's own
