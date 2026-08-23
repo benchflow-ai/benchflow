@@ -21,6 +21,8 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,11 +68,63 @@ logger = logging.getLogger(__name__)
 
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
-_PROMPT_CANCEL_GRACE_TIMEOUT_SEC = 5.0
+_PROMPT_GRACEFUL_CANCEL_TIMEOUT_SEC = 5.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
 _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+_ACP_CANCEL_GRACE_TIMEOUT_DEFAULT_SEC = 60.0
+_ACP_CANCEL_GRACE_TIMEOUT_MIN_SEC = 1.0
+_ACP_CANCEL_GRACE_TIMEOUT_MAX_SEC = 300.0
+
+
+@dataclass(frozen=True)
+class _PromptCancelDrainResult:
+    requested_grace_sec: float
+    elapsed_grace_sec: float
+    prompt_completed: bool
+    tools_completed: bool
+
+
+def _log_cancel_drain(result: _PromptCancelDrainResult) -> _PromptCancelDrainResult:
+    logger.info(
+        "ACP cancellation drain: requested=%.2fs elapsed=%.2fs "
+        "prompt_completed=%s tools_completed=%s",
+        result.requested_grace_sec,
+        result.elapsed_grace_sec,
+        result.prompt_completed,
+        result.tools_completed,
+    )
+    return result
+
+
+def _prompt_response_completed(prompt_task: asyncio.Task) -> bool:
+    if not prompt_task.done() or prompt_task.cancelled():
+        return False
+    try:
+        prompt_task.result()
+    except BaseException:
+        return False
+    return True
+
+
+def _acp_cancel_grace_timeout_sec() -> float:
+    raw = os.environ.get("BENCHFLOW_ACP_CANCEL_GRACE_TIMEOUT")
+    if raw is None:
+        return _ACP_CANCEL_GRACE_TIMEOUT_DEFAULT_SEC
+    try:
+        timeout = float(raw)
+    except ValueError as e:
+        raise ValueError(
+            "BENCHFLOW_ACP_CANCEL_GRACE_TIMEOUT must be a number from 1 to 300"
+        ) from e
+    if not (
+        _ACP_CANCEL_GRACE_TIMEOUT_MIN_SEC
+        <= timeout
+        <= _ACP_CANCEL_GRACE_TIMEOUT_MAX_SEC
+    ):
+        raise ValueError("BENCHFLOW_ACP_CANCEL_GRACE_TIMEOUT must be from 1 to 300")
+    return timeout
 
 
 def _acp_handshake_timeout_sec() -> float:
@@ -771,43 +825,91 @@ async def _cancel_and_drain_prompt_task(prompt_task: asyncio.Task) -> bool:
     return False
 
 
-async def _request_cancel_and_drain_prompt_task(
-    acp_client: ACPClient, prompt_task: asyncio.Task
-) -> bool:
-    """Ask the ACP agent to stop, then hard-cancel if it does not respond."""
-    if prompt_task.done():
-        return True
-    deadline = asyncio.get_running_loop().time() + _PROMPT_CANCEL_GRACE_TIMEOUT_SEC
+async def _gracefully_cancel_prompt_task(
+    acp_client: ACPClient, session, prompt_task: asyncio.Task
+) -> _PromptCancelDrainResult:
+    """Ask ACP to cancel, then preserve only genuine terminal updates."""
+    grace = _acp_cancel_grace_timeout_sec()
+    loop = asyncio.get_running_loop()
+    pending_at_cancel = set(session.pending_tool_call_ids())
+    if prompt_task.done() and not pending_at_cancel:
+        return _log_cancel_drain(
+            _PromptCancelDrainResult(
+                grace, 0.0, _prompt_response_completed(prompt_task), True
+            )
+        )
+
+    cancel = getattr(acp_client, "cancel", None)
+    if not callable(cancel):
+        await _cancel_and_drain_prompt_task(prompt_task)
+        return _log_cancel_drain(
+            _PromptCancelDrainResult(
+                grace,
+                0.0,
+                False,
+                not pending_at_cancel.intersection(session.pending_tool_call_ids()),
+            )
+        )
     try:
-        await asyncio.wait_for(
-            acp_client.cancel(), timeout=_PROMPT_CANCEL_GRACE_TIMEOUT_SEC
+        await asyncio.wait_for(cancel(), timeout=_PROMPT_GRACEFUL_CANCEL_TIMEOUT_SEC)
+    except Exception as e:
+        logger.warning("ACP session cancellation failed: %s", e)
+        await _cancel_and_drain_prompt_task(prompt_task)
+        return _log_cancel_drain(
+            _PromptCancelDrainResult(
+                grace,
+                0.0,
+                False,
+                not pending_at_cancel.intersection(session.pending_tool_call_ids()),
+            )
         )
-    except Exception:
-        logger.warning(
-            "ACP session/cancel failed; hard-cancelling prompt", exc_info=True
+
+    drain_started = loop.time()
+    deadline = drain_started + grace
+    if not prompt_task.done():
+        remaining = max(0.0, deadline - loop.time())
+        await asyncio.wait({prompt_task}, timeout=remaining)
+
+    prompt_completed = _prompt_response_completed(prompt_task)
+
+    tools_completed = not pending_at_cancel.intersection(
+        session.pending_tool_call_ids()
+    )
+    drain = getattr(acp_client, "drain_tool_call_updates", None)
+    if prompt_completed and not tools_completed and callable(drain):
+        remaining = max(0.0, deadline - loop.time())
+        if remaining:
+            tools_completed = await drain(pending_at_cancel, remaining)
+
+    elapsed = loop.time() - drain_started
+    if not (prompt_completed and tools_completed):
+        await _cancel_and_drain_prompt_task(prompt_task)
+    return _log_cancel_drain(
+        _PromptCancelDrainResult(
+            requested_grace_sec=grace,
+            elapsed_grace_sec=elapsed,
+            prompt_completed=prompt_completed,
+            tools_completed=tools_completed,
         )
-    else:
-        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
-        done, _pending = await asyncio.wait({prompt_task}, timeout=remaining)
-        if done:
-            with contextlib.suppress(BaseException):
-                prompt_task.result()
-            return True
-        logger.warning(
-            "ACP prompt did not finish within %.2fs after session/cancel",
-            _PROMPT_CANCEL_GRACE_TIMEOUT_SEC,
-        )
-    return await _cancel_and_drain_prompt_task(prompt_task)
+    )
 
 
-def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutError:
+def _agent_prompt_timeout_error(
+    session, timeout: int, drain: _PromptCancelDrainResult
+) -> AgentPromptTimeoutError:
     session.mark_prompt_end()
     pending_tool_call_ids = session.pending_tool_call_ids()
-    terminal_complete = not pending_tool_call_ids
+    terminal_complete = (
+        drain.prompt_completed and drain.tools_completed and not pending_tool_call_ids
+    )
     session.record_agent_timeout(
         timeout_sec=float(timeout),
         pending_tool_call_ids=pending_tool_call_ids,
         terminal_trajectory_complete=terminal_complete,
+        cancel_grace_requested_sec=drain.requested_grace_sec,
+        cancel_grace_elapsed_sec=drain.elapsed_grace_sec,
+        cancel_prompt_completed=drain.prompt_completed,
+        cancel_tools_completed=drain.tools_completed,
     )
     diagnostic = AgentPromptTimeoutDiagnostic(
         timeout_sec=float(timeout),
@@ -815,6 +917,10 @@ def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutErro
         pending_tool_call_ids=pending_tool_call_ids,
         terminal_event_recorded=True,
         terminal_trajectory_complete=terminal_complete,
+        cancel_grace_requested_sec=drain.requested_grace_sec,
+        cancel_grace_elapsed_sec=drain.elapsed_grace_sec,
+        cancel_prompt_completed=drain.prompt_completed,
+        cancel_tools_completed=drain.tools_completed,
     )
     return AgentPromptTimeoutError(
         f"Agent prompt exceeded wall-clock budget {timeout}s",
@@ -823,15 +929,25 @@ def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutErro
     )
 
 
-def _idle_timeout_error(session, diagnostic: IdleTimeoutDiagnostic) -> IdleTimeoutError:
+def _idle_timeout_error(
+    session,
+    diagnostic: IdleTimeoutDiagnostic,
+    drain: _PromptCancelDrainResult,
+) -> IdleTimeoutError:
     session.mark_prompt_end()
     pending_tool_call_ids = session.pending_tool_call_ids()
-    terminal_complete = not pending_tool_call_ids
+    terminal_complete = (
+        drain.prompt_completed and drain.tools_completed and not pending_tool_call_ids
+    )
     session.record_agent_timeout(
         reason="idle_timeout",
         timeout_sec=float(diagnostic.idle_timeout_sec),
         pending_tool_call_ids=pending_tool_call_ids,
         terminal_trajectory_complete=terminal_complete,
+        cancel_grace_requested_sec=drain.requested_grace_sec,
+        cancel_grace_elapsed_sec=drain.elapsed_grace_sec,
+        cancel_prompt_completed=drain.prompt_completed,
+        cancel_tools_completed=drain.tools_completed,
     )
     return IdleTimeoutError(
         f"Agent idle for {diagnostic.idle_timeout_sec}s with no new tool call, "
@@ -858,9 +974,9 @@ async def _prompt_with_wall_clock_budget(
         done, _pending = await asyncio.wait({prompt_task}, timeout=timeout)
         if done:
             return prompt_task.result()
-        await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
+        drain = await _gracefully_cancel_prompt_task(acp_client, session, prompt_task)
         cleanup_attempted = True
-        raise _agent_prompt_timeout_error(session, timeout)
+        raise _agent_prompt_timeout_error(session, timeout, drain)
     finally:
         if not prompt_task.done() and not cleanup_attempted:
             await _cancel_and_drain_prompt_task(prompt_task)
@@ -934,8 +1050,9 @@ async def _prompt_with_idle_watchdog(
             if now - last_progress >= idle_timeout:
                 idle_duration_sec = int(now - last_progress)
                 wall_clock_elapsed_sec = int(now - (deadline - timeout))
-                last_activity_at_iso = last_activity_at.isoformat()
-                await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
+                drain = await _gracefully_cancel_prompt_task(
+                    acp_client, session, prompt_task
+                )
                 cleanup_attempted = True
                 diag = IdleTimeoutDiagnostic(
                     idle_timeout_sec=idle_timeout,
@@ -944,13 +1061,19 @@ async def _prompt_with_idle_watchdog(
                     n_tool_calls=len(session.tool_calls),
                     n_message_chunks=len(session.message_chunks),
                     n_thought_chunks=len(session.thought_chunks),
-                    last_activity_at=last_activity_at_iso,
+                    last_activity_at=last_activity_at.isoformat(),
+                    cancel_grace_requested_sec=drain.requested_grace_sec,
+                    cancel_grace_elapsed_sec=drain.elapsed_grace_sec,
+                    cancel_prompt_completed=drain.prompt_completed,
+                    cancel_tools_completed=drain.tools_completed,
                 )
-                raise _idle_timeout_error(session, diag)
+                raise _idle_timeout_error(session, diag, drain)
             if now > deadline:
-                await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
+                drain = await _gracefully_cancel_prompt_task(
+                    acp_client, session, prompt_task
+                )
                 cleanup_attempted = True
-                raise _agent_prompt_timeout_error(session, timeout)
+                raise _agent_prompt_timeout_error(session, timeout, drain)
 
         return prompt_task.result()
     finally:

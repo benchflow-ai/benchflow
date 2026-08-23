@@ -83,17 +83,21 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
             out.append({"type": event["type"], "text": event["text"]})
         elif event["type"] == "agent_timeout":
-            out.append(
-                {
-                    "type": "agent_timeout",
-                    "reason": event["reason"],
-                    "timeout_sec": event["timeout_sec"],
-                    "pending_tool_call_ids": event["pending_tool_call_ids"],
-                    "terminal_trajectory_complete": event[
-                        "terminal_trajectory_complete"
-                    ],
-                }
+            row = {
+                "type": "agent_timeout",
+                "reason": event["reason"],
+                "timeout_sec": event["timeout_sec"],
+                "pending_tool_call_ids": event["pending_tool_call_ids"],
+                "terminal_trajectory_complete": event["terminal_trajectory_complete"],
+            }
+            cancellation_keys = (
+                "cancel_grace_requested_sec",
+                "cancel_grace_elapsed_sec",
+                "cancel_prompt_completed",
+                "cancel_tools_completed",
             )
+            row.update({key: event[key] for key in cancellation_keys if key in event})
+            out.append(row)
     return out
 
 

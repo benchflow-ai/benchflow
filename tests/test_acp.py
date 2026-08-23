@@ -829,6 +829,63 @@ class TestACPInterleaving:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
+    async def test_drain_processes_delayed_genuine_tool_terminal(self) -> None:
+        """Guards PR #1051: post-response drain consumes real ACP terminal update."""
+
+        class DelayedTerminalTransport:
+            async def receive(self) -> dict:
+                await asyncio.sleep(0)
+                return {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_delayed",
+                            "status": "cancelled",
+                        }
+                    },
+                }
+
+        session = ACPSession("genuine-drain")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_delayed",
+                "title": "long command",
+                "kind": "bash",
+            }
+        )
+        client = ACPClient(DelayedTerminalTransport())  # type: ignore[arg-type]
+        client._session = session
+
+        assert await client.drain_tool_call_updates({"tc_delayed"}, 0.1) is True
+        assert session.tool_calls[0].status == ToolCallStatus.CANCELLED
+
+    @pytest.mark.asyncio
+    async def test_drain_fails_closed_on_transport_error(self) -> None:
+        """Guards PR #1051: broken post-response transport remains partial."""
+
+        class BrokenTransport:
+            async def receive(self) -> dict:
+                raise RuntimeError("transport closed")
+
+        session = ACPSession("broken-drain")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_pending",
+                "title": "long command",
+                "kind": "bash",
+            }
+        )
+        client = ACPClient(BrokenTransport())  # type: ignore[arg-type]
+        client._session = session
+
+        assert await client.drain_tool_call_updates({"tc_pending"}, 0.1) is False
+        assert session.pending_tool_call_ids() == ["tc_pending"]
+
 
 class TestACPIdleWatchdog:
     @pytest.mark.asyncio
@@ -839,7 +896,7 @@ class TestACPIdleWatchdog:
         from benchflow.acp import runtime
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
-        monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.1)
+        monkeypatch.setattr(runtime, "_acp_cancel_grace_timeout_sec", lambda: 0.1)
         session = ACPSession("graceful-idle-session")
 
         class GracefulClient:
@@ -881,6 +938,10 @@ class TestACPIdleWatchdog:
             "timeout_sec": 1.0,
             "pending_tool_call_ids": [],
             "terminal_trajectory_complete": True,
+            "cancel_grace_requested_sec": 0.1,
+            "cancel_grace_elapsed_sec": pytest.approx(0.0, abs=0.1),
+            "cancel_prompt_completed": True,
+            "cancel_tools_completed": True,
         }
         assert session.latest_usage_totals() == {
             "input_tokens": 11,
@@ -914,7 +975,7 @@ class TestACPIdleWatchdog:
         from benchflow.acp import runtime
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
-        monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.05)
+        monkeypatch.setattr(runtime, "_acp_cancel_grace_timeout_sec", lambda: 0.05)
 
         # release is never set while the watchdog runs, so the prompt task stays
         # wedged in its cancellation handler — exactly the stuck-drain scenario.
@@ -1103,7 +1164,7 @@ class TestIdleTimeoutDiagnostics:
 
     @pytest.mark.asyncio
     async def test_wall_clock_timeout_records_terminal_diagnostic(self) -> None:
-        """Wall-clock timeouts record runner-owned terminal timeout evidence."""
+        """Guards PR #1051: hard-cancel fallback records partial timeout evidence."""
         from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
         from benchflow.diagnostics import AgentPromptTimeoutDiagnostic
 
@@ -1125,13 +1186,15 @@ class TestIdleTimeoutDiagnostics:
         assert isinstance(exc_info.value.diagnostic, AgentPromptTimeoutDiagnostic)
         assert exc_info.value.diagnostic.timeout_sec == 2
         assert exc_info.value.diagnostic.pending_tool_call_ids == []
-        assert exc_info.value.terminal_trajectory_complete is True
+        assert exc_info.value.diagnostic.cancel_prompt_completed is False
+        assert exc_info.value.diagnostic.cancel_tools_completed is True
+        assert exc_info.value.terminal_trajectory_complete is False
         assert exc_info.value.n_tool_calls == 1
         assert [event["type"] for event in exc_info.value.trajectory] == [
             "user_message",
             "agent_timeout",
         ]
-        assert exc_info.value.trajectory[-1]["terminal_trajectory_complete"] is True
+        assert exc_info.value.trajectory[-1]["terminal_trajectory_complete"] is False
 
     @pytest.mark.asyncio
     async def test_wall_clock_timeout_with_pending_tool_stays_partial(self) -> None:
@@ -1180,7 +1243,7 @@ class TestIdleTimeoutDiagnostics:
         from benchflow.acp import runtime
         from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
 
-        monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.01)
+        monkeypatch.setattr(runtime, "_acp_cancel_grace_timeout_sec", lambda: 0.01)
         session = ACPSession("noncooperative-wall-clock-session")
 
         class NoncooperativeClient:
@@ -1214,6 +1277,199 @@ class TestIdleTimeoutDiagnostics:
         assert client.cancel_calls == 1
         assert exc_info.value.terminal_trajectory_complete is False
         assert exc_info.value.diagnostic.pending_tool_call_ids == ["tc_stuck"]
+
+    @pytest.mark.asyncio
+    async def test_wall_timeout_drains_tool_terminal_after_prompt_response(
+        self, monkeypatch
+    ) -> None:
+        """Guards PR #1051: PromptResponse cannot outrun genuine tool terminal update."""
+        from types import SimpleNamespace
+
+        import benchflow.acp.runtime as runtime
+
+        monkeypatch.setattr(runtime, "_acp_cancel_grace_timeout_sec", lambda: 0.1)
+        session = ACPSession("response-before-tool-terminal")
+
+        class DelayedTerminalClient:
+            def __init__(self) -> None:
+                self.cancelled = asyncio.Event()
+                self.prompt_returned = asyncio.Event()
+
+            async def prompt(self, _prompt: str):
+                session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_delayed",
+                        "title": "long command",
+                        "kind": "bash",
+                    }
+                )
+                await self.cancelled.wait()
+                session.record_prompt_usage({"totalTokens": 11})
+                self.prompt_returned.set()
+                return SimpleNamespace(stop_reason="cancelled")
+
+            async def cancel(self) -> None:
+                self.cancelled.set()
+
+            async def drain_tool_call_updates(
+                self, tool_call_ids: set[str], timeout: float
+            ) -> bool:
+                assert self.prompt_returned.is_set()
+                assert tool_call_ids == {"tc_delayed"}
+                assert timeout > 0
+                await asyncio.sleep(0)
+                session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc_delayed",
+                        "status": "cancelled",
+                    }
+                )
+                return True
+
+        with pytest.raises(runtime.AgentPromptTimeoutError) as exc_info:
+            await runtime.execute_prompts(
+                DelayedTerminalClient(),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=0.01,  # type: ignore[arg-type]
+                idle_timeout=None,
+            )
+
+        assert session.tool_calls[0].status == ToolCallStatus.CANCELLED
+        assert exc_info.value.terminal_trajectory_complete is True
+        assert exc_info.value.diagnostic.cancel_prompt_completed is True
+        assert exc_info.value.diagnostic.cancel_tools_completed is True
+        assert session.latest_usage_totals() is not None
+        assert session.latest_usage_totals()["total_tokens"] == 11
+
+    @pytest.mark.asyncio
+    async def test_exceptional_prompt_is_not_a_completed_response(self) -> None:
+        """Guards PR #1051: failed prompt task cannot certify terminal timeout."""
+        import benchflow.acp.runtime as runtime
+
+        session = ACPSession("exceptional-prompt")
+
+        class ExceptionalClient:
+            def __init__(self) -> None:
+                self.cancelled = asyncio.Event()
+
+            async def prompt(self, _prompt: str):
+                await self.cancelled.wait()
+                raise RuntimeError("no PromptResponse")
+
+            async def cancel(self) -> None:
+                self.cancelled.set()
+
+        with pytest.raises(runtime.AgentPromptTimeoutError) as exc_info:
+            await runtime.execute_prompts(
+                ExceptionalClient(),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=0.01,  # type: ignore[arg-type]
+                idle_timeout=None,
+            )
+
+        assert exc_info.value.terminal_trajectory_complete is False
+        assert exc_info.value.diagnostic.cancel_prompt_completed is False
+        assert exc_info.value.diagnostic.cancel_tools_completed is True
+
+    @pytest.mark.asyncio
+    async def test_cancel_send_is_independently_bounded(self, monkeypatch) -> None:
+        """Guards PR #1051: session/cancel send cannot consume drain grace."""
+        import benchflow.acp.runtime as runtime
+
+        monkeypatch.setattr(runtime, "_PROMPT_GRACEFUL_CANCEL_TIMEOUT_SEC", 0.01)
+        session = ACPSession("stuck-cancel-send")
+
+        class StuckCancelClient:
+            async def prompt(self, _prompt: str):
+                await asyncio.Future()
+
+            async def cancel(self) -> None:
+                await asyncio.Future()
+
+        with pytest.raises(runtime.AgentPromptTimeoutError) as exc_info:
+            await runtime.execute_prompts(
+                StuckCancelClient(),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=0.01,  # type: ignore[arg-type]
+                idle_timeout=None,
+            )
+
+        assert exc_info.value.terminal_trajectory_complete is False
+        assert exc_info.value.diagnostic.cancel_grace_elapsed_sec == 0.0
+        assert exc_info.value.diagnostic.cancel_prompt_completed is False
+
+    @pytest.mark.parametrize(
+        "value",
+        ["bad", "0", "0.99", "301"],
+    )
+    def test_cancel_grace_timeout_rejects_invalid_env(
+        self, monkeypatch, value: str
+    ) -> None:
+        """Guards PR #1051: ACP cancel grace accepts only 1..300 seconds."""
+        import benchflow.acp.runtime as runtime
+
+        monkeypatch.setenv("BENCHFLOW_ACP_CANCEL_GRACE_TIMEOUT", value)
+        with pytest.raises(ValueError, match="must be"):
+            runtime._acp_cancel_grace_timeout_sec()
+
+    def test_cancel_grace_timeout_accepts_bounds(self, monkeypatch) -> None:
+        """Guards PR #1051: ACP cancel grace includes documented bounds."""
+        import benchflow.acp.runtime as runtime
+
+        monkeypatch.setenv("BENCHFLOW_ACP_CANCEL_GRACE_TIMEOUT", "1")
+        assert runtime._acp_cancel_grace_timeout_sec() == 1.0
+        monkeypatch.setenv("BENCHFLOW_ACP_CANCEL_GRACE_TIMEOUT", "300")
+        assert runtime._acp_cancel_grace_timeout_sec() == 300.0
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_timeout_hard_cancels_unresponsive_acp_prompt(
+        self, monkeypatch
+    ) -> None:
+        """Guards PR #1051: unresponsive ACP cancellation stays bounded and partial."""
+        import benchflow.acp.runtime as runtime
+
+        monkeypatch.setattr(runtime, "_PROMPT_GRACEFUL_CANCEL_TIMEOUT_SEC", 0.01)
+        monkeypatch.setattr(runtime, "_acp_cancel_grace_timeout_sec", lambda: 0.01)
+
+        class UnresponsiveClient:
+            def __init__(self, session: ACPSession) -> None:
+                self._session = session
+                self.cancel_called = False
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_pending",
+                        "title": "stuck command",
+                        "kind": "bash",
+                    }
+                )
+                await asyncio.Future()
+
+            async def cancel(self) -> None:
+                self.cancel_called = True
+
+        session = ACPSession("unresponsive-wall-clock-session")
+        client = UnresponsiveClient(session)
+        with pytest.raises(runtime.AgentPromptTimeoutError) as exc_info:
+            await runtime.execute_prompts(
+                client,  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=0.01,  # type: ignore[arg-type]
+                idle_timeout=None,
+            )
+
+        assert client.cancel_called is True
+        assert exc_info.value.terminal_trajectory_complete is False
+        assert exc_info.value.diagnostic.pending_tool_call_ids == ["tc_pending"]
+        assert session.latest_usage_totals() is None
 
 
 class TestAcpHandshakeTimeout:

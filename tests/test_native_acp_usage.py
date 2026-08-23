@@ -106,7 +106,7 @@ async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
     from benchflow.diagnostics import AgentPromptTimeoutError, IdleTimeoutError
     from benchflow.rollout import Rollout, RolloutConfig, Scene
 
-    monkeypatch.setattr(runtime, "_PROMPT_CANCEL_GRACE_TIMEOUT_SEC", 0.1)
+    monkeypatch.setattr(runtime, "_acp_cancel_grace_timeout_sec", lambda: 0.1)
     session = ACPSession("rollout-timeout-session")
 
     class GracefulClient:

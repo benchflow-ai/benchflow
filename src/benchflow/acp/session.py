@@ -308,19 +308,31 @@ class ACPSession:
         timeout_sec: float,
         pending_tool_call_ids: list[str],
         terminal_trajectory_complete: bool,
+        cancel_grace_requested_sec: float | None = None,
+        cancel_grace_elapsed_sec: float | None = None,
+        cancel_prompt_completed: bool | None = None,
+        cancel_tools_completed: bool | None = None,
     ) -> None:
         """Append BenchFlow's terminal timeout marker to the ACP event stream."""
         self._events_active = True
         self._flush_agent_text()
-        self.events.append(
-            {
-                "type": "agent_timeout",
-                "reason": reason,
-                "timeout_sec": timeout_sec,
-                "pending_tool_call_ids": list(pending_tool_call_ids),
-                "terminal_trajectory_complete": terminal_trajectory_complete,
-            }
+        event: dict[str, object] = {
+            "type": "agent_timeout",
+            "reason": reason,
+            "timeout_sec": timeout_sec,
+            "pending_tool_call_ids": list(pending_tool_call_ids),
+            "terminal_trajectory_complete": terminal_trajectory_complete,
+        }
+        cancellation = {
+            "cancel_grace_requested_sec": cancel_grace_requested_sec,
+            "cancel_grace_elapsed_sec": cancel_grace_elapsed_sec,
+            "cancel_prompt_completed": cancel_prompt_completed,
+            "cancel_tools_completed": cancel_tools_completed,
+        }
+        event.update(
+            {key: value for key, value in cancellation.items() if value is not None}
         )
+        self.events.append(event)
         self._notify_change()
 
     def record_prompt_usage(self, usage: object | None) -> None:

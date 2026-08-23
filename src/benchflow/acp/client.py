@@ -1,5 +1,6 @@
 """ACP client — benchflow acts as the client, agents are ACP servers."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -413,6 +414,46 @@ class ACPClient:
             await self._send_notification(
                 "session/cancel", {"sessionId": self._session.session_id}
             )
+
+    async def drain_tool_call_updates(
+        self, tool_call_ids: set[str], timeout: float
+    ) -> bool:
+        """Process genuine ACP updates until selected tool calls are terminal.
+
+        This is used only after ``session/prompt`` has returned, so no other
+        coroutine owns the transport reader. It deliberately does not invent
+        terminal updates when an agent stops without sending them.
+        """
+        if not self._session:
+            return not tool_call_ids
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while tool_call_ids.intersection(self._session.pending_tool_call_ids()):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+
+            async def _receive_and_dispatch() -> None:
+                msg = await self._transport.receive()
+                if "method" in msg and "id" not in msg:
+                    await self._handle_notification(msg)
+                elif "method" in msg and "id" in msg:
+                    await self._handle_agent_request(msg)
+                else:
+                    logger.debug("ACPClient ignoring message while draining: %s", msg)
+
+            try:
+                await asyncio.wait_for(_receive_and_dispatch(), timeout=remaining)
+            except TimeoutError:
+                return False
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("ACP update drain failed: %s", e)
+                return False
+
+        return True
 
     @property
     def session(self) -> ACPSession | None:

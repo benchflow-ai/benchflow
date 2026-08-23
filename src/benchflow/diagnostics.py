@@ -131,6 +131,10 @@ class IdleTimeoutDiagnostic(Diagnostic):
     n_message_chunks: int = 0
     n_thought_chunks: int = 0
     last_activity_at: str = ""
+    cancel_grace_requested_sec: float | None = None
+    cancel_grace_elapsed_sec: float | None = None
+    cancel_prompt_completed: bool | None = None
+    cancel_tools_completed: bool | None = None
 
     field: ClassVar[str] = "idle_timeout_info"
     category: ClassVar[str | None] = "idle_timeout"
@@ -155,6 +159,10 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
     pending_tool_call_ids: list[str] = field(default_factory=list)
     terminal_event_recorded: bool = False
     terminal_trajectory_complete: bool = False
+    cancel_grace_requested_sec: float | None = None
+    cancel_grace_elapsed_sec: float | None = None
+    cancel_prompt_completed: bool | None = None
+    cancel_tools_completed: bool | None = None
 
     field: ClassVar[str] = "agent_timeout_info"
     category: ClassVar[str | None] = "timeout"
