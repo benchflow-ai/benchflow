@@ -106,9 +106,11 @@ _LIVE_CAPTURE_INTERVAL_SEC = 1.0
 _LIVE_CAPTURE_STALL_WARN_TICKS = 30
 
 # Agents that cannot make model calls through LiteLLM. ``oracle`` has no model
-# at all. Gemini is routable through LiteLLM's native Google GenerateContent
+# at all. ``fx`` speaks the Vercel AI SDK gateway wire protocol
+# (/v3/ai/language-model), which the proxy does not expose.
+# Gemini is routable through LiteLLM's native Google GenerateContent
 # endpoints; keeping it behind the proxy is required for no-web reviewer runs.
-_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle"})
+_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "fx"})
 # Providers whose mandatory LiteLLM proxy runs inside the sandbox. Keeping this
 # placement policy in the canonical provider registry prevents a new backend from
 # accidentally handing an in-sandbox agent a host-loopback endpoint.
