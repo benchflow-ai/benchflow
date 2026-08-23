@@ -53,6 +53,7 @@ class _FakeHostServer:
     [
         ("gemini", "gemini-3.5-flash", True),
         ("oracle", "openai/gpt-4.1-mini", False),
+        ("fx", "vercel/anthropic/claude-sonnet-4.5", False),
         ("openhands", "gemini-3.5-flash", True),
         ("codex-acp", "openai/gpt-4.1-mini", True),
         ("openhands", None, False),
