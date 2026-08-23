@@ -97,8 +97,13 @@ async def test_timeout_terminalization_reaches_verifier_after_process_death(
     rollout._trajectory_source = "partial_acp"
     rollout._partial_trajectory = True
     rollout._terminal_timeout = False
-    rollout._acp_client = SimpleNamespace(session=session)
+    rollout._acp_client = SimpleNamespace(session=session, close=AsyncMock())
+    rollout._session = session
+    rollout._session_adapter = None
+    rollout._is_session_factory = False
     rollout._session_traj_count = len(rollout._trajectory)
+    rollout._session_tool_count = 1
+    rollout._n_tool_calls = 1
     rollout._diagnostics = diagnostics
     rollout._env = env
     rollout._rollout_paths = paths
@@ -111,7 +116,12 @@ async def test_timeout_terminalization_reaches_verifier_after_process_death(
     rollout._timing = {}
     rollout._planes = planes
     rollout._agent_cwd = "/app"
+    rollout._agent_launch = "claude-agent-acp"
+    rollout._active_role = "agent"
+    rollout._phase = "executed"
 
+    await rollout.disconnect()
+    assert rollout._acp_client is None
     assert await rollout.verify() == {"reward": 1.0}
     assert order == ["processes-dead", "verifier"]
     assert rollout._partial_trajectory is False

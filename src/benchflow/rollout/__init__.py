@@ -1512,22 +1512,31 @@ class Rollout:
             logger.warning(f"Partial trajectory capture failed: {e}")
             return
         delta = captured[getattr(self, "_session_traj_count", 0) :]
-        if not delta:
-            return
-        self._trajectory.extend(delta)
-        self._session_traj_count = len(captured)
-        if getattr(self, "_terminal_timeout", False):
-            # Clean wall-clock terminal timeout (#640): the captured tail is the
-            # complete trajectory, so leave _partial_trajectory False.
-            self._trajectory_source = "acp"
-        else:
-            self._partial_trajectory = True
-            self._trajectory_source = "partial_acp"
-        prior_session_tools = getattr(self, "_session_tool_count", 0)
-        new_tools = len(session.tool_calls) - prior_session_tools
-        if new_tools > 0:
-            self._n_tool_calls += new_tools
-        self._session_tool_count = len(session.tool_calls)
+        if delta:
+            self._trajectory.extend(delta)
+            self._session_traj_count = len(captured)
+            if getattr(self, "_terminal_timeout", False):
+                # Clean wall-clock terminal timeout (#640): the captured tail is the
+                # complete trajectory, so leave _partial_trajectory False.
+                self._trajectory_source = "acp"
+            else:
+                self._partial_trajectory = True
+                self._trajectory_source = "partial_acp"
+            prior_session_tools = getattr(self, "_session_tool_count", 0)
+            new_tools = len(session.tool_calls) - prior_session_tools
+            if new_tools > 0:
+                self._n_tool_calls += new_tools
+            self._session_tool_count = len(session.tool_calls)
+
+        diagnostics = getattr(self, "_diagnostics", None)
+        timeout_diagnostic = (
+            diagnostics.get("agent_timeout_info") if diagnostics is not None else None
+        )
+        if timeout_diagnostic is not None and session.pending_tool_call_ids():
+            self._timeout_terminalization_session = session
+            self._timeout_session_trajectory_start = len(self._trajectory) - len(
+                captured
+            )
 
     def _capture_partial_session_factory_trajectory(self) -> None:
         """Session-factory analogue of :meth:`_capture_partial_acp_trajectory`.
@@ -1840,9 +1849,9 @@ class Rollout:
                 )
 
         timeout_diagnostic = self._diagnostics.get("agent_timeout_info")
-        session = (
-            getattr(self._acp_client, "session", None) if self._acp_client else None
-        )
+        session = getattr(self, "_timeout_terminalization_session", None)
+        if session is None and self._acp_client:
+            session = getattr(self._acp_client, "session", None)
         pending_timeout = bool(
             session is not None
             and timeout_diagnostic is not None
@@ -1859,13 +1868,18 @@ class Rollout:
                     assert isinstance(timeout_diagnostic, AgentPromptTimeoutDiagnostic)
                     timeout_diagnostic.terminal_trajectory_complete = True
                     captured = _capture_session_trajectory(session)
-                    session_start = len(self._trajectory) - self._session_traj_count
+                    session_start = getattr(
+                        self,
+                        "_timeout_session_trajectory_start",
+                        len(self._trajectory) - self._session_traj_count,
+                    )
                     if session_start < 0:
                         raise RuntimeError(
                             "ACP trajectory cursor exceeds committed trajectory"
                         )
                     self._trajectory[session_start:] = captured
                     self._session_traj_count = len(captured)
+                    self._timeout_terminalization_session = None
             await _publish_trajectory_for_verifier(
                 self._env, self._trajectory, self._rollout_paths.agent_dir
             )
