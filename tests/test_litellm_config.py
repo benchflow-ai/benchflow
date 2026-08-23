@@ -179,6 +179,18 @@ def test_openrouter_route_uses_openai_compatible_endpoint():
     assert route.required_env == ("OPENROUTER_API_KEY",)
 
 
+def test_vercel_route_uses_openai_compatible_endpoint():
+    route = resolve_litellm_route(
+        "vercel/anthropic/claude-sonnet-4.5",
+        {"AI_GATEWAY_API_KEY": "vck-test"},
+    )
+
+    assert route.upstream_model == "openai/anthropic/claude-sonnet-4.5"
+    assert route.litellm_params["api_base"] == "https://ai-gateway.vercel.sh/v1"
+    assert route.litellm_params["api_key"] == "os.environ/AI_GATEWAY_API_KEY"
+    assert route.required_env == ("AI_GATEWAY_API_KEY",)
+
+
 def test_proxy_config_registers_plain_and_openai_aliases():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",
