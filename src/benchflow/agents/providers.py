@@ -218,11 +218,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENROUTER_API_KEY",
     ),
-    # Vercel AI Gateway exposes hosted models behind one AI_GATEWAY_API_KEY:
-    # OpenAI-compatible completions/responses under /v1, plus an Anthropic
-    # Messages surface at the root (clients append /v1/messages themselves).
-    # Model ids keep the gateway's creator/model form, so callers write
-    # vercel/<creator>/<model> (e.g. vercel/anthropic/claude-sonnet-4.5).
+    # Vercel AI Gateway: OpenAI-compatible endpoints under /v1; the Anthropic
+    # Messages surface sits at the root (clients append /v1/messages). Model ids
+    # keep the gateway's creator/model form: vercel/anthropic/claude-sonnet-4.5.
     "vercel": ProviderConfig(
         name="vercel",
         base_url="https://ai-gateway.vercel.sh/v1",
