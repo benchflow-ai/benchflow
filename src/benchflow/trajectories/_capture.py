@@ -70,16 +70,19 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     for event in events:
         if event["type"] == "tool_call":
             tc = event["record"]
-            out.append(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tc.tool_call_id,
-                    "kind": tc.kind,
-                    "title": tc.title,
-                    "status": tc.status.value,
-                    "content": tc.content,
-                }
-            )
+            row = {
+                "type": "tool_call",
+                "tool_call_id": tc.tool_call_id,
+                "kind": tc.kind,
+                "title": tc.title,
+                "status": tc.status.value,
+                "content": tc.content,
+            }
+            if tc.effects is not None:
+                row["effects"] = tc.effects
+            if tc.terminal_source is not None:
+                row["terminal_source"] = tc.terminal_source
+            out.append(row)
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
             out.append({"type": event["type"], "text": event["text"]})
         elif event["type"] == "agent_timeout":

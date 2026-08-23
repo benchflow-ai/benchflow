@@ -88,6 +88,7 @@ from benchflow.contracts import (
 )
 from benchflow.contracts import RoundResult as RoundResult
 from benchflow.diagnostics import (
+    AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutError,
     ProviderApiErrorDiagnostic,
@@ -1838,9 +1839,41 @@ class Rollout:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
-        await _publish_trajectory_for_verifier(
-            self._env, self._trajectory, self._rollout_paths.agent_dir
+        timeout_diagnostic = self._diagnostics.get("agent_timeout_info")
+        session = (
+            getattr(self._acp_client, "session", None) if self._acp_client else None
         )
+        pending_timeout = bool(
+            session is not None
+            and timeout_diagnostic is not None
+            and session.pending_tool_call_ids()
+        )
+
+        async def _publish_quiesced_timeout_trajectory() -> None:
+            if session is not None:
+                terminalized = session.terminalize_pending_tools_after_process_death()
+                if terminalized:
+                    self._terminal_timeout = True
+                    self._partial_trajectory = False
+                    self._trajectory_source = "acp"
+                    assert isinstance(timeout_diagnostic, AgentPromptTimeoutDiagnostic)
+                    timeout_diagnostic.terminal_trajectory_complete = True
+                    captured = _capture_session_trajectory(session)
+                    session_start = len(self._trajectory) - self._session_traj_count
+                    if session_start < 0:
+                        raise RuntimeError(
+                            "ACP trajectory cursor exceeds committed trajectory"
+                        )
+                    self._trajectory[session_start:] = captured
+                    self._session_traj_count = len(captured)
+            await _publish_trajectory_for_verifier(
+                self._env, self._trajectory, self._rollout_paths.agent_dir
+            )
+
+        if not pending_timeout:
+            await _publish_trajectory_for_verifier(
+                self._env, self._trajectory, self._rollout_paths.agent_dir
+            )
 
         (
             self._rewards,
@@ -1854,6 +1887,9 @@ class Rollout:
             self._planes,
             sandbox_user=cfg.sandbox_user,
             workspace=self._agent_cwd,
+            after_agent_quiesced=(
+                _publish_quiesced_timeout_trajectory if pending_timeout else None
+            ),
         )
         if verifier_timeout_diag is not None:
             self._diagnostics.set(verifier_timeout_diag)

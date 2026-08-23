@@ -28,7 +28,7 @@ import os
 import re
 import shlex
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -456,6 +456,7 @@ async def _verify_rollout(
     planes: RolloutPlanes,
     sandbox_user: str | None = None,
     workspace: str | None = None,
+    after_agent_quiesced: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
     """Run verifier with pre-verification hardening.
 
@@ -469,7 +470,32 @@ async def _verify_rollout(
     verifier_timeout: VerifierTimeoutDiagnostic | None = None
     timeout_budget = task.config.verifier.timeout_sec
     try:
-        await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
+        if after_agent_quiesced is not None and not sandbox_user:
+            raise RuntimeError(
+                "Cannot publish terminal timeout evidence without a sandbox user "
+                "for process-death proof"
+            )
+        callback_ran = False
+
+        async def _after_agent_quiesced() -> None:
+            nonlocal callback_ran
+            if callback_ran:
+                return
+            callback_ran = True
+            if after_agent_quiesced is not None:
+                await after_agent_quiesced()
+
+        await planes.harden_before_verify(
+            env,
+            task,
+            sandbox_user,
+            workspace=workspace,
+            after_agent_quiesced=_after_agent_quiesced,
+        )
+        if after_agent_quiesced is not None and not callback_ran:
+            raise RuntimeError(
+                "Verifier hardening did not prove agent process-tree death"
+            )
         logger.info("Running verifier...")
         verifier = planes.verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
         verifier_result = None

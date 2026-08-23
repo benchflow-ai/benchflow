@@ -106,7 +106,6 @@ class TestTrajectoryWriter:
         snap = _read_jsonl(traj_path)
         assert [e["type"] for e in snap] == ["user_message", "tool_call"]
         assert snap[1]["status"] == ToolCallStatus.PENDING.value
-
         session.handle_update(
             {
                 "sessionUpdate": "tool_call_update",
@@ -196,6 +195,34 @@ class TestTrajectoryWriter:
         )
         snapshot = _read_jsonl(traj_path)
         assert snapshot == [{"type": "oracle", "command": "solve.sh", "return_code": 0}]
+
+
+class TestTimeoutTerminalization:
+    def test_process_death_terminalizes_pending_tool_fail_closed(self) -> None:
+        """Guards PR #1051's framework-owned timeout terminalization."""
+        session = ACPSession("timeout")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_pending",
+                "title": "long command",
+                "kind": "bash",
+            }
+        )
+        session.record_agent_timeout(
+            timeout_sec=1800.0,
+            pending_tool_call_ids=["tc_pending"],
+            terminal_trajectory_complete=False,
+        )
+
+        assert session.terminalize_pending_tools_after_process_death() == ["tc_pending"]
+        trajectory = _capture_session_trajectory(session)
+        tool = trajectory[0]
+        assert tool["status"] == "cancelled"
+        assert tool["effects"] == "unknown"
+        assert tool["terminal_source"] == "benchflow"
+        assert trajectory[1]["terminal_trajectory_complete"] is True
+        assert session.pending_tool_call_ids() == []
 
 
 class TestMultiSceneCumulativeStreaming:

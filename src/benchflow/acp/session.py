@@ -162,6 +162,8 @@ class ToolCallRecord:
         self.kind = kind
         self.status = ToolCallStatus.PENDING
         self.content: list[dict] = []
+        self.effects: str | None = None
+        self.terminal_source: str | None = None
         self.started_at = datetime.now()
         self.finished_at: datetime | None = None
 
@@ -334,6 +336,27 @@ class ACPSession:
         )
         self.events.append(event)
         self._notify_change()
+
+    def terminalize_pending_tools_after_process_death(self) -> list[str]:
+        """Close pending tools after BenchFlow proves agent processes are dead.
+
+        Guards PR #1051: this is framework-owned cancellation, not an
+        adapter-reported outcome, and command effects remain unknown.
+        """
+        terminalized = self.pending_tool_call_ids()
+        if not terminalized:
+            return []
+        for tool_call_id in terminalized:
+            record = self._tool_call_map[tool_call_id]
+            record.effects = "unknown"
+            record.terminal_source = "benchflow"
+            record.update_status(ToolCallStatus.CANCELLED)
+        for event in reversed(self.events):
+            if event.get("type") == "agent_timeout":
+                event["terminal_trajectory_complete"] = True
+                break
+        self._notify_change()
+        return terminalized
 
     def record_prompt_usage(self, usage: object | None) -> None:
         """Record cumulative ACP token usage returned by session/prompt."""

@@ -68,6 +68,27 @@ def _make_task(user=None):
     return task
 
 
+@pytest.mark.asyncio
+async def test_process_kill_requires_zero_survivors() -> None:
+    """Guards PR #1051: verifier cannot start without process-death proof."""
+    from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
+
+    env = _make_env(
+        side_effect=[
+            MagicMock(stdout="", stderr="", exit_code=0),
+            MagicMock(stdout="", stderr="", exit_code=0),
+            MagicMock(stdout="", stderr="survivor", exit_code=1),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="processes remain after kill"):
+        await _kill_sandbox_user_procs(env, "benchflow")
+
+    proof = env.exec.call_args_list[-1]
+    assert "! pgrep -u benchflow" in proof.args[0]
+    assert proof.kwargs["user"] == "root"
+
+
 def _snapshot_side_effect(present: frozenset = frozenset()) -> list:
     """Build side_effect list for _snapshot_build_config: mkdir -> per-file probes -> manifest write.
 

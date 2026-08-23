@@ -1048,16 +1048,23 @@ def _purge_pycache_cmd(workspace: str) -> str:
 
 
 async def _kill_sandbox_user_procs(env, sandbox_user: str) -> None:
-    """Kill sandbox-user processes so none write during verifier teardown."""
+    """Kill sandbox-user processes and prove none remain."""
+    user = shlex.quote(sandbox_user)
     await env.exec(
-        f"pkill -u {sandbox_user} 2>/dev/null; "
-        f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
+        f"pkill -u {user} 2>/dev/null; sleep 1; pkill -9 -u {user} 2>/dev/null || true",
+        user="root",
         timeout_sec=10,
     )
     # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
     await env.exec(
-        f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
-        f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
+        f"! pgrep -u {user} > /dev/null 2>&1 || "
+        f"(sleep 1 && pkill -9 -u {user}; sleep 1)",
+        user="root",
+    )
+    await _checked_exec(
+        env,
+        f"! pgrep -u {user} > /dev/null 2>&1",
+        "Verifier hardening failed: sandbox-user processes remain after kill",
         user="root",
     )
 
@@ -1175,6 +1182,7 @@ async def harden_before_verify(
     # contract, e.g. task config [verifier] restore_workspace = true after an
     # oracle/diff audit proves the answer is not stored in the workspace.
     restore_workspace: bool = False,
+    after_agent_quiesced=None,
 ) -> None:
     """Neutralize agent tampering before running the verifier.
 
@@ -1199,6 +1207,8 @@ async def harden_before_verify(
     # 1. Kill sandbox-user processes (prevent concurrent writes during teardown).
     if sandbox_user:
         await _kill_sandbox_user_procs(env, sandbox_user)
+        if after_agent_quiesced is not None:
+            await after_agent_quiesced()
     # 2. Wipe /logs/verifier/ contents while preserving remote bind mounts, then
     #    prepare the legacy /app rootdir fallback.
     await _checked_exec(

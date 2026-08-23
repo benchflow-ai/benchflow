@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,131 @@ from benchflow.trajectories.types import (
     LLMResponse,
     Trajectory,
 )
+
+
+@pytest.mark.asyncio
+async def test_timeout_terminalization_reaches_verifier_after_process_death(
+    tmp_path,
+) -> None:
+    """Guards PR #1051: verifier sees terminal evidence only after proof."""
+    from benchflow.acp.session import ACPSession
+    from benchflow.diagnostics import (
+        AgentPromptTimeoutDiagnostic,
+        RolloutDiagnostics,
+    )
+    from benchflow.rollout import Rollout
+    from benchflow.task import RolloutPaths
+    from benchflow.trajectories._capture import _capture_session_trajectory
+
+    session = ACPSession("timeout")
+    session.handle_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc_pending",
+            "title": "long command",
+            "kind": "bash",
+        }
+    )
+    session.record_agent_timeout(
+        timeout_sec=1800.0,
+        pending_tool_call_ids=["tc_pending"],
+        terminal_trajectory_complete=False,
+    )
+    diagnostics = RolloutDiagnostics()
+    diagnostics.set(
+        AgentPromptTimeoutDiagnostic(
+            timeout_sec=1800.0,
+            pending_tool_call_ids=["tc_pending"],
+            terminal_event_recorded=True,
+        )
+    )
+    paths = RolloutPaths(tmp_path / "rollout")
+    order: list[str] = []
+
+    async def harden(*_args, **kwargs) -> None:
+        order.append("processes-dead")
+        await kwargs["after_agent_quiesced"]()
+
+    async def verify():
+        order.append("verifier")
+        rows = [
+            json.loads(line)
+            for line in (paths.agent_dir / "acp_trajectory.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        assert rows[0]["status"] == "cancelled"
+        assert rows[0]["effects"] == "unknown"
+        assert rows[0]["terminal_source"] == "benchflow"
+        return SimpleNamespace(rewards={"reward": 1.0})
+
+    planes = MagicMock()
+    planes.harden_before_verify = AsyncMock(side_effect=harden)
+    planes.verifier.return_value.verify = verify
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    env.upload_file = AsyncMock()
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = SimpleNamespace(
+        primary_agent="claude-agent-acp", sandbox_user="agent"
+    )
+    rollout._trajectory = _capture_session_trajectory(session)
+    rollout._trajectory_source = "partial_acp"
+    rollout._partial_trajectory = True
+    rollout._terminal_timeout = False
+    rollout._acp_client = SimpleNamespace(session=session)
+    rollout._session_traj_count = len(rollout._trajectory)
+    rollout._diagnostics = diagnostics
+    rollout._env = env
+    rollout._rollout_paths = paths
+    rollout._task = SimpleNamespace(
+        name="timeout-task",
+        config=SimpleNamespace(
+            verifier=SimpleNamespace(timeout_sec=10, reward_range=None)
+        ),
+    )
+    rollout._timing = {}
+    rollout._planes = planes
+    rollout._agent_cwd = "/app"
+
+    assert await rollout.verify() == {"reward": 1.0}
+    assert order == ["processes-dead", "verifier"]
+    assert rollout._partial_trajectory is False
+    assert rollout._terminal_timeout is True
+
+
+@pytest.mark.asyncio
+async def test_timeout_terminalization_requires_process_death_identity(
+    tmp_path,
+) -> None:
+    """Guards PR #1051: no sandbox user means no process-death claim."""
+    from benchflow.rollout import _verify_rollout
+
+    task = SimpleNamespace(
+        name="timeout-task",
+        config=SimpleNamespace(verifier=SimpleNamespace(timeout_sec=10)),
+    )
+    paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+    planes = MagicMock()
+    callback = AsyncMock()
+
+    rewards, verifier_error, timeout = await _verify_rollout(
+        MagicMock(),
+        task,
+        paths,
+        {},
+        planes,
+        sandbox_user=None,
+        after_agent_quiesced=callback,
+    )
+
+    assert rewards is None
+    assert verifier_error is not None and "without a sandbox user" in verifier_error
+    assert timeout is None
+    callback.assert_not_awaited()
+    planes.verifier.assert_not_called()
+
 
 # classify_verifier_error
 
