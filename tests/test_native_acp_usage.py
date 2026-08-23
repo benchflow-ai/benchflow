@@ -124,7 +124,16 @@ async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
                     }
                 )
             await self.cancelled.wait()
-            if timeout_kind == "wall":
+            if timeout_kind == "idle":
+                session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_cancelled",
+                        "title": "late cancellation cleanup",
+                        "kind": "bash",
+                    }
+                )
+            if timeout_kind in {"wall", "idle"}:
                 session.handle_update(
                     {
                         "sessionUpdate": "tool_call_update",
@@ -160,6 +169,9 @@ async def test_rollout_timeout_keeps_usage_from_graceful_acp_cancel(
         await rollout.execute(["solve"])
 
     assert exc_info.value.terminal_trajectory_complete is True
+    assert exc_info.value.n_tool_calls == 1
+    assert rollout._n_tool_calls == 1
+    assert exc_info.value.diagnostic.n_tool_calls == 1
     assert rollout._partial_trajectory is False
     assert rollout._trajectory_source == "acp"
     expected_reason = "idle_timeout" if timeout_kind == "idle" else "wall_clock_timeout"

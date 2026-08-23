@@ -932,17 +932,20 @@ async def _prompt_with_idle_watchdog(
                 last_progress = now
                 last_activity_at = datetime.now(UTC)
             if now - last_progress >= idle_timeout:
+                idle_duration_sec = int(now - last_progress)
+                wall_clock_elapsed_sec = int(now - (deadline - timeout))
+                last_activity_at_iso = last_activity_at.isoformat()
+                await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
+                cleanup_attempted = True
                 diag = IdleTimeoutDiagnostic(
                     idle_timeout_sec=idle_timeout,
-                    idle_duration_sec=int(now - last_progress),
-                    wall_clock_elapsed_sec=int(now - (deadline - timeout)),
+                    idle_duration_sec=idle_duration_sec,
+                    wall_clock_elapsed_sec=wall_clock_elapsed_sec,
                     n_tool_calls=len(session.tool_calls),
                     n_message_chunks=len(session.message_chunks),
                     n_thought_chunks=len(session.thought_chunks),
-                    last_activity_at=last_activity_at.isoformat(),
+                    last_activity_at=last_activity_at_iso,
                 )
-                await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
-                cleanup_attempted = True
                 raise _idle_timeout_error(session, diag)
             if now > deadline:
                 await _request_cancel_and_drain_prompt_task(acp_client, prompt_task)
