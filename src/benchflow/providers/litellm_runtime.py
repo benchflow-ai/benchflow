@@ -644,14 +644,20 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
 def needs_litellm_runtime(agent: str, model: str | None) -> bool:
     """True when an agent/model pair should be routed through LiteLLM.
 
-    ``oracle`` has no model; ``native_protocol`` agents speak a wire protocol
-    the proxy does not expose. Gemini stays behind the proxy (LiteLLM's native
-    GenerateContent endpoints) — required for no-web reviewer runs.
+    ``oracle`` has no model; ``native_provider`` agents bypass the proxy only
+    for their own provider's models (a wire protocol the proxy does not
+    expose). Gemini stays behind the proxy (LiteLLM's native GenerateContent
+    endpoints) — required for no-web reviewer runs.
     """
     if not model or agent == "oracle":
         return False
     cfg = AGENTS.get(agent)
-    return cfg is None or not cfg.native_protocol
+    if cfg is None or not cfg.native_provider:
+        return True
+    from benchflow.agents.providers import find_provider
+
+    provider = find_provider(model)
+    return provider is None or provider[0] != cfg.native_provider
 
 
 def _find_free_port() -> int:
@@ -1646,10 +1652,11 @@ async def ensure_litellm_runtime(
     *required* (``required`` fails closed when usage cannot be captured at all).
     The only agents that skip the proxy are those that physically cannot be
     routed through it: ``oracle`` (no model), native-subscription auth (no
-    API key to proxy), and ``native_protocol`` agents (wire protocol the proxy
-    does not expose; raw key reaches the agent, usage is ACP-reported only,
-    ``required`` usage tracking fails closed). Gemini uses LiteLLM's native
-    GenerateContent endpoints.
+    API key to proxy), and ``native_provider`` agents on their own provider's
+    models (wire protocol the proxy does not expose; that provider's key
+    reaches the agent, other provider secrets are scrubbed, usage is
+    ACP-reported only, ``required`` usage tracking fails closed). Gemini uses
+    LiteLLM's native GenerateContent endpoints.
     """
     # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
     # upstream routing or credentials. Restore controller-held source config.
@@ -1679,6 +1686,14 @@ async def ensure_litellm_runtime(
                 "Token usage tracking is required, but agent "
                 f"{agent!r} cannot be routed through LiteLLM."
             )
+        cfg = AGENTS.get(agent)
+        if cfg is not None and cfg.native_provider:
+            from benchflow.agents.providers import PROVIDERS
+
+            # The agent only needs its own provider's key; scrub the rest.
+            keep = PROVIDERS[cfg.native_provider].auth_env
+            for name in _provider_secret_env_names() - {keep}:
+                agent_env.pop(name, None)
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 

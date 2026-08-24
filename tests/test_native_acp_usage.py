@@ -80,6 +80,27 @@ async def test_disconnect_preserves_native_usage_in_final_metrics():
     assert rollout._usage_metrics["total_tokens"] == 14
 
 
+@pytest.mark.asyncio
+async def test_acp_client_normalizes_refused_stop_reason():
+    """fx emits the non-spec "refused"; it must parse as the spec's "refusal"."""
+    from benchflow.acp.client import ACPClient
+    from benchflow.acp.session import ACPSession
+    from benchflow.acp.types import StopReason
+
+    client = ACPClient.__new__(ACPClient)
+    client._session = ACPSession("session-1")
+
+    async def fake_send_request(method, params):
+        return {"stopReason": "refused"}
+
+    client._send_request = fake_send_request
+
+    result = await client.prompt("solve")
+
+    assert result.stop_reason == "refusal"
+    assert client._session.stop_reason is StopReason.REFUSAL
+
+
 def test_rollout_native_acp_usage_uses_cumulative_deltas():
     """Guards PR #613 follow-up: ACP cumulative usage is not double-counted."""
     from benchflow.acp.session import ACPSession

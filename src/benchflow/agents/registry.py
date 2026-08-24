@@ -489,9 +489,9 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
-    native_protocol: bool = False
-    # Model traffic cannot go through the LiteLLM proxy (wire protocol the
-    # proxy does not expose); the agent calls its provider directly.
+    native_provider: str = ""
+    # Provider whose models this agent serves natively; its traffic cannot be
+    # proxied, so runs bypass the proxy for those models and reject others.
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
     acp_model_config_id: str = ""
@@ -1018,7 +1018,7 @@ AGENTS: dict[str, AgentConfig] = {
         },
         supports_acp_set_model=False,
         # fx speaks the AI SDK gateway wire protocol.
-        native_protocol=True,
+        native_provider="vercel",
     ),
 }
 
