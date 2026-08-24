@@ -399,6 +399,9 @@ class ACPClient:
         result = await self._send_request(
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
         )
+        # fx emits the non-spec stop reason "refused" for the spec's "refusal".
+        if isinstance(result, dict) and result.get("stopReason") == "refused":
+            result["stopReason"] = "refusal"
         prompt_result = PromptResult.model_validate(result)
         # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
