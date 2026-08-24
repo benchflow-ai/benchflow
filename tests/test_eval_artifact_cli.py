@@ -205,6 +205,191 @@ def test_eval_run_publish_bucket_writes_readme_summary(
     assert "`oracle`" in text
 
 
+def test_eval_run_publish_bucket_readme_dedupes_retry_attempts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Retry rollout dirs for the same task must count as one task, best-scored.
+
+    Guards against README.md (and the --eval-results-model reward mean)
+    treating each retry attempt as a distinct task.
+    """
+    tasks = tmp_path / "tasks"
+    _write_task(tasks / "task-a")
+
+    async def fake_run(self):
+        job_dir = self._jobs_dir / self._job_name
+        _write_rollout(job_dir / "task-a__attempt1", "task-a")
+        (job_dir / "task-a__attempt1" / "result.json").write_text(
+            json.dumps({"task_name": "task-a", "rewards": {"reward": 0.0}}),
+            encoding="utf-8",
+        )
+        _write_rollout(job_dir / "task-a__attempt2", "task-a")
+        return SimpleNamespace(
+            job_name=self._job_name,
+            passed=1,
+            failed=0,
+            errored=0,
+            verifier_errored=0,
+            total=1,
+            score=1.0,
+            score_excl_errors=1.0,
+        )
+
+    monkeypatch.setattr(Evaluation, "run", fake_run)
+
+    captured: dict[str, Path] = {}
+
+    def fake_publish_folder_to_bucket(
+        folder, *, bucket_id, path_in_repo="", private=False
+    ):
+        captured["folder"] = folder
+        return SimpleNamespace(url=f"https://huggingface.co/buckets/{bucket_id}")
+
+    import benchflow.publish.huggingface as hf_publish
+
+    monkeypatch.setattr(
+        hf_publish, "publish_folder_to_bucket", fake_publish_folder_to_bucket
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(tasks),
+            "--agent",
+            "oracle",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+            "--publish-bucket",
+            "org/some-bucket",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    text = (captured["folder"] / "README.md").read_text()
+    assert "- Tasks: 1" in text
+    assert "- Mean reward: 1.000" in text
+    assert text.count("| task-a |") == 1
+
+
+def test_eval_run_eval_results_dedupes_retry_attempts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The --eval-results-model reward mean must not double-count retries."""
+    tasks = tmp_path / "tasks"
+    _write_task(tasks / "task-a")
+
+    async def fake_run(self):
+        job_dir = self._jobs_dir / self._job_name
+        _write_rollout(job_dir / "task-a__attempt1", "task-a")
+        (job_dir / "task-a__attempt1" / "result.json").write_text(
+            json.dumps({"task_name": "task-a", "rewards": {"reward": 0.0}}),
+            encoding="utf-8",
+        )
+        _write_rollout(job_dir / "task-a__attempt2", "task-a")
+        return SimpleNamespace(
+            job_name=self._job_name,
+            passed=1,
+            failed=0,
+            errored=0,
+            verifier_errored=0,
+            total=1,
+            score=1.0,
+            score_excl_errors=1.0,
+        )
+
+    monkeypatch.setattr(Evaluation, "run", fake_run)
+
+    captured: dict[str, float] = {}
+
+    def fake_open_eval_results_pr(
+        *, model_repo, dataset_id, task_id, value, source_url=None, notes=None
+    ):
+        captured["value"] = value
+        return "https://huggingface.co/org/model/discussions/1"
+
+    import benchflow.publish.huggingface as hf_publish
+
+    monkeypatch.setattr(hf_publish, "open_eval_results_pr", fake_open_eval_results_pr)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(tasks),
+            "--agent",
+            "oracle",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+            "--eval-results-model",
+            "org/model",
+            "--eval-results-dataset",
+            "org/bench",
+            "--eval-results-task",
+            "t1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # Best-of-retries reward is 1.0 -> 100.0, not the naive two-attempt mean (50.0).
+    assert captured["value"] == 100.0
+
+
+def test_eval_run_eval_results_warns_when_nothing_scored(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tasks = tmp_path / "tasks"
+    _write_task(tasks / "task-a")
+
+    async def fake_run(self):
+        job_dir = self._jobs_dir / self._job_name
+        rollout = job_dir / "task-a__abc"
+        rollout.mkdir(parents=True)
+        (rollout / "result.json").write_text(
+            json.dumps({"task_name": "task-a", "rewards": None}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            job_name=self._job_name,
+            passed=0,
+            failed=1,
+            errored=0,
+            verifier_errored=0,
+            total=1,
+            score=0.0,
+            score_excl_errors=0.0,
+        )
+
+    monkeypatch.setattr(Evaluation, "run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(tasks),
+            "--agent",
+            "oracle",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+            "--eval-results-model",
+            "org/model",
+            "--eval-results-dataset",
+            "org/bench",
+            "--eval-results-task",
+            "t1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "no scored rollouts" in result.output
+
+
 def test_sharded_health_and_selection_discover_worker_shards(tmp_path: Path) -> None:
     jobs_dir = tmp_path / "jobs"
     advertised_job_dir = jobs_dir / "worker-sharded"

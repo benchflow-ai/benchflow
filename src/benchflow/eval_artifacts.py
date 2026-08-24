@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchflow._utils.task_authoring import task_digest
+from benchflow._utils.text import truncate_end
 from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
@@ -272,14 +273,28 @@ def _escape_md_cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
 
+_ISSUE_CELL_LIMIT = 120
+
+
+def canonical_task_rows(job_dir: Path) -> list[dict[str, Any]]:
+    """One row per task_id — the best-scored/highest-reward rollout.
+
+    Reused by the README summary and ``--eval-results-model`` so retry
+    attempts (multiple rollout dirs for the same task) are never counted
+    or averaged as if they were distinct tasks.
+    """
+    return build_canonical_selection(job_dir, policy="one-healthy-per-task")["selected"]
+
+
 def render_run_summary_markdown(
     job_dir: Path, *, agent: str | None = None, model: str | None = None
 ) -> str:
     """Render a Markdown run summary (results + issues) for publish folders."""
-    summary = build_health_summary(job_dir)
-    rows = summary["rows"]
+    rows = canonical_task_rows(job_dir)
     rewards = [row["reward"] for row in rows if row["scored"]]
     mean_reward = sum(rewards) / len(rewards) if rewards else None
+    scored_count = sum(1 for row in rows if row["scored"])
+    tool_call_count = sum(1 for row in rows if row["tool_calls"] > 0)
 
     lines = ["# BenchFlow run summary", ""]
     if agent:
@@ -287,12 +302,12 @@ def render_run_summary_markdown(
     if model:
         lines.append(f"- Model: `{model}`")
     lines += [
-        f"- Tasks: {summary['total_rows']}",
-        f"- Scored: {summary['scored_rows']} / Unscored: {summary['unscored_rows']}",
+        f"- Tasks: {len(rows)}",
+        f"- Scored: {scored_count} / Unscored: {len(rows) - scored_count}",
         f"- Mean reward: {mean_reward:.3f}"
         if mean_reward is not None
         else "- Mean reward: n/a",
-        f"- Rows with tool calls: {summary['rows_with_tool_calls']}",
+        f"- Tasks with tool calls: {tool_call_count}",
         "",
         "## Tasks",
         "",
@@ -302,9 +317,10 @@ def render_run_summary_markdown(
     for row in rows:
         reward = f"{row['reward']:.3f}" if isinstance(row["reward"], float) else "—"
         issue = row.get("error") or row.get("verifier_error") or ""
+        issue = truncate_end(_escape_md_cell(str(issue)), _ISSUE_CELL_LIMIT)
         lines.append(
             f"| {_escape_md_cell(str(row['task_id']))} | {reward} | "
-            f"{row['tool_calls']} | {_escape_md_cell(str(issue))} |"
+            f"{row['tool_calls']} | {issue} |"
         )
     return "\n".join(lines) + "\n"
 

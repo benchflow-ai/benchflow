@@ -66,7 +66,7 @@ def postprocess_eval_artifacts(
     eval_config = _apply_source_sidecar(eval_config, resolved_tasks_dir)
     from benchflow.eval_artifacts import (
         TaskManifestOptions,
-        build_health_summary,
+        canonical_task_rows,
         materialize_canonical_job,
         render_run_summary_markdown,
         write_canonical_selection,
@@ -178,9 +178,7 @@ def postprocess_eval_artifacts(
         from benchflow.publish.huggingface import open_eval_results_pr
 
         rewards = [
-            row["reward"]
-            for row in build_health_summary(job_dir)["rows"]
-            if row["scored"]
+            row["reward"] for row in canonical_task_rows(job_dir) if row["scored"]
         ]
         if rewards:
             value = round(100.0 * sum(rewards) / len(rewards), 2)

@@ -287,6 +287,11 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
 
+`--publish-hf`/`--publish-bucket` also write a `README.md` run summary
+(agent, model, per-task reward and any error/verifier issue, deduplicated
+across retries) into the job dir before upload — buckets render it on the
+directory page automatically.
+
 See [Architecture: skill loading](../architecture.md#skill-loading) for how
 `with-skill` mode is registered with each agent.
 
