@@ -581,6 +581,31 @@ def eval_run(
             "--hf-public-read-check", help="Verify public HF reads after upload"
         ),
     ] = False,
+    publish_bucket: Annotated[
+        str | None,
+        typer.Option(
+            "--publish-bucket", help="Upload final eval artifacts to a HF bucket"
+        ),
+    ] = None,
+    eval_results_model: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-model",
+            help="HF model repo to open a community eval-results PR on",
+        ),
+    ] = None,
+    eval_results_dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-dataset", help="HF benchmark dataset id, e.g. org/benchmark"
+        ),
+    ] = None,
+    eval_results_task: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-task", help="Benchmark task_id from the dataset's eval.yaml"
+        ),
+    ] = None,
     matrix: Annotated[
         Path | None,
         typer.Option("--matrix", help="YAML model matrix for repeated evals"),
@@ -653,6 +678,10 @@ def eval_run(
         publish_hf=publish_hf,
         hf_prefix=hf_prefix,
         hf_public_read_check=hf_public_read_check,
+        publish_bucket=publish_bucket,
+        eval_results_model=eval_results_model,
+        eval_results_dataset=eval_results_dataset,
+        eval_results_task=eval_results_task,
         matrix=matrix,
         trials=trials,
     )
