@@ -67,6 +67,7 @@ from benchflow._utils.scoring import (
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
+    extract_reward,
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
@@ -431,8 +432,7 @@ def _classify_completed_outcomes(
     """
     passed = failed = errored = 0
     for r in completed.values():
-        rewards = r.get("rewards") if isinstance(r, dict) else None
-        reward = rewards.get("reward") if rewards else None
+        reward = extract_reward(r) if isinstance(r, dict) else None
         if reward == 1:
             passed += 1
         elif reward is not None:
@@ -1100,6 +1100,14 @@ class Evaluation:
                 r = json.loads(rfile.read_text())
                 task = r["task_name"]
                 if r.get("rewards") is not None or r.get("verifier_error"):
+                    _rw = r.get("rewards")
+                    if _rw is not None and not isinstance(_rw, dict):
+                        logger.warning(
+                            "Malformed rewards field in %s for task %r: "
+                            "expected dict or null, got %s %r — "
+                            "treating as no reward (task will count as errored)",
+                            rfile, task, type(_rw).__name__, _rw,
+                        )
                     mtime = rfile.stat().st_mtime
                     prev = best.get(task)
                     if prev is None or (mtime, str(rfile)) >= (prev[0], ""):
