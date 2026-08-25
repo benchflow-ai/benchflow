@@ -64,10 +64,10 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     count_audit_outcomes,
     count_score_outcomes,
+    extract_reward,
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
-    extract_reward,
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
