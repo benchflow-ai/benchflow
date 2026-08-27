@@ -710,10 +710,11 @@ def test_tabs_and_disclosures_are_keyboard_complete(page, server, edge_server):
     )
     heading = page.locator(".group-head", has_text="alpha-task")
     heading.focus()
-    heading.press("Enter")
-    heading = page.locator(".group-head", has_text="alpha-task")
-    assert heading.get_attribute("aria-expanded") == "true"
-    assert page.evaluate("document.activeElement.dataset.groupKey") == "alpha-task"
+    for expanded in ("true", "false", "true"):
+        heading.press("Enter")
+        heading = page.locator(".group-head", has_text="alpha-task")
+        assert heading.get_attribute("aria-expanded") == expanded
+        assert page.evaluate("document.activeElement.dataset.groupKey") == "alpha-task"
     assert page.locator("#" + heading.get_attribute("aria-controls")).count() == 1
 
     page.goto(edge_server + "/?run=" + LONG_RUN_ID)

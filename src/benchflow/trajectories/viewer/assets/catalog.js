@@ -166,11 +166,9 @@ BF.catalog = (() => {
   }
 
   function focusGroup(key) {
-    requestAnimationFrame(() => {
-      const button = [...document.querySelectorAll(".group-head")]
-        .find((candidate) => candidate.dataset.groupKey === key);
-      if (button) button.focus({ preventScroll: true });
-    });
+    const button = [...document.querySelectorAll(".group-head")]
+      .find((candidate) => candidate.dataset.groupKey === key);
+    if (button) button.focus({ preventScroll: true });
   }
 
   function renderRuns(groupToFocus = null) {
