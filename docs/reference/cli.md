@@ -455,14 +455,13 @@ counts, grouping (by task, by model + harness, or none) with per-group
 pass/fail aggregates, sorting (name/reward/duration/cost), text filtering,
 collapsible groups with incremental "show more" pagination, and URL-preserved
 state — selecting a run opens the detail page and the back control restores
-the exact catalog view. Traces load dynamically via `/api/rollouts` and
-`/api/rollout?id=…` — ids resolve only by exact membership in a fresh
+the exact catalog view. Traces load dynamically via `/api/rollout?id=…` —
+ids resolve only by exact membership in a fresh
 directory scan — and `?run=<id>` deep-links a run.
 Discovery is capped at 500 runs by default (`BENCHFLOW_VIEWER_MAX_RUNS`
 overrides); truncation is never silent — the sidebar heading, the server
-startup line, and an `X-BenchFlow-Capped: 1` response header on
-`/api/rollouts` all signal it, and a `?run=` id outside the discovered set
-shows an explicit error instead of another run.
+startup line, and the catalog payload all signal it, and a `?run=` id outside
+the discovered set shows an explicit error instead of another run.
 
 `hf://<org>/<dataset>[@revision][/subpath]` browses a HuggingFace trajectory
 dataset (e.g. the community ground-truth uploads). The download allowlist is
@@ -479,7 +478,10 @@ machine-readable line to stdout — `DECISION: approved` or
 `DECISION: rejected` — and exits. Exit codes: `0` approved (also the normal
 Ctrl+C stop), `3` rejected — deliberately not `1`/`2`, which stay reserved
 for errors and usage mistakes. Without `--confirm` the server has no
-`/decision` endpoint and runs until Ctrl+C, as before.
+`/decision` endpoint and runs until Ctrl+C, as before. Confirmation requests
+are accepted only from the viewer page served by that process: each server
+uses a one-time random token and validates the request's localhost host and
+origin.
 
 `--redaction-summary "2 API keys, 1 bearer token"` adds a display-only note to
 the `--confirm` bar — "Before upload, BenchFlow masks: … Originals never leave

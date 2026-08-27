@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import RunSummary
-from .payload import _is_acp_rollout_dir, _load_result_json
+from .payload import _is_acp_rollout_dir, _load_rollout_metadata
 
 
 def _runs_cap() -> int:
@@ -73,23 +73,18 @@ def _resolve_browse_rollout(base: Path, rid: str | None) -> Path | None:
 def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
     """Catalog row for one rollout: identity, verdict, row-level stats."""
     d = base / rel_id
-    result_data = _load_result_json(d)
-    rewards = result_data.get("rewards")
-    reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    timing = result_data.get("timing")
-    agent_result = result_data.get("agent_result")
-    usage = agent_result if isinstance(agent_result, dict) else {}
+    metadata = _load_rollout_metadata(d)
     return RunSummary(
         id=rel_id,
         name=d.name,
-        task_name=result_data.get("task_name") or d.name,
-        agent_name=result_data.get("agent_name") or result_data.get("agent"),
-        model=result_data.get("model"),
-        reward=reward,
-        has_error=bool(result_data.get("error") or result_data.get("verifier_error")),
-        skill_mode=result_data.get("skill_mode"),
-        duration_sec=(timing or {}).get("total") if isinstance(timing, dict) else None,
-        cost_usd=usage.get("cost_usd"),
-        total_tokens=usage.get("total_tokens"),
-        n_tool_calls=result_data.get("n_tool_calls"),
+        task_name=metadata.task_name or d.name,
+        agent_name=metadata.agent_name,
+        model=metadata.model,
+        reward=metadata.reward,
+        has_error=metadata.has_error,
+        skill_mode=metadata.skill_mode,
+        duration_sec=metadata.timing.total if metadata.timing is not None else None,
+        cost_usd=metadata.usage.cost_usd,
+        total_tokens=metadata.usage.total_tokens,
+        n_tool_calls=metadata.n_tool_calls,
     ).to_payload()

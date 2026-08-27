@@ -6,9 +6,11 @@ pinned by the jsonl-session and confirm-flow tests.
 
 import html
 import json
+import math
 from pathlib import Path
 
-from .payload import _load_result_json, _parse_jsonl
+from .models import MessageStep, PromptStep, ThoughtStep, ToolStep, tool_hue
+from .payload import _load_prompts, _load_result_json, _normalize_steps, _parse_jsonl
 from .render import _render_acp_trajectory, _theme_css
 
 _THINKING_PREVIEW = 600  # max chars for thinking block preview
@@ -94,7 +96,9 @@ body { padding-bottom: 104px; }
 .confirm-btn.approve:hover { background: #262626; }
 .confirm-btn.reject { background: var(--card); color: var(--ink); border: 1px solid var(--rule-strong); }
 .confirm-btn.reject:hover { background: var(--secondary); }
+.confirm-btn:disabled { cursor: wait; opacity: 0.55; }
 .confirm-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted-foreground); }
+.confirm-error { flex-basis: 100%; font-size: 12.5px; color: #a61b1b; }
 </style>
 <div class="confirm-bar">
 <div class="confirm-inner" id="confirm-inner">
@@ -108,16 +112,39 @@ body { padding-bottom: 104px; }
 </div>
 <script>
 async function __benchDecide(choice) {
+  const inner = document.getElementById("confirm-inner");
+  const buttons = Array.from(inner.querySelectorAll("button"));
+  buttons.forEach((button) => { button.disabled = true; });
+  let response;
   try {
-    await fetch("/decision", { method: "POST", body: choice });
+    response = await fetch("/decision", {
+      method: "POST",
+      headers: { "X-BenchFlow-Confirm-Token": __BENCHFLOW_CONFIRM_TOKEN__ },
+      body: choice,
+    });
   } catch (err) {
-    // The server exits right after answering; a dropped socket is still a
-    // delivered decision, so fall through to the confirmation note.
+    __benchDecisionError(inner, buttons, "Connection closed; check the terminal before retrying.");
+    return;
   }
-  document.getElementById("confirm-inner").innerHTML =
+  if (!response.ok) {
+    __benchDecisionError(inner, buttons, "Could not record that decision. Please try again.");
+    return;
+  }
+  inner.innerHTML =
     choice === "approve"
       ? '<span class="confirm-question">Approved — go back to your agent.</span>'
       : '<span class="confirm-question">Rejected — tell your agent which session instead.</span>';
+}
+function __benchDecisionError(inner, buttons, message) {
+  buttons.forEach((button) => { button.disabled = false; });
+  let error = document.getElementById("confirm-error");
+  if (!error) {
+    error = document.createElement("div");
+    error.id = "confirm-error";
+    error.className = "confirm-error";
+    inner.appendChild(error);
+  }
+  error.textContent = message;
 }
 </script>
 """
@@ -126,13 +153,14 @@ async function __benchDecide(choice) {
 _REDACTION_NOTE_MARKER = "<!--BENCHFLOW-REDACTION-NOTE-->"
 
 
-def _confirm_bar_html(redaction_summary: str | None) -> str:
+def _confirm_bar_html(redaction_summary: str | None, confirm_token: str) -> str:
     """Confirm-bar snippet, optionally carrying the redaction-summary note.
 
     The note is presentation-only text the caller composed (the upload skill
     lifts it from ``bench traj upload --dry-run``); the viewer itself never
-    redacts, so without a summary the bar is byte-identical to the plain
-    ``--confirm`` bar.
+    redacts, so omitting a summary adds no note markup. ``confirm_token`` is
+    serialized into the same-origin decision request; the server validates it
+    before accepting a click.
     """
     note = ""
     if redaction_summary:
@@ -141,12 +169,17 @@ def _confirm_bar_html(redaction_summary: str | None) -> str:
             f"{html.escape(redaction_summary)}. "
             "Originals never leave this machine.</div>"
         )
-    return _CONFIRM_BAR_HTML.replace(_REDACTION_NOTE_MARKER, note, 1)
+    bar = _CONFIRM_BAR_HTML.replace(
+        "__BENCHFLOW_CONFIRM_TOKEN__", json.dumps(confirm_token), 1
+    )
+    return bar.replace(_REDACTION_NOTE_MARKER, note, 1)
 
 
-def _inject_confirm_bar(page: str, redaction_summary: str | None = None) -> str:
+def _inject_confirm_bar(
+    page: str, redaction_summary: str | None, *, confirm_token: str
+) -> str:
     """Append the confirm bar just before </body> (or at the end as fallback)."""
-    bar = _confirm_bar_html(redaction_summary)
+    bar = _confirm_bar_html(redaction_summary, confirm_token)
     if "</body>" in page:
         return page.replace("</body>", f"{bar}</body>", 1)
     return page + bar
@@ -174,26 +207,32 @@ _WORDMARK_HTML = (
 )
 
 
-# Tool kind → accent class. Substring matching so it covers Claude Code tool
-# names (Bash, Write, Edit, Read, Agent, WebSearch, ...), ACP kinds (execute,
-# edit, read, search, fetch, ...), and Codex function names (shell, ...).
-# Order matters: earlier entries win (e.g. "websearch" hits web before read).
-_TOOL_ACCENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("acc-web", ("web", "search", "fetch", "grep", "glob", "browser")),
-    ("acc-bash", ("bash", "shell", "exec", "terminal", "command")),
-    ("acc-edit", ("write", "edit", "patch", "delete", "move", "notebook")),
-    ("acc-read", ("read", "cat", "view", "ls", "list")),
-    ("acc-agent", ("agent", "task", "skill", "oracle")),
-)
+_TOOL_ACCENT_BY_HUE = {
+    "read": "acc-read",
+    "edit": "acc-edit",
+    "execute": "acc-bash",
+    "fetch": "acc-web",
+    "search": "acc-web",
+    "skill": "acc-agent",
+    "think": "acc-other",
+    "other": "acc-other",
+}
 
 
-def _tool_accent_class(name: str) -> str:
-    """Map a tool name/kind to its accent CSS class (presentation only)."""
-    lowered = name.lower()
-    for css_class, needles in _TOOL_ACCENTS:
-        if any(needle in lowered for needle in needles):
-            return css_class
-    return "acc-other"
+def _tool_accent_class(name: str, title: str = "") -> str:
+    """Legacy CSS adapter over the canonical tool classifier."""
+    return _TOOL_ACCENT_BY_HUE[tool_hue(str(name), str(title))]
+
+
+def _coerce_cost(value: object) -> float | None:
+    """Return a finite numeric cost, or ``None`` for malformed JSON values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        cost = float(value)
+    except (TypeError, ValueError):
+        return None
+    return cost if math.isfinite(cost) else None
 
 
 def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
@@ -314,13 +353,17 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
 
         elif etype == "result":
             # Final summary
-            cost = event.get("total_cost_usd", 0)
-            turns = event.get("num_turns", "?")
-            result_text = html.escape(event.get("result", "")[:_RESULT_PREVIEW])
+            cost = _coerce_cost(event.get("total_cost_usd", 0))
+            cost_text = html.escape(f"{cost if cost is not None else 0:.4f}")
+            turns = html.escape(str(event.get("num_turns", "?")))
+            raw_result = event.get("result", "")
+            result_text = html.escape(
+                str(raw_result if raw_result is not None else "")[:_RESULT_PREVIEW]
+            )
             blocks.append(
                 f'<div class="step result">'
                 f'<div class="step-header"><span class="label result">RESULT</span>'
-                f'<span class="meta-inline">turns={turns} cost=${cost:.4f}</span></div>'
+                f'<span class="meta-inline">turns={turns} cost=${cost_text}</span></div>'
                 f'<div class="msg">{result_text}</div>'
                 f"</div>"
             )
@@ -361,18 +404,8 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     - trajectory/acp_trajectory.jsonl → ACP session events
     - prompts.json → used for prompt labels if available
     """
-    # Try loading prompts from prompts.json if not provided. A corrupt file is
-    # auxiliary (it only supplies prompt labels) — degrade to default labels
-    # rather than crashing the whole view with a raw JSONDecodeError traceback.
-    if prompts is None and (rollout_dir / "prompts.json").exists():
-        try:
-            prompts = json.loads(
-                (rollout_dir / "prompts.json").read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            )
-        except (json.JSONDecodeError, OSError):
-            prompts = None
+    if prompts is None:
+        prompts = _load_prompts(rollout_dir)
 
     # Auto-detect format
     turn_files = sorted(rollout_dir.glob("turn*.txt"))
@@ -435,7 +468,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 <html>
 <head>
 <meta charset="utf-8">
-<title>benchflow — {rollout_dir.name}</title>
+<title>benchflow — {html.escape(rollout_dir.name)}</title>
 <style>
 {_VIEWER_CSS}</style>
 </head>
@@ -467,62 +500,45 @@ def _render_acp_events(
     result_data = result_data or {}
     blocks = []
 
-    # Show prompts at top only if trajectory has no inline user_message events
-    has_inline_prompts = any(e.get("type") == "user_message" for e in events)
-    if not has_inline_prompts:
-        for i, prompt in enumerate(prompts or []):
+    # Raw ACP events use the same normalization and status/classification
+    # boundary as the interactive renderer. Timeout/future variants remain
+    # intentionally absent from this compact legacy page.
+    for step in _normalize_steps(events, prompts):
+        if isinstance(step, PromptStep):
             blocks.append(
                 f'<div class="step prompt">'
-                f'<div class="step-header"><span class="label prompt">PROMPT {i + 1}</span></div>'
-                f'<div class="msg">{html.escape(prompt[:500])}</div>'
+                f'<div class="step-header"><span class="label prompt">{step.label}</span></div>'
+                f'<div class="msg">{html.escape(step.text)[:500]}</div>'
                 f"</div>"
             )
-
-    # Show events
-    prompt_counter = 0
-    for event in events:
-        etype = event.get("type", "")
-        if etype == "user_message":
-            prompt_counter += 1
-            text = html.escape(event.get("text", ""))
-            blocks.append(
-                f'<div class="step prompt">'
-                f'<div class="step-header"><span class="label prompt">PROMPT {prompt_counter}</span></div>'
-                f'<div class="msg">{text[:500]}</div>'
-                f"</div>"
-            )
-        elif etype == "tool_call":
-            kind = html.escape(event.get("kind", ""))
-            event_title = html.escape(event.get("title", ""))
-            status = event.get("status", "")
-            # ACP kinds are coarse ("other" covers Skill/Task/...); when the
-            # kind doesn't map, fall back to the human title for the accent.
-            accent = _tool_accent_class(event.get("kind", ""))
-            if accent == "acc-other":
-                accent = _tool_accent_class(event.get("title", ""))
+        elif isinstance(step, ToolStep):
+            tool = step.tool
+            kind = html.escape(tool.kind)
+            event_title = html.escape(tool.title)
+            accent = _tool_accent_class(tool.kind, tool.title)
             blocks.append(
                 f'<div class="step agent tool-step {accent}">'
                 f'<div class="tool"><span class="tool-name">{kind}</span> {event_title}</div>'
-                f'<div class="metrics">{status}</div>'
+                f'<div class="metrics">{tool.status}</div>'
                 f"</div>"
             )
-        elif etype == "agent_message":
-            text = html.escape(event.get("text", ""))
+        elif isinstance(step, MessageStep):
             blocks.append(
-                f'<div class="step agent"><div class="msg">{text[:500]}</div></div>'
+                f'<div class="step agent"><div class="msg">'
+                f"{html.escape(step.text)[:500]}</div></div>"
             )
-        elif etype == "agent_thought":
-            text = html.escape(event.get("text", ""))
+        elif isinstance(step, ThoughtStep):
             blocks.append(
-                f'<div class="step agent"><div class="thinking">{text[:500]}</div></div>'
+                f'<div class="step agent"><div class="thinking">'
+                f"{html.escape(step.text)[:500]}</div></div>"
             )
 
     # Result summary
     if result_data:
-        agent = html.escape(result_data.get("agent_name", "?"))
-        rewards = result_data.get("rewards", {})
-        n_tools = result_data.get("n_tool_calls", 0)
-        n_prompts = result_data.get("n_prompts", 0)
+        agent = html.escape(str(result_data.get("agent_name", "?")))
+        rewards = html.escape(str(result_data.get("rewards", {})))
+        n_tools = html.escape(str(result_data.get("n_tool_calls", 0)))
+        n_prompts = html.escape(str(result_data.get("n_prompts", 0)))
         blocks.append(
             f'<div class="step result">'
             f'<div class="step-header"><span class="label result">RESULT</span></div>'
@@ -623,13 +639,16 @@ def render_jsonl_file(path: Path) -> str:
         return _NO_TRAJECTORIES_HTML
     if not events:
         return _NO_TRAJECTORIES_HTML
+    prompts = _load_prompts(path.parent)
     if _looks_like_codex(events):
         converted = _codex_to_acp(events)
         if not converted:
             return _NO_TRAJECTORIES_HTML
-        return _render_acp_events(path.name, converted, {})
+        return _render_acp_events(path.name, converted, {}, prompts)
     if _looks_like_acp(events):
-        return _render_acp_events(path.name, events, _load_result_json(path.parent))
+        return _render_acp_events(
+            path.name, events, _load_result_json(path.parent), prompts
+        )
     body = render_turn(events, 1, "")
     if not body.strip():
         return _NO_TRAJECTORIES_HTML
@@ -689,7 +708,10 @@ def _result_cost(events: list[dict]) -> float | None:
     seen = False
     for event in events:
         if event.get("type") == "result" and event.get("total_cost_usd") is not None:
-            total += float(event.get("total_cost_usd") or 0)
+            cost = _coerce_cost(event.get("total_cost_usd"))
+            if cost is None:
+                continue
+            total += cost
             seen = True
     return total if seen else None
 

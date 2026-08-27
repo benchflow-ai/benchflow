@@ -12,8 +12,8 @@
   Verifier and Metrics tabs, Focus/Full modes, per-kind filters and hues,
   text search, and per-event `#e42` anchors. Trajectory content is treated
   as untrusted end to end (data-only embedding, `textContent` rendering).
-  Raw session JSONL files, the `--confirm` approve/reject contract, and the
-  legacy `turn*.txt` renderer are unchanged.
+  Raw session JSONL files and legacy `turn*.txt` runs remain supported, and
+  the `--confirm` approve/reject contract remains compatible.
 - **Directories of rollouts serve a run catalog.** Pointing
   `bench eval view` at a job directory (or a whole `jobs/` tree) serves a
   browsable index: corpus counts, grouping by task or model + harness with

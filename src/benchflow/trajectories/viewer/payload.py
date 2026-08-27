@@ -1,45 +1,96 @@
-"""ACP payload assembly: normalization, diagnostics, sidecar loading.
+"""Normalize untrusted rollout artifacts into the typed viewer payload."""
 
-Builds the typed :class:`~.models.ViewerPayload` the interactive template
-renders client-side. All trajectory content is untrusted input — it stays
-data throughout.
-"""
+from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
+
 from .models import (
     ErrorBanner,
+    JsonObject,
+    JsonValue,
+    MessageStep,
     Meta,
+    PromptStep,
+    RolloutMetadata,
     Step,
     StepCounts,
+    ThoughtStep,
     TimeoutInfo,
+    TimeoutStep,
+    Timing,
     ToolCall,
+    ToolStep,
+    UnknownStep,
+    Usage,
     VerifierArtifacts,
+    VerifierTest,
     ViewerPayload,
+    normalize_tool_status,
+    normalize_verifier_status,
     tool_hue,
 )
 
+_MAX_JSON_DEPTH = 64
+_MAX_JSON_OUTPUT_DEPTH = _MAX_JSON_DEPTH + 32
 
-def _parse_jsonl(text: str) -> list[dict]:
-    events = []
+
+def _within_json_depth(value: Any, *, max_depth: int = _MAX_JSON_DEPTH) -> bool:
+    """Bound container nesting without using Python recursion.
+
+    JSON produced by BenchFlow is shallow. Rejecting unusually deep artifacts
+    keeps the recursive finite-number scrubber and encoder comfortably below
+    Python's recursion limit while still allowing wide, otherwise-valid data.
+    """
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    seen_containers: set[int] = set()
+    while pending:
+        current, depth = pending.pop()
+        if isinstance(current, dict):
+            identity = id(current)
+            if identity in seen_containers:
+                return False
+            seen_containers.add(identity)
+            if depth >= max_depth:
+                return False
+            pending.extend((child, depth + 1) for child in current.values())
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity in seen_containers:
+                return False
+            seen_containers.add(identity)
+            if depth >= max_depth:
+                return False
+            pending.extend((child, depth + 1) for child in current)
+    return True
+
+
+def _parse_json(text: str) -> Any:
+    """Parse one bounded JSON value; malformed or over-deep input is absent."""
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    return parsed if _within_json_depth(parsed) else None
+
+
+def _parse_jsonl(text: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     for line in text.splitlines():
         if not line.strip():
             continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        parsed = _parse_json(line)
         if isinstance(parsed, dict):
             events.append(parsed)
     return events
 
 
-# result.json diagnostic blocks surfaced in the header banner. The live list
-# derives from DIAGNOSTIC_REGISTRY so new diagnostics (e.g. behavior flags)
-# appear without this module drifting; the fallback pins the 0.7.4 set.
+# Keep a fallback so the viewer remains useful if diagnostics cannot import.
 _DIAGNOSTIC_KEYS_FALLBACK = (
     "idle_timeout_info",
     "agent_timeout_info",
@@ -52,21 +103,20 @@ _DIAGNOSTIC_KEYS_FALLBACK = (
 
 
 def _diagnostic_keys() -> tuple[str, ...]:
-    """Diagnostic block keys, in registry display order."""
     try:
         from benchflow.diagnostics import DIAGNOSTIC_REGISTRY
-    except Exception:  # pragma: no cover — registry is core; stay lenient
+    except Exception:  # pragma: no cover - diagnostics is a core module
         return _DIAGNOSTIC_KEYS_FALLBACK
-    return tuple(d.field for d in DIAGNOSTIC_REGISTRY)
+    return tuple(diagnostic.field for diagnostic in DIAGNOSTIC_REGISTRY)
 
 
 def _load_json(path: Path) -> Any:
-    # errors="replace": binary/mis-encoded sidecars degrade to a JSON parse
-    # failure (→ None) instead of an unhandled UnicodeDecodeError.
+    """Read a JSON sidecar, returning ``None`` for any malformed artifact."""
     try:
-        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (json.JSONDecodeError, OSError):
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return None
+    return _parse_json(text)
 
 
 def _read_text(path: Path) -> str | None:
@@ -76,245 +126,401 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
-def _tool_content_texts(content: Any) -> list[str]:
-    """Flatten ACP tool_call content blocks to plain strings.
+def _json_value(value: Any) -> JsonValue:
+    """Project a scrubbed value onto the recursive JSON value type."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return str(value)
 
-    Three shapes occur in captures: the canonical nested block
-    ``{"type": "content", "content": {"type": "text", "text": ...}}``, a flat
-    ``{"text": ...}``, and edit-tool diff blocks
-    ``{"type": "diff", "path": ..., "oldText": ..., "newText": ...}``.
+
+def _json_object(value: Any) -> JsonObject:
+    if not isinstance(value, dict) or not _within_json_depth(value):
+        return {}
+    value = scrub_non_finite(value)
+    return {str(key): _json_value(item) for key, item in value.items()}
+
+
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    number = _finite_float(value)
+    if number is None or number < 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _optional_text(value: Any) -> str | None:
+    """Coerce scalar identity fields; reject container-shaped identities."""
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return str(value)
+
+
+def _display_text(value: Any) -> str:
+    """Losslessly display JSON-shaped content without leaking invalid JSON."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        if not _within_json_depth(value):
+            return ""
+        return dumps_finite(value, ensure_ascii=False, default=str)
+    if isinstance(value, float) and not math.isfinite(value):
+        return ""
+    return str(value)
+
+
+def _load_prompts(rollout_dir: Path) -> list[str] | None:
+    """Load prompts.json through the shared bounded JSON/text boundary.
+
+    The artifact contract is a list, but older or hand-edited captures may
+    contain non-string entries. Coerce entries exactly as trajectory text is
+    coerced; a non-list top level is not a prompt collection.
     """
-    texts: list[str] = []
+    parsed = _load_json(rollout_dir / "prompts.json")
+    if not isinstance(parsed, list):
+        return None
+    return [_display_text(prompt) for prompt in parsed]
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _tool_content_texts(content: Any) -> list[str]:
+    """Flatten canonical, flat-text, and diff ACP tool content blocks."""
     if not isinstance(content, list):
-        return texts
+        return []
+    texts: list[str] = []
     for item in content:
         if not isinstance(item, dict):
-            texts.append(str(item))
-            continue
-        inner = item.get("content")
-        if isinstance(inner, dict) and "text" in inner:
-            texts.append(str(inner.get("text", "")))
-        elif "text" in item:
-            texts.append(str(item.get("text", "")))
-        elif item.get("type") == "diff":
-            texts.append(
-                f"diff {item.get('path', '')}\n"
-                f"--- old\n{item.get('oldText') or ''}\n"
-                f"+++ new\n{item.get('newText') or ''}"
-            )
+            text = _display_text(item)
         else:
-            texts.append(json.dumps(item, ensure_ascii=False))
-    return [t for t in texts if t]
+            inner = item.get("content")
+            if isinstance(inner, dict) and "text" in inner:
+                text = _display_text(inner.get("text"))
+            elif "text" in item:
+                text = _display_text(item.get("text"))
+            elif item.get("type") == "diff":
+                text = (
+                    f"diff {_display_text(item.get('path'))}\n"
+                    f"--- old\n{_display_text(item.get('oldText'))}\n"
+                    f"+++ new\n{_display_text(item.get('newText'))}"
+                )
+            else:
+                text = dumps_finite(item, ensure_ascii=False, default=str)
+        if text:
+            texts.append(text)
+    return texts
 
 
 def _parse_ts(value: Any) -> float | None:
-    """Lenient timestamp → epoch seconds; None for absent/unparseable.
-
-    Accepts numeric epochs and anything ``datetime.fromisoformat`` reads
-    (ISO-8601, and the space-separated ``str(datetime.now())`` form used by
-    result.json's started_at).
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
+    """Parse finite epoch or ISO-8601 timestamps into epoch seconds."""
+    numeric = _finite_float(value)
+    if numeric is not None and not isinstance(value, str):
+        return numeric
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value).timestamp()
-        except ValueError:
+            timestamp = datetime.fromisoformat(value).timestamp()
+        except (ValueError, OverflowError, OSError):
             return None
+        return timestamp if math.isfinite(timestamp) else None
     return None
 
 
-def _normalize_steps(events: list[dict], prompts: list[str] | None) -> list[Step]:
-    """Project raw ACP events onto renderer steps with server-side numbering.
+def _tool_timing(event: dict[str, Any]) -> tuple[float | None, float | None]:
+    started = _parse_ts(event.get("started_at"))
+    if started is None:
+        started = _parse_ts(event.get("ts"))
+    finished = _parse_ts(event.get("finished_at"))
+    duration = (
+        finished - started
+        if started is not None and finished is not None and finished >= started
+        else None
+    )
+    return started, duration
 
-    Prompt labels ("PROMPT 1") are computed here, not client-side, and the
-    ``prompts`` list is embedded only when the trajectory has no inline
-    user_message events — embedding both would duplicate prompt text in the
-    emitted page (pinned by TestViewerCompatibility).
 
-    Timestamps are forward-compatible passthrough: today's captures carry
-    none (verified across the HF ground-truth uploads), but when the
-    capture-side proposal lands (``ts`` on text events, ``started_at`` /
-    ``finished_at`` on tool calls — benchflow#1033) steps gain ``t`` (epoch)
-    and tools ``dur`` (seconds), and the renderer shows a timeline with no
-    further changes.
-    """
+def _normalize_steps(
+    events: list[dict[str, Any]], prompts: list[str] | None
+) -> list[Step]:
+    """Project raw ACP event variants onto explicit renderer step variants."""
     steps: list[Step] = []
     prompt_counter = 0
 
-    def add(step: Step, event: dict | None = None) -> None:
-        step.i = len(steps) + 1
-        if event is not None:
-            if step.kind == "tool":
-                started = _parse_ts(event.get("started_at") or event.get("ts"))
-                finished = _parse_ts(event.get("finished_at"))
-                if started is not None:
-                    step.t = started
-                    if finished is not None and finished >= started:
-                        step.dur = finished - started
-            else:
-                step.t = _parse_ts(event.get("ts"))
-        steps.append(step)
+    def next_index() -> int:
+        return len(steps) + 1
 
-    has_inline_prompts = any(e.get("type") == "user_message" for e in events)
+    has_inline_prompts = any(event.get("type") == "user_message" for event in events)
     if not has_inline_prompts:
         for text in prompts or []:
             prompt_counter += 1
-            add(
-                Step(
-                    i=0,
-                    kind="prompt",
+            steps.append(
+                PromptStep(
+                    i=next_index(),
                     label=f"PROMPT {prompt_counter}",
-                    text=str(text),
+                    text=_display_text(text),
                 )
             )
 
     for event in events:
-        etype = event.get("type", "")
-        if etype == "user_message":
+        if not _within_json_depth(event):
+            continue
+        event_type = _optional_text(event.get("type")) or ""
+        event_time = _parse_ts(event.get("ts"))
+        if event_type == "user_message":
             prompt_counter += 1
-            add(
-                Step(
-                    i=0,
-                    kind="prompt",
+            steps.append(
+                PromptStep(
+                    i=next_index(),
                     label=f"PROMPT {prompt_counter}",
-                    text=str(event.get("text", "")),
-                ),
-                event,
+                    text=_display_text(event.get("text")),
+                    t=event_time,
+                )
             )
-        elif etype == "agent_message":
-            add(Step(i=0, kind="message", text=str(event.get("text", ""))), event)
-        elif etype == "agent_thought":
-            add(Step(i=0, kind="thought", text=str(event.get("text", ""))), event)
-        elif etype == "tool_call":
-            kind = str(event.get("kind", "other"))
-            title = str(event.get("title", ""))
-            add(
-                Step(
-                    i=0,
-                    kind="tool",
+        elif event_type == "agent_message":
+            steps.append(
+                MessageStep(
+                    i=next_index(), text=_display_text(event.get("text")), t=event_time
+                )
+            )
+        elif event_type == "agent_thought":
+            steps.append(
+                ThoughtStep(
+                    i=next_index(), text=_display_text(event.get("text")), t=event_time
+                )
+            )
+        elif event_type == "tool_call":
+            kind = _display_text(event.get("kind")) or "other"
+            title = _display_text(event.get("title"))
+            started, duration = _tool_timing(event)
+            steps.append(
+                ToolStep(
+                    i=next_index(),
                     tool=ToolCall(
-                        id=str(event.get("tool_call_id", "")),
+                        id=_display_text(event.get("tool_call_id")),
                         kind=kind,
                         title=title,
-                        status=str(event.get("status", "")),
+                        status=normalize_tool_status(event.get("status")),
                         content=_tool_content_texts(event.get("content")),
                         hue=tool_hue(kind, title),
                     ),
-                ),
-                event,
+                    t=started,
+                    dur=duration,
+                )
             )
-        elif etype == "agent_timeout":
-            # Coerce to a list of strings — a crafted non-list value would
-            # otherwise reach the client and break the renderer.
-            pending_raw = event.get("pending_tool_call_ids")
-            add(
-                Step(
-                    i=0,
-                    kind="timeout",
+        elif event_type == "agent_timeout":
+            pending = event.get("pending_tool_call_ids")
+            steps.append(
+                TimeoutStep(
+                    i=next_index(),
                     timeout=TimeoutInfo(
-                        reason=str(event.get("reason", "")),
-                        timeout_sec=event.get("timeout_sec"),
-                        pending=[str(x) for x in pending_raw]
-                        if isinstance(pending_raw, list)
+                        reason=_display_text(event.get("reason")),
+                        timeout_sec=_finite_float(event.get("timeout_sec")),
+                        pending=[_display_text(item) for item in pending]
+                        if isinstance(pending, list)
                         else [],
-                        complete=event.get("terminal_trajectory_complete"),
+                        complete=_optional_bool(
+                            event.get("terminal_trajectory_complete")
+                        ),
                     ),
-                ),
-                event,
+                    t=event_time,
+                )
             )
         else:
-            # Unknown/future event types render as a generic card, never
-            # crash — and ship complete (the template collapses long bodies;
-            # silent truncation would betray the full-event-stream promise).
-            add(
-                Step(
-                    i=0,
-                    kind="unknown",
-                    type=str(etype),
-                    text=json.dumps(event, ensure_ascii=False),
-                ),
-                event,
+            steps.append(
+                UnknownStep(
+                    i=next_index(),
+                    type=event_type,
+                    text=dumps_finite(event, ensure_ascii=False, default=str),
+                    t=event_time,
+                )
             )
     return steps
 
 
-def _build_meta(result_data: dict, timing: dict | None, steps: list[Step]) -> Meta:
-    rewards = result_data.get("rewards")
-    reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    agent_result = result_data.get("agent_result")
-    usage = agent_result if isinstance(agent_result, dict) else {}
+_USAGE_INT_FIELDS = (
+    "n_tool_calls",
+    "n_skill_invocations",
+    "n_prompts",
+    "n_input_tokens",
+    "n_output_tokens",
+    "n_cache_read_tokens",
+    "n_cache_creation_tokens",
+    "total_tokens",
+)
 
-    errors: list[ErrorBanner] = []
-    if result_data.get("error"):
-        errors.append(
-            ErrorBanner(
-                label=str(result_data.get("error_category") or "error"),
-                text=str(result_data["error"]),
-            )
-        )
-    if result_data.get("verifier_error"):
-        errors.append(
-            ErrorBanner(
-                label=str(
-                    result_data.get("verifier_error_category") or "verifier error"
-                ),
-                text=str(result_data["verifier_error"]),
-            )
-        )
-    if result_data.get("export_error"):
-        errors.append(
-            ErrorBanner(label="export error", text=str(result_data["export_error"]))
-        )
-    # Diagnostics that ride along an actual error render as error banners;
-    # on an otherwise-clean rollout they are behavior flags (e.g. #1025's
-    # chat-only completion) and render neutrally. All three error channels
-    # count as "actual error". Text ships complete — the template collapses
-    # long banners instead of this side truncating them.
-    has_error = bool(
-        result_data.get("error")
-        or result_data.get("verifier_error")
-        or result_data.get("export_error")
+
+def _normalize_usage(raw: Any) -> Usage:
+    values = _json_object(raw)
+    integers: dict[str, int | None] = {}
+    for field_name in _USAGE_INT_FIELDS:
+        normalized = _nonnegative_int(values.get(field_name))
+        integers[field_name] = normalized
+        if field_name in values:
+            values[field_name] = normalized
+
+    cost_usd = _finite_float(values.get("cost_usd"))
+    if "cost_usd" in values:
+        values["cost_usd"] = cost_usd
+    usage_source = _optional_text(values.get("usage_source"))
+    price_source = _optional_text(values.get("price_source"))
+    if "usage_source" in values:
+        values["usage_source"] = usage_source
+    if "price_source" in values:
+        values["price_source"] = price_source
+
+    return Usage(
+        values=values,
+        n_tool_calls=integers["n_tool_calls"],
+        n_skill_invocations=integers["n_skill_invocations"],
+        n_prompts=integers["n_prompts"],
+        n_input_tokens=integers["n_input_tokens"],
+        n_output_tokens=integers["n_output_tokens"],
+        n_cache_read_tokens=integers["n_cache_read_tokens"],
+        n_cache_creation_tokens=integers["n_cache_creation_tokens"],
+        total_tokens=integers["total_tokens"],
+        cost_usd=cost_usd,
+        usage_source=usage_source,
+        price_source=price_source,
     )
+
+
+def _normalize_timing(raw: Any) -> Timing | None:
+    if not isinstance(raw, dict) or not _within_json_depth(raw):
+        return None
+    values = {str(key): _finite_float(value) for key, value in raw.items()}
+    return Timing(values=values, total=values.get("total"))
+
+
+def _error_text(value: Any) -> str | None:
+    return _display_text(value) if value else None
+
+
+def _normalize_metadata(
+    result_data: dict[str, Any], timing_data: dict[str, Any] | None
+) -> RolloutMetadata:
+    """Canonical result/timing boundary shared by detail and catalog views."""
+    if not _within_json_depth(result_data):
+        result_data = {}
+    rewards = result_data.get("rewards")
+    reward = _finite_float(rewards.get("reward")) if isinstance(rewards, dict) else None
+    usage = _normalize_usage(result_data.get("agent_result"))
+    timing = _normalize_timing(timing_data)
+
+    agent_error = _error_text(result_data.get("error"))
+    verifier_error = _error_text(result_data.get("verifier_error"))
+    export_error = _error_text(result_data.get("export_error"))
+    has_error = any((agent_error, verifier_error, export_error))
+    errors: list[ErrorBanner] = []
+    if agent_error is not None:
+        errors.append(
+            ErrorBanner(
+                label=_optional_text(result_data.get("error_category")) or "error",
+                text=agent_error,
+            )
+        )
+    if verifier_error is not None:
+        errors.append(
+            ErrorBanner(
+                label=_optional_text(result_data.get("verifier_error_category"))
+                or "verifier error",
+                text=verifier_error,
+            )
+        )
+    if export_error is not None:
+        errors.append(ErrorBanner(label="export error", text=export_error))
+
     for key in _diagnostic_keys():
         value = result_data.get(key)
         if value:
             errors.append(
                 ErrorBanner(
                     label=key.removesuffix("_info").replace("_", " "),
-                    text=json.dumps(value, ensure_ascii=False, default=str),
+                    text=dumps_finite(value, ensure_ascii=False, default=str),
                     level="error" if has_error else "info",
                 )
             )
 
-    return Meta(
-        task_name=result_data.get("task_name"),
-        agent_name=result_data.get("agent_name") or result_data.get("agent"),
-        model=result_data.get("model"),
-        skill_mode=result_data.get("skill_mode"),
+    top_level_tool_calls = _nonnegative_int(result_data.get("n_tool_calls"))
+    agent_name = _optional_text(result_data.get("agent_name")) or _optional_text(
+        result_data.get("agent")
+    )
+    return RolloutMetadata(
+        task_name=_optional_text(result_data.get("task_name")),
+        agent_name=agent_name,
+        model=_optional_text(result_data.get("model")),
+        skill_mode=_optional_text(result_data.get("skill_mode")),
         reward=reward,
         usage=usage,
-        counts=StepCounts(
-            prompts=sum(1 for s in steps if s.kind == "prompt"),
-            messages=sum(1 for s in steps if s.kind == "message"),
-            thoughts=sum(1 for s in steps if s.kind == "thought"),
-            tools=sum(1 for s in steps if s.kind == "tool"),
-        ),
         timing=timing,
-        duration_sec=(timing or {}).get("total"),
-        errors=errors,
-        trajectory_source=result_data.get("trajectory_source"),
-        partial_trajectory=result_data.get("partial_trajectory"),
-        started_at=result_data.get("started_at"),
-        finished_at=result_data.get("finished_at"),
+        n_tool_calls=top_level_tool_calls
+        if top_level_tool_calls is not None
+        else usage.n_tool_calls,
+        errors=tuple(errors),
+        has_error=has_error,
+        trajectory_source=_optional_text(result_data.get("trajectory_source")),
+        partial_trajectory=_optional_bool(result_data.get("partial_trajectory")),
+        started_at=_optional_text(result_data.get("started_at")),
+        finished_at=_optional_text(result_data.get("finished_at")),
     )
 
 
-# The exact verifier sidecars the viewer renders. Also the verifier/ portion
-# of the hf:// download allowlist (imported by .sources), so the fetch
-# surface can never drift wider than what this module actually reads.
+def _load_rollout_metadata(rollout_dir: Path) -> RolloutMetadata:
+    """Load and normalize both metadata sidecars exactly once per projection."""
+    result_data = _load_result_json(rollout_dir)
+    preferred_timing = _load_json(rollout_dir / "timing.json")
+    if not isinstance(preferred_timing, dict):
+        embedded_timing = result_data.get("timing")
+        preferred_timing = (
+            embedded_timing if isinstance(embedded_timing, dict) else None
+        )
+    return _normalize_metadata(result_data, preferred_timing)
+
+
+def _build_meta(metadata: RolloutMetadata, steps: list[Step]) -> Meta:
+    counts = StepCounts(
+        prompts=sum(step.kind == "prompt" for step in steps),
+        messages=sum(step.kind == "message" for step in steps),
+        thoughts=sum(step.kind == "thought" for step in steps),
+        tools=sum(step.kind == "tool" for step in steps),
+    )
+    return Meta(
+        task_name=metadata.task_name,
+        agent_name=metadata.agent_name,
+        model=metadata.model,
+        skill_mode=metadata.skill_mode,
+        reward=metadata.reward,
+        usage=metadata.usage,
+        counts=counts,
+        timing=metadata.timing,
+        duration_sec=metadata.timing.total if metadata.timing is not None else None,
+        errors=metadata.errors,
+        trajectory_source=metadata.trajectory_source,
+        partial_trajectory=metadata.partial_trajectory,
+        started_at=metadata.started_at,
+        finished_at=metadata.finished_at,
+    )
+
+
+# Exact verifier sidecars rendered by the viewer and downloaded for hf://.
 VERIFIER_SIDECARS = ("reward.txt", "test-stdout.txt", "test-stderr.txt", "ctrf.json")
 (
     _VERIFIER_REWARD,
@@ -325,43 +531,40 @@ VERIFIER_SIDECARS = ("reward.txt", "test-stdout.txt", "test-stderr.txt", "ctrf.j
 
 
 def _load_verifier(rollout_dir: Path) -> VerifierArtifacts:
-    vdir = rollout_dir / "verifier"
-    reward = _read_text(vdir / _VERIFIER_REWARD)
-    ctrf_tests = None
-    ctrf = _load_json(vdir / _VERIFIER_CTRF)
+    verifier_dir = rollout_dir / "verifier"
+    reward = _read_text(verifier_dir / _VERIFIER_REWARD)
+    ctrf_tests: list[VerifierTest] | None = None
+    ctrf = _load_json(verifier_dir / _VERIFIER_CTRF)
     if isinstance(ctrf, dict):
-        raw_tests = (ctrf.get("results") or {}).get("tests")
+        results = ctrf.get("results")
+        raw_tests = results.get("tests") if isinstance(results, dict) else None
         if isinstance(raw_tests, list):
             ctrf_tests = [
-                {
-                    "name": str(t.get("name", "")),
-                    "status": str(t.get("status", "")),
-                    "duration": t.get("duration"),
-                }
-                for t in raw_tests
-                if isinstance(t, dict)
+                VerifierTest(
+                    name=_display_text(test.get("name")),
+                    status=normalize_verifier_status(test.get("status")),
+                    duration=_finite_float(test.get("duration")),
+                )
+                for test in raw_tests
+                if isinstance(test, dict)
             ]
     return VerifierArtifacts(
         reward=reward.strip() if reward else None,
-        stdout=_read_text(vdir / _VERIFIER_STDOUT),
-        stderr=_read_text(vdir / _VERIFIER_STDERR),
+        stdout=_read_text(verifier_dir / _VERIFIER_STDOUT),
+        stderr=_read_text(verifier_dir / _VERIFIER_STDERR),
         ctrf=ctrf_tests,
     )
 
 
 def _safe_json(obj: Any) -> str:
-    """Serialize untrusted payload data to UTF-8-safe JSON text.
-
-    Lone surrogates (possible in crafted trajectory text) survive
-    ``json.dumps(ensure_ascii=False)`` but crash utf-8 encoding later in
-    ``serve()``; replace them here.
-    """
-    data = json.dumps(obj, ensure_ascii=False, default=str)
+    """Emit strict, finite JSON and replace lone UTF-16 surrogates."""
+    if not _within_json_depth(obj, max_depth=_MAX_JSON_OUTPUT_DEPTH):
+        return "null"
+    data = dumps_finite(obj, ensure_ascii=False, default=str)
     return data.encode("utf-8", errors="replace").decode("utf-8")
 
 
 def _build_acp_payload(rollout_dir: Path, prompts: list[str] | None) -> ViewerPayload:
-    """Assemble the typed renderer payload for one canonical ACP rollout dir."""
     acp_path = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
     try:
         text = acp_path.read_text(encoding="utf-8", errors="replace")
@@ -370,19 +573,12 @@ def _build_acp_payload(rollout_dir: Path, prompts: list[str] | None) -> ViewerPa
     events = _parse_jsonl(text)
 
     if prompts is None:
-        loaded = _load_json(rollout_dir / "prompts.json")
-        prompts = loaded if isinstance(loaded, list) else None
-
-    result_data = _load_result_json(rollout_dir)
-    timing = _load_json(rollout_dir / "timing.json")
-    if not isinstance(timing, dict):
-        embedded = result_data.get("timing")
-        timing = embedded if isinstance(embedded, dict) else None
+        prompts = _load_prompts(rollout_dir)
 
     steps = _normalize_steps(events, prompts)
     return ViewerPayload(
         rollout_name=rollout_dir.name,
-        meta=_build_meta(result_data, timing, steps),
+        meta=_build_meta(_load_rollout_metadata(rollout_dir), steps),
         steps=steps,
         verifier=_load_verifier(rollout_dir),
     )
@@ -392,6 +588,6 @@ def _is_acp_rollout_dir(path: Path) -> bool:
     return (path / "trajectory" / "acp_trajectory.jsonl").exists()
 
 
-def _load_result_json(rollout_dir: Path) -> dict:
+def _load_result_json(rollout_dir: Path) -> dict[str, Any]:
     parsed = _load_json(rollout_dir / "result.json")
     return parsed if isinstance(parsed, dict) else {}

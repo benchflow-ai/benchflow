@@ -9,6 +9,7 @@ from .payload import _build_acp_payload, _safe_json
 
 _PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
 _TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
+_SCRIPT_ASSETS = ("viewer.js", "detail.js", "catalog.js", "boot.js")
 
 
 def _theme_css() -> str:
@@ -34,17 +35,47 @@ def _load_template() -> str:
     )
     page = page.replace(
         "//__BENCHFLOW_VIEWER_JS__",
-        (assets / "viewer.js").read_text(encoding="utf-8"),
+        "\n\n".join(
+            (assets / name).read_text(encoding="utf-8") for name in _SCRIPT_ASSETS
+        ),
         1,
     )
     return page
 
 
+def _json_for_script(value: Any) -> str:
+    """Serialize JSON safely inside an HTML ``script`` data block.
+
+    Escaping only ``</`` is insufficient: ``<!--<script>`` enters the HTML
+    tokenizer's script-data double-escaped state and can swallow every later
+    closing script tag.  Escaping all HTML-significant code points also keeps
+    the JSON valid because JavaScript's JSON parser decodes ``\\uXXXX`` escapes.
+    U+2028/U+2029 are included for compatibility with consumers that copy the
+    document into an executable-script context.
+    """
+    return (
+        _safe_json(value)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _render_shell(title: str, boot: dict[str, Any]) -> str:
     """Inject a boot document into the template (script-breakout escaped)."""
     page = _load_template()
-    page = page.replace(_TITLE_PLACEHOLDER, html.escape(title), 1)
-    return page.replace(_PAYLOAD_PLACEHOLDER, _safe_json(boot).replace("</", "<\\/"), 1)
+    # Replace the payload while the template still owns the only payload
+    # marker.  If an untrusted title happens to equal that marker, inserting
+    # the title first would consume the JSON replacement and leave the real
+    # script node empty.
+    page = page.replace(
+        _PAYLOAD_PLACEHOLDER,
+        _json_for_script(boot),
+        1,
+    )
+    return page.replace(_TITLE_PLACEHOLDER, html.escape(title), 1)
 
 
 def _render_acp_trajectory(
@@ -52,8 +83,8 @@ def _render_acp_trajectory(
 ) -> str:
     """Render a canonical ACP rollout as a self-contained interactive page.
 
-    Trajectory content is untrusted input: it travels as JSON data (``</``
-    escaped so it cannot break out of the script tag) and the template
+    Trajectory content is untrusted input: it travels as JSON data (all ``<``
+    characters escaped for the HTML script-data tokenizer) and the template
     renders it exclusively via ``textContent``.
     """
     payload = _build_acp_payload(rollout_dir, prompts)

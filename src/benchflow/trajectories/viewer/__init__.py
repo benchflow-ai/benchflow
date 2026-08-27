@@ -26,6 +26,7 @@ from .payload import (
     _build_acp_payload,
     _diagnostic_keys,
     _is_acp_rollout_dir,
+    _load_prompts,
     _parse_jsonl,
     _safe_json,
     _tool_content_texts,
@@ -36,6 +37,7 @@ from .sources import (
     _HF_VIEWER_FILES,
     HfDatasetSource,
     LocalPathSource,
+    ViewerSourceError,
     parse_source,
     resolve_hf_dataset,
 )
@@ -50,6 +52,7 @@ __all__ = [
     "resolve_hf_dataset",
     "LocalPathSource",
     "HfDatasetSource",
+    "ViewerSourceError",
     # internals reached by tests and siblings through the historical module
     "_DIAGNOSTIC_KEYS_FALLBACK",
     "_HF_VIEWER_FILES",
@@ -61,6 +64,7 @@ __all__ = [
     "_discover_rollouts",
     "_inject_confirm_bar",
     "_is_acp_rollout_dir",
+    "_load_prompts",
     "_parse_jsonl",
     "_render_acp_trajectory",
     "_render_shell",

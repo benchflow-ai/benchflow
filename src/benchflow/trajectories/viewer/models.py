@@ -1,13 +1,8 @@
-"""Typed contract for the viewer payload — the Python ↔ JavaScript boundary.
+"""Typed view models for the Python-to-JavaScript viewer boundary.
 
-Every field the template's JavaScript reads is declared here, once. The
-``to_payload()`` methods are the only place view-model objects become JSON:
-they preserve the exact wire shape the renderer and its tests pin, including
-which optional keys are *omitted* (not nulled) when absent.
-
-Tool-kind classification also lives here as the single source: Python
-computes each tool call's display ``hue`` and ships it in the payload, so
-the JavaScript never re-derives (and can never drift from) it.
+Raw rollout artifacts are normalized before they enter these models.  Each
+``to_payload`` method is therefore a small, explicit declaration of the wire
+shape instead of a second validation layer.
 """
 
 from __future__ import annotations
@@ -15,21 +10,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
-StepKind = Literal["prompt", "message", "thought", "tool", "timeout", "unknown"]
+type JsonValue = (
+    None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+)
+type JsonObject = dict[str, JsonValue]
+
 ToolHue = Literal[
     "read", "edit", "execute", "fetch", "search", "think", "skill", "other"
 ]
+ToolStatus = Literal[
+    "pending", "in_progress", "completed", "failed", "cancelled", "unknown"
+]
+VerifierStatus = Literal["passed", "failed", "skipped", "pending", "unknown"]
 
-# ACP kinds that are already display hues.
 _KNOWN_HUES: frozenset[str] = frozenset(
     {"read", "edit", "execute", "fetch", "search", "think", "skill"}
 )
-
-# Fallback classification for coarse kinds ("other" covers Skill/Task/...,
-# and kinds like "delete"/"move" fall outside the canonical set): infer the
-# hue from kind+title needles. Order matters — earlier entries win (e.g.
-# "websearch" hits search before read). Mirrors the legacy renderer's
-# _tool_accent_class chain.
 _HUE_INFER: tuple[tuple[ToolHue, tuple[str, ...]], ...] = (
     ("search", ("web", "search", "fetch", "grep", "glob", "browser")),
     ("execute", ("bash", "shell", "exec", "terminal", "command")),
@@ -37,27 +33,50 @@ _HUE_INFER: tuple[tuple[ToolHue, tuple[str, ...]], ...] = (
     ("read", ("read", "cat", "view", "ls", "list")),
     ("skill", ("agent", "task", "skill", "oracle")),
 )
+_TOOL_STATUSES: frozenset[str] = frozenset(
+    {"pending", "in_progress", "completed", "failed", "cancelled"}
+)
+_VERIFIER_STATUSES: frozenset[str] = frozenset(
+    {"passed", "failed", "skipped", "pending"}
+)
 
 
-def tool_hue(kind: str, title: str) -> ToolHue:
-    """Display hue for a tool call — the one classification site."""
-    if kind in _KNOWN_HUES:
-        return cast(ToolHue, kind)
-    hay = f"{kind} {title}".lower()
+def tool_hue(kind: str, title: str = "") -> ToolHue:
+    """Classify a tool once for both modern and legacy renderers."""
+    normalized_kind = kind.strip().lower()
+    if normalized_kind in _KNOWN_HUES:
+        return cast(ToolHue, normalized_kind)
+    haystack = f"{kind} {title}".lower()
     for hue, needles in _HUE_INFER:
-        if any(needle in hay for needle in needles):
+        if any(needle in haystack for needle in needles):
             return hue
     return "other"
 
 
-@dataclass
-class ToolCall:
-    """One tool invocation as the trace stream renders it."""
+def normalize_tool_status(value: object) -> ToolStatus:
+    """Return a CSS-safe ACP tool status, never untrusted source text."""
+    if isinstance(value, str):
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in _TOOL_STATUSES:
+            return cast(ToolStatus, normalized)
+    return "unknown"
 
+
+def normalize_verifier_status(value: object) -> VerifierStatus:
+    """Return the small verifier status vocabulary understood by the UI."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _VERIFIER_STATUSES:
+            return cast(VerifierStatus, normalized)
+    return "unknown"
+
+
+@dataclass(frozen=True)
+class ToolCall:
     id: str
     kind: str
     title: str
-    status: str
+    status: ToolStatus
     content: list[str]
     hue: ToolHue
 
@@ -72,10 +91,8 @@ class ToolCall:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class TimeoutInfo:
-    """agent_timeout event details."""
-
     reason: str
     timeout_sec: float | None
     pending: list[str]
@@ -90,60 +107,115 @@ class TimeoutInfo:
         }
 
 
-@dataclass
-class Step:
-    """One renderer step. Optional fields are omitted from the wire when
-    absent — the template (and the timestamp tests) rely on key presence,
-    not null checks."""
+def _step_payload(i: int, kind: str, *, t: float | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"i": i, "kind": kind}
+    if t is not None:
+        payload["t"] = t
+    return payload
 
+
+@dataclass(frozen=True)
+class PromptStep:
     i: int
-    kind: StepKind
-    label: str | None = None
-    text: str | None = None
-    type: str | None = None  # original event type, unknown steps only
-    tool: ToolCall | None = None
-    timeout: TimeoutInfo | None = None
-    t: float | None = None  # epoch seconds, when the capture has timestamps
-    dur: float | None = None  # tool duration seconds
+    label: str
+    text: str
+    t: float | None = None
+    kind: Literal["prompt"] = field(default="prompt", init=False)
 
     def to_payload(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"i": self.i, "kind": self.kind}
-        if self.label is not None:
-            out["label"] = self.label
-        if self.text is not None:
-            out["text"] = self.text
-        if self.type is not None:
-            out["type"] = self.type
-        if self.tool is not None:
-            out["tool"] = self.tool.to_payload()
-        if self.timeout is not None:
-            out["timeout"] = self.timeout.to_payload()
-        if self.t is not None:
-            out["t"] = self.t
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload.update(label=self.label, text=self.text)
+        return payload
+
+
+@dataclass(frozen=True)
+class MessageStep:
+    i: int
+    text: str
+    t: float | None = None
+    kind: Literal["message"] = field(default="message", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload["text"] = self.text
+        return payload
+
+
+@dataclass(frozen=True)
+class ThoughtStep:
+    i: int
+    text: str
+    t: float | None = None
+    kind: Literal["thought"] = field(default="thought", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload["text"] = self.text
+        return payload
+
+
+@dataclass(frozen=True)
+class ToolStep:
+    i: int
+    tool: ToolCall
+    t: float | None = None
+    dur: float | None = None
+    kind: Literal["tool"] = field(default="tool", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload["tool"] = self.tool.to_payload()
         if self.dur is not None:
-            out["dur"] = self.dur
-        return out
+            payload["dur"] = self.dur
+        return payload
 
 
-@dataclass
+@dataclass(frozen=True)
+class TimeoutStep:
+    i: int
+    timeout: TimeoutInfo
+    t: float | None = None
+    kind: Literal["timeout"] = field(default="timeout", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload["timeout"] = self.timeout.to_payload()
+        return payload
+
+
+@dataclass(frozen=True)
+class UnknownStep:
+    i: int
+    type: str
+    text: str
+    t: float | None = None
+    kind: Literal["unknown"] = field(default="unknown", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload.update(type=self.type, text=self.text)
+        return payload
+
+
+type Step = (
+    PromptStep | MessageStep | ThoughtStep | ToolStep | TimeoutStep | UnknownStep
+)
+
+
+@dataclass(frozen=True)
 class ErrorBanner:
-    """One header banner. ``level`` is present only for registry diagnostics
-    ("error" riding along a real failure, "info" for behavior flags on an
-    otherwise-clean rollout); explicit error channels carry no level and
-    always render as errors."""
-
     label: str
     text: str
     level: Literal["error", "info"] | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"label": self.label, "text": self.text}
+        payload: dict[str, Any] = {"label": self.label, "text": self.text}
         if self.level is not None:
-            out["level"] = self.level
-        return out
+            payload["level"] = self.level
+        return payload
 
 
-@dataclass
+@dataclass(frozen=True)
 class StepCounts:
     prompts: int = 0
     messages: int = 0
@@ -159,21 +231,70 @@ class StepCounts:
         }
 
 
-@dataclass
-class Meta:
-    """Header metadata from result.json/timing.json. Every key ships (null
-    when unknown) — the template hides absent stats itself."""
+@dataclass(frozen=True)
+class Usage:
+    """Normalized ``agent_result`` plus typed fields used by the catalog."""
+
+    values: JsonObject = field(default_factory=dict)
+    n_tool_calls: int | None = None
+    n_skill_invocations: int | None = None
+    n_prompts: int | None = None
+    n_input_tokens: int | None = None
+    n_output_tokens: int | None = None
+    n_cache_read_tokens: int | None = None
+    n_cache_creation_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    usage_source: str | None = None
+    price_source: str | None = None
+
+    def to_payload(self) -> JsonObject:
+        return dict(self.values)
+
+
+@dataclass(frozen=True)
+class Timing:
+    """Finite phase timings loaded from the preferred timing artifact."""
+
+    values: dict[str, float | None]
+    total: float | None = None
+
+    def to_payload(self) -> dict[str, float | None]:
+        return dict(self.values)
+
+
+@dataclass(frozen=True)
+class RolloutMetadata:
+    """Canonical normalized projection of result.json and timing.json."""
 
     task_name: str | None = None
     agent_name: str | None = None
     model: str | None = None
     skill_mode: str | None = None
     reward: float | None = None
-    usage: dict[str, Any] = field(default_factory=dict)
+    usage: Usage = field(default_factory=Usage)
+    timing: Timing | None = None
+    n_tool_calls: int | None = None
+    errors: tuple[ErrorBanner, ...] = ()
+    has_error: bool = False
+    trajectory_source: str | None = None
+    partial_trajectory: bool | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+@dataclass(frozen=True)
+class Meta:
+    task_name: str | None = None
+    agent_name: str | None = None
+    model: str | None = None
+    skill_mode: str | None = None
+    reward: float | None = None
+    usage: Usage = field(default_factory=Usage)
     counts: StepCounts = field(default_factory=StepCounts)
-    timing: dict[str, Any] | None = None
+    timing: Timing | None = None
     duration_sec: float | None = None
-    errors: list[ErrorBanner] = field(default_factory=list)
+    errors: tuple[ErrorBanner, ...] = ()
     trajectory_source: str | None = None
     partial_trajectory: bool | None = None
     started_at: str | None = None
@@ -186,11 +307,11 @@ class Meta:
             "model": self.model,
             "skill_mode": self.skill_mode,
             "reward": self.reward,
-            "usage": self.usage,
+            "usage": self.usage.to_payload(),
             "counts": self.counts.to_payload(),
-            "timing": self.timing,
+            "timing": self.timing.to_payload() if self.timing is not None else None,
             "duration_sec": self.duration_sec,
-            "errors": [e.to_payload() for e in self.errors],
+            "errors": [error.to_payload() for error in self.errors],
             "trajectory_source": self.trajectory_source,
             "partial_trajectory": self.partial_trajectory,
             "started_at": self.started_at,
@@ -198,26 +319,40 @@ class Meta:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
+class VerifierTest:
+    name: str
+    status: VerifierStatus
+    duration: float | None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "duration": self.duration,
+        }
+
+
+@dataclass(frozen=True)
 class VerifierArtifacts:
     reward: str | None = None
     stdout: str | None = None
     stderr: str | None = None
-    ctrf: list[dict[str, Any]] | None = None
+    ctrf: list[VerifierTest] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "reward": self.reward,
             "stdout": self.stdout,
             "stderr": self.stderr,
-            "ctrf": self.ctrf,
+            "ctrf": [test.to_payload() for test in self.ctrf]
+            if self.ctrf is not None
+            else None,
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ViewerPayload:
-    """The complete single-run payload embedded in (or fetched by) the page."""
-
     rollout_name: str
     meta: Meta
     steps: list[Step]
@@ -229,16 +364,13 @@ class ViewerPayload:
             "schema_version": self.schema_version,
             "rollout_name": self.rollout_name,
             "meta": self.meta.to_payload(),
-            "steps": [s.to_payload() for s in self.steps],
+            "steps": [step.to_payload() for step in self.steps],
             "verifier": self.verifier.to_payload(),
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class RunSummary:
-    """One browse-mode catalog row: identity, verdict, and the row-level
-    stats the index sorts and displays (duration/cost/tokens/tool calls)."""
-
     id: str
     name: str
     task_name: str
