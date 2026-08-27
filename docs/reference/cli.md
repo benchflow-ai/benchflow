@@ -435,9 +435,42 @@ bench eval metrics jobs/ --json
 ### bench eval view
 
 Serve a trial trajectory viewer in the browser for a rollout directory, a job
-directory, or a Claude Code / Codex / ACP session JSONL file. Contributors
+directory, a Claude Code / Codex / ACP session JSONL file, or a HuggingFace
+trajectory dataset. Contributors
 reach this through the [trajectory upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md),
 not by running the command themselves.
+
+ACP rollout directories render as an interactive review page: full-fidelity
+event stream (long content collapses instead of truncating), a header with
+harness/model/skills, reward badge, token/cost/duration tiles and
+`result.json` failure diagnostics, Verifier and Metrics tabs, Focus/Full
+modes, per-kind filters, text search, and per-event `#e42` anchors. When a
+capture carries per-event timestamps the stream shows a `+m:ss` timeline and
+per-tool durations; today's captures carry none, so nothing renders until the
+capture side starts writing them.
+
+Pointing the command at a directory **of** rollouts (a job directory, a whole
+`jobs/` tree) serves **browse mode** instead: a run catalog with corpus
+counts, grouping (by task, by model + harness, or none) with per-group
+pass/fail aggregates, sorting (name/reward/duration/cost), text filtering,
+collapsible groups with incremental "show more" pagination, and URL-preserved
+state — selecting a run opens the detail page and the back control restores
+the exact catalog view. Traces load dynamically via `/api/rollout?id=…` —
+ids resolve only by exact membership in a fresh
+directory scan — and `?run=<id>` deep-links a run.
+Discovery is capped at 500 runs by default (`BENCHFLOW_VIEWER_MAX_RUNS`
+overrides); truncation is never silent — the sidebar heading, the server
+startup line, and the catalog payload all signal it, and a `?run=` id outside
+the discovered set shows an explicit error instead of another run.
+
+`hf://<org>/<dataset>[@revision][/subpath]` browses a HuggingFace trajectory
+dataset (e.g. the community ground-truth uploads). The download allowlist is
+exact — `result.json`, `timing.json`, `prompts.json`,
+`trajectory/acp_trajectory.jsonl`, and the four verifier sidecars the viewer
+renders (`reward.txt`, `test-stdout.txt`, `test-stderr.txt`, `ctrf.json`) —
+never wildcards, so large run artifacts and `llm_trajectory`/`trainer`
+exports are not fetched. Files land in the shared `huggingface_hub` cache,
+so repeat views are incremental.
 
 `--confirm` adds a sticky approve/reject bar to the page. When the reviewer
 clicks **Approve & submit** or **Not this one**, the server prints one
@@ -445,7 +478,10 @@ machine-readable line to stdout — `DECISION: approved` or
 `DECISION: rejected` — and exits. Exit codes: `0` approved (also the normal
 Ctrl+C stop), `3` rejected — deliberately not `1`/`2`, which stay reserved
 for errors and usage mistakes. Without `--confirm` the server has no
-`/decision` endpoint and runs until Ctrl+C, as before.
+`/decision` endpoint and runs until Ctrl+C, as before. Confirmation requests
+are accepted only from the viewer page served by that process: each server
+uses a one-time random token and validates the request's localhost host and
+origin.
 
 `--redaction-summary "2 API keys, 1 bearer token"` adds a display-only note to
 the `--confirm` bar — "Before upload, BenchFlow masks: … Originals never leave
@@ -458,6 +494,7 @@ effect; without the flag the bar is unchanged.
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
+bench eval view hf://benchflow/skillsbench-trajectories-apr2026/jobs/opus47-with-skills-t1
 bench eval view ~/.claude/projects/<project>/<session>.jsonl
 bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
 bench eval view session.jsonl --confirm --redaction-summary "2 API keys, 1 bearer token"
