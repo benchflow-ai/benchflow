@@ -1106,7 +1106,10 @@ class Evaluation:
                             "Malformed rewards field in %s for task %r: "
                             "expected dict or null, got %s %r — "
                             "treating as no reward (task will count as errored)",
-                            rfile, task, type(_rw).__name__, _rw,
+                            rfile,
+                            task,
+                            type(_rw).__name__,
+                            _rw,
                         )
                     mtime = rfile.stat().st_mtime
                     prev = best.get(task)
