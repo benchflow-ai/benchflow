@@ -7,13 +7,16 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
 
 from benchflow._types import Scene, Turn
+from benchflow.branch_stage import AUTO_STAGES, normalize_stages
 from benchflow.contracts.user import BaseUser, DocumentNudgeUser, ModelDocumentNudgeUser
 from benchflow.task.document import TaskDocument
 
 PromptComposition = Literal["append", "replace"]
 PromptPartKind = Literal["base", "role", "scene", "turn"]
 TeamHandoffKind = Literal["none", "sequential-shared"]
-BranchExecutionKind = Literal["none", "option-kinds-preserved", "unsupported"]
+BranchExecutionKind = Literal[
+    "none", "option-kinds-preserved", "forked-snapshot", "unsupported"
+]
 
 _APPEND_DEFAULT_ORDER: tuple[PromptPartKind, ...] = ("base", "role", "scene", "turn")
 _REPLACE_DEFAULT_ORDER: tuple[PromptPartKind, ...] = ("turn", "scene", "role", "base")
@@ -76,11 +79,20 @@ class _TeamHandoffPolicy:
 
 @dataclass(frozen=True)
 class CompiledUserRuntime:
-    """Concrete user runtime compiled from document-declared user metadata."""
+    """Concrete user runtime compiled from document-declared user metadata.
+
+    ``snapshot_stages`` is the stage-capture request a
+    ``branch_execution: forked-snapshot`` declaration compiles to (rollout
+    branching RFC §3.2): the launch policy asks the rollout to snapshot those
+    boundaries so an ablation/branch (or a ``--cut-stage`` continuation) can
+    fork them later. Empty for every other declaration — and on the
+    fail-closed path, so an unsupported task never requests capture.
+    """
 
     contract: UserRuntimeContract
     user: BaseUser | None
     max_rounds: int | None
+    snapshot_stages: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -241,19 +253,26 @@ def compile_document_user_runtime(document: TaskDocument) -> CompiledUserRuntime
         branch_execution_supported = False
         unsupported.append("benchflow.nudges.branch_execution must be a string")
     elif branch_execution is not None:
-        if branch_execution != "option-kinds-preserved":
+        if branch_execution not in _BRANCH_EXECUTION_VALUES:
             branch_execution_supported = False
             unsupported.append(
                 "benchflow.nudges.branch_execution supports only "
-                "option-kinds-preserved; forked branch execution is not implemented"
+                "option-kinds-preserved and forked-snapshot"
             )
         elif not branchable:
             branch_execution_supported = False
             unsupported.append(
                 "benchflow.nudges.branch_execution requires branchable: true"
             )
+    snapshot_stages, branch_stage_issues = _compile_branch_stages(
+        nudges, branch_execution=branch_execution
+    )
+    if branch_stage_issues:
+        branch_execution_supported = False
+        unsupported.extend(branch_stage_issues)
     branch_execution_kind = _branch_execution_kind(
         branchable,
+        declared=branch_execution,
         supported=branch_execution_supported,
     )
     confirmation_policy = _confirmation_policy_tier(nudges.get("confirmation_policy"))
@@ -384,6 +403,7 @@ def compile_document_user_runtime(document: TaskDocument) -> CompiledUserRuntime
         ),
         user=user,
         max_rounds=max_rounds,
+        snapshot_stages=snapshot_stages,
     )
 
 
@@ -631,13 +651,62 @@ def _handoff_kind(policy: _TeamHandoffPolicy | None) -> TeamHandoffKind:
     return "sequential-shared"
 
 
+#: The declarable ``benchflow.nudges.branch_execution`` values. Both are real:
+#: ``option-kinds-preserved`` is the ACP ask_user slice (option IDs and kinds
+#: survive the bridge), ``forked-snapshot`` is the Environment/sandbox
+#: snapshot branch engine (rollout-branching RFC) — the task requests stage
+#: capture so a branch/ablation can fork the recorded boundaries.
+_BRANCH_EXECUTION_VALUES = frozenset({"option-kinds-preserved", "forked-snapshot"})
+
+
+def _compile_branch_stages(
+    nudges: dict[str, Any], *, branch_execution: str | None
+) -> tuple[frozenset[str], list[str]]:
+    """The stage-capture request a forked-snapshot declaration compiles to.
+
+    ``benchflow.nudges.branch_stages`` optionally narrows (or, for
+    ``post-research``, extends — declaring it says the harness will
+    ``mark_stage()`` it) the boundaries the task asks the rollout to
+    snapshot; it is validated against the branch-stage taxonomy and rejected
+    without ``branch_execution: forked-snapshot``, the declaration that gives
+    it meaning. With no explicit list, forked-snapshot requests the
+    auto-capturable boundaries (``env-ready``/``pre-verify``/``post-verify``)
+    — the failure-cascade stages the lifecycle can capture on its own.
+    """
+    raw = nudges.get("branch_stages")
+    if raw is None:
+        if branch_execution == "forked-snapshot":
+            return frozenset(AUTO_STAGES), []
+        return frozenset(), []
+    if branch_execution != "forked-snapshot":
+        return frozenset(), [
+            "benchflow.nudges.branch_stages requires branch_execution: forked-snapshot"
+        ]
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or not all(isinstance(stage, str) for stage in raw)
+    ):
+        return frozenset(), [
+            "benchflow.nudges.branch_stages must be a non-empty list of "
+            "branch stage names"
+        ]
+    try:
+        return normalize_stages(raw), []
+    except ValueError as exc:
+        return frozenset(), [f"benchflow.nudges.branch_stages: {exc}"]
+
+
 def _branch_execution_kind(
     branchable: bool,
     *,
+    declared: str | None = None,
     supported: bool = True,
 ) -> BranchExecutionKind:
     if not supported:
         return "unsupported"
+    if declared == "forked-snapshot":
+        return "forked-snapshot"
     if branchable:
         return "option-kinds-preserved"
     return "none"
