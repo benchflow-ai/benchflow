@@ -550,6 +550,12 @@ class AblationRequest:
     # layer needs an Environment plane, which this command does not bind, so
     # requesting it by default would fail closed at capture time.
     snapshot_layers: frozenset[str] = frozenset({SKILL_DELTA_LAYER})
+    # Durable snapshot retention (RFC §3.6): export the branched stage's
+    # committed sandbox image (``docker save``) to
+    # ``<out_dir>/snapshots/<ref>.tar`` before cleanup destroys it, and record
+    # the tar's path + sha256 in the report. Without it the snapshot dies with
+    # the rollout and the report marks its handle ephemeral instead.
+    keep_snapshots: bool = False
 
 
 @dataclass
@@ -627,7 +633,11 @@ class AblationReport:
     ``None`` when no manifest was bound. ``stage_snapshot`` is the branched
     stage's recorded snapshot refs (the committed sandbox image ref and the
     environment snapshot id, plus the layers captured), the handles a reader
-    needs to restore that world and re-branch it by hand later.
+    needs to restore that world and re-branch it by hand later — annotated by
+    :func:`retain_stage_snapshot` with their lifetime: ``ephemeral: true``
+    with ``exported: null`` when cleanup destroyed the image (the default),
+    or ``ephemeral: false`` with the exported tar's path and sha256 under
+    ``--keep-snapshots``.
     """
 
     task_id: str
@@ -1063,6 +1073,98 @@ async def _run_parent(rollout: Any, stage: str) -> tuple[float | None, str | Non
     return (None if reward is None else float(reward)), None
 
 
+def _snapshot_tar_name(ref: str) -> str:
+    """A filesystem-safe tar basename for a snapshot image ref."""
+    import re
+
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", ref).strip("-") or "snapshot"
+
+
+def _file_sha256(path: Path) -> str:
+    """Streaming ``sha256:``-prefixed digest of a file (tars can be large)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+async def export_stage_snapshot(
+    sandbox: Any, *, sandbox_ref: str, out_dir: Path
+) -> dict[str, Any]:
+    """``docker save`` the branched stage's sandbox image into ``out_dir``.
+
+    The durable half of ``--keep-snapshots`` (RFC §3.6): the tar lands at
+    ``<out_dir>/snapshots/<ref>.tar`` and the returned record carries its
+    path and content sha256 — enough for a reader to verify and
+    ``docker load`` the world later. Raises when the sandbox backend cannot
+    export (the caller records the failure; the report stays truthful).
+    """
+    export = getattr(sandbox, "export_image", None)
+    if export is None:
+        backend = "no sandbox attached" if sandbox is None else type(sandbox).__name__
+        raise AblationError(
+            f"--keep-snapshots: the sandbox backend ({backend}) does not "
+            "support exporting snapshot images (export_image); the docker "
+            "backend does"
+        )
+    snapshots_dir = Path(out_dir) / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    tar_path = snapshots_dir / f"{_snapshot_tar_name(sandbox_ref)}.tar"
+    await export(sandbox_ref, tar_path)
+    return {"path": str(tar_path), "sha256": _file_sha256(tar_path)}
+
+
+async def retain_stage_snapshot(
+    report: AblationReport, *, sandbox: Any, keep_snapshots: bool, out_dir: Path
+) -> None:
+    """Make the report truthful about the stage snapshot's lifetime (RFC §3.6).
+
+    Must run **before** ``rollout.cleanup()`` — cleanup's
+    ``compose down --rmi all`` is what destroys the committed ``bf-snap-*``
+    image, and a report serialized afterwards once published a handle
+    ``docker image inspect`` could no longer resolve. With
+    ``keep_snapshots`` the image is exported to a tar and the entry records
+    ``ephemeral: false`` plus the tar's path and sha256; without it (or when
+    the export fails — recorded as ``export_error``) the entry records
+    ``ephemeral: true, exported: null`` so a reader knows the ref no longer
+    resolves. Never raises: the arms' rewards must survive a failed export.
+    """
+    snap = report.stage_snapshot
+    if snap is None:
+        return
+    snap["ephemeral"] = True
+    snap["exported"] = None
+    sandbox_ref = snap.get("sandbox_ref")
+    if not keep_snapshots:
+        return
+    if sandbox_ref is None:
+        snap["export_error"] = (
+            "--keep-snapshots: the branched stage recorded no sandbox-layer "
+            "image to export"
+        )
+        return
+    try:
+        exported = await export_stage_snapshot(
+            sandbox, sandbox_ref=sandbox_ref, out_dir=out_dir
+        )
+    except Exception as exc:
+        from benchflow._utils.text import describe_exception
+
+        snap["export_error"] = describe_exception(exc)
+        logger.error(
+            "--keep-snapshots could not export %s — the report records the "
+            "snapshot as ephemeral: %s",
+            sandbox_ref,
+            snap["export_error"],
+        )
+    else:
+        snap["ephemeral"] = False
+        snap["exported"] = exported
+
+
 async def run_ablation(request: AblationRequest) -> AblationReport:
     """Run the task once, fork the requested stage into the arms, score them.
 
@@ -1164,19 +1266,34 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
             branch_error = describe_exception(exc)
             logger.error("ablation branch at %r failed: %s", stage, branch_error)
     finally:
-        await rollout.cleanup()
+        # The branched stage's recorded snapshot refs — the committed sandbox
+        # image and environment snapshot id a reader needs to restore this
+        # world and re-branch it by hand later (RFC §3.2; also on disk in the
+        # parent run's stage_snapshots.json). Read — and retained/annotated —
+        # BEFORE cleanup: cleanup destroys the committed image, and a report
+        # serialized afterwards once published a snapshot ref that
+        # ``docker image inspect`` could no longer resolve. cleanup always
+        # runs, and never over a masked retention error (retain_stage_snapshot
+        # records failures instead of raising).
+        try:
+            stage_registry = getattr(rollout, "_stage_snapshots", None)
+            if stage_registry:
+                from benchflow.branch_lineage import stage_snapshots_payload
+
+                report.stage_snapshot = stage_snapshots_payload(stage_registry).get(
+                    stage
+                )
+            await retain_stage_snapshot(
+                report,
+                sandbox=getattr(rollout, "env", None),
+                keep_snapshots=request.keep_snapshots,
+                out_dir=Path(request.out_dir),
+            )
+        finally:
+            await rollout.cleanup()
 
     run_dir = getattr(rollout, "_rollout_dir", None)
     report.parent_run_dir = None if run_dir is None else str(run_dir)
-    # The branched stage's recorded snapshot refs — the committed sandbox
-    # image and environment snapshot id a reader needs to restore this world
-    # and re-branch it by hand later (RFC §3.2; also on disk in the parent
-    # run's stage_snapshots.json).
-    stage_registry = getattr(rollout, "_stage_snapshots", None)
-    if stage_registry:
-        from benchflow.branch_lineage import stage_snapshots_payload
-
-        report.stage_snapshot = stage_snapshots_payload(stage_registry).get(stage)
     report.arms = _outcomes(
         request.arms,
         _branch_children(rollout.tree),

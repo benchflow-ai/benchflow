@@ -391,6 +391,7 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it — the rejection names the SDK path (`mark_stage` at the cut point, then `branch_at_stage`) |
 | `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`, `env:<registry-ref>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators (quoted string values included); a comma inside a `config:@<file>` path is not representable |
 | `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
+| `--keep-snapshots` | `false` | Export the branched stage's sandbox snapshot image (`docker save`) to `<out-dir>/snapshots/<ref>.tar` before cleanup destroys it; `ablation.json` records the tar's path and sha256 (`stage_snapshot.exported`). Without the flag the committed image dies with the run, and the report records the handle as `ephemeral: true` with `exported: null` so a reader knows the ref no longer resolves |
 | `--json` | `false` | Emit the report as JSON on stdout instead of the table |
 
 Arm kinds map onto the `BranchDelta` fields the branch engine executes:

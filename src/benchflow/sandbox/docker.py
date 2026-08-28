@@ -929,6 +929,28 @@ class DockerSandbox(BaseSandbox):
             " ".join(replayed) or "none",
         )
 
+    async def export_image(self, ref: str, target_path: Path | str) -> None:
+        """``docker save`` the image ``ref`` to ``target_path`` (a tar).
+
+        The durable half of the snapshot lifecycle (rollout-branching RFC
+        §3.6): committed ``bf-snap-*`` images die with the rollout's
+        ``compose down --rmi all``, so a caller that wants the branched
+        stage's world to outlive the run exports it *before* cleanup.
+        Fails closed — a missing image raises rather than leaving a
+        zero-length tar behind.
+        """
+        result = await self._docker_cli(
+            ["save", "-o", str(target_path), ref], check=False
+        )
+        if result.return_code != 0:
+            # docker save may leave a partial/empty file on failure; a tar
+            # that does not restore must not look like one that does.
+            Path(target_path).unlink(missing_ok=True)
+            raise RuntimeError(
+                f"docker save {ref!r} failed: {result.stderr or result.stdout}"
+            )
+        self.logger.info("Snapshot exported: %s -> %s", ref, target_path)
+
     async def _inspect_container(self, container_id: str) -> dict[str, Any]:
         """``docker inspect`` one container as a dict — raises if it cannot."""
         result = await self._docker_cli(["inspect", container_id], check=False)

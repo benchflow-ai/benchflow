@@ -1808,11 +1808,139 @@ async def test_the_branched_stages_snapshot_refs_are_stamped_into_the_report(
         "environment_ref": None,
         "sandbox_ref": "bf-snap-root-1",
         "layers": ["sandbox"],
+        # Without --keep-snapshots the committed image dies with the run's
+        # cleanup, and the report says so (see the retention tests below).
+        "ephemeral": True,
+        "exported": None,
     }
     payload = json.loads(
         write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
     )
     assert payload["stage_snapshot"]["sandbox_ref"] == "bf-snap-root-1"
+
+
+# 10. Snapshot retention (RFC §3.6): --keep-snapshots exports, and a handle
+#     cleanup destroyed is recorded as ephemeral, never as restorable
+
+
+class _ExportingStageRefRollout(_StageRefRollout):
+    """A stage-ref rollout whose sandbox can docker-save its snapshot image."""
+
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        rollout = self
+
+        class _Sandbox:
+            async def export_image(self, ref: str, target_path) -> None:
+                # Recorded in the rollout's call log so the test can prove the
+                # export happened BEFORE cleanup destroyed the image.
+                rollout.calls.append(f"export:{ref}")
+                Path(target_path).write_bytes(b"fake-docker-save-tar")
+
+        self.env = _Sandbox()
+
+
+async def test_keep_snapshots_exports_the_tar_before_cleanup_and_records_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards "feat(ablate): --keep-snapshots export; ephemeral handles
+    recorded truthfully" (the durable half): with the flag, the branched
+    stage's sandbox image is docker-saved to <out-dir>/snapshots/<ref>.tar
+    *before* cleanup destroys it, and ablation.json records the tar's path
+    and content sha256 with ephemeral: false."""
+    import dataclasses
+    import hashlib
+
+    built = _patch_rollout(monkeypatch, _ExportingStageRefRollout)
+    request = dataclasses.replace(_request(tmp_path), keep_snapshots=True)
+
+    report = await run_ablation(request)
+
+    # The export ran between the fork and cleanup — the one window in which
+    # the committed image still exists.
+    calls = built[0].calls
+    assert calls.index("export:bf-snap-root-1") < calls.index("cleanup")
+    tar_path = Path(request.out_dir) / "snapshots" / "bf-snap-root-1.tar"
+    assert tar_path.read_bytes() == b"fake-docker-save-tar"
+    assert report.stage_snapshot["ephemeral"] is False
+    assert report.stage_snapshot["exported"] == {
+        "path": str(tar_path),
+        "sha256": "sha256:" + hashlib.sha256(b"fake-docker-save-tar").hexdigest(),
+    }
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert payload["stage_snapshot"]["exported"]["path"] == str(tar_path)
+
+
+async def test_without_keep_snapshots_the_handle_is_recorded_ephemeral(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards "feat(ablate): --keep-snapshots export; ephemeral handles
+    recorded truthfully" (the truthful half): the real E2E report recorded
+    bf-snap-…, and docker image inspect immediately confirmed the image no
+    longer existed — cleanup runs before serialization. The default report
+    now says the handle is ephemeral so a reader knows it does not resolve."""
+    _patch_rollout(monkeypatch, _StageRefRollout)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert report.stage_snapshot["ephemeral"] is True
+    assert report.stage_snapshot["exported"] is None
+    assert "export_error" not in report.stage_snapshot
+    payload = json.loads(
+        write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
+    )
+    assert payload["stage_snapshot"]["ephemeral"] is True
+    assert payload["stage_snapshot"]["exported"] is None
+
+
+async def test_a_failed_export_is_recorded_and_does_not_cost_the_rewards(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The failure path of "feat(ablate): --keep-snapshots export; ephemeral
+    handles recorded truthfully": a backend that cannot export (here: no
+    sandbox attached) records export_error and keeps the handle ephemeral —
+    the arms' rewards and the report survive."""
+    import dataclasses
+
+    _patch_rollout(monkeypatch, _StageRefRollout)  # no .env on this fake
+    request = dataclasses.replace(_request(tmp_path), keep_snapshots=True)
+
+    report = await run_ablation(request)
+
+    snap = report.stage_snapshot
+    assert snap["ephemeral"] is True
+    assert snap["exported"] is None
+    assert "--keep-snapshots" in snap["export_error"]
+    assert [arm.reward for arm in report.arms] == [1.0, 0.0]
+    assert not (Path(request.out_dir) / "snapshots").exists()
+
+
+def test_cli_keep_snapshots_reaches_the_request(tmp_path: Path, monkeypatch) -> None:
+    """The flag half of "feat(ablate): --keep-snapshots export; ephemeral
+    handles recorded truthfully": --keep-snapshots reaches
+    AblationRequest.keep_snapshots, and its absence means False."""
+    report = _report(arms=_skill_outcomes(with_skill=1.0, no_skill=0.0))
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    seen = _patched_run(monkeypatch, report)
+
+    base = [
+        "eval",
+        "ablate",
+        "--tasks-dir",
+        str(_task_dir(tmp_path, "with-flag")),
+        "--out-dir",
+        str(tmp_path / "out-a"),
+    ]
+    result = runner.invoke(app, [*base, "--keep-snapshots"])
+    assert result.exit_code == 0, result.output
+    assert seen[0].keep_snapshots is True
+
+    base[3] = str(_task_dir(tmp_path, "without-flag"))
+    result = runner.invoke(app, base)
+    assert result.exit_code == 0, result.output
+    assert seen[1].keep_snapshots is False
 
 
 def test_the_table_prints_the_environment_and_the_snapshot_refs(
