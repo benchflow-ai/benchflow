@@ -389,7 +389,8 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--reasoning-effort` | agent default | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) — the same control as `bench eval run`, recorded in the parent's and every arm's `config.json` |
 | `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
 | `--environment-manifest` | task-declared | Environment-plane manifest for the parent and every arm — a manifest path or a `name@version` registry spec, same semantics as `bench eval run`. An explicit flag beats the task-declared `benchflow.environment.manifest` (the run path's precedence), and the bound environment is stamped into `ablation.json` |
-| `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it — the rejection names the SDK path (`mark_stage` at the cut point, then `branch_at_stage`) |
+| `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `post-research`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so it needs a research-end trigger: pair it with `--mark-research-end-on` (without one, the rejection names both that flag and the SDK path — `mark_stage` at the cut point, then `branch_at_stage`) |
+| `--mark-research-end-on` | — | Workspace file whose first appearance marks `post-research` (e.g. `/app/PLAN.md`, the FrontierPhysics convention): the engine polls the sandbox (`test -e`, every ~2s, plus a final check when the agent quiesces) and snapshots the stage the first time the file exists — so the capture lands within one poll of the file appearing, and may include up to that much post-plan agent work. Required for `--at-stage post-research`; rejected for any other stage. If the file never appears, the ablation reports that the marker never appeared instead of forking |
 | `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`, `env:<registry-ref>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators (quoted string values included); a comma inside a `config:@<file>` path is not representable |
 | `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
 | `--keep-snapshots` | `false` | Export the branched stage's sandbox snapshot image (`docker save`) to `<out-dir>/snapshots/<ref>.tar` before cleanup destroys it; `ablation.json` records the tar's path and sha256 (`stage_snapshot.exported`). Without the flag the committed image dies with the run, and the report records the handle as `ephemeral: true` with `exported: null` so a reader knows the ref no longer resolves |
@@ -428,8 +429,13 @@ precedes `install_agent()`, so **every** arm forked there runs as a fresh child
 rollout over the restored snapshot and installs the agent for itself —
 including an `inject:` arm, which would otherwise be scored in a world with no
 agent, no skills and no path lockdown and reported as "the parent's world plus
-one prompt". At `pre-verify` / `post-verify` the agent is already installed and
-the arms continue in place.
+one prompt". At `post-research` / `pre-verify` / `post-verify` the agent is
+already installed and the arms continue in place: each child restores the
+stage's workspace snapshot and connects a **fresh agent session** over it
+(agent-session memory is not snapshotted — RFC §7), so a `post-research` fork
+compares continuations of the recorded *workspace* boundary; to rebuild the
+agent's exact memory up to that boundary instead, replay to it with
+`bench eval continue --cut-stage post-research`.
 
 The table shows one row per arm — reward, pass/fail, wall clock, and a
 one-line attribution such as *"fails (0.00) where with-skill passes (1.00) at

@@ -164,12 +164,25 @@ def _ablate_command(
             "--at-stage",
             help=(
                 f"Stage boundary to fork: {', '.join(BRANCH_STAGES)}. "
-                "'post-research' is a mid-execute() cut point only "
-                "Rollout.mark_stage() can record, so this command cannot "
-                "capture it."
+                "'post-research' is a mid-execute() cut point that needs a "
+                "research-end trigger: pair it with --mark-research-end-on."
             ),
         ),
     ] = STAGE_ENV_READY,
+    mark_research_end_on: Annotated[
+        str | None,
+        typer.Option(
+            "--mark-research-end-on",
+            help=(
+                "Workspace file whose first appearance marks 'post-research' "
+                "(e.g. /app/PLAN.md, the FrontierPhysics convention): the "
+                "engine polls the sandbox during the agent's run (plus one "
+                "final check when it quiesces) and snapshots the stage the "
+                "first time the file exists. Required for --at-stage "
+                "post-research; rejected for any other stage."
+            ),
+        ),
+    ] = None,
     arms: Annotated[
         str,
         typer.Option(
@@ -245,7 +258,9 @@ def _ablate_command(
 
     try:
         parsed_arms = parse_arms(arms)
-        stage = validate_arms_for_stage(parsed_arms, at_stage)
+        stage = validate_arms_for_stage(
+            parsed_arms, at_stage, research_end_marker=mark_research_end_on
+        )
         task_path = resolve_ablation_task(tasks_dir)
     except (AblationError, ValueError) as exc:
         print_error(str(exc))
@@ -274,6 +289,7 @@ def _ablate_command(
                     sandbox=sandbox,
                     out_dir=out_dir,
                     environment_manifest=environment_manifest,
+                    mark_research_end_on=mark_research_end_on,
                     keep_snapshots=keep_snapshots,
                 )
             )

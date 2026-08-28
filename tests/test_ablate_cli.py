@@ -24,9 +24,11 @@ keys.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
 import click
@@ -2144,3 +2146,214 @@ def test_post_research_rejection_names_the_sdk_branching_path() -> None:
     assert "cannot be captured by this command" in message
     assert "rollout.mark_stage('post-research')" in message
     assert "rollout.branch_at_stage('post-research'" in message
+
+
+# 11. post-research capture via a research-end marker file
+#     ("feat(ablate): post-research capture via a research-end marker file")
+
+
+def _inject_arms(tmp_path: Path) -> str:
+    """Two injection arms — the only arm kind executable at post-research."""
+    plan = tmp_path / "oracle-plan.md"
+    plan.write_text("follow the oracle plan\n", encoding="utf-8")
+    decoy = tmp_path / "decoy-plan.md"
+    decoy.write_text("follow the decoy plan\n", encoding="utf-8")
+    return f"inject:{plan},inject:{decoy}"
+
+
+def test_post_research_with_a_marker_passes_preflight(tmp_path: Path) -> None:
+    """--mark-research-end-on lifts the pre-flight rejection the reviewer named:
+    'bench eval ablate rejects post-research'."""
+    arms = parse_arms(_inject_arms(tmp_path))
+    assert (
+        validate_arms_for_stage(
+            arms, "post-research", research_end_marker="/app/PLAN.md"
+        )
+        == "post-research"
+    )
+
+
+def test_post_research_rejection_names_the_marker_flag() -> None:
+    """Without the trigger the rejection now teaches the CLI recipe too."""
+    arms = parse_arms("with-skill,no-skill")
+    with pytest.raises(AblationSpecError, match="--mark-research-end-on"):
+        validate_arms_for_stage(arms, "post-research")
+
+
+def test_marker_on_a_non_marked_stage_fails_closed(tmp_path: Path) -> None:
+    """The marker defines the research-end boundary and nothing else."""
+    arms = parse_arms(_inject_arms(tmp_path))
+    with pytest.raises(AblationSpecError, match="only applies to --at-stage"):
+        validate_arms_for_stage(arms, "env-ready", research_end_marker="/app/PLAN.md")
+
+
+class _ResearchMarkerRollout(_FakeRollout):
+    """A parent whose agent materializes PLAN.md mid-``execute()``.
+
+    The sandbox double answers the watcher's ``test -e`` from
+    ``marker_present``, which ``execute()`` flips *before* yielding the event
+    loop — so the watcher observes the file while the agent is still running,
+    exactly the mid-run capture the wire adds.
+    """
+
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self.marker_present = False
+        self.marker_commands: list[str] = []
+        self._stage_snapshots: dict[str, Any] = {}
+        rollout = self
+
+        class _Env:
+            async def exec(self, cmd, *, user="root", timeout_sec=30):
+                rollout.marker_commands.append(cmd)
+                found = rollout.marker_present and "PLAN.md" in cmd
+                return SimpleNamespace(return_code=0 if found else 1)
+
+        self.env = _Env()
+
+    async def execute(self) -> None:
+        self.calls.append("execute")
+        self.marker_present = True  # the agent just wrote its plan...
+        await asyncio.sleep(0.05)  # ...and keeps running while the watcher polls
+
+    async def mark_stage(self, name: str):
+        from benchflow.branch import StageSnapshot
+        from benchflow.sandbox.protocol import SandboxImage
+
+        self.calls.append(f"mark_stage:{name}")
+        snap = StageSnapshot(
+            environment_ref=None,
+            sandbox_ref=SandboxImage(provider="fake", ref="bf-snap-research"),
+            stage=name,
+            meta={"exchanges_completed": 3},
+        )
+        self._stage_snapshots[name] = snap
+        return snap
+
+
+async def test_marker_file_appearing_mid_run_captures_post_research_and_branches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PLAN.md appears at exchange k → the post-research snapshot exists and
+    branch_at_stage('post-research') forks the arms — the reviewer-named
+    end-to-end gap for `bench eval ablate --at-stage post-research`."""
+    built = _patch_rollout(monkeypatch, _ResearchMarkerRollout)
+    request = AblationRequest(
+        task_path=_task_dir(tmp_path),
+        arms=parse_arms(_inject_arms(tmp_path)),
+        agent="claude-agent-acp",
+        model="claude-sonnet",
+        stage="post-research",
+        out_dir=tmp_path / "out",
+        mark_research_end_on="/app/PLAN.md",
+    )
+
+    report = await run_ablation(request)
+
+    rollout = built[0]
+    # The watcher marked the stage while the agent was still executing —
+    # before verify(), from a `test -e` on the marker path.
+    assert "mark_stage:post-research" in rollout.calls
+    assert rollout.calls.index("mark_stage:post-research") < rollout.calls.index(
+        "verify"
+    )
+    assert any("test -e /app/PLAN.md" in cmd for cmd in rollout.marker_commands)
+    assert "post-research" in rollout._stage_snapshots
+    # ...and the branch really forked there, one child per arm, rewards read.
+    assert "branch_at_stage:post-research" in rollout.calls
+    assert report.stage == "post-research"
+    assert [arm.reward for arm in report.arms] == [1.0, 0.0]
+    assert report.error is None
+
+
+class _NeverMarkedRollout(_FakeRollout):
+    """A parent whose workspace never grows the marker file."""
+
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self._stage_snapshots: dict[str, Any] = {}
+
+        class _Env:
+            async def exec(self, cmd, *, user="root", timeout_sec=30):
+                return SimpleNamespace(return_code=1)
+
+        self.env = _Env()
+
+    async def branch_at_stage(self, stage, n, *, deltas=None) -> float:
+        raise AssertionError("must not fork a stage that was never captured")
+
+
+async def test_marker_never_appearing_reports_the_missing_capture(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The unacceptable outcome would be silently forking a different stage —
+    instead the report says the marker never appeared and skips every arm."""
+    built = _patch_rollout(monkeypatch, _NeverMarkedRollout)
+    request = AblationRequest(
+        task_path=_task_dir(tmp_path),
+        arms=parse_arms(_inject_arms(tmp_path)),
+        agent="claude-agent-acp",
+        model="claude-sonnet",
+        stage="post-research",
+        out_dir=tmp_path / "out",
+        mark_research_end_on="/app/PLAN.md",
+    )
+
+    report = await run_ablation(request)
+
+    assert built[0].calls[-1] == "cleanup"
+    assert "never appeared" in report.error
+    assert "/app/PLAN.md" in report.error
+    assert [arm.status for arm in report.arms] == ["skipped", "skipped"]
+    assert report.has_errors is True
+
+
+async def test_watch_research_end_polls_until_the_file_exists() -> None:
+    """The watcher itself: polls, ignores transient exec failures, marks once."""
+    from benchflow.ablate import watch_research_end
+
+    class _Rollout:
+        def __init__(self) -> None:
+            self.polls = 0
+            self.marked: list[str] = []
+            self._agent_cwd = "/app"
+            rollout = self
+
+            class _Env:
+                async def exec(self, cmd, *, user="root", timeout_sec=30):
+                    rollout.polls += 1
+                    if rollout.polls == 1:
+                        raise RuntimeError("transient exec failure")
+                    return SimpleNamespace(return_code=0 if rollout.polls >= 3 else 1)
+
+            self.env = _Env()
+
+        async def mark_stage(self, name: str) -> None:
+            self.marked.append(name)
+
+    rollout = _Rollout()
+
+    marked = await watch_research_end(rollout, "PLAN.md", poll_interval=0.001)
+
+    assert marked is True
+    assert rollout.polls == 3
+    assert rollout.marked == ["post-research"]
+
+
+def test_cli_rejects_post_research_without_the_marker_flag(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--at-stage",
+            "post-research",
+            "--arms",
+            _inject_arms(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "--mark-research-end-on" in _flat(result.stderr)
+    assert "Traceback (most recent call last)" not in result.output
