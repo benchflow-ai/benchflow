@@ -97,6 +97,56 @@ def continued_rollout_name(run: RunFolder) -> str:
     return f"{cleaned}__continued"
 
 
+def stage_tags_from_run(run: RunFolder, cut_stage: str) -> dict[str, int]:
+    """The recorded stage→exchange-index tags backing a ``--cut-stage`` request.
+
+    The run-folder half of the RFC §3.5 stage-tagged cut: stage captures
+    record their completed-exchange index into the run's
+    ``stage_snapshots.json`` (see ``benchflow.branch_policy.capture_stage``),
+    and this resolves that registry for ``cut_stage``, failing closed with a
+    typed :class:`ReplayCutPointError` that tells the caller what *was*
+    recorded:
+
+    * no registry at all — the run never captured a stage;
+    * ``cut_stage`` absent — names the stages the run did record;
+    * recorded without an index (``exchanges_completed: null``) — the usage
+      gateway could not count at capture time, so the stage cannot name a cut;
+    * recorded at index 0 — the stage closed before the first exchange, so
+      there is no recorded prefix to replay.
+
+    An explicit SDK ``stage_tags`` mapping bypasses this entirely (it stays
+    the override seam); the CLI resolves through here.
+    """
+    registry = run.stage_registry
+    if not registry:
+        raise ReplayCutPointError(
+            f"--cut-stage {cut_stage!r}: the run folder recorded no stage "
+            "snapshots (no stage_snapshots.json) — re-run the task with stage "
+            "capture (RolloutConfig.snapshot_stages / Rollout.mark_stage()) "
+            "or cut by number with --max-exchanges."
+        )
+    if cut_stage not in registry:
+        raise ReplayCutPointError(
+            f"unknown cut stage {cut_stage!r}; this run recorded: "
+            f"{', '.join(sorted(registry))}."
+        )
+    tags = run.stage_exchange_tags
+    if cut_stage not in tags:
+        raise ReplayCutPointError(
+            f"stage {cut_stage!r} was recorded without an exchange index "
+            "(exchanges_completed is null — the run's usage gateway could not "
+            "count exchanges at capture time), so it cannot name a cut; use "
+            "--max-exchanges instead."
+        )
+    if tags[cut_stage] == 0:
+        raise ReplayCutPointError(
+            f"stage {cut_stage!r} closed before the first LLM exchange "
+            "(exchanges_completed is 0) — there is no recorded prefix to "
+            "replay; run the task fresh instead of continuing it."
+        )
+    return tags
+
+
 def resolve_cut_point(
     max_exchanges: int | None,
     *,
@@ -107,9 +157,10 @@ def resolve_cut_point(
 
     ``stage_tags[stage]`` is the 1-based count of exchanges that had completed
     when the stage closed — a cut at that stage replays exactly that many
-    exchanges. (Rollout-branching RFC §3.5 — externally supplied; recording
-    stage tags at run time is a named follow-on.) With ``cut_stage`` given,
-    the cut resolves to ``stage_tags[cut_stage]``; every misuse — combining
+    exchanges (rollout-branching RFC §3.5). The mapping comes from the run
+    folder's recorded registry (:func:`stage_tags_from_run`) unless the SDK
+    caller supplies its own override dict. With ``cut_stage`` given, the cut
+    resolves to ``stage_tags[cut_stage]``; every misuse — combining
     ``cut_stage`` with ``max_exchanges``, a missing ``stage_tags`` mapping, an
     unknown stage, or a tag below 1 — fails closed with
     :class:`ReplayCutPointError`. Returns ``(max_exchanges, branch_stage)``.
@@ -762,12 +813,16 @@ async def continue_run(
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
     the replay without provider credentials.
     ``max_exchanges`` replays only the first K recorded exchanges, then goes
-    live (the RFC §3.5 cut-point). ``stage_tags`` + ``cut_stage`` name the cut
-    by recorded stage instead: ``stage_tags[stage]`` is the 1-based count of
-    exchanges that had completed when the stage closed — a cut at that stage
-    replays exactly that many exchanges.
+    live (the RFC §3.5 cut-point). ``cut_stage`` names the cut by recorded
+    stage instead: the run folder's ``stage_snapshots.json`` carries the
+    1-based count of exchanges that had completed when each recorded stage
+    closed (:func:`stage_tags_from_run`), and a cut at that stage replays
+    exactly that many exchanges. ``stage_tags`` overrides the recorded
+    registry when the SDK caller supplies its own stage→count mapping.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
+    if cut_stage is not None and stage_tags is None:
+        stage_tags = stage_tags_from_run(run, cut_stage)
     max_exchanges, branch_stage = resolve_cut_point(
         max_exchanges, stage_tags=stage_tags, cut_stage=cut_stage
     )

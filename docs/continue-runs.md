@@ -65,6 +65,7 @@ optional.
 | `--strict-divergence` | off | Abort if replay leaves the original rails. |
 | `--replay-only` | off | Rebuild via replay and stop at the cut-point (no live model needed). |
 | `--max-exchanges K` | all recorded | Replay only the first K recorded exchanges, then go live ([Cut-points](#cut-points)). |
+| `--cut-stage STAGE` | — | Cut at a recorded stage boundary by name, resolving K from the run's `stage_snapshots.json` ([Cut-points](#cut-points)). |
 
 ### Models and credentials
 
@@ -117,13 +118,23 @@ went wrong in.
 - The stitched `llm_trajectory.jsonl` contains only the replayed prefix (the
   first K *parsed* recorded exchanges — a malformed recorded line is never
   replayed and never stitched) plus the live suffix.
-- Naming cut-points by stage instead of by number is available through the
-  Python API (`benchflow.continue_run.orchestrator.continue_run`):
-  `stage_tags[stage]` is the 1-based count of exchanges that had completed
-  when the stage closed — a cut at that stage replays exactly that many
-  exchanges. The resolved stage is recorded as `branch_stage` in the
-  `cut_point` block; invalid stage cuts raise `ReplayCutPointError`.
-  Recording stage tags at run time is a named follow-on in the RFC.
+- Cut-points can be named by **stage** instead of by number:
+  `--cut-stage <stage>` (e.g. `--cut-stage post-research`) resolves the
+  exchange index the original run recorded when that stage boundary closed.
+  A run that captures stage boundaries (`RolloutConfig.snapshot_stages`, or
+  `Rollout.mark_stage()` for `post-research`) records
+  `exchanges_completed` per stage in its `stage_snapshots.json`; a cut at
+  that stage replays exactly that many exchanges. The resolved stage is
+  recorded as `branch_stage` in the `cut_point` block. Every miss fails
+  closed with a typed `ReplayCutPointError`: a run with no recorded stages,
+  an unrecorded stage (the error lists the stages the run *did* record), a
+  stage recorded without an index (`exchanges_completed: null` — the usage
+  gateway could not count at capture time), or a stage that closed before
+  the first exchange. `--cut-stage` and `--max-exchanges` are mutually
+  exclusive. Through the Python API
+  (`benchflow.continue_run.orchestrator.continue_run`), an explicit
+  `stage_tags` mapping (`stage -> 1-based completed-exchange count`)
+  overrides the recorded registry.
 
 ## Limitations and caveats
 

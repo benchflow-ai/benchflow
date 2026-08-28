@@ -103,6 +103,17 @@ def register_continue(
                 "live (default: all recorded).",
             ),
         ] = None,
+        cut_stage: Annotated[
+            str | None,
+            typer.Option(
+                "--cut-stage",
+                help="Cut the replay at a recorded stage boundary by name "
+                "(e.g. post-research): resolves the exchange index the run's "
+                "stage_snapshots.json recorded when that stage closed. "
+                "Mutually exclusive with --max-exchanges; an unrecorded stage "
+                "fails closed listing the stages the run did record.",
+            ),
+        ] = None,
         proxy_mode: Annotated[
             str,
             typer.Option(
@@ -134,6 +145,7 @@ def register_continue(
                     replay_only=replay_only,
                     proxy_mode=proxy_mode,
                     max_exchanges=max_exchanges,
+                    cut_stage=cut_stage,
                 )
             )
         except (RunFolderError, ReplayCutPointError) as exc:
