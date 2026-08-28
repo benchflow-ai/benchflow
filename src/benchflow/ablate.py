@@ -538,6 +538,11 @@ class AblationRequest:
     agent: str
     stage: str = STAGE_ENV_READY
     model: str | None = None
+    # Agent reasoning/thinking effort (``--reasoning-effort``) — the same
+    # normalized control ``bench eval run`` resolves, threaded through the
+    # canonical plan so parent and child configs record the effort the arms
+    # actually ran under. ``None`` = the agent's own default.
+    reasoning_effort: str | None = None
     sandbox: str = "docker"
     out_dir: Path = Path("jobs")
     # Explicit environment binding (``--environment-manifest``): a manifest
@@ -929,6 +934,76 @@ def attribute(
 # Execution
 
 
+def resolve_canonical_parent_config(
+    request: AblationRequest,
+    *,
+    stage: str,
+    environment_manifest: Any = None,
+) -> Any:
+    """The parent's RolloutConfig: the canonical eval plan + the ablation axis.
+
+    An ablation's parent is a *normal evaluation run* of the task — the arms
+    fork its world, so any control the parent dropped is dropped for every arm
+    too. The request is therefore resolved through the same two stages ``bench
+    eval run`` uses: :func:`~benchflow.eval_plan.build_eval_plan` (normalized
+    agent/model/effort/sandbox/usage settings, fail-closed validation) and
+    :func:`~benchflow.evaluation.task_rollout_config` (task digest, dataset and
+    source identity, prompts, the task-declared environment fallback). A
+    hand-rolled reduced config here is the PR #1046 review finding: the real
+    E2E parent and child configs published ``task_digest: null`` and
+    ``reasoning_effort: null``.
+
+    Overlaid on top — the only fields the ablation owns:
+
+    * the stage-capture request (``snapshot_stages={stage}`` plus the request's
+      layers), which is *why* this rollout exists;
+    * ``skill_mode='no-skill'`` — stated, not defaulted: the arms fork the
+      parent's own ``env-ready`` image, and a with-skill parent bakes its pack
+      into that image, so a ``no-skill`` arm would restore the pack and still
+      be labelled no-skill. The branch engine refuses that fork; pinning the
+      parent here keeps every ablation on the side of the gate that runs;
+    * out-dir / job naming (``<out_dir>/ablation/<task>``, so the run
+      directory is derivable from the output directory);
+    * the resolved environment binding (explicit flag beats the task's own
+      declaration — resolved fail-closed by
+      :func:`resolve_ablation_environment_binding` before this is called).
+
+    Plan-validation failures re-raise as :class:`AblationSpecError`: they are
+    request defects, decidable before the parent run costs anything.
+    """
+    from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
+    from benchflow.evaluation import task_rollout_config
+
+    task_path = Path(request.task_path)
+    try:
+        plan = build_eval_plan(
+            EvalCreateRequest(
+                tasks_dir=task_path,
+                agent=request.agent,
+                model=request.model,
+                reasoning_effort=request.reasoning_effort,
+                environment=request.sandbox,
+                jobs_dir=str(request.out_dir),
+                # One parent rollout at a time — the truthful value for a
+                # single-task experiment, not the batch default.
+                concurrency=1,
+            )
+        )
+    except EvalPlanError as exc:
+        raise AblationSpecError(str(exc)) from exc
+    return task_rollout_config(
+        plan.make_eval_config(),
+        task_path,
+        job_name=PARENT_JOB_NAME,
+        jobs_dir=plan.output_jobs_dir,
+        rollout_name=task_path.name,
+        environment_manifest=environment_manifest,
+        skill_mode=SKILL_MODE_NO_SKILL,
+        snapshot_stages={stage},
+        snapshot_layers=request.snapshot_layers,
+    )
+
+
 def _branch_children(tree: RolloutTree) -> list[RolloutNode]:
     """The branch children of this run, in fork order.
 
@@ -1176,8 +1251,7 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
     than an exception — the arms that did run keep their rewards.
     """
     from benchflow._utils.text import describe_exception
-    from benchflow.evaluation import effective_model
-    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.rollout import Rollout
 
     stage = validate_arms_for_stage(
         request.arms, request.stage, snapshot_layers=request.snapshot_layers
@@ -1189,7 +1263,6 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
             "(solve.sh) has no session to fork"
         )
     task_path = Path(request.task_path)
-    model = effective_model(request.agent, request.model)
     environment_binding = resolve_ablation_environment_binding(
         task_path, explicit=request.environment_manifest
     )
@@ -1219,29 +1292,13 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
             stamp = environment_stamp(load_manifest_binding(arm.delta.environment_ref))
             if stamp is not None:
                 environment_stamps[arm.name] = stamp
-    config = RolloutConfig.from_legacy(
-        task_path=task_path,
-        agent=request.agent,
-        model=model,
-        environment=request.sandbox,
-        # The bound world — an explicit ``--environment-manifest`` when given,
-        # else the task's own declaration, resolved exactly as a normal
-        # evaluation resolves it. Every arm forks the parent's snapshot and
-        # (at ``env-ready``) re-runs from the parent's config, so binding it
-        # here binds it for the whole experiment — see
-        # :func:`resolve_ablation_environment_binding`.
-        environment_manifest=environment_manifest,
-        jobs_dir=Path(request.out_dir),
-        job_name=PARENT_JOB_NAME,
-        rollout_name=task_path.name,
-        # Stated, not defaulted: the arms fork the parent's own ``env-ready``
-        # image, and a with-skill parent bakes its pack into that image — a
-        # ``no-skill`` arm would restore the pack and still be labelled
-        # no-skill. The branch engine refuses that fork; pinning the parent
-        # here is what keeps every ablation on the side of the gate that runs.
-        skill_mode=SKILL_MODE_NO_SKILL,
-        snapshot_stages={stage},
-        snapshot_layers=request.snapshot_layers,
+    # The canonical evaluation configuration with the ablation axis overlaid —
+    # the bound world (an explicit ``--environment-manifest`` when given, else
+    # the task's own declaration) rides along: every arm forks the parent's
+    # snapshot and (at ``env-ready``) re-runs from the parent's config, so
+    # binding it here binds it for the whole experiment.
+    config = resolve_canonical_parent_config(
+        request, stage=stage, environment_manifest=environment_manifest
     )
     rollout = Rollout(config)
     report = AblationReport(
@@ -1249,8 +1306,8 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
         task_path=str(task_path),
         stage=stage,
         snapshot_layers=sorted(request.snapshot_layers),
-        agent=request.agent,
-        model=model,
+        agent=config.agent,
+        model=config.model,
         sandbox=request.sandbox,
         arms=[],
         environment=environment_stamp(environment_binding),

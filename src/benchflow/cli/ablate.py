@@ -145,6 +145,17 @@ def _ablate_command(
     ],
     agent: AgentOption = "claude-agent-acp",
     model: ModelOption = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--reasoning-effort",
+            help=(
+                "Agent reasoning/thinking effort when the agent exposes one "
+                "(e.g. max) — the same control as bench eval run, recorded in "
+                "the parent's and every arm's config"
+            ),
+        ),
+    ] = None,
     sandbox: SandboxOption = "docker",
     environment_manifest: EnvironmentManifestOption = None,
     at_stage: Annotated[
@@ -259,6 +270,7 @@ def _ablate_command(
                     agent=agent,
                     stage=stage,
                     model=model,
+                    reasoning_effort=reasoning_effort,
                     sandbox=sandbox,
                     out_dir=out_dir,
                     environment_manifest=environment_manifest,

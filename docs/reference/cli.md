@@ -386,6 +386,7 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--tasks-dir` | — | Task directory to ablate (or a collection holding exactly one task); several tasks fail closed — the arms are the axis, the task is fixed |
 | `--agent` | `claude-agent-acp` | Agent harness for the parent run and every arm (`oracle` is rejected: a branch child connects an agent session, and `solve.sh` has none) |
 | `--model` | agent registry | Model for the parent run and every arm |
+| `--reasoning-effort` | agent default | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) — the same control as `bench eval run`, recorded in the parent's and every arm's `config.json` |
 | `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
 | `--environment-manifest` | task-declared | Environment-plane manifest for the parent and every arm — a manifest path or a `name@version` registry spec, same semantics as `bench eval run`. An explicit flag beats the task-declared `benchflow.environment.manifest` (the run path's precedence), and the bound environment is stamped into `ablation.json` |
 | `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so this command rejects it — the rejection names the SDK path (`mark_stage` at the cut point, then `branch_at_stage`) |
