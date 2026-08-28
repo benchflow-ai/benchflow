@@ -32,7 +32,9 @@ gates — these are a pre-flight mirror, never a replacement.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +70,7 @@ from benchflow.branch_stage import (
     BRANCH_STAGES,
     MARKED_STAGES,
     STAGE_ENV_READY,
+    STAGE_POST_RESEARCH,
     validate_stage,
 )
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
@@ -343,6 +346,7 @@ def validate_arms_for_stage(
     stage: str,
     *,
     snapshot_layers: frozenset[str] | set[str] | None = None,
+    research_end_marker: str | None = None,
 ) -> str:
     """Reject a stage/arm combination before the parent rollout runs.
 
@@ -350,8 +354,13 @@ def validate_arms_for_stage(
 
     * ``post-research`` is a mid-``execute()`` cut point only an explicit
       ``Rollout.mark_stage()`` can record (RFC §3.2). This command drives the
-      lifecycle, not the agent's planning, so it cannot mark it — saying so up
-      front beats running the whole task and dying at the fork.
+      lifecycle, not the agent's planning, so on its own it cannot mark it —
+      ``--mark-research-end-on <workspace-path>`` supplies the concrete
+      trigger (the engine marks the stage the first time that file exists in
+      the workspace; see :func:`watch_research_end`), and without it the
+      rejection says so up front, which beats running the whole task and
+      dying at the fork. The marker is meaningless for any other stage and
+      fails closed there.
     * a ``skill_mode`` arm executes only at ``env-ready``, because skills are
       deployed by ``install_agent()`` (RFC §3.3). The branch engine fails
       closed on this too; here it costs nothing instead of a full run.
@@ -373,11 +382,21 @@ def validate_arms_for_stage(
     Returns the validated stage, so callers can use this as their one gate.
     """
     validate_stage(stage, field="--at-stage")
-    if stage in MARKED_STAGES:
+    if research_end_marker is not None and stage != STAGE_POST_RESEARCH:
         raise AblationSpecError(
-            f"--at-stage {stage!r} cannot be captured by this command: it is a "
-            "mid-execute() cut point only an explicit Rollout.mark_stage() call "
-            "can record. To branch there, drive the run through the SDK — "
+            f"--mark-research-end-on only applies to --at-stage "
+            f"{STAGE_POST_RESEARCH!r}, not {stage!r}: the marker file's first "
+            "appearance is what defines the research-end boundary, and no "
+            "other stage is captured from it"
+        )
+    if stage in MARKED_STAGES and research_end_marker is None:
+        raise AblationSpecError(
+            f"--at-stage {stage!r} cannot be captured by this command without "
+            "a research-end trigger: it is a mid-execute() cut point only an "
+            "explicit Rollout.mark_stage() call can record. Pass "
+            "--mark-research-end-on <workspace-path> (e.g. /app/PLAN.md) so "
+            "the engine marks the stage the first time that file appears "
+            "during the agent's run; or drive the run through the SDK — "
             f"await rollout.mark_stage({stage!r}) at the cut point during the "
             f"agent's run, then await rollout.branch_at_stage({stage!r}, n, "
             "deltas=[...]) — or ablate one of "
@@ -527,6 +546,13 @@ class AblationRequest:
     # manifest — the same precedence as ``bench eval run``. ``None`` = bind
     # whatever the task declares (or nothing).
     environment_manifest: Path | str | None = None
+    # The research-end trigger (``--mark-research-end-on``): a workspace path
+    # (absolute, or relative to the agent's cwd) whose first appearance marks
+    # ``post-research`` during the parent's run — the FrontierPhysics
+    # convention is the agent materializing its plan as ``/app/PLAN.md``.
+    # Required for ``stage='post-research'``; meaningless (fail closed) for
+    # any other stage. ``None`` = no trigger.
+    mark_research_end_on: str | None = None
     # The layers the stage snapshot composes (RFC §3.1). The container layer is
     # mandatory for a skills arm and sufficient on its own; the environment
     # layer needs an Environment plane, which this command does not bind, so
@@ -613,13 +639,118 @@ def resolve_canonical_parent_config(
     )
 
 
-async def _run_parent(rollout: Any, stage: str) -> tuple[float | None, str | None]:
+#: How often the research-end watcher polls the workspace for the marker file.
+RESEARCH_END_POLL_SEC = 2.0
+
+
+def _resolve_marker_path(rollout: Any, marker: str) -> str:
+    """An absolute in-sandbox path for the research-end marker file."""
+    if marker.startswith("/"):
+        return marker
+    cwd = getattr(rollout, "_agent_cwd", None) or "/app"
+    return f"{str(cwd).rstrip('/')}/{marker}"
+
+
+async def _research_marker_exists(rollout: Any, path: str) -> bool:
+    """One cheap ``test -e`` for the marker file in the parent's sandbox."""
+    sandbox = getattr(rollout, "env", None)
+    if sandbox is None:
+        return False
+    result = await sandbox.exec(f"test -e {shlex.quote(path)}", timeout_sec=10)
+    return getattr(result, "return_code", 1) == 0
+
+
+async def watch_research_end(
+    rollout: Any, marker: str, *, poll_interval: float = RESEARCH_END_POLL_SEC
+) -> bool:
+    """Mark ``post-research`` the first time ``marker`` exists in the workspace.
+
+    The concrete trigger behind ``--mark-research-end-on`` (RFC §3.2): a
+    research-style agent materializes its plan as a workspace file (the
+    FrontierPhysics convention is ``/app/PLAN.md``), so the file's first
+    appearance *is* the research→execution boundary. The engine has no
+    per-LLM-exchange hook from outside the agent process, so the check runs
+    on a cheap wall-clock poll (one sandbox ``test -e`` per
+    ``poll_interval``) concurrent with ``execute()``, plus a final check when
+    the agent quiesces — **the capture therefore lands within one poll of the
+    file appearing, and the snapshot may include up to that much post-plan
+    agent work.** That cadence bound is the documented tradeoff of marking
+    from outside the agent; the exchange index recorded with the mark
+    (``capture_stage``) is exact for the moment the capture actually ran.
+
+    Transient poll failures (a raced exec, teardown) keep polling; a
+    ``mark_stage()`` failure propagates — a capture the run was told to take
+    and could not is the same fail-closed rule the lifecycle's own boundaries
+    apply. Returns True once the stage is marked; cancellation is the normal
+    end when the agent finishes before the marker ever appears.
+    """
+    path = _resolve_marker_path(rollout, marker)
+    while True:
+        try:
+            found = await _research_marker_exists(rollout, path)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("research-end marker poll failed", exc_info=True)
+            found = False
+        if found:
+            await rollout.mark_stage(STAGE_POST_RESEARCH)
+            return True
+        await asyncio.sleep(poll_interval)
+
+
+async def _execute_parent(rollout: Any, research_end_marker: str | None) -> None:
+    """``execute()``, with the research-end watcher beside it when requested.
+
+    The watcher runs as a sibling task for the duration of the agent's run and
+    is cancelled when the agent quiesces; a marker that appeared between the
+    watcher's last poll and quiescence is caught by one final check, so the
+    trigger is decided by the file's presence, not by poll timing. A watcher
+    failure (its ``mark_stage`` raising) is logged and leaves the stage
+    uncaptured — the branch then fails closed on the missing stage rather
+    than this masking the agent's own outcome.
+    """
+    if research_end_marker is None:
+        await rollout.execute()
+        return
+    watcher = asyncio.create_task(watch_research_end(rollout, research_end_marker))
+    marked = False
+    watcher_failed = False
+    try:
+        await rollout.execute()
+    finally:
+        if not watcher.done():
+            watcher.cancel()
+        try:
+            marked = await watcher
+        except asyncio.CancelledError:
+            marked = False
+        except Exception:
+            watcher_failed = True
+            logger.warning(
+                "research-end watcher failed — 'post-research' was not "
+                "captured mid-run",
+                exc_info=True,
+            )
+    if marked or watcher_failed:
+        return
+    if await _research_marker_exists(
+        rollout, _resolve_marker_path(rollout, research_end_marker)
+    ):
+        await rollout.mark_stage(STAGE_POST_RESEARCH)
+
+
+async def _run_parent(
+    rollout: Any, stage: str, *, research_end_marker: str | None = None
+) -> tuple[float | None, str | None]:
     """Drive the parent past ``stage`` and score it; return ``(reward, error)``.
 
     Not ``Rollout.run()``: that cleans the sandbox up on the way out, and a
     torn-down sandbox has nothing left to branch. The phases below are the
     linear lifecycle in order, with the boundary captured by the rollout's own
-    ``snapshot_stages`` policy as it passes.
+    ``snapshot_stages`` policy as it passes — except ``post-research``, which
+    is marked by the research-end watcher (:func:`watch_research_end`) when
+    ``research_end_marker`` names the trigger file.
 
     A failure *after* the boundary is recorded, not raised: the snapshot the
     arms fork from was already taken, and attributing a failed run is the
@@ -638,7 +769,7 @@ async def _run_parent(rollout: Any, stage: str) -> tuple[float | None, str | Non
     try:
         await rollout.install_agent()
         await rollout.connect()
-        await rollout.execute()
+        await _execute_parent(rollout, research_end_marker)
         rewards = await rollout.verify()
     except Exception as exc:
         error = describe_exception(exc)
@@ -761,7 +892,10 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
     from benchflow.rollout import Rollout
 
     stage = validate_arms_for_stage(
-        request.arms, request.stage, snapshot_layers=request.snapshot_layers
+        request.arms,
+        request.stage,
+        snapshot_layers=request.snapshot_layers,
+        research_end_marker=request.mark_research_end_on,
     )
     if request.agent == "oracle":
         raise AblationSpecError(
@@ -821,14 +955,31 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
     )
     branch_error: str | None = None
     try:
-        report.parent_reward, report.parent_error = await _run_parent(rollout, stage)
-        try:
-            report.value = await rollout.branch_at_stage(
-                stage, len(request.arms), deltas=[arm.delta for arm in request.arms]
+        report.parent_reward, report.parent_error = await _run_parent(
+            rollout, stage, research_end_marker=request.mark_research_end_on
+        )
+        if request.mark_research_end_on is not None and stage not in getattr(
+            rollout, "_stage_snapshots", {}
+        ):
+            # The trigger never fired: branching would only raise
+            # BranchStageNotCaptured, so say what actually happened — the
+            # marker file, not the stage machinery, is what was missing.
+            branch_error = (
+                f"the research-end marker {request.mark_research_end_on!r} "
+                "never appeared in the workspace during the parent run, so "
+                f"{stage!r} was never captured and there is nothing to branch"
             )
-        except Exception as exc:
-            branch_error = describe_exception(exc)
             logger.error("ablation branch at %r failed: %s", stage, branch_error)
+        else:
+            try:
+                report.value = await rollout.branch_at_stage(
+                    stage,
+                    len(request.arms),
+                    deltas=[arm.delta for arm in request.arms],
+                )
+            except Exception as exc:
+                branch_error = describe_exception(exc)
+                logger.error("ablation branch at %r failed: %s", stage, branch_error)
     finally:
         # The branched stage's recorded snapshot refs — the committed sandbox
         # image and environment snapshot id a reader needs to restore this
