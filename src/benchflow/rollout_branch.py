@@ -962,9 +962,12 @@ async def branch(
     # container — so without this every child's verifier writes (and clears)
     # the parent's own evidence, and the run ends with the last child's
     # reward.txt sitting where the parent's belongs. Held aside before the
-    # first child, handed to each child after it ran, put back in the finally
-    # below. :mod:`benchflow.branch_artifacts` isolates its own failures: a
-    # lost copy of the evidence must not cost the rewards.
+    # first child, handed to each child after it ran, put back at the end.
+    # :mod:`benchflow.branch_artifacts` fails closed: a custody failure
+    # preserves the hold directory and raises ``ArtifactCustodyError`` — the
+    # fork must not report a world whose evidence it lost — except while a
+    # child's own exception is propagating, where the failure is recorded and
+    # logged instead so the child's failure stays the diagnosis.
     holder = (
         MountedArtifacts.hold(run_dir=run_dir, parent_id=parent.id)
         if run_dir is not None
@@ -990,9 +993,21 @@ async def branch(
                 run_dir=run_dir,
                 holder=holder,
             )
-        finally:
+        except BaseException:
+            # The exception on its way out — a child's crash, or a custody
+            # failure _run_children itself surfaced — is the caller's
+            # diagnosis. release() must not replace it: it records and logs a
+            # failure of its own (preserving the hold directory) instead of
+            # raising over the real one.
             if holder is not None:
-                holder.release()
+                holder.release(raising=False)
+            raise
+        # Success path: a release failure here is the most important thing
+        # that happened — it raises ArtifactCustodyError (the hold directory
+        # is preserved), which the except below treats like any other fork
+        # failure: restore the parent, persist the partial lineage, propagate.
+        if holder is not None:
+            holder.release()
     except BaseException:
         # A child raised something other than UnscoredChildError (an agent
         # connection failure, a verifier crash) and the fork ends here. The
@@ -1219,7 +1234,11 @@ async def _run_children(
             # raised still hands off whatever it wrote to the shared mounts
             # (a crashed child's verifier output is often the only evidence of
             # why it crashed). Handing off also empties the mounts, so the
-            # next child cannot inherit this one's files.
+            # next child cannot inherit this one's files. hand_off never
+            # raises here — a raise inside this finally would replace the
+            # child's own exception — it records the failure on the holder,
+            # and raise_pending() below surfaces it once the child's outcome
+            # is safely on the node.
             child.state[CHILD_WALL_CLOCK_KEY] = time.monotonic() - started
             if holder is not None and run_dir is not None:
                 holder.hand_off(child_mount_dir(run_dir, parent.id, child.id))
@@ -1243,6 +1262,13 @@ async def _run_children(
                 base_prompt_count=len(saved.executed_prompts),
                 base_tool_calls=saved.n_tool_calls,
             )
+        if holder is not None:
+            # Custody fails closed: a hand-off failure means the mounts may
+            # still carry this child's files, which the next child would both
+            # inherit and destroy. The child's own outcome (reward / unscored
+            # reason / result.json) is recorded above, so raising here loses
+            # no observation — the fork stops before evidence can cross arms.
+            holder.raise_pending()
 
 
 def make_default_runner(

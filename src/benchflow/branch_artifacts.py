@@ -38,11 +38,19 @@ only emptied entry by entry — deleting a live bind-mount source detaches it
 from the running container. And ``parent/`` is transient: it exists on disk
 only between the first child starting and the last child finishing, so finding
 it after a run means the branch did not complete and the parent's evidence is
-in there rather than at its canonical path.
+in there — preserved, never deleted — rather than at its canonical path.
 
-Failure-isolated by design, like the lineage writers: every operation reports
-failure through the caller's logger and never propagates, because losing a copy
-of the evidence must not cost the rewards the fork was run to measure.
+Custody fails **closed**: this is audit-critical evidence, so a failure at any
+step of the chain preserves the hold directory (nothing is ever removed with
+``rmtree`` unless every held entry was confirmed moved back) and surfaces as a typed
+:class:`ArtifactCustodyError` whose message names the preserved path. The one
+concession to the engine's "an artifact error must never replace the real
+failure" invariant is *when* the error is raised: a custody failure observed
+while a child's own exception is propagating is recorded on the guard and
+logged — with the preserved path — instead of raised, so the child's failure
+stays the caller's diagnosis (:meth:`MountedArtifacts.hand_off` records;
+:meth:`MountedArtifacts.raise_pending` and :meth:`MountedArtifacts.release`
+raise it as soon as no more important exception is in flight).
 """
 
 from __future__ import annotations
@@ -55,6 +63,21 @@ from pathlib import Path
 from benchflow.task.paths import RolloutPaths
 
 logger = logging.getLogger(__name__)
+
+
+class ArtifactCustodyError(RuntimeError):
+    """A step of the mounted-artifact custody chain failed.
+
+    Fail-closed marker for :class:`MountedArtifacts`: the hold directory named
+    by :attr:`hold_dir` has been **preserved on disk** — whatever evidence the
+    failed move left behind is in there, recoverable by hand — and the branch
+    must not pretend the custody chain completed.
+    """
+
+    def __init__(self, message: str, *, hold_dir: Path) -> None:
+        super().__init__(message)
+        self.hold_dir = Path(hold_dir)
+
 
 #: Directory name under ``branches/<parent-node-id>/`` holding the parent's own
 #: mounted-artifact entries while its children run. Transient — see the module
@@ -156,15 +179,31 @@ class MountedArtifacts:
     child's own directory — which both preserves the child's evidence and
     leaves the mounts empty, so the next child cannot inherit the previous
     one's files. :meth:`release` puts the parent's entries back at the end.
+
+    Every step fails closed (:class:`ArtifactCustodyError`, module docstring):
+    the hold directory is preserved on any failure, and the only step allowed
+    to defer its raise is :meth:`hand_off`, which runs inside the child loop's
+    ``finally`` where a raise would replace the child's own exception — it
+    records into :attr:`custody_failures` instead, and :meth:`raise_pending`
+    surfaces the record the moment no child failure is in flight.
     """
 
     rollout_dir: Path
     hold_dir: Path
     held: list[str] = field(default_factory=list)
+    #: Custody failures observed where raising would have masked a more
+    #: important exception (``hand_off`` inside the child loop's ``finally``).
+    custody_failures: list[str] = field(default_factory=list)
 
     @classmethod
     def hold(cls, *, run_dir: Path, parent_id: str) -> MountedArtifacts:
-        """Move the parent's mounted entries aside, before any child runs."""
+        """Move the parent's mounted entries aside, before any child runs.
+
+        Fails closed: a failure here means a child would overwrite the
+        parent's evidence, so the branch must not proceed. Whatever was moved
+        before the failure stays preserved in the hold directory — named in
+        the raised :class:`ArtifactCustodyError` — and is never deleted.
+        """
         guard = cls(
             rollout_dir=Path(run_dir), hold_dir=parent_hold_dir(run_dir, parent_id)
         )
@@ -172,45 +211,102 @@ class MountedArtifacts:
             try:
                 if _move_entries(source, guard.hold_dir / source.name):
                     guard.held.append(source.name)
-            except Exception:
-                logger.warning(
-                    "branch could not hold the parent's %s directory aside; a "
-                    "child's output may overwrite it",
-                    source,
-                    exc_info=True,
+            except Exception as exc:
+                message = (
+                    f"branch could not hold the parent's {source} directory "
+                    f"aside ({exc}); refusing to run children over the "
+                    "parent's evidence. Entries already held are preserved at "
+                    f"{guard.hold_dir}"
                 )
+                logger.error(message, exc_info=True)
+                raise ArtifactCustodyError(message, hold_dir=guard.hold_dir) from exc
         return guard
 
     def hand_off(self, target: Path) -> None:
-        """Move what the child just wrote to the mounts into ``target``."""
+        """Move what the child just wrote to the mounts into ``target``.
+
+        Runs inside the child loop's ``finally`` — a raise here would replace
+        the child's own exception, so a failure is recorded on
+        :attr:`custody_failures` (and logged, naming the preserved hold
+        directory) for :meth:`raise_pending` / the caller to surface once the
+        child's exception, if any, has been dealt with.
+        """
         for source in mounted_artifact_dirs(self.rollout_dir):
             try:
                 _move_entries(source, Path(target) / source.name)
-            except Exception:
-                logger.warning(
-                    "branch could not capture a child's %s output under %s; the "
-                    "child's reward is unaffected",
-                    source,
-                    target,
-                    exc_info=True,
+            except Exception as exc:
+                message = (
+                    f"branch could not capture a child's {source.name} output "
+                    f"under {target} ({exc}); files left in the mounts would "
+                    "leak into the next child. The parent's own evidence is "
+                    f"preserved at {self.hold_dir}"
                 )
+                self.custody_failures.append(message)
+                logger.error(message, exc_info=True)
 
-    def release(self) -> None:
-        """Put the parent's own entries back at their canonical paths."""
+    def raise_pending(self) -> None:
+        """Raise the custody failure :meth:`hand_off` had to swallow, if any.
+
+        Called by the child loop after a child completes *without* raising —
+        the point where no more important exception exists to preserve.
+        """
+        if self.custody_failures:
+            raise ArtifactCustodyError(
+                "; ".join(self.custody_failures), hold_dir=self.hold_dir
+            )
+
+    def release(self, *, raising: bool = True) -> None:
+        """Put the parent's own entries back at their canonical paths.
+
+        The hold directory is removed only after **every** held entry was
+        confirmed moved back and nothing remains inside it — a directory whose
+        contents were not confirmed moved is never deleted. On failure the
+        hold directory is preserved and an :class:`ArtifactCustodyError`
+        naming it is raised; ``raising=False`` (the caller is unwinding a
+        child's own exception, which must stay the diagnosis) records and
+        logs instead of raising.
+        """
+        failures: list[str] = []
         for source in mounted_artifact_dirs(self.rollout_dir):
             if source.name not in self.held:
                 continue
             try:
                 _move_entries(self.hold_dir / source.name, source)
-            except Exception:
-                logger.warning(
+            except Exception as exc:
+                failures.append(
+                    f"branch could not restore the parent's {source} directory ({exc})"
+                )
+                logger.error(
                     "branch could not restore the parent's %s directory from "
-                    "%s — the parent's evidence is still there, not lost",
+                    "%s — the parent's evidence is preserved there, not lost",
                     source,
                     self.hold_dir,
                     exc_info=True,
                 )
-        try:
-            shutil.rmtree(self.hold_dir, ignore_errors=True)
-        except Exception:  # pragma: no cover - rmtree already swallows errors
-            logger.warning("branch could not remove %s", self.hold_dir, exc_info=True)
+        remaining = (
+            sorted(
+                str(entry.relative_to(self.hold_dir))
+                for entry in self.hold_dir.rglob("*")
+                if entry.is_symlink() or not entry.is_dir()
+            )
+            if self.hold_dir.is_dir()
+            else []
+        )
+        if failures or remaining:
+            if not failures:
+                # Every move-back "succeeded" yet files remain: unaccounted
+                # evidence. Deleting it would be exactly the fail-open rmtree
+                # this class exists to prevent.
+                failures.append(
+                    f"unexpected entries remain after release: {remaining[:10]}"
+                )
+            message = (
+                "; ".join(failures)
+                + f" — the hold directory is preserved at {self.hold_dir}"
+            )
+            self.custody_failures.extend(failures)
+            logger.error(message)
+            if raising:
+                raise ArtifactCustodyError(message, hold_dir=self.hold_dir)
+            return
+        shutil.rmtree(self.hold_dir, ignore_errors=True)
