@@ -222,10 +222,14 @@ LiteLLM gateway) is desirable but independent; it is a named follow-on, not v1.
 
 ### 3.6 Snapshot lifecycle
 
-`docker commit` images (`bf-snap-*`) and in-sandbox state dirs currently die with the
+`docker commit` images (`bf-snap-*`) and in-sandbox state dirs die with the
 rollout (or linger unmanaged). v1 adds: snapshot refs recorded in `tree.json`; optional
-`--keep-snapshots` to export container images (`docker save`) into the run folder for
-cross-run branching; a GC note in docs. A remote snapshot registry is out of scope.
+`--keep-snapshots` (`bench eval ablate`) to export the branched stage's container image
+(`docker save`) into `<out-dir>/snapshots/<ref>.tar` for cross-run branching, with the
+tar's path and sha256 recorded in `ablation.json`. Without the flag the report records
+the snapshot handle as `ephemeral: true` with `exported: null` — a recorded ref whose
+image cleanup has destroyed must say so rather than read as restorable. A remote
+snapshot registry is out of scope.
 
 ## 4. Capability matrix (v1)
 

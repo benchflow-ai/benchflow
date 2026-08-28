@@ -178,6 +178,19 @@ def _ablate_command(
             help="Ablation output directory (default: jobs/ablate-<ts>)",
         ),
     ] = None,
+    keep_snapshots: Annotated[
+        bool,
+        typer.Option(
+            "--keep-snapshots",
+            help=(
+                "Export the branched stage's sandbox snapshot image (docker "
+                "save) to <out-dir>/snapshots/<ref>.tar before cleanup "
+                "destroys it; ablation.json records the tar path and sha256. "
+                "Without it the snapshot dies with the run and its handle is "
+                "recorded as ephemeral"
+            ),
+        ),
+    ] = False,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Emit the ablation report as JSON on stdout"),
@@ -249,6 +262,7 @@ def _ablate_command(
                     sandbox=sandbox,
                     out_dir=out_dir,
                     environment_manifest=environment_manifest,
+                    keep_snapshots=keep_snapshots,
                 )
             )
         )
