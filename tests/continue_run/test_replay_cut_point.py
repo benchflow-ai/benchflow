@@ -7,10 +7,11 @@ FrontierPhysics#73). PR number to be added on submission.
 ``max_exchanges`` replays at most the first K recorded exchanges, then switches
 the proxy to live passthrough exactly as if the recording had ended there. The
 router exposes cut-point accounting (``n_replayed_exchanges`` +
-``cut_point_digest``), a cut continue-run's ``source_provenance`` gains a
-``cut_point`` block (configured at build time, reconciled with the served
-counts post-run in host proxy mode), and ``stage_tags`` + ``cut_stage`` name a
-cut by recorded stage — ``stage_tags[stage]`` is the 1-based count of
+``served_request_digest``/``recorded_request_digest`` + the workspace digest
+taken as the run crosses the cut), a cut continue-run's ``source_provenance``
+gains a ``cut_point`` block (configured at build time, reconciled with the
+served counts post-run in host proxy mode), and ``stage_tags`` + ``cut_stage``
+name a cut by recorded stage — ``stage_tags[stage]`` is the 1-based count of
 exchanges that had completed when the stage closed. Unit tests against the
 existing continue_run test doubles — no Docker, no API keys.
 """
@@ -41,9 +42,10 @@ from benchflow.continue_run.orchestrator import (
     write_stitched_trajectory,
 )
 from benchflow.continue_run.replay_proxy import (
+    REQUEST_DIGEST_BASIS,
     ReplayCutPointError,
     ReplayRouter,
-    request_body_digest,
+    comparable_request_digest,
     validate_max_exchanges,
 )
 from benchflow.continue_run.run_folder import load_run_folder
@@ -119,7 +121,8 @@ def test_cut_at_n_equals_full_prefix_behavior():
         sources = [router.next_response(_request(i)).source for i in range(3)]
         assert sources == ["replay", "replay", "live"]
     assert cut.n_replayed_exchanges == full.n_replayed_exchanges == 2
-    assert cut.cut_point_digest == full.cut_point_digest
+    assert cut.recorded_request_digest == full.recorded_request_digest
+    assert cut.served_request_digest == full.served_request_digest
 
 
 @pytest.mark.parametrize("bad", [0, -1, 4])
@@ -136,12 +139,22 @@ def test_validate_max_exchanges_none_means_full_prefix():
 # ── cut-point accounting ──────────────────────────────────────────────────
 
 
-def test_cut_point_digest_matches_independent_sha256():
+def test_cut_point_digests_match_independent_sha256():
+    """The served digest is of the ACTUAL incoming request at the cut.
+
+    Guards "fix(continue): replay divergence detection compares actual content
+    and records workspace digests": the block's digest used to hash only the
+    *recorded* request, so a diverged replay hashed to the recorded value and
+    looked faithful. Both sides are now digested and named separately; here
+    the incoming request equals the recorded one, so the two digests agree —
+    and match an independently computed sha256 of the comparable projection.
+    """
     recorded = _recorded(3)
     router = ReplayRouter(
         recorded, live_forwarder=lambda req: completion(content="L"), max_exchanges=2
     )
-    assert router.cut_point_digest is None  # nothing replayed yet
+    assert router.served_request_digest is None  # nothing replayed yet
+    assert router.recorded_request_digest is None
     for i in range(3):
         router.next_response(_request(i))
 
@@ -149,16 +162,31 @@ def test_cut_point_digest_matches_independent_sha256():
         "sha256:"
         + hashlib.sha256(
             json.dumps(
-                recorded[1].request.body, sort_keys=True, separators=(",", ":")
+                {"messages": recorded[1].request.body["messages"]},
+                sort_keys=True,
+                separators=(",", ":"),
             ).encode()
         ).hexdigest()
     )
     assert router.n_replayed_exchanges == 2
-    assert router.cut_point_digest == expected
-    assert request_body_digest(recorded[1].request.body) == expected
+    assert router.recorded_request_digest == expected
+    assert router.served_request_digest == expected
+    assert comparable_request_digest(recorded[1].request.body) == expected
 
 
-def test_cut_point_digest_deterministic_across_runs():
+def test_served_digest_differs_from_recorded_when_replay_diverged():
+    """The half the recorded-only digest could not express: the agent's actual
+    request at the cut is what ``served_request_digest`` hashes."""
+    recorded = _recorded(1)
+    router = ReplayRouter(recorded)
+    router.next_response({"messages": [{"role": "user", "content": "CHANGED"}]})
+    assert router.served_request_digest != router.recorded_request_digest
+    assert router.recorded_request_digest == comparable_request_digest(
+        recorded[0].request.body
+    )
+
+
+def test_cut_point_digests_deterministic_across_runs():
     recorded = _recorded(3)
     digests = []
     for _ in range(2):
@@ -169,9 +197,9 @@ def test_cut_point_digest_deterministic_across_runs():
         )
         for i in range(2):
             router.next_response(_request(i))
-        digests.append(router.cut_point_digest)
+        digests.append((router.served_request_digest, router.recorded_request_digest))
     assert digests[0] == digests[1]
-    assert digests[0] is not None
+    assert digests[0][0] is not None
 
 
 def test_natural_end_exposes_cut_point_accounting_too():
@@ -180,7 +208,10 @@ def test_natural_end_exposes_cut_point_accounting_too():
     for i in range(3):
         router.next_response(_request(i))
     assert router.n_replayed_exchanges == 2
-    assert router.cut_point_digest == request_body_digest(recorded[1].request.body)
+    assert router.recorded_request_digest == comparable_request_digest(
+        recorded[1].request.body
+    )
+    assert router.served_request_digest == comparable_request_digest(_request(1))
 
 
 # ── provenance: the cut_point block in source_provenance ──────────────────
@@ -207,11 +238,19 @@ def test_provenance_gains_cut_point_block(tmp_path):
     cfg = _build_config(tmp_path, run, max_exchanges=2)
     cut = cfg.source_provenance["cut_point"]
     assert cut["n_replayed_exchanges"] == 2
-    assert cut["cut_point_digest"] == request_body_digest(run.exchanges[1].request.body)
+    assert cut["recorded_request_digest"] == comparable_request_digest(
+        run.exchanges[1].request.body
+    )
+    assert cut["request_digest_basis"] == REQUEST_DIGEST_BASIS
     # config-time blocks are computed from the recording, and say so — sandbox
     # proxy mode (truncated upload, no live router to read back) keeps this
-    # basis in the final artifacts.
+    # basis in the final artifacts. Everything only the live run could
+    # observe is recorded honestly as null, never fabricated.
     assert cut["accounting"] == "configured"
+    assert cut["served_request_digest"] is None
+    assert cut["divergences"] is None
+    assert cut["workspace_digest"] is None
+    assert "no live sandbox is reachable" in cut["workspace_digest_reason"]
     assert "branch_stage" not in cut
     # existing provenance fields are preserved alongside the new block
     assert cfg.source_provenance["kind"] == "benchflow-continue"
@@ -224,7 +263,9 @@ def test_provenance_natural_end_documents_cut_point(tmp_path):
     cfg = _build_config(tmp_path, run)  # no max_exchanges
     cut = cfg.source_provenance["cut_point"]
     assert cut["n_replayed_exchanges"] == 3
-    assert cut["cut_point_digest"] == request_body_digest(run.exchanges[2].request.body)
+    assert cut["recorded_request_digest"] == comparable_request_digest(
+        run.exchanges[2].request.body
+    )
     assert cut["accounting"] == "configured"
 
 
@@ -235,9 +276,9 @@ def test_served_cut_point_records_what_the_router_actually_served():
     """A run that went live before reaching the configured cut is visible.
 
     The router's served counters had no production readers — the block now
-    records n_replayed_exchanges / cut_point_digest as observed (accounting
-    "served") plus the requested configured_max_exchanges, so a
-    served-vs-configured divergence is detectable in artifacts.
+    records n_replayed_exchanges plus the served/recorded request digests as
+    observed (accounting "served") and the requested configured_max_exchanges,
+    so a served-vs-configured divergence is detectable in artifacts.
     """
     recorded = _recorded(3)
     router = ReplayRouter(
@@ -249,10 +290,16 @@ def test_served_cut_point_records_what_the_router_actually_served():
 
     block = served_cut_point(router, configured_max_exchanges=3)
 
+    reason = block.pop("workspace_digest_reason")
+    assert "never crossed the cut point" in reason
     assert block == {
         "n_replayed_exchanges": 2,
-        "cut_point_digest": request_body_digest(recorded[1].request.body),
+        "served_request_digest": comparable_request_digest(_request(1)),
+        "recorded_request_digest": comparable_request_digest(recorded[1].request.body),
+        "request_digest_basis": REQUEST_DIGEST_BASIS,
         "accounting": "served",
+        "divergences": [],
+        "workspace_digest": None,
         "configured_max_exchanges": 3,
     }
 
@@ -265,12 +312,149 @@ def test_served_cut_point_natural_end_and_stage_shape():
 
     block = served_cut_point(router, branch_stage="post-research")
 
+    # the cut WAS crossed here, but no workspace hook was configured — the
+    # reason says which of the two happened, never a fabricated digest
+    reason = block.pop("workspace_digest_reason")
+    assert "no live sandbox was reachable" in reason
     assert block == {
         "n_replayed_exchanges": 2,
-        "cut_point_digest": request_body_digest(recorded[1].request.body),
+        "served_request_digest": comparable_request_digest(_request(1)),
+        "recorded_request_digest": comparable_request_digest(recorded[1].request.body),
+        "request_digest_basis": REQUEST_DIGEST_BASIS,
         "accounting": "served",
+        "divergences": [],
+        "workspace_digest": None,
         "branch_stage": "post-research",
     }
+
+
+def test_served_cut_point_carries_the_divergence_events():
+    """Divergence accounting reaches the artifact, with the exchange index.
+
+    Guards "fix(continue): replay divergence detection compares actual content
+    and records workspace digests": a divergence annotates (the continuation
+    still runs — fidelity caveats are recorded, not hidden, per RFC §3.5) and
+    the served block carries every event so the artifact is truthful about it.
+    """
+    recorded = _recorded(2)
+    router = ReplayRouter(recorded, live_forwarder=lambda req: completion(content="L"))
+    router.next_response(_request(0))  # faithful
+    router.next_response({"messages": [{"role": "user", "content": "x"}] * 2})
+
+    block = served_cut_point(router)
+
+    assert block["divergences"] == router.divergence_events
+    (event,) = block["divergences"]
+    assert event["exchange_index"] == 1
+    assert event["served_request_digest"] == block["served_request_digest"]
+    assert event["recorded_request_digest"] == block["recorded_request_digest"]
+    assert block["served_request_digest"] != block["recorded_request_digest"]
+
+
+# ── workspace digest at the cut point ─────────────────────────────────────
+
+
+def test_workspace_digest_is_captured_once_as_the_run_crosses_the_cut():
+    """Guards "fix(continue): replay divergence detection compares actual
+    content and records workspace digests": the RFC §3.5 workspace digest is
+    taken exactly once, at the first live-leg request — the moment the
+    replay-rebuilt workspace is complete — and lands in the served block."""
+    calls: list[int] = []
+    payload = {"digest": "sha256:" + "a" * 64, "basis": "b", "root": "/app"}
+
+    def hook():
+        calls.append(1)
+        return dict(payload)
+
+    router = ReplayRouter(
+        _recorded(3),
+        live_forwarder=lambda req: completion(content="L"),
+        max_exchanges=1,
+        workspace_digest_fn=hook,
+    )
+    router.next_response(_request(0))
+    assert router.workspace_digest is None  # cut not crossed yet
+    router.next_response(_request(1))
+    router.next_response(_request(2))
+
+    assert calls == [1]  # once, not per live request
+    assert router.workspace_digest == payload
+    block = served_cut_point(router)
+    assert block["workspace_digest"] == payload
+    assert "workspace_digest_reason" not in block
+
+
+def test_workspace_digest_failure_is_recorded_never_fabricated():
+    def hook():
+        raise RuntimeError("sandbox is gone")
+
+    router = ReplayRouter(
+        _recorded(1),
+        live_forwarder=lambda req: completion(content="L"),
+        workspace_digest_fn=hook,
+    )
+    router.next_response(_request(0))
+    router.next_response(_request(1))  # crosses the cut; hook raises
+
+    assert router.workspace_digest is None
+    block = served_cut_point(router)
+    assert block["workspace_digest"] is None
+    assert "sandbox is gone" in block["workspace_digest_reason"]
+
+
+async def test_compute_workspace_digest_runs_the_pipeline_in_the_sandbox():
+    """The reusable helper execs the find|sort|sha256sum pipeline and parses
+    the marker-prefixed digest line, ignoring merged compose noise."""
+    from benchflow.sandbox.protocol import ExecResult
+    from benchflow.sandbox.workspace_digest import (
+        WORKSPACE_DIGEST_BASIS,
+        compute_workspace_digest,
+    )
+
+    commands: list[str] = []
+
+    class FakeSandbox:
+        async def exec(self, command, timeout_sec=None):
+            commands.append(command)
+            return ExecResult(
+                return_code=0,
+                stdout=(
+                    "Found orphan containers for this project\n"
+                    "BFWSDIGEST:" + "a" * 64 + "  -\n"
+                ),
+                stderr="",
+            )
+
+    payload = await compute_workspace_digest(FakeSandbox())
+
+    assert payload == {
+        "digest": "sha256:" + "a" * 64,
+        "basis": WORKSPACE_DIGEST_BASIS,
+        "root": "/app",
+    }
+    (command,) = commands
+    assert "find . -type f | sort | xargs -r sha256sum" in command
+    assert "cd /app" in command
+
+
+async def test_compute_workspace_digest_fails_closed_on_bad_output():
+    from benchflow.sandbox.protocol import ExecResult
+    from benchflow.sandbox.workspace_digest import compute_workspace_digest
+
+    class FailingSandbox:
+        async def exec(self, command, timeout_sec=None):
+            return ExecResult(return_code=1, stdout="", stderr="sh: cd: /app")
+
+    class GarbageSandbox:
+        async def exec(self, command, timeout_sec=None):
+            return ExecResult(
+                return_code=0, stdout="BFWSDIGEST:not-a-digest\n", stderr=""
+            )
+
+    with pytest.raises(RuntimeError, match="failed"):
+        await compute_workspace_digest(FailingSandbox())
+    with pytest.raises(RuntimeError, match="not a sha256"):
+        await compute_workspace_digest(GarbageSandbox())
 
 
 def test_update_continued_metadata_reconciles_cut_point_in_both_files(tmp_path):
@@ -279,7 +463,7 @@ def test_update_continued_metadata_reconciles_cut_point_in_both_files(tmp_path):
     rollout_dir.mkdir()
     configured = {
         "n_replayed_exchanges": 3,
-        "cut_point_digest": "sha256:configured",
+        "recorded_request_digest": "sha256:configured",
         "accounting": "configured",
     }
     (rollout_dir / "config.json").write_text(
@@ -292,7 +476,8 @@ def test_update_continued_metadata_reconciles_cut_point_in_both_files(tmp_path):
     traj.write_text("")
     served = {
         "n_replayed_exchanges": 2,
-        "cut_point_digest": "sha256:served",
+        "served_request_digest": "sha256:served",
+        "recorded_request_digest": "sha256:recorded",
         "accounting": "served",
         "configured_max_exchanges": 3,
     }
@@ -582,10 +767,17 @@ async def test_host_mode_stitches_and_bills_only_the_exchanges_served(
     }
     assert payload["agent_result"]["total_tokens"] == 2
     # and so is the provenance — served, with the request K still visible
-    assert payload["source"]["cut_point"] == {
+    cut = payload["source"]["cut_point"]
+    reason = cut.pop("workspace_digest_reason")
+    assert "never crossed the cut point" in reason
+    assert cut == {
         "n_replayed_exchanges": 1,
-        "cut_point_digest": request_body_digest(recorded[0].request.body),
+        "served_request_digest": comparable_request_digest(_request(0)),
+        "recorded_request_digest": comparable_request_digest(recorded[0].request.body),
+        "request_digest_basis": REQUEST_DIGEST_BASIS,
         "accounting": "served",
+        "divergences": [],
+        "workspace_digest": None,
         "configured_max_exchanges": 2,
     }
     assert result.n_recorded == 1

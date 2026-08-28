@@ -89,16 +89,31 @@ went wrong in.
 - `K` must satisfy `1 <= K <= n_recorded`; anything else fails closed before a
   sandbox boots.
 - The continued run's `source_provenance` gains a `cut_point` block:
-  `n_replayed_exchanges` plus `cut_point_digest` (a sha256 over the canonical
-  JSON of the last replayed request). The block's `accounting` field names its
-  basis: in **host** proxy mode the orchestrator reconciles the block after
-  the run with what the live replay proxy *actually served*
-  (`accounting: "served"`, plus `configured_max_exchanges` when a cut was
-  requested — so a run that went live before reaching the requested cut is
-  visible in artifacts); in **sandbox** proxy mode the uploaded recording is
-  truncated to the configured prefix and the block records that basis
-  (`accounting: "configured"`). A natural-end continuation records the same
-  block, documenting the end of the recording.
+  `n_replayed_exchanges` plus two request digests named by what they hash —
+  `served_request_digest` (the request the agent *actually* sent at the cut)
+  and `recorded_request_digest` (the recorded request it answered for), both
+  sha256 over the canonical JSON of the comparable projection
+  `{messages, tools}` (`request_digest_basis` states this in the artifact).
+  Divergence is checked per replayed exchange on the same basis — a
+  same-message-count prompt/content/tool change is detected, not only a count
+  mismatch — and every event (exchange index + both digests) is recorded in
+  the block's `divergences` list. A divergence annotates rather than aborts
+  (fidelity caveats are recorded, not hidden — RFC §3.5); `--strict-divergence`
+  remains the opt-in abort. The block also carries `workspace_digest`: a
+  deterministic digest of the continuation workspace (`/app` — file contents,
+  tree and modes) taken as the run crosses the cut into the live leg; when no
+  live sandbox is reachable at that moment (sandbox proxy mode, a run that
+  never crossed the cut, a digest failure) the field is `null` and
+  `workspace_digest_reason` says why — it is never fabricated. The block's
+  `accounting` field names its basis: in **host** proxy mode the orchestrator
+  reconciles the block after the run with what the live replay proxy
+  *actually served* (`accounting: "served"`, plus `configured_max_exchanges`
+  when a cut was requested — so a run that went live before reaching the
+  requested cut is visible in artifacts); in **sandbox** proxy mode the
+  uploaded recording is truncated to the configured prefix and the block
+  records that basis (`accounting: "configured"`, with the live-only fields
+  null). A natural-end continuation records the same block, documenting the
+  end of the recording.
 - The stitched `llm_trajectory.jsonl` contains only the replayed prefix (the
   first K *parsed* recorded exchanges — a malformed recorded line is never
   replayed and never stitched) plus the live suffix.

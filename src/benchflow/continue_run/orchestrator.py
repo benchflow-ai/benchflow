@@ -21,6 +21,7 @@ forwarder request-building, trajectory stitching) are pure and unit-tested.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -32,10 +33,11 @@ from typing import Any, cast
 
 from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import (
+    REQUEST_DIGEST_BASIS,
     ReplayCutPointError,
     ReplayProxy,
     ReplayRouter,
-    request_body_digest,
+    comparable_request_digest,
     validate_max_exchanges,
 )
 from benchflow.continue_run.run_folder import RunFolder, RunFolderError, load_run_folder
@@ -150,24 +152,37 @@ def cut_point_provenance(
 
     ``n_replayed_exchanges`` is the replay prefix the run is *configured* to
     serve (the natural end when ``max_exchanges`` is ``None``) and
-    ``cut_point_digest`` the canonical-JSON sha256 of the last replayed
-    exchange's request — both computed from the recording at config time, so
-    the block carries ``accounting: "configured"``. In sandbox proxy mode the
-    uploaded recording is truncated to exactly this prefix, so configured
-    accounting is the honest basis there; in host proxy mode the orchestrator
-    reconciles the block after the run with what the live router actually
-    served (:func:`served_cut_point`). ``branch_stage`` is recorded only for
-    a stage-named cut.
+    ``recorded_request_digest`` the comparable digest of the last replayed
+    exchange's *recorded* request — both computed from the recording at
+    config time, so the block carries ``accounting: "configured"`` and every
+    field only the live run could observe is recorded honestly as null:
+    ``served_request_digest`` (no incoming request exists yet),
+    ``divergences`` (not observed on this basis) and ``workspace_digest``
+    (no sandbox is reachable at the cut point on this basis — the in-sandbox
+    replay proxy crosses the cut without notifying the host). In sandbox
+    proxy mode the uploaded recording is truncated to exactly this prefix,
+    so configured accounting is the honest basis there; in host proxy mode
+    the orchestrator reconciles the block after the run with what the live
+    router actually served (:func:`served_cut_point`). ``branch_stage`` is
+    recorded only for a stage-named cut.
     """
     n_replayed = validate_max_exchanges(max_exchanges, len(exchanges))
     block: dict[str, Any] = {
         "n_replayed_exchanges": n_replayed,
-        "cut_point_digest": (
-            request_body_digest(exchanges[n_replayed - 1].request.body)
+        "recorded_request_digest": (
+            comparable_request_digest(exchanges[n_replayed - 1].request.body)
             if n_replayed > 0
             else None
         ),
+        "served_request_digest": None,
+        "request_digest_basis": REQUEST_DIGEST_BASIS,
         "accounting": "configured",
+        "divergences": None,
+        "workspace_digest": None,
+        "workspace_digest_reason": (
+            "configured-basis block computed from the recording alone; no "
+            "live sandbox is reachable at the cut point on this basis"
+        ),
     }
     if branch_stage is not None:
         block["branch_stage"] = branch_stage
@@ -183,18 +198,29 @@ def served_cut_point(
     """The post-run ``cut_point`` block reconciled with what was served.
 
     Host proxy mode keeps the live :class:`ReplayRouter` in-process, so after
-    the run the block can record the replay prefix the proxy *actually*
-    served — ``n_replayed_exchanges`` and ``cut_point_digest`` as observed
-    (``accounting: "served"``) rather than as configured. When an explicit
-    cut was requested, ``configured_max_exchanges`` preserves the requested
-    K so a served/configured divergence (e.g. the agent stopped asking before
-    the cut) stays visible; ``branch_stage`` is kept for a stage-named cut.
+    the run the block records the replay prefix the proxy *actually* served
+    (``accounting: "served"``): ``served_request_digest`` is the comparable
+    digest of the ACTUAL request the agent sent at the cut,
+    ``recorded_request_digest`` the recorded request it answered for — named
+    separately so a reader can compare them — plus every divergence event the
+    router detected and the workspace digest taken as the run crossed the cut
+    (null with a reason when none could be, never fabricated). When an
+    explicit cut was requested, ``configured_max_exchanges`` preserves the
+    requested K so a served/configured divergence (e.g. the agent stopped
+    asking before the cut) stays visible; ``branch_stage`` is kept for a
+    stage-named cut.
     """
     block: dict[str, Any] = {
         "n_replayed_exchanges": router.n_replayed_exchanges,
-        "cut_point_digest": router.cut_point_digest,
+        "served_request_digest": router.served_request_digest,
+        "recorded_request_digest": router.recorded_request_digest,
+        "request_digest_basis": REQUEST_DIGEST_BASIS,
         "accounting": "served",
+        "divergences": list(router.divergence_events),
+        "workspace_digest": router.workspace_digest,
     }
+    if router.workspace_digest is None:
+        block["workspace_digest_reason"] = router.workspace_digest_reason
     if configured_max_exchanges is not None:
         block["configured_max_exchanges"] = configured_max_exchanges
     if branch_stage is not None:
@@ -610,6 +636,46 @@ def write_continuation_artifacts(
     return stitched_path
 
 
+def _host_workspace_digest_fn(
+    rollout: Any, loop: asyncio.AbstractEventLoop
+) -> Callable[[], dict[str, Any]]:
+    """The router's cut-point workspace hook, bound to a live host-mode run.
+
+    Called by :class:`ReplayRouter` on the proxy's HTTP handler thread the
+    moment the first live-leg request arrives — the workspace the replay just
+    rebuilt is still live in the rollout's sandbox at that moment, so the
+    digest is scheduled onto the run's event loop
+    (:func:`~benchflow.sandbox.workspace_digest.compute_workspace_digest`)
+    and awaited from the handler thread. Raises — with the reason — when no
+    sandbox is attached or the hook is somehow invoked on the loop thread
+    itself (waiting there would deadlock the run); the router records the
+    reason and never fabricates a digest.
+    """
+    from benchflow.sandbox.workspace_digest import compute_workspace_digest
+
+    def _digest() -> dict[str, Any]:
+        sandbox = getattr(rollout, "env", None)
+        if sandbox is None:
+            raise RuntimeError(
+                "no live sandbox is attached to the continuation rollout"
+            )
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            raise RuntimeError(
+                "cut point crossed on the run's own event-loop thread; "
+                "waiting for the digest here would deadlock the run"
+            )
+        future = asyncio.run_coroutine_threadsafe(
+            compute_workspace_digest(sandbox), loop
+        )
+        return future.result(timeout=180)
+
+    return _digest
+
+
 def _host_proxy_binding(environment: str) -> tuple[str, str]:
     """(bind_host, advertise_host) so a Docker agent can reach the host proxy.
 
@@ -772,6 +838,14 @@ async def continue_run(
             branch_stage=branch_stage,
         )
         rollout = await Rollout.create(config)
+        # RFC §3.5 workspace accounting: the router digests the continuation
+        # workspace the moment the run crosses the cut into the live leg —
+        # the one moment the replay-rebuilt workspace is both complete and
+        # still live in the sandbox. If the run never crosses (or the digest
+        # fails), the cut_point block records null with the reason.
+        router.workspace_digest_fn = _host_workspace_digest_fn(
+            rollout, asyncio.get_running_loop()
+        )
         result = await rollout.run()
         rollout_dir = Path(rollout._rollout_dir or (out_root / rollout_name))
     finally:
