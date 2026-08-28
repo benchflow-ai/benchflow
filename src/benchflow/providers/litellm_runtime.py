@@ -103,6 +103,10 @@ _LIVE_CAPTURE_INTERVAL_SEC = 1.0
 # normal backlog; one that has stopped advancing is the state that renders a
 # frozen-but-plausible token count.
 _LIVE_CAPTURE_STALL_WARN_TICKS = 30
+# Bounded drain for live_exchange_count(): how many back-to-back polls a
+# stage-marker read may spend catching the tail up to the gateway log's end
+# before answering "unknown" instead of a stale lower bound.
+_LIVE_EXCHANGE_DRAIN_ATTEMPTS = 8
 
 # Agents that cannot make model calls through LiteLLM. ``oracle`` has no model
 # at all. Gemini is routable through LiteLLM's native Google GenerateContent
@@ -214,10 +218,55 @@ class LiteLLMProcess:
             return None
         return self._live_usage_total_tokens
 
+    async def live_exchange_count(self) -> int | None:
+        """Completed provider exchanges at this instant, drained to the log's end.
+
+        The stage-marker seam (rollout-branching RFC §3.5):
+        ``benchflow.branch_policy.capture_stage`` records this count into
+        ``stage_snapshots.json`` so a stage-named replay cut
+        (``bench eval continue --cut-stage``) can replay exactly the prefix
+        that had completed when the stage closed. Unlike
+        :meth:`live_usage_tokens` (display-only, allowed to lag), a cut index
+        must not undercount, so this read *drains* the callback tail to EOF
+        first — bounded at ``_LIVE_EXCHANGE_DRAIN_ATTEMPTS`` polls — and
+        returns ``None`` rather than a stale lower bound when the tail still
+        is not caught up (or the live capture never started): an honest
+        "unknown" beats a plausible wrong cut. Counts every completed
+        exchange, failure records included — the same per-record basis
+        ``trajectory_from_litellm_callback_log`` gives both the live mirror
+        and the end-of-run import, so the index names the same
+        ``llm_trajectory.jsonl`` line the replay prefix counts.
+        """
+        trajectory = getattr(self, "_live_trajectory", None)
+        if trajectory is None:
+            return None
+        for _ in range(_LIVE_EXCHANGE_DRAIN_ATTEMPTS):
+            await self._capture_live_records()
+            if self._live_capture_lag_bytes == 0:
+                return len(trajectory.exchanges)
+        return None
+
     async def _read_callback_chunk(self, offset: int, limit: int) -> _CallbackChunk:
         raise NotImplementedError
 
     async def _capture_live_records(self) -> None:
+        """Serialized entry to one tail poll.
+
+        Historically only the capture loop (and ``_stop_live_capture``, after
+        cancelling it) called the poll, so it could assume exclusive access to
+        the offset/remainder cursor. ``live_exchange_count`` now drains
+        on demand from the event loop *while the loop task may be mid-poll at
+        an await point*; two interleaved polls would read the same offset and
+        append the same records twice. The lock makes every poll atomic with
+        respect to other polls without changing single-caller behavior.
+        """
+        lock = getattr(self, "_live_capture_lock", None)
+        if lock is None:
+            lock = self._live_capture_lock = asyncio.Lock()
+        async with lock:
+            await self._capture_live_records_locked()
+
+    async def _capture_live_records_locked(self) -> None:
         trajectory = getattr(self, "_live_trajectory", None)
         writer = getattr(self, "_live_writer", None)
         if trajectory is None or writer is None:

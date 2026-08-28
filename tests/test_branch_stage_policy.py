@@ -449,6 +449,71 @@ async def test_mark_stage_takes_the_layers_it_is_given(tmp_path: Path):
     assert snap.sandbox_ref is sandbox.snapshots[0]
 
 
+class _FakeUsageGateway:
+    """A usage-gateway server double exposing the RFC §3.5 stage-marker seam."""
+
+    def __init__(self, count: int | None) -> None:
+        self._count = count
+        self.calls = 0
+
+    async def live_exchange_count(self) -> int | None:
+        self.calls += 1
+        return self._count
+
+
+async def test_mark_stage_records_the_completed_exchange_index(tmp_path: Path):
+    """Guards "feat(branch): record stage markers with trajectory exchange
+    indices": marking a stage records which LLM exchange had completed at that
+    moment — read from the usage gateway's drained live capture — into the
+    snapshot meta and into ``stage_snapshots.json``, so a stage-named replay
+    cut (``bench eval continue --cut-stage``) can resolve the prefix later.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment, rollout._env = FakeEnv(), FakeSnapSandbox()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rollout._rollout_dir = run_dir
+    gateway = _FakeUsageGateway(7)
+    rollout._usage_runtime = SimpleNamespace(server=gateway)
+
+    snap = await rollout.mark_stage("post-research")
+
+    assert gateway.calls == 1
+    assert snap.meta["exchanges_completed"] == 7
+    recorded = json.loads((run_dir / "stage_snapshots.json").read_text())
+    assert recorded["stages"]["post-research"]["exchanges_completed"] == 7
+
+
+async def test_stage_capture_records_null_when_the_gateway_cannot_count(
+    tmp_path: Path,
+):
+    """An unavailable count is recorded as null, never a fabricated number.
+
+    Both absence shapes degrade the same way: a gateway whose drained tail
+    answers ``None`` (it could not catch up), and a runtime whose read raises.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment, rollout._env = FakeEnv(), FakeSnapSandbox()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rollout._rollout_dir = run_dir
+
+    class _RaisingGateway:
+        async def live_exchange_count(self) -> int | None:
+            raise RuntimeError("tail read failed")
+
+    rollout._usage_runtime = SimpleNamespace(server=_FakeUsageGateway(None))
+    unknown = await rollout.mark_stage("post-research")
+    rollout._usage_runtime = SimpleNamespace(server=_RaisingGateway())
+    raising = await rollout.mark_stage("pre-verify")
+
+    assert unknown.meta["exchanges_completed"] is None
+    assert raising.meta["exchanges_completed"] is None
+    recorded = json.loads((run_dir / "stage_snapshots.json").read_text())
+    assert recorded["stages"]["post-research"]["exchanges_completed"] is None
+    assert recorded["stages"]["pre-verify"]["exchanges_completed"] is None
+
+
 # 6. Branching from a recorded stage
 
 
@@ -715,6 +780,11 @@ async def test_stage_snapshots_json_is_deterministic(tmp_path: Path):
             "environment_ref": "env-snap-1",
             "sandbox_ref": None,
             "layers": ["environment"],
+            # No usage gateway is attached to this fake rollout, so the
+            # exchange index of the capture is recorded as an honest null
+            # ("feat(branch): record stage markers with trajectory exchange
+            # indices").
+            "exchanges_completed": None,
         }
     }
     assert (run_dir / "stage_snapshots.json").read_text() == (
@@ -723,6 +793,7 @@ async def test_stage_snapshots_json_is_deterministic(tmp_path: Path):
         '  "stages": {\n'
         '    "env-ready": {\n'
         '      "environment_ref": "env-snap-2",\n'
+        '      "exchanges_completed": null,\n'
         '      "layers": [\n'
         '        "environment",\n'
         '        "sandbox"\n'
@@ -731,6 +802,7 @@ async def test_stage_snapshots_json_is_deterministic(tmp_path: Path):
         "    },\n"
         '    "pre-verify": {\n'
         '      "environment_ref": "env-snap-1",\n'
+        '      "exchanges_completed": null,\n'
         '      "layers": [\n'
         '        "environment"\n'
         "      ],\n"

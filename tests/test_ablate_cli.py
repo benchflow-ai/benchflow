@@ -1950,6 +1950,10 @@ async def test_the_branched_stages_snapshot_refs_are_stamped_into_the_report(
         "environment_ref": None,
         "sandbox_ref": "bf-snap-root-1",
         "layers": ["sandbox"],
+        # The fake registry records no capture-time exchange index, so the
+        # report carries the honest null ("feat(branch): record stage markers
+        # with trajectory exchange indices").
+        "exchanges_completed": None,
         # Without --keep-snapshots the committed image dies with the run's
         # cleanup, and the report says so (see the retention tests below).
         "ephemeral": True,

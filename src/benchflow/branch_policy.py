@@ -484,6 +484,35 @@ def validate_fresh_children(layers: frozenset[str], *, at_stage: str) -> None:
         )
 
 
+async def completed_exchange_count(rollout: Any) -> int | None:
+    """The LLM exchanges completed by ``rollout`` at this instant, best-effort.
+
+    The stage half of the RFC §3.5 stage-tagged replay cut: every stage
+    capture records which ``llm_trajectory.jsonl`` prefix had completed when
+    the boundary closed, so ``bench eval continue --cut-stage`` can replay
+    exactly that prefix later. The count comes from the usage gateway's live
+    capture (``LiveUsageGateway.live_exchange_count`` — drained to the
+    gateway log's end, so it cannot silently undercount), reached duck-typed
+    because the branch engine, like the rollout kernel, must not import the
+    concrete provider plane; the name is agreed in
+    ``contracts.planes.LiveUsageGateway`` and statically asserted by
+    ``benchflow.providers.litellm_runtime``. Any absence — no runtime
+    connected yet (``env-ready``), a gateway without the accessor (Daytona's
+    stop()-time import), the drain failing or timing out — degrades to
+    ``None``, recorded honestly as an unknown index, never a guess.
+    """
+    runtime = getattr(rollout, "_usage_runtime", None)
+    counter = getattr(getattr(runtime, "server", None), "live_exchange_count", None)
+    if counter is None:
+        return None
+    try:
+        count = await counter()
+    except Exception:
+        logger.debug("live exchange count unavailable at stage capture", exc_info=True)
+        return None
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
 async def capture_stage(
     rollout: Rollout,
     stage: str,
@@ -499,6 +528,14 @@ async def capture_stage(
     state — and register it under ``stage`` on the rollout. The registry is
     re-serialized to ``stage_snapshots.json`` after every capture, with write
     failures logged and isolated from the rollout.
+
+    Each capture also records the completed-LLM-exchange index of the moment
+    (:func:`completed_exchange_count`, taken immediately *before* the layers
+    snapshot so the index names the world the snapshot froze, not one that
+    kept moving while layers committed) into ``snapshot.meta`` and therefore
+    into ``stage_snapshots.json`` — the stage→exchange-index data a
+    stage-named replay cut resolves. ``None`` (count unavailable) is recorded
+    as an honest null.
 
     Callers are the lifecycle's own boundaries (``start()``/``verify()``, gated
     on ``RolloutConfig.snapshot_stages``) and ``Rollout.mark_stage`` for the
@@ -517,6 +554,7 @@ async def capture_stage(
         subject=subject,
         requested=f"snapshot_layers={sorted(layers)!r}",
     )
+    exchanges_completed = await completed_exchange_count(rollout)
     try:
         snapshot = await _checkpoint_composed(
             rollout._cursor,
@@ -531,6 +569,7 @@ async def capture_stage(
             "checkpoint was recorded on the node."
         )
         raise
+    snapshot.meta["exchanges_completed"] = exchanges_completed
     rollout._stage_snapshots[stage] = snapshot
     rollout._stage_nodes[stage] = rollout._cursor
 

@@ -120,13 +120,31 @@ def serialize_tree(
     return path
 
 
+def _stage_exchange_index(snap: Any) -> int | None:
+    """The recorded completed-exchange index of a stage capture, or ``None``.
+
+    ``capture_stage`` stores the count in ``snapshot.meta`` (RFC §3.5 —
+    stage-tagged replay cuts); the serializer records exactly an ``int`` and
+    maps anything else — absent meta, an unavailable count, a foreign value —
+    to ``None``, the honest "unknown index".
+    """
+    meta = getattr(snap, "meta", None)
+    value = meta.get("exchanges_completed") if isinstance(meta, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def stage_snapshots_payload(
     snapshots: Mapping[str, StageSnapshot],
 ) -> dict[str, dict[str, Any]]:
     """The stage registry as a serializable ``stage -> refs`` mapping (RFC §3.2).
 
-    Each entry records the per-layer roll-back handles and the ``layers`` the
-    stage actually captured (sorted) — the set a stage branch restores.
+    Each entry records the per-layer roll-back handles, the ``layers`` the
+    stage actually captured (sorted) — the set a stage branch restores — and
+    ``exchanges_completed``, the LLM-exchange index recorded at capture time
+    (``null`` when it was unavailable): the stage→exchange-index data a
+    stage-named replay cut (``bench eval continue --cut-stage``) resolves.
     """
     payload: dict[str, dict[str, Any]] = {}
     for stage, snap in snapshots.items():
@@ -135,6 +153,7 @@ def stage_snapshots_payload(
             "environment_ref": refs["environment"],
             "sandbox_ref": refs["sandbox"],
             "layers": sorted(layer for layer, ref in refs.items() if ref is not None),
+            "exchanges_completed": _stage_exchange_index(snap),
         }
     return payload
 

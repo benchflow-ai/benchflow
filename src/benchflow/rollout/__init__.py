@@ -1934,6 +1934,12 @@ class Rollout:
         the agent first is the caller's job, exactly as it is for
         :meth:`branch`.
 
+        Marking also records which LLM exchange had completed at that moment
+        (read from the usage gateway's drained live capture; ``None`` when
+        unavailable) into the snapshot's meta and ``stage_snapshots.json`` —
+        the stage→exchange-index data ``bench eval continue --cut-stage``
+        resolves (RFC §3.5).
+
         ``snapshot_layers`` defaults to the run's configured layers.
         """
         return await _capture_stage_engine(
