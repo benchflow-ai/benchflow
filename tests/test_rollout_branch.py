@@ -857,3 +857,198 @@ async def test_a_rollout_without_a_run_directory_still_branches(tmp_path: Path):
         return 0.5
 
     assert await rollout.branch(2, run_child=run_child) == 0.5
+
+
+# Custody fails closed
+#
+# Guards "fix(branch): artifact custody fails closed and preserves the hold
+# directory". MountedArtifacts used to catch every failure of its own moves,
+# log a warning, and in release() unconditionally rmtree the hold directory —
+# deleting the parent's evidence exactly when the move back had failed.
+
+
+def _held_run_dir(tmp_path: Path):
+    """A run dir with the parent's evidence at its canonical mount paths."""
+    from benchflow.task.paths import RolloutPaths
+
+    run_dir = tmp_path / "run"
+    paths = RolloutPaths(rollout_dir=run_dir)
+    paths.mkdir()
+    (paths.verifier_dir / "reward.txt").write_text("parent-1.0\n")
+    (paths.agent_dir / "acp_trajectory.jsonl").write_text('{"parent": true}\n')
+    (paths.artifacts_dir / "answer.md").write_text("the parent's answer\n")
+    return run_dir, paths
+
+
+def test_release_failure_preserves_the_hold_directory_and_raises_typed(
+    tmp_path: Path, monkeypatch, caplog
+):
+    """Guards "fix(branch): artifact custody fails closed and preserves the
+    hold directory": a release() whose move-back fails must raise
+    ArtifactCustodyError, keep the hold directory (never rmtree contents that
+    were not confirmed moved), and log the preserved path."""
+    from benchflow.branch_artifacts import (
+        ArtifactCustodyError,
+        MountedArtifacts,
+        parent_hold_dir,
+    )
+
+    run_dir, _paths = _held_run_dir(tmp_path)
+    holder = MountedArtifacts.hold(run_dir=run_dir, parent_id="root")
+    hold_dir = parent_hold_dir(run_dir, "root")
+    assert (hold_dir / "verifier" / "reward.txt").read_text() == "parent-1.0\n"
+
+    def boom(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("benchflow.branch_artifacts.shutil.move", boom)
+
+    with (
+        caplog.at_level("ERROR", logger="benchflow.branch_artifacts"),
+        pytest.raises(ArtifactCustodyError) as excinfo,
+    ):
+        holder.release()
+
+    # The parent's evidence is still on disk, in the preserved hold directory.
+    assert hold_dir.is_dir()
+    assert (hold_dir / "verifier" / "reward.txt").read_text() == "parent-1.0\n"
+    assert (
+        hold_dir / "agent" / "acp_trajectory.jsonl"
+    ).read_text() == '{"parent": true}\n'
+    # The typed error and the log both name the preserved path.
+    assert excinfo.value.hold_dir == hold_dir
+    assert str(hold_dir) in str(excinfo.value)
+    assert any(str(hold_dir) in record.getMessage() for record in caplog.records)
+
+
+def test_release_success_removes_the_hold_directory(tmp_path: Path):
+    """The other half of "fix(branch): artifact custody fails closed and
+    preserves the hold directory": a clean release restores the parent's
+    entries and removes the (now confirmed-empty) hold directory."""
+    from benchflow.branch_artifacts import MountedArtifacts, parent_hold_dir
+
+    run_dir, paths = _held_run_dir(tmp_path)
+    holder = MountedArtifacts.hold(run_dir=run_dir, parent_id="root")
+
+    holder.release()
+
+    assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
+    assert (paths.artifacts_dir / "answer.md").read_text() == "the parent's answer\n"
+    assert not parent_hold_dir(run_dir, "root").exists()
+
+
+def test_hold_failure_fails_closed_and_preserves_what_was_held(
+    tmp_path: Path, monkeypatch
+):
+    """Guards "fix(branch): artifact custody fails closed and preserves the
+    hold directory": a hold() that cannot move the parent's entries aside must
+    refuse to run children over them — typed error, partial hold preserved."""
+    import benchflow.branch_artifacts as branch_artifacts
+    from benchflow.branch_artifacts import (
+        ArtifactCustodyError,
+        MountedArtifacts,
+        parent_hold_dir,
+    )
+
+    run_dir, paths = _held_run_dir(tmp_path)
+    real_move = branch_artifacts._move_entries
+
+    def flaky_move(source, target):
+        if source.name == "verifier":
+            raise OSError("Permission denied")
+        return real_move(source, target)
+
+    monkeypatch.setattr(branch_artifacts, "_move_entries", flaky_move)
+
+    with pytest.raises(ArtifactCustodyError) as excinfo:
+        MountedArtifacts.hold(run_dir=run_dir, parent_id="root")
+
+    hold_dir = parent_hold_dir(run_dir, "root")
+    assert str(hold_dir) in str(excinfo.value)
+    # What was already held (agent, artifacts precede verifier) is preserved
+    # in the hold directory, not deleted and not rolled back half-way.
+    assert (
+        hold_dir / "agent" / "acp_trajectory.jsonl"
+    ).read_text() == '{"parent": true}\n'
+    # The verifier entries never moved — still at their canonical path.
+    assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
+
+
+def _fail_hand_off_moves(monkeypatch):
+    """Make _move_entries fail exactly on hand_off targets (children/…)."""
+    import benchflow.branch_artifacts as branch_artifacts
+
+    real_move = branch_artifacts._move_entries
+
+    def flaky_move(source, target):
+        if "children" in Path(target).parts:
+            raise OSError("No space left on device")
+        return real_move(source, target)
+
+    monkeypatch.setattr(branch_artifacts, "_move_entries", flaky_move)
+
+
+async def test_a_custody_failure_does_not_mask_the_childs_own_exception(
+    tmp_path: Path, monkeypatch, caplog
+):
+    """Guards "fix(branch): artifact custody fails closed and preserves the
+    hold directory" (the invariant half): a hand_off failure while the child's
+    own exception is propagating is recorded and logged — with the preserved
+    path — never raised over the child's failure, which stays the caller's
+    diagnosis. The parent's evidence still comes back."""
+    from benchflow.task.paths import RolloutPaths
+
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    paths = RolloutPaths(rollout_dir=rollout._rollout_dir)
+    _fail_hand_off_moves(monkeypatch)
+
+    async def run_child(child):
+        (paths.verifier_dir / "child-only.txt").write_text("child evidence\n")
+        raise RuntimeError("verifier crashed")
+
+    with (
+        caplog.at_level("ERROR", logger="benchflow.branch_artifacts"),
+        pytest.raises(RuntimeError, match="verifier crashed"),
+    ):
+        await rollout.branch(2, run_child=run_child)
+
+    # The custody failure was logged, naming the preserved hold path.
+    hold_dir = rollout._rollout_dir / "branches" / "root" / "parent"
+    assert any(str(hold_dir) in record.getMessage() for record in caplog.records)
+    # And the parent's own evidence is back at its canonical path.
+    assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
+
+
+async def test_a_hand_off_failure_without_a_child_exception_fails_the_fork_closed(
+    tmp_path: Path, monkeypatch
+):
+    """Guards "fix(branch): artifact custody fails closed and preserves the
+    hold directory": when no child failure is in flight, a hand_off failure is
+    raised as ArtifactCustodyError before the next child can inherit (and
+    destroy) the files left in the mounts. The completed child's reward is
+    recorded first, so the observation is not lost."""
+    from benchflow.branch_artifacts import ArtifactCustodyError
+    from benchflow.task.paths import RolloutPaths
+
+    rollout = _mounted_rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    parent = rollout._cursor
+    paths = RolloutPaths(rollout_dir=rollout._rollout_dir)
+    _fail_hand_off_moves(monkeypatch)
+    ran: list[str] = []
+
+    async def run_child(child):
+        ran.append(child.id)
+        (paths.verifier_dir / "reward.txt").write_text("child-score\n")
+        return 1.0
+
+    with pytest.raises(ArtifactCustodyError):
+        await rollout.branch(2, run_child=run_child)
+
+    # The fork stopped after the first child — the second never ran over the
+    # first one's leaked files.
+    assert len(ran) == 1
+    assert parent.children[0].state["reward"] == 1.0
+    # The parent's evidence was still restored on the way out.
+    assert (paths.verifier_dir / "reward.txt").read_text() == "parent-1.0\n"
