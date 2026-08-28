@@ -1545,6 +1545,148 @@ async def test_an_unresolvable_declared_environment_fails_before_the_parent_runs
     assert built == []
 
 
+# 7b. The parent runs the canonical evaluation configuration
+
+
+async def test_the_parent_config_is_the_canonical_plan_with_the_ablation_overlaid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The parent's config carries what a plain eval run of the task would.
+
+    Guards "fix(ablate): resolve the canonical eval plan and overlay only the
+    ablation axis" (the PR #1046 review finding): run_ablation used to
+    hand-roll a reduced RolloutConfig, so a real E2E parent published
+    ``task_digest: null`` and ``reasoning_effort: null`` — the run lost its
+    attribution to exact task content and its effort control. The request now
+    resolves through ``build_eval_plan`` + ``task_rollout_config`` (the same
+    two stages as ``bench eval run``), and only the ablation-owned fields are
+    overlaid on top.
+    """
+    import dataclasses
+
+    from benchflow._utils.benchmark_repos import task_source_provenance
+    from benchflow._utils.task_authoring import task_digest
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    built = _patch_rollout(monkeypatch)
+    request = dataclasses.replace(_request(tmp_path), reasoning_effort="MAX")
+
+    await run_ablation(request)
+
+    config = built[0].config
+    # Canonical controls and provenance, from the task fixture through the plan.
+    assert config.task_digest == task_digest(request.task_path)
+    assert config.task_digest.startswith("sha256:")
+    assert config.reasoning_effort == "max"  # normalized, not passed through raw
+    assert config.primary_reasoning_effort == "max"
+    assert config.model == "claude-sonnet"
+    assert config.source_provenance == task_source_provenance(
+        None, Path(request.task_path)
+    )
+    assert isinstance(config.usage_tracking, UsageTrackingConfig)
+    assert config.agent_idle_timeout == 600  # the plan's normalized default
+    # The overlay: only what the ablation owns.
+    assert config.skill_mode == "no-skill"
+    assert config.snapshot_stages == frozenset({"env-ready"})
+    assert config.snapshot_layers == frozenset({"sandbox"})
+    assert config.job_name == "ablation"
+    assert config.rollout_name == request.task_path.name
+
+
+async def test_task_digest_and_reasoning_effort_flow_into_every_arms_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The child configs inherit the canonical fields, not nulls.
+
+    The second half of "fix(ablate): resolve the canonical eval plan and
+    overlay only the ablation axis": a fresh ``env-ready`` child derives its
+    config from the parent's (``child_skill_config`` is a
+    ``dataclasses.replace``), so the E2E nulls in the *child* configs were the
+    parent's nulls showing through. Asserted on the production path every arm
+    takes at that boundary (:func:`benchflow.branch_skill.make_fresh_child_runner`).
+    """
+    import dataclasses
+    from types import SimpleNamespace
+
+    import benchflow.branch_skill as branch_skill
+    from benchflow._utils.task_authoring import task_digest
+    from benchflow.branch_skill import make_fresh_child_runner
+
+    built = _patch_rollout(monkeypatch)
+    request = dataclasses.replace(_request(tmp_path), reasoning_effort="high")
+
+    await run_ablation(request)
+
+    child_configs: list[Any] = []
+
+    async def _capture_fresh_child(rollout, config, *, prompts=None):
+        child_configs.append(config)
+        return 1.0
+
+    monkeypatch.setattr(branch_skill, "run_fresh_child", _capture_fresh_child)
+    tree = RolloutTree()
+    child = tree.attach(tree.root)
+    for arm in request.arms:
+        run_child = make_fresh_child_runner(
+            cast(Any, SimpleNamespace(_config=built[0].config)),
+            delta=arm.delta,
+            parent=tree.root,
+            branch_stage="env-ready",
+            run_dir=built[0]._rollout_dir,
+        )
+        await run_child(child)
+
+    digest = task_digest(request.task_path)
+    assert [cfg.task_digest for cfg in child_configs] == [digest, digest]
+    assert [cfg.reasoning_effort for cfg in child_configs] == ["high", "high"]
+
+
+async def test_a_bad_reasoning_effort_or_sandbox_fails_before_the_parent_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Plan validation is the ablation's validation, fail-closed and free.
+
+    Resolving the canonical plan buys its gates too: a typo'd effort or an
+    unknown sandbox dies as a spec error before any rollout is built, with the
+    same message ``bench eval run`` prints — not deep in the parent run.
+    """
+    import dataclasses
+
+    built = _patch_rollout(monkeypatch)
+    request = _request(tmp_path)
+
+    with pytest.raises(AblationSpecError, match="reasoning_effort"):
+        await run_ablation(dataclasses.replace(request, reasoning_effort="turbo"))
+    with pytest.raises(AblationSpecError, match="Invalid --sandbox"):
+        await run_ablation(dataclasses.replace(request, sandbox="warpdrive"))
+
+    assert built == []  # nothing ran, nothing was paid for
+
+
+def test_cli_reasoning_effort_reaches_the_request(tmp_path: Path, monkeypatch) -> None:
+    """--reasoning-effort threads to AblationRequest — same flag as eval run."""
+    report = _report(arms=_skill_outcomes(with_skill=1.0, no_skill=0.0))
+    attribute(report.arms, parent_reward=report.parent_reward, stage=report.stage)
+    seen = _patched_run(monkeypatch, report)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "ablate",
+            "--tasks-dir",
+            str(_task_dir(tmp_path)),
+            "--reasoning-effort",
+            "max",
+            "--out-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen[0].reasoning_effort == "max"
+
+
 # 8. Ablation self-description: the bound environment and the stage snapshot
 
 
