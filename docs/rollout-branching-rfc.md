@@ -208,10 +208,14 @@ proxy seam end-to-end. Two additions:
    index that closed each stage is stored, so cut-points can be named by stage instead
    of by number.
 
-Divergence accounting: at the cut-point, record a content digest of the last replayed
-request and the workspace (`tree.json.cut_point_digest`), so a silently-diverged replay
-is detectable in artifacts. Fidelity caveats inherit from continue-runs and are
-recorded, not hidden.
+Divergence accounting: at the cut-point, record content digests of the last replayed
+request — both the request actually served and the recorded one, named separately —
+and a deterministic digest of the continuation workspace (the `cut_point` provenance
+block: `served_request_digest` / `recorded_request_digest` / `workspace_digest`, null
+with a reason when no live sandbox is reachable at the cut), plus a per-exchange
+content comparison whose divergence events land in the same block — so a
+silently-diverged replay is detectable in artifacts. Fidelity caveats inherit from
+continue-runs and are recorded, not hidden.
 
 Generalizing replay beyond openhands (all agents already *record* through the same
 LiteLLM gateway) is desirable but independent; it is a named follow-on, not v1.
