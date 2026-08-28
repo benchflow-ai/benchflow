@@ -14,6 +14,7 @@ from benchflow.task import (
     TaskConfig,
     TaskRuntimeView,
     UnsupportedTaskFeatureError,
+    compile_document_user_runtime,
     validate_task_runtime_support,
 )
 
@@ -1000,34 +1001,96 @@ def test_validator_rejects_invalid_document_user_confirmation_policy(
     assert "confirmation_policy" in user_issue.reason
 
 
-def test_validator_rejects_forked_document_user_branch_execution(
+_FORKED_SNAPSHOT_FRONTMATTER = dedent(
+    """\
+    agents:
+      roles:
+        solver:
+          agent: codex
+    scenes:
+      - name: solve
+        roles: [solver]
+    user:
+      model: claude-haiku
+      stop_rule: satisfied-or-3-rounds
+      private_facts:
+        hidden_need: Use the quarterly file.
+    benchflow:
+      nudges:
+        mode: simulated-user
+        nudge_budget: 2
+        branchable: true
+        branch_execution: forked-snapshot
+    """
+)
+
+
+def test_validator_accepts_forked_snapshot_branch_execution(
     tmp_path: Path,
 ) -> None:
-    """Forked branch execution is not implied by preserving option kinds."""
+    """A forked-snapshot task.md validates on a snapshot-capable sandbox.
+
+    Guards "feat(task): accept branch_execution forked-snapshot now the
+    engine supports it": the value used to fail closed as "not implemented"
+    even though the Environment/sandbox snapshot branch engine ships — the
+    declaration now compiles to a stage-capture request instead.
+    """
     task_dir = tmp_path / "forked-branch-user"
+    _write_task_md(task_dir, frontmatter=_FORKED_SNAPSHOT_FRONTMATTER)
+    task = Task(task_dir)
+    assert task.document is not None
+
+    issues = validate_task_runtime_support(
+        task.document,
+        sandbox="docker",
+        task_dir=task_dir,
+    )
+
+    assert issues == []
+    runtime = compile_document_user_runtime(task.document)
+    assert runtime.contract.status == "supported"
+    assert runtime.contract.branch_execution == "forked-snapshot"
+    # The surfaced half: the task requests the auto-capturable boundaries so
+    # a branch/ablation (or continue --cut-stage) can fork them later.
+    assert runtime.snapshot_stages == frozenset(
+        {"env-ready", "pre-verify", "post-verify"}
+    )
+
+
+def test_validator_rejects_forked_snapshot_on_a_snapshotless_sandbox(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed half the engine genuinely cannot honor: a backend whose
+    sandboxes cannot take container snapshots would fail the requested stage
+    captures at the first boundary, so validation says so before launch."""
+    task_dir = tmp_path / "forked-branch-user-modal"
+    _write_task_md(task_dir, frontmatter=_FORKED_SNAPSHOT_FRONTMATTER)
+    task = Task(task_dir)
+    assert task.document is not None
+
+    issues = validate_task_runtime_support(
+        task.document,
+        sandbox="modal",
+        task_dir=task_dir,
+    )
+
+    issue = next(
+        issue for issue in issues if issue.path == "benchflow.nudges.branch_execution"
+    )
+    assert "container-snapshot-capable sandbox" in issue.reason
+    assert "modal" in issue.reason
+
+
+def test_validator_rejects_forked_snapshot_without_branchable(
+    tmp_path: Path,
+) -> None:
+    """forked-snapshot still requires branchable: true, like every other
+    branch_execution value."""
+    task_dir = tmp_path / "forked-not-branchable"
     _write_task_md(
         task_dir,
-        frontmatter=dedent(
-            """\
-            agents:
-              roles:
-                solver:
-                  agent: codex
-            scenes:
-              - name: solve
-                roles: [solver]
-            user:
-              model: claude-haiku
-              stop_rule: satisfied-or-3-rounds
-              private_facts:
-                hidden_need: Use the quarterly file.
-            benchflow:
-              nudges:
-                mode: simulated-user
-                nudge_budget: 2
-                branchable: true
-                branch_execution: forked-snapshot
-            """
+        frontmatter=_FORKED_SNAPSHOT_FRONTMATTER.replace(
+            "branchable: true", "branchable: false"
         ),
     )
     task = Task(task_dir)
@@ -1040,8 +1103,29 @@ def test_validator_rejects_forked_document_user_branch_execution(
     )
 
     user_issue = next(issue for issue in issues if issue.path == "user")
-    assert "forked branch execution is not implemented" in user_issue.reason
-    assert any(issue.path == "benchflow.nudges" for issue in issues)
+    assert "requires branchable: true" in user_issue.reason
+
+
+def test_validator_rejects_unknown_branch_stages(tmp_path: Path) -> None:
+    """branch_stages is validated against the branch-stage taxonomy."""
+    task_dir = tmp_path / "forked-bad-stages"
+    _write_task_md(
+        task_dir,
+        frontmatter=_FORKED_SNAPSHOT_FRONTMATTER
+        + "    branch_stages: [env-ready, mid-flight]\n",
+    )
+    task = Task(task_dir)
+    assert task.document is not None
+
+    issues = validate_task_runtime_support(
+        task.document,
+        sandbox="docker",
+        task_dir=task_dir,
+    )
+
+    user_issue = next(issue for issue in issues if issue.path == "user")
+    assert "branch_stages" in user_issue.reason
+    assert "mid-flight" in user_issue.reason
 
 
 def test_validator_rejects_malformed_document_user_runtime_types(

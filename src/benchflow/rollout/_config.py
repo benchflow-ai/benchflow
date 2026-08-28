@@ -70,8 +70,15 @@ def _task_document_user_runtime(
     *,
     prompts: list[str | None] | None,
     skill_mode: str,
-) -> tuple[BaseUser, int | None] | None:
-    """Compile a supported document-declared user into runtime configuration."""
+) -> Any | None:
+    """Compile a supported document-declared user into runtime configuration.
+
+    Returns the full :class:`~benchflow.task.prompts.CompiledUserRuntime`
+    (``None`` when the task declares no adoptable user): beside the user loop
+    itself it carries the task's stage-capture request — a
+    ``branch_execution: forked-snapshot`` declaration compiles to the
+    ``snapshot_stages`` the launch policy should honor (RFC §3.2).
+    """
 
     if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
         return None
@@ -85,7 +92,7 @@ def _task_document_user_runtime(
     runtime = compile_document_user_runtime(TaskDocument.from_path(document_path))
     if runtime.user is None:
         return None
-    return runtime.user, runtime.max_rounds
+    return runtime
 
 
 @dataclass
@@ -319,9 +326,41 @@ class RolloutConfig:
                 )
             return
         if document_user is not None:
-            self.user, max_rounds = document_user
-            if max_rounds is not None:
-                self.max_user_rounds = max_rounds
+            self.user = document_user.user
+            if document_user.max_rounds is not None:
+                self.max_user_rounds = document_user.max_rounds
+            self._adopt_document_snapshot_request(document_user)
+
+    def _adopt_document_snapshot_request(self, runtime: Any) -> None:
+        """Honor a task-declared forked-snapshot stage-capture request.
+
+        ``branch_execution: forked-snapshot`` compiles to the stages the task
+        asks the rollout to snapshot (RFC §3.2 — snapshot policy is opt-in
+        per run *or per task*); adopting them here is what makes the
+        declaration real: a plain evaluation of the task leaves
+        ``stage_snapshots.json`` (with exchange indices) behind, so an
+        ablation/branch — or ``bench eval continue --cut-stage`` — can fork
+        the recorded boundaries later. The run-level request wins outright: a
+        caller that set ``snapshot_stages`` keeps exactly what it asked for.
+        When the task's request is adopted and the layers are still the
+        config default, they resolve to the container layer (plus the
+        environment layer iff an Environment plane is bound): the sandbox
+        snapshot is what a forked-snapshot branch restores, and the
+        environment layer without a plane would fail every capture closed. A
+        sandbox that cannot snapshot still fails the first capture closed at
+        run time — the capability gate is the branch engine's, not this
+        adoption's — and ``bench tasks check`` flags that combination before
+        launch.
+        """
+        stages = getattr(runtime, "snapshot_stages", frozenset())
+        if not stages or self.snapshot_stages:
+            return
+        self.snapshot_stages = normalize_stages(stages)
+        if self.snapshot_layers == frozenset({"environment"}):
+            layers = {"sandbox"}
+            if self.environment_manifest is not None:
+                layers.add("environment")
+            self.snapshot_layers = frozenset(layers)
 
     @classmethod
     def from_legacy(

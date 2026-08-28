@@ -37,7 +37,7 @@ Concretely, after this RFC a task author or reviewer can run:
 | Environment-state snapshots (declared sqlite files, `sqlite3 .backup`, fail-closed `EnvironmentSnapshotError`) | `src/benchflow/environment/manifest_env.py` (from #387/#486) | **Live**; sole restore point used by the branch engine |
 | Record-replay of a finished run: replay `llm_trajectory.jsonl` responses by index through a proxy into a fresh sandbox | `src/benchflow/continue_run/` (`bench eval continue`) | **Live** (openhands-only), replays the full prefix only |
 | Per-run variation axes: env-registry refs (S-axis), allowlisted `--config-override` patches (C-axis), `skill_mode` | `environment/_registry/`, `_utils/config_override.py`, `rollout/_config.py` | **Live**, but bound once at rollout setup — no per-child variation |
-| Task-authoring surface: `branch_execution: forked-snapshot` | `docs/task-standard.md` | **Declared, fails closed** — waiting for exactly this machinery |
+| Task-authoring surface: `branch_execution: forked-snapshot` | `docs/task-standard.md` | **Live** — compiles to a stage-capture request the launch policy honors (snapshot-capable sandboxes only; see task-standard) |
 
 The gap is stated in `docs/architecture.md`: *"container and agent-session checkpoint
 composition remain future work."* Branch children today also leave **no artifacts** —
@@ -92,11 +92,15 @@ pack, deploy nothing on top of it, and still be labelled `no-skill` everywhere. 
 `skill_mode` delta therefore requires a `no-skill` parent and fails closed
 (`BranchParentSkillModeConflict`) otherwise.
 Mid-`execute()` boundaries are cursor positions in the existing tree — the branch
-engine already forks at the cursor; this RFC adds *named* cut-points recorded as
-stage-tagged exchange indices (§3.5).
+engine already forks at the cursor; named cut-points are recorded as stage-tagged
+exchange indices (§3.5): every stage capture stores the completed-LLM-exchange
+index of its moment in `stage_snapshots.json`. `post-research` is markable from
+the CLI too: `bench eval ablate --at-stage post-research --mark-research-end-on
+/app/PLAN.md` marks the stage the first time the named workspace file exists.
 
-Snapshot policy is opt-in per run (`--snapshot-stages env-ready,pre-verify`) or per
-task (`sandbox:`-spelled frontmatter, post-#966 naming).
+Snapshot policy is opt-in per run (`RolloutConfig.snapshot_stages`) or per task
+(`benchflow.nudges.branch_execution: forked-snapshot`, optionally narrowed with
+`branch_stages` — see `docs/task-standard.md`).
 
 ### 3.3 Per-child deltas (reuse the three run-level axes)
 
@@ -205,8 +209,11 @@ proxy seam end-to-end. Two additions:
 1. **`max_exchanges: int`** — replay the first K exchanges, then switch the proxy to
    live passthrough. ("Replay research verbatim, go live at execution.")
 2. **Stage-tagged indices** — when a run records stage boundaries (§3.2), the exchange
-   index that closed each stage is stored, so cut-points can be named by stage instead
-   of by number.
+   index that closed each stage is stored (`exchanges_completed` per stage in
+   `stage_snapshots.json`), so cut-points can be named by stage instead of by
+   number: `bench eval continue --cut-stage post-research` resolves the recorded
+   index (an unrecorded stage, or one recorded without an index, fails closed
+   with a typed error naming what was recorded).
 
 Divergence accounting: at the cut-point, record content digests of the last replayed
 request — both the request actually served and the recorded one, named separately —

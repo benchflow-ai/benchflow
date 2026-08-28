@@ -17,6 +17,7 @@ from typing import cast
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
+    CONTAINER_SNAPSHOT_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
     SINGLE_CONTAINER_PROVIDERS,
@@ -443,6 +444,7 @@ def _append_document_user_issues(
 ) -> None:
     runtime = user_runtime or compile_document_user_runtime(document)
     if runtime.contract.status != "unsupported":
+        _append_forked_snapshot_issues(unsupported, runtime=runtime, sandbox=sandbox)
         return
     reason = runtime.contract.reason or "document user runtime is unsupported"
     if document.user:
@@ -451,6 +453,39 @@ def _append_document_user_issues(
         _issue(unsupported, path="## user-persona", reason=reason, sandbox=sandbox)
     if "nudges" in document.benchflow:
         _issue(unsupported, path="benchflow.nudges", reason=reason, sandbox=sandbox)
+
+
+def _append_forked_snapshot_issues(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    runtime: CompiledUserRuntime,
+    sandbox: str,
+) -> None:
+    """Fail a forked-snapshot declaration closed on a snapshot-less backend.
+
+    ``branch_execution: forked-snapshot`` compiles to a stage-capture request
+    the rollout honors with container-level snapshots (the branch engine's
+    sandbox layer); a backend whose sandboxes cannot snapshot would fail the
+    run at the first captured boundary, so the gate says so before launch.
+    Registry-level fact only — the runtime ``Sandbox.supports_snapshot`` gate
+    stays the final authority (it also catches per-strategy holes such as
+    Daytona DinD).
+    """
+    if runtime.contract.branch_execution != "forked-snapshot":
+        return
+    if sandbox in CONTAINER_SNAPSHOT_PROVIDERS:
+        return
+    _issue(
+        unsupported,
+        path="benchflow.nudges.branch_execution",
+        reason=(
+            "forked-snapshot needs a container-snapshot-capable sandbox "
+            f"({', '.join(sorted(CONTAINER_SNAPSHOT_PROVIDERS))}); "
+            f"{sandbox} sandboxes cannot snapshot, so the requested stage "
+            "captures would fail closed at the first boundary"
+        ),
+        sandbox=sandbox,
+    )
 
 
 def _append_prompt_policy_issues(
