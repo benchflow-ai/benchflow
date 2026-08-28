@@ -1232,8 +1232,12 @@ original run's model), `--timeout`, `--output`, `--require-timeout`,
 `--strict-divergence`, `--replay-only` (rebuild via replay and stop at the
 cut-point — no live model or API key needed), `--max-exchanges` (replay only
 the first K recorded LLM exchanges, then go live; default: all recorded — see
-[Cut-points](../continue-runs.md#cut-points)), and `--proxy-mode` (replay
-proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
+[Cut-points](../continue-runs.md#cut-points)), `--cut-stage` (cut at a
+recorded stage boundary by name, e.g. `post-research`: resolves the exchange
+index the original run's `stage_snapshots.json` recorded when that stage
+closed; mutually exclusive with `--max-exchanges`, and an unrecorded stage
+fails closed listing the stages the run did record), and `--proxy-mode`
+(replay proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
 sandbox-local replay for Daytona/Modal and host replay for Docker).
 
 ### bench eval continue-batch

@@ -35,6 +35,7 @@ from benchflow.continue_run.orchestrator import (
     cut_point_provenance,
     resolve_cut_point,
     served_cut_point,
+    stage_tags_from_run,
     stitched_trajectory_lines,
     summarize_llm_trajectory_usage,
     update_continued_metadata,
@@ -545,6 +546,108 @@ def test_resolve_cut_point_passthrough_without_stage():
     assert resolve_cut_point(4) == (4, None)
 
 
+# ── stage-named cuts resolve from the run folder's recorded registry ──────
+#
+# Guards "feat(continue): stage-named cut points": the reviewer-named gap was
+# that stage-tagged cuts existed only as an SDK stage_tags override — `bench
+# eval continue` exposed only numeric --max-exchanges, and nothing read the
+# indices a run actually recorded. --cut-stage now resolves the exchange
+# index from the run folder's stage_snapshots.json (written by the stage
+# capture path since "feat(branch): record stage markers with trajectory
+# exchange indices").
+
+
+def _registry_entry(exchanges_completed) -> dict:
+    """One stage_snapshots.json entry, in the shape write_stage_snapshots emits."""
+    return {
+        "environment_ref": None,
+        "sandbox_ref": "bf-snap-1",
+        "layers": ["sandbox"],
+        "exchanges_completed": exchanges_completed,
+    }
+
+
+def test_run_folder_loads_the_recorded_stage_registry(tmp_path):
+    folder = write_run_folder(
+        tmp_path / "run",
+        exchanges=_recorded(3),
+        stage_snapshots={
+            "post-research": _registry_entry(2),
+            "pre-verify": _registry_entry(None),
+        },
+    )
+    run = load_run_folder(folder)
+    assert run.recorded_stages == ["post-research", "pre-verify"]
+    # Only stages with a usable index become tags; a null index stays visible
+    # in the registry but cannot name a cut.
+    assert run.stage_exchange_tags == {"post-research": 2}
+
+
+def test_cut_stage_resolves_the_recorded_exchange_index(tmp_path):
+    """A recording with a marked stage resolves --cut-stage to that index."""
+    folder = write_run_folder(
+        tmp_path / "run",
+        exchanges=_recorded(3),
+        stage_snapshots={"post-research": _registry_entry(2)},
+    )
+    run = load_run_folder(folder)
+
+    tags = stage_tags_from_run(run, "post-research")
+
+    assert resolve_cut_point(None, stage_tags=tags, cut_stage="post-research") == (
+        2,
+        "post-research",
+    )
+
+
+def test_cut_stage_with_no_recorded_stages_fails_closed(tmp_path):
+    folder = write_run_folder(tmp_path / "run", exchanges=_recorded(2))
+    run = load_run_folder(folder)
+    with pytest.raises(ReplayCutPointError, match="recorded no stage snapshots"):
+        stage_tags_from_run(run, "post-research")
+
+
+def test_cut_stage_unrecorded_stage_lists_what_was_recorded(tmp_path):
+    folder = write_run_folder(
+        tmp_path / "run",
+        exchanges=_recorded(2),
+        stage_snapshots={
+            "env-ready": _registry_entry(0),
+            "post-research": _registry_entry(1),
+        },
+    )
+    run = load_run_folder(folder)
+    with pytest.raises(
+        ReplayCutPointError, match="env-ready, post-research"
+    ) as excinfo:
+        stage_tags_from_run(run, "pre-verify")
+    assert "unknown cut stage 'pre-verify'" in str(excinfo.value)
+
+
+def test_cut_stage_recorded_without_an_index_fails_closed(tmp_path):
+    """A stage the gateway could not index is an honest null, not a guess."""
+    folder = write_run_folder(
+        tmp_path / "run",
+        exchanges=_recorded(2),
+        stage_snapshots={"post-research": _registry_entry(None)},
+    )
+    run = load_run_folder(folder)
+    with pytest.raises(ReplayCutPointError, match="without an exchange index"):
+        stage_tags_from_run(run, "post-research")
+
+
+def test_cut_stage_before_the_first_exchange_fails_closed(tmp_path):
+    """env-ready closes before any exchange — there is no prefix to replay."""
+    folder = write_run_folder(
+        tmp_path / "run",
+        exchanges=_recorded(2),
+        stage_snapshots={"env-ready": _registry_entry(0)},
+    )
+    run = load_run_folder(folder)
+    with pytest.raises(ReplayCutPointError, match="before the first LLM exchange"):
+        stage_tags_from_run(run, "env-ready")
+
+
 # ── stitched trajectory: prefix = the K parsed (replayed) exchanges ───────
 
 
@@ -643,6 +746,29 @@ def test_cli_out_of_range_cut_exits_clean(tmp_path):
     res = runner.invoke(app, ["eval", "continue", str(folder), "--max-exchanges", "99"])
     assert res.exit_code == 1
     assert "max_exchanges must be in 1..2" in res.output
+    assert "Traceback (most recent call last)" not in res.output
+
+
+def test_cli_cut_stage_reaches_orchestrator(tmp_path, monkeypatch):
+    """Guards "feat(continue): stage-named cut points": the CLI exposes the
+    stage-named cut, not only numeric --max-exchanges."""
+    captured: dict = {}
+    _patch_continue_run(monkeypatch, tmp_path, captured)
+    res = runner.invoke(
+        app, ["eval", "continue", str(tmp_path), "--cut-stage", "post-research"]
+    )
+    assert res.exit_code == 0, res.output
+    assert captured["cut_stage"] == "post-research"
+    assert captured["max_exchanges"] is None
+
+
+def test_cli_cut_stage_without_recorded_stages_exits_clean(tmp_path):
+    folder = write_run_folder(tmp_path / "run", exchanges=_recorded(2))
+    res = runner.invoke(
+        app, ["eval", "continue", str(folder), "--cut-stage", "post-research"]
+    )
+    assert res.exit_code == 1
+    assert "recorded no stage snapshots" in res.output
     assert "Traceback (most recent call last)" not in res.output
 
 
@@ -781,6 +907,40 @@ async def test_host_mode_stitches_and_bills_only_the_exchanges_served(
         "configured_max_exchanges": 2,
     }
     assert result.n_recorded == 1
+
+
+async def test_host_mode_cut_stage_resolves_from_the_run_folder(tmp_path, monkeypatch):
+    """End to end: ``cut_stage`` alone configures the cut the registry names.
+
+    Guards "feat(continue): stage-named cut points" — no SDK ``stage_tags``
+    override anywhere: the run folder's recorded ``stage_snapshots.json``
+    (post-research closed at exchange 2) is the only source, and the
+    continuation's provenance records both the resolved K and the stage name.
+    """
+    recorded = _recorded(3)
+    monkeypatch.setattr(_AbandoningRollout, "served", 2)
+    folder, tasks_dir = _host_mode_run(tmp_path, monkeypatch, recorded)
+    (folder / "stage_snapshots.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "stages": {"post-research": _registry_entry(2)}}
+        )
+    )
+
+    result = await continue_run(
+        folder,
+        tasks_dir=tasks_dir,
+        output_dir=tmp_path / "continued",
+        proxy_mode="host",
+        replay_only=True,
+        cut_stage="post-research",
+    )
+
+    payload = json.loads((result.rollout_dir / "result.json").read_text())
+    cut = payload["source"]["cut_point"]
+    assert cut["n_replayed_exchanges"] == 2
+    assert cut["configured_max_exchanges"] == 2
+    assert cut["branch_stage"] == "post-research"
+    assert result.n_recorded == 2
 
 
 async def test_host_mode_full_consumption_is_unchanged(tmp_path, monkeypatch):
