@@ -85,11 +85,24 @@ def test_agent_session_capture_is_audit_only_not_training_ready(tmp_path: Path) 
         json.dumps(
             {
                 "status": "partial",
+                "capture_source": "codex_native_session",
                 "capture_fidelity": "agent_session",
                 "auth_mode": "oauth_subscription",
                 "exchange_count": 1,
                 "request_complete": False,
                 "response_complete": True,
+                "role_captures": [
+                    {
+                        "role": "agent",
+                        "agent": "codex-acp",
+                        "auth_mode": "oauth_subscription",
+                        "capture_source": "codex_native_session",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": True,
+                    }
+                ],
             }
         )
     )
@@ -279,7 +292,8 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
     assert row["error"] is None
 
     manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
-    unhealthy_manifest = json.loads(manifest_path.read_text())
+    healthy_manifest = json.loads(manifest_path.read_text())
+    unhealthy_manifest = json.loads(json.dumps(healthy_manifest))
     unhealthy_manifest["missing_fields"].append("token_usage")
     manifest_path.write_text(json.dumps(unhealthy_manifest))
 
@@ -291,6 +305,39 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
     assert unhealthy_row["info"]["training_ready"] is False
     assert unhealthy_row["is_completed"] is False
     assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
+
+    cross_role_manifest = json.loads(json.dumps(healthy_manifest))
+    cross_role_manifest["missing_fields"] = [
+        "headers",
+        "provider_response",
+        "provider_response_envelope",
+        "system_prompt",
+        "tool_definitions",
+    ]
+    cross_role_manifest["role_captures"][0]["response_complete"] = False
+    manifest_path.write_text(json.dumps(cross_role_manifest))
+
+    cross_role_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert cross_role_row["info"]["training_ready"] is False
+    assert cross_role_row["is_completed"] is False
+    assert cross_role_row["error"]["error"] == "missing_llm_trajectory"
+
+    omitted_role_manifest = json.loads(json.dumps(healthy_manifest))
+    omitted_role_manifest["role_captures"].pop(0)
+    manifest_path.write_text(json.dumps(omitted_role_manifest))
+
+    omitted_role_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert omitted_role_row["info"]["training_ready"] is False
+    assert omitted_role_row["is_completed"] is False
+    assert omitted_role_row["error"]["error"] == "missing_llm_trajectory"
 
 
 def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) -> None:

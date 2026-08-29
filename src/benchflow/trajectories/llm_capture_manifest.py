@@ -68,6 +68,16 @@ class CaptureSource(StrEnum):
     NONE = "none"
 
 
+_OAUTH_AUDIT_CAPTURE_SOURCES = frozenset(
+    {
+        CaptureSource.CLAUDE_OTEL_RAW_BODY,
+        CaptureSource.CLAUDE_NATIVE_SESSION,
+        CaptureSource.CODEX_NATIVE_SESSION,
+        CaptureSource.ACP_PROJECTION,
+    }
+)
+
+
 class AuthMode(StrEnum):
     API_KEY = "api_key"
     OAUTH_SUBSCRIPTION = "oauth_subscription"
@@ -273,53 +283,6 @@ def _exchange_requires_manifest(exchange: dict[str, Any]) -> bool:
     )
 
 
-def capture_manifest_has_oauth_role_capture(manifest: dict[str, Any]) -> bool:
-    """Return whether a mixed manifest contains captured OAuth role evidence."""
-
-    role_captures = manifest.get("role_captures")
-    if not isinstance(role_captures, list):
-        return False
-    for value in role_captures:
-        try:
-            role_capture = LLMRoleCapture.model_validate(value)
-        except ValidationError:
-            continue
-        if (
-            role_capture.auth_mode is AuthMode.OAUTH_SUBSCRIPTION
-            and role_capture.capture_source is not CaptureSource.NONE
-            and role_capture.capture_fidelity is not CaptureFidelity.NONE
-            and role_capture.exchange_count > 0
-        ):
-            return True
-    return False
-
-
-def capture_manifest_has_replay_capture(manifest: dict[str, Any]) -> bool:
-    """Return whether a manifest contains an audit-only continuation suffix."""
-
-    if (
-        manifest.get("capture_source") == CaptureSource.REPLAY_PROXY.value
-        and isinstance(manifest.get("exchange_count"), int)
-        and not isinstance(manifest.get("exchange_count"), bool)
-        and manifest["exchange_count"] > 0
-    ):
-        return True
-    role_captures = manifest.get("role_captures")
-    if not isinstance(role_captures, list):
-        return False
-    for value in role_captures:
-        try:
-            role_capture = LLMRoleCapture.model_validate(value)
-        except ValidationError:
-            continue
-        if (
-            role_capture.capture_source is CaptureSource.REPLAY_PROXY
-            and role_capture.exchange_count > 0
-        ):
-            return True
-    return False
-
-
 def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> bool:
     """Accept only expected, internally complete audit-only capture states."""
 
@@ -340,11 +303,38 @@ def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> boo
     ):
         return False
     missing_fields = set(raw_missing_fields)
-    has_oauth_capture = bool(
-        manifest.get("auth_mode") == AuthMode.OAUTH_SUBSCRIPTION.value
-        or capture_manifest_has_oauth_role_capture(manifest)
+    role_captures = _validated_role_captures(manifest)
+    if role_captures is None or not _role_captures_match_manifest(
+        manifest, role_captures
+    ):
+        return False
+    has_oauth_capture = any(
+        _is_oauth_audit_role_capture(capture) for capture in role_captures
     )
-    if not capture_manifest_has_replay_capture(manifest):
+    if manifest.get("status") == CaptureStatus.NO_MODEL_CALL.value:
+        return bool(
+            manifest.get("auth_mode") == AuthMode.OAUTH_SUBSCRIPTION.value
+            and not errors
+            and not missing_fields
+            and all(
+                capture.auth_mode is AuthMode.OAUTH_SUBSCRIPTION
+                and capture.capture_source is CaptureSource.NONE
+                and capture.capture_fidelity is CaptureFidelity.NONE
+                and capture.exchange_count == 0
+                and capture.request_complete is False
+                and capture.response_complete is False
+                for capture in role_captures
+            )
+        )
+    if not role_captures or not all(
+        _role_capture_preserves_audit_completion(capture) for capture in role_captures
+    ):
+        return False
+    has_replay_capture = any(
+        capture.capture_source is CaptureSource.REPLAY_PROXY
+        for capture in role_captures
+    )
+    if not has_replay_capture:
         return bool(
             has_oauth_capture
             and not errors
@@ -356,34 +346,83 @@ def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> boo
     if has_oauth_capture:
         allowed_errors.add(CONTINUATION_SOURCE_AUDIT_ERROR)
         allowed_missing_fields.update(_OAUTH_AUDIT_MISSING_FIELDS)
-    if (
+    return not (
         REPLAY_PROXY_INGRESS_AUDIT_ERROR not in errors
         or not errors.issubset(allowed_errors)
         or _REPLAY_AUDIT_MISSING_FIELD not in missing_fields
         or not missing_fields.issubset(allowed_missing_fields)
         or manifest.get("response_complete") is not True
+    )
+
+
+def _validated_role_captures(
+    manifest: dict[str, Any],
+) -> list[LLMRoleCapture] | None:
+    raw_role_captures = manifest.get("role_captures", [])
+    if not isinstance(raw_role_captures, list) or any(
+        not isinstance(value, dict)
+        or not isinstance(value.get("exchange_count"), int)
+        or isinstance(value.get("exchange_count"), bool)
+        or value["exchange_count"] < 0
+        or not isinstance(value.get("request_complete"), bool)
+        or not isinstance(value.get("response_complete"), bool)
+        for value in raw_role_captures
+    ):
+        return None
+    try:
+        return [LLMRoleCapture.model_validate(value) for value in raw_role_captures]
+    except ValidationError:
+        return None
+
+
+def _is_oauth_audit_role_capture(capture: LLMRoleCapture) -> bool:
+    return bool(
+        capture.auth_mode is AuthMode.OAUTH_SUBSCRIPTION
+        and capture.capture_source in _OAUTH_AUDIT_CAPTURE_SOURCES
+        and capture.capture_fidelity
+        in {CaptureFidelity.AGENT_SESSION, CaptureFidelity.ACP_PROJECTION}
+        and capture.exchange_count > 0
+    )
+
+
+def _role_captures_match_manifest(
+    manifest: dict[str, Any], role_captures: list[LLMRoleCapture]
+) -> bool:
+    exchange_count = manifest.get("exchange_count")
+    if (
+        not isinstance(exchange_count, int)
+        or isinstance(exchange_count, bool)
+        or exchange_count < 0
+        or sum(capture.exchange_count for capture in role_captures) != exchange_count
     ):
         return False
-    role_captures = manifest.get("role_captures")
-    if not isinstance(role_captures, list):
-        return False
-    replay_captures: list[LLMRoleCapture] = []
-    for value in role_captures:
-        try:
-            role_capture = LLMRoleCapture.model_validate(value)
-        except ValidationError:
-            return False
-        if role_capture.capture_source is CaptureSource.REPLAY_PROXY:
-            replay_captures.append(role_capture)
-    return bool(
-        replay_captures
-        and all(
+    if exchange_count == 0:
+        return True
+    active_auth_modes = {
+        capture.auth_mode for capture in role_captures if capture.exchange_count > 0
+    }
+    expected_auth_mode = (
+        next(iter(active_auth_modes)) if len(active_auth_modes) == 1 else AuthMode.MIXED
+    )
+    return manifest.get("auth_mode") == expected_auth_mode.value
+
+
+def _role_capture_preserves_audit_completion(capture: LLMRoleCapture) -> bool:
+    if capture.capture_source is CaptureSource.REPLAY_PROXY:
+        return bool(
             capture.capture_fidelity is CaptureFidelity.AGENT_SESSION
             and capture.exchange_count > 0
             and capture.request_complete is False
             and capture.response_complete is True
-            for capture in replay_captures
         )
+    if _is_oauth_audit_role_capture(capture):
+        return True
+    return bool(
+        capture.capture_source is not CaptureSource.NONE
+        and capture.capture_fidelity is not CaptureFidelity.NONE
+        and capture.exchange_count > 0
+        and capture.request_complete is True
+        and capture.response_complete is True
     )
 
 
