@@ -57,6 +57,7 @@ class AuthMode(StrEnum):
 class LLMRoleCapture(BaseModel):
     """Per prepared role provenance for mixed-auth/mixed-agent rollouts."""
 
+    role: str = "agent"
     agent: str
     model: str | None = None
     auth_mode: AuthMode
@@ -102,8 +103,7 @@ def initialize_llm_trajectory_artifacts(
     trajectory_dir = rollout_dir / "trajectory"
     trajectory_dir.mkdir(parents=True, exist_ok=True)
     trajectory_path = trajectory_dir / LLM_TRAJECTORY_FILENAME
-    if not trajectory_path.exists():
-        _atomic_write_text(trajectory_path, "")
+    _atomic_write_text(trajectory_path, "")
     manifest = LLMTrajectoryManifest(
         agent=agent,
         model=model,

@@ -106,7 +106,7 @@ class LLMTrajectoryCapture:
             session_id=session_id,
             started_at=started_at,
         )
-        self._targets: dict[tuple[str, str | None, str], _CaptureTarget] = {}
+        self._targets: dict[tuple[str, str, str | None, str], _CaptureTarget] = {}
         self._collector_started = False
         self._capture_root_prepared = False
         self._preparation_errors: list[str] = []
@@ -132,6 +132,7 @@ class LLMTrajectoryCapture:
         agent_env: dict[str, str],
         credential_home: str,
         sandbox_user: str | None,
+        role_name: str | None = None,
     ) -> dict[str, str]:
         """Return the agent environment augmented for native capture."""
 
@@ -144,9 +145,11 @@ class LLMTrajectoryCapture:
             credential_home=credential_home,
             auth_mode=auth_mode,
             native=native,
+            role=role_name or "primary",
         )
-        self._targets[(agent, model, credential_home)] = target
-        self._refresh_manifest_auth_mode()
+        if role_name is not None:
+            self._targets[(role_name, agent, model, credential_home)] = target
+            self._refresh_manifest_auth_mode()
         if not native:
             write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
             return prepared
@@ -281,6 +284,7 @@ class LLMTrajectoryCapture:
             credential_home="",
             auth_mode=self.manifest.auth_mode,
             native=native,
+            role="primary",
         )
 
     def record_failure(self, error: object, *, model_call_seen: bool) -> None:

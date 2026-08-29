@@ -29,6 +29,7 @@ class CaptureTarget:
     credential_home: str
     auth_mode: AuthMode
     native: bool
+    role: str = "agent"
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,11 @@ def load_provider_wire_records(
                     target.agent
                     if target is not None
                     else (fallback_agent if not targets else "mixed")
+                ),
+                "role": (
+                    target.role
+                    if target is not None
+                    else ("primary" if not targets else "mixed")
                 ),
                 "model": (
                     target.model
@@ -259,6 +265,7 @@ def _native_bundle_records(bundle: NativeCaptureBundle) -> list[dict[str, Any]]:
             metadata.update(
                 {
                     "agent": target.agent,
+                    "role": target.role,
                     "model": target.model or _record_model(record),
                     "auth_mode": target.auth_mode.value,
                     "role_attribution_complete": True,
@@ -268,6 +275,7 @@ def _native_bundle_records(bundle: NativeCaptureBundle) -> list[dict[str, Any]]:
             metadata.update(
                 {
                     "agent": "mixed",
+                    "role": "mixed",
                     "model": _record_model(record),
                     "auth_mode": AuthMode.MIXED.value,
                     "role_attribution_complete": False,
@@ -282,6 +290,7 @@ def _role_candidates(targets: list[CaptureTarget]) -> list[dict[str, Any]]:
     return [
         {
             "agent": target.agent,
+            "role": target.role,
             "model": target.model,
             "auth_mode": target.auth_mode.value,
         }
@@ -300,6 +309,7 @@ def _captured_targets(
         for target in targets:
             if (
                 metadata.get("agent") == target.agent
+                and metadata.get("role") == target.role
                 and metadata.get("auth_mode") == target.auth_mode.value
                 and _model_matches_target(metadata.get("model"), target.model)
             ):
@@ -396,15 +406,17 @@ def _role_captures(
     records: list[dict[str, Any]], *, targets: list[CaptureTarget]
 ) -> list[LLMRoleCapture]:
     grouped: dict[
-        tuple[str, str | None, AuthMode, CaptureSource, CaptureFidelity],
+        tuple[str, str, str | None, AuthMode, CaptureSource, CaptureFidelity],
         list[dict[str, Any]],
     ] = {}
     for record in records:
         metadata = _record_metadata(record)
+        role = str(metadata.get("role") or "unknown")
         agent = str(metadata.get("agent") or "unknown")
         model_value = metadata.get("model") or _record_model(record)
         model = str(model_value) if model_value is not None else None
         key = (
+            role,
             agent,
             model,
             AuthMode(str(metadata.get("auth_mode"))),
@@ -414,6 +426,7 @@ def _role_captures(
         grouped.setdefault(key, []).append(record)
     captures = [
         LLMRoleCapture(
+            role=role,
             agent=agent,
             model=model,
             auth_mode=auth_mode,
@@ -427,15 +440,17 @@ def _role_captures(
                 _record_metadata_bool(record, "response_complete") for record in group
             ),
         )
-        for (agent, model, auth_mode, source, fidelity), group in sorted(
-            grouped.items(), key=lambda item: (item[0][0], item[0][1] or "")
+        for (role, agent, model, auth_mode, source, fidelity), group in sorted(
+            grouped.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "")
         )
     ]
     captured_roles = {
-        (capture.agent, capture.model, capture.auth_mode) for capture in captures
+        (capture.role, capture.agent, capture.model, capture.auth_mode)
+        for capture in captures
     }
     captures.extend(
         LLMRoleCapture(
+            role=target.role,
             agent=target.agent,
             model=target.model,
             auth_mode=target.auth_mode,
@@ -446,6 +461,10 @@ def _role_captures(
             response_complete=False,
         )
         for target in targets
-        if (target.agent, target.model, target.auth_mode) not in captured_roles
+        if (target.role, target.agent, target.model, target.auth_mode)
+        not in captured_roles
     )
-    return sorted(captures, key=lambda capture: (capture.agent, capture.model or ""))
+    return sorted(
+        captures,
+        key=lambda capture: (capture.role, capture.agent, capture.model or ""),
+    )

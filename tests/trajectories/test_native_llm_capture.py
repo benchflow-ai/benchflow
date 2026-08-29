@@ -517,6 +517,34 @@ async def test_capture_always_emits_empty_jsonl_and_terminal_manifest(
     assert manifest["auth_mode"] == "api_key"
 
 
+def test_capture_initialization_truncates_reused_rollout_jsonl(tmp_path: Path) -> None:
+    """Guards PR #1057 against stale rows when a rollout name is reused."""
+
+    first = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="first-session",
+        started_at=STARTED_AT,
+    )
+    first.trajectory_path.write_text('{"stale":true}\n')
+
+    second = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="second-session",
+        started_at=STARTED_AT,
+    )
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert second.trajectory_path.read_text() == ""
+    assert manifest["status"] == "pending"
+    assert manifest["session_id"] == "second-session"
+
+
 @pytest.mark.parametrize(
     ("auth_json", "expected"),
     [
@@ -793,6 +821,57 @@ async def test_mixed_auth_rollout_marks_missing_native_role_partial(
     assert roles["codex-acp"]["exchange_count"] == 1
     assert roles["claude-agent-acp"]["exchange_count"] == 0
     assert roles["claude-agent-acp"]["capture_fidelity"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_same_agent_model_roles_remain_independently_auditable(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against collapsing same-model scene roles."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-api",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    for role_name in ("coder", "reviewer"):
+        await capture.prepare_agent(
+            None,
+            agent="codex-acp",
+            model="gpt-api",
+            agent_env={"OPENAI_API_KEY": "test-key"},
+            credential_home="/home/agent",
+            sandbox_user="agent",
+            role_name=role_name,
+        )
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {"body": {"model": "gpt-api", "input": "hello"}},
+                "response": {"status_code": 200, "body": {"output": []}},
+            }
+        )
+        + "\n"
+    )
+
+    await capture.finalize(None, acp_events=[], model_call_seen=True)
+
+    row = json.loads(capture.trajectory_path.read_text())
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert row["metadata"]["role"] == "mixed"
+    assert {item["role"] for item in row["metadata"]["role_candidates"]} == {
+        "coder",
+        "reviewer",
+    }
+    assert manifest["status"] == "partial"
+    roles = {role["role"]: role for role in manifest["role_captures"]}
+    assert roles["coder"]["exchange_count"] == 0
+    assert roles["reviewer"]["exchange_count"] == 0
+    assert roles["mixed"]["exchange_count"] == 1
 
 
 @pytest.mark.asyncio

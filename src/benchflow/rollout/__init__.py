@@ -2399,6 +2399,7 @@ class Rollout:
                 agent_env=agent_env,
                 credential_home=cred_home,
                 sandbox_user=cfg.sandbox_user,
+                role_name=role.name,
             )
 
         self._agent_launch = agent_launch
