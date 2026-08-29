@@ -206,6 +206,8 @@ def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
         rows = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError:
         return True, False, 0
+    if not rows:
+        return True, False, 0
     manifest = read_llm_trajectory_manifest(rollout_dir)
     if manifest is not None and not capture_manifest_allows_training(
         manifest, exchange_count=len(rows)
