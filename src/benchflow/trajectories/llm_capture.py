@@ -7,9 +7,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import tempfile
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -49,6 +51,8 @@ from benchflow.trajectories.types import redact_trajectory_text
 logger = logging.getLogger(__name__)
 
 _REMOTE_CAPTURE_PREFIX = "/tmp/benchflow-llm-capture-"
+_MAX_NATIVE_SESSION_FILES = 1000
+_SAFE_NATIVE_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _OTEL_SINK_SOURCE = r"""
 import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -148,12 +152,24 @@ class LLMTrajectoryCapture:
             native=native,
             role=role_name or "primary",
         )
-        primary_key = ("primary", agent, model, credential_home)
+        primary_key = _capture_target_key(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            role_name=None,
+        )
         if role_name is None:
             self._targets[primary_key] = target
         else:
             self._targets.pop(primary_key, None)
-            self._targets[(role_name, agent, model, credential_home)] = target
+            self._targets[
+                _capture_target_key(
+                    agent=agent,
+                    model=model,
+                    credential_home=credential_home,
+                    role_name=role_name,
+                )
+            ] = target
         self._refresh_manifest_auth_mode()
         if not native:
             write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
@@ -195,6 +211,39 @@ class LLMTrajectoryCapture:
 
     def _native_targets(self) -> list[_CaptureTarget]:
         return [target for target in self._targets.values() if target.native]
+
+    def bind_native_session(
+        self,
+        *,
+        agent: str,
+        model: str | None,
+        credential_home: str,
+        native_session_id: str,
+        role_name: str | None = None,
+    ) -> None:
+        """Bind an ACP session ID to its prepared native capture target."""
+
+        key = _capture_target_key(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            role_name=role_name,
+        )
+        target = self._targets.get(key)
+        if target is None or not target.native:
+            return
+        if _SAFE_NATIVE_SESSION_ID.fullmatch(native_session_id) is None:
+            warning = "native ACP session identifier was unsafe for file scoping"
+            self._preparation_errors.append(warning)
+            logger.warning("Native LLM capture disabled: %s", warning)
+            return
+        session_ids = tuple(sorted({*target.native_session_ids, native_session_id}))
+        if len(session_ids) > _MAX_NATIVE_SESSION_FILES:
+            warning = "native ACP session count exceeded the capture limit"
+            self._preparation_errors.append(warning)
+            logger.warning("Native LLM capture disabled: %s", warning)
+            return
+        self._targets[key] = replace(target, native_session_ids=session_ids)
 
     def _refresh_manifest_auth_mode(self) -> None:
         modes = {target.auth_mode for target in self._targets.values()}
@@ -449,36 +498,18 @@ exit 1
                         _NativeCaptureBundle(targets=claude_targets, result=result)
                     )
                     raw_claude_captured = True
-            credential_homes = sorted(
-                {target.credential_home for target in native_targets}
-            )
-            for index, credential_home in enumerate(credential_homes):
-                home_targets = tuple(
-                    target
-                    for target in native_targets
-                    if target.credential_home == credential_home
-                )
-                home_claude_targets = tuple(
-                    target
-                    for target in home_targets
-                    if _is_claude_code_agent(target.agent)
-                )
-                home_codex_targets = tuple(
-                    target for target in home_targets if target.agent == "codex-acp"
-                )
-                claude_local = local_root / f"home-{index}" / "claude-projects"
-                codex_local = local_root / f"home-{index}" / "codex-sessions"
-                if (
-                    home_claude_targets
-                    and not raw_claude_captured
-                    and await _download_recent_session_files(
+            for index, target in enumerate(native_targets):
+                if _is_claude_code_agent(target.agent) and not raw_claude_captured:
+                    claude_local = local_root / f"target-{index}" / "claude-projects"
+                    downloaded = await _download_bound_session_files(
                         env,
-                        f"{credential_home}/.claude/projects",
+                        f"{target.credential_home}/.claude/projects",
                         claude_local,
                         started_at=self.started_at,
+                        session_ids=target.native_session_ids,
                     )
-                ):
-                    target = home_claude_targets[0]
+                    if not downloaded:
+                        continue
                     result = parse_claude_sessions(
                         claude_local,
                         agent=target.agent,
@@ -488,17 +519,21 @@ exit 1
                     if result is not None:
                         bundles.append(
                             _NativeCaptureBundle(
-                                targets=home_claude_targets,
+                                targets=(target,),
                                 result=result,
                             )
                         )
-                if home_codex_targets and await _download_recent_session_files(
-                    env,
-                    f"{credential_home}/.codex/sessions",
-                    codex_local,
-                    started_at=self.started_at,
-                ):
-                    target = home_codex_targets[0]
+                elif target.agent == "codex-acp":
+                    codex_local = local_root / f"target-{index}" / "codex-sessions"
+                    downloaded = await _download_bound_session_files(
+                        env,
+                        f"{target.credential_home}/.codex/sessions",
+                        codex_local,
+                        started_at=self.started_at,
+                        session_ids=target.native_session_ids,
+                    )
+                    if not downloaded:
+                        continue
                     result = parse_codex_sessions(
                         codex_local,
                         agent=target.agent,
@@ -510,7 +545,7 @@ exit 1
                     if result is not None:
                         bundles.append(
                             _NativeCaptureBundle(
-                                targets=home_codex_targets,
+                                targets=(target,),
                                 result=result,
                             )
                         )
@@ -556,19 +591,35 @@ exit 1
         write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
 
 
-async def _download_recent_session_files(
+async def _download_bound_session_files(
     env: Any,
     remote: str,
     local: Path,
     *,
     started_at: datetime,
+    session_ids: tuple[str, ...],
 ) -> bool:
+    if not session_ids:
+        return False
+    if any(_SAFE_NATIVE_SESSION_ID.fullmatch(value) is None for value in session_ids):
+        raise RuntimeError("Native session discovery received an unsafe session ID")
     boundary = started_at.timestamp() - 1.0
     remote_root = shlex.quote(remote)
+    filename_patterns = [
+        pattern
+        for session_id in session_ids
+        for pattern in (f"{session_id}.jsonl", f"*-{session_id}.jsonl")
+    ]
+    filename_filter = (
+        r"\( "
+        + " -o ".join(f"-name {shlex.quote(pattern)}" for pattern in filename_patterns)
+        + r" \)"
+    )
     result = await env.exec(
         f"if test -d {remote_root}; then "
         f"find {remote_root} -type f -name '*.jsonl' "
-        f"-newermt {shlex.quote(f'@{boundary}')} -printf '%P\\n' | head -n 1001; "
+        f"-newermt {shlex.quote(f'@{boundary}')} {filename_filter} "
+        f"-printf '%P\\n' | head -n {_MAX_NATIVE_SESSION_FILES + 1}; "
         "fi",
         user="root",
         timeout_sec=10,
@@ -577,7 +628,7 @@ async def _download_recent_session_files(
         detail = (result.stderr or result.stdout or "session discovery failed")[:300]
         raise RuntimeError(f"Native session discovery failed: {detail}")
     relative_paths = [line for line in result.stdout.splitlines() if line]
-    if len(relative_paths) > 1000:
+    if len(relative_paths) > _MAX_NATIVE_SESSION_FILES:
         raise RuntimeError("Native session discovery exceeded the 1000-file limit")
     if not relative_paths:
         return False
@@ -593,6 +644,16 @@ async def _download_recent_session_files(
         *(env.download_file(source, destination) for source, destination in downloads)
     )
     return True
+
+
+def _capture_target_key(
+    *,
+    agent: str,
+    model: str | None,
+    credential_home: str,
+    role_name: str | None,
+) -> tuple[str, str, str | None, str]:
+    return (role_name or "primary", agent, model, credential_home)
 
 
 def _is_claude_code_agent(agent: str) -> bool:

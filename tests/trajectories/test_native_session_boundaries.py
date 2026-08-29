@@ -6,12 +6,14 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from benchflow.rollout import Rollout
 from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
-    _download_recent_session_files,
+    _download_bound_session_files,
 )
 from benchflow.trajectories.native_capture_parsers import parse_codex_sessions
 
@@ -129,17 +131,18 @@ async def test_claude_capture_setup_clears_reused_raw_attempt(
 async def test_native_download_selects_recent_files_before_copying(
     tmp_path: Path,
 ) -> None:
-    """Guards PR #1057 against copying an entire reused native-session tree."""
+    """Guards PR #1057 against copying unrelated concurrent native sessions."""
 
     commands: list[str] = []
     downloads: list[tuple[str, Path]] = []
+    native_session_id = "019effaf-3966-75d3-b61a-2916c84b0ac8"
 
     class DockerLikeEnv:
         async def exec(self, command, **_kwargs):
             commands.append(command)
             return SimpleNamespace(
                 return_code=0,
-                stdout="2026/08/28/session.jsonl\n",
+                stdout=f"2026/08/28/rollout-now-{native_session_id}.jsonl\n",
                 stderr="",
             )
 
@@ -150,18 +153,89 @@ async def test_native_download_selects_recent_files_before_copying(
             destination.write_text("{}\n")
 
     destination = tmp_path / "missing-parent" / "sessions"
-    downloaded = await _download_recent_session_files(
+    downloaded = await _download_bound_session_files(
         DockerLikeEnv(),
         "/home/agent/.codex/sessions",
         destination,
         started_at=STARTED_AT,
+        session_ids=(native_session_id,),
     )
 
     assert downloaded is True
     assert len(downloads) == 1
-    assert downloads[0][0].endswith("/2026/08/28/session.jsonl")
+    assert downloads[0][0].endswith(
+        f"/2026/08/28/rollout-now-{native_session_id}.jsonl"
+    )
     assert downloads[0][1].is_file()
     assert "-newermt" in commands[0]
+    assert f"-name {native_session_id}.jsonl" in commands[0]
+    assert f"-name '*-{native_session_id}.jsonl'" in commands[0]
+
+
+@pytest.mark.asyncio
+async def test_native_capture_binds_only_returned_acp_session_ids(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057's exact ACP-to-native-session ownership boundary."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    await capture.prepare_agent(
+        None,
+        agent="codex-acp",
+        model="gpt-5.6",
+        agent_env={"CODEX_AUTH_JSON": '{"tokens":{"access_token":"test"}}'},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+
+    capture.bind_native_session(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        native_session_id="019effaf-3966-75d3-b61a-2916c84b0ac8",
+    )
+    capture.bind_native_session(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        native_session_id="019effaf-3ab7-71f1-8ff3-fdecf66b551e",
+    )
+
+    target = capture._native_targets()[0]
+    assert target.native_session_ids == (
+        "019effaf-3966-75d3-b61a-2916c84b0ac8",
+        "019effaf-3ab7-71f1-8ff3-fdecf66b551e",
+    )
+
+
+def test_rollout_binds_the_acp_session_after_connect() -> None:
+    """Guards PR #1057's rollout-to-capture session binding seam."""
+
+    rollout = object.__new__(Rollout)
+    capture = SimpleNamespace(bind_native_session=Mock())
+    rollout._llm_capture = capture
+    rollout._session = SimpleNamespace(session_id="native-session-1")
+
+    rollout._bind_llm_capture_session(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        role_name="solver",
+    )
+
+    capture.bind_native_session.assert_called_once_with(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        native_session_id="native-session-1",
+        role_name="solver",
+    )
 
 
 def test_codex_session_files_do_not_share_request_history(tmp_path: Path) -> None:

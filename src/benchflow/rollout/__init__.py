@@ -1365,6 +1365,13 @@ class Rollout:
                     getattr(self, "_agent_cfg", None),
                 ),
             )
+        self._bind_llm_capture_session(
+            agent=cfg.primary_agent,
+            model=cfg.primary_model,
+            credential_home=(
+                f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+            ),
+        )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -1389,6 +1396,28 @@ class Rollout:
         traj_path = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
         self._session.on_change = make_trajectory_sink(
             TrajectoryWriter(traj_path), prior
+        )
+
+    def _bind_llm_capture_session(
+        self,
+        *,
+        agent: str,
+        model: str | None,
+        credential_home: str,
+        role_name: str | None = None,
+    ) -> None:
+        """Bind the current ACP ID to the native session files it owns."""
+
+        llm_capture = getattr(self, "_llm_capture", None)
+        native_session_id = getattr(self._session, "session_id", None)
+        if llm_capture is None or not isinstance(native_session_id, str):
+            return
+        llm_capture.bind_native_session(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            native_session_id=native_session_id,
+            role_name=role_name,
         )
 
     async def disconnect(self) -> None:
@@ -2347,6 +2376,7 @@ class Rollout:
         needs_role_credentials = (
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
+        cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
         if role_agent_differs:
             if cfg.skip_agent_install:
                 agent_cfg = None
@@ -2360,7 +2390,6 @@ class Rollout:
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
         if needs_role_credentials:
-            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await self._planes.write_credential_files(
                 self._env,
                 role.agent,
@@ -2390,7 +2419,6 @@ class Rollout:
 
         llm_capture = getattr(self, "_llm_capture", None)
         if llm_capture is not None:
-            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             agent_env = await llm_capture.prepare_agent(
                 self._env,
                 agent=role.agent,
@@ -2445,6 +2473,12 @@ class Rollout:
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
             )
+        self._bind_llm_capture_session(
+            agent=role.agent,
+            model=role.model,
+            credential_home=cred_home,
+            role_name=role.name,
+        )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role

@@ -34,6 +34,7 @@ from benchflow.trajectories.export_prime_sft import (
 )
 from benchflow.trajectories.llm_capture_manifest import (
     capture_manifest_allows_training,
+    capture_manifest_has_oauth_role_capture,
     read_llm_trajectory_manifest,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
@@ -503,10 +504,14 @@ def build_rollout_results_record(
         and reported_exchange_count > 0
         and llm_steps.capture_contract_rejected
     )
-    native_subscription_without_llm = bool(
+    audit_capture_preserves_completion = bool(
         (
             (agent_result or {}).get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
             or (capture_manifest or {}).get("auth_mode") == "oauth_subscription"
+            or (
+                capture_manifest is not None
+                and capture_manifest_has_oauth_role_capture(capture_manifest)
+            )
         )
         and (
             capture_manifest is None
@@ -545,7 +550,7 @@ def build_rollout_results_record(
             training_ready_reason = "verifier_error"
         else:
             training_ready_reason = "missing_healthy_structured_llm_trajectory"
-        if error_obj is None and not native_subscription_without_llm:
+        if error_obj is None and not audit_capture_preserves_completion:
             error_name = (
                 training_ready_reason
                 if training_ready_reason

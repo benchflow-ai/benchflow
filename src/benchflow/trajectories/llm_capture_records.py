@@ -30,6 +30,7 @@ class CaptureTarget:
     auth_mode: AuthMode
     native: bool
     role: str = "agent"
+    native_session_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -260,7 +261,7 @@ def _native_bundle_records(bundle: NativeCaptureBundle) -> list[dict[str, Any]]:
         if not isinstance(metadata, dict):
             metadata = {}
             record["metadata"] = metadata
-        target = _target_for_model(list(bundle.targets), _record_model(record))
+        target = _target_for_record(list(bundle.targets), record)
         if target is not None:
             metadata.update(
                 {
@@ -351,6 +352,21 @@ def _target_for_model(
         if target.model and _model_matches_target(model, target.model)
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _target_for_record(
+    targets: list[CaptureTarget], record: dict[str, Any]
+) -> CaptureTarget | None:
+    native_session_id = _record_metadata(record).get("native_session_id")
+    if isinstance(native_session_id, str):
+        session_matches = [
+            target
+            for target in targets
+            if native_session_id in target.native_session_ids
+        ]
+        if len(session_matches) == 1:
+            return session_matches[0]
+    return _target_for_model(targets, _record_model(record))
 
 
 def _sort_exchange_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

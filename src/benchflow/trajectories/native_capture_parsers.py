@@ -117,6 +117,7 @@ def parse_claude_raw_capture(
                 response_complete=True,
                 extra_metadata={
                     "provider_request_id": request_id,
+                    "native_session_id": event_session,
                     "request_body_file": request_path.name,
                     "response_body_file": response_path.name,
                     "pairing": (

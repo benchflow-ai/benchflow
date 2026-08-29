@@ -124,6 +124,7 @@ def test_claude_otel_raw_bodies_become_provider_wire_exchanges(tmp_path: Path) -
     assert exchange.response.body["id"] == "msg_123"
     assert exchange.duration_ms == 500
     assert exchange.metadata["provider_request_id"] == "req_123"
+    assert exchange.metadata["native_session_id"] == "session-1"
 
 
 def test_claude_concurrent_raw_pairing_fails_closed_for_training(

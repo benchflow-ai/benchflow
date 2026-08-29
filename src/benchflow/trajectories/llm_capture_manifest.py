@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 LLM_TRAJECTORY_FILENAME = "llm_trajectory.jsonl"
 LLM_TRAJECTORY_MANIFEST_FILENAME = "llm_trajectory.manifest.json"
@@ -154,6 +154,27 @@ def capture_manifest_allows_training(
         and exchange_count > 0
         and expected_count == exchange_count
     )
+
+
+def capture_manifest_has_oauth_role_capture(manifest: dict[str, Any]) -> bool:
+    """Return whether a mixed manifest contains captured OAuth role evidence."""
+
+    role_captures = manifest.get("role_captures")
+    if not isinstance(role_captures, list):
+        return False
+    for value in role_captures:
+        try:
+            role_capture = LLMRoleCapture.model_validate(value)
+        except ValidationError:
+            continue
+        if (
+            role_capture.auth_mode is AuthMode.OAUTH_SUBSCRIPTION
+            and role_capture.capture_source is not CaptureSource.NONE
+            and role_capture.capture_fidelity is not CaptureFidelity.NONE
+            and role_capture.exchange_count > 0
+        ):
+            return True
+    return False
 
 
 def _atomic_write_text(path: Path, payload: str) -> None:

@@ -125,3 +125,69 @@ def test_manifest_count_mismatch_fails_closed_for_canonical_results(
     assert row["info"]["training_ready"] is False
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
     assert row["is_completed"] is False
+
+
+def test_mixed_oauth_audit_capture_preserves_successful_completion(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against turning successful mixed-auth runs into errors."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire")
+    provider_row = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    oauth_row = json.loads(json.dumps(provider_row))
+    oauth_row["metadata"].update(
+        {
+            "capture_fidelity": "agent_session",
+            "auth_mode": "oauth_subscription",
+            "request_complete": False,
+        }
+    )
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(provider_row) + "\n" + json.dumps(oauth_row) + "\n"
+    )
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_fidelity": "mixed",
+                "auth_mode": "mixed",
+                "exchange_count": 2,
+                "request_complete": False,
+                "response_complete": True,
+                "role_captures": [
+                    {
+                        "role": "coder",
+                        "agent": "codex-acp",
+                        "auth_mode": "api_key",
+                        "capture_source": "litellm_proxy",
+                        "capture_fidelity": "provider_wire",
+                        "exchange_count": 1,
+                        "request_complete": True,
+                        "response_complete": True,
+                    },
+                    {
+                        "role": "reviewer",
+                        "agent": "claude-agent-acp",
+                        "auth_mode": "oauth_subscription",
+                        "capture_source": "claude_native_session",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": False,
+                    },
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is True
+    assert row["error"] is None
