@@ -46,6 +46,7 @@ from benchflow.trajectories.native_capture_parsers import (
     parse_claude_sessions,
     parse_codex_sessions,
     project_acp_trajectory,
+    retain_uncovered_claude_session_exchanges,
 )
 from benchflow.trajectories.types import redact_trajectory_text
 
@@ -312,6 +313,8 @@ class LLMTrajectoryCapture:
                 )
             except Exception:
                 if env is not None:
+                    if self._collector_owned:
+                        await self._stop_otel_sink(env)
                     await self._cleanup_remote_capture(env)
                 raise
 
@@ -510,6 +513,18 @@ for attempt in $(seq 1 20); do
   fi
   sleep 0.05
 done
+old_command=$(ps -p "$old_pid" -o command= 2>/dev/null || true)
+case "$old_command" in
+  *{self._remote_capture_root}/otel_sink.mjs*) ;;
+  *) exit 0 ;;
+esac
+kill -KILL "$old_pid" 2>/dev/null || true
+for attempt in $(seq 1 20); do
+  if ! kill -0 "$old_pid" 2>/dev/null; then
+    exit 0
+  fi
+  sleep 0.05
+done
 echo "previous Claude telemetry collector did not stop" >&2
 exit 1
 """
@@ -546,7 +561,7 @@ exit 1
         )
         with tempfile.TemporaryDirectory(prefix="benchflow-native-llm-") as temporary:
             local_root = Path(temporary)
-            raw_claude_session_ids = await self._collect_claude_raw_capture(
+            raw_claude_result = await self._collect_claude_raw_capture(
                 env,
                 local_root=local_root,
                 claude_targets=claude_targets,
@@ -556,18 +571,15 @@ exit 1
             for index, target in enumerate(native_targets):
                 try:
                     if _is_claude_code_agent(target.agent):
-                        fallback_ids = tuple(
-                            session_id
-                            for session_id in target.native_session_ids
-                            if session_id not in raw_claude_session_ids
-                        )
-                        bundle = await self._collect_claude_session_fallback(
+                        target_bundles = await self._collect_claude_session_fallback(
                             env,
                             local_root=local_root,
                             index=index,
                             target=target,
-                            session_ids=fallback_ids,
+                            raw_result=raw_claude_result,
                         )
+                        bundles.extend(target_bundles)
+                        bundle = None
                     elif target.agent == "codex-acp":
                         bundle = await self._collect_codex_session(
                             env,
@@ -596,9 +608,9 @@ exit 1
         claude_targets: tuple[_CaptureTarget, ...],
         bundles: list[_NativeCaptureBundle],
         errors: list[str],
-    ) -> set[str]:
+    ) -> NativeParseResult | None:
         if not self._capture_root_prepared:
-            return set()
+            return None
         capture_dir = local_root / "capture"
         try:
             await env.download_dir(self._remote_capture_root, capture_dir)
@@ -611,11 +623,11 @@ exit 1
         except Exception as exc:
             errors.append(_sanitized_error(exc))
             logger.warning("Claude raw LLM capture collection failed: %s", exc)
-            return set()
+            return None
         if result is None:
-            return set()
+            return None
         bundles.append(_NativeCaptureBundle(targets=claude_targets, result=result))
-        return _native_session_ids(result)
+        return result
 
     async def _collect_claude_session_fallback(
         self,
@@ -624,31 +636,38 @@ exit 1
         local_root: Path,
         index: int,
         target: _CaptureTarget,
-        session_ids: tuple[str, ...],
-    ) -> _NativeCaptureBundle | None:
-        if not session_ids:
-            return None
-        local = local_root / f"target-{index}" / "claude-projects"
-        downloaded = await _download_bound_session_files(
-            env,
-            f"{target.credential_home}/.claude/projects",
-            local,
-            started_at=self.started_at,
-            session_ids=session_ids,
-        )
-        if not downloaded:
-            return None
-        result = parse_claude_sessions(
-            local,
-            agent=target.agent,
-            session_id=self.session_id,
-            started_at=self.started_at,
-        )
-        return (
-            _NativeCaptureBundle(targets=(target,), result=result)
-            if result is not None
-            else None
-        )
+        raw_result: NativeParseResult | None,
+    ) -> tuple[_NativeCaptureBundle, ...]:
+        bundles: list[_NativeCaptureBundle] = []
+        for session_index, native_session_id in enumerate(target.native_session_ids):
+            local = local_root / f"target-{index}" / f"claude-session-{session_index}"
+            downloaded = await _download_bound_session_files(
+                env,
+                f"{target.credential_home}/.claude/projects",
+                local,
+                started_at=self.started_at,
+                session_ids=(native_session_id,),
+            )
+            if not downloaded:
+                continue
+            result = parse_claude_sessions(
+                local,
+                agent=target.agent,
+                session_id=self.session_id,
+                started_at=self.started_at,
+            )
+            if result is None:
+                continue
+            uncovered = retain_uncovered_claude_session_exchanges(
+                raw_result,
+                result,
+                native_session_id=native_session_id,
+            )
+            if uncovered is not None:
+                bundles.append(
+                    _NativeCaptureBundle(targets=(target,), result=uncovered)
+                )
+        return tuple(bundles)
 
     async def _collect_codex_session(
         self,
@@ -685,6 +704,11 @@ exit 1
     async def _cleanup_remote_capture(self, env: Any) -> None:
         if not self._capture_root_prepared:
             return
+        if self._collector_owned:
+            raise RuntimeError(
+                "Refusing to remove Claude capture ownership files while its "
+                "collector may still be running"
+            )
         result = await env.exec(
             "for attempt in 1 2 3; do\n"
             f"  if ! test -e {self._remote_capture_root} || "
@@ -790,16 +814,6 @@ def _capture_target_key(
     role_name: str | None,
 ) -> tuple[str, str, str | None, str]:
     return (role_name or "primary", agent, model, credential_home)
-
-
-def _native_session_ids(result: NativeParseResult) -> set[str]:
-    """Return exact ACP session IDs represented by parsed native exchanges."""
-
-    return {
-        value
-        for exchange in result.trajectory.exchanges
-        if isinstance((value := exchange.metadata.get("native_session_id")), str)
-    }
 
 
 def _is_claude_code_agent(agent: str) -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -79,18 +80,26 @@ def _native_result(
     source: CaptureSource,
     fidelity: CaptureFidelity,
     model: str,
+    request_id: str | None = None,
+    response_id: str | None = None,
 ) -> NativeParseResult:
+    response_body: dict[str, object] = {"output": []}
+    if response_id is not None:
+        response_body["id"] = response_id
+    metadata: dict[str, object] = {
+        "capture_source": source.value,
+        "capture_fidelity": fidelity.value,
+        "auth_mode": AuthMode.OAUTH_SUBSCRIPTION.value,
+        "native_session_id": session_id,
+        "request_complete": fidelity is CaptureFidelity.PROVIDER_WIRE,
+        "response_complete": True,
+    }
+    if request_id is not None:
+        metadata["provider_request_id"] = request_id
     exchange = LLMExchange(
         request=LLMRequest(body={"model": model, "input": "hello"}),
-        response=LLMResponse(body={"output": []}),
-        metadata={
-            "capture_source": source.value,
-            "capture_fidelity": fidelity.value,
-            "auth_mode": AuthMode.OAUTH_SUBSCRIPTION.value,
-            "native_session_id": session_id,
-            "request_complete": fidelity is CaptureFidelity.PROVIDER_WIRE,
-            "response_complete": True,
-        },
+        response=LLMResponse(body=response_body),
+        metadata=metadata,
     )
     return NativeParseResult(
         trajectory=Trajectory(
@@ -509,14 +518,13 @@ async def test_native_role_reprepare_preserves_prior_session_ids(
 
 
 @pytest.mark.asyncio
-async def test_claude_fallback_collects_only_raw_uncovered_sessions(
+async def test_claude_fallback_collects_only_raw_uncovered_exchanges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards PR #1057's per-session Claude raw fallback coverage."""
+    """Guards PR #1057 against losing a partially raw-captured Claude session."""
 
     first_id = "019effaf-3966-75d3-b61a-2916c84b0ac8"
-    second_id = "019effaf-3ab7-71f1-8ff3-fdecf66b551e"
     capture = LLMTrajectoryCapture(
         tmp_path,
         agent="claude-agent-acp",
@@ -524,42 +532,53 @@ async def test_claude_fallback_collects_only_raw_uncovered_sessions(
         session_id="rollout-1",
         started_at=STARTED_AT,
     )
-    targets = (
-        _CaptureTarget(
-            agent="claude-agent-acp",
-            model="claude-sonnet-4-6",
-            credential_home="/home/agent",
-            auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
-            native=True,
-            role="solver",
-            native_session_ids=(first_id,),
-        ),
-        _CaptureTarget(
-            agent="claude-agent-acp",
-            model="claude-sonnet-4-6",
-            credential_home="/home/agent",
-            auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
-            native=True,
-            role="reviewer",
-            native_session_ids=(second_id,),
-        ),
+    target = _CaptureTarget(
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+        role="solver",
+        native_session_ids=(first_id,),
     )
-    for target in targets:
-        capture._targets[
-            (target.role, target.agent, target.model, target.credential_home)
-        ] = target
+    capture._targets[
+        (target.role, target.agent, target.model, target.credential_home)
+    ] = target
     capture._capture_root_prepared = True
     raw_result = _native_result(
         session_id=first_id,
         source=CaptureSource.CLAUDE_OTEL_RAW_BODY,
         fidelity=CaptureFidelity.PROVIDER_WIRE,
         model="claude-sonnet-4-6",
+        request_id="request-covered",
+        response_id="message-covered",
     )
-    fallback_result = _native_result(
-        session_id=second_id,
+    covered_fallback = _native_result(
+        session_id=first_id,
         source=CaptureSource.CLAUDE_NATIVE_SESSION,
         fidelity=CaptureFidelity.AGENT_SESSION,
         model="claude-sonnet-4-6",
+        request_id="request-covered",
+        response_id="message-covered",
+    )
+    missing_fallback = _native_result(
+        session_id=first_id,
+        source=CaptureSource.CLAUDE_NATIVE_SESSION,
+        fidelity=CaptureFidelity.AGENT_SESSION,
+        model="claude-sonnet-4-6",
+        request_id="request-missing",
+        response_id="message-missing",
+    )
+    fallback_result = replace(
+        covered_fallback,
+        trajectory=covered_fallback.trajectory.model_copy(
+            update={
+                "exchanges": [
+                    *covered_fallback.trajectory.exchanges,
+                    *missing_fallback.trajectory.exchanges,
+                ]
+            }
+        ),
     )
     fallback_calls: list[tuple[str, ...]] = []
 
@@ -592,7 +611,11 @@ async def test_claude_fallback_collects_only_raw_uncovered_sessions(
     collection = await capture._collect_native_results(CaptureEnv())
 
     assert len(collection.bundles) == 2
-    assert fallback_calls == [(second_id,)]
+    assert fallback_calls == [(first_id,)]
+    fallback_exchanges = collection.bundles[1].result.trajectory.exchanges
+    assert len(fallback_exchanges) == 1
+    assert fallback_exchanges[0].metadata["provider_request_id"] == "request-missing"
+    assert fallback_exchanges[0].metadata["native_session_id"] == first_id
     assert collection.errors == ()
 
 

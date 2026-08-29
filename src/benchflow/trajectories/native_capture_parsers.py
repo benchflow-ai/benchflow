@@ -207,6 +207,48 @@ def parse_claude_sessions(
     )
 
 
+def retain_uncovered_claude_session_exchanges(
+    raw_result: NativeParseResult | None,
+    session_result: NativeParseResult,
+    *,
+    native_session_id: str,
+) -> NativeParseResult | None:
+    """Keep transcript exchanges not already represented by provider-wire capture."""
+
+    raw_identities = {
+        identity
+        for exchange in (
+            raw_result.trajectory.exchanges if raw_result is not None else []
+        )
+        if exchange.metadata.get("native_session_id") == native_session_id
+        for identity in _claude_exchange_identities(exchange)
+    }
+    uncovered: list[LLMExchange] = []
+    for exchange in session_result.trajectory.exchanges:
+        exchange.metadata["native_session_id"] = native_session_id
+        identities = _claude_exchange_identities(exchange)
+        if identities and identities.intersection(raw_identities):
+            continue
+        uncovered.append(exchange)
+    if not uncovered:
+        return None
+    trajectory = session_result.trajectory.model_copy(
+        update={
+            "exchanges": uncovered,
+            "finished_at": max(exchange.response.timestamp for exchange in uncovered),
+        }
+    )
+    return NativeParseResult(
+        trajectory=trajectory,
+        source=session_result.source,
+        fidelity=session_result.fidelity,
+        request_complete=session_result.request_complete,
+        response_complete=session_result.response_complete,
+        missing_fields=list(session_result.missing_fields),
+        errors=list(session_result.errors),
+    )
+
+
 def _parse_claude_session_records(
     records: list[dict[str, Any]], *, started_at: datetime
 ) -> list[LLMExchange]:
@@ -498,6 +540,8 @@ def _exchange(
     response_complete: bool,
     extra_metadata: dict[str, Any] | None = None,
 ) -> LLMExchange:
+    request_timestamp = _utc_timestamp(request_timestamp)
+    response_timestamp = _utc_timestamp(response_timestamp)
     metadata = {
         "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
         "capture_source": source.value,
@@ -767,7 +811,7 @@ def _normalize_codex_usage(usage: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record_timestamp(record: dict[str, Any], default: datetime) -> datetime:
-    return _optional_record_timestamp(record) or default
+    return _optional_record_timestamp(record) or _utc_timestamp(default)
 
 
 def _optional_record_timestamp(record: dict[str, Any]) -> datetime | None:
@@ -775,9 +819,30 @@ def _optional_record_timestamp(record: dict[str, Any]) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return _utc_timestamp(datetime.fromisoformat(value.replace("Z", "+00:00")))
     except ValueError:
         return None
+
+
+def _utc_timestamp(value: datetime) -> datetime:
+    """Normalize native timestamps, interpreting legacy naive values as UTC."""
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _claude_exchange_identities(exchange: LLMExchange) -> set[tuple[str, str]]:
+    """Return exact provider identifiers shared by raw and transcript records."""
+
+    identities: set[tuple[str, str]] = set()
+    request_id = exchange.metadata.get("provider_request_id")
+    if isinstance(request_id, str) and request_id:
+        identities.add(("request", request_id))
+    response_id = exchange.response.body.get("id")
+    if isinstance(response_id, str) and response_id:
+        identities.add(("response", response_id))
+    return identities
 
 
 def _unix_nanos_timestamp(value: Any) -> datetime:
