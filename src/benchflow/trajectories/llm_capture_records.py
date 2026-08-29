@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.providers.litellm_config import safe_model_alias
 from benchflow.trajectories.llm_capture_manifest import (
     LLM_TRAJECTORY_SCHEMA_VERSION,
     AuthMode,
@@ -85,7 +86,7 @@ def load_provider_wire_records(
         if not isinstance(metadata, dict):
             metadata = {}
             record["metadata"] = metadata
-        target = _target_for_model(targets, _record_model(record))
+        target = _target_for_provider_record(targets, record)
         attribution_complete = target is not None or not targets
         metadata.update(
             {
@@ -319,17 +320,27 @@ def _captured_targets(
 
 
 def _model_matches_target(value: Any, configured_model: str | None) -> bool:
+    return _model_match_score(value, configured_model) > 0
+
+
+def _model_match_score(value: Any, configured_model: str | None) -> int:
     if configured_model is None:
-        return True
+        return 1
     if not isinstance(value, str):
-        return False
+        return 0
     normalized_value = value.casefold()
     normalized_target = configured_model.casefold()
-    return bool(
-        normalized_value == normalized_target
-        or normalized_value.endswith(f"/{normalized_target}")
-        or normalized_target.endswith(f"/{normalized_value}")
-    )
+    proxy_alias = safe_model_alias(configured_model).casefold()
+    if normalized_value == normalized_target or normalized_value in {
+        proxy_alias,
+        f"openai/{proxy_alias}",
+    }:
+        return 2
+    if normalized_value.endswith(f"/{normalized_target}") or normalized_target.endswith(
+        f"/{normalized_value}"
+    ):
+        return 1
+    return 0
 
 
 def _record_model(record: dict[str, Any]) -> str | None:
@@ -351,6 +362,33 @@ def _target_for_model(
         for target in targets
         if target.model and _model_matches_target(model, target.model)
     ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _target_for_provider_record(
+    targets: list[CaptureTarget], record: dict[str, Any]
+) -> CaptureTarget | None:
+    if len(targets) == 1:
+        return targets[0]
+    candidates = {_record_model(record)}
+    metadata = _record_metadata(record)
+    candidates.update(
+        value
+        for key in ("model_group", "request_model", "provider_model")
+        if isinstance((value := metadata.get(key)), str) and value
+    )
+    scored = [
+        (
+            max(
+                _model_match_score(candidate, target.model) for candidate in candidates
+            ),
+            target,
+        )
+        for target in targets
+        if target.model
+    ]
+    best_score = max((score for score, _target in scored), default=0)
+    matches = [target for score, target in scored if score == best_score > 0]
     return matches[0] if len(matches) == 1 else None
 
 

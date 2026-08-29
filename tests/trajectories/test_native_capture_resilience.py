@@ -11,6 +11,7 @@ import pytest
 
 from benchflow.trajectories.llm_capture import LLMTrajectoryCapture, _CaptureTarget
 from benchflow.trajectories.llm_capture_manifest import AuthMode
+from benchflow.trajectories.llm_capture_records import load_provider_wire_records
 from benchflow.trajectories.native_capture_parsers import parse_codex_sessions
 
 
@@ -56,6 +57,85 @@ def test_native_parser_normalizes_fallback_and_record_timestamps(
     assert exchange.request.timestamp.tzinfo is UTC
     assert exchange.response.timestamp.tzinfo is UTC
     assert exchange.duration_ms > 0
+
+
+def test_provider_role_attribution_uses_proxy_model_aliases(tmp_path: Path) -> None:
+    """Guards PR #1057 against losing roles after LiteLLM model translation."""
+
+    targets = [
+        _CaptureTarget(
+            agent="claude-agent-acp",
+            model="aws-bedrock/us.anthropic.claude-opus-4-8",
+            credential_home="/home/solver",
+            auth_mode=AuthMode.API_KEY,
+            native=False,
+            role="solver",
+        ),
+        _CaptureTarget(
+            agent="codex-acp",
+            model="azure-foundry-openai/gpt-5.5",
+            credential_home="/home/reviewer",
+            auth_mode=AuthMode.API_KEY,
+            native=False,
+            role="reviewer",
+        ),
+        _CaptureTarget(
+            agent="opencode",
+            model="openai/gpt-5.5",
+            credential_home="/home/critic",
+            auth_mode=AuthMode.API_KEY,
+            native=False,
+            role="critic",
+        ),
+    ]
+    trajectory = tmp_path / "llm_trajectory.jsonl"
+    trajectory.write_text(
+        "".join(
+            json.dumps(record) + "\n"
+            for record in (
+                {
+                    "request": {
+                        "body": {"model": "bedrock/us.anthropic.claude-opus-4-8"}
+                    },
+                    "response": {"status_code": 200, "body": {}},
+                    "metadata": {
+                        "model_group": (
+                            "benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"
+                        )
+                    },
+                },
+                {
+                    "request": {"body": {"model": "gpt-5.5"}},
+                    "response": {"status_code": 200, "body": {}},
+                    "metadata": {
+                        "request_model": "benchflow-azure-foundry-openai-gpt-5.5"
+                    },
+                },
+                {
+                    "request": {"body": {"model": "gpt-5.5"}},
+                    "response": {"status_code": 200, "body": {}},
+                    "metadata": {"request_model": "benchflow-openai-gpt-5.5"},
+                },
+            )
+        )
+    )
+
+    records = load_provider_wire_records(
+        trajectory,
+        targets=targets,
+        fallback_agent="mixed",
+        fallback_model=None,
+        fallback_auth=AuthMode.API_KEY,
+    )
+
+    assert [record["metadata"]["role"] for record in records] == [
+        "solver",
+        "reviewer",
+        "critic",
+    ]
+    assert all(
+        record["metadata"]["role_attribution_complete"] is True for record in records
+    )
 
 
 @pytest.mark.asyncio
