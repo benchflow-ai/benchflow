@@ -898,6 +898,41 @@ class TestACPIdleWatchdog:
                     await client.task
 
 
+class TestPendingToolCallGrace:
+    @pytest.mark.asyncio
+    async def test_lost_tool_call_completion_trips_idle_after_grace(self):
+        """Guards the #1061 fix: a tool call whose completion update never
+        arrives must stop deferring the idle watchdog once the pending grace
+        (3x idle_timeout) elapses with no other session activity, instead of
+        disarming it for the rest of the wall-clock budget.
+
+        Runtime: ~5s (3s grace + 1s idle + polls); the outer wait_for is a
+        loose hang guard, not a timing assertion.
+        """
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+        from benchflow.acp.session import ToolCallRecord
+
+        class HangingPromptClient:
+            async def prompt(self, _prompt: str):
+                await asyncio.Future()
+
+        session = ACPSession("pending-grace-session")
+        # A tool call stuck in PENDING with no terminal update, ever.
+        session.tool_calls.append(ToolCallRecord("t1", "sleep 180", "execute"))
+
+        with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
+            await asyncio.wait_for(
+                execute_prompts(
+                    HangingPromptClient(),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=60,
+                    idle_timeout=1,
+                ),
+                timeout=20.0,
+            )
+
+
 class TestIdleTimeoutDiagnostics:
     """Guards ENG-149: idle timeouts must carry structured diagnostics."""
 

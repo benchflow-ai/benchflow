@@ -841,6 +841,13 @@ async def _prompt_with_idle_watchdog(
     last_progress = asyncio.get_event_loop().time()
     last_activity_at = datetime.now(UTC)
     last_count = _activity_count()
+    # A pending tool call defers the idle watchdog only within this grace: a
+    # completion update lost in transit (e.g. a half-open PTY websocket frame
+    # drop) leaves the call pending forever and would otherwise disarm the
+    # watchdog for the rest of the wall-clock budget (#1061).
+    pending_grace = idle_timeout * 3
+    pending_snapshot: tuple[str, ...] = ()
+    pending_since = last_progress
     # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
     # short overall budgets don't overshoot (e.g. timeout=30s with default
     # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
@@ -870,13 +877,20 @@ async def _prompt_with_idle_watchdog(
             # (e.g. a long build/test/solver shell command), not hung. Those tools
             # emit no ACP updates until they return, so a >idle_timeout run would
             # otherwise false-fire the watchdog and discard real work. Treat a
-            # pending tool call as progress and defer to the wall-clock `timeout`
-            # backstop below for a tool that never returns. A genuine model-side
-            # hang has no pending tool call (the prior tool already completed via
-            # tool_call_update), so it still trips the idle path.
+            # pending tool call as progress, but only within pending_grace of the
+            # pending set last changing: a call whose completion update was lost
+            # in transit stays pending forever, and an unbounded deferral would
+            # disarm the watchdog for the rest of the wall-clock budget (#1061).
+            # A genuine model-side hang has no pending tool call (the prior tool
+            # already completed via tool_call_update), so it trips the idle path.
             elif session.pending_tool_call_ids():
-                last_progress = now
-                last_activity_at = datetime.now(UTC)
+                snapshot = tuple(sorted(session.pending_tool_call_ids()))
+                if snapshot != pending_snapshot:
+                    pending_snapshot = snapshot
+                    pending_since = now
+                if now - pending_since < pending_grace:
+                    last_progress = now
+                    last_activity_at = datetime.now(UTC)
             if now - last_progress >= idle_timeout:
                 diag = IdleTimeoutDiagnostic(
                     idle_timeout_sec=idle_timeout,
