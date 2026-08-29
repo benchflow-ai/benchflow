@@ -112,6 +112,7 @@ class LLMTrajectoryCapture:
             started_at=started_at,
         )
         self._targets: dict[tuple[str, str, str | None, str], _CaptureTarget] = {}
+        self._provisional_target_key: tuple[str, str, str | None, str] | None = None
         self._collector_started = False
         self._collector_owned = False
         self._capture_root_prepared = False
@@ -160,9 +161,17 @@ class LLMTrajectoryCapture:
             role_name=None,
         )
         if role_name is None:
+            if (
+                self._provisional_target_key is not None
+                and self._provisional_target_key != primary_key
+            ):
+                self._targets.pop(self._provisional_target_key, None)
             self._targets[primary_key] = target
+            self._provisional_target_key = primary_key
         else:
-            self._targets.pop(primary_key, None)
+            if self._provisional_target_key is not None:
+                self._targets.pop(self._provisional_target_key, None)
+                self._provisional_target_key = None
             self._targets[
                 _capture_target_key(
                     agent=agent,
@@ -231,7 +240,11 @@ class LLMTrajectoryCapture:
             role_name=role_name,
         )
         target = self._targets.get(key)
-        if target is None or not target.native:
+        if target is None:
+            return
+        if key == self._provisional_target_key:
+            self._provisional_target_key = None
+        if not target.native:
             return
         if _SAFE_NATIVE_SESSION_ID.fullmatch(native_session_id) is None:
             warning = "native ACP session identifier was unsafe for file scoping"
@@ -287,6 +300,7 @@ class LLMTrajectoryCapture:
         )
         native_targets = self._native_targets()
         native_resources_exist = self._collector_owned or self._capture_root_prepared
+        cleanup_failed = False
         if (native_targets or native_resources_exist) and env is not None:
             try:
                 if native_targets:
@@ -297,7 +311,12 @@ class LLMTrajectoryCapture:
                 collection_errors.append(_sanitized_error(exc))
                 logger.warning("Native LLM trajectory collection failed: %s", exc)
             finally:
-                await self._cleanup_remote_capture(env)
+                try:
+                    await self._cleanup_remote_capture(env)
+                except Exception as exc:
+                    collection_errors.append(_sanitized_error(exc))
+                    logger.error("Sandbox LLM capture cleanup failed: %s", exc)
+                    cleanup_failed = True
 
         if not provider_records and not native_bundles and acp_events:
             projected = project_acp_trajectory(
@@ -330,7 +349,9 @@ class LLMTrajectoryCapture:
         write_exchange_records(self.trajectory_path, assembly.records)
         self.manifest.auth_mode = assembly.auth_mode
         self._finish_manifest(
-            status=assembly.status,
+            status=(
+                CaptureStatus.CAPTURE_FAILED if cleanup_failed else assembly.status
+            ),
             source=assembly.source,
             fidelity=assembly.fidelity,
             exchange_count=len(assembly.records),
@@ -564,17 +585,22 @@ exit 1
     async def _cleanup_remote_capture(self, env: Any) -> None:
         if not self._capture_root_prepared:
             return
-        try:
-            result = await env.exec(
-                f"find {self._remote_capture_root} -depth -delete",
-                user="root",
-                timeout_sec=10,
-            )
-            if result.return_code != 0:
-                detail = (result.stderr or result.stdout or "unknown error")[:300]
-                logger.warning("Sandbox LLM capture cleanup failed: %s", detail)
-        except Exception as exc:
-            logger.warning("Sandbox LLM capture cleanup failed: %s", exc)
+        result = await env.exec(
+            "for attempt in 1 2 3; do\n"
+            f"  if ! test -e {self._remote_capture_root} || "
+            f"find {self._remote_capture_root} -depth -delete; then\n"
+            "    exit 0\n"
+            "  fi\n"
+            "  sleep 0.1\n"
+            "done\n"
+            "exit 1",
+            user="root",
+            timeout_sec=10,
+        )
+        if result.return_code != 0:
+            detail = (result.stderr or result.stdout or "unknown error")[:300]
+            raise RuntimeError(f"Sandbox LLM capture cleanup failed: {detail}")
+        self._capture_root_prepared = False
 
     def _finish_manifest(
         self,

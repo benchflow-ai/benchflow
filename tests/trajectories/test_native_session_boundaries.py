@@ -86,6 +86,89 @@ async def test_phase_api_registers_provisional_primary_oauth_target(
 
 
 @pytest.mark.asyncio
+async def test_first_named_role_removes_actual_unbound_provisional_target(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against retaining a different provisional primary."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-primary",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    await capture.prepare_agent(
+        None,
+        agent="codex-acp",
+        model="gpt-primary",
+        agent_env={
+            "CODEX_AUTH_JSON": '{"auth_mode":"chatgpt","tokens":{"refresh_token":"test"}}'
+        },
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+    await capture.prepare_agent(
+        None,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        agent_env={"ANTHROPIC_API_KEY": "test-key"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+        role_name="reviewer",
+    )
+
+    targets = list(capture._targets.values())
+    assert [(target.role, target.agent) for target in targets] == [
+        ("reviewer", "claude-agent-acp")
+    ]
+    assert capture._provisional_target_key is None
+
+
+@pytest.mark.asyncio
+async def test_executed_primary_is_not_removed_by_later_named_role(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against deleting an activated primary capture target."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-primary",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    await capture.prepare_agent(
+        None,
+        agent="codex-acp",
+        model="gpt-primary",
+        agent_env={"OPENAI_API_KEY": "test-key"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+    capture.bind_native_session(
+        agent="codex-acp",
+        model="gpt-primary",
+        credential_home="/home/agent",
+        native_session_id="primary-session",
+    )
+    await capture.prepare_agent(
+        None,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        agent_env={"ANTHROPIC_API_KEY": "test-key"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+        role_name="reviewer",
+    )
+
+    assert {target.role for target in capture._targets.values()} == {
+        "primary",
+        "reviewer",
+    }
+
+
+@pytest.mark.asyncio
 async def test_claude_capture_setup_clears_reused_raw_attempt(
     tmp_path: Path,
 ) -> None:
@@ -300,6 +383,58 @@ async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -
     assert any("-depth -delete" in command for command in commands)
     assert capture._collector_started is False
     assert capture._collector_owned is False
+
+
+@pytest.mark.asyncio
+async def test_raw_capture_cleanup_failure_marks_manifest_failed(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against hiding retained raw provider bodies."""
+
+    commands: list[str] = []
+
+    class CleanupFailureEnv:
+        async def exec(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(
+                return_code=1,
+                stdout="",
+                stderr="capture directory deletion failed",
+            )
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    capture.configure({"OPENAI_API_KEY": "test-key"})
+    capture._capture_root_prepared = True
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {"body": {"model": "gpt-5.6", "input": "hello"}},
+                "response": {"status_code": 200, "body": {"output": []}},
+            }
+        )
+        + "\n"
+    )
+
+    await capture.finalize(
+        CleanupFailureEnv(),
+        acp_events=[],
+        model_call_seen=True,
+    )
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert "for attempt in 1 2 3" in commands[0]
+    assert manifest["status"] == "capture_failed"
+    assert manifest["exchange_count"] == 1
+    assert any("cleanup failed" in error for error in manifest["errors"])
+    assert capture._capture_root_prepared is True
 
 
 def test_rollout_binds_the_acp_session_after_connect() -> None:
