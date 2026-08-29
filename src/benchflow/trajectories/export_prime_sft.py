@@ -62,6 +62,7 @@ class PrimeSftExportStats:
     skipped_exchanges_provider_error: int = 0
     skipped_no_assistant: int = 0
     skipped_missing_tool_defs: int = 0
+    skipped_insufficient_capture_fidelity: int = 0
     skipped_terminal_error: int = 0
     skipped_invalid: int = 0
     tool_call_ids_rewritten: int = 0
@@ -81,6 +82,9 @@ class PrimeSftExportStats:
             "skipped_exchanges_provider_error": self.skipped_exchanges_provider_error,
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tool_defs": self.skipped_missing_tool_defs,
+            "skipped_insufficient_capture_fidelity": (
+                self.skipped_insufficient_capture_fidelity
+            ),
             "skipped_terminal_error": self.skipped_terminal_error,
             "skipped_invalid": self.skipped_invalid,
             "tool_call_ids_rewritten": self.tool_call_ids_rewritten,
@@ -1117,6 +1121,15 @@ def normalize_prime_sft_exchange(
     redact: bool = True,
 ) -> tuple[PrimeSftExchangeData | None, str | None]:
     """Normalize one raw LLM exchange through the Prime-SFT validator path."""
+    metadata = exchange.get("metadata")
+    if isinstance(metadata, dict):
+        fidelity = metadata.get("capture_fidelity")
+        if fidelity is not None and fidelity != "provider_wire":
+            return None, "insufficient_capture_fidelity"
+        if metadata.get("request_complete") is False:
+            return None, "insufficient_capture_fidelity"
+        if metadata.get("response_complete") is False:
+            return None, "insufficient_capture_fidelity"
     messages, tool_defs, skip_reason = _exchange_to_messages_and_tools(
         exchange, redact=redact
     )
@@ -1233,6 +1246,9 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
                 continue
             if skip_reason == "missing_tool_defs":
                 stats.skipped_missing_tool_defs += 1
+                continue
+            if skip_reason == "insufficient_capture_fidelity":
+                stats.skipped_insufficient_capture_fidelity += 1
                 continue
             if row is None:
                 stats.skipped_invalid += 1

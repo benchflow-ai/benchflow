@@ -188,6 +188,24 @@ def test_anthropic_tool_use_content_preserved_as_tool_calls(tmp_path: Path) -> N
     assert stats.rows_with_tool_calls == 1
 
 
+def test_native_session_exchange_is_not_exported_for_training(tmp_path: Path) -> None:
+    """Guards this PR's fail-closed export boundary for reconstructed capture."""
+
+    exchange = _anthropic_exchange()
+    exchange["metadata"] = {
+        "capture_fidelity": "agent_session",
+        "request_complete": False,
+        "response_complete": False,
+    }
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert rows == []
+    assert stats.skipped_insufficient_capture_fidelity == 1
+    assert stats.skipped_invalid == 0
+
+
 def test_skipped_provider_error_counts_rollouts_not_exchanges(tmp_path: Path) -> None:
     """Guards #828 greptile P1: an all-failed rollout counts as ONE rollout skip,
     with the exchange count surfaced separately."""

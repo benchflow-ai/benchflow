@@ -202,7 +202,8 @@ Each run writes under `--jobs-dir` (default `jobs/`):
       prompts.json                  # prompts sent to the agent
       trajectory/
         acp_trajectory.jsonl        # full agent trace (ACP events)
-        llm_trajectory.jsonl        # raw provider requests/responses (when the usage-tracking proxy captured exchanges)
+        llm_trajectory.jsonl        # always present; LLM exchanges at the fidelity described below
+        llm_trajectory.manifest.json # capture source, fidelity, completeness, and errors
       trainer/
         verifiers.jsonl             # trainer-ready scored trajectory (Verifiers/ORS record)
         atif.json                   # ATIF trajectory record (omitted if the trajectory is empty)
@@ -212,6 +213,24 @@ Each run writes under `--jobs-dir` (default `jobs/`):
         reward.txt                  # raw verifier reward (0.0-1.0)
         test-stdout.txt             # verifier stdout
 ```
+
+`llm_trajectory.jsonl` is created when the rollout directory is initialized,
+including for setup failures and tasks that make no model call. Its sidecar is
+the source of truth for interpreting the JSONL:
+
+| Agent/auth path | Primary source | `capture_fidelity` |
+|---|---|---|
+| API key through the BenchFlow gateway (including Azure) | LiteLLM provider request/response capture | `provider_wire` |
+| Claude Code subscription/OAuth | Claude Code raw API-body files correlated by local OTLP logs | `provider_wire` |
+| Claude Code subscription/OAuth fallback | Claude Code native session JSONL | `agent_session` |
+| Codex subscription/OAuth | Codex native session JSONL | `agent_session` |
+
+The manifest status is `complete`, `partial`, `no_model_call`, or
+`capture_failed`. Reconstructed `agent_session` rows remain useful for audit and
+viewer workflows, but trainer exports fail closed unless the manifest says the
+capture is complete provider-wire data. Claude's own raw-body telemetry can
+still contain provider-redacted extended-thinking blocks; BenchFlow also applies
+its normal secret redaction before publishing the JSONL.
 
 ### Reading results
 

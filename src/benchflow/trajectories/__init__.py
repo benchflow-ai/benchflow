@@ -1,7 +1,8 @@
 """Trajectory capture and exchange schemas.
 
-BenchFlow persists ACP-native trajectories plus LiteLLM callback-derived LLM
-request/response exchanges.
+BenchFlow persists ACP-native trajectories plus provider-wire or explicitly
+lower-fidelity native-agent LLM request/response exchanges. The adjacent
+``llm_trajectory.manifest.json`` states the capture source and completeness.
 
 Files
 -----

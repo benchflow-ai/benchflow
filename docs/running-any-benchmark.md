@@ -217,7 +217,8 @@ Every layer terminates at the *same* output contract, written per rollout under
 | `results.jsonl` | Verifiers/Prime-RL shaped rollout row |
 | `rewards.jsonl` | The reward record for the rollout (ORS / OpenReward shape) |
 | `trajectory/acp_trajectory.jsonl` | Full agent trace as ACP events |
-| `trajectory/llm_trajectory.jsonl` | Raw provider requests/responses (when captured) |
+| `trajectory/llm_trajectory.jsonl` | Always-present LLM exchange log (possibly empty for `no_model_call`) |
+| `trajectory/llm_trajectory.manifest.json` | Capture source, fidelity, completeness, and errors |
 | `trainer/verifiers.jsonl` | Trainer-ready scored trajectory (Verifiers record) |
 | `trainer/atif.json` | ATIF trajectory record |
 | `trainer/adp.jsonl` | ADP trajectory record |

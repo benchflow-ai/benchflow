@@ -219,6 +219,10 @@ from benchflow.trajectories._capture import (
     make_trajectory_sink,
 )
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories.llm_capture import (
+    LLMTrajectoryCapture,
+    model_call_seen_from_evidence,
+)
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.usage_tracking import (
     USAGE_SOURCE_AGENT_NATIVE_ACP,
@@ -645,6 +649,7 @@ class Rollout:
         self._started_at: datetime | None = None
         self._job_name: str | None = None
         self._rollout_name: str | None = None
+        self._llm_capture: LLMTrajectoryCapture | None = None
         self._agent_env: dict[str, str] = {}
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
@@ -938,6 +943,17 @@ class Rollout:
             self._rollout_name,
         ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
 
+        # Create the artifact contract as soon as the rollout directory exists.
+        # Even setup/start failures therefore leave a valid (possibly empty)
+        # JSONL plus a sidecar explaining why no exchange was captured.
+        self._llm_capture = LLMTrajectoryCapture(
+            self._rollout_dir,
+            agent=cfg.primary_agent,
+            model=cfg.primary_model,
+            session_id=self._rollout_name or "",
+            started_at=self._started_at,
+        )
+
         # C-axis overlay: deep-merge cfg.config_override into the task's resolved
         # config here at the rollout layer (not in the Task constructor), so only
         # this run's tasks are patched and every downstream read sees it. No-op
@@ -958,6 +974,7 @@ class Rollout:
             ),
             disallow=self._disallow_web_tools,
         )
+        self._llm_capture.configure(self._agent_env)
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
             task_path=cfg.task_path,
@@ -1224,6 +1241,16 @@ class Rollout:
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await self._planes.upload_subscription_auth(
                 self._env, agent_name, cred_home
+            )
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            self._agent_env = await llm_capture.prepare_agent(
+                self._env,
+                agent=agent_name,
+                model=cfg.primary_model,
+                agent_env=self._agent_env,
+                credential_home=cred_home,
+                sandbox_user=cfg.sandbox_user,
             )
         await self._planes.apply_web_tool_policy(
             self._env,
@@ -2010,6 +2037,27 @@ class Rollout:
                 self._usage_runtime = None
 
         self._finalize_usage_metrics()
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            acp_events = list(getattr(self, "_trajectory", None) or [])
+            model_call_seen = model_call_seen_from_evidence(
+                getattr(self, "_usage_metrics", None), acp_events
+            )
+            try:
+                await llm_capture.finalize(
+                    self._env,
+                    acp_events=acp_events,
+                    model_call_seen=model_call_seen,
+                )
+            except Exception as e:
+                logger.warning(f"LLM trajectory finalization failed: {e}")
+                try:
+                    llm_capture.record_failure(e, model_call_seen=model_call_seen)
+                except Exception as record_error:
+                    logger.warning(
+                        "LLM trajectory failure manifest write failed: %s",
+                        record_error,
+                    )
         self._enforce_required_usage_tracking()
 
         if self._environment is not None:
@@ -2339,6 +2387,18 @@ class Rollout:
                 agent_cfg,
                 cred_home,
                 disallow=disallow_web_tools,
+            )
+
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+            agent_env = await llm_capture.prepare_agent(
+                self._env,
+                agent=role.agent,
+                model=role.model,
+                agent_env=agent_env,
+                credential_home=cred_home,
+                sandbox_user=cfg.sandbox_user,
             )
 
         self._agent_launch = agent_launch

@@ -138,8 +138,9 @@ and what it is:
     agent/                           — agent-side logs
     trajectory/acp_trajectory.jsonl  — the full agent trace (every ACP event:
                                        prompts, tool calls, outputs)
-    trajectory/llm_trajectory.jsonl  — raw provider requests/responses captured
-                                       by the usage-tracking proxy
+    trajectory/llm_trajectory.jsonl  — always-present LLM exchange log
+    trajectory/llm_trajectory.manifest.json
+                                     — source/fidelity/completeness for that log
     trainer/verifiers.jsonl          — trainer-ready scored trajectory record
     trainer/atif.json                — the trajectory in ATIF interchange
                                        format (omitted if the trajectory is empty)

@@ -286,9 +286,11 @@ def eval_run(
             "--usage-tracking",
             help=(
                 "Telemetry-enforcement policy: auto, required, or off. The "
-                "LiteLLM proxy is always used for routable agents (usage, cost, "
-                "and llm_trajectory.jsonl are always captured); this flag only "
-                "controls whether trusted telemetry is required."
+                "LiteLLM proxy is always used for routable API-key agents; "
+                "native subscription agents use their own telemetry/session "
+                "surface. llm_trajectory.jsonl is always emitted, and its "
+                "manifest records capture fidelity. This flag only controls "
+                "whether trusted usage telemetry is required."
             ),
         ),
     ] = None,
