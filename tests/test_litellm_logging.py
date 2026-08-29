@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 
 import pytest
@@ -148,6 +149,30 @@ def test_callback_module_source_exposes_proxy_handler_instance():
     assert "class BenchFlowLiteLLMLogger" in source
     assert "from benchflow_trajectory_redaction import redact_trajectory_obj" in source
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
+
+
+def test_callback_forces_private_artifacts_under_permissive_umask(
+    tmp_path, monkeypatch
+):
+    """Guards PR #1057 against permissive umasks exposing provider capture."""
+
+    namespace = _callback_namespace()
+    runtime_dir = tmp_path / "runtime"
+    log_path = runtime_dir / "callback.jsonl"
+    state_path = runtime_dir / "capture_state.json"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    monkeypatch.setenv("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH", str(state_path))
+
+    previous_umask = os.umask(0)
+    try:
+        logger = namespace["BenchFlowLiteLLMLogger"]()
+        logger._write({"event": "failure"})
+    finally:
+        os.umask(previous_umask)
+
+    assert runtime_dir.stat().st_mode & 0o777 == 0o700
+    assert log_path.stat().st_mode & 0o777 == 0o600
+    assert state_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_callback_preserves_post_transform_provider_request_body():

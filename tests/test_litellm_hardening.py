@@ -295,6 +295,7 @@ class _FakeSandbox:
         self.uploaded_modes: dict[str, str | None] = {}
         self.exec_calls: list[str] = []
         self.exec_timeouts: list[int | None] = []
+        self.exec_users: list[str | None] = []
         self.fail_launch = fail_launch
         self.fail_preflight = fail_preflight
         self.log_content = log_content
@@ -309,6 +310,7 @@ class _FakeSandbox:
     ) -> _ExecResult:
         self.exec_calls.append(command)
         self.exec_timeouts.append(timeout_sec)
+        self.exec_users.append(user)
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -391,6 +393,8 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     )
     launch_command = next(call for call in sandbox.exec_calls if "launcher.py" in call)
     assert f"rc=$?; rm -f {launch_files[0]}; exit $rc" in launch_command
+    launch_index = sandbox.exec_calls.index(launch_command)
+    assert sandbox.exec_users[launch_index] == "root"
 
     assert proc.base_url == "http://127.0.0.1:45999"
     assert await proc.is_running() is True
@@ -667,6 +671,23 @@ def test_runtime_packages_canonical_redactor_verbatim(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runtime_files_are_private_even_with_permissive_umask(tmp_path):
+    """Guards PR #1057 against permissive host runtime-file permissions."""
+
+    import os
+
+    runtime_dir = tmp_path / "runtime"
+    previous_umask = os.umask(0)
+    try:
+        runtime_mod._write_runtime_files(runtime_dir, config={"model_list": []})
+    finally:
+        os.umask(previous_umask)
+
+    assert runtime_dir.stat().st_mode & 0o777 == 0o700
+    for path in runtime_dir.iterdir():
+        assert path.stat().st_mode & 0o777 == 0o600, path
 
 
 def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):

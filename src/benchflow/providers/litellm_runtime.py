@@ -824,6 +824,7 @@ def _write_runtime_files(
     config: dict[str, object],
 ) -> tuple[Path, Path, Path]:
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir.chmod(0o700)
     callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
     redaction_path = runtime_dir / f"{_REDACTION_MODULE}.py"
     patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
@@ -835,6 +836,14 @@ def _write_runtime_files(
     patch_path.write_text(patch_source)
     sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    for path in (
+        callback_path,
+        redaction_path,
+        patch_path,
+        sitecustomize_path,
+        config_path,
+    ):
+        path.chmod(0o600)
     return config_path, callback_path, patch_path
 
 
@@ -1006,6 +1015,8 @@ import socket
 import subprocess
 import sys
 
+os.umask(0o077)
+
 # Read launch config from a file (argv[1]), never the command line: provider
 # keys live in cfg["env"], and a shared sandbox exposes exec argv via /proc.
 cfg = json.loads(open(sys.argv[1], encoding="utf-8").read())
@@ -1078,7 +1089,15 @@ async def _upload_runtime_files_to_sandbox(
         "launch_config": f"{runtime_dir}/launch_config.json",
         "preflight": f"{runtime_dir}/bedrock_patch_preflight.py",
     }
-    result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
+    quoted_runtime_dir = shlex.quote(runtime_dir)
+    result = await sandbox.exec(
+        (
+            f"umask 077; mkdir -p {quoted_runtime_dir}; "
+            f"chown 0:0 {quoted_runtime_dir}; chmod 700 {quoted_runtime_dir}"
+        ),
+        user="root",
+        timeout_sec=20,
+    )
     if result.return_code != 0:
         raise RuntimeError(_exec_details("prepare LiteLLM runtime directory", result))
     await _upload_text(
@@ -1224,10 +1243,13 @@ async def _terminate_sandbox_litellm(
         await sandbox.exec(
             f"if [ -s {shlex.quote(pid_path)} ]; then "
             f"kill -TERM $(cat {shlex.quote(pid_path)}) 2>/dev/null || true; fi",
+            user="root",
             timeout_sec=10,
         )
     with contextlib.suppress(Exception):
-        await sandbox.exec(f"rm -rf {shlex.quote(runtime_dir)}", timeout_sec=10)
+        await sandbox.exec(
+            f"rm -rf {shlex.quote(runtime_dir)}", user="root", timeout_sec=10
+        )
 
 
 async def _start_sandbox_litellm(
@@ -1284,13 +1306,16 @@ async def _start_sandbox_litellm(
     # the sandbox filesystem for the life of the run.
     command = (
         f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
-        f"{shlex.quote(paths['log'])} && "
+        f"{shlex.quote(paths['log'])} {shlex.quote(paths['capture_state'])} && "
+        f"umask 077 && : > {shlex.quote(paths['log'])} && "
+        f"chown 0:0 {shlex.quote(paths['log'])} && "
+        f"chmod 600 {shlex.quote(paths['log'])} && "
         f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
         f"{shlex.quote(paths['launch_config'])}; "
         f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
     )
     try:
-        result = await sandbox.exec(command, timeout_sec=20)
+        result = await sandbox.exec(command, user="root", timeout_sec=20)
         if result.return_code != 0:
             raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
         state = await _wait_for_sandbox_state(
@@ -1854,7 +1879,7 @@ async def _provider_capture_has_verified_custody(
     sandbox: Any | None,
     runtime_dir: str | None,
 ) -> bool:
-    """Prove the agent cannot read or mutate a root-owned runtime artifact."""
+    """Prove the agent cannot read or mutate the real provider capture files."""
 
     if not sandbox_local:
         return True
@@ -1880,32 +1905,37 @@ async def _provider_capture_has_verified_custody(
     if effective_uid == 0:
         return False
 
-    probe_path = f"{runtime_dir}/.benchflow-custody-{uuid4().hex}"
-    probe_value = secrets.token_hex(32)
-    quoted_path = shlex.quote(probe_path)
-    quoted_value = shlex.quote(probe_value)
+    quoted_runtime = shlex.quote(runtime_dir)
+    quoted_log = shlex.quote(f"{runtime_dir}/callback.jsonl")
+    quoted_state = shlex.quote(f"{runtime_dir}/capture_state.json")
     try:
-        created = await sandbox.exec(
+        secured = await sandbox.exec(
             (
-                f"umask 077; printf %s {quoted_value} > {quoted_path}; "
-                f"chown 0:0 {quoted_path}; chmod 600 {quoted_path}"
+                f"test -d {quoted_runtime} && test ! -L {quoted_runtime} && "
+                f"test -f {quoted_log} && test ! -L {quoted_log} && "
+                f"test -f {quoted_state} && test ! -L {quoted_state} && "
+                f"chown 0:0 {quoted_runtime} {quoted_log} {quoted_state} && "
+                f"chmod 700 {quoted_runtime} && "
+                f"chmod 600 {quoted_log} {quoted_state}"
             ),
             user="root",
             timeout_sec=10,
         )
-        if created.return_code != 0:
-            logger.warning("Provider capture custody probe creation failed")
+        if secured.return_code != 0:
+            logger.warning("Provider capture custody artifact hardening failed")
             return False
         access = await sandbox.exec(
             (
-                f"if cat {quoted_path} >/dev/null 2>&1; then exit 0; fi; "
-                f"if printf compromised >> {quoted_path} 2>/dev/null; "
-                "then exit 0; fi; "
-                f"if rm -f {quoted_path} 2>/dev/null; then exit 0; fi; "
+                f"for artifact in {quoted_log} {quoted_state}; do "
+                'if cat "$artifact" >/dev/null 2>&1; then exit 0; fi; '
+                'if [ -r "$artifact" ] || [ -w "$artifact" ]; then exit 0; fi; '
+                "done; "
+                f"if [ -r {quoted_runtime} ] || [ -w {quoted_runtime} ] || "
+                f"[ -x {quoted_runtime} ]; then exit 0; fi; "
                 "if command -v sudo >/dev/null 2>&1 && "
-                f"sudo -n cat {quoted_path} >/dev/null 2>&1; then exit 0; fi; "
+                f"sudo -n cat {quoted_state} >/dev/null 2>&1; then exit 0; fi; "
                 "if command -v doas >/dev/null 2>&1 && "
-                f"doas -n cat {quoted_path} >/dev/null 2>&1; then exit 0; fi; "
+                f"doas -n cat {quoted_state} >/dev/null 2>&1; then exit 0; fi; "
                 "if id -G 2>/dev/null | tr ' ' '\\n' | grep -qx 0; "
                 "then exit 0; fi; "
                 "effective_caps=$(awk '/^CapEff:/ {print $2}' "
@@ -1929,8 +1959,9 @@ async def _provider_capture_has_verified_custody(
             return False
         verified = await sandbox.exec(
             (
-                f'test "$(cat {quoted_path})" = {quoted_value} && '
-                f"test \"$(stat -c '%u:%a' {quoted_path})\" = '0:600'"
+                f"test \"$(stat -c '%u:%a' {quoted_runtime})\" = '0:700' && "
+                f"test \"$(stat -c '%u:%a' {quoted_log})\" = '0:600' && "
+                f"test \"$(stat -c '%u:%a' {quoted_state})\" = '0:600'"
             ),
             user="root",
             timeout_sec=10,
@@ -1942,9 +1973,6 @@ async def _provider_capture_has_verified_custody(
     except Exception as exc:
         logger.warning("Provider capture custody artifact probe failed: %s", exc)
         return False
-    finally:
-        with contextlib.suppress(Exception):
-            await sandbox.exec(f"rm -f {quoted_path}", user="root", timeout_sec=10)
 
 
 async def stop_litellm_runtime(runtime: Any | None) -> None:

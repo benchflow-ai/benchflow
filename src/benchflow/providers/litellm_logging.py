@@ -108,6 +108,27 @@ except ModuleNotFoundError:
 _skill_catalog_gate_passed = False
 
 
+def _secure_parent(path: str) -> None:
+    parent = os.path.dirname(path)
+    if not parent:
+        return
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    os.chmod(parent, 0o700)
+
+
+def _secure_text_file(path: str, *, append: bool):
+    _secure_parent(path)
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "a" if append else "w", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _required_skill_names() -> tuple[str, ...]:
     raw = os.environ.get("BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", "")
     if not raw:
@@ -251,8 +272,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         }
         temporary = path + ".tmp"
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(temporary, "w", encoding="utf-8") as handle:
+            with _secure_text_file(temporary, append=False) as handle:
                 json.dump(payload, handle, separators=(",", ":"))
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -274,7 +294,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             # If removal itself is unavailable, corrupt the validity contract
             # explicitly. Cleanup rejects this payload as a malformed journal.
             try:
-                with open(path, "w", encoding="utf-8") as handle:
+                with _secure_text_file(path, append=False) as handle:
                     json.dump({"valid": False}, handle, separators=(",", ":"))
                     handle.flush()
                     os.fsync(handle.fileno())
@@ -297,8 +317,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         payload["logged_at"] = datetime.now(timezone.utc).isoformat()
         durable_payload = redact_trajectory_obj(_jsonable(payload))
         with self._capture_lock:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "a", encoding="utf-8") as handle:
+            with _secure_text_file(path, append=True) as handle:
                 handle.write(
                     json.dumps(durable_payload, separators=(",", ":")) + "\n"
                 )
