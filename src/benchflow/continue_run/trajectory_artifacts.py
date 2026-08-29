@@ -253,15 +253,6 @@ def refresh_stitched_trajectory_manifest(
     if not live_capture_complete:
         missing_fields.append("live_provider_exchange")
 
-    models = {
-        value
-        for value, present in (
-            (original_model, n_recorded > 0),
-            (live_model, live_attempt_count > 0),
-        )
-        if present and value
-    }
-    stitched_model = next(iter(models)) if len(models) == 1 else None
     role_captures = _continuation_role_captures(
         source=source,
         original_model=original_model,
@@ -272,6 +263,10 @@ def refresh_stitched_trajectory_manifest(
         live_capture_complete=live_capture_complete,
         rows_valid=rows_valid,
     )
+    active_models = {
+        capture.model for capture in role_captures if capture.exchange_count > 0
+    }
+    stitched_model = next(iter(active_models)) if len(active_models) == 1 else None
     manifest = LLMTrajectoryManifest(
         status=CaptureStatus.COMPLETE if complete else CaptureStatus.PARTIAL,
         capture_source=capture_source,

@@ -183,11 +183,12 @@ def test_write_stitched_trajectory_creates_file(tmp_path):
 def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_path):
     """Guards PR #1057 against promoting continuation ingress to provider wire."""
 
-    model = "openai/gpt-5.5"
+    recorded_model = "openai/gpt-5.4"
+    continued_model = "openai/gpt-5.5"
     source = write_run_folder(
         tmp_path / "source",
         exchanges=[exchange(completion(content="recorded"))],
-        model=model,
+        model=recorded_model,
     )
     source_manifest = LLMTrajectoryManifest(
         status=CaptureStatus.COMPLETE,
@@ -195,7 +196,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
         auth_mode=AuthMode.API_KEY,
         agent="openhands",
-        model=model,
+        model=recorded_model,
         session_id="source",
         exchange_count=1,
         request_complete=True,
@@ -218,13 +219,13 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         rollout,
         source / "trajectory" / "llm_trajectory.jsonl",
         live,
-        live_model=model,
+        live_model=continued_model,
     )
     manifest = refresh_stitched_trajectory_manifest(
         rollout,
         source,
-        original_model=model,
-        live_model=model,
+        original_model=recorded_model,
+        live_model=continued_model,
         n_recorded=1,
         n_live=1,
         live_attempt_count=1,
@@ -235,6 +236,11 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
     assert manifest.capture_source is CaptureSource.MIXED
     assert manifest.capture_fidelity is CaptureFidelity.MIXED
     assert manifest.exchange_count == 2
+    assert manifest.model is None
+    assert [capture.model for capture in manifest.role_captures] == [
+        recorded_model,
+        continued_model,
+    ]
     assert manifest.request_complete is False
     assert "live_provider_request" in manifest.missing_fields
     assert not capture_manifest_allows_training(
@@ -246,7 +252,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
     assert live_row["metadata"]["request_complete"] is False
     assert live_row["metadata"]["response_complete"] is True
     assert live_row["metadata"]["request_capture_source"] == "replay_proxy_ingress"
-    assert live_row["metadata"]["model"] == model
+    assert live_row["metadata"]["model"] == continued_model
     assert live_row["metadata"]["schema_version"] == 2
 
     repeated_rollout = tmp_path / "continued-twice"
@@ -261,13 +267,16 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         repeated_rollout,
         rollout / "trajectory" / "llm_trajectory.jsonl",
         [exchange(completion(content="live-again"))],
-        live_model=model,
+        live_model=continued_model,
     )
     repeated_manifest = refresh_stitched_trajectory_manifest(
         repeated_rollout,
         rollout,
-        original_model=model,
-        live_model=model,
+        # update_continued_metadata() rewrites the first continuation's
+        # run-level config to the live model, even though its prefix retains
+        # recorded_model. The aggregate must therefore come from role captures.
+        original_model=continued_model,
+        live_model=continued_model,
         n_recorded=2,
         n_live=1,
         live_attempt_count=1,
@@ -275,11 +284,17 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
     )
 
     assert repeated_manifest.exchange_count == 3
+    assert repeated_manifest.model is None
     assert CONTINUATION_SOURCE_AUDIT_ERROR in repeated_manifest.errors
     assert [capture.leg for capture in repeated_manifest.role_captures] == [
         "recorded",
         "recorded",
         "live",
+    ]
+    assert [capture.model for capture in repeated_manifest.role_captures] == [
+        recorded_model,
+        continued_model,
+        continued_model,
     ]
     assert capture_manifest_preserves_audit_completion(
         repeated_manifest.model_dump(mode="json")
