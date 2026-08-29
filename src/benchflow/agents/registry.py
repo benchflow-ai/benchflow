@@ -111,6 +111,9 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_ORI_VERSION = "0.12.0+68f9a36"
+_ORI_RELEASE_TAG = "cli-0.12.0-68f9a36"
+_ORI_BINARY = f"{_BENCHFLOW_BIN_PREFIX}/ori"
 
 # OpenCode-family proxy provider id. OpenCode hard-codes the OpenAI *Responses*
 # API for the built-in ``openai`` provider id (its ``getModel`` calls
@@ -125,6 +128,62 @@ _OPENHANDS_TOOLS_VERSION = "1.28.1"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
+)
+
+# Ori is distributed as a native Bun executable, not an npm package. Pin both
+# the release tag and per-platform SHA-256 so sandbox builds are reproducible
+# and the install path never executes a floating remote installer.
+_ORI_INSTALL = (
+    f"BF_ORI_BIN={_ORI_BINARY}; "
+    f"BF_ORI_VERSION={_ORI_VERSION}; "
+    f"BF_ORI_RELEASE={_ORI_RELEASE_TAG}; "
+    'BF_ORI_CURRENT=""; '
+    'if [ -x "$BF_ORI_BIN" ]; then '
+    'BF_ORI_CURRENT=$(ORI_TELEMETRY=0 "$BF_ORI_BIN" version --human '
+    "2>/dev/null | awk 'NF {print $NF; exit}'); "
+    "fi; "
+    'if [ "$BF_ORI_CURRENT" != "$BF_ORI_VERSION" ]; then '
+    "if ! command -v curl >/dev/null 2>&1 || "
+    "! command -v sha256sum >/dev/null 2>&1; then "
+    "if command -v apt-get >/dev/null 2>&1; then "
+    "apt-get update -qq && apt-get install -y -qq curl ca-certificates coreutils; "
+    "elif command -v dnf >/dev/null 2>&1; then "
+    "dnf -y install curl ca-certificates coreutils; "
+    "elif command -v apk >/dev/null 2>&1; then "
+    "apk add --no-cache curl ca-certificates coreutils; "
+    "else echo 'Ori bootstrap requires curl and sha256sum' >&2; exit 127; fi; "
+    "fi; "
+    'BF_ORI_ARCH=$(uname -m); '
+    'case "$BF_ORI_ARCH" in '
+    "x86_64|amd64) BF_ORI_ARCH=x64 ;; "
+    "aarch64|arm64) BF_ORI_ARCH=arm64 ;; "
+    '*) echo "Unsupported architecture for Ori: $BF_ORI_ARCH" >&2; exit 1 ;; '
+    "esac; "
+    'BF_ORI_LIBC=""; '
+    "if command -v ldd >/dev/null 2>&1 && "
+    "ldd --version 2>&1 | grep -qi musl; then BF_ORI_LIBC=-musl; fi; "
+    'BF_ORI_ASSET="ori-linux-${BF_ORI_ARCH}${BF_ORI_LIBC}"; '
+    'case "$BF_ORI_ASSET" in '
+    "ori-linux-x64) BF_ORI_SHA=2dffa9f311f8b65fbcbf6a5645c806ba623f14a003010410cd800095bc270b67 ;; "
+    "ori-linux-arm64) BF_ORI_SHA=d3ee260046c313a785db466db99781fb5acd91bf39ef28384a83ac293f793753 ;; "
+    "ori-linux-x64-musl) BF_ORI_SHA=b91bb8f01e41f5e8de496b16135db6756c4d71baa30bc230f7990db7e370f837 ;; "
+    "ori-linux-arm64-musl) BF_ORI_SHA=85a3be536da3337b630f2fa56f3b259961a334f5e7af75c3dd4a5a7873957d34 ;; "
+    '*) echo "No checksum for Ori asset: $BF_ORI_ASSET" >&2; exit 1 ;; '
+    "esac; "
+    'BF_ORI_TMP=$(mktemp -d /tmp/benchflow-ori-install.XXXXXX); '
+    'curl -fsSLo "$BF_ORI_TMP/$BF_ORI_ASSET" '
+    '"https://github.com/OpenRouterLabs/ori-releases/releases/download/'
+    '${BF_ORI_RELEASE}/${BF_ORI_ASSET}"; '
+    'BF_ORI_ACTUAL=$(sha256sum "$BF_ORI_TMP/$BF_ORI_ASSET"); '
+    'BF_ORI_ACTUAL=${BF_ORI_ACTUAL%% *}; '
+    'if [ "$BF_ORI_ACTUAL" != "$BF_ORI_SHA" ]; then '
+    'echo "Ori checksum mismatch for $BF_ORI_ASSET" >&2; exit 1; fi; '
+    f"mkdir -p {_BENCHFLOW_BIN_PREFIX}; "
+    'mv -f "$BF_ORI_TMP/$BF_ORI_ASSET" "$BF_ORI_BIN"; '
+    'rmdir "$BF_ORI_TMP"; '
+    'chmod 755 "$BF_ORI_BIN"; '
+    "fi; "
+    'ORI_TELEMETRY=0 "$BF_ORI_BIN" version --human'
 )
 # Node 22.20.0 supports OpenClaw 2026.6.9. Keep their pin pair in sync.
 _NODE_INSTALL = (
@@ -430,13 +489,16 @@ class SubscriptionAuth:
     BenchFlow detects the auth files on the host, copies them into the
     container, and skips the API key requirement.
 
-    ``detect_file`` is checked to determine if the user is logged in.
+    ``detect_file`` is checked to determine if the user is logged in. Agents
+    with more than one supported credential location may set ``detect_files``;
+    any existing path then activates subscription auth.
     All ``files`` are copied into the container when subscription auth is used.
     """
 
     replaces_env: str  # The env var this substitutes, e.g. "ANTHROPIC_API_KEY"
     detect_file: str  # Host path to check for login, e.g. "~/.claude/.credentials.json"
     files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
+    detect_files: list[str] = field(default_factory=list)  # Optional alternatives
 
 
 @dataclass
@@ -724,6 +786,48 @@ AGENTS: dict[str, AgentConfig] = {
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
+    ),
+    "ori": AgentConfig(
+        name="ori",
+        description=(
+            "OpenRouter Ori built-in coding harness via its headless JSONL runtime"
+        ),
+        install_cmd=_ORI_INSTALL,
+        # session_factory owns invocation; keep the launch command descriptive
+        # for `bench agent show` and registry consumers.
+        launch_cmd=(
+            f"{_ORI_BINARY} code --harness ori --approvals self-drive --output jsonl"
+        ),
+        protocol="session-factory",
+        session_factory="benchflow.agents.ori:build_ori_agent",
+        skill_paths=["$WORKSPACE/.agents/skills"],
+        requires_env=["OPENROUTER_API_KEY"],
+        default_model="openrouter/openrouter/auto",
+        api_protocol="openai-completions",
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "ORI_OPENROUTER_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENROUTER_API_KEY",
+            "BENCHFLOW_PROVIDER_MODEL": "ORI_MODEL",
+        },
+        subscription_auth=SubscriptionAuth(
+            replaces_env="OPENROUTER_API_KEY",
+            detect_file="~/.ori/credentials.json",
+            detect_files=[
+                "~/.ori/credentials.json",
+                "~/.openrouter/credentials.json",
+            ],
+            files=[
+                HostAuthFile(
+                    "~/.ori/credentials.json", "{home}/.ori/credentials.json"
+                ),
+                HostAuthFile(
+                    "~/.openrouter/credentials.json",
+                    "{home}/.openrouter/credentials.json",
+                ),
+            ],
+        ),
+        home_dirs=[".ori", ".openrouter"],
+        supports_acp_set_model=False,
     ),
     "mimo": AgentConfig(
         name="mimo",
@@ -1065,6 +1169,7 @@ AGENT_ALIASES: dict[str, str] = {
     "gemini": "gemini",
     "pi": "pi-acp",
     "openclaw": "openclaw",
+    "ori": "ori",
     "openhands": "openhands",
     "oh": "openhands",
     "harvey-lab": "harvey-lab-harness",
@@ -1139,6 +1244,11 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
     persistent sessions, crash recovery, and structured NDJSON output.
     The underlying agent's install, env, and credentials are preserved.
     """
+    if config.protocol != "acp":
+        raise KeyError(
+            f"Agent {config.name!r} uses protocol {config.protocol!r} and cannot "
+            "be wrapped by ACPX. Run it by its bare agent name instead."
+        )
     acpx_agent_name = config.name
     for alias, canonical in AGENT_ALIASES.items():
         if canonical == config.name:

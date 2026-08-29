@@ -50,7 +50,11 @@ def register_agent(app: typer.Typer) -> None:
         table.add_column("Aliases", style="dim")
         table.add_column("Description")
         table.add_column("Protocol", style="green")
-        table.add_column("Requires", style="yellow")
+        # Keep credential names intact even when plugin agents add wider values
+        # to the other columns (for example a native ``session-factory``
+        # protocol).  Rich otherwise ellipsizes OPENAI_API_KEY at 80 columns,
+        # making the discovery output unactionable.
+        table.add_column("Requires", style="yellow", min_width=18)
 
         for a in list_agents():
             aliases = ", ".join(sorted(reverse_aliases.get(a.name, [])))

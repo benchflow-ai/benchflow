@@ -1353,6 +1353,7 @@ _PROVIDER_ENDPOINT_ENV_NAMES = frozenset(
         "LLM_BASE_URL",
         "OPENAI_BASE_URL",
         "OPENAI_API_BASE",
+        "ORI_OPENROUTER_BASE_URL",
         "AZURE_API_ENDPOINT",
         "AZURE_API_BASE",
         "AZURE_OPENAI_ENDPOINT",
@@ -1602,7 +1603,7 @@ async def ensure_litellm_runtime(
         return await _skip_litellm_runtime(
             agent_env,
             runtime,
-            reason="native subscription auth will use agent ACP usage telemetry",
+            reason="native subscription auth will use agent-native usage telemetry",
         )
 
     if not needs_litellm_runtime(agent, model):

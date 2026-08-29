@@ -221,6 +221,7 @@ from benchflow.trajectories._capture import (
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.usage_tracking import (
+    USAGE_SOURCE_AGENT_NATIVE,
     USAGE_SOURCE_AGENT_NATIVE_ACP,
     USAGE_SOURCE_PROVIDER_RESPONSE,
     is_token_usage_available,
@@ -1315,6 +1316,7 @@ class Rollout:
                 rollout_dir=rollout_dir,
                 timeout=self._timeout,
                 agent_cwd=self._agent_cwd,
+                reasoning_effort=cfg.primary_reasoning_effort,
             )
         else:
             (
@@ -1699,7 +1701,12 @@ class Rollout:
         self._phase = "executed"
 
     def _collect_native_acp_usage(self) -> None:
-        """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
+        """Accumulate trusted session-native usage deltas.
+
+        ACP sessions use ``agent_native_acp``. Protocol-agnostic sessions such
+        as Ori may declare ``usage_source = "agent_native"`` while exposing the
+        same cumulative ``latest_usage_totals`` shape.
+        """
         session = getattr(self, "_session", None)
         latest_fn = getattr(session, "latest_usage_totals", None)
         if not callable(latest_fn):
@@ -1733,7 +1740,12 @@ class Rollout:
             details.get("thought_tokens")
         ) + (delta.get("thought_tokens") or 0)
         metrics["usage_details"] = details
-        metrics["usage_source"] = USAGE_SOURCE_AGENT_NATIVE_ACP
+        declared_source = getattr(session, "usage_source", None)
+        metrics["usage_source"] = (
+            USAGE_SOURCE_AGENT_NATIVE
+            if declared_source == USAGE_SOURCE_AGENT_NATIVE
+            else USAGE_SOURCE_AGENT_NATIVE_ACP
+        )
         metrics["cost_usd"] = None
         metrics["price_source"] = None
         self._native_usage_metrics = metrics
@@ -2033,7 +2045,7 @@ class Rollout:
         self._phase = "cleaned"
 
     def _finalize_usage_metrics(self) -> None:
-        """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
+        """Prefer LiteLLM usage, otherwise use trusted session-native usage."""
         current_metrics = getattr(
             self, "_usage_metrics", {"usage_source": "unavailable"}
         )
@@ -2363,6 +2375,7 @@ class Rollout:
                     role.timeout_sec if role.timeout_sec is not None else self._timeout
                 ),
                 agent_cwd=self._agent_cwd,
+                reasoning_effort=role.reasoning_effort,
             )
         else:
             (
@@ -2564,13 +2577,12 @@ class Rollout:
         # silent API failure.
         if not getattr(self, "_executed_prompts", None):
             return
-        # Native-subscription runs have NO usage channel: the LiteLLM proxy is
+        # Native-subscription runs have no proxy evidence: LiteLLM is
         # deliberately skipped (Harbor-style split) and the CLI authenticates
-        # itself, so zero tokens + zero tool calls is the expected shape of a
-        # HEALTHY run for agents whose trajectory carries no tool telemetry
-        # (e.g. omnigent's flat session events). The zero-signal heuristic is
-        # meaningless there and would null verifier-granted rewards; real
-        # failures still surface via the agent error channels.
+        # itself. Some agents expose trusted native usage (Ori does), while
+        # others expose neither usage nor tool telemetry (e.g. omnigent's flat
+        # session events). Conservatively skip the proxy-oriented zero-signal
+        # heuristic for both; real failures still surface via agent errors.
         from benchflow.agents.env import uses_native_subscription_auth
 
         config = getattr(self, "_config", None)

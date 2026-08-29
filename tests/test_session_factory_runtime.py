@@ -139,6 +139,22 @@ async def test_drive_runs_each_prompt_and_captures_steps():
 
 
 @pytest.mark.asyncio
+async def test_drive_uses_optional_session_factory_tool_count():
+    class _ToolCountingSession(_FakeSession):
+        @property
+        def tool_call_count(self) -> int:
+            return len(self.prompts_seen)
+
+    session = _ToolCountingSession()
+    trajectory, n_tool_calls = await execute_prompts_session_factory(
+        session, ["one", "two"], timeout=30
+    )
+
+    assert trajectory == session.steps
+    assert n_tool_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_drive_timeout_raises_with_partial_trajectory():
     class _HangSession(_FakeSession):
         async def prompt(self, text: str) -> StopReason:

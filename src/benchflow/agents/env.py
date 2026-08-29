@@ -388,8 +388,8 @@ def uses_native_subscription_auth(
     """Return True when an agent should use CLI/subscription auth directly.
 
     This is the Harbor-style split point: API-key runs can be routed through
-    LiteLLM, while subscription-auth runs stay on the native Codex/Claude ACP
-    path and report usage from the agent protocol response.
+    LiteLLM, while subscription-auth runs stay on the agent's native auth path
+    and report usage from the agent protocol/runtime response.
     """
     if agent_env.get("BENCHFLOW_PROVIDER_NAME") == "litellm" or any(
         agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS
@@ -412,6 +412,27 @@ def uses_native_subscription_auth(
             or bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
             or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
             or check_subscription_auth(agent, required_key)
+        )
+
+    # Registry-driven OpenRouter-login gate. Ori accepts credentials created by
+    # `ori login` from ~/.ori or ~/.openrouter and reports trusted usage in its
+    # terminal JSONL event, so it can bypass LiteLLM when no API key is present.
+    openrouter_cfg = AGENTS.get(agent)
+    if (
+        openrouter_cfg is not None
+        and openrouter_cfg.subscription_auth is not None
+        and openrouter_cfg.subscription_auth.replaces_env == "OPENROUTER_API_KEY"
+    ):
+        if agent_env.get("OPENROUTER_API_KEY"):
+            return False
+        if model is not None:
+            from benchflow.agents.registry import infer_env_key_for_model
+
+            if infer_env_key_for_model(model) != "OPENROUTER_API_KEY":
+                return False
+        return (
+            agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
+            or check_subscription_auth(agent, "OPENROUTER_API_KEY")
         )
 
     # Registry-driven Claude-CLI gate: any agent whose subscription_auth
@@ -558,7 +579,8 @@ def check_subscription_auth(agent: str, required_key: str) -> bool:
     sa = agent_cfg.subscription_auth
     if sa.replaces_env != required_key:
         return False
-    return Path(sa.detect_file).expanduser().is_file()
+    detect_files = sa.detect_files or [sa.detect_file]
+    return any(Path(path).expanduser().is_file() for path in detect_files)
 
 
 def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:

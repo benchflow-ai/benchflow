@@ -9,14 +9,11 @@ role)`` → :class:`~benchflow.agents.protocol.Session`. The drive loop
 and captures the session's ``steps`` as the trajectory; ``on_change`` is wired
 by the kernel's ``_attach_trajectory_writer`` (same as ACP).
 
-LLM-usage capture is **protocol-agnostic** — the agent's provider traffic is
-routed through the litellm proxy (via the ``BENCHFLOW_PROVIDER_*`` env the kernel
-mints), and the proxy logs raw request/response + token usage to
-``llm_trajectory.jsonl`` regardless of agent protocol. So token counts flow for a
-session-factory agent exactly as for ACP; that is what keeps a healthy run valid
-(``_maybe_classify_api_error`` nulls reward only when tokens==0 AND tool_calls==0,
-and a session-factory agent reports 0 tool calls — its one-shot CLI exposes no
-per-call stream — so captured tokens are load-bearing).
+LLM-usage capture is **protocol-agnostic** — provider traffic normally routes
+through the LiteLLM proxy, while a session may additionally expose cumulative
+``latest_usage_totals`` for native-login paths. A session that can identify tool
+calls exposes cumulative ``tool_call_count``; one-shot adapters without that
+signal retain the legacy zero count.
 """
 
 from __future__ import annotations
@@ -48,6 +45,8 @@ class SessionFactorySandbox:
     sandbox: Any
     agent_env: dict[str, str]
     agent_cwd: str | None = None
+    reasoning_effort: str | None = None
+    prompt_timeout: float = 3600
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.sandbox, name)
@@ -79,6 +78,7 @@ async def connect_session_factory(
     rollout_dir: Path | None,
     timeout: float,
     agent_cwd: str | None = None,
+    reasoning_effort: str | None = None,
     **_ignored: Any,
 ) -> tuple[None, object, None, str]:
     """Build the session-factory Agent and connect → Session.
@@ -107,7 +107,13 @@ async def connect_session_factory(
     connect_env = dict(agent_env)
     if agent_cwd:
         connect_env["BENCHFLOW_AGENT_CWD"] = agent_cwd
-    connect_sandbox = SessionFactorySandbox(env, connect_env, agent_cwd)
+    connect_sandbox = SessionFactorySandbox(
+        env,
+        connect_env,
+        agent_cwd,
+        reasoning_effort,
+        timeout if timeout > 0 else 3600,
+    )
     connect_coro = agent_obj.connect(connect_sandbox, "agent")
     try:
         if timeout > 0:
@@ -130,10 +136,8 @@ async def execute_prompts_session_factory(
 ) -> tuple[list[dict], int]:
     """Drive a session-factory Session: one ``prompt`` per turn, capture steps.
 
-    Returns ``(trajectory, n_tool_calls)``. ``n_tool_calls`` is always ``0`` — a
-    session-factory agent (e.g. omnigent's one-shot ``omnigent run -p``) exposes
-    no per-tool-call stream; run validity rests on the proxy-captured token
-    usage instead.
+    Returns ``(trajectory, n_tool_calls)``. A session may expose cumulative
+    ``tool_call_count`` (Ori does); adapters without it retain the legacy zero.
 
     ``timeout`` is the per-prompt wall-clock budget. ``idle_timeout`` is accepted
     for signature parity with ``execute_prompts`` but does not apply (there is no
@@ -149,11 +153,10 @@ async def execute_prompts_session_factory(
                 session.prompt(prompt), timeout=timeout
             )
         except TimeoutError as exc:
-            # One-shot agent: on budget exhaustion there is no pending tool-call
-            # stream, so the snapshot is terminal-complete with 0 tool calls.
+            n_tool_calls = _session_tool_call_count(session)
             diagnostic = AgentPromptTimeoutDiagnostic(
                 timeout_sec=float(timeout),
-                n_tool_calls=0,
+                n_tool_calls=n_tool_calls,
                 terminal_trajectory_complete=True,
             )
             raise AgentPromptTimeoutError(
@@ -172,9 +175,10 @@ async def execute_prompts_session_factory(
             # flag instead of the bare exception bubbling up and discarding it
             # (#825). ``Exception`` (not ``BaseException``) deliberately lets
             # asyncio ``CancelledError`` propagate untouched.
+            n_tool_calls = _session_tool_call_count(session)
             diagnostic = AgentPromptTimeoutDiagnostic(
                 timeout_sec=float(timeout),
-                n_tool_calls=0,
+                n_tool_calls=n_tool_calls,
                 terminal_trajectory_complete=False,
             )
             raise AgentPromptTimeoutError(
@@ -184,4 +188,13 @@ async def execute_prompts_session_factory(
                 executed_prompts=prompts[: i + 1],
             ) from exc
         logger.info("  → %s", stop_reason)
-    return list(session.steps), 0
+    return list(session.steps), _session_tool_call_count(session)
+
+
+def _session_tool_call_count(session: Any) -> int:
+    """Read an optional cumulative session-factory tool counter defensively."""
+    value = getattr(session, "tool_call_count", 0)
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0

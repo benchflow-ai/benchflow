@@ -90,7 +90,7 @@ class RolloutResult:
                       or None when provider telemetry was unavailable.
         cost_usd:     Provider cost estimate in USD, or None when unavailable.
         usage_source: Token telemetry source. One of "provider_response",
-                      "agent_native_acp", or "unavailable".
+                      "agent_native_acp", "agent_native", or "unavailable".
         price_source: Pricing table version used for cost_usd, or None.
         usage_details: Optional source-specific telemetry details.
         error:        Error description string, or None on success.

@@ -431,6 +431,7 @@ def test_usage_source_type_contract_tracks_trusted_sources():
 
     from benchflow.usage_tracking import (
         TRUSTED_USAGE_SOURCES,
+        USAGE_SOURCE_AGENT_NATIVE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_UNAVAILABLE,
@@ -441,12 +442,17 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     assert set(get_args(UsageSource)) == {
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_AGENT_NATIVE,
         USAGE_SOURCE_UNAVAILABLE,
     }
     assert {
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_AGENT_NATIVE,
     } == TRUSTED_USAGE_SOURCES
+    assert normalize_usage_source(USAGE_SOURCE_AGENT_NATIVE) == (
+        USAGE_SOURCE_AGENT_NATIVE
+    )
     assert normalize_usage_source(USAGE_SOURCE_AGENT_NATIVE_ACP) == (
         USAGE_SOURCE_AGENT_NATIVE_ACP
     )
