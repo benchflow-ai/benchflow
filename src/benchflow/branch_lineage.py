@@ -168,11 +168,54 @@ def write_stage_snapshots(
     capture so a run that dies mid-lifecycle still leaves the stages it did
     reach. The caller isolates failures.
     """
+    return write_stage_snapshots_stages(
+        run_dir=run_dir, stages=stage_snapshots_payload(snapshots)
+    )
+
+
+def write_stage_snapshots_stages(
+    *, run_dir: Path, stages: Mapping[str, Mapping[str, Any]]
+) -> Path:
+    """Write ``stage_snapshots.json`` from an already-serialized stage mapping.
+
+    The seam :func:`write_stage_snapshots` (capture-time, from the live
+    registry) and the cleanup-time lifetime rewrite (annotated entries —
+    ``ephemeral`` / ``exported``, see
+    :func:`benchflow.branch_policy.finalize_stage_snapshots`) share, so both
+    writers emit one deterministic schema.
+    """
     path = Path(run_dir) / "stage_snapshots.json"
     payload = {
         "schema_version": _SCHEMA_VERSION,
-        "stages": stage_snapshots_payload(snapshots),
+        "stages": {stage: dict(entry) for stage, entry in stages.items()},
     }
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    return path
+
+
+def annotate_stage_snapshots_file(
+    *, run_dir: Path, annotations: Mapping[str, Mapping[str, Any]]
+) -> Path | None:
+    """Merge lifetime-annotated entries into an existing ``stage_snapshots.json``.
+
+    ``annotations`` maps stage name → the fully annotated entry (refs plus
+    ``ephemeral`` / ``exported`` / ``export_error``), which *replaces* the
+    file's entry for that stage — the annotated entry was built from the same
+    recorded refs, plus the lifetime the annotator just decided. Returns
+    ``None`` (no-op) when the file does not exist: there is no recorded
+    artifact to make truthful. A corrupt file raises; the caller isolates
+    failures, as for every writer in this module.
+    """
+    path = Path(run_dir) / "stage_snapshots.json"
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text())
+    stages = payload.get("stages")
+    if not isinstance(stages, dict):
+        stages = {}
+        payload["stages"] = stages
+    for stage, entry in annotations.items():
+        stages[stage] = dict(entry)
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     return path
 

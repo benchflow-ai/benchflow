@@ -231,12 +231,19 @@ LiteLLM gateway) is desirable but independent; it is a named follow-on, not v1.
 
 `docker commit` images (`bf-snap-*`) and in-sandbox state dirs die with the
 rollout (or linger unmanaged). v1 adds: snapshot refs recorded in `tree.json`; optional
-`--keep-snapshots` (`bench eval ablate`) to export the branched stage's container image
-(`docker save`) into `<out-dir>/snapshots/<ref>.tar` for cross-run branching, with the
-tar's path and sha256 recorded in `ablation.json`. Without the flag the report records
-the snapshot handle as `ephemeral: true` with `exported: null` — a recorded ref whose
-image cleanup has destroyed must say so rather than read as restorable. A remote
-snapshot registry is out of scope.
+`--keep-snapshots` (`bench eval ablate` **and** `bench eval run`) to export captured
+container images (`docker save`) into `snapshots/<ref>.tar` — the ablation's
+`<out-dir>`, a plain run's own run directory — for cross-run branching, with each
+tar's path, content sha256 and image id recorded in `ablation.json` /
+`stage_snapshots.json`. Rollout cleanup stamps every recorded ref's lifetime into
+`stage_snapshots.json` before the images are destroyed: without the flag the entry
+reads `ephemeral: true` with `exported: null` — a recorded ref whose image cleanup
+has destroyed must say so rather than read as restorable. The import half closes the
+loop: `bench eval import-snapshots <run-dir>`
+(`benchflow.snapshot_import.import_stage_snapshots`) verifies the exported tar's
+sha256, `docker load`s it, and checks the loaded image id against the recorded one,
+so a completed run's stage boundary is genuinely branchable later. A remote snapshot
+registry is out of scope.
 
 ## 4. Capability matrix (v1)
 

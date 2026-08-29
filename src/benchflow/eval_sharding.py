@@ -156,6 +156,7 @@ def _config_payload(
         "loop_strategy": (
             config.loop_strategy.to_mapping() if config.loop_strategy else None
         ),
+        "keep_snapshots": config.keep_snapshots,
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload

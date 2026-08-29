@@ -592,3 +592,74 @@ async def test_a_childs_verifier_run_cannot_destroy_the_parents_evidence(
         # emptied, never removed.
         await _exec_ok(sandbox, f"echo post > {container_verifier_dir}/after.txt")
         assert (host_verifier_dir / "after.txt").read_text().strip() == "post"
+
+
+async def test_export_import_round_trip_restores_the_recorded_image_id(
+    docker_prereqs: None, environment_dir: Path, tmp_path: Path
+) -> None:
+    """--keep-snapshots end-to-end (RFC §3.6): commit → export → destroy →
+    import restores the exact recorded image.
+
+    Guards "feat(rollout): stage snapshots record their lifetime;
+    --keep-snapshots on bench eval run with a tested import path" at the T2
+    tier: the committed stage image is ``docker save``d through the shared
+    export machinery, removed (what cleanup's ``compose down --rmi all`` does
+    to every ``bf-snap-*`` image), then re-imported through the recorded
+    ``stage_snapshots.json`` — and the loaded image id equals both what the
+    export recorded from the tar's manifest and what ``docker image inspect``
+    reports afterwards.
+    """
+    from benchflow.branch_policy import export_stage_snapshot
+    from benchflow.snapshot_import import import_stage_snapshots
+
+    async with _live_sandbox(environment_dir, tmp_path / "rollout") as sandbox:
+        await _exec_ok(sandbox, "echo retained > /app/retained.txt")
+        image = await sandbox.snapshot()
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        exported = await export_stage_snapshot(
+            sandbox, sandbox_ref=image.ref, out_dir=run_dir
+        )
+        assert exported["image_id"] is not None, (
+            "a real `docker save` tar must yield its config digest"
+        )
+        (run_dir / "stage_snapshots.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "stages": {
+                        "pre-verify": {
+                            "environment_ref": None,
+                            "sandbox_ref": image.ref,
+                            "layers": ["sandbox"],
+                            "exchanges_completed": None,
+                            "ephemeral": False,
+                            "exported": exported,
+                        }
+                    },
+                },
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        )
+        # The run is over as far as this image is concerned.
+        subprocess.run(
+            ["docker", "rmi", "-f", image.ref],
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+
+        [restored] = import_stage_snapshots(run_dir)
+
+        assert restored.sandbox_ref == image.ref
+        assert restored.image_id == exported["image_id"]
+        inspected = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image.ref],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        assert inspected.stdout.strip() == exported["image_id"]

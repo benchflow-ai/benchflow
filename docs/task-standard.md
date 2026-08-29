@@ -737,7 +737,15 @@ declaring `post-research` says the harness will `mark_stage()` it) and
 records each boundary's completed-LLM-exchange index in
 `stage_snapshots.json`, so `bench eval ablate`, `Rollout.branch_at_stage()`,
 or `bench eval continue --cut-stage` can fork the recorded boundaries later.
-Both values require `branchable: true`. Forked-snapshot stays fail-closed
+"Later" is scoped by each ref's recorded lifetime: within the run the
+snapshot images are live, but a plain `bench eval run` destroys them at
+cleanup and marks every ref `ephemeral: true` in `stage_snapshots.json` —
+branching *after* the run completes therefore needs `bench eval run
+--keep-snapshots` (which exports each captured image to
+`snapshots/<ref>.tar` in the run directory) followed by `bench eval
+import-snapshots <run-dir>` to load and identity-check the image before
+forking it. `--cut-stage` replay needs only the recorded exchange indices,
+no image. Both values require `branchable: true`. Forked-snapshot stays fail-closed
 where the engine genuinely cannot honor it: a backend whose sandboxes cannot
 take container snapshots (modal, apple-container, agentcore — and Daytona's
 DinD strategy at run time) is rejected by task validation / the capture

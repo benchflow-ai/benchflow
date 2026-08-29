@@ -205,6 +205,9 @@ from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResul
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.rollout_branch import capture_stage as _capture_stage_engine
+from benchflow.rollout_branch import (
+    finalize_stage_snapshots as _finalize_stage_snapshots_engine,
+)
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -2223,6 +2226,14 @@ class Rollout:
             # caller — leave it running so they can reuse it or stop it
             # themselves. #388. getattr() keeps tests that bypass __init__
             # via Rollout.__new__() working.
+            #
+            # The stop below destroys every committed ``bf-snap-*`` stage
+            # image (``compose down --rmi all``), so first make
+            # ``stage_snapshots.json`` truthful about each ref's lifetime —
+            # exporting the images to <run_dir>/snapshots/ when
+            # ``RolloutConfig.keep_snapshots`` asks for it, marking them
+            # ephemeral otherwise (never raises; PR #1046 second review).
+            await _finalize_stage_snapshots_engine(self)
             try:
                 await self._env.stop(delete=True)
             except Exception as e:

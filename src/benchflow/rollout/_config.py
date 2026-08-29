@@ -139,6 +139,15 @@ class RolloutConfig:
     # engine's capability gate, the single source of truth for which layers
     # exist and which the active planes can actually take.
     snapshot_layers: frozenset[str] = frozenset({"environment"})
+    # Durable stage-snapshot retention (RFC §3.6, `bench eval run
+    # --keep-snapshots`): before cleanup destroys the committed ``bf-snap-*``
+    # images, export each captured stage's sandbox image (``docker save``) to
+    # ``<run_dir>/snapshots/<ref>.tar`` and record the tar's path, sha256 and
+    # image id in ``stage_snapshots.json``. False (default) keeps today's
+    # lifecycle — the images die with the run — and cleanup marks each
+    # recorded ref ``ephemeral: true`` so the artifact never shows a bare ref
+    # that no longer resolves.
+    keep_snapshots: bool = False
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.

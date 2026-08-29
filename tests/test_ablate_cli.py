@@ -2101,6 +2101,12 @@ async def test_keep_snapshots_exports_the_tar_before_cleanup_and_records_it(
     assert report.stage_snapshot["exported"] == {
         "path": str(tar_path),
         "sha256": "sha256:" + hashlib.sha256(b"fake-docker-save-tar").hexdigest(),
+        # The fake's bytes are not a real `docker save` tar, so the image id
+        # is the honest null ("feat(rollout): stage snapshots record their
+        # lifetime; --keep-snapshots on bench eval run with a tested import
+        # path" — the id is read from the tar's manifest for verification at
+        # import time, never guessed).
+        "image_id": None,
     }
     payload = json.loads(
         write_ablation_report(report, tmp_path / "out").read_text(encoding="utf-8")
@@ -2444,3 +2450,63 @@ def test_cli_rejects_post_research_without_the_marker_flag(tmp_path: Path) -> No
     assert result.exit_code == 1, result.output
     assert "--mark-research-end-on" in _flat(result.stderr)
     assert "Traceback (most recent call last)" not in result.output
+
+
+class _FileWritingStageRefRollout(_ExportingStageRefRollout):
+    """A stage-ref rollout that also leaves capture-time stage_snapshots.json,
+    the way the real engine's ``capture_stage`` does."""
+
+    async def branch_at_stage(self, stage, n, *, deltas=None):
+        value = await super().branch_at_stage(stage, n, deltas=deltas)
+        from benchflow.branch_lineage import write_stage_snapshots
+
+        self._rollout_dir.mkdir(parents=True, exist_ok=True)
+        write_stage_snapshots(
+            run_dir=self._rollout_dir, snapshots=self._stage_snapshots
+        )
+        return value
+
+
+async def test_retention_annotates_the_parent_runs_stage_snapshots_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards "feat(rollout): stage snapshots record their lifetime;
+    --keep-snapshots on bench eval run with a tested import path" (the
+    ablate/plain consistency half): the parent run's stage_snapshots.json is
+    the on-disk twin of ``report.stage_snapshot``, so the retention decision
+    — exported where, or ephemeral — must land in both, teaching readers one
+    schema."""
+    import dataclasses
+
+    _patch_rollout(monkeypatch, _FileWritingStageRefRollout)
+    request = dataclasses.replace(_request(tmp_path), keep_snapshots=True)
+
+    report = await run_ablation(request)
+
+    run_dir = Path(report.parent_run_dir)
+    recorded = json.loads((run_dir / "stage_snapshots.json").read_text())["stages"][
+        report.stage
+    ]
+    assert recorded == report.stage_snapshot
+    assert recorded["ephemeral"] is False
+    assert recorded["exported"]["path"] == str(
+        Path(request.out_dir) / "snapshots" / "bf-snap-root-1.tar"
+    )
+
+
+async def test_without_keep_snapshots_the_parent_file_is_marked_ephemeral(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The default half of the same consistency guard: no flag, so the file
+    entry says the ref died with the run — never a bare ref."""
+    _patch_rollout(monkeypatch, _FileWritingStageRefRollout)
+
+    report = await run_ablation(_request(tmp_path))
+
+    run_dir = Path(report.parent_run_dir)
+    recorded = json.loads((run_dir / "stage_snapshots.json").read_text())["stages"][
+        report.stage
+    ]
+    assert recorded == report.stage_snapshot
+    assert recorded["ephemeral"] is True
+    assert recorded["exported"] is None

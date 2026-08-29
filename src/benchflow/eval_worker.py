@@ -82,6 +82,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
             if raw.get("loop_strategy")
             else None
         ),
+        keep_snapshots=bool(raw.get("keep_snapshots", False)),
     )
 
 

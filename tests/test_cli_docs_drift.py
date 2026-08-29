@@ -179,6 +179,7 @@ def test_documented_subcommands_exist() -> None:
         ["eval", "list"],
         ["eval", "metrics"],
         ["eval", "view"],
+        ["eval", "import-snapshots"],
         ["train", "convert"],
         ["train", "validate"],
         ["train", "run"],
