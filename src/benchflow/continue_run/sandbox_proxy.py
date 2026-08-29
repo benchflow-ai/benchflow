@@ -185,6 +185,9 @@ class ReplayState:
     def next_response(self, request_body):
         with self.condition:
             if self.quiescing:
+                self.live_attempt_count += 1
+                self.live_error_count += 1
+                self._write_state()
                 return "error", 503, {
                     "error": {"message": "replay proxy is quiescing"}
                 }

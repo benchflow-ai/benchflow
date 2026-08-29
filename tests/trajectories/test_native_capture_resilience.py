@@ -198,6 +198,57 @@ def test_provider_role_attribution_uses_runtime_identity_for_same_model(
     )
 
 
+def test_provider_role_attribution_intersects_repeated_role_with_model(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 when scenes reuse a role name with different models."""
+    targets = [
+        _CaptureTarget(
+            agent="opencode",
+            model=model,
+            credential_home=f"/home/{index}",
+            auth_mode=AuthMode.API_KEY,
+            native=False,
+            role="solver",
+        )
+        for index, model in enumerate(("openai/gpt-5.5", "openai/gpt-5.6"))
+    ]
+    trajectory = tmp_path / "llm_trajectory.jsonl"
+    trajectory.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "request": {"body": {"model": model.rsplit("/", 1)[-1]}},
+                    "response": {"status_code": 200, "body": {}},
+                    "metadata": {
+                        "benchflow_agent": "opencode",
+                        "benchflow_role": "solver",
+                        "benchflow_requested_model": model,
+                    },
+                }
+            )
+            + "\n"
+            for model in ("openai/gpt-5.5", "openai/gpt-5.6")
+        )
+    )
+
+    records = load_provider_wire_records(
+        trajectory,
+        targets=targets,
+        fallback_agent="opencode",
+        fallback_model=None,
+        fallback_auth=AuthMode.API_KEY,
+    )
+
+    assert [record["metadata"]["model"] for record in records] == [
+        "openai/gpt-5.5",
+        "openai/gpt-5.6",
+    ]
+    assert all(
+        record["metadata"]["role_attribution_complete"] is True for record in records
+    )
+
+
 @pytest.mark.asyncio
 async def test_malformed_provider_capture_stops_owned_collector_before_cleanup(
     tmp_path: Path,

@@ -374,7 +374,7 @@ def _target_for_provider_record(
     stamped_role = metadata.get("benchflow_role")
     stamped_agent = metadata.get("benchflow_agent")
     if isinstance(stamped_role, str) and stamped_role:
-        identity_matches = [
+        targets = [
             target
             for target in targets
             if target.role == stamped_role
@@ -384,7 +384,10 @@ def _target_for_provider_record(
                 or target.agent == stamped_agent
             )
         ]
-        return identity_matches[0] if len(identity_matches) == 1 else None
+        if len(targets) == 1:
+            return targets[0]
+        if not targets:
+            return None
     candidates = {_record_model(record)}
     candidates.update(
         value

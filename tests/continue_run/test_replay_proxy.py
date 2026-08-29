@@ -193,7 +193,11 @@ def test_sandbox_quiesce_waits_for_live_handler_before_snapshot(tmp_path) -> Non
     late = state.next_response({"messages": [{"role": "user"}]})
     assert late[0] == "error"
     assert late[1] == 503
-    assert state.live_attempt_count == 1
+    assert state.live_attempt_count == 2
+    assert state.live_error_count == 1
+    capture_state = json.loads((tmp_path / "state.json").read_text())
+    assert capture_state["live_attempt_count"] == 2
+    assert capture_state["live_error_count"] == 1
 
 
 @pytest.mark.asyncio
