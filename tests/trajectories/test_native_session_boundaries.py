@@ -214,6 +214,39 @@ async def test_native_capture_binds_only_returned_acp_session_ids(
     )
 
 
+@pytest.mark.asyncio
+async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -> None:
+    """Guards PR #1057 against leaking a replaced OAuth collector."""
+
+    commands: list[str] = []
+
+    class CleanupEnv:
+        async def exec(self, command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    capture.configure({"ANTHROPIC_API_KEY": "test-key"})
+    capture._collector_started = True
+    capture._capture_root_prepared = True
+
+    await capture.finalize(
+        CleanupEnv(),
+        acp_events=[],
+        model_call_seen=False,
+    )
+
+    assert any("kill -TERM" in command for command in commands)
+    assert any("-depth -delete" in command for command in commands)
+    assert capture._collector_started is False
+
+
 def test_rollout_binds_the_acp_session_after_connect() -> None:
     """Guards PR #1057's rollout-to-capture session binding seam."""
 

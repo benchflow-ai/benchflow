@@ -258,6 +258,7 @@ class LLMTrajectoryCapture:
         *,
         acp_events: list[dict[str, Any]],
         model_call_seen: bool,
+        capture_errors: list[str] | None = None,
     ) -> None:
         """Publish the highest-fidelity available capture and terminal sidecar."""
 
@@ -280,11 +281,17 @@ class LLMTrajectoryCapture:
                 raise
 
         native_bundles: list[_NativeCaptureBundle] = []
-        collection_errors: list[str] = list(self._preparation_errors)
+        collection_errors = list(
+            dict.fromkeys([*self._preparation_errors, *(capture_errors or [])])
+        )
         native_targets = self._native_targets()
-        if native_targets and env is not None:
+        native_resources_exist = self._collector_started or self._capture_root_prepared
+        if (native_targets or native_resources_exist) and env is not None:
             try:
-                native_bundles = await self._collect_native_results(env)
+                if native_targets:
+                    native_bundles = await self._collect_native_results(env)
+                elif self._collector_started:
+                    await self._stop_otel_sink(env)
             except Exception as exc:
                 collection_errors.append(_sanitized_error(exc))
                 logger.warning("Native LLM trajectory collection failed: %s", exc)

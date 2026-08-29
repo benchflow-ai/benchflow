@@ -355,3 +355,53 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
 
     assert rollout._usage_metrics["usage_source"] == "provider_response"
     assert (tmp_path / "trajectory" / "llm_trajectory.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_rollout_cleanup_propagates_provider_stop_failure_to_capture(tmp_path):
+    """Guards PR #1057 against accepting a truncated live provider prefix."""
+
+    from benchflow.rollout import Rollout, RolloutConfig
+
+    class FakeServer:
+        trajectory = _trajectory(
+            {
+                "model": "gpt-5.6",
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            }
+        )
+
+        def reconcile_live_capture(self):
+            return None
+
+    async def fail_stop(_runtime):
+        raise RuntimeError("remote callback import failed")
+
+    capture = SimpleNamespace(finalize=AsyncMock(), record_failure=AsyncMock())
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(task_path=tmp_path / "task")
+    rollout._trajectory = []
+    rollout._acp_client = None
+    rollout._agent_launch = ""
+    rollout._env = SimpleNamespace(stop=AsyncMock())
+    rollout._environment = None
+    rollout._usage_runtime = ProviderRuntime(
+        kind="litellm",
+        agent_base_url="http://127.0.0.1:4000",
+        backend_model="gpt-5.6",
+        server=FakeServer(),
+    )
+    rollout._planes = SimpleNamespace(
+        stop_provider_runtime=fail_stop,
+        extract_usage=extract_usage,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._env_externally_owned = False
+    rollout._llm_capture = capture
+
+    await rollout.cleanup()
+
+    capture.finalize.assert_awaited_once()
+    assert capture.finalize.await_args.kwargs["capture_errors"] == [
+        "provider runtime stop or remote capture import failed"
+    ]

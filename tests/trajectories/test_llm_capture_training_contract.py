@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from benchflow.trajectories.llm_capture import LLMTrajectoryCapture
 from benchflow.trajectories.results import build_rollout_results_record
 
 
@@ -191,3 +195,42 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
     assert row["is_completed"] is True
     assert row["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_provider_finalization_error_rejects_complete_live_prefix(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on a truncated provider prefix."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="rollout-1",
+        started_at=datetime(2026, 8, 29, tzinfo=UTC),
+    )
+    capture.configure({"OPENAI_API_KEY": "test-key"})
+    _write_exchange(tmp_path / "trajectory", fidelity="provider_wire")
+
+    await capture.finalize(
+        None,
+        acp_events=[],
+        model_call_seen=True,
+        capture_errors=["provider runtime stop or remote capture import failed"],
+    )
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert manifest["status"] == "partial"
+    assert manifest["exchange_count"] == 1
+    assert manifest["errors"] == [
+        "provider runtime stop or remote capture import failed"
+    ]
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+    assert row["info"]["training_ready"] is False
+    assert row["is_completed"] is False

@@ -2022,12 +2022,16 @@ class Rollout:
                 self._evolved_skills = None
 
         usage_runtime = getattr(self, "_usage_runtime", None)
+        provider_capture_errors: list[str] = []
         if usage_runtime is not None:
             try:
                 await self._planes.stop_provider_runtime(usage_runtime)
                 self._usage_metrics = self._planes.extract_usage(usage_runtime)
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
+                provider_capture_errors.append(
+                    "provider runtime stop or remote capture import failed"
+                )
                 self._usage_metrics = self._planes.extract_usage(None)
             # Snapshot any provider failure (401/403/429/503) now that captures
             # are imported (stop() populated the trajectory). This must happen
@@ -2057,6 +2061,9 @@ class Rollout:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
                 logger.warning(f"LLM trajectory write failed: {e}")
+                provider_capture_errors.append(
+                    "provider live trajectory reconciliation failed"
+                )
             try:
                 self._reconcile_acp_tool_evidence(usage_runtime)
             except Exception as e:
@@ -2076,6 +2083,7 @@ class Rollout:
                     self._env,
                     acp_events=acp_events,
                     model_call_seen=model_call_seen,
+                    capture_errors=provider_capture_errors,
                 )
             except Exception as e:
                 logger.warning(f"LLM trajectory finalization failed: {e}")
