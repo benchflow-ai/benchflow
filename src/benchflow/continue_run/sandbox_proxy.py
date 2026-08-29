@@ -343,6 +343,11 @@ class ReplayHandler(BaseHTTPRequestHandler):
             self.server.shutdown()
             self.server.server_close()
             quiesced = self.state.quiesce()
+            # The control request is the one handler deliberately excluded
+            # from the barrier above. Retire it from the accepted-handler
+            # accounting before publishing success so the response is also a
+            # reliable, race-free signal that the capture lifecycle drained.
+            self.server.release_current_handler()
             self._send_json(
                 200 if quiesced else 503,
                 {"status": "quiesced" if quiesced else "quiesce_timeout"},
@@ -391,6 +396,7 @@ class ReplayServer(ThreadingHTTPServer):
     def __init__(self, address, handler, state):
         super().__init__(address, handler)
         self.state = state
+        self._handler_local = threading.local()
 
     def process_request(self, request, client_address):
         self.state.handler_started()
@@ -401,9 +407,17 @@ class ReplayServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
+        self._handler_local.counted = True
         try:
             super().process_request_thread(request, client_address)
         finally:
+            if self._handler_local.counted:
+                self.state.handler_finished()
+            self._handler_local.counted = False
+
+    def release_current_handler(self):
+        if getattr(self._handler_local, "counted", False):
+            self._handler_local.counted = False
             self.state.handler_finished()
 
 
