@@ -24,7 +24,7 @@ from benchflow.trajectories.native_capture_parsers import (
     parse_codex_sessions,
     retain_uncovered_claude_session_exchanges,
 )
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.redaction import redact_trajectory_text
 
 logger = logging.getLogger(__name__)
 

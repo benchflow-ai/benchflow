@@ -382,6 +382,13 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     # config.yaml uses os.environ/ refs, so the secret is not inlined there either.
     config_files = [k for k in sandbox.uploaded if k.endswith("config.yaml")]
     assert config_files and secret not in sandbox.uploaded[config_files[0]]
+    redaction_files = [
+        k for k in sandbox.uploaded if k.endswith("benchflow_trajectory_redaction.py")
+    ]
+    assert len(redaction_files) == 1
+    assert (
+        sandbox.uploaded[redaction_files[0]] == runtime_mod._redaction_module_source()
+    )
     launch_command = next(call for call in sandbox.exec_calls if "launcher.py" in call)
     assert f"rc=$?; rm -f {launch_files[0]}; exit $rc" in launch_command
 
@@ -624,6 +631,36 @@ def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_pat
     env["PYTHONPATH"] = str(tmp_path)
     result = subprocess.run(
         [sys.executable, "-c", preflight_mod.BEDROCK_PATCH_PREFLIGHT_SOURCE],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runtime_packages_canonical_redactor_verbatim(tmp_path):
+    """Guards PR #1057 against reflective callback source reconstruction."""
+
+    import os
+    import subprocess
+    import sys
+
+    runtime_mod._write_runtime_files(tmp_path, config={"model_list": []})
+
+    packaged = tmp_path / "benchflow_trajectory_redaction.py"
+    assert packaged.read_text() == runtime_mod._redaction_module_source()
+    assert "def redact_trajectory_obj" in packaged.read_text()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import benchflow_litellm_callback as callback; "
+            "assert callback.redact_trajectory_obj.__module__ == "
+            "'benchflow_trajectory_redaction'",
+        ],
         env=env,
         capture_output=True,
         text=True,

@@ -270,6 +270,61 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
     assert row["error"] is None
 
 
+def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) -> None:
+    """Guards PR #1057 against marking successful continuations incomplete."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="agent_session")
+    replay_row = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    replay_row["metadata"].update(
+        {
+            "capture_source": "replay_proxy",
+            "request_capture_source": "replay_proxy_ingress",
+            "auth_mode": "api_key",
+            "request_complete": False,
+        }
+    )
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(json.dumps(replay_row) + "\n")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_source": "mixed",
+                "capture_fidelity": "mixed",
+                "auth_mode": "api_key",
+                "exchange_count": 1,
+                "request_complete": False,
+                "response_complete": True,
+                "role_captures": [
+                    {
+                        "role": "agent",
+                        "leg": "live",
+                        "agent": "openhands",
+                        "model": "openai/gpt-5.6",
+                        "auth_mode": "api_key",
+                        "capture_source": "replay_proxy",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is True
+    assert row["error"] is None
+
+
 @pytest.mark.asyncio
 async def test_provider_finalization_error_rejects_complete_live_prefix(
     tmp_path: Path,

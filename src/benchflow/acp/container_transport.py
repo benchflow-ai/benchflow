@@ -7,7 +7,7 @@ from typing import Any, TextIO
 
 from benchflow.sandbox.process import LiveProcess
 from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.redaction import redact_trajectory_text
 
 from .transport import Transport, decode_json_rpc_message
 

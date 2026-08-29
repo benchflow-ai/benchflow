@@ -275,6 +275,32 @@ def capture_manifest_has_oauth_role_capture(manifest: dict[str, Any]) -> bool:
     return False
 
 
+def capture_manifest_has_replay_capture(manifest: dict[str, Any]) -> bool:
+    """Return whether a manifest contains an audit-only continuation suffix."""
+
+    if (
+        manifest.get("capture_source") == CaptureSource.REPLAY_PROXY.value
+        and isinstance(manifest.get("exchange_count"), int)
+        and not isinstance(manifest.get("exchange_count"), bool)
+        and manifest["exchange_count"] > 0
+    ):
+        return True
+    role_captures = manifest.get("role_captures")
+    if not isinstance(role_captures, list):
+        return False
+    for value in role_captures:
+        try:
+            role_capture = LLMRoleCapture.model_validate(value)
+        except ValidationError:
+            continue
+        if (
+            role_capture.capture_source is CaptureSource.REPLAY_PROXY
+            and role_capture.exchange_count > 0
+        ):
+            return True
+    return False
+
+
 def _atomic_write_text(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")

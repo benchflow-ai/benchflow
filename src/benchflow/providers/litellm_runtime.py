@@ -18,6 +18,7 @@ import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from uuid import uuid4
@@ -69,6 +70,7 @@ logger = logging.getLogger(__name__)
 LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
+_REDACTION_MODULE = "benchflow_trajectory_redaction"
 _LITELLM_REQUESTED_MODEL_ENV = "BENCHFLOW_LITELLM_REQUESTED_MODEL"
 _LITELLM_AGENT_ENV = "BENCHFLOW_LITELLM_AGENT"
 _LITELLM_ROLE_ENV = "BENCHFLOW_LITELLM_ROLE"
@@ -823,15 +825,27 @@ def _write_runtime_files(
 ) -> tuple[Path, Path, Path]:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
+    redaction_path = runtime_dir / f"{_REDACTION_MODULE}.py"
     patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
+    redaction_path.write_text(_redaction_module_source())
     patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
     sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path, callback_path, patch_path
+
+
+def _redaction_module_source() -> str:
+    """Read the packaged canonical redactor for isolated proxy runtimes."""
+
+    return (
+        files("benchflow.trajectories")
+        .joinpath("redaction.py")
+        .read_text(encoding="utf-8")
+    )
 
 
 # How long to wait for the *host* per-run LiteLLM proxy to become healthy.
@@ -1050,6 +1064,7 @@ async def _upload_runtime_files_to_sandbox(
     paths = {
         "config": f"{runtime_dir}/config.yaml",
         "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
+        "redaction": f"{runtime_dir}/{_REDACTION_MODULE}.py",
         "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
@@ -1070,6 +1085,7 @@ async def _upload_runtime_files_to_sandbox(
         sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml"
     )
     await _upload_text(sandbox, callback_module_source(), paths["callback"], ".py")
+    await _upload_text(sandbox, _redaction_module_source(), paths["redaction"], ".py")
     await _upload_text(
         sandbox,
         Path(__file__).with_name("litellm_bedrock_patch.py").read_text(),

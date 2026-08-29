@@ -35,6 +35,7 @@ from benchflow.trajectories.export_prime_sft import (
 from benchflow.trajectories.llm_capture_manifest import (
     capture_artifact_allows_training,
     capture_manifest_has_oauth_role_capture,
+    capture_manifest_has_replay_capture,
     read_llm_trajectory_manifest,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
@@ -512,6 +513,10 @@ def build_rollout_results_record(
             or (
                 capture_manifest is not None
                 and capture_manifest_has_oauth_role_capture(capture_manifest)
+            )
+            or (
+                capture_manifest is not None
+                and capture_manifest_has_replay_capture(capture_manifest)
             )
         )
         and (

@@ -28,6 +28,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     CaptureFidelity,
     CaptureSource,
     CaptureStatus,
+    LLMRoleCapture,
     LLMTrajectoryManifest,
     capture_manifest_allows_training,
     initialize_llm_trajectory_artifacts,
@@ -660,7 +661,7 @@ async def test_sandbox_teardown_refinalizes_manifest_after_cleanup(tmp_path):
 
 
 def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
-    """Guards PR #1057 against retaining the pre-stitch trainer row."""
+    """Guards PR #1057 against retaining stale or incomplete continuation rows."""
     rollout = tmp_path / "job" / "demo-task__continued"
     (rollout / "trajectory").mkdir(parents=True)
     model = "openai/gpt-5.5"
@@ -732,6 +733,48 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
     assert refreshed["token_usage"]["total_tokens"] == 2
     assert len(refreshed["trajectory"]) == 1
     assert aggregated == refreshed
+
+    replay_manifest = manifest.model_copy(
+        update={
+            "status": CaptureStatus.PARTIAL,
+            "capture_source": CaptureSource.MIXED,
+            "capture_fidelity": CaptureFidelity.MIXED,
+            "request_complete": False,
+            "role_captures": [
+                LLMRoleCapture(
+                    role="agent",
+                    leg="live",
+                    agent="openhands",
+                    model=model,
+                    auth_mode=AuthMode.API_KEY,
+                    capture_source=CaptureSource.REPLAY_PROXY,
+                    capture_fidelity=CaptureFidelity.AGENT_SESSION,
+                    exchange_count=1,
+                    request_complete=False,
+                    response_complete=True,
+                )
+            ],
+        }
+    )
+    write_llm_trajectory_manifest(rollout, replay_manifest)
+    (rollout / "results.jsonl").write_text(
+        json.dumps({"info": {"training_ready": True}, "is_completed": False}) + "\n"
+    )
+
+    update_continued_metadata(
+        rollout,
+        live_model=model,
+        usage=summarize_llm_trajectory_usage(trajectory_path, n_recorded=0),
+        environment="docker",
+    )
+
+    replay_refreshed = json.loads((rollout / "results.jsonl").read_text())
+    assert replay_refreshed["info"]["training_ready"] is False
+    assert replay_refreshed["info"]["training_ready_reason"] == (
+        "insufficient_capture_fidelity"
+    )
+    assert replay_refreshed["is_completed"] is True
+    assert replay_refreshed["error"] is None
 
 
 def test_stitching_structurally_redacts_escaped_secret(tmp_path):

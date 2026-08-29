@@ -13,7 +13,6 @@ from benchflow.trajectories.types import (
     LLMRequest,
     LLMResponse,
     Trajectory,
-    canonical_redaction_source,
 )
 from benchflow.usage_tracking import usage_unavailable
 
@@ -82,8 +81,7 @@ _CONTEXT_LIMIT_HINT_RE = re.compile(
 
 def callback_module_source() -> str:
     """Return the Python module written next to LiteLLM config.yaml."""
-    return (
-        r"""
+    return r"""
 from __future__ import annotations
 
 import json
@@ -97,9 +95,14 @@ from typing import Any
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
-"""
-        + canonical_redaction_source()
-        + r"""
+
+try:
+    from benchflow_trajectory_redaction import redact_trajectory_obj
+except ModuleNotFoundError:
+    # Direct source execution in BenchFlow tests/development. Production proxy
+    # runtimes always receive the packaged standalone module beside this file;
+    # isolated sandboxes fail loudly if that deployment artifact is absent.
+    from benchflow.trajectories.redaction import redact_trajectory_obj
 
 
 _skill_catalog_gate_passed = False
@@ -549,7 +552,6 @@ class BenchFlowLiteLLMLogger(CustomLogger):
 
 proxy_handler_instance = BenchFlowLiteLLMLogger()
 """
-    )
 
 
 def _parse_time(value: Any) -> datetime:

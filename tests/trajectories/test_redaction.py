@@ -10,14 +10,16 @@ import json
 
 import pytest
 
+from benchflow.trajectories.redaction import (
+    redact_trajectory_text,
+    redact_trajectory_text_with_count,
+)
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
     LLMResponse,
     Trajectory,
     redact_acp_trajectory_jsonl,
-    redact_trajectory_text,
-    redact_trajectory_text_with_count,
 )
 
 # Fake token fixtures assembled from split literals so the full token string
@@ -1015,7 +1017,7 @@ _FAKE_PEM = (
 def test_canonical_text_redaction_reports_a_category(text, expected_category):
     """Guards the redaction-transparency feature from PR #1022: each canonical rule tags its replacements with the
     kind of secret it actually detects."""
-    from benchflow.trajectories.types import redact_trajectory_text_with_categories
+    from benchflow.trajectories.redaction import redact_trajectory_text_with_categories
 
     redacted, categories = redact_trajectory_text_with_categories(text)
     assert categories == {expected_category: 1}
@@ -1025,7 +1027,7 @@ def test_canonical_text_redaction_reports_a_category(text, expected_category):
 def test_text_categories_sum_to_the_backward_compatible_count():
     """Guards the redaction-transparency feature from PR #1022: the categorized scan and the count scan agree, so
     ``redaction_replacements`` stays backward-compatible."""
-    from benchflow.trajectories.types import (
+    from benchflow.trajectories.redaction import (
         redact_trajectory_text_with_categories,
         redact_trajectory_text_with_count,
     )

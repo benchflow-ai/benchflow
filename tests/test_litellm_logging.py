@@ -146,6 +146,7 @@ def test_callback_module_source_exposes_proxy_handler_instance():
     source = callback_module_source()
 
     assert "class BenchFlowLiteLLMLogger" in source
+    assert "from benchflow_trajectory_redaction import redact_trajectory_obj" in source
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
 
 

@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
-from benchflow.trajectories.types import (
+from benchflow.trajectories.redaction import (
     REDACTION_CATEGORY_API_KEY,
     REDACTION_CATEGORY_BEARER_TOKEN,
     REDACTION_CATEGORY_CREDENTIAL_FIELD,
