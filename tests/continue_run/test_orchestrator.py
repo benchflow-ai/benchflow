@@ -476,9 +476,10 @@ async def test_sandbox_teardown_still_runs_rollout_cleanup_after_sidecar_failure
     rollout = FakeRollout()
     events: list[str] = []
 
-    async def before_cleanup():
+    async def before_cleanup(teardown_errors):
         events.append("artifact")
         assert rollout._error is not None
+        assert len(teardown_errors) == 2
 
     errors = await _safe_sandbox_continuation_teardown(
         rollout=rollout,
@@ -494,3 +495,182 @@ async def test_sandbox_teardown_still_runs_rollout_cleanup_after_sidecar_failure
     assert rollout._error is not None
     assert "proxy unavailable" in rollout._error
     assert "provider refused stop" in rollout._error
+
+
+@pytest.mark.asyncio
+async def test_sandbox_teardown_passes_errors_when_agent_already_failed():
+    """Guards PR #1057 against hiding capture teardown behind an agent error."""
+
+    class FailingProxy:
+        async def stop(self):
+            raise RuntimeError("capture state unavailable")
+
+    class FakeRollout:
+        _error = "agent failed first"
+
+        async def cleanup(self):
+            return None
+
+    observed: list[str] = []
+
+    async def before_cleanup(teardown_errors):
+        observed.extend(teardown_errors)
+
+    async def stop_provider_runtime(_runtime):
+        return None
+
+    rollout = FakeRollout()
+    errors = await _safe_sandbox_continuation_teardown(
+        rollout=rollout,
+        replay_proxy=FailingProxy(),
+        provider_runtime=None,
+        stop_provider_runtime=stop_provider_runtime,
+        before_cleanup=before_cleanup,
+    )
+
+    assert errors == observed
+    assert errors and "capture state unavailable" in errors[0]
+    assert rollout._error == "agent failed first"
+
+
+def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
+    """Guards PR #1057 against retaining the pre-stitch trainer row."""
+    rollout = tmp_path / "job" / "demo-task__continued"
+    (rollout / "trajectory").mkdir(parents=True)
+    model = "openai/gpt-5.5"
+    row = exchange(completion(content="done")).model_dump(mode="json")
+    row["request"]["body"]["messages"] = [{"role": "user", "content": "Do the task."}]
+    row["metadata"] = {
+        "schema_version": 2,
+        "capture_source": "litellm_proxy",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+    }
+    trajectory_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    trajectory_path.write_text(json.dumps(row) + "\n")
+    manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE,
+        capture_source=CaptureSource.LITELLM_PROXY,
+        capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
+        auth_mode=AuthMode.API_KEY,
+        agent="openhands",
+        model=model,
+        session_id="continued",
+        exchange_count=1,
+        request_complete=True,
+        response_complete=True,
+        started_at="2026-08-29T00:00:00Z",
+        finished_at="2026-08-29T00:01:00Z",
+    )
+    write_llm_trajectory_manifest(rollout, manifest)
+    (rollout / "config.json").write_text(json.dumps({"model": None, "source": {}}))
+    (rollout / "prompts.json").write_text(json.dumps(["Do the task."]))
+    (rollout / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "demo-task",
+                "rollout_name": "demo-task__continued",
+                "agent": "openhands",
+                "agent_name": "OpenHands",
+                "model": None,
+                "n_tool_calls": 0,
+                "partial_trajectory": False,
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "export_error": None,
+                "timing": {},
+                "agent_result": {"total_tokens": 0, "usage_source": "unavailable"},
+                "usage_tracking": {"requested": "off", "status": "off"},
+            }
+        )
+    )
+    (rollout / "results.jsonl").write_text(
+        json.dumps({"info": {"training_ready": False, "model": None}}) + "\n"
+    )
+
+    update_continued_metadata(
+        rollout,
+        live_model=model,
+        usage=summarize_llm_trajectory_usage(trajectory_path, n_recorded=0),
+        environment="docker",
+    )
+
+    refreshed = json.loads((rollout / "results.jsonl").read_text())
+    aggregated = json.loads((rollout.parent / "results.jsonl").read_text())
+    assert refreshed["info"]["model"] == model
+    assert refreshed["info"]["training_ready"] is True
+    assert refreshed["token_usage"]["total_tokens"] == 2
+    assert len(refreshed["trajectory"]) == 1
+    assert aggregated == refreshed
+
+
+def test_stitching_structurally_redacts_escaped_secret(tmp_path):
+    """Guards PR #1057 against string redaction corrupting stitched JSON."""
+    secret = "ESCbearerSECRETtok123456"
+    source = tmp_path / "source.jsonl"
+    payload = exchange(completion(content="done")).model_dump(mode="json")
+    payload["request"]["body"]["authorization"] = f'Bearer {secret}\\"tail'
+    source.write_text(json.dumps(payload) + "\n")
+
+    rendered = stitched_trajectory_lines(source, [])
+
+    assert len(rendered) == 1
+    restored = json.loads(rendered[0])
+    assert secret not in rendered[0]
+    assert "***REDACTED***" in restored["request"]["body"]["authorization"]
+    assert restored["metadata"]["schema_version"] == 2
+
+
+def test_refresh_stitched_manifest_rejects_malformed_row(tmp_path):
+    """Guards PR #1057 against a complete sidecar for invalid stitched JSONL."""
+    model = "openai/gpt-5.5"
+    source = write_run_folder(
+        tmp_path / "source",
+        exchanges=[exchange(completion(content="recorded"))],
+        model=model,
+    )
+    source_manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE,
+        capture_source=CaptureSource.LITELLM_PROXY,
+        capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
+        auth_mode=AuthMode.API_KEY,
+        agent="openhands",
+        model=model,
+        session_id="source",
+        exchange_count=1,
+        request_complete=True,
+        response_complete=True,
+        started_at="2026-08-29T00:00:00Z",
+    )
+    write_llm_trajectory_manifest(source, source_manifest)
+    rollout = tmp_path / "continued"
+    initialize_llm_trajectory_artifacts(
+        rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued",
+        started_at=source_manifest.started_at,
+    )
+    stitched = rollout / "trajectory" / "llm_trajectory.jsonl"
+    stitched.write_text('{"request": broken}\n')
+
+    manifest = refresh_stitched_trajectory_manifest(
+        rollout,
+        source,
+        original_model=model,
+        live_model=model,
+        n_recorded=1,
+        n_live=0,
+        live_attempt_count=0,
+        live_errors=[],
+    )
+
+    assert manifest.status is CaptureStatus.PARTIAL
+    assert manifest.request_complete is False
+    assert manifest.response_complete is False
+    assert "valid_provider_exchange" in manifest.missing_fields
+    assert any("malformed row" in error for error in manifest.errors)

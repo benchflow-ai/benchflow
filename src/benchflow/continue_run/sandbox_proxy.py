@@ -27,6 +27,7 @@ from benchflow.trajectories.types import LLMExchange
 
 SANDBOX_REPLAY_ROOT = "/tmp/benchflow-replay"
 DEFAULT_SANDBOX_REPLAY_PORT = 61357
+_CAPTURE_STATE_WRITE_FAILED = "BENCHFLOW_CAPTURE_STATE_WRITE_FAILED"
 
 
 def sandbox_replay_base_url(port: int = DEFAULT_SANDBOX_REPLAY_PORT) -> str:
@@ -48,6 +49,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CAPTURE_STATE_WRITE_FAILED = "BENCHFLOW_CAPTURE_STATE_WRITE_FAILED"
 
 
 def _n_messages(body):
@@ -142,10 +145,23 @@ class ReplayState:
             "live_error_count": self.live_error_count,
         }
         temporary = self.state_path + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle)
-            handle.flush()
-        os.replace(temporary, self.state_path)
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+                handle.flush()
+            os.replace(temporary, self.state_path)
+        except Exception:
+            self.live_error_count += 1
+            try:
+                os.unlink(self.state_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            print(CAPTURE_STATE_WRITE_FAILED, file=sys.stderr, flush=True)
+            raise
 
     def _check_divergence(self, incoming, recorded_request):
         want = _n_messages(recorded_request)
@@ -480,6 +496,7 @@ class SandboxReplayProxy:
     async def stop(self) -> None:
         self.live_exchanges = await self._load_live_exchanges()
         await self._load_live_state()
+        await self._load_runtime_errors()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"if [ -s {shlex.quote(self.pid_path)} ]; then "
@@ -545,4 +562,12 @@ class SandboxReplayProxy:
                 "sandbox live exchange recovery mismatch: "
                 f"attempted {self.live_attempt_count}, "
                 f"recovered {len(self.live_exchanges)}"
+            )
+
+    async def _load_runtime_errors(self) -> None:
+        stderr = await _read_remote_text(self.sandbox, self.stderr_path)
+        failures = stderr.count(_CAPTURE_STATE_WRITE_FAILED)
+        if failures:
+            self.live_errors.append(
+                f"sandbox live attempt journal failed {failures} time(s)"
             )

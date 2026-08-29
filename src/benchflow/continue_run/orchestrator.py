@@ -53,7 +53,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     read_llm_trajectory_manifest,
     write_llm_trajectory_manifest,
 )
-from benchflow.trajectories.types import LLMExchange, redact_trajectory_text
+from benchflow.trajectories.types import LLMExchange, redact_trajectory_obj
 
 logger = logging.getLogger(__name__)
 
@@ -293,10 +293,10 @@ def stitched_trajectory_lines(
                     metadata = {}
                     payload["metadata"] = metadata
                 metadata["schema_version"] = LLM_TRAJECTORY_SCHEMA_VERSION
-                lines.append(redact_trajectory_text(json.dumps(payload, default=str)))
+                lines.append(json.dumps(redact_trajectory_obj(payload), default=str))
     for exchange in live_exchanges:
-        raw = json.dumps(exchange.model_dump(mode="json"), default=str)
-        lines.append(redact_trajectory_text(raw))
+        payload = redact_trajectory_obj(exchange.model_dump(mode="json"))
+        lines.append(json.dumps(payload, default=str))
     return lines
 
 
@@ -329,7 +329,7 @@ def write_stitched_trajectory(
                 "payload_redacted": True,
             }
         )
-        lines.append(redact_trajectory_text(json.dumps(payload, default=str)))
+        lines.append(json.dumps(redact_trajectory_obj(payload), default=str))
     rendered = "\n".join(lines) + ("\n" if lines else "")
     temporary = out.with_suffix(out.suffix + ".tmp")
     temporary.write_text(rendered)
@@ -370,9 +370,17 @@ def refresh_stitched_trajectory_manifest(
         source = None
 
     trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-    exchange_count = sum(
-        bool(line.strip()) for line in trajectory_path.read_text().splitlines()
-    )
+    trajectory_lines = [
+        line for line in trajectory_path.read_text().splitlines() if line.strip()
+    ]
+    exchange_count = len(trajectory_lines)
+    malformed_count = 0
+    for line in trajectory_lines:
+        try:
+            LLMExchange.model_validate_json(line)
+        except ValueError:
+            malformed_count += 1
+    rows_valid = malformed_count == 0
     expected_count = n_recorded + live_attempt_count
     count_matches = exchange_count == expected_count
     source_allows_training = bool(
@@ -380,7 +388,12 @@ def refresh_stitched_trajectory_manifest(
         and capture_manifest_allows_training(source_raw, exchange_count=n_recorded)
     )
     live_capture_complete = live_attempt_count == n_live and not live_errors
-    complete = source_allows_training and count_matches and live_capture_complete
+    complete = (
+        source_allows_training
+        and count_matches
+        and live_capture_complete
+        and rows_valid
+    )
 
     source_capture_source = source.capture_source if source else CaptureSource.NONE
     source_fidelity = source.capture_fidelity if source else CaptureFidelity.NONE
@@ -405,10 +418,18 @@ def refresh_stitched_trajectory_manifest(
         auth_mode = source_auth
 
     request_complete = bool(
-        source and source.request_complete and count_matches and live_capture_complete
+        source
+        and source.request_complete
+        and count_matches
+        and live_capture_complete
+        and rows_valid
     )
     response_complete = bool(
-        source and source.response_complete and count_matches and live_capture_complete
+        source
+        and source.response_complete
+        and count_matches
+        and live_capture_complete
+        and rows_valid
     )
     errors = list(source.errors) if source and not complete else []
     missing_fields = list(source.missing_fields) if source and not complete else []
@@ -424,6 +445,11 @@ def refresh_stitched_trajectory_manifest(
             f"expected {expected_count}, found {exchange_count}"
         )
         missing_fields.append("exchange_count")
+    if not rows_valid:
+        errors.append(
+            f"stitched LLM trajectory contains {malformed_count} malformed row(s)"
+        )
+        missing_fields.append("valid_provider_exchange")
     if not live_capture_complete:
         missing_fields.append("live_provider_exchange")
 
@@ -595,6 +621,9 @@ def update_continued_metadata(
             else usage_tracking.get("status", "off")
         )
     result_path.write_text(json.dumps(result, indent=2) + "\n")
+    from benchflow.trajectories.results import refresh_rollout_results_jsonl
+
+    refresh_rollout_results_jsonl(rollout_dir)
 
 
 def _host_proxy_binding(environment: str) -> tuple[str, str]:
@@ -620,7 +649,7 @@ async def _safe_sandbox_continuation_teardown(
     replay_proxy: SandboxReplayProxy | None,
     provider_runtime: Any | None,
     stop_provider_runtime: Callable[[Any], Awaitable[None]],
-    before_cleanup: Callable[[], Awaitable[None]] | None = None,
+    before_cleanup: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> list[str]:
     """Stop continuation sidecars but always let Rollout write final artifacts."""
     errors: list[str] = []
@@ -642,7 +671,7 @@ async def _safe_sandbox_continuation_teardown(
         rollout._error = "Continuation teardown warning: " + "; ".join(errors)
 
     if before_cleanup is not None:
-        await _capture("continuation artifact write", before_cleanup())
+        await _capture("continuation artifact write", before_cleanup(errors))
 
     await _capture("rollout cleanup", rollout.cleanup())
 
@@ -815,7 +844,9 @@ async def _continue_run_with_sandbox_proxy(
     live_exchanges: list[LLMExchange] = []
     artifacts_written = False
 
-    async def _write_artifacts_before_cleanup() -> None:
+    async def _write_artifacts_before_cleanup(
+        teardown_errors: list[str] | None = None,
+    ) -> None:
         nonlocal artifacts_written, live_exchanges, result, rollout_dir
         if artifacts_written:
             return
@@ -842,12 +873,7 @@ async def _continue_run_with_sandbox_proxy(
             ),
             live_errors=[
                 *(replay_proxy.live_errors if replay_proxy is not None else []),
-                *(
-                    ["continuation teardown failed before capture finalization"]
-                    if isinstance(rollout._error, str)
-                    and rollout._error.startswith("Continuation teardown warning:")
-                    else []
-                ),
+                *(teardown_errors or []),
             ],
         )
         update_continued_metadata(

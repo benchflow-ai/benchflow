@@ -654,6 +654,71 @@ def write_rollout_results_jsonl(
     return record
 
 
+def refresh_rollout_results_jsonl(rollout_dir: str | Path) -> dict[str, Any] | None:
+    """Rebuild the trainer-facing row from finalized rollout artifacts.
+
+    Continuation replaces the LLM trajectory and its manifest after Rollout's
+    normal result-building phase. Rebuilding here keeps ``results.jsonl`` in
+    lockstep with the final capture contract, model identity, and token usage.
+    """
+    rollout_path = Path(rollout_dir)
+    result_path = rollout_path / "result.json"
+    if not result_path.is_file():
+        return None
+    result = json.loads(result_path.read_text())
+    if not isinstance(result, dict):
+        raise ValueError(f"Invalid rollout result object: {result_path}")
+
+    prompts: list[str] = []
+    prompts_path = rollout_path / "prompts.json"
+    if prompts_path.is_file():
+        raw_prompts = json.loads(prompts_path.read_text())
+        if isinstance(raw_prompts, list):
+            prompts = [item for item in raw_prompts if isinstance(item, str)]
+
+    task_name = str(result.get("task_name") or rollout_path.name.split("__", 1)[0])
+    rollout_name = str(result.get("rollout_name") or rollout_path.name)
+    agent = str(result.get("agent") or "unknown")
+    agent_name = str(result.get("agent_name") or agent)
+    n_tool_calls = result.get("n_tool_calls")
+    if not isinstance(n_tool_calls, int) or isinstance(n_tool_calls, bool):
+        n_tool_calls = 0
+    record = write_rollout_results_jsonl(
+        rollout_path,
+        task_name=task_name,
+        rollout_name=rollout_name,
+        agent=agent,
+        agent_name=agent_name,
+        model=result.get("model") if isinstance(result.get("model"), str) else None,
+        n_tool_calls=n_tool_calls,
+        prompts=prompts,
+        trajectory=[],
+        partial_trajectory=bool(result.get("partial_trajectory")),
+        rewards=result.get("rewards")
+        if isinstance(result.get("rewards"), dict)
+        else None,
+        error=result.get("error") if isinstance(result.get("error"), str) else None,
+        verifier_error=(
+            result.get("verifier_error")
+            if isinstance(result.get("verifier_error"), str)
+            else None
+        ),
+        export_error=(
+            result.get("export_error")
+            if isinstance(result.get("export_error"), str)
+            else None
+        ),
+        timing=result.get("timing") if isinstance(result.get("timing"), dict) else None,
+        agent_result=(
+            result.get("agent_result")
+            if isinstance(result.get("agent_result"), dict)
+            else None
+        ),
+    )
+    write_job_results_jsonl(rollout_path.parent)
+    return record
+
+
 def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
     """Aggregate per-rollout ``results.jsonl`` files into ``job_dir/results.jsonl``."""
     job_path = Path(job_dir)

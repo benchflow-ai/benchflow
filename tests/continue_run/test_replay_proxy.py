@@ -13,7 +13,10 @@ from benchflow.continue_run.replay_proxy import (
     ReplayRouter,
     completion_to_sse,
 )
-from benchflow.continue_run.sandbox_proxy import _sandbox_proxy_source
+from benchflow.continue_run.sandbox_proxy import (
+    SandboxReplayProxy,
+    _sandbox_proxy_source,
+)
 
 from ._helpers import completion, exchange
 
@@ -110,6 +113,66 @@ def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
     capture_state = json.loads((tmp_path / "state.json").read_text())
     assert capture_state["live_attempt_count"] == 1
     assert capture_state["live_error_count"] == 1
+
+
+def test_sandbox_attempt_journal_failure_invalidates_stale_state(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1057 against completing an unjournaled sandbox call."""
+    namespace: dict[str, object] = {}
+    exec(_sandbox_proxy_source(), namespace)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"live_attempt_count": 0, "live_error_count": 0}))
+    state = namespace["ReplayState"](
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(tmp_path / "live.jsonl"),
+        state_path=str(state_path),
+        port=61357,
+    )
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(namespace["os"], "replace", fail_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        state.next_response({"messages": [{"role": "user"}]})
+
+    assert state.live_attempt_count == 1
+    assert state.live_error_count == 1
+    assert not state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_attempt_journal_marker_reaches_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1057 by surfacing the sandbox journal marker at teardown."""
+    proxy = SandboxReplayProxy(
+        sandbox=object(),
+        runtime_dir="/tmp/runtime",
+        port=61357,
+        pid_path="/tmp/runtime/pid",
+        live_log_path="/tmp/runtime/live.jsonl",
+        state_path="/tmp/runtime/state.json",
+        stdout_path="/tmp/runtime/stdout.log",
+        stderr_path="/tmp/runtime/stderr.log",
+    )
+
+    async def read_remote_text(_sandbox, path, **_kwargs):
+        assert path == proxy.stderr_path
+        return "BENCHFLOW_CAPTURE_STATE_WRITE_FAILED\n"
+
+    monkeypatch.setattr(
+        "benchflow.continue_run.sandbox_proxy._read_remote_text", read_remote_text
+    )
+
+    await proxy._load_runtime_errors()
+
+    assert proxy.live_errors == ["sandbox live attempt journal failed 1 time(s)"]
 
 
 def test_divergence_warns_by_default():
