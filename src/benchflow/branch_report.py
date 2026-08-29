@@ -14,10 +14,11 @@ write stays in :mod:`benchflow.rollout_branch`, whose module namespace is the
 patch seam the lineage-isolation tests pin.
 
 The split follows the data's direction: :mod:`benchflow.ablate` owns the
-*request* side (arm specs, pre-flight validation, driving the parent and the
-fork); this module owns the *result* side, and nothing here reaches back —
-``ablate`` imports from ``branch_report``, never the reverse, and the
-engine-facing lineage writer knows nothing about arms.
+*request* side (driving the parent and the fork, with arm specs and
+pre-flight validation in :mod:`benchflow.ablate_arms`); this module owns the
+*result* side, and nothing here reaches back — ``ablate`` imports from
+``branch_report``, never the reverse, and the engine-facing lineage writer
+knows nothing about arms.
 
 Determinism is the report's contract: arms keep request order, every delta is
 the engine's own content-addressed provenance dict, test names sort, and no
@@ -40,7 +41,7 @@ from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from benchflow.ablate import AblationArm
+    from benchflow.ablate_arms import AblationArm
     from benchflow.environment.manifest import ManifestBinding
     from benchflow.trajectories.tree import RolloutNode, RolloutTree
 
