@@ -42,6 +42,7 @@ from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.trajectories.llm_capture_manifest import (
+    LLM_TRAJECTORY_SCHEMA_VERSION,
     AuthMode,
     CaptureFidelity,
     CaptureSource,
@@ -270,15 +271,29 @@ def stitched_trajectory_lines(
 ) -> list[str]:
     """Build the continuous llm_trajectory: recorded prefix + live suffix.
 
-    The recorded prefix is taken verbatim from the source file (already redacted
-    and byte-identical to what the agent replayed); the live suffix is the
-    exchanges the proxy captured after the cut-point, redacted on the way out.
+    The recorded request/response payloads are preserved, while their metadata
+    is promoted to the current schema so a newly stitched artifact can never be
+    mistaken for sidecar-optional legacy data. The live suffix is redacted on
+    the way out.
     """
     lines: list[str] = []
     if original_llm_trajectory.is_file():
         for raw in original_llm_trajectory.read_text().splitlines():
             if raw.strip():
-                lines.append(raw)
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    lines.append(raw)
+                    continue
+                if not isinstance(payload, dict):
+                    lines.append(raw)
+                    continue
+                metadata = payload.setdefault("metadata", {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    payload["metadata"] = metadata
+                metadata["schema_version"] = LLM_TRAJECTORY_SCHEMA_VERSION
+                lines.append(redact_trajectory_text(json.dumps(payload, default=str)))
     for exchange in live_exchanges:
         raw = json.dumps(exchange.model_dump(mode="json"), default=str)
         lines.append(redact_trajectory_text(raw))
@@ -307,6 +322,7 @@ def write_stitched_trajectory(
                 "auth_mode": AuthMode.API_KEY.value,
                 "capture_source": CaptureSource.LITELLM_PROXY.value,
                 "capture_fidelity": CaptureFidelity.PROVIDER_WIRE.value,
+                "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
                 "request_complete": True,
                 "response_complete": True,
                 "role_attribution_complete": True,
@@ -329,6 +345,8 @@ def refresh_stitched_trajectory_manifest(
     live_model: str | None,
     n_recorded: int,
     n_live: int,
+    live_attempt_count: int,
+    live_errors: list[str],
 ) -> LLMTrajectoryManifest:
     """Replace rollout-finalization provenance with the final stitched contract."""
 
@@ -355,13 +373,14 @@ def refresh_stitched_trajectory_manifest(
     exchange_count = sum(
         bool(line.strip()) for line in trajectory_path.read_text().splitlines()
     )
-    expected_count = n_recorded + n_live
+    expected_count = n_recorded + live_attempt_count
     count_matches = exchange_count == expected_count
     source_allows_training = bool(
         source_raw is not None
         and capture_manifest_allows_training(source_raw, exchange_count=n_recorded)
     )
-    complete = source_allows_training and count_matches
+    live_capture_complete = live_attempt_count == n_live and not live_errors
+    complete = source_allows_training and count_matches and live_capture_complete
 
     source_capture_source = source.capture_source if source else CaptureSource.NONE
     source_fidelity = source.capture_fidelity if source else CaptureFidelity.NONE
@@ -385,10 +404,15 @@ def refresh_stitched_trajectory_manifest(
         capture_fidelity = source_fidelity
         auth_mode = source_auth
 
-    request_complete = bool(source and source.request_complete and count_matches)
-    response_complete = bool(source and source.response_complete and count_matches)
+    request_complete = bool(
+        source and source.request_complete and count_matches and live_capture_complete
+    )
+    response_complete = bool(
+        source and source.response_complete and count_matches and live_capture_complete
+    )
     errors = list(source.errors) if source and not complete else []
     missing_fields = list(source.missing_fields) if source and not complete else []
+    errors.extend(live_errors)
     if source is None:
         errors.append("source LLM trajectory manifest is missing or malformed")
         missing_fields.append("source_capture_provenance")
@@ -400,12 +424,14 @@ def refresh_stitched_trajectory_manifest(
             f"expected {expected_count}, found {exchange_count}"
         )
         missing_fields.append("exchange_count")
+    if not live_capture_complete:
+        missing_fields.append("live_provider_exchange")
 
     models = {
         value
         for value, present in (
             (original_model, n_recorded > 0),
-            (live_model, n_live > 0),
+            (live_model, live_attempt_count > 0),
         )
         if present and value
     }
@@ -730,6 +756,8 @@ async def continue_run(
         live_model=live_model,
         n_recorded=run.n_recorded_exchanges,
         n_live=len(router.live_exchanges),
+        live_attempt_count=router.live_attempt_count,
+        live_errors=list(router.live_errors),
     )
     update_continued_metadata(
         rollout_dir,
@@ -809,6 +837,18 @@ async def _continue_run_with_sandbox_proxy(
             live_model=live_model,
             n_recorded=run.n_recorded_exchanges,
             n_live=len(live_exchanges),
+            live_attempt_count=(
+                replay_proxy.live_attempt_count if replay_proxy is not None else 0
+            ),
+            live_errors=[
+                *(replay_proxy.live_errors if replay_proxy is not None else []),
+                *(
+                    ["continuation teardown failed before capture finalization"]
+                    if isinstance(rollout._error, str)
+                    and rollout._error.startswith("Continuation teardown warning:")
+                    else []
+                ),
+            ],
         )
         update_continued_metadata(
             rollout_dir,

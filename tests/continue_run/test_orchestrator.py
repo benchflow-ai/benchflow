@@ -156,7 +156,9 @@ def test_stitched_trajectory_recorded_prefix_plus_live_suffix(tmp_path):
     live = [exchange(completion(content="LIVE"))]
     lines = stitched_trajectory_lines(original, live)
     assert len(lines) == 3
-    assert json.loads(lines[0]) == {"a": 1}
+    first = json.loads(lines[0])
+    assert first["a"] == 1
+    assert first["metadata"]["schema_version"] == 2
     last = json.loads(lines[2])
     assert last["response"]["body"]["choices"][0]["message"]["content"] == "LIVE"
 
@@ -219,6 +221,8 @@ def test_refresh_stitched_manifest_replaces_pre_stitch_finalization(tmp_path):
         live_model=model,
         n_recorded=1,
         n_live=1,
+        live_attempt_count=1,
+        live_errors=[],
     )
 
     assert manifest.status is CaptureStatus.COMPLETE
@@ -230,6 +234,7 @@ def test_refresh_stitched_manifest_replaces_pre_stitch_finalization(tmp_path):
     live_row = json.loads(out.read_text().splitlines()[-1])
     assert live_row["metadata"]["capture_fidelity"] == "provider_wire"
     assert live_row["metadata"]["model"] == model
+    assert live_row["metadata"]["schema_version"] == 2
 
 
 def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path):
@@ -278,6 +283,8 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
         live_model="openai/gpt-5.5",
         n_recorded=1,
         n_live=1,
+        live_attempt_count=1,
+        live_errors=[],
     )
 
     assert manifest.status is CaptureStatus.PARTIAL
@@ -287,6 +294,64 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
     assert not capture_manifest_allows_training(
         manifest.model_dump(mode="json"), exchange_count=2
     )
+
+
+def test_refresh_stitched_manifest_rejects_missing_live_attempt(tmp_path):
+    """Guards PR #1057 against completing a lost continuation exchange."""
+
+    model = "openai/gpt-5.5"
+    source = write_run_folder(
+        tmp_path / "source",
+        exchanges=[exchange(completion(content="recorded"))],
+        model=model,
+    )
+    source_manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE,
+        capture_source=CaptureSource.LITELLM_PROXY,
+        capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
+        auth_mode=AuthMode.API_KEY,
+        agent="openhands",
+        model=model,
+        session_id="source",
+        exchange_count=1,
+        request_complete=True,
+        response_complete=True,
+        started_at="2026-08-29T00:00:00Z",
+    )
+    write_llm_trajectory_manifest(source, source_manifest)
+    rollout = tmp_path / "continued"
+    initialize_llm_trajectory_artifacts(
+        rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued",
+        started_at=source_manifest.started_at,
+    )
+    stitched = write_stitched_trajectory(
+        rollout,
+        source / "trajectory" / "llm_trajectory.jsonl",
+        [],
+        live_model=model,
+    )
+
+    manifest = refresh_stitched_trajectory_manifest(
+        rollout,
+        source,
+        original_model=model,
+        live_model=model,
+        n_recorded=1,
+        n_live=0,
+        live_attempt_count=1,
+        live_errors=["live provider request failed before capture"],
+    )
+
+    assert manifest.status is CaptureStatus.PARTIAL
+    assert manifest.request_complete is False
+    assert manifest.response_complete is False
+    assert "live_provider_exchange" in manifest.missing_fields
+    assert any("count mismatch" in error for error in manifest.errors)
+    recorded_row = json.loads(stitched.read_text())
+    assert recorded_row["metadata"]["schema_version"] == 2
 
 
 def test_summarize_llm_trajectory_usage_splits_recorded_and_live(tmp_path):

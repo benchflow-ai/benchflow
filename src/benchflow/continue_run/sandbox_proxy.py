@@ -39,6 +39,7 @@ def _sandbox_proxy_source() -> str:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -125,10 +126,26 @@ class ReplayState:
     upstream_api_key: str
     upstream_model: str
     live_log_path: str
+    state_path: str
+    port: int
     strict_divergence: bool = False
     cursor: int = 0
     divergences: int = 0
+    live_attempt_count: int = 0
+    live_error_count: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _write_state(self):
+        payload = {
+            "port": self.port,
+            "live_attempt_count": self.live_attempt_count,
+            "live_error_count": self.live_error_count,
+        }
+        temporary = self.state_path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+        os.replace(temporary, self.state_path)
 
     def _check_divergence(self, incoming, recorded_request):
         want = _n_messages(recorded_request)
@@ -155,9 +172,22 @@ class ReplayState:
                 response = exchange.get("response") or {}
                 return "replay", int(response.get("status_code") or 200), dict(response.get("body") or {})
             self.cursor += 1
+            self.live_attempt_count += 1
+            self._write_state()
 
-        status, body = self._forward_live(request_body)
-        self._append_live_exchange(request_body, status, body)
+        status, body, provider_observed = self._forward_live(request_body)
+        if provider_observed:
+            try:
+                self._append_live_exchange(request_body, status, body)
+            except Exception:
+                with self.lock:
+                    self.live_error_count += 1
+                    self._write_state()
+                raise
+        else:
+            with self.lock:
+                self.live_error_count += 1
+                self._write_state()
         return "live", status, body
 
     def _forward_live(self, request_body):
@@ -177,17 +207,17 @@ class ReplayState:
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
                 raw = response.read().decode("utf-8")
-                return int(response.status), json.loads(raw or "{}")
+                return int(response.status), json.loads(raw or "{}"), True
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             try:
                 body = json.loads(raw or "{}")
             except json.JSONDecodeError:
                 body = {"error": {"message": raw or str(exc)}}
-            return int(exc.code), body
+            return int(exc.code), body, True
         except Exception as exc:
             traceback.print_exc()
-            return 500, {"error": {"message": str(exc)}}
+            return 500, {"error": {"message": str(exc)}}, False
 
     def _append_live_exchange(self, request_body, status, body):
         row = {
@@ -286,11 +316,12 @@ def main():
         upstream_api_key=cfg["upstream_api_key"],
         upstream_model=cfg["upstream_model"],
         live_log_path=cfg["live_log_path"],
+        state_path=cfg["state_path"],
+        port=int(cfg["port"]),
         strict_divergence=bool(cfg.get("strict_divergence")),
     )
     server = ReplayServer(("127.0.0.1", int(cfg["port"])), ReplayHandler, state)
-    with open(cfg["state_path"], "w", encoding="utf-8") as handle:
-        json.dump({"port": int(cfg["port"])}, handle)
+    state._write_state()
     server.serve_forever()
 
 
@@ -341,6 +372,8 @@ class SandboxReplayProxy:
     stdout_path: str
     stderr_path: str
     live_exchanges: list[LLMExchange] = field(default_factory=list)
+    live_attempt_count: int = 0
+    live_errors: list[str] = field(default_factory=list)
 
     @property
     def base_url(self) -> str:
@@ -446,6 +479,7 @@ class SandboxReplayProxy:
 
     async def stop(self) -> None:
         self.live_exchanges = await self._load_live_exchanges()
+        await self._load_live_state()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"if [ -s {shlex.quote(self.pid_path)} ]; then "
@@ -462,11 +496,53 @@ class SandboxReplayProxy:
     async def _load_live_exchanges(self) -> list[LLMExchange]:
         text = await _read_remote_text(self.sandbox, self.live_log_path)
         exchanges: list[LLMExchange] = []
+        malformed = 0
         for raw in text.splitlines():
             if not raw.strip():
                 continue
             try:
                 exchanges.append(LLMExchange.model_validate_json(raw))
             except Exception:
+                malformed += 1
                 continue
+        if malformed:
+            self.live_errors.append(
+                f"{malformed} sandbox live exchange record(s) were malformed"
+            )
         return exchanges
+
+    async def _load_live_state(self) -> None:
+        text = await _read_remote_text(self.sandbox, self.state_path)
+        try:
+            state = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            state = None
+        if not isinstance(state, dict):
+            self.live_errors.append("sandbox live capture state was unavailable")
+            return
+        attempt_count = state.get("live_attempt_count")
+        error_count = state.get("live_error_count")
+        if (
+            not isinstance(attempt_count, int)
+            or isinstance(attempt_count, bool)
+            or attempt_count < 0
+        ):
+            self.live_errors.append("sandbox live attempt count was invalid")
+            return
+        self.live_attempt_count = attempt_count
+        if (
+            not isinstance(error_count, int)
+            or isinstance(error_count, bool)
+            or error_count < 0
+        ):
+            self.live_errors.append("sandbox live error count was invalid")
+        elif error_count:
+            self.live_errors.append(
+                f"{error_count} sandbox live provider request(s) failed before capture"
+            )
+        if self.live_attempt_count != len(self.live_exchanges):
+            self.live_errors.append(
+                "sandbox live exchange recovery mismatch: "
+                f"attempted {self.live_attempt_count}, "
+                f"recovered {len(self.live_exchanges)}"
+            )

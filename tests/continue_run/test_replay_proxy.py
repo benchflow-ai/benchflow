@@ -13,6 +13,7 @@ from benchflow.continue_run.replay_proxy import (
     ReplayRouter,
     completion_to_sse,
 )
+from benchflow.continue_run.sandbox_proxy import _sandbox_proxy_source
 
 from ._helpers import completion, exchange
 
@@ -46,6 +47,8 @@ def test_serves_recorded_responses_in_order_then_live():
     assert r3.body["choices"][0]["message"]["content"] == "LIVE"
     # the live exchange was captured for stitching
     assert len(router.live_exchanges) == 1
+    assert router.live_attempt_count == 1
+    assert router.live_errors == []
     assert len(live) == 1
 
 
@@ -55,6 +58,58 @@ def test_exhausted_without_forwarder_returns_error():
     result = router.next_response({"messages": [{}]})
     assert result.source == "error"
     assert result.status == 503
+    assert router.live_attempt_count == 1
+    assert router.live_errors
+
+
+def test_live_forwarder_failure_retains_unpaired_attempt() -> None:
+    """Guards PR #1057 against completing a lost host continuation call."""
+
+    def fail(_request):
+        raise RuntimeError("provider unavailable")
+
+    router = ReplayRouter([], live_forwarder=fail)
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        router.next_response({"messages": [{}]})
+
+    assert router.live_attempt_count == 1
+    assert router.live_exchanges == []
+    assert router.live_errors == [
+        "live provider request failed before a response could be captured"
+    ]
+
+
+def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1057 against labeling a synthesized sandbox 500 provider-wire."""
+
+    namespace: dict[str, object] = {}
+    exec(_sandbox_proxy_source(), namespace)
+    state = namespace["ReplayState"](
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(tmp_path / "live.jsonl"),
+        state_path=str(tmp_path / "state.json"),
+        port=61357,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise TimeoutError("provider unavailable")
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", fail)
+    source, status, body = state.next_response({"messages": [{"role": "user"}]})
+
+    assert source == "live"
+    assert status == 500
+    assert "error" in body
+    assert not (tmp_path / "live.jsonl").exists()
+    capture_state = json.loads((tmp_path / "state.json").read_text())
+    assert capture_state["live_attempt_count"] == 1
+    assert capture_state["live_error_count"] == 1
 
 
 def test_divergence_warns_by_default():
