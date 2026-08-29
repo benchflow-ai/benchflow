@@ -84,6 +84,48 @@ async def test_phase_api_registers_provisional_primary_oauth_target(
 
 
 @pytest.mark.asyncio
+async def test_claude_capture_setup_clears_reused_raw_attempt(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against importing raw bodies from a crashed retry."""
+
+    commands: list[str] = []
+
+    class FailingCollectorEnv:
+        async def exec(self, command, **_kwargs):
+            commands.append(command)
+            if "nohup" in command:
+                return SimpleNamespace(return_code=1, stdout="", stderr="no node")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def upload_file(self, *_args, **_kwargs):
+            return None
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="reused-rollout",
+        started_at=STARTED_AT,
+    )
+    await capture.prepare_agent(
+        FailingCollectorEnv(),
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        agent_env={"CLAUDE_CODE_OAUTH_TOKEN": "test-token"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+
+    stop, setup = commands[:2]
+    assert 'case "$old_pid"' in stop
+    assert "otel_sink.mjs*" in stop
+    clear_at = setup.index("-mindepth 1 -delete")
+    create_at = setup.index("mkdir -p")
+    assert clear_at < create_at
+
+
+@pytest.mark.asyncio
 async def test_native_download_selects_recent_files_before_copying(
     tmp_path: Path,
 ) -> None:

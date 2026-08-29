@@ -318,8 +318,11 @@ class LLMTrajectoryCapture:
     async def _ensure_otel_sink(self, env: Any, *, sandbox_user: str | None) -> int:
         if self._collector_started:
             return await self._read_collector_port(env)
+        await self._stop_otel_sink(env)
         capture_owner = shlex.quote(sandbox_user or "root")
         setup = await env.exec(
+            f"find {self._remote_capture_root} -depth -mindepth 1 -delete "
+            "2>/dev/null || true\n"
             f"mkdir -p {self._remote_capture_root}/raw "
             f"{self._remote_capture_root}/otel\n"
             f"chown -R {capture_owner} {self._remote_capture_root}\n"
@@ -379,6 +382,36 @@ exit 1
         self._collector_started = True
         return _parse_port(result.stdout)
 
+    async def _stop_otel_sink(self, env: Any) -> None:
+        command = f"""
+if ! test -s {self._remote_capture_root}/pid; then
+  exit 0
+fi
+read -r old_pid < {self._remote_capture_root}/pid || true
+case "$old_pid" in
+  ''|*[!0-9]*) exit 0 ;;
+esac
+old_command=$(ps -p "$old_pid" -o command= 2>/dev/null || true)
+case "$old_command" in
+  *{self._remote_capture_root}/otel_sink.mjs*) ;;
+  *) exit 0 ;;
+esac
+kill -TERM "$old_pid" 2>/dev/null || true
+for attempt in $(seq 1 20); do
+  if ! kill -0 "$old_pid" 2>/dev/null; then
+    exit 0
+  fi
+  sleep 0.05
+done
+echo "previous Claude telemetry collector did not stop" >&2
+exit 1
+"""
+        result = await env.exec(command, user="root", timeout_sec=5)
+        if result.return_code != 0:
+            detail = (result.stderr or result.stdout or "collector did not stop")[:300]
+            raise RuntimeError(f"Claude OTel sink shutdown failed: {detail}")
+        self._collector_started = False
+
     async def _read_collector_port(self, env: Any) -> int:
         result = await env.exec(
             f"cat {self._remote_capture_root}/port",
@@ -391,13 +424,7 @@ exit 1
 
     async def _collect_native_results(self, env: Any) -> list[_NativeCaptureBundle]:
         if self._collector_started:
-            await env.exec(
-                f"if test -s {self._remote_capture_root}/pid; then "
-                f"kill -TERM $(cat {self._remote_capture_root}/pid) "
-                f"2>/dev/null || true; fi",
-                user="root",
-                timeout_sec=5,
-            )
+            await self._stop_otel_sink(env)
         bundles: list[_NativeCaptureBundle] = []
         native_targets = self._native_targets()
         claude_targets = tuple(
