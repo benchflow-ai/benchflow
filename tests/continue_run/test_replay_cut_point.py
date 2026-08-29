@@ -434,7 +434,11 @@ async def test_compute_workspace_digest_runs_the_pipeline_in_the_sandbox():
         "root": "/app",
     }
     (command,) = commands
-    assert "find . -type f | sort | xargs -r sha256sum" in command
+    # The null-safe, fail-closed form (PR #1046 second review, P1-A): names
+    # travel NUL-terminated and no stage hides behind a trailing pipe.
+    assert "find . -type f -print0" in command
+    assert "xargs -0 -r sha256sum" in command
+    assert "find . -type f | sort" not in command
     assert "cd /app" in command
 
 
@@ -456,6 +460,167 @@ async def test_compute_workspace_digest_fails_closed_on_bad_output():
         await compute_workspace_digest(FailingSandbox())
     with pytest.raises(RuntimeError, match="not a sha256"):
         await compute_workspace_digest(GarbageSandbox())
+
+
+# Real-shell workspace-digest semantics (PR #1046 second review, P1-A).
+#
+# The finding: the digest pipeline fed filenames through newline-separated
+# ``find | sort | xargs``, so a legal name like ``file with spaces.txt`` was
+# word-split into several arguments; the inner ``sha256sum`` failed, the
+# trailing ``| sha256sum`` succeeded anyway (a pipeline's status is its last
+# command's), and two materially different workspaces recorded the *same*
+# successful digest. These tests run the command in a genuine ``/bin/sh`` over
+# a real temp dir — the shell, ``find``, ``sort`` and ``xargs`` under test are
+# never faked. Only the digest *tools* may be shimmed on hosts without GNU
+# coreutils (macOS): ``shasum -a 256`` is a real sha256 and BSD
+# ``stat -f '%N %Lp'`` is a real stat — the shims translate flag spelling,
+# not semantics.
+
+
+def _digest_tool_bin(tmp_path: Path) -> Path | None:
+    """A PATH dir supplying ``sha256sum``/GNU-style ``stat``, if needed.
+
+    Returns ``None`` when the host tools already speak the pipeline's dialect;
+    otherwise writes real-tool shims into ``tmp_path`` and returns it. Skips
+    the calling test when no real tool exists to shim.
+    """
+    import shutil
+    import stat as stat_mod
+    import subprocess
+
+    bin_dir = tmp_path / "digest-tools-bin"
+    needed = False
+
+    def _shim(name: str, body: str) -> None:
+        path = bin_dir / name
+        bin_dir.mkdir(exist_ok=True)
+        path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(path.stat().st_mode | stat_mod.S_IXUSR)
+
+    if shutil.which("sha256sum") is None:
+        shasum = shutil.which("shasum")
+        if shasum is None:
+            pytest.skip("host has neither sha256sum nor shasum")
+        _shim("sha256sum", f'exec "{shasum}" -a 256 "$@"')
+        needed = True
+
+    probe = tmp_path / "digest-tools-probe"
+    probe.write_text("")
+    gnu_stat = (
+        subprocess.run(
+            ["stat", "-c", "%n %a", str(probe)], capture_output=True
+        ).returncode
+        == 0
+    )
+    if not gnu_stat:
+        bsd_stat = (
+            subprocess.run(
+                ["/usr/bin/stat", "-f", "%N %Lp", str(probe)], capture_output=True
+            ).returncode
+            == 0
+        )
+        if not bsd_stat:
+            pytest.skip("host has neither GNU nor BSD stat")
+        _shim(
+            "stat",
+            'if [ "$1" = "-c" ] && [ "$2" = "%n %a" ]; then\n'
+            "  shift 2\n"
+            '  exec /usr/bin/stat -f "%N %Lp" "$@"\n'
+            "fi\n"
+            'exec /usr/bin/stat "$@"',
+        )
+        needed = True
+    return bin_dir if needed else None
+
+
+class _LocalShellSandbox:
+    """``exec`` = a real ``/bin/sh -c`` on the host — no faked shell semantics."""
+
+    def __init__(self, extra_path: Path | None) -> None:
+        self._extra_path = extra_path
+
+    async def exec(self, command, timeout_sec=None):
+        import os
+        import subprocess
+
+        from benchflow.sandbox.protocol import ExecResult
+
+        env = dict(os.environ)
+        if self._extra_path is not None:
+            env["PATH"] = f"{self._extra_path}:{env.get('PATH', '')}"
+        proc = subprocess.run(
+            ["/bin/sh", "-c", command],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_sec,
+        )
+        return ExecResult(
+            return_code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr
+        )
+
+
+async def test_workspace_digest_distinguishes_trees_differing_inside_a_spaced_name(
+    tmp_path: Path,
+) -> None:
+    """The reviewer's exact repro: two workspaces whose only difference is the
+    CONTENT of ``file with spaces.txt`` (0 bytes vs 37) must record different
+    digests — the word-split pipeline recorded the same successful digest for
+    both. Guards ``fix(sandbox): workspace digests are null-safe and fail
+    closed``."""
+    from benchflow.sandbox.workspace_digest import compute_workspace_digest
+
+    ws_a = tmp_path / "ws_a"
+    ws_b = tmp_path / "ws_b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    (ws_a / "file with spaces.txt").write_text("")
+    (ws_b / "file with spaces.txt").write_text("x" * 37)
+    sandbox = _LocalShellSandbox(_digest_tool_bin(tmp_path))
+
+    digest_a = await compute_workspace_digest(sandbox, root=str(ws_a))
+    digest_b = await compute_workspace_digest(sandbox, root=str(ws_b))
+
+    assert digest_a["digest"] != digest_b["digest"], (
+        "materially different workspaces recorded the same digest — the "
+        "pipeline is still word-splitting filenames"
+    )
+    # And the digest is still deterministic: same tree, same value.
+    digest_a_again = await compute_workspace_digest(sandbox, root=str(ws_a))
+    assert digest_a_again["digest"] == digest_a["digest"]
+
+
+async def test_workspace_digest_newline_filename_never_succeeds_wrongly(
+    tmp_path: Path,
+) -> None:
+    """A filename containing a newline either digests correctly (different
+    contents => different digests) or fails closed with a reason — it must
+    never record the same successful digest for materially different trees.
+    Guards ``fix(sandbox): workspace digests are null-safe and fail closed``."""
+    from benchflow.sandbox.workspace_digest import compute_workspace_digest
+
+    name = "bad\nname.txt"
+    ws_a = tmp_path / "ws_a"
+    ws_b = tmp_path / "ws_b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    (ws_a / name).write_text("alpha")
+    (ws_b / name).write_text("beta")
+    sandbox = _LocalShellSandbox(_digest_tool_bin(tmp_path))
+
+    digests: list[str | None] = []
+    for root in (ws_a, ws_b):
+        try:
+            payload = await compute_workspace_digest(sandbox, root=str(root))
+        except RuntimeError:
+            digests.append(None)  # fail-closed with a reason: acceptable
+        else:
+            digests.append(payload["digest"])
+    if digests[0] is not None and digests[1] is not None:
+        assert digests[0] != digests[1], (
+            "materially different workspaces recorded the same digest for a "
+            "newline-bearing filename"
+        )
 
 
 def test_update_continued_metadata_reconciles_cut_point_in_both_files(tmp_path):

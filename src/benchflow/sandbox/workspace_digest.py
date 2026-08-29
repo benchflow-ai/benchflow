@@ -22,23 +22,66 @@ from typing import Any
 WORKSPACE_DIGEST_ROOT = "/app"
 
 #: What the digest is computed over — recorded next to every digest so a
-#: reader knows two digests are comparable before comparing them.
+#: reader knows two digests are comparable before comparing them. The
+#: null-safe/fail-closed wording is deliberate: the original ``find|sort|
+#: xargs`` form word-split legal filenames and recorded a *successful wrong*
+#: digest (PR #1046 second review, P1-A), so a digest recorded under that
+#: basis must never read as comparable to one recorded under this one.
 WORKSPACE_DIGEST_BASIS = (
     "sha256 over sorted per-file sha256sums + a sorted stat listing of names "
-    "and permission bits (find|sort|sha256sum)"
+    "and permission bits (null-safe find -print0|sort -z|xargs -0, "
+    "fail-closed staged pipeline)"
 )
 
 _MARKER = "BFWSDIGEST:"
 
 
-def workspace_digest_command(root: str = WORKSPACE_DIGEST_ROOT) -> str:
-    """The in-sandbox pipeline: one deterministic line summarizing ``root``."""
+def workspace_digest_command(
+    root: str = WORKSPACE_DIGEST_ROOT, *, exclude_basename: str | None = None
+) -> str:
+    """The in-sandbox pipeline: one deterministic line summarizing ``root``.
+
+    Null-safe and fail-closed (PR #1046 second review, P1-A):
+
+    * File names travel NUL-terminated end to end
+      (``find -print0 | sort -z | xargs -0``), so a legal name containing
+      spaces — or even a newline — stays one argument. The original
+      newline-separated form word-split ``file with spaces.txt`` into three
+      arguments; the inner ``sha256sum`` failed on all of them and two
+      materially different workspaces recorded the *same* digest.
+    * Every stage writes to its own file under a private temp dir with its
+      exit status checked by ``&&`` — an inner failure fails the whole
+      command, so a digest is either correct or absent-with-reason, never
+      wrong. This is intrinsic failure propagation: the sandboxes run
+      ``sh -c`` (busybox ash on minimal images), where ``pipefail`` is not
+      reliably available, and a trailing ``| sha256sum`` would otherwise
+      succeed over a broken producer (a pipeline's status is its last
+      command's). ``LC_ALL=C`` pins the sort to byte order so the digest
+      does not depend on the image's locale.
+
+    For workspaces whose filenames the old pipeline handled correctly, the
+    byte stream reaching the final ``sha256sum`` is unchanged, so recorded
+    digest values are stable; trees with pathological names now digest
+    correctly (a genuinely different value) instead of colliding.
+
+    ``exclude_basename`` drops files whose basename matches the glob from
+    both listings — the docker proofs exclude a ``.backup``-restored sqlite
+    DB that is logically, not byte-, identical.
+    """
     quoted = shlex.quote(root)
+    skip = f" ! -name {shlex.quote(exclude_basename)}" if exclude_basename else ""
+    d = '"$__bf_td"'
     return (
-        f"cd {quoted} && {{ "
-        "find . -type f | sort | xargs -r sha256sum; "
-        "find . | sort | xargs -r stat -c '%n %a'; "
-        "} | sha256sum"
+        f"cd {quoted} && __bf_td=$(mktemp -d) && "
+        f"find . -type f{skip} -print0 >{d}/f0 && "
+        f"LC_ALL=C sort -z <{d}/f0 >{d}/f1 && "
+        f"xargs -0 -r sha256sum <{d}/f1 >{d}/sums && "
+        f"find .{skip} -print0 >{d}/a0 && "
+        f"LC_ALL=C sort -z <{d}/a0 >{d}/a1 && "
+        f"xargs -0 -r stat -c '%n %a' <{d}/a1 >{d}/stats && "
+        f"cat {d}/sums {d}/stats >{d}/all && "
+        f"sha256sum <{d}/all && "
+        f"rm -rf {d}"
     )
 
 
