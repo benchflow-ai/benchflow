@@ -31,7 +31,19 @@ def _build_results_row(rollout_dir: Path, *, agent_result: dict) -> dict:
     )
 
 
-def _write_exchange(trajectory_dir: Path, *, fidelity: str) -> None:
+def _write_exchange(
+    trajectory_dir: Path,
+    *,
+    fidelity: str,
+    schema_version: int | None = None,
+) -> None:
+    metadata: dict[str, str | bool | int] = {
+        "capture_fidelity": fidelity,
+        "request_complete": fidelity == "provider_wire",
+        "response_complete": True,
+    }
+    if schema_version is not None:
+        metadata["schema_version"] = schema_version
     (trajectory_dir / "llm_trajectory.jsonl").write_text(
         json.dumps(
             {
@@ -45,11 +57,7 @@ def _write_exchange(trajectory_dir: Path, *, fidelity: str) -> None:
                         "content": [{"type": "text", "text": "hi"}],
                     },
                 },
-                "metadata": {
-                    "capture_fidelity": fidelity,
-                    "request_complete": fidelity == "provider_wire",
-                    "response_complete": True,
-                },
+                "metadata": metadata,
             }
         )
         + "\n"
@@ -93,6 +101,28 @@ def test_corrupt_capture_manifest_fails_closed_for_training(tmp_path: Path) -> N
     trajectory_dir.mkdir()
     _write_exchange(trajectory_dir, fidelity="provider_wire")
     (trajectory_dir / "llm_trajectory.manifest.json").write_text("{broken")
+
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == (
+        "missing_healthy_structured_llm_trajectory"
+    )
+    assert row["is_completed"] is False
+
+
+def test_sidecarless_schema_v2_capture_fails_closed_for_canonical_results(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against treating detached schema-v2 rows as legacy."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        schema_version=2,
+    )
 
     row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
 

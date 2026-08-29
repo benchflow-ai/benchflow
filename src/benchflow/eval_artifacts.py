@@ -16,7 +16,7 @@ from benchflow.trajectories.export_prime_sft import (
     load_llm_trajectory_jsonl,
 )
 from benchflow.trajectories.llm_capture_manifest import (
-    capture_manifest_allows_training,
+    capture_artifact_allows_training,
     read_llm_trajectory_manifest,
 )
 
@@ -209,9 +209,7 @@ def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
     if not rows:
         return True, False, 0
     manifest = read_llm_trajectory_manifest(rollout_dir)
-    if manifest is not None and not capture_manifest_allows_training(
-        manifest, exchange_count=len(rows)
-    ):
+    if not capture_artifact_allows_training(manifest, exchanges=rows):
         return True, False, len(rows)
     return True, True, len(rows)
 

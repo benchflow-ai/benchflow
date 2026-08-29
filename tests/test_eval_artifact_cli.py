@@ -21,7 +21,12 @@ def _write_task(task_dir: Path) -> None:
     (task_dir / "task.toml").write_text('version = "1.0"\n', encoding="utf-8")
 
 
-def _write_llm_trajectory(rollout_dir: Path, *, tool_calls: bool = True) -> None:
+def _write_llm_trajectory(
+    rollout_dir: Path,
+    *,
+    tool_calls: bool = True,
+    schema_version: int | None = None,
+) -> None:
     trajectory = rollout_dir / "trajectory"
     trajectory.mkdir(parents=True, exist_ok=True)
     message: dict[str, Any] = {"role": "assistant", "content": "done"}
@@ -37,31 +42,31 @@ def _write_llm_trajectory(rollout_dir: Path, *, tool_calls: bool = True) -> None
                 }
             ],
         }
-    (trajectory / "llm_trajectory.jsonl").write_text(
-        json.dumps(
-            {
-                "request": {
-                    "body": {
-                        "model": "m",
-                        "messages": [{"role": "user", "content": "do it"}],
-                        "tools": [
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "finish",
-                                    "parameters": {"type": "object", "properties": {}},
-                                },
-                            }
-                        ],
+    exchange = {
+        "request": {
+            "body": {
+                "model": "m",
+                "messages": [{"role": "user", "content": "do it"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
                     }
-                },
-                "response": {
-                    "status_code": 200,
-                    "body": {"choices": [{"message": message}]},
-                },
+                ],
             }
-        )
-        + "\n",
+        },
+        "response": {
+            "status_code": 200,
+            "body": {"choices": [{"message": message}]},
+        },
+    }
+    if schema_version is not None:
+        exchange["metadata"] = {"schema_version": schema_version}
+    (trajectory / "llm_trajectory.jsonl").write_text(
+        json.dumps(exchange) + "\n",
         encoding="utf-8",
     )
 
@@ -125,6 +130,23 @@ def test_health_rejects_empty_llm_capture_without_manifest(tmp_path: Path) -> No
     assert health["rows"][0]["has_llm_trajectory"] is True
     assert health["rows"][0]["valid_llm_trajectory"] is False
     assert health["rows"][0]["llm_trajectory_rows"] == 0
+
+
+def test_health_rejects_sidecarless_schema_v2_llm_capture(tmp_path: Path) -> None:
+    """Guards PR #1057 against validating detached schema-v2 capture rows."""
+
+    job = tmp_path / "job"
+    rollout = job / "task-a__abc"
+    _write_rollout(rollout)
+    _write_llm_trajectory(rollout, schema_version=2)
+
+    health = build_health_summary(job)
+
+    assert health["missing_llm_trajectory"] == 0
+    assert health["malformed_llm_trajectory"] == 1
+    assert health["rows"][0]["has_llm_trajectory"] is True
+    assert health["rows"][0]["valid_llm_trajectory"] is False
+    assert health["rows"][0]["llm_trajectory_rows"] == 1
 
 
 def test_eval_run_writes_manifest_health_and_canonical_artifacts(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -153,6 +154,33 @@ def capture_manifest_allows_training(
         and manifest.get("response_complete") is True
         and exchange_count > 0
         and expected_count == exchange_count
+    )
+
+
+def capture_artifact_allows_training(
+    manifest: dict[str, Any] | None,
+    *,
+    exchanges: Sequence[dict[str, Any]],
+) -> bool:
+    """Apply the sidecar contract while retaining genuine legacy JSONL support."""
+
+    if manifest is not None:
+        return capture_manifest_allows_training(
+            manifest,
+            exchange_count=len(exchanges),
+        )
+    return not any(_exchange_requires_manifest(exchange) for exchange in exchanges)
+
+
+def _exchange_requires_manifest(exchange: dict[str, Any]) -> bool:
+    metadata = exchange.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    schema_version = metadata.get("schema_version")
+    return bool(
+        isinstance(schema_version, int)
+        and not isinstance(schema_version, bool)
+        and schema_version >= LLM_TRAJECTORY_SCHEMA_VERSION
     )
 
 

@@ -245,6 +245,31 @@ def test_partial_manifest_blocks_prime_and_trl_training_exports(
     assert trl_stats.skipped_insufficient_capture_fidelity == 1
 
 
+def test_sidecarless_schema_v2_blocks_prime_and_trl_training_exports(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against exporting detached schema-v2 capture rows."""
+
+    exchange = _exchange(final=True)
+    exchange["metadata"] = {
+        "schema_version": 2,
+        "capture_fidelity": "provider_wire",
+        "request_complete": True,
+        "response_complete": True,
+    }
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+
+    prime_rows, prime_stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        tmp_path / "job"
+    )
+    trl_rows, trl_stats = convert_benchflow_rollouts_to_trl_sft_rows(tmp_path / "job")
+
+    assert prime_rows == []
+    assert prime_stats.skipped_insufficient_capture_fidelity == 1
+    assert trl_rows == []
+    assert trl_stats.skipped_insufficient_capture_fidelity == 1
+
+
 def test_manifest_count_mismatch_blocks_prime_and_trl_training_exports(
     tmp_path: Path,
 ) -> None:

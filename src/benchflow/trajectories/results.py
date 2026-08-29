@@ -33,7 +33,7 @@ from benchflow.trajectories.export_prime_sft import (
     validate_prime_sft_row,
 )
 from benchflow.trajectories.llm_capture_manifest import (
-    capture_manifest_allows_training,
+    capture_artifact_allows_training,
     capture_manifest_has_oauth_role_capture,
     read_llm_trajectory_manifest,
 )
@@ -182,8 +182,9 @@ def _llm_steps_from_trajectory(
     except PrimeSftTrajectoryJsonlError as exc:
         return _LLMStepsResult([], [], f"Invalid LLM trajectory JSONL: {exc}")
     capture_manifest = read_llm_trajectory_manifest(rollout_dir)
-    if capture_manifest is not None and not capture_manifest_allows_training(
-        capture_manifest, exchange_count=len(exchanges)
+    if not capture_artifact_allows_training(
+        capture_manifest,
+        exchanges=exchanges,
     ):
         return _LLMStepsResult([], [], None, capture_contract_rejected=True)
     training_success_indices = _training_success_exchange_indices(exchanges)
