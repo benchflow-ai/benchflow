@@ -96,6 +96,33 @@ def test_reasoning_effort_bogus_clean_error(tmp_path: Path):
     assert "Traceback (most recent call last)" not in result.output
 
 
+def test_reasoning_effort_unsupported_by_agent_clean_error(tmp_path: Path):
+    """Guards P2-A of the PR #1046 second review: gemini declares no ACP
+    effort config option, so a requested effort is decidable at planning —
+    it must be rejected before any provisioning, not after the sandbox was
+    built and the agent installed."""
+    task = _task_dir(tmp_path)
+    with patch.object(Evaluation, "run", new=_fake_run_pass):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "gemini",
+                "--sandbox",
+                "docker",
+                "--reasoning-effort",
+                "high",
+            ],
+        )
+    assert result.exit_code == 1
+    assert "not supported by agent 'gemini'" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
+
+
 def test_tasks_dir_missing_clean_error(tmp_path: Path):
     with patch.object(Evaluation, "run", new=_fake_run_pass):
         result = CliRunner().invoke(
