@@ -1657,6 +1657,7 @@ async def ensure_litellm_runtime(
     live_trajectory_path: Path | None = None,
     force_sandbox_local: bool = False,
     role_name: str | None = None,
+    sandbox_user: str | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1723,9 +1724,13 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
+    capture_trusted = not sandbox_local or bool(
+        sandbox_user and sandbox_user not in {"root", "0"}
+    )
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
-        f"{session_id}:{role_name or 'primary'}:{skill_gate_key}"
+        f"{session_id}:{role_name or 'primary'}:{sandbox_user or 'root'}:"
+        f"{skill_gate_key}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
@@ -1794,6 +1799,7 @@ async def ensure_litellm_runtime(
         server=server,
         config_key=config_key,
         master_key=master_key,
+        capture_trusted=capture_trusted,
     )
     if live_trajectory_path is not None:
         server.start_live_capture(live_trajectory_path)

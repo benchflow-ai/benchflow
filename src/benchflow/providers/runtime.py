@@ -31,6 +31,7 @@ class ProviderRuntime:
     server: LiteLLMProcess | None = None
     config_key: str | None = None
     master_key: str | None = None
+    capture_trusted: bool = True
 
     @property
     def base_url(self) -> str:
@@ -52,6 +53,7 @@ async def ensure_litellm_runtime(
     live_trajectory_path: Path | None = None,
     force_sandbox_local: bool = False,
     role_name: str | None = None,
+    sandbox_user: str | None = None,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -71,6 +73,7 @@ async def ensure_litellm_runtime(
         live_trajectory_path=live_trajectory_path,
         force_sandbox_local=force_sandbox_local,
         role_name=role_name,
+        sandbox_user=sandbox_user,
     )
 
 

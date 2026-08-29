@@ -10,7 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from benchflow.trajectories.llm_capture import LLMTrajectoryCapture, _CaptureTarget
-from benchflow.trajectories.llm_capture_manifest import AuthMode
+from benchflow.trajectories.llm_capture_manifest import (
+    AuthMode,
+    CaptureFidelity,
+    CaptureStatus,
+)
 from benchflow.trajectories.llm_capture_records import load_provider_wire_records
 from benchflow.trajectories.native_capture_parsers import parse_codex_sessions
 
@@ -247,6 +251,72 @@ def test_provider_role_attribution_intersects_repeated_role_with_model(
     assert all(
         record["metadata"]["role_attribution_complete"] is True for record in records
     )
+
+
+@pytest.mark.asyncio
+async def test_root_sandbox_provider_capture_is_retained_but_audit_only(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on root-agent-writable proxy capture."""
+
+    model = "openai/gpt-5.5"
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model=model,
+        session_id="rollout-root",
+        started_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+    )
+    await capture.prepare_agent(
+        None,
+        agent="codex-acp",
+        model=model,
+        agent_env={"OPENAI_API_KEY": "test-key"},
+        credential_home="/root",
+        sandbox_user=None,
+    )
+    capture.bind_provider_capture_trust(
+        agent="codex-acp",
+        model=model,
+        credential_home="/root",
+        trusted=False,
+    )
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {
+                    "body": {
+                        "model": "gpt-5.5",
+                        "messages": [{"role": "user", "content": "solve"}],
+                    }
+                },
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "choices": [
+                            {"message": {"role": "assistant", "content": "done"}}
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    },
+                },
+                "metadata": {
+                    "benchflow_agent": "codex-acp",
+                    "benchflow_role": "primary",
+                    "benchflow_requested_model": model,
+                },
+            }
+        )
+        + "\n"
+    )
+
+    await capture.finalize(None, acp_events=[], model_call_seen=True)
+
+    record = json.loads(capture.trajectory_path.read_text())
+    assert record["metadata"]["capture_fidelity"] == "agent_session"
+    assert record["metadata"]["capture_custody"] == "agent_writable_sandbox"
+    assert capture.manifest.status is CaptureStatus.PARTIAL
+    assert capture.manifest.capture_fidelity is CaptureFidelity.AGENT_SESSION
+    assert any("shared root custody" in error for error in capture.manifest.errors)
 
 
 @pytest.mark.asyncio

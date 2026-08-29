@@ -60,6 +60,7 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
     assert provider_runtime is not None
     assert provider_runtime.kind == "litellm"
     assert provider_runtime.backend_model == "bedrock/us.anthropic.claude-opus-4-8"
+    assert provider_runtime.capture_trusted is True
     assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:32123/v1"
     assert updated["OPENAI_API_KEY"] == provider_runtime.master_key
     assert updated[LITELLM_MODEL_ALIAS_ENV] == (
@@ -160,8 +161,35 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
     assert starts[0]["sandbox"] is sandbox
     assert provider_runtime is not None
     assert provider_runtime.base_url == "http://127.0.0.1:45678"
+    assert provider_runtime.capture_trusted is False
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
     assert updated["LLM_MODEL"].startswith("openai/benchflow-aws-bedrock")
+
+
+@pytest.mark.asyncio
+async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch):
+    """Guards PR #1057's root/non-root provider-capture custody boundary."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    _, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={
+            "AWS_BEARER_TOKEN_BEDROCK": "token",
+            "AWS_REGION": "us-west-2",
+        },
+        model="aws-bedrock/us.anthropic.claude-opus-4-8",
+        runtime=None,
+        environment="daytona",
+        session_id="run-non-root",
+        sandbox=SimpleNamespace(),
+        sandbox_user="agent",
+    )
+
+    assert provider_runtime is not None
+    assert provider_runtime.capture_trusted is True
 
 
 @pytest.mark.asyncio

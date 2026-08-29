@@ -181,6 +181,8 @@ class LLMTrajectoryCapture:
             auth_mode=auth_mode,
         )
         previous_target = self._targets.get(target_key)
+        if previous_target is not None and not previous_target.provider_capture_trusted:
+            target = replace(target, provider_capture_trusted=False)
         if (
             previous_target is not None
             and previous_target.native
@@ -299,6 +301,37 @@ class LLMTrajectoryCapture:
             logger.warning("Native LLM capture disabled: %s", warning)
             return
         self._targets[key] = replace(target, native_session_ids=session_ids)
+
+    def bind_provider_capture_trust(
+        self,
+        *,
+        agent: str,
+        model: str | None,
+        credential_home: str,
+        trusted: bool,
+        role_name: str | None = None,
+    ) -> None:
+        """Bind the gateway custody boundary to its prepared capture target."""
+
+        base_key = _capture_target_base_key(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            role_name=role_name,
+        )
+        key = self._active_target_keys.get(base_key)
+        if key is None:
+            return
+        target = self._targets.get(key)
+        if target is None or target.native:
+            return
+        self._targets[key] = replace(
+            target,
+            # Once any provider rows for this target were collected under
+            # shared root custody, later trusted placement cannot recover the
+            # target-level training claim without per-row custody evidence.
+            provider_capture_trusted=(target.provider_capture_trusted and trusted),
+        )
 
     def _refresh_manifest_auth_mode(self) -> None:
         modes = {target.auth_mode for target in self._targets.values()}

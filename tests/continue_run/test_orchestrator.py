@@ -296,6 +296,69 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
     )
 
 
+def test_root_sandbox_live_suffix_is_retained_but_audit_only(tmp_path):
+    """Guards PR #1057 against trusting root-writable continuation capture."""
+
+    model = "openai/gpt-5.5"
+    source = write_run_folder(
+        tmp_path / "source",
+        exchanges=[exchange(completion(content="recorded"))],
+        model=model,
+    )
+    source_manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE,
+        capture_source=CaptureSource.LITELLM_PROXY,
+        capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
+        auth_mode=AuthMode.API_KEY,
+        agent="openhands",
+        model=model,
+        session_id="source",
+        exchange_count=1,
+        request_complete=True,
+        response_complete=True,
+        started_at="2026-08-29T00:00:00Z",
+        finished_at="2026-08-29T00:01:00Z",
+    )
+    write_llm_trajectory_manifest(source, source_manifest)
+
+    rollout = tmp_path / "continued"
+    initialize_llm_trajectory_artifacts(
+        rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued",
+        started_at=source_manifest.finished_at,
+    )
+    out = write_stitched_trajectory(
+        rollout,
+        source / "trajectory" / "llm_trajectory.jsonl",
+        [exchange(completion(content="live"))],
+        live_model=model,
+        live_capture_trusted=False,
+    )
+    manifest = refresh_stitched_trajectory_manifest(
+        rollout,
+        source,
+        original_model=model,
+        live_model=model,
+        n_recorded=1,
+        n_live=1,
+        live_attempt_count=1,
+        live_errors=[],
+        live_capture_trusted=False,
+    )
+
+    live_row = json.loads(out.read_text().splitlines()[-1])
+    assert live_row["metadata"]["capture_fidelity"] == "agent_session"
+    assert live_row["metadata"]["capture_custody"] == "agent_writable_sandbox"
+    assert manifest.status is CaptureStatus.PARTIAL
+    assert manifest.capture_fidelity is CaptureFidelity.MIXED
+    assert any("shared root custody" in error for error in manifest.errors)
+    assert not capture_manifest_allows_training(
+        manifest.model_dump(mode="json"), exchange_count=2
+    )
+
+
 def test_refresh_stitched_manifest_rejects_missing_live_attempt(tmp_path):
     """Guards PR #1057 against completing a lost continuation exchange."""
 

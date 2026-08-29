@@ -33,6 +33,7 @@ class CaptureTarget:
     native: bool
     role: str = "agent"
     native_session_ids: tuple[str, ...] = ()
+    provider_capture_trusted: bool = True
 
 
 @dataclass(frozen=True)
@@ -89,11 +90,18 @@ def load_provider_wire_records(
             record["metadata"] = metadata
         target = _target_for_provider_record(targets, record)
         attribution_complete = target is not None or not targets
+        capture_trusted = (
+            target.provider_capture_trusted if target is not None else True
+        )
         metadata.update(
             {
                 "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
                 "capture_source": CaptureSource.LITELLM_PROXY.value,
-                "capture_fidelity": CaptureFidelity.PROVIDER_WIRE.value,
+                "capture_fidelity": (
+                    CaptureFidelity.PROVIDER_WIRE.value
+                    if capture_trusted
+                    else CaptureFidelity.AGENT_SESSION.value
+                ),
                 "auth_mode": (
                     target.auth_mode.value
                     if target is not None
@@ -120,6 +128,8 @@ def load_provider_wire_records(
                 "payload_redacted": True,
             }
         )
+        if not capture_trusted:
+            metadata["capture_custody"] = "agent_writable_sandbox"
         if not attribution_complete:
             metadata["role_candidates"] = _role_candidates(targets)
         records.append(redact_trajectory_obj(record))
@@ -142,6 +152,13 @@ def assemble_capture(
     ]
     records = _sort_exchange_records([*provider_records, *native_records])
     errors = list(collection_errors)
+    if any(
+        _record_metadata(record).get("capture_custody") == "agent_writable_sandbox"
+        for record in provider_records
+    ):
+        errors.append(
+            "sandbox-local LiteLLM capture shared root custody with the agent"
+        )
     attribution_incomplete = any(
         _record_metadata(record).get("role_attribution_complete") is False
         for record in records

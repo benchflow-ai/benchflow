@@ -224,6 +224,13 @@ Every layer terminates at the *same* output contract, written per rollout under
 | `trainer/adp.jsonl` | ADP trajectory record |
 | `verifier/` | Raw verifier output (`reward.txt`, `ctrf.json`, stdout) |
 
+The JSONL file is always an audit artifact; its sidecar determines whether it
+is also training-ready. Training requires complete `provider_wire` capture with
+positive provider token usage. Native OAuth/session capture and sandbox-local
+capture that shares root custody with the agent are retained but marked
+lower-fidelity, so exporters reject them rather than treating agent-writable
+records as trusted provider evidence.
+
 Hosted runs share this artifact contract too (see the `hosted_env.py` module
 docstring), with `source.type="hosted_env"` / `trajectory_source="hosted_env"`
 marking the lineage.

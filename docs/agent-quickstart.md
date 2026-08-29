@@ -148,6 +148,13 @@ and what it is:
     verifier/reward.txt              — raw verifier reward
     verifier/test-stdout.txt         — verifier stdout (and ctrf.json when the
                                        test emits a CTRF report)
+
+`llm_trajectory.jsonl` is an audit artifact for every run, not an unconditional
+training claim. Only a `complete` manifest with `provider_wire` fidelity and
+positive provider token usage is training-ready. Native OAuth/session capture,
+and a sandbox-local proxy that shares root custody with the agent, stay
+available for audit but are marked lower-fidelity and excluded from training.
+
 Also note the job-level summary.json plus aggregated results.jsonl,
 verifiers.jsonl, and adp.jsonl in the job directory. The trainer/ files and the job-level
 aggregates are written by current BenchFlow releases; if they are missing,

@@ -1322,7 +1322,19 @@ class Rollout:
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
             force_sandbox_local=getattr(self, "_disallow_web_tools", False),
+            sandbox_user=cfg.sandbox_user,
         )
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            credential_home = (
+                f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+            )
+            llm_capture.bind_provider_capture_trust(
+                agent=cfg.primary_agent,
+                model=cfg.primary_model,
+                credential_home=credential_home,
+                trusted=getattr(self._usage_runtime, "capture_trusted", True),
+            )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
@@ -2379,6 +2391,7 @@ class Rollout:
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
             force_sandbox_local=disallow_web_tools,
             role_name=role.name,
+            sandbox_user=cfg.sandbox_user,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -2435,6 +2448,13 @@ class Rollout:
                 agent_env=agent_env,
                 credential_home=cred_home,
                 sandbox_user=cfg.sandbox_user,
+                role_name=role.name,
+            )
+            llm_capture.bind_provider_capture_trust(
+                agent=role.agent,
+                model=role.model,
+                credential_home=cred_home,
+                trusted=getattr(self._usage_runtime, "capture_trusted", True),
                 role_name=role.name,
             )
 
