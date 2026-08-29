@@ -297,11 +297,14 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
 def canonical_redaction_module_source() -> str:
     """Read this packaged redactor for an isolated stdlib-only runtime."""
 
-    return (
-        files("benchflow.trajectories")
-        .joinpath("redaction.py")
-        .read_text(encoding="utf-8")
+    package = files("benchflow.trajectories")
+    resource = package.joinpath(
+        "resources",
+        "canonical_redaction.py.txt",
     )
+    if resource.is_file():
+        return resource.read_text(encoding="utf-8")
+    return package.joinpath("redaction.py").read_text(encoding="utf-8")
 
 
 def redact_trajectory_text(text: str) -> str:

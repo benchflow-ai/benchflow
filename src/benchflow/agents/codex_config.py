@@ -44,23 +44,34 @@ def apply_codex_provider_config(
             raise ValueError(f"{CODEX_CONFIG_ENV} must decode to a JSON object")
         return
 
-    provider_id = (
-        agent_env.get(CODEX_MODEL_PROVIDER_ENV)
-        or config.get("model_provider")
-        or codex_provider_id(provider_name)
-    )
-    providers = config.get("model_providers")
-    providers = {} if not isinstance(providers, dict) else dict(providers)
-    provider = providers.get(provider_id)
-    provider = dict(provider) if isinstance(provider, dict) else {}
-    provider.setdefault("name", provider_name)
-    provider["base_url"] = base_url
     if strict:
-        provider["env_key"] = "OPENAI_API_KEY"
+        provider_id = codex_provider_id(provider_name)
+        config = {}
+        providers: dict[str, Any] = {}
+        provider: dict[str, Any] = {
+            "name": provider_name,
+            "base_url": base_url,
+            "env_key": "OPENAI_API_KEY",
+            "wire_api": "responses",
+            "supports_websockets": False,
+        }
     else:
+        provider_id = (
+            agent_env.get(CODEX_MODEL_PROVIDER_ENV)
+            or config.get("model_provider")
+            or codex_provider_id(provider_name)
+        )
+        providers_value = config.get("model_providers")
+        providers = (
+            {} if not isinstance(providers_value, dict) else dict(providers_value)
+        )
+        provider_value = providers.get(provider_id)
+        provider = dict(provider_value) if isinstance(provider_value, dict) else {}
+        provider.setdefault("name", provider_name)
+        provider["base_url"] = base_url
         provider.setdefault("env_key", "OPENAI_API_KEY")
-    provider.setdefault("wire_api", "responses")
-    provider.setdefault("supports_websockets", False)
+        provider.setdefault("wire_api", "responses")
+        provider.setdefault("supports_websockets", False)
 
     providers[provider_id] = provider
     config["model_providers"] = providers

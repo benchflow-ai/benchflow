@@ -132,9 +132,10 @@ def test_proxy_strips_every_supported_alternate_credential_alias():
 
 
 def test_proxy_rebinds_custom_codex_provider_to_master_key():
-    """Guards PR #1057 against stripping a custom Codex provider's env key."""
+    """Guards PR #1057 against retaining custom Codex provider credentials."""
 
     master_key = "sk-benchflow-master"
+    literal_key = "literal-provider-credential"
     route = resolve_litellm_route(
         "openai/gpt-5.6-luna",
         {"OPENAI_API_KEY": "sk-provider"},
@@ -145,12 +146,18 @@ def test_proxy_rebinds_custom_codex_provider_to_master_key():
             "CODEX_API_KEY": "sk-codex-provider",
             "CODEX_CONFIG": json.dumps(
                 {
+                    "top_level_secret": literal_key,
                     "model_provider": "custom",
                     "model_providers": {
                         "custom": {
                             "env_key": "CODEX_API_KEY",
                             "wire_api": "responses",
-                        }
+                            "http_headers": {"Authorization": literal_key},
+                        },
+                        "unused": {
+                            "env_key": "UNUSED_API_KEY",
+                            "http_headers": {"Authorization": literal_key},
+                        },
                     },
                 }
             ),
@@ -160,10 +167,23 @@ def test_proxy_rebinds_custom_codex_provider_to_master_key():
         master_key=master_key,
     )
 
-    provider = json.loads(updated["CODEX_CONFIG"])["model_providers"]["custom"]
-    assert provider["env_key"] == "OPENAI_API_KEY"
+    config = json.loads(updated["CODEX_CONFIG"])
+    assert config == {
+        "model_providers": {
+            "benchflow-litellm": {
+                "name": "litellm",
+                "base_url": "http://127.0.0.1:4000/v1",
+                "env_key": "OPENAI_API_KEY",
+                "wire_api": "responses",
+                "supports_websockets": False,
+            }
+        },
+        "model_provider": "benchflow-litellm",
+        "model": route.model_alias,
+    }
     assert updated["OPENAI_API_KEY"] == master_key
     assert "CODEX_API_KEY" not in updated
+    assert literal_key not in json.dumps(updated)
     runtime_mod._assert_proxy_isolated(
         "codex-acp",
         updated,
