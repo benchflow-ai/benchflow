@@ -218,7 +218,6 @@ from benchflow.trajectories._capture import (
     _scrape_agent_trajectory,
     make_trajectory_sink,
 )
-from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
     model_call_seen_from_evidence,
@@ -2548,12 +2547,13 @@ class Rollout:
         """Persist captured provider HTTP exchanges as JSONL."""
         if self._rollout_dir is None:
             return
-        trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
+        server = getattr(usage_runtime, "server", None)
+        if server is None:
+            return
+        trajectory = server.trajectory
         if trajectory is None or not trajectory.exchanges:
             return
-        LiveLLMTrajectoryWriter(
-            self._rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-        ).reconcile(trajectory)
+        server.reconcile_live_capture()
 
     def _reconcile_acp_tool_evidence(self, usage_runtime: Any) -> None:
         """Repair lossy ACP tool details from trusted provider capture."""

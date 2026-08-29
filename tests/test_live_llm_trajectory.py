@@ -117,6 +117,21 @@ def test_writer_deduplicates_unchanged_snapshot_and_reconciles(tmp_path):
     assert len(path.read_text().splitlines()) == 2
 
 
+def test_writer_preserves_prior_runtime_rows_across_scene_switch(tmp_path):
+    """Guards PR #1057 against replacing an earlier API-key role's rows."""
+
+    path = tmp_path / "llm_trajectory.jsonl"
+    assert LiveLLMTrajectoryWriter(path).write(_trajectory(content="first")) is True
+
+    second_writer = LiveLLMTrajectoryWriter(path)
+    second = _trajectory(content="first")
+    assert second_writer.write(second) is True
+    assert len(path.read_text().splitlines()) == 2
+
+    assert second_writer.reconcile(second) is False
+    assert len(path.read_text().splitlines()) == 2
+
+
 def test_writer_does_not_create_empty_live_artifact(tmp_path):
     """Guards empty-artifact suppression from commit c86adfb."""
     path = tmp_path / "llm_trajectory.jsonl"

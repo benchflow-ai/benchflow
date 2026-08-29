@@ -373,7 +373,9 @@ class LiteLLMProcess:
         with contextlib.suppress(Exception):
             await self._capture_live_records()
 
-    def _reconcile_live_capture(self) -> None:
+    def reconcile_live_capture(self) -> None:
+        """Publish this runtime's final snapshot without dropping prior runtimes."""
+
         writer = getattr(self, "_live_writer", None)
         if writer is not None:
             writer.reconcile(self.trajectory)
@@ -435,7 +437,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
                 self.process.kill()
                 await asyncio.to_thread(self.process.wait, 10)
         self._load_callback_log()
-        self._reconcile_live_capture()
+        self.reconcile_live_capture()
         with contextlib.suppress(Exception):
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
@@ -539,7 +541,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 timeout_sec=10,
             )
         await self._load_callback_log()
-        self._reconcile_live_capture()
+        self.reconcile_live_capture()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10

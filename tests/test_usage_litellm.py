@@ -12,6 +12,7 @@ import pytest
 
 from benchflow.providers.litellm_logging import extract_usage_from_trajectory
 from benchflow.providers.runtime import ProviderRuntime, extract_usage
+from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -272,6 +273,42 @@ def test_extract_usage_reads_litellm_runtime_trajectory():
     assert usage["n_output_tokens"] == 2
 
 
+def test_rollout_final_reconcile_preserves_prior_provider_runtime(tmp_path):
+    """Guards PR #1057's cumulative writer across runtime-switch cleanup."""
+
+    from benchflow.rollout import Rollout
+
+    path = tmp_path / "trajectory" / "llm_trajectory.jsonl"
+    first = _trajectory({"choices": [{"message": {"content": "same"}}]})
+    assert LiveLLMTrajectoryWriter(path).write(first) is True
+
+    class FakeLiveServer:
+        def __init__(self):
+            self.trajectory = _trajectory(
+                {"choices": [{"message": {"content": "same"}}]}
+            )
+            self.writer = LiveLLMTrajectoryWriter(path)
+            self.reconciled = 0
+
+        def reconcile_live_capture(self):
+            self.reconciled += 1
+            self.writer.reconcile(self.trajectory)
+
+    server = FakeLiveServer()
+    runtime = ProviderRuntime(
+        kind="litellm",
+        agent_base_url="http://127.0.0.1:4000",
+        server=server,
+    )
+    rollout = Rollout.__new__(Rollout)
+    rollout._rollout_dir = tmp_path
+
+    rollout._write_llm_trajectory(runtime)
+
+    assert server.reconciled == 1
+    assert len(path.read_text().splitlines()) == 2
+
+
 @pytest.mark.asyncio
 async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path):
     from benchflow.rollout import Rollout, RolloutConfig
@@ -287,6 +324,11 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
 
         async def stop(self):
             return None
+
+        def reconcile_live_capture(self):
+            LiveLLMTrajectoryWriter(
+                tmp_path / "trajectory" / "llm_trajectory.jsonl"
+            ).reconcile(self.trajectory)
 
     server = FakeServer()
     rollout = Rollout.__new__(Rollout)
