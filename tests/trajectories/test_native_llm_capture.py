@@ -605,7 +605,12 @@ async def test_provider_jsonl_gets_complete_fidelity_metadata(tmp_path: Path) ->
                         },
                     },
                 },
-                "metadata": {"request_complete": True},
+                "metadata": {
+                    "request_complete": True,
+                    "request_capture_source": (
+                        "litellm_pre_api_call_complete_input_dict"
+                    ),
+                },
             }
         )
         + "\n"
@@ -659,6 +664,7 @@ async def test_provider_jsonl_without_canonical_request_is_partial(
         (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
     )
     assert manifest["status"] == "partial"
+    assert manifest["capture_fidelity"] == "agent_session"
     assert manifest["request_complete"] is False
     assert "provider_request" in manifest["missing_fields"]
 
@@ -749,6 +755,12 @@ async def test_mixed_auth_rollout_merges_provider_and_native_exchanges(
                     "timestamp": "2026-08-28T12:00:02Z",
                     "status_code": 200,
                     "body": {"output": []},
+                },
+                "metadata": {
+                    "request_complete": True,
+                    "request_capture_source": (
+                        "litellm_pre_api_call_complete_input_dict"
+                    ),
                 },
             }
         )

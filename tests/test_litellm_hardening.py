@@ -750,6 +750,7 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
         "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
     }
     kwargs = {
+        "litellm_call_id": "round-trip-provider-request",
         "model": "benchflow-openai-gpt-4.1-mini",
         "messages": [{"role": "user", "content": "hi"}],
         "litellm_params": {
@@ -768,6 +769,19 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     end = datetime(2026, 6, 4, 10, 0, 1)
 
     await logger.async_pre_call_hook(None, None, kwargs, "acompletion")
+    logger.log_pre_api_call(
+        "openai/gpt-4.1-mini",
+        kwargs["messages"],
+        {
+            "litellm_call_id": kwargs["litellm_call_id"],
+            "additional_args": {
+                "complete_input_dict": {
+                    "model": "gpt-4.1-mini",
+                    "messages": kwargs["messages"],
+                }
+            },
+        },
+    )
     await logger.async_log_success_event(kwargs, response, start, end)
 
     text = log_path.read_text()

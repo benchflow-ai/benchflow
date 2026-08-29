@@ -149,8 +149,8 @@ def test_callback_module_source_exposes_proxy_handler_instance():
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
 
 
-def test_callback_preserves_complete_proxy_request_body():
-    """Guards PR #1057 against claiming completeness for an allowlisted request."""
+def test_callback_preserves_post_transform_provider_request_body():
+    """Guards PR #1057 against labeling proxy ingress as provider wire."""
 
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     now = datetime.now()
@@ -163,10 +163,24 @@ def test_callback_preserves_complete_proxy_request_body():
         "stop": ["DONE"],
         "tool_choice": "required",
         "response_format": {"type": "json_object"},
+        "input": "removed before provider dispatch",
     }
+    provider_body = {key: value for key, value in proxy_body.items() if key != "input"}
+    provider_body["model"] = "gpt-5.6-deployment"
+    provider_body["stream"] = False
+    call_id = "call-provider-body"
+    logger.log_pre_api_call(
+        provider_body["model"],
+        provider_body["messages"],
+        {
+            "litellm_call_id": call_id,
+            "additional_args": {"complete_input_dict": provider_body},
+        },
+    )
 
     record = logger._base_record(
         {
+            "litellm_call_id": call_id,
             "model": "benchflow-openai-gpt-5.6",
             "messages": proxy_body["messages"],
             "litellm_params": {
@@ -180,22 +194,73 @@ def test_callback_preserves_complete_proxy_request_body():
     )
 
     assert record["request_complete"] is True
-    assert record["request"]["body"] == {**proxy_body, "stream": False}
+    assert record["request_capture_source"] == (
+        "litellm_pre_api_call_complete_input_dict"
+    )
+    assert record["request"]["body"] == provider_body
+    assert "input" not in record["request"]["body"]
 
 
-def test_callback_marks_request_incomplete_without_proxy_body():
-    """Guards PR #1057 against promoting reconstructed callback parameters."""
+def test_callback_marks_proxy_ingress_request_incomplete():
+    """Guards PR #1057 against promoting reconstructed proxy-ingress parameters."""
 
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     now = datetime.now()
 
     record = logger._base_record(
-        {"model": "gpt-5.6", "messages": [{"role": "user", "content": "hi"}]},
+        {
+            "model": "gpt-5.6",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_params": {
+                "proxy_server_request": {
+                    "body": {"model": "alias", "temperature": 0.25}
+                }
+            },
+        },
         now,
         now,
     )
 
     assert record["request_complete"] is False
+    assert record["request_capture_source"] == "proxy_ingress_reconstruction"
+    assert record["request"]["body"]["temperature"] == 0.25
+
+
+def test_callback_redacts_secrets_before_durable_journal(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1057 against persisting raw secrets before finalization."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    api_key = "provider-key-without-a-recognizable-prefix"
+    access_token = "oauth-token-without-a-recognizable-prefix"
+    sas = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+
+    logger._write(
+        {
+            "event": "success",
+            "request": {
+                "body": {
+                    "api_key": api_key,
+                    "nested": {"access_token": access_token},
+                    "download_url": f"https://blob.invalid/x?sig={sas}&sp=r",
+                    "note": f"Authorization: Bearer {access_token}",
+                }
+            },
+        }
+    )
+
+    raw = log_path.read_text()
+    assert api_key not in raw
+    assert access_token not in raw
+    assert sas not in raw
+    row = json.loads(raw)
+    body = row["request"]["body"]
+    assert body["api_key"] == "***REDACTED***"
+    assert body["nested"]["access_token"] == "***REDACTED***"
+    assert "sig=***REDACTED***" in body["download_url"]
 
 
 @pytest.mark.asyncio

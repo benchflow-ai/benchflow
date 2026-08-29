@@ -451,7 +451,13 @@ async def test_manifest_write_failure_preserves_already_assembled_rows(
                         "usage": {"input_tokens": 1, "output_tokens": 1},
                     },
                 },
-                "metadata": {"benchflow_requested_model": "openai/gpt-5.6"},
+                "metadata": {
+                    "benchflow_requested_model": "openai/gpt-5.6",
+                    "request_complete": True,
+                    "request_capture_source": (
+                        "litellm_pre_api_call_complete_input_dict"
+                    ),
+                },
             }
         )
         + "\n"

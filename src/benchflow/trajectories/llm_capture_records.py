@@ -94,13 +94,17 @@ def load_provider_wire_records(
             target.provider_capture_trusted if target is not None else True
         )
         request_complete = metadata.get("request_complete") is True
+        provider_request_observed = (
+            metadata.get("request_capture_source")
+            == "litellm_pre_api_call_complete_input_dict"
+        )
         metadata.update(
             {
                 "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
                 "capture_source": CaptureSource.LITELLM_PROXY.value,
                 "capture_fidelity": (
                     CaptureFidelity.PROVIDER_WIRE.value
-                    if capture_trusted
+                    if capture_trusted and provider_request_observed
                     else CaptureFidelity.AGENT_SESSION.value
                 ),
                 "auth_mode": (

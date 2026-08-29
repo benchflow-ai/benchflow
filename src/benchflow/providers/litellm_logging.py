@@ -183,6 +183,80 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+_SENSITIVE_FIELD_SUFFIXES = (
+    "api_key",
+    "access_key",
+    "account_key",
+    "secret_key",
+    "private_key",
+    "access_token",
+    "refresh_token",
+    "session_token",
+    "client_secret",
+    "token",
+    "secret",
+    "credential",
+    "password",
+    "passwd",
+    "credentials",
+)
+_SENSITIVE_FIELD_NAMES = {
+    "authorization",
+    "proxy_authorization",
+    "x_api_key",
+    "x_goog_api_key",
+    "api_key",
+    "apikey",
+}
+_URL_CREDENTIAL_RE = re.compile(
+    r"([?&](?:"
+    r"api_?key|access_key|access_token|refresh_token|session_token|"
+    r"session_id|sessionid|client_secret|aws_secret_access_key|account_key|"
+    r"secret|password_hash|password|passwd|"
+    r"signature|x-amz-signature|x-amz-credential|x-amz-security-token|sas"
+    r")=)[^&\s\"'*]+",
+    re.IGNORECASE,
+)
+_AZURE_SAS_RE = re.compile(r"([?&]sig=)[^&\s\"'*]{16,}", re.IGNORECASE)
+_AUTHORIZATION_RE = re.compile(
+    r"\b(Bearer|Token|Basic)\s+(?!\*\*\*REDACTED\*\*\*)[^\s,;\"']+",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_field(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+    return normalized in _SENSITIVE_FIELD_NAMES or normalized.endswith(
+        _SENSITIVE_FIELD_SUFFIXES
+    )
+
+
+def _redact_storage_text(value: str) -> str:
+    value = _URL_CREDENTIAL_RE.sub(r"\1***REDACTED***", value)
+    value = _AZURE_SAS_RE.sub(r"\1***REDACTED***", value)
+    return _AUTHORIZATION_RE.sub(r"\1 ***REDACTED***", value)
+
+
+def _redact_for_storage(value: Any) -> Any:
+    # Redact callback payloads before the durable append-only write.
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                "***REDACTED***"
+                if _is_sensitive_field(key)
+                else _redact_for_storage(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_for_storage(item) for item in value]
+    if isinstance(value, str):
+        return _redact_storage_text(value)
+    return value
+
+
 def _iso(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -229,6 +303,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         self._capture_lock = threading.Lock()
         self._attempt_count = 0
         self._terminal_count = 0
+        self._provider_requests: dict[str, dict[str, Any]] = {}
         with self._capture_lock:
             self._write_state_locked()
 
@@ -286,52 +361,105 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         if not path:
             return
         payload["logged_at"] = datetime.now(timezone.utc).isoformat()
+        durable_payload = _redact_for_storage(_jsonable(payload))
         with self._capture_lock:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as handle:
                 handle.write(
-                    json.dumps(_jsonable(payload), separators=(",", ":")) + "\n"
+                    json.dumps(durable_payload, separators=(",", ":")) + "\n"
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
             self._terminal_count += 1
             self._write_state_locked()
 
+    @staticmethod
+    def _call_id(kwargs: dict[str, Any]) -> str | None:
+        direct = kwargs.get("litellm_call_id")
+        if isinstance(direct, str) and direct:
+            return direct
+        litellm_params = kwargs.get("litellm_params") or {}
+        nested = (
+            litellm_params.get("litellm_call_id")
+            if isinstance(litellm_params, dict)
+            else None
+        )
+        return nested if isinstance(nested, str) and nested else None
+
+    def log_pre_api_call(self, model, messages, kwargs) -> None:
+        # Retain LiteLLM's post-transform body until its terminal callback.
+        if not isinstance(kwargs, dict):
+            return
+        call_id = self._call_id(kwargs)
+        additional_args = kwargs.get("additional_args") or {}
+        provider_body = (
+            additional_args.get("complete_input_dict")
+            if isinstance(additional_args, dict)
+            else None
+        )
+        jsonable_body = _jsonable(provider_body)
+        if call_id is None or not isinstance(jsonable_body, dict):
+            return
+        with self._capture_lock:
+            self._provider_requests[call_id] = _redact_for_storage(jsonable_body)
+
     def _base_record(self, kwargs: dict[str, Any], start_time: Any, end_time: Any) -> dict[str, Any]:
         litellm_params = kwargs.get("litellm_params") or {}
         optional_params = kwargs.get("optional_params") or {}
         metadata = kwargs.get("metadata") or litellm_params.get("metadata") or {}
+        additional_args = kwargs.get("additional_args") or {}
+        callback_provider_body = (
+            additional_args.get("complete_input_dict")
+            if isinstance(additional_args, dict)
+            else None
+        )
+        call_id = self._call_id(kwargs)
+        with self._capture_lock:
+            provider_body = (
+                self._provider_requests.pop(call_id, None)
+                if call_id is not None
+                else None
+            )
+        if provider_body is None:
+            provider_body = callback_provider_body
+        jsonable_provider_body = _jsonable(provider_body)
+        request_complete = isinstance(jsonable_provider_body, dict)
         proxy_request = litellm_params.get("proxy_server_request") or {}
         proxy_body = (
             proxy_request.get("body") if isinstance(proxy_request, dict) else None
         )
-        request_complete = isinstance(proxy_body, dict)
-        # LiteLLM preserves the complete incoming provider request body here.
-        # Start from that canonical payload so ordinary/future sampling and
-        # output parameters are not silently lost by a hard-coded allowlist.
-        request_body = dict(proxy_body) if request_complete else {}
-        for key in ("model", "messages", "input"):
-            if kwargs.get(key) is not None:
-                request_body[key] = kwargs[key]
-        for key in ("tools", "stream"):
-            if key in optional_params:
-                request_body[key] = optional_params[key]
-            elif kwargs.get(key) is not None:
-                request_body[key] = kwargs[key]
-        for key in ("reasoning_effort", "thinking", "output_config"):
-            value = optional_params.get(key)
-            if value is None:
-                value = kwargs.get(key)
-            if value is None:
-                value = litellm_params.get(key)
-            if value is not None:
-                request_body[key] = value
-        for key in ("logprobs", "top_logprobs"):
-            value = optional_params.get(key)
-            if value is None:
-                value = kwargs.get(key)
-            if value is not None:
-                request_body[key] = value
+        if request_complete:
+            # ``Logging.pre_call(..., complete_input_dict=...)`` is populated
+            # after provider-specific transformation and is the body handed to
+            # the HTTP client. Proxy ingress is only an audit fallback: routes
+            # may drop or rewrite its fields before the provider sees them.
+            request_body = dict(jsonable_provider_body)
+            request_capture_source = "litellm_pre_api_call_complete_input_dict"
+        else:
+            request_body = dict(proxy_body) if isinstance(proxy_body, dict) else {}
+            for key in ("model", "messages", "input"):
+                if kwargs.get(key) is not None:
+                    request_body[key] = kwargs[key]
+            for key in ("tools", "stream"):
+                if key in optional_params:
+                    request_body[key] = optional_params[key]
+                elif kwargs.get(key) is not None:
+                    request_body[key] = kwargs[key]
+            for key in ("reasoning_effort", "thinking", "output_config"):
+                value = optional_params.get(key)
+                if value is None:
+                    value = kwargs.get(key)
+                if value is None:
+                    value = litellm_params.get(key)
+                if value is not None:
+                    request_body[key] = value
+            for key in ("logprobs", "top_logprobs"):
+                value = optional_params.get(key)
+                if value is None:
+                    value = kwargs.get(key)
+                if value is not None:
+                    request_body[key] = value
+            request_capture_source = "proxy_ingress_reconstruction"
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
             "benchflow_agent": os.environ.get("BENCHFLOW_LITELLM_AGENT"),
@@ -347,6 +475,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
             "call_type": kwargs.get("call_type") or litellm_params.get("call_type"),
             "request_complete": request_complete,
+            "request_capture_source": request_capture_source,
             "input_shape": {
                 "has_messages": bool(kwargs.get("messages")),
                 "has_input": kwargs.get("input") is not None,
@@ -545,6 +674,7 @@ def _exchange_metadata(
             "model_group",
             "call_type",
             "input_shape",
+            "request_capture_source",
         )
         if record.get(key) is not None
     }

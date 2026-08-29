@@ -16,6 +16,7 @@ from benchflow.continue_run.replay_proxy import (
 )
 from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
+    _ordered_live_exchange_log,
     _sandbox_proxy_source,
 )
 
@@ -81,6 +82,43 @@ def test_live_forwarder_failure_retains_unpaired_attempt() -> None:
     assert router.live_exchanges == []
     assert router.live_errors == [
         "live provider request failed before a response could be captured"
+    ]
+
+
+def test_host_live_exchanges_preserve_attempt_order_under_concurrency() -> None:
+    """Guards PR #1057 against stitching host calls in completion order."""
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def forward(request):
+        request_id = request["request_id"]
+        if request_id == 1:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        return completion(content=f"live-{request_id}")
+
+    router = ReplayRouter([], live_forwarder=forward)
+    results: list[object] = []
+    first = threading.Thread(
+        target=lambda: results.append(router.next_response({"request_id": 1}))
+    )
+    second = threading.Thread(
+        target=lambda: results.append(router.next_response({"request_id": 2}))
+    )
+
+    first.start()
+    assert first_started.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    assert not second.is_alive()
+    release_first.set()
+    first.join(timeout=5)
+
+    assert [row.request.body["request_id"] for row in router.live_exchanges] == [1, 2]
+    assert [row.metadata["continuation_attempt"] for row in router.live_exchanges] == [
+        1,
+        2,
     ]
 
 
@@ -198,6 +236,50 @@ def test_sandbox_quiesce_waits_for_live_handler_before_snapshot(tmp_path) -> Non
     capture_state = json.loads((tmp_path / "state.json").read_text())
     assert capture_state["live_attempt_count"] == 2
     assert capture_state["live_error_count"] == 1
+
+
+def test_sandbox_live_exchange_recovery_restores_attempt_order(tmp_path) -> None:
+    """Guards PR #1057 against stitching sandbox calls in completion order."""
+
+    namespace: dict[str, object] = {}
+    exec(_sandbox_proxy_source(), namespace)
+    live_log = tmp_path / "live.jsonl"
+    state = namespace["ReplayState"](
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(live_log),
+        state_path=str(tmp_path / "state.json"),
+        port=61357,
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def forward(request):
+        request_id = request["request_id"]
+        if request_id == 1:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        return 200, completion(content=f"live-{request_id}"), True
+
+    state._forward_live = forward
+    first = threading.Thread(target=lambda: state.next_response({"request_id": 1}))
+    second = threading.Thread(target=lambda: state.next_response({"request_id": 2}))
+
+    first.start()
+    assert first_started.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    assert not second.is_alive()
+    release_first.set()
+    first.join(timeout=5)
+
+    raw_rows = [json.loads(line) for line in live_log.read_text().splitlines()]
+    assert [row["metadata"]["continuation_attempt"] for row in raw_rows] == [2, 1]
+    exchanges, malformed = _ordered_live_exchange_log(live_log.read_text())
+    assert malformed == 0
+    assert [row.request.body["request_id"] for row in exchanges] == [1, 2]
 
 
 def test_sandbox_quiesce_closes_listener_and_drains_accepted_handlers(

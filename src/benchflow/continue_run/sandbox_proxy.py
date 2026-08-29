@@ -203,6 +203,7 @@ class ReplayState:
                 return "replay", int(response.get("status_code") or 200), dict(response.get("body") or {})
             self.cursor += 1
             self.live_attempt_count += 1
+            live_attempt = self.live_attempt_count
             self.active_live_requests += 1
             try:
                 self._write_state()
@@ -215,7 +216,10 @@ class ReplayState:
             status, body, provider_observed = self._forward_live(request_body)
             if provider_observed:
                 try:
-                    self._append_live_exchange(request_body, status, body)
+                    with self.lock:
+                        self._append_live_exchange(
+                            request_body, status, body, live_attempt
+                        )
                 except Exception:
                     with self.lock:
                         self.live_error_count += 1
@@ -284,10 +288,11 @@ class ReplayState:
             traceback.print_exc()
             return 500, {"error": {"message": str(exc)}}, False
 
-    def _append_live_exchange(self, request_body, status, body):
+    def _append_live_exchange(self, request_body, status, body, live_attempt):
         row = {
             "request": {"body": request_body},
             "response": {"status_code": status, "body": body},
+            "metadata": {"continuation_attempt": live_attempt},
         }
         with open(self.live_log_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(row) + "\n")
@@ -441,6 +446,33 @@ def main():
 if __name__ == "__main__":
     main()
 """
+
+
+def _ordered_live_exchange_log(text: str) -> tuple[list[LLMExchange], int]:
+    """Parse sandbox live rows and restore their assigned attempt order."""
+    sequenced: list[tuple[int, LLMExchange]] = []
+    malformed = 0
+    seen: set[int] = set()
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            exchange = LLMExchange.model_validate_json(raw)
+        except Exception:
+            malformed += 1
+            continue
+        attempt = exchange.metadata.get("continuation_attempt")
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt <= 0
+            or attempt in seen
+        ):
+            malformed += 1
+            continue
+        seen.add(attempt)
+        sequenced.append((attempt, exchange))
+    return [exchange for _, exchange in sorted(sequenced)], malformed
 
 
 async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
@@ -639,16 +671,7 @@ class SandboxReplayProxy:
 
     async def _load_live_exchanges(self) -> list[LLMExchange]:
         text = await _read_remote_text(self.sandbox, self.live_log_path)
-        exchanges: list[LLMExchange] = []
-        malformed = 0
-        for raw in text.splitlines():
-            if not raw.strip():
-                continue
-            try:
-                exchanges.append(LLMExchange.model_validate_json(raw))
-            except Exception:
-                malformed += 1
-                continue
+        exchanges, malformed = _ordered_live_exchange_log(text)
         if malformed:
             self.live_errors.append(
                 f"{malformed} sandbox live exchange record(s) were malformed"
