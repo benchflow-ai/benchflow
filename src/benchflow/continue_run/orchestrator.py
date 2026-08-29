@@ -44,9 +44,6 @@ from benchflow.continue_run.trajectory_artifacts import (
 from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
-from benchflow.trajectories.llm_capture_manifest import (
-    provider_capture_has_trusted_custody,
-)
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -602,10 +599,7 @@ async def _continue_run_with_sandbox_proxy(
         rollout_name=rollout_name,
     )
     rollout = await Rollout.create(config)
-    live_capture_trusted = provider_capture_has_trusted_custody(
-        sandbox_local=True,
-        sandbox_user=config.sandbox_user,
-    )
+    live_capture_trusted = False
     replay_proxy: SandboxReplayProxy | None = None
     provider_runtime: Any | None = None
     result: Any | None = None
@@ -620,13 +614,22 @@ async def _continue_run_with_sandbox_proxy(
         *,
         force: bool = False,
     ) -> None:
-        nonlocal artifacts_written, live_exchanges, result, rollout_dir
+        nonlocal \
+            artifacts_written, \
+            live_capture_trusted, \
+            live_exchanges, \
+            result, \
+            rollout_dir
         if artifacts_written and not force:
             return
         result = _result_after_sandbox_teardown(rollout)
         if result is None:
             return
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
+        live_capture_trusted = bool(
+            provider_runtime is not None
+            and getattr(provider_runtime, "capture_trusted", False)
+        )
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
         stitched_path = write_stitched_trajectory(
             rollout_dir,

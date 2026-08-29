@@ -256,6 +256,17 @@ def refresh_stitched_trajectory_manifest(
         if present and value
     }
     stitched_model = next(iter(models)) if len(models) == 1 else None
+    role_captures = _continuation_role_captures(
+        source=source,
+        original_model=original_model,
+        live_model=live_model,
+        n_recorded=n_recorded,
+        n_live=n_live,
+        live_attempt_count=live_attempt_count,
+        live_capture_complete=live_capture_complete,
+        live_capture_trusted=live_capture_trusted,
+        rows_valid=rows_valid,
+    )
     manifest = LLMTrajectoryManifest(
         status=CaptureStatus.COMPLETE if complete else CaptureStatus.PARTIAL,
         capture_source=capture_source,
@@ -272,19 +283,63 @@ def refresh_stitched_trajectory_manifest(
         finished_at=datetime.now(UTC),
         missing_fields=sorted(set(missing_fields)),
         errors=errors,
-        role_captures=[
-            LLMRoleCapture(
-                role="agent",
-                agent="openhands",
-                model=stitched_model,
-                auth_mode=auth_mode,
-                capture_source=capture_source,
-                capture_fidelity=capture_fidelity,
-                exchange_count=exchange_count,
-                request_complete=request_complete,
-                response_complete=response_complete,
-            )
-        ],
+        role_captures=role_captures,
     )
     write_llm_trajectory_manifest(rollout_dir, manifest)
     return manifest
+
+
+def _continuation_role_captures(
+    *,
+    source: LLMTrajectoryManifest | None,
+    original_model: str | None,
+    live_model: str | None,
+    n_recorded: int,
+    n_live: int,
+    live_attempt_count: int,
+    live_capture_complete: bool,
+    live_capture_trusted: bool,
+    rows_valid: bool,
+) -> list[LLMRoleCapture]:
+    """Preserve source-role provenance and append a distinct live leg."""
+
+    captures = [
+        capture.model_copy(update={"leg": "recorded"})
+        for capture in (source.role_captures if source else [])
+    ]
+    if source is not None and n_recorded and not captures:
+        captures.append(
+            LLMRoleCapture(
+                role="agent",
+                leg="recorded",
+                agent=source.agent,
+                model=source.model or original_model,
+                auth_mode=source.auth_mode,
+                capture_source=source.capture_source,
+                capture_fidelity=source.capture_fidelity,
+                exchange_count=n_recorded,
+                request_complete=source.request_complete,
+                response_complete=source.response_complete,
+            )
+        )
+    if live_attempt_count or n_live:
+        live_complete = live_capture_complete and rows_valid
+        captures.append(
+            LLMRoleCapture(
+                role="agent",
+                leg="live",
+                agent="openhands",
+                model=live_model,
+                auth_mode=AuthMode.API_KEY,
+                capture_source=CaptureSource.LITELLM_PROXY,
+                capture_fidelity=(
+                    CaptureFidelity.PROVIDER_WIRE
+                    if live_capture_trusted
+                    else CaptureFidelity.AGENT_SESSION
+                ),
+                exchange_count=n_live,
+                request_complete=live_complete,
+                response_complete=live_complete,
+            )
+        )
+    return captures

@@ -14,7 +14,6 @@ from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
     _CaptureTarget,
     _NativeCaptureBundle,
-    _NativeCollection,
 )
 from benchflow.trajectories.llm_capture_manifest import (
     AuthMode,
@@ -22,6 +21,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     CaptureSource,
     CaptureStatus,
 )
+from benchflow.trajectories.native_capture_collection import NativeCollection
 from benchflow.trajectories.native_capture_parsers import (
     parse_claude_raw_capture,
     parse_claude_sessions,
@@ -650,7 +650,7 @@ async def test_provider_capture_early_return_cleans_native_raw_bodies(
         native=True,
     )
     capture._targets[(target.agent, target.model, target.credential_home)] = target
-    capture._capture_root_prepared = True
+    capture._otel_collector.root_prepared = True
     capture.trajectory_path.write_text(
         json.dumps(
             {
@@ -742,12 +742,13 @@ async def test_mixed_auth_rollout_merges_provider_and_native_exchanges(
     )
     assert native_result is not None
 
-    async def collect_native(_env):
-        return _NativeCollection(
+    async def collect_native(_env, *, targets):
+        assert targets == [native_target]
+        return NativeCollection(
             bundles=(_NativeCaptureBundle((native_target,), native_result),)
         )
 
-    capture._collect_native_results = collect_native
+    capture._native_collector.collect = collect_native
 
     await capture.finalize(object(), acp_events=[], model_call_seen=True)
 
@@ -813,10 +814,11 @@ async def test_mixed_auth_rollout_marks_missing_native_role_partial(
         + "\n"
     )
 
-    async def collect_native(_env):
-        return _NativeCollection()
+    async def collect_native(_env, *, targets):
+        assert targets == [native_target]
+        return NativeCollection()
 
-    capture._collect_native_results = collect_native
+    capture._native_collector.collect = collect_native
 
     await capture.finalize(object(), acp_events=[], model_call_seen=True)
 

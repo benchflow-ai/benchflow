@@ -12,17 +12,21 @@ from unittest.mock import Mock
 import pytest
 
 from benchflow.rollout import Rollout
-from benchflow.trajectories import llm_capture as llm_capture_module
+from benchflow.trajectories import (
+    native_capture_collection as native_capture_module,
+)
 from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
     _CaptureTarget,
-    _download_bound_session_files,
     _NativeCaptureBundle,
 )
 from benchflow.trajectories.llm_capture_manifest import (
     AuthMode,
     CaptureFidelity,
     CaptureSource,
+)
+from benchflow.trajectories.native_capture_collection import (
+    download_bound_session_files,
 )
 from benchflow.trajectories.native_capture_parsers import (
     NativeParseResult,
@@ -365,14 +369,14 @@ async def test_claude_startup_timeout_still_releases_owned_collector(
         sandbox_user="agent",
     )
 
-    assert capture._collector_started is False
-    assert capture._collector_owned is True
+    assert capture._otel_collector.started is False
+    assert capture._otel_collector.owned is True
 
     await capture.finalize(env, acp_events=[], model_call_seen=False)
 
     stop_commands = [command for command in commands if "read -r old_pid" in command]
     assert len(stop_commands) == 2
-    assert capture._collector_owned is False
+    assert capture._otel_collector.owned is False
     assert any("-depth -delete" in command for command in commands)
 
 
@@ -460,7 +464,7 @@ async def test_native_download_selects_recent_files_before_copying(
             destination.write_text("{}\n")
 
     destination = tmp_path / "missing-parent" / "sessions"
-    downloaded = await _download_bound_session_files(
+    downloaded = await download_bound_session_files(
         DockerLikeEnv(),
         "/home/agent/.codex/sessions",
         destination,
@@ -596,7 +600,7 @@ async def test_claude_fallback_collects_only_raw_uncovered_exchanges(
     capture._targets[
         (target.role, target.agent, target.model, target.credential_home)
     ] = target
-    capture._capture_root_prepared = True
+    capture._otel_collector.root_prepared = True
     raw_result = _native_result(
         session_id=first_id,
         source=CaptureSource.CLAUDE_OTEL_RAW_BODY,
@@ -645,22 +649,22 @@ async def test_claude_fallback_collects_only_raw_uncovered_exchanges(
         return True
 
     monkeypatch.setattr(
-        llm_capture_module,
+        native_capture_module,
         "parse_claude_raw_capture",
         lambda *_args, **_kwargs: raw_result,
     )
     monkeypatch.setattr(
-        llm_capture_module,
-        "_download_bound_session_files",
+        native_capture_module,
+        "download_bound_session_files",
         download_bound,
     )
     monkeypatch.setattr(
-        llm_capture_module,
+        native_capture_module,
         "parse_claude_sessions",
         lambda *_args, **_kwargs: fallback_result,
     )
 
-    collection = await capture._collect_native_results(CaptureEnv())
+    collection = await capture._native_collector.collect(CaptureEnv(), targets=[target])
 
     assert len(collection.bundles) == 2
     assert fallback_calls == [(first_id,)]
@@ -720,7 +724,9 @@ async def test_later_native_target_failure_preserves_prior_bundle(
             raise RuntimeError("second target download failed")
         return _NativeCaptureBundle(targets=(first,), result=first_result)
 
-    monkeypatch.setattr(capture, "_collect_codex_session", collect_codex)
+    monkeypatch.setattr(
+        capture._native_collector, "_collect_codex_session", collect_codex
+    )
 
     await capture.finalize(object(), acp_events=[], model_call_seen=True)
 
@@ -756,9 +762,9 @@ async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -
         started_at=STARTED_AT,
     )
     capture.configure({"ANTHROPIC_API_KEY": "test-key"})
-    capture._collector_started = True
-    capture._collector_owned = True
-    capture._capture_root_prepared = True
+    capture._otel_collector.started = True
+    capture._otel_collector.owned = True
+    capture._otel_collector.root_prepared = True
 
     await capture.finalize(
         CleanupEnv(),
@@ -768,8 +774,8 @@ async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -
 
     assert any("kill -TERM" in command for command in commands)
     assert any("-depth -delete" in command for command in commands)
-    assert capture._collector_started is False
-    assert capture._collector_owned is False
+    assert capture._otel_collector.started is False
+    assert capture._otel_collector.owned is False
 
 
 @pytest.mark.asyncio
@@ -797,7 +803,7 @@ async def test_raw_capture_cleanup_failure_marks_manifest_failed(
         started_at=STARTED_AT,
     )
     capture.configure({"OPENAI_API_KEY": "test-key"})
-    capture._capture_root_prepared = True
+    capture._otel_collector.root_prepared = True
     capture.trajectory_path.write_text(
         json.dumps(
             {
@@ -821,7 +827,7 @@ async def test_raw_capture_cleanup_failure_marks_manifest_failed(
     assert manifest["status"] == "capture_failed"
     assert manifest["exchange_count"] == 1
     assert any("cleanup failed" in error for error in manifest["errors"])
-    assert capture._capture_root_prepared is True
+    assert capture._otel_collector.root_prepared is True
 
 
 def test_rollout_binds_the_acp_session_after_connect() -> None:

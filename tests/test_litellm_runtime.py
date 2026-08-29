@@ -174,6 +174,12 @@ async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch)
         return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
 
     monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    class NonRootSandbox:
+        async def exec(self, command, **_kwargs):
+            assert command == "id -u -- agent"
+            return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
+
     _, provider_runtime = await ensure_litellm_runtime(
         agent="openhands",
         agent_env={
@@ -184,12 +190,43 @@ async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch)
         runtime=None,
         environment="daytona",
         session_id="run-non-root",
-        sandbox=SimpleNamespace(),
+        sandbox=NonRootSandbox(),
         sandbox_user="agent",
     )
 
     assert provider_runtime is not None
     assert provider_runtime.capture_trusted is True
+
+
+@pytest.mark.asyncio
+async def test_uid_zero_alias_keeps_sandbox_gateway_capture_audit_only(monkeypatch):
+    """Guards PR #1057 against trusting a non-root name that resolves to UID 0."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    class RootAliasSandbox:
+        async def exec(self, command, **_kwargs):
+            assert command == "id -u -- agent"
+            return SimpleNamespace(return_code=0, stdout="0\n", stderr="")
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    _, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={
+            "AWS_BEARER_TOKEN_BEDROCK": "token",
+            "AWS_REGION": "us-west-2",
+        },
+        model="aws-bedrock/us.anthropic.claude-opus-4-8",
+        runtime=None,
+        environment="daytona",
+        session_id="run-root-alias",
+        sandbox=RootAliasSandbox(),
+        sandbox_user="agent",
+    )
+
+    assert provider_runtime is not None
+    assert provider_runtime.capture_trusted is False
 
 
 @pytest.mark.asyncio

@@ -58,9 +58,6 @@ from benchflow.providers.litellm_logging import (
 )
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
-from benchflow.trajectories.llm_capture_manifest import (
-    provider_capture_has_trusted_custody,
-)
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -1727,9 +1724,10 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
-    capture_trusted = provider_capture_has_trusted_custody(
+    capture_trusted = await _provider_capture_has_verified_custody(
         sandbox_local=sandbox_local,
         sandbox_user=sandbox_user,
+        sandbox=sandbox,
     )
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
@@ -1741,6 +1739,9 @@ async def ensure_litellm_runtime(
         if getattr(runtime, "config_key", None) == config_key and server is not None:
             is_running = await server.is_running()
             if is_running:
+                runtime.capture_trusted = bool(
+                    getattr(runtime, "capture_trusted", False) and capture_trusted
+                )
                 if live_trajectory_path is not None:
                     server.start_live_capture(live_trajectory_path)
                 return (
@@ -1817,6 +1818,35 @@ async def ensure_litellm_runtime(
         ),
         new_runtime,
     )
+
+
+async def _provider_capture_has_verified_custody(
+    *, sandbox_local: bool, sandbox_user: str | None, sandbox: Any | None
+) -> bool:
+    """Verify that the sandbox agent's effective UID cannot rewrite capture data."""
+
+    if not sandbox_local:
+        return True
+    if sandbox is None or sandbox_user in {None, "", "root", "0"}:
+        return False
+    try:
+        result = await sandbox.exec(
+            f"id -u -- {shlex.quote(sandbox_user)}",
+            user="root",
+            timeout_sec=10,
+        )
+    except Exception as exc:
+        logger.warning("Provider capture custody UID check failed: %s", exc)
+        return False
+    if result.return_code != 0:
+        logger.warning("Provider capture custody UID check returned non-zero")
+        return False
+    try:
+        effective_uid = int(result.stdout.strip())
+    except (AttributeError, ValueError):
+        logger.warning("Provider capture custody UID check returned invalid output")
+        return False
+    return effective_uid != 0
 
 
 async def stop_litellm_runtime(runtime: Any | None) -> None:

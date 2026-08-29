@@ -293,6 +293,19 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
     assert manifest.capture_source is CaptureSource.MIXED
     assert manifest.capture_fidelity is CaptureFidelity.MIXED
     assert manifest.auth_mode is AuthMode.MIXED
+    assert [capture.leg for capture in manifest.role_captures] == [
+        "recorded",
+        "live",
+    ]
+    recorded, live = manifest.role_captures
+    assert recorded.agent == "claude-agent-acp"
+    assert recorded.model == "claude-sonnet-4-6"
+    assert recorded.auth_mode is AuthMode.OAUTH_SUBSCRIPTION
+    assert recorded.capture_fidelity is CaptureFidelity.AGENT_SESSION
+    assert live.agent == "openhands"
+    assert live.model == "openai/gpt-5.5"
+    assert live.auth_mode is AuthMode.API_KEY
+    assert live.capture_fidelity is CaptureFidelity.PROVIDER_WIRE
     assert not capture_manifest_allows_training(
         manifest.model_dump(mode="json"), exchange_count=2
     )
