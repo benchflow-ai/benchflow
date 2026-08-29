@@ -108,13 +108,21 @@ def test_provider_role_attribution_uses_proxy_model_aliases(tmp_path: Path) -> N
                     "request": {"body": {"model": "gpt-5.5"}},
                     "response": {"status_code": 200, "body": {}},
                     "metadata": {
-                        "request_model": "benchflow-azure-foundry-openai-gpt-5.5"
+                        "benchflow_requested_model": ("azure-foundry-openai/gpt-5.5"),
+                        "benchflow_model_alias": (
+                            "benchflow-azure-foundry-openai-gpt-5.5"
+                        ),
+                        "request_model": "gpt-5.5",
                     },
                 },
                 {
                     "request": {"body": {"model": "gpt-5.5"}},
                     "response": {"status_code": 200, "body": {}},
-                    "metadata": {"request_model": "benchflow-openai-gpt-5.5"},
+                    "metadata": {
+                        "benchflow_requested_model": "openai/gpt-5.5",
+                        "benchflow_model_alias": "benchflow-openai-gpt-5.5",
+                        "request_model": "gpt-5.5",
+                    },
                 },
             )
         )

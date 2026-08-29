@@ -362,6 +362,13 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     launch_files = [k for k in sandbox.uploaded if k.endswith("launch_config.json")]
     assert launch_files, "launch_config.json should be uploaded"
     assert secret in sandbox.uploaded[launch_files[0]]
+    launch_config = json.loads(sandbox.uploaded[launch_files[0]])
+    assert launch_config["env"]["BENCHFLOW_LITELLM_REQUESTED_MODEL"] == (
+        "minimax/MiniMax-M3"
+    )
+    assert launch_config["env"]["BENCHFLOW_LITELLM_MODEL_ALIAS"] == (
+        "benchflow-minimax-MiniMax-M3"
+    )
     assert set(sandbox.uploaded_modes.values()) == {"600"}
     # ...and the secret never appears on any exec command line (/proc exposure).
     assert all(secret not in call for call in sandbox.exec_calls)

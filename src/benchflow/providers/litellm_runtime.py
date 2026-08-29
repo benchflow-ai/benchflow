@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
+_LITELLM_REQUESTED_MODEL_ENV = "BENCHFLOW_LITELLM_REQUESTED_MODEL"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 
 # The proxy is an internal single-route gateway — it must never register the
@@ -857,6 +858,8 @@ async def _start_host_litellm(
             "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+            LITELLM_MODEL_ALIAS_ENV: route.model_alias,
+            _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -1178,6 +1181,8 @@ async def _start_sandbox_litellm(
             "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+            LITELLM_MODEL_ALIAS_ENV: route.model_alias,
+            _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )

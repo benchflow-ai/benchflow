@@ -112,6 +112,32 @@ def test_callback_record_preserves_logprob_request_fields():
     assert record["request"]["body"]["top_logprobs"] == 1
 
 
+def test_callback_record_preserves_benchflow_route_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1057 against LiteLLM erasing provider-role identity."""
+
+    monkeypatch.setenv(
+        "BENCHFLOW_LITELLM_REQUESTED_MODEL",
+        "azure-foundry-openai/gpt-5.5",
+    )
+    monkeypatch.setenv(
+        "BENCHFLOW_LITELLM_MODEL_ALIAS",
+        "benchflow-azure-foundry-openai-gpt-5.5",
+    )
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]},
+        now,
+        now,
+    )
+
+    assert record["benchflow_requested_model"] == ("azure-foundry-openai/gpt-5.5")
+    assert record["benchflow_model_alias"] == ("benchflow-azure-foundry-openai-gpt-5.5")
+
+
 def test_callback_module_source_exposes_proxy_handler_instance():
     source = callback_module_source()
 

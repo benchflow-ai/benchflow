@@ -374,7 +374,13 @@ def _target_for_provider_record(
     metadata = _record_metadata(record)
     candidates.update(
         value
-        for key in ("model_group", "request_model", "provider_model")
+        for key in (
+            "benchflow_requested_model",
+            "benchflow_model_alias",
+            "model_group",
+            "request_model",
+            "provider_model",
+        )
         if isinstance((value := metadata.get(key)), str) and value
     )
     scored = [
