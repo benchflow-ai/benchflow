@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
+from benchflow.trajectories.llm_capture_manifest import (
+    capture_manifest_allows_training,
+    read_llm_trajectory_manifest,
+)
 from benchflow.trajectories.types import redact_trajectory_obj
 
 PrimeSftRowMode = Literal["rollout", "exchange"]
@@ -1213,6 +1217,13 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         reward = _reward_from_result(result)
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
+            continue
+
+        capture_manifest = read_llm_trajectory_manifest(rollout_dir)
+        if capture_manifest is not None and not capture_manifest_allows_training(
+            capture_manifest
+        ):
+            stats.skipped_insufficient_capture_fidelity += 1
             continue
 
         trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"

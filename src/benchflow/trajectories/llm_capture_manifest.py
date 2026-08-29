@@ -12,6 +12,7 @@ import os
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,7 @@ class CaptureFidelity(StrEnum):
     PROVIDER_WIRE = "provider_wire"
     AGENT_SESSION = "agent_session"
     ACP_PROJECTION = "acp_projection"
+    MIXED = "mixed"
     NONE = "none"
 
 
@@ -41,13 +43,28 @@ class CaptureSource(StrEnum):
     CLAUDE_NATIVE_SESSION = "claude_native_session"
     CODEX_NATIVE_SESSION = "codex_native_session"
     ACP_PROJECTION = "acp_projection"
+    MIXED = "mixed"
     NONE = "none"
 
 
 class AuthMode(StrEnum):
     API_KEY = "api_key"
     OAUTH_SUBSCRIPTION = "oauth_subscription"
+    MIXED = "mixed"
     UNKNOWN = "unknown"
+
+
+class LLMRoleCapture(BaseModel):
+    """Per prepared role provenance for mixed-auth/mixed-agent rollouts."""
+
+    agent: str
+    model: str | None = None
+    auth_mode: AuthMode
+    capture_source: CaptureSource
+    capture_fidelity: CaptureFidelity
+    exchange_count: int
+    request_complete: bool
+    response_complete: bool
 
 
 class LLMTrajectoryManifest(BaseModel):
@@ -69,6 +86,7 @@ class LLMTrajectoryManifest(BaseModel):
     finished_at: datetime | None = None
     missing_fields: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    role_captures: list[LLMRoleCapture] = Field(default_factory=list)
 
 
 def initialize_llm_trajectory_artifacts(
@@ -102,6 +120,32 @@ def write_llm_trajectory_manifest(
     path = rollout_dir / "trajectory" / LLM_TRAJECTORY_MANIFEST_FILENAME
     payload = json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True)
     _atomic_write_text(path, payload + "\n")
+
+
+def read_llm_trajectory_manifest(rollout_dir: Path) -> dict[str, Any] | None:
+    """Read the sidecar, distinguishing absent legacy data from corruption."""
+
+    path = rollout_dir / "trajectory" / LLM_TRAJECTORY_MANIFEST_FILENAME
+    if not path.exists():
+        return None
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"status": "capture_failed", "capture_fidelity": "none"}
+    if not isinstance(manifest, dict):
+        return {"status": "capture_failed", "capture_fidelity": "none"}
+    return manifest
+
+
+def capture_manifest_allows_training(manifest: dict[str, Any]) -> bool:
+    """Return whether the rollout-level capture is safe for training export."""
+
+    return bool(
+        manifest.get("status") == "complete"
+        and manifest.get("capture_fidelity") == "provider_wire"
+        and manifest.get("request_complete") is True
+        and manifest.get("response_complete") is True
+    )
 
 
 def _atomic_write_text(path: Path, payload: str) -> None:

@@ -226,11 +226,15 @@ the source of truth for interpreting the JSONL:
 | Codex subscription/OAuth | Codex native session JSONL | `agent_session` |
 
 The manifest status is `complete`, `partial`, `no_model_call`, or
-`capture_failed`. Reconstructed `agent_session` rows remain useful for audit and
-viewer workflows, but trainer exports fail closed unless the manifest says the
-capture is complete provider-wire data. Claude's own raw-body telemetry can
-still contain provider-redacted extended-thinking blocks; BenchFlow also applies
-its normal secret redaction before publishing the JSONL.
+`capture_failed`. Mixed-role rollouts merge API-key and native-subscription
+exchanges into the same JSONL; `role_captures` records each prepared role's
+agent, model, auth mode, source, fidelity, completeness, and exchange count.
+Missing or ambiguously attributed roles make the rollout-level capture
+`partial`. Reconstructed `agent_session` rows remain useful for audit and viewer
+workflows, but trainer exports fail closed unless the manifest says the capture
+is complete provider-wire data. Claude's own raw-body telemetry can still
+contain provider-redacted extended-thinking blocks; BenchFlow also applies its
+normal secret redaction before publishing the JSONL.
 
 ### Reading results
 

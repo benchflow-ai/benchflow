@@ -81,6 +81,35 @@ def _write_rollout(rollout_dir: Path, task_name: str = "task-a") -> None:
     _write_llm_trajectory(rollout_dir)
 
 
+def test_health_rejects_empty_terminal_llm_capture_manifest(tmp_path: Path) -> None:
+    """Guards PR #1057 against validating no-call artifacts as healthy traces."""
+
+    job = tmp_path / "job"
+    rollout = job / "task-a__abc"
+    _write_rollout(rollout)
+    trajectory = rollout / "trajectory"
+    (trajectory / "llm_trajectory.jsonl").write_text("")
+    (trajectory / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "no_model_call",
+                "capture_fidelity": "none",
+                "exchange_count": 0,
+                "request_complete": False,
+                "response_complete": False,
+            }
+        )
+    )
+
+    health = build_health_summary(job)
+
+    assert health["missing_llm_trajectory"] == 0
+    assert health["malformed_llm_trajectory"] == 1
+    assert health["rows"][0]["has_llm_trajectory"] is True
+    assert health["rows"][0]["valid_llm_trajectory"] is False
+    assert health["rows"][0]["llm_trajectory_rows"] == 0
+
+
 def test_eval_run_writes_manifest_health_and_canonical_artifacts(
     tmp_path: Path, monkeypatch
 ) -> None:

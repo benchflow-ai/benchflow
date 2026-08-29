@@ -32,7 +32,8 @@ from benchflow.trajectories.export_prime_sft import (
     validate_prime_sft_row,
 )
 from benchflow.trajectories.llm_capture_manifest import (
-    LLM_TRAJECTORY_MANIFEST_FILENAME,
+    capture_manifest_allows_training,
+    read_llm_trajectory_manifest,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
@@ -170,8 +171,8 @@ def _llm_steps_from_trajectory(
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
-    capture_manifest = _load_llm_capture_manifest(rollout_dir)
-    if capture_manifest is not None and not _capture_manifest_allows_training(
+    capture_manifest = read_llm_trajectory_manifest(rollout_dir)
+    if capture_manifest is not None and not capture_manifest_allows_training(
         capture_manifest
     ):
         return [], [], None
@@ -273,29 +274,6 @@ def _response_is_training_success(response: Any) -> bool:
     if status is not None and status != "completed":
         return False
     return not bool(body.get("incomplete_details"))
-
-
-def _load_llm_capture_manifest(rollout_dir: Path) -> dict[str, Any] | None:
-    path = rollout_dir / "trajectory" / LLM_TRAJECTORY_MANIFEST_FILENAME
-    if not path.exists():
-        # Backward compatibility for artifacts created before the sidecar contract.
-        return None
-    try:
-        manifest = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {"status": "capture_failed", "capture_fidelity": "none"}
-    if not isinstance(manifest, dict):
-        return {"status": "capture_failed", "capture_fidelity": "none"}
-    return manifest
-
-
-def _capture_manifest_allows_training(manifest: dict[str, Any]) -> bool:
-    return bool(
-        manifest.get("status") == "complete"
-        and manifest.get("capture_fidelity") == "provider_wire"
-        and manifest.get("request_complete") is True
-        and manifest.get("response_complete") is True
-    )
 
 
 def _training_success_exchange_indices(
@@ -504,11 +482,11 @@ def build_rollout_results_record(
         export_error=effective_export_error,
     )
     terminal_health_error = bool(error or verifier_error or partial_trajectory)
-    capture_manifest = _load_llm_capture_manifest(rollout_path)
+    capture_manifest = read_llm_trajectory_manifest(rollout_path)
     audit_only_capture = bool(
         capture_manifest is not None
         and int(capture_manifest.get("exchange_count") or 0) > 0
-        and not _capture_manifest_allows_training(capture_manifest)
+        and not capture_manifest_allows_training(capture_manifest)
     )
     native_subscription_without_llm = bool(
         (

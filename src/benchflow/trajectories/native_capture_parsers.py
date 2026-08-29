@@ -176,7 +176,7 @@ def parse_claude_sessions(
 ) -> NativeParseResult | None:
     """Reconstruct model turns from Claude Code's native session transcript."""
 
-    records = _read_jsonl_tree(sessions_dir)
+    records = _read_jsonl_tree(sessions_dir, started_at=started_at)
     if not records:
         return None
     messages: list[dict[str, Any]] = []
@@ -278,7 +278,7 @@ def parse_codex_sessions(
 ) -> NativeParseResult | None:
     """Reconstruct Responses-style calls from Codex native session records."""
 
-    records = _read_jsonl_tree(sessions_dir)
+    records = _read_jsonl_tree(sessions_dir, started_at=started_at)
     if not records:
         return None
     history: list[dict[str, Any]] = []
@@ -488,17 +488,29 @@ def _exchange(
     )
 
 
-def _read_jsonl_tree(root: Path) -> list[dict[str, Any]]:
+def _read_jsonl_tree(
+    root: Path, *, started_at: datetime | None = None
+) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
+    boundary = started_at.timestamp() - 1.0 if started_at is not None else None
     records: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*.jsonl"), key=lambda item: item.stat().st_mtime):
+        if boundary is not None and path.stat().st_mtime < boundary:
+            continue
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if isinstance(record, dict):
+                timestamp = _optional_record_timestamp(record)
+                if (
+                    boundary is not None
+                    and timestamp is not None
+                    and timestamp.timestamp() < boundary
+                ):
+                    continue
                 records.append(record)
     return records
 
@@ -718,14 +730,17 @@ def _normalize_codex_usage(usage: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record_timestamp(record: dict[str, Any], default: datetime) -> datetime:
+    return _optional_record_timestamp(record) or default
+
+
+def _optional_record_timestamp(record: dict[str, Any]) -> datetime | None:
     value = record.get("timestamp")
     if not isinstance(value, str):
-        return default
+        return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return default
-    return parsed
+        return None
 
 
 def _unix_nanos_timestamp(value: Any) -> datetime:

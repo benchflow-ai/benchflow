@@ -15,28 +15,35 @@ from typing import Any
 
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
-from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.llm_capture_manifest import (
     LLM_TRAJECTORY_FILENAME,
-    LLM_TRAJECTORY_SCHEMA_VERSION,
     AuthMode,
     CaptureFidelity,
     CaptureSource,
     CaptureStatus,
+    LLMRoleCapture,
     initialize_llm_trajectory_artifacts,
     write_llm_trajectory_manifest,
 )
+from benchflow.trajectories.llm_capture_records import (
+    CaptureTarget as _CaptureTarget,
+)
+from benchflow.trajectories.llm_capture_records import (
+    NativeCaptureBundle as _NativeCaptureBundle,
+)
+from benchflow.trajectories.llm_capture_records import (
+    assemble_capture,
+    load_provider_wire_records,
+    role_captures_for_targets,
+    write_exchange_records,
+)
 from benchflow.trajectories.native_capture_parsers import (
-    NativeParseResult,
     parse_claude_raw_capture,
     parse_claude_sessions,
     parse_codex_sessions,
     project_acp_trajectory,
 )
-from benchflow.trajectories.types import (
-    redact_trajectory_obj,
-    redact_trajectory_text,
-)
+from benchflow.trajectories.types import redact_trajectory_text
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +106,7 @@ class LLMTrajectoryCapture:
             session_id=session_id,
             started_at=started_at,
         )
-        self._native_agents: dict[str, str | None] = {}
-        self._credential_homes: set[str] = set()
+        self._targets: dict[tuple[str, str | None, str], _CaptureTarget] = {}
         self._collector_started = False
         self._capture_root_prepared = False
         self._preparation_errors: list[str] = []
@@ -130,11 +136,20 @@ class LLMTrajectoryCapture:
         """Return the agent environment augmented for native capture."""
 
         prepared = dict(agent_env)
-        if not uses_native_subscription_auth(agent, model, prepared):
+        native = uses_native_subscription_auth(agent, model, prepared)
+        auth_mode = _resolve_auth_mode(agent, model, prepared)
+        target = _CaptureTarget(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            auth_mode=auth_mode,
+            native=native,
+        )
+        self._targets[(agent, model, credential_home)] = target
+        self._refresh_manifest_auth_mode()
+        if not native:
+            write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
             return prepared
-        self._native_agents[agent] = model
-        self._credential_homes.add(credential_home)
-        self.manifest.auth_mode = _resolve_auth_mode(agent, model, prepared)
         if _is_claude_code_agent(agent):
             raw_dir = f"{self._remote_capture_root}/raw"
             prepared.update(
@@ -168,6 +183,16 @@ class LLMTrajectoryCapture:
         write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
         return prepared
 
+    def _native_targets(self) -> list[_CaptureTarget]:
+        return [target for target in self._targets.values() if target.native]
+
+    def _refresh_manifest_auth_mode(self) -> None:
+        modes = {target.auth_mode for target in self._targets.values()}
+        if len(modes) == 1:
+            self.manifest.auth_mode = next(iter(modes))
+        elif len(modes) > 1:
+            self.manifest.auth_mode = AuthMode.MIXED
+
     async def finalize(
         self,
         env: Any,
@@ -178,92 +203,84 @@ class LLMTrajectoryCapture:
         """Publish the highest-fidelity available capture and terminal sidecar."""
 
         self.manifest.finished_at = datetime.now()
+        provider_records: list[dict[str, Any]] = []
         if self.trajectory_path.stat().st_size > 0:
             try:
-                exchange_count = _annotate_provider_wire_jsonl(
+                provider_records = load_provider_wire_records(
                     self.trajectory_path,
-                    auth_mode=self.manifest.auth_mode,
+                    targets=[
+                        target for target in self._targets.values() if not target.native
+                    ],
+                    fallback_agent=self.agent,
+                    fallback_model=self.model,
+                    fallback_auth=self.manifest.auth_mode,
                 )
-                self._finish_manifest(
-                    status=CaptureStatus.COMPLETE,
-                    source=CaptureSource.LITELLM_PROXY,
-                    fidelity=CaptureFidelity.PROVIDER_WIRE,
-                    exchange_count=exchange_count,
-                    request_complete=True,
-                    response_complete=True,
-                )
-            finally:
-                # Mixed-role scenes can prepare native telemetry before another
-                # role writes provider capture. Never strand raw bodies in a
-                # reusable externally-owned sandbox on this early-return path.
-                if self._native_agents and env is not None:
+            except Exception:
+                if env is not None:
                     await self._cleanup_remote_capture(env)
-            return
+                raise
 
-        native_result: NativeParseResult | None = None
+        native_bundles: list[_NativeCaptureBundle] = []
         collection_errors: list[str] = list(self._preparation_errors)
-        if self._native_agents and env is not None:
+        native_targets = self._native_targets()
+        if native_targets and env is not None:
             try:
-                native_result = await self._collect_native_result(env)
+                native_bundles = await self._collect_native_results(env)
             except Exception as exc:
                 collection_errors.append(_sanitized_error(exc))
                 logger.warning("Native LLM trajectory collection failed: %s", exc)
             finally:
                 await self._cleanup_remote_capture(env)
 
-        if native_result is None and acp_events:
-            native_result = project_acp_trajectory(
+        if not provider_records and not native_bundles and acp_events:
+            projected = project_acp_trajectory(
                 acp_events,
                 agent=self.agent,
                 session_id=self.session_id,
                 started_at=self.started_at,
                 auth_mode=self.manifest.auth_mode.value,
             )
-        if native_result is not None:
-            LiveLLMTrajectoryWriter(self.trajectory_path).reconcile(
-                native_result.trajectory
-            )
-            errors = [*collection_errors, *native_result.errors]
-            status = (
-                CaptureStatus.COMPLETE
-                if native_result.fidelity is CaptureFidelity.PROVIDER_WIRE
-                and not errors
-                else CaptureStatus.PARTIAL
-            )
-            self._finish_manifest(
-                status=status,
-                source=native_result.source,
-                fidelity=native_result.fidelity,
-                exchange_count=len(native_result.trajectory.exchanges),
-                request_complete=native_result.request_complete,
-                response_complete=native_result.response_complete,
-                missing_fields=native_result.missing_fields,
-                errors=errors,
-            )
-            return
-
-        self._finish_manifest(
-            status=(
-                CaptureStatus.CAPTURE_FAILED
-                if model_call_seen
-                else CaptureStatus.NO_MODEL_CALL
-            ),
-            source=CaptureSource.NONE,
-            fidelity=CaptureFidelity.NONE,
-            exchange_count=0,
-            request_complete=False,
-            response_complete=False,
-            missing_fields=(
-                ["provider_request", "provider_response"] if model_call_seen else []
-            ),
-            errors=(
-                collection_errors
-                or (
-                    ["model call observed but no LLM capture source was readable"]
-                    if model_call_seen
-                    else []
+            if projected is not None:
+                native_bundles.append(
+                    _NativeCaptureBundle(
+                        targets=(
+                            tuple(native_targets)
+                            or (self._fallback_target(native=True),)
+                        ),
+                        result=projected,
+                    )
                 )
-            ),
+
+        prepared_targets = list(self._targets.values())
+        assembly = assemble_capture(
+            provider_records=provider_records,
+            native_bundles=native_bundles,
+            targets=prepared_targets,
+            collection_errors=collection_errors,
+            model_call_seen=model_call_seen,
+            fallback_auth=self.manifest.auth_mode,
+        )
+        write_exchange_records(self.trajectory_path, assembly.records)
+        self.manifest.auth_mode = assembly.auth_mode
+        self._finish_manifest(
+            status=assembly.status,
+            source=assembly.source,
+            fidelity=assembly.fidelity,
+            exchange_count=len(assembly.records),
+            request_complete=assembly.request_complete,
+            response_complete=assembly.response_complete,
+            missing_fields=assembly.missing_fields,
+            errors=assembly.errors,
+            role_captures=assembly.role_captures,
+        )
+
+    def _fallback_target(self, *, native: bool) -> _CaptureTarget:
+        return _CaptureTarget(
+            agent=self.agent,
+            model=self.model,
+            credential_home="",
+            auth_mode=self.manifest.auth_mode,
+            native=native,
         )
 
     def record_failure(self, error: object, *, model_call_seen: bool) -> None:
@@ -286,6 +303,7 @@ class LLMTrajectoryCapture:
                 ["provider_request", "provider_response"] if model_call_seen else []
             ),
             errors=[_sanitized_error(error)],
+            role_captures=role_captures_for_targets(list(self._targets.values())),
         )
 
     async def _ensure_otel_sink(self, env: Any, *, sandbox_user: str | None) -> int:
@@ -362,7 +380,7 @@ exit 1
             raise RuntimeError("Claude OTel sink port file is unavailable")
         return _parse_port(result.stdout)
 
-    async def _collect_native_result(self, env: Any) -> NativeParseResult | None:
+    async def _collect_native_results(self, env: Any) -> list[_NativeCaptureBundle]:
         if self._collector_started:
             await env.exec(
                 f"if test -s {self._remote_capture_root}/pid; then "
@@ -371,54 +389,88 @@ exit 1
                 user="root",
                 timeout_sec=5,
             )
+        bundles: list[_NativeCaptureBundle] = []
+        native_targets = self._native_targets()
+        claude_targets = tuple(
+            target for target in native_targets if _is_claude_code_agent(target.agent)
+        )
         with tempfile.TemporaryDirectory(prefix="benchflow-native-llm-") as temporary:
             local_root = Path(temporary)
             capture_dir = local_root / "capture"
+            raw_claude_captured = False
             if self._capture_root_prepared:
                 await env.download_dir(self._remote_capture_root, capture_dir)
                 result = parse_claude_raw_capture(
                     capture_dir,
-                    agent=self.agent,
+                    agent=(claude_targets[0].agent if claude_targets else self.agent),
                     session_id=self.session_id,
                     started_at=self.started_at,
                 )
                 if result is not None:
-                    return result
-            session_roots: list[tuple[str, Path]] = []
-            for index, credential_home in enumerate(sorted(self._credential_homes)):
+                    bundles.append(
+                        _NativeCaptureBundle(targets=claude_targets, result=result)
+                    )
+                    raw_claude_captured = True
+            credential_homes = sorted(
+                {target.credential_home for target in native_targets}
+            )
+            for index, credential_home in enumerate(credential_homes):
+                home_targets = tuple(
+                    target
+                    for target in native_targets
+                    if target.credential_home == credential_home
+                )
+                home_claude_targets = tuple(
+                    target
+                    for target in home_targets
+                    if _is_claude_code_agent(target.agent)
+                )
+                home_codex_targets = tuple(
+                    target for target in home_targets if target.agent == "codex-acp"
+                )
                 claude_local = local_root / f"home-{index}" / "claude-projects"
                 codex_local = local_root / f"home-{index}" / "codex-sessions"
-                if any(
-                    _is_claude_code_agent(agent) for agent in self._native_agents
-                ) and await _download_optional_dir(
-                    env, f"{credential_home}/.claude/projects", claude_local
+                if (
+                    home_claude_targets
+                    and not raw_claude_captured
+                    and await _download_optional_dir(
+                        env, f"{credential_home}/.claude/projects", claude_local
+                    )
                 ):
-                    session_roots.append(("claude", claude_local))
-                if "codex-acp" in self._native_agents and await _download_optional_dir(
+                    target = home_claude_targets[0]
+                    result = parse_claude_sessions(
+                        claude_local,
+                        agent=target.agent,
+                        session_id=self.session_id,
+                        started_at=self.started_at,
+                    )
+                    if result is not None:
+                        bundles.append(
+                            _NativeCaptureBundle(
+                                targets=home_claude_targets,
+                                result=result,
+                            )
+                        )
+                if home_codex_targets and await _download_optional_dir(
                     env, f"{credential_home}/.codex/sessions", codex_local
                 ):
-                    session_roots.append(("codex", codex_local))
-
-            for source, root in session_roots:
-                if source == "claude":
-                    result = parse_claude_sessions(
-                        root,
-                        agent=self.agent,
-                        session_id=self.session_id,
-                        started_at=self.started_at,
-                    )
-                else:
+                    target = home_codex_targets[0]
                     result = parse_codex_sessions(
-                        root,
-                        agent=self.agent,
+                        codex_local,
+                        agent=target.agent,
                         session_id=self.session_id,
                         started_at=self.started_at,
-                        configured_model=self._native_agents.get("codex-acp"),
-                        auth_mode=self.manifest.auth_mode.value,
+                        configured_model=target.model,
+                        auth_mode=target.auth_mode.value,
                     )
-                if result is not None:
-                    return result
-        return None
+                    if result is not None:
+                        bundles.append(
+                            _NativeCaptureBundle(
+                                targets=home_codex_targets,
+                                result=result,
+                            )
+                        )
+        return bundles
 
     async def _cleanup_remote_capture(self, env: Any) -> None:
         if not self._capture_root_prepared:
@@ -446,6 +498,7 @@ exit 1
         response_complete: bool,
         missing_fields: list[str] | None = None,
         errors: list[str] | None = None,
+        role_captures: list[LLMRoleCapture] | None = None,
     ) -> None:
         self.manifest.status = status
         self.manifest.capture_source = source
@@ -455,6 +508,7 @@ exit 1
         self.manifest.response_complete = response_complete
         self.manifest.missing_fields = sorted(set(missing_fields or []))
         self.manifest.errors = [_sanitized_error(item) for item in errors or []]
+        self.manifest.role_captures = role_captures or []
         write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
 
 
@@ -519,38 +573,6 @@ def _parse_port(value: str) -> int:
     if not 1 <= port <= 65535:
         raise RuntimeError("Claude OTel sink returned an out-of-range port")
     return port
-
-
-def _annotate_provider_wire_jsonl(path: Path, *, auth_mode: AuthMode) -> int:
-    records: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"invalid LLM trajectory JSONL at line {line_number}: {exc.msg}"
-            ) from exc
-        if not isinstance(record, dict):
-            raise ValueError(
-                f"invalid LLM trajectory JSONL at line {line_number}: expected object"
-            )
-        metadata = record.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-            record["metadata"] = metadata
-        metadata.setdefault("schema_version", LLM_TRAJECTORY_SCHEMA_VERSION)
-        metadata.setdefault("capture_source", CaptureSource.LITELLM_PROXY.value)
-        metadata.setdefault("capture_fidelity", CaptureFidelity.PROVIDER_WIRE.value)
-        metadata.setdefault("auth_mode", auth_mode.value)
-        metadata.setdefault("request_complete", True)
-        metadata.setdefault("response_complete", True)
-        metadata.setdefault("payload_redacted", True)
-        records.append(redact_trajectory_obj(record))
-    payload = "".join(json.dumps(record, default=str) + "\n" for record in records)
-    _atomic_replace_text(path, payload)
-    return len(records)
 
 
 def _sanitized_error(error: object) -> str:

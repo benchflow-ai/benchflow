@@ -15,6 +15,10 @@ from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
 )
+from benchflow.trajectories.llm_capture_manifest import (
+    capture_manifest_allows_training,
+    read_llm_trajectory_manifest,
+)
 
 CanonicalizePolicy = Literal["none", "one-healthy-per-task"]
 RetryPolicy = Literal["default", "unscored-only"]
@@ -202,6 +206,18 @@ def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
         rows = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError:
         return True, False, 0
+    manifest = read_llm_trajectory_manifest(rollout_dir)
+    if manifest is not None:
+        try:
+            expected_rows = int(manifest.get("exchange_count") or 0)
+        except (TypeError, ValueError):
+            return True, False, len(rows)
+        if (
+            not capture_manifest_allows_training(manifest)
+            or not rows
+            or expected_rows != len(rows)
+        ):
+            return True, False, len(rows)
     return True, True, len(rows)
 
 

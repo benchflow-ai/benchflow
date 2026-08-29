@@ -24,6 +24,10 @@ from benchflow.trajectories.export_prime_sft import (
     normalize_prime_sft_exchange,
     validate_prime_sft_row,
 )
+from benchflow.trajectories.llm_capture_manifest import (
+    capture_manifest_allows_training,
+    read_llm_trajectory_manifest,
+)
 from benchflow.trajectories.types import redact_trajectory_obj
 
 TrlSftRowMode = Literal["rollout", "exchange"]
@@ -42,6 +46,7 @@ class TrlSftExportStats:
     skipped_provider_error: int = 0
     skipped_no_assistant: int = 0
     skipped_missing_tools: int = 0
+    skipped_insufficient_capture_fidelity: int = 0
     skipped_terminal_error: int = 0
     skipped_helper_calls: int = 0
     skipped_invalid: int = 0
@@ -64,6 +69,9 @@ class TrlSftExportStats:
             "skipped_provider_error": self.skipped_provider_error,
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tools": self.skipped_missing_tools,
+            "skipped_insufficient_capture_fidelity": (
+                self.skipped_insufficient_capture_fidelity
+            ),
             "skipped_terminal_error": self.skipped_terminal_error,
             "skipped_helper_calls": self.skipped_helper_calls,
             "skipped_invalid": self.skipped_invalid,
@@ -314,6 +322,12 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
             continue
+        capture_manifest = read_llm_trajectory_manifest(rollout_dir)
+        if capture_manifest is not None and not capture_manifest_allows_training(
+            capture_manifest
+        ):
+            stats.skipped_insufficient_capture_fidelity += 1
+            continue
         trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
         exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
         if not exchanges:
@@ -350,6 +364,9 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
                 continue
             if skip_reason == "missing_tool_defs":
                 stats.skipped_missing_tools += 1
+                continue
+            if skip_reason == "insufficient_capture_fidelity":
+                stats.skipped_insufficient_capture_fidelity += 1
                 continue
             if row is None:
                 stats.skipped_invalid += 1

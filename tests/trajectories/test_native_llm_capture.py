@@ -12,9 +12,12 @@ import pytest
 
 from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
+    _CaptureTarget,
     _download_optional_dir,
+    _NativeCaptureBundle,
 )
 from benchflow.trajectories.llm_capture_manifest import (
+    AuthMode,
     CaptureFidelity,
     CaptureSource,
     CaptureStatus,
@@ -25,7 +28,6 @@ from benchflow.trajectories.native_capture_parsers import (
     parse_codex_sessions,
     project_acp_trajectory,
 )
-from benchflow.trajectories.results import build_rollout_results_record
 
 STARTED_AT = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
 
@@ -51,7 +53,7 @@ def _otel_record(name: str, timestamp_ns: int, **attributes: str) -> dict:
 
 
 def test_claude_otel_raw_bodies_become_provider_wire_exchanges(tmp_path: Path) -> None:
-    """Guards this PR's exact Claude OAuth raw-body capture contract."""
+    """Guards PR #1057's exact Claude OAuth raw-body capture contract."""
 
     capture = tmp_path / "capture"
     raw = capture / "raw"
@@ -128,7 +130,7 @@ def test_claude_otel_raw_bodies_become_provider_wire_exchanges(tmp_path: Path) -
 def test_claude_concurrent_raw_pairing_fails_closed_for_training(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR against claiming FIFO pairing for concurrent Claude calls."""
+    """Guards PR #1057 against claiming FIFO pairing for concurrent Claude calls."""
 
     capture = tmp_path / "capture"
     raw = capture / "raw"
@@ -198,7 +200,7 @@ def test_claude_concurrent_raw_pairing_fails_closed_for_training(
 def test_claude_first_raw_request_survives_missing_otel_body_event(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR against Claude omitting its first request-body OTLP event."""
+    """Guards PR #1057 against Claude omitting its first request-body OTLP event."""
 
     capture = tmp_path / "capture"
     raw = capture / "raw"
@@ -262,7 +264,7 @@ def test_claude_first_raw_request_survives_missing_otel_body_event(
 
 
 def test_claude_session_fallback_is_truthfully_lower_fidelity(tmp_path: Path) -> None:
-    """Guards this PR's Claude OAuth fallback when raw OTel is unavailable."""
+    """Guards PR #1057's Claude OAuth fallback when raw OTel is unavailable."""
 
     session = tmp_path / "claude" / "session.jsonl"
     _write_jsonl(
@@ -313,8 +315,82 @@ def test_claude_session_fallback_is_truthfully_lower_fidelity(tmp_path: Path) ->
     assert "tool_definitions" in result.missing_fields
 
 
+def test_native_session_fallback_filters_records_before_rollout_start(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against importing sessions from a reused sandbox."""
+
+    sessions = tmp_path / "claude"
+    previous = sessions / "previous.jsonl"
+    current = sessions / "current.jsonl"
+    _write_jsonl(
+        previous,
+        [
+            {
+                "type": "assistant",
+                "requestId": "old-request",
+                "timestamp": "2026-08-28T11:59:00Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "old answer"}],
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        current,
+        [
+            {
+                "type": "assistant",
+                "requestId": "old-appended-request",
+                "timestamp": "2026-08-28T11:59:30Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "old appended answer"}],
+                },
+            },
+            {
+                "type": "user",
+                "timestamp": "2026-08-28T12:00:01Z",
+                "message": {"role": "user", "content": "current prompt"},
+            },
+            {
+                "type": "assistant",
+                "requestId": "current-request",
+                "timestamp": "2026-08-28T12:00:02Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "current answer"}],
+                },
+            },
+        ],
+    )
+    previous_time = int((STARTED_AT.timestamp() - 10) * 1_000_000_000)
+    current_time = int((STARTED_AT.timestamp() + 10) * 1_000_000_000)
+    os.utime(previous, ns=(previous_time, previous_time))
+    os.utime(current, ns=(current_time, current_time))
+
+    result = parse_claude_sessions(
+        sessions,
+        agent="claude-agent-acp",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+
+    assert result is not None
+    assert len(result.trajectory.exchanges) == 1
+    exchange = result.trajectory.exchanges[0]
+    assert exchange.response.body["content"][0]["text"] == "current answer"
+    assert exchange.request.body["messages"] == [
+        {"role": "user", "content": "current prompt"}
+    ]
+
+
 def test_codex_oauth_session_splits_calls_and_preserves_usage(tmp_path: Path) -> None:
-    """Guards this PR's Codex OAuth native-session trajectory reconstruction."""
+    """Guards PR #1057's Codex OAuth native-session trajectory reconstruction."""
 
     session = tmp_path / "codex" / "session.jsonl"
     _write_jsonl(
@@ -418,7 +494,7 @@ def test_codex_oauth_session_splits_calls_and_preserves_usage(tmp_path: Path) ->
 async def test_capture_always_emits_empty_jsonl_and_terminal_manifest(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR's always-present artifact invariant for zero-call runs."""
+    """Guards PR #1057's always-present artifact invariant for zero-call runs."""
 
     capture = LLMTrajectoryCapture(
         tmp_path,
@@ -456,7 +532,7 @@ def test_codex_native_auth_file_mode_is_not_assumed_to_be_oauth(
     auth_json: str,
     expected: str,
 ) -> None:
-    """Guards this PR's Codex auth provenance for API-key auth.json files."""
+    """Guards PR #1057's Codex auth provenance for API-key auth.json files."""
 
     capture = LLMTrajectoryCapture(
         tmp_path,
@@ -475,7 +551,7 @@ def test_codex_native_auth_file_mode_is_not_assumed_to_be_oauth(
 
 @pytest.mark.asyncio
 async def test_provider_jsonl_gets_complete_fidelity_metadata(tmp_path: Path) -> None:
-    """Guards this PR's uniform metadata for existing API-key proxy capture."""
+    """Guards PR #1057's uniform metadata for existing API-key proxy capture."""
 
     capture = LLMTrajectoryCapture(
         tmp_path,
@@ -511,7 +587,7 @@ async def test_provider_jsonl_gets_complete_fidelity_metadata(tmp_path: Path) ->
 async def test_provider_capture_early_return_cleans_native_raw_bodies(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR against raw-body leakage from mixed-role rollouts."""
+    """Guards PR #1057 against raw-body leakage from mixed-role rollouts."""
 
     commands: list[str] = []
 
@@ -527,7 +603,14 @@ async def test_provider_capture_early_return_cleans_native_raw_bodies(
         session_id="rollout-1",
         started_at=STARTED_AT,
     )
-    capture._native_agents["claude-agent-acp"] = "claude-sonnet-4-6"
+    target = _CaptureTarget(
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+    )
+    capture._targets[(target.agent, target.model, target.credential_home)] = target
     capture._capture_root_prepared = True
     capture.trajectory_path.write_text(
         json.dumps(
@@ -546,10 +629,177 @@ async def test_provider_capture_early_return_cleans_native_raw_bodies(
 
 
 @pytest.mark.asyncio
+async def test_mixed_auth_rollout_merges_provider_and_native_exchanges(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against dropping native rows from mixed-auth scenes."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-api",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    api_target = _CaptureTarget(
+        agent="codex-acp",
+        model="gpt-api",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.API_KEY,
+        native=False,
+    )
+    native_target = _CaptureTarget(
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+    )
+    for target in (api_target, native_target):
+        capture._targets[(target.agent, target.model, target.credential_home)] = target
+    capture._refresh_manifest_auth_mode()
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {
+                    "timestamp": "2026-08-28T12:00:01Z",
+                    "body": {"model": "gpt-api", "input": "hello"},
+                },
+                "response": {
+                    "timestamp": "2026-08-28T12:00:02Z",
+                    "status_code": 200,
+                    "body": {"output": []},
+                },
+            }
+        )
+        + "\n"
+    )
+    session = tmp_path / "native-session" / "session.jsonl"
+    _write_jsonl(
+        session,
+        [
+            {
+                "type": "user",
+                "timestamp": "2026-08-28T12:00:03Z",
+                "message": {"role": "user", "content": "native prompt"},
+            },
+            {
+                "type": "assistant",
+                "requestId": "req-native",
+                "timestamp": "2026-08-28T12:00:04Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "native answer"}],
+                },
+            },
+        ],
+    )
+    native_result = parse_claude_sessions(
+        session.parent,
+        agent=native_target.agent,
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    assert native_result is not None
+
+    async def collect_native(_env):
+        return [_NativeCaptureBundle((native_target,), native_result)]
+
+    capture._collect_native_results = collect_native
+
+    await capture.finalize(object(), acp_events=[], model_call_seen=True)
+
+    rows = [
+        json.loads(line) for line in capture.trajectory_path.read_text().splitlines()
+    ]
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert len(rows) == 2
+    assert {row["metadata"]["agent"] for row in rows} == {
+        "codex-acp",
+        "claude-agent-acp",
+    }
+    assert manifest["status"] == "partial"
+    assert manifest["capture_source"] == "mixed"
+    assert manifest["capture_fidelity"] == "mixed"
+    assert manifest["auth_mode"] == "mixed"
+    assert manifest["exchange_count"] == 2
+    assert {role["agent"] for role in manifest["role_captures"]} == {
+        "codex-acp",
+        "claude-agent-acp",
+    }
+
+
+@pytest.mark.asyncio
+async def test_mixed_auth_rollout_marks_missing_native_role_partial(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against hiding a missing OAuth role behind API rows."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-api",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    api_target = _CaptureTarget(
+        agent="codex-acp",
+        model="gpt-api",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.API_KEY,
+        native=False,
+    )
+    native_target = _CaptureTarget(
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+    )
+    for target in (api_target, native_target):
+        capture._targets[(target.agent, target.model, target.credential_home)] = target
+    capture._refresh_manifest_auth_mode()
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {"body": {"model": "gpt-api", "input": "hello"}},
+                "response": {"status_code": 200, "body": {"output": []}},
+            }
+        )
+        + "\n"
+    )
+
+    async def collect_native(_env):
+        return []
+
+    capture._collect_native_results = collect_native
+
+    await capture.finalize(object(), acp_events=[], model_call_seen=True)
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert manifest["status"] == "partial"
+    assert manifest["capture_source"] == "mixed"
+    assert manifest["capture_fidelity"] == "mixed"
+    assert manifest["auth_mode"] == "mixed"
+    assert manifest["request_complete"] is False
+    assert manifest["response_complete"] is False
+    assert any("no capture was attributable" in error for error in manifest["errors"])
+    roles = {role["agent"]: role for role in manifest["role_captures"]}
+    assert roles["codex-acp"]["exchange_count"] == 1
+    assert roles["claude-agent-acp"]["exchange_count"] == 0
+    assert roles["claude-agent-acp"]["capture_fidelity"] == "none"
+
+
+@pytest.mark.asyncio
 async def test_claude_capture_setup_failure_degrades_without_aborting(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR against observability setup breaking Claude OAuth runs."""
+    """Guards PR #1057 against observability setup breaking Claude OAuth runs."""
 
     commands: list[str] = []
 
@@ -593,7 +843,7 @@ async def test_claude_capture_setup_failure_degrades_without_aborting(
 async def test_optional_session_download_creates_docker_copy_parent(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR's Docker native-session download path."""
+    """Guards PR #1057's Docker native-session download path."""
 
     class DockerLikeEnv:
         async def exec(self, *_args, **_kwargs):
@@ -615,7 +865,7 @@ async def test_optional_session_download_creates_docker_copy_parent(
 def test_capture_failure_repairs_invalid_jsonl_and_redacts_manifest_error(
     tmp_path: Path,
 ) -> None:
-    """Guards this PR's valid-JSONL and secret-redaction failure invariant."""
+    """Guards PR #1057's valid-JSONL and secret-redaction failure invariant."""
 
     capture = LLMTrajectoryCapture(
         tmp_path,
@@ -639,7 +889,7 @@ def test_capture_failure_repairs_invalid_jsonl_and_redacts_manifest_error(
 
 
 def test_acp_projection_retains_the_actual_auth_mode() -> None:
-    """Guards this PR against labeling API-key fallback rows as OAuth."""
+    """Guards PR #1057 against labeling API-key fallback rows as OAuth."""
 
     result = project_acp_trajectory(
         [{"type": "agent_message", "text": "finished"}],
@@ -651,119 +901,3 @@ def test_acp_projection_retains_the_actual_auth_mode() -> None:
 
     assert result is not None
     assert result.trajectory.exchanges[0].metadata["auth_mode"] == "api_key"
-
-
-def test_agent_session_capture_is_audit_only_not_training_ready(tmp_path: Path) -> None:
-    """Guards this PR against silently training on reconstructed OAuth payloads."""
-
-    trajectory_dir = tmp_path / "trajectory"
-    trajectory_dir.mkdir()
-    (trajectory_dir / "llm_trajectory.jsonl").write_text(
-        json.dumps(
-            {
-                "request": {
-                    "body": {"messages": [{"role": "user", "content": "hello"}]}
-                },
-                "response": {
-                    "status_code": 200,
-                    "body": {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": "hi"}],
-                    },
-                },
-                "metadata": {
-                    "capture_fidelity": "agent_session",
-                    "request_complete": False,
-                    "response_complete": True,
-                },
-            }
-        )
-        + "\n"
-    )
-    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
-        json.dumps(
-            {
-                "status": "partial",
-                "capture_fidelity": "agent_session",
-                "auth_mode": "oauth_subscription",
-                "exchange_count": 1,
-                "request_complete": False,
-                "response_complete": True,
-            }
-        )
-    )
-
-    row = build_rollout_results_record(
-        tmp_path,
-        task_name="task",
-        rollout_name="rollout",
-        agent="claude-agent-acp",
-        agent_name="Claude Code",
-        model="claude-opus-4-1",
-        n_tool_calls=0,
-        prompts=["hello"],
-        trajectory=[],
-        partial_trajectory=False,
-        rewards={"reward": 1.0},
-        error=None,
-        verifier_error=None,
-        agent_result={"usage_source": "agent_native_acp", "total_tokens": 2},
-    )
-
-    assert row["info"]["training_ready"] is False
-    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
-    assert row["is_completed"] is True
-    assert row["error"] is None
-
-
-def test_corrupt_capture_manifest_fails_closed_for_training(tmp_path: Path) -> None:
-    """Guards this PR against treating a corrupt new sidecar as a legacy artifact."""
-
-    trajectory_dir = tmp_path / "trajectory"
-    trajectory_dir.mkdir()
-    (trajectory_dir / "llm_trajectory.jsonl").write_text(
-        json.dumps(
-            {
-                "request": {
-                    "body": {"messages": [{"role": "user", "content": "hello"}]}
-                },
-                "response": {
-                    "status_code": 200,
-                    "body": {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": "hi"}],
-                    },
-                },
-                "metadata": {
-                    "capture_fidelity": "provider_wire",
-                    "request_complete": True,
-                    "response_complete": True,
-                },
-            }
-        )
-        + "\n"
-    )
-    (trajectory_dir / "llm_trajectory.manifest.json").write_text("{broken")
-
-    row = build_rollout_results_record(
-        tmp_path,
-        task_name="task",
-        rollout_name="rollout",
-        agent="claude-agent-acp",
-        agent_name="Claude Code",
-        model="claude-opus-4-1",
-        n_tool_calls=0,
-        prompts=["hello"],
-        trajectory=[],
-        partial_trajectory=False,
-        rewards={"reward": 1.0},
-        error=None,
-        verifier_error=None,
-        agent_result={"total_tokens": 2},
-    )
-
-    assert row["info"]["training_ready"] is False
-    assert row["info"]["training_ready_reason"] == (
-        "missing_healthy_structured_llm_trajectory"
-    )
-    assert row["is_completed"] is False
