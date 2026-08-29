@@ -14,6 +14,7 @@ from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
     _CaptureTarget,
     _NativeCaptureBundle,
+    _NativeCollection,
 )
 from benchflow.trajectories.llm_capture_manifest import (
     AuthMode,
@@ -732,7 +733,9 @@ async def test_mixed_auth_rollout_merges_provider_and_native_exchanges(
     assert native_result is not None
 
     async def collect_native(_env):
-        return [_NativeCaptureBundle((native_target,), native_result)]
+        return _NativeCollection(
+            bundles=(_NativeCaptureBundle((native_target,), native_result),)
+        )
 
     capture._collect_native_results = collect_native
 
@@ -801,7 +804,7 @@ async def test_mixed_auth_rollout_marks_missing_native_role_partial(
     )
 
     async def collect_native(_env):
-        return []
+        return _NativeCollection()
 
     capture._collect_native_results = collect_native
 

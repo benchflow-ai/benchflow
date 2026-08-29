@@ -11,11 +11,28 @@ from unittest.mock import Mock
 import pytest
 
 from benchflow.rollout import Rollout
+from benchflow.trajectories import llm_capture as llm_capture_module
 from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
+    _CaptureTarget,
     _download_bound_session_files,
+    _NativeCaptureBundle,
 )
-from benchflow.trajectories.native_capture_parsers import parse_codex_sessions
+from benchflow.trajectories.llm_capture_manifest import (
+    AuthMode,
+    CaptureFidelity,
+    CaptureSource,
+)
+from benchflow.trajectories.native_capture_parsers import (
+    NativeParseResult,
+    parse_codex_sessions,
+)
+from benchflow.trajectories.types import (
+    LLMExchange,
+    LLMRequest,
+    LLMResponse,
+    Trajectory,
+)
 
 STARTED_AT = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
 
@@ -54,6 +71,41 @@ def _codex_session(prompt: str, answer: str, second: int) -> list[dict]:
             },
         },
     ]
+
+
+def _native_result(
+    *,
+    session_id: str,
+    source: CaptureSource,
+    fidelity: CaptureFidelity,
+    model: str,
+) -> NativeParseResult:
+    exchange = LLMExchange(
+        request=LLMRequest(body={"model": model, "input": "hello"}),
+        response=LLMResponse(body={"output": []}),
+        metadata={
+            "capture_source": source.value,
+            "capture_fidelity": fidelity.value,
+            "auth_mode": AuthMode.OAUTH_SUBSCRIPTION.value,
+            "native_session_id": session_id,
+            "request_complete": fidelity is CaptureFidelity.PROVIDER_WIRE,
+            "response_complete": True,
+        },
+    )
+    return NativeParseResult(
+        trajectory=Trajectory(
+            session_id="rollout-1",
+            agent_name="agent",
+            exchanges=[exchange],
+        ),
+        source=source,
+        fidelity=fidelity,
+        request_complete=fidelity is CaptureFidelity.PROVIDER_WIRE,
+        response_complete=True,
+        missing_fields=(
+            [] if fidelity is CaptureFidelity.PROVIDER_WIRE else ["request"]
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -264,6 +316,64 @@ async def test_claude_startup_timeout_still_releases_owned_collector(
 
 
 @pytest.mark.asyncio
+async def test_claude_capture_setup_error_is_cleared_after_recovery(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against retaining a recovered setup failure."""
+
+    class RecoveringCollectorEnv:
+        def __init__(self) -> None:
+            self.launch_attempts = 0
+
+        async def exec(self, command, **_kwargs):
+            if "nohup" not in command:
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            self.launch_attempts += 1
+            if self.launch_attempts == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout="",
+                    stderr="collector port was not observed",
+                )
+            return SimpleNamespace(return_code=0, stdout="43123\n", stderr="")
+
+        async def upload_file(self, *_args, **_kwargs):
+            return None
+
+    env = RecoveringCollectorEnv()
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    first_env = await capture.prepare_agent(
+        env,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        agent_env={"CLAUDE_CODE_OAUTH_TOKEN": "test-token"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+    assert "OTEL_LOGS_EXPORTER" not in first_env
+    assert capture._otel_setup_error is not None
+
+    recovered_env = await capture.prepare_agent(
+        env,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        agent_env={"CLAUDE_CODE_OAUTH_TOKEN": "test-token"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+        role_name="solver",
+    )
+
+    assert recovered_env["OTEL_LOGS_EXPORTER"] == "otlp"
+    assert capture._otel_setup_error is None
+
+
+@pytest.mark.asyncio
 async def test_native_download_selects_recent_files_before_copying(
     tmp_path: Path,
 ) -> None:
@@ -396,6 +506,160 @@ async def test_native_role_reprepare_preserves_prior_session_ids(
         "019effaf-3966-75d3-b61a-2916c84b0ac8",
         "019effaf-3ab7-71f1-8ff3-fdecf66b551e",
     )
+
+
+@pytest.mark.asyncio
+async def test_claude_fallback_collects_only_raw_uncovered_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1057's per-session Claude raw fallback coverage."""
+
+    first_id = "019effaf-3966-75d3-b61a-2916c84b0ac8"
+    second_id = "019effaf-3ab7-71f1-8ff3-fdecf66b551e"
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    targets = (
+        _CaptureTarget(
+            agent="claude-agent-acp",
+            model="claude-sonnet-4-6",
+            credential_home="/home/agent",
+            auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+            native=True,
+            role="solver",
+            native_session_ids=(first_id,),
+        ),
+        _CaptureTarget(
+            agent="claude-agent-acp",
+            model="claude-sonnet-4-6",
+            credential_home="/home/agent",
+            auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+            native=True,
+            role="reviewer",
+            native_session_ids=(second_id,),
+        ),
+    )
+    for target in targets:
+        capture._targets[
+            (target.role, target.agent, target.model, target.credential_home)
+        ] = target
+    capture._capture_root_prepared = True
+    raw_result = _native_result(
+        session_id=first_id,
+        source=CaptureSource.CLAUDE_OTEL_RAW_BODY,
+        fidelity=CaptureFidelity.PROVIDER_WIRE,
+        model="claude-sonnet-4-6",
+    )
+    fallback_result = _native_result(
+        session_id=second_id,
+        source=CaptureSource.CLAUDE_NATIVE_SESSION,
+        fidelity=CaptureFidelity.AGENT_SESSION,
+        model="claude-sonnet-4-6",
+    )
+    fallback_calls: list[tuple[str, ...]] = []
+
+    class CaptureEnv:
+        async def download_dir(self, _remote, local):
+            Path(local).mkdir(parents=True)
+
+    async def download_bound(_env, _remote, local, *, started_at, session_ids):
+        del started_at
+        fallback_calls.append(session_ids)
+        Path(local).mkdir(parents=True)
+        return True
+
+    monkeypatch.setattr(
+        llm_capture_module,
+        "parse_claude_raw_capture",
+        lambda *_args, **_kwargs: raw_result,
+    )
+    monkeypatch.setattr(
+        llm_capture_module,
+        "_download_bound_session_files",
+        download_bound,
+    )
+    monkeypatch.setattr(
+        llm_capture_module,
+        "parse_claude_sessions",
+        lambda *_args, **_kwargs: fallback_result,
+    )
+
+    collection = await capture._collect_native_results(CaptureEnv())
+
+    assert len(collection.bundles) == 2
+    assert fallback_calls == [(second_id,)]
+    assert collection.errors == ()
+
+
+@pytest.mark.asyncio
+async def test_later_native_target_failure_preserves_prior_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1057 against discarding earlier native role evidence."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-one",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    first = _CaptureTarget(
+        agent="codex-acp",
+        model="gpt-one",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+        role="solver",
+        native_session_ids=("session-one",),
+    )
+    second = _CaptureTarget(
+        agent="codex-acp",
+        model="gpt-two",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+        role="reviewer",
+        native_session_ids=("session-two",),
+    )
+    for target in (first, second):
+        capture._targets[
+            (target.role, target.agent, target.model, target.credential_home)
+        ] = target
+    first_result = _native_result(
+        session_id="session-one",
+        source=CaptureSource.CODEX_NATIVE_SESSION,
+        fidelity=CaptureFidelity.AGENT_SESSION,
+        model="gpt-one",
+    )
+
+    async def collect_codex(_env, *, local_root, index, target):
+        del local_root, index
+        if target is second:
+            raise RuntimeError("second target download failed")
+        return _NativeCaptureBundle(targets=(first,), result=first_result)
+
+    monkeypatch.setattr(capture, "_collect_codex_session", collect_codex)
+
+    await capture.finalize(object(), acp_events=[], model_call_seen=True)
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    rows = [
+        json.loads(line) for line in capture.trajectory_path.read_text().splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["metadata"]["role"] == "solver"
+    assert manifest["exchange_count"] == 1
+    assert manifest["status"] == "partial"
+    assert any("role reviewer" in error for error in manifest["errors"])
 
 
 @pytest.mark.asyncio
