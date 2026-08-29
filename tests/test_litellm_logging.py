@@ -149,6 +149,55 @@ def test_callback_module_source_exposes_proxy_handler_instance():
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
 
 
+def test_callback_preserves_complete_proxy_request_body():
+    """Guards PR #1057 against claiming completeness for an allowlisted request."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    proxy_body = {
+        "model": "benchflow-openai-gpt-5.6",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.25,
+        "max_tokens": 321,
+        "top_p": 0.8,
+        "stop": ["DONE"],
+        "tool_choice": "required",
+        "response_format": {"type": "json_object"},
+    }
+
+    record = logger._base_record(
+        {
+            "model": "benchflow-openai-gpt-5.6",
+            "messages": proxy_body["messages"],
+            "litellm_params": {
+                "model": "openai/gpt-5.6",
+                "proxy_server_request": {"body": proxy_body},
+            },
+            "optional_params": {"stream": False},
+        },
+        now,
+        now,
+    )
+
+    assert record["request_complete"] is True
+    assert record["request"]["body"] == {**proxy_body, "stream": False}
+
+
+def test_callback_marks_request_incomplete_without_proxy_body():
+    """Guards PR #1057 against promoting reconstructed callback parameters."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {"model": "gpt-5.6", "messages": [{"role": "user", "content": "hi"}]},
+        now,
+        now,
+    )
+
+    assert record["request_complete"] is False
+
+
 @pytest.mark.asyncio
 async def test_callback_pre_call_hook_strips_chat_input_compat_field():
     namespace: dict[str, object] = {}
@@ -345,6 +394,7 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
         "provider_model": "openai/glm-5.1",
         "model_group": "benchflow-glm-5.1",
         "call_type": "completion",
+        "request_complete": True,
         "input_shape": {
             "has_messages": True,
             "has_input": True,
@@ -462,6 +512,7 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
             "n_messages": 2,
         },
         "call_purpose": "agent",
+        "request_complete": True,
     }
     assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
         "agent",

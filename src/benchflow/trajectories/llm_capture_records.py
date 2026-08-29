@@ -93,6 +93,7 @@ def load_provider_wire_records(
         capture_trusted = (
             target.provider_capture_trusted if target is not None else True
         )
+        request_complete = metadata.get("request_complete") is True
         metadata.update(
             {
                 "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
@@ -123,7 +124,7 @@ def load_provider_wire_records(
                     else (_record_model(record) or fallback_model)
                 ),
                 "role_attribution_complete": attribution_complete,
-                "request_complete": True,
+                "request_complete": request_complete,
                 "response_complete": True,
                 "payload_redacted": True,
             }
@@ -208,6 +209,11 @@ def assemble_capture(
     missing_fields = {
         field for bundle in native_bundles for field in bundle.result.missing_fields
     }
+    if any(
+        not _record_metadata_bool(record, "request_complete")
+        for record in provider_records
+    ):
+        missing_fields.add("provider_request")
     successful_records = [
         record
         for record in records

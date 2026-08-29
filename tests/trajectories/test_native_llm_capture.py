@@ -605,6 +605,7 @@ async def test_provider_jsonl_gets_complete_fidelity_metadata(tmp_path: Path) ->
                         },
                     },
                 },
+                "metadata": {"request_complete": True},
             }
         )
         + "\n"
@@ -620,6 +621,46 @@ async def test_provider_jsonl_gets_complete_fidelity_metadata(tmp_path: Path) ->
     assert exchange["metadata"]["auth_mode"] == "api_key"
     assert manifest["status"] == "complete"
     assert manifest["capture_source"] == "litellm_proxy"
+
+
+@pytest.mark.asyncio
+async def test_provider_jsonl_without_canonical_request_is_partial(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on an allowlisted callback request."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="openai/gpt-5.6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    capture.configure({"OPENAI_API_KEY": "test-key"})
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {"body": {"model": "gpt-5.6", "input": "hello"}},
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "output": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+
+    await capture.finalize(None, acp_events=[], model_call_seen=True)
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert manifest["status"] == "partial"
+    assert manifest["request_complete"] is False
+    assert "provider_request" in manifest["missing_fields"]
 
 
 @pytest.mark.asyncio

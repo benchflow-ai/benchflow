@@ -752,7 +752,15 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     kwargs = {
         "model": "benchflow-openai-gpt-4.1-mini",
         "messages": [{"role": "user", "content": "hi"}],
-        "litellm_params": {"model": "openai/gpt-4.1-mini"},
+        "litellm_params": {
+            "model": "openai/gpt-4.1-mini",
+            "proxy_server_request": {
+                "body": {
+                    "model": "benchflow-openai-gpt-4.1-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                }
+            },
+        },
         "optional_params": {},
         "call_type": "acompletion",
     }
@@ -774,6 +782,7 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 12
     assert usage["n_output_tokens"] == 4
+    assert trajectory.exchanges[0].metadata["request_complete"] is True
     assert json.loads(state_path.read_text()) == {
         "attempt_count": 1,
         "terminal_count": 1,

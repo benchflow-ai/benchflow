@@ -301,13 +301,23 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         litellm_params = kwargs.get("litellm_params") or {}
         optional_params = kwargs.get("optional_params") or {}
         metadata = kwargs.get("metadata") or litellm_params.get("metadata") or {}
-        request_body = {
-            "model": kwargs.get("model"),
-            "messages": kwargs.get("messages"),
-            "input": kwargs.get("input"),
-            "tools": optional_params.get("tools") or kwargs.get("tools"),
-            "stream": optional_params.get("stream") or kwargs.get("stream"),
-        }
+        proxy_request = litellm_params.get("proxy_server_request") or {}
+        proxy_body = (
+            proxy_request.get("body") if isinstance(proxy_request, dict) else None
+        )
+        request_complete = isinstance(proxy_body, dict)
+        # LiteLLM preserves the complete incoming provider request body here.
+        # Start from that canonical payload so ordinary/future sampling and
+        # output parameters are not silently lost by a hard-coded allowlist.
+        request_body = dict(proxy_body) if request_complete else {}
+        for key in ("model", "messages", "input"):
+            if kwargs.get(key) is not None:
+                request_body[key] = kwargs[key]
+        for key in ("tools", "stream"):
+            if key in optional_params:
+                request_body[key] = optional_params[key]
+            elif kwargs.get(key) is not None:
+                request_body[key] = kwargs[key]
         for key in ("reasoning_effort", "thinking", "output_config"):
             value = optional_params.get(key)
             if value is None:
@@ -336,6 +346,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
             "call_type": kwargs.get("call_type") or litellm_params.get("call_type"),
+            "request_complete": request_complete,
             "input_shape": {
                 "has_messages": bool(kwargs.get("messages")),
                 "has_input": kwargs.get("input") is not None,
@@ -541,6 +552,7 @@ def _exchange_metadata(
         agent_name=agent_name,
         request_body=request_body,
     )
+    metadata["request_complete"] = record.get("request_complete") is True
     return metadata
 
 
