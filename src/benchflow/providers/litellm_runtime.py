@@ -27,7 +27,7 @@ import httpx
 import yaml
 
 from benchflow._utils.text import describe_exception
-from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.codex_config import apply_codex_proxy_config
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_bedrock_preflight import (
@@ -36,6 +36,9 @@ from benchflow.providers.litellm_bedrock_preflight import (
     preflight_host_bedrock_patch,
     preflight_sandbox_bedrock_patch,
     route_requires_bedrock_patch,
+)
+from benchflow.providers.litellm_capture_custody import (
+    provider_capture_has_verified_custody as _provider_capture_has_verified_custody,
 )
 from benchflow.providers.litellm_capture_lifecycle import (
     LITELLM_CAPTURE_STATE_ENV,
@@ -57,6 +60,7 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.files import upload_private_text
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.redaction import canonical_redaction_module_source
@@ -422,7 +426,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
         stderr_path: Path,
         session_id: str,
         agent_name: str,
-        capture_state_path: Path | None = None,
+        capture_state_path: Path,
     ) -> None:
         self.route = route
         self.process = process
@@ -497,13 +501,6 @@ class HostLiteLLMProcess(LiteLLMProcess):
         )
 
     def _load_capture_state(self) -> dict[str, Any] | None:
-        if self.capture_state_path is None:
-            trajectory = self.trajectory
-            assert trajectory is not None
-            return {
-                "attempt_count": len(trajectory.exchanges),
-                "terminal_count": len(trajectory.exchanges),
-            }
         try:
             payload = json.loads(self.capture_state_path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -534,7 +531,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         stderr_path: str,
         session_id: str,
         agent_name: str,
-        capture_state_path: str | None = None,
+        capture_state_path: str,
     ) -> None:
         self.sandbox = sandbox
         self.route = route
@@ -673,13 +670,6 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         )
 
     async def _load_capture_state(self) -> dict[str, Any] | None:
-        if self.capture_state_path is None:
-            trajectory = self.trajectory
-            assert trajectory is not None
-            return {
-                "attempt_count": len(trajectory.exchanges),
-                "terminal_count": len(trajectory.exchanges),
-            }
         result = await self.sandbox.exec(
             f"cat {shlex.quote(self.capture_state_path)} 2>/dev/null || true",
             timeout_sec=15,
@@ -864,7 +854,7 @@ def _write_runtime_files(
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
-    redaction_path.write_text(_redaction_module_source())
+    redaction_path.write_text(canonical_redaction_module_source())
     patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
     sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
@@ -878,12 +868,6 @@ def _write_runtime_files(
     ):
         path.chmod(0o600)
     return config_path, callback_path, patch_path
-
-
-def _redaction_module_source() -> str:
-    """Read the packaged canonical redactor for isolated proxy runtimes."""
-
-    return canonical_redaction_module_source()
 
 
 # How long to wait for the *host* per-run LiteLLM proxy to become healthy.
@@ -1082,19 +1066,6 @@ print(json.dumps({"pid": proc.pid, "port": port}))
 """
 
 
-async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False) as tmp:
-        tmp.write(text)
-        tmp_path = Path(tmp.name)
-    try:
-        # Runtime files carry the provider environment and proxy master key;
-        # ``mode`` is part of the sandbox protocol, so every backend either
-        # honors it or fails loudly — never a silently world-readable secret.
-        await sandbox.upload_file(tmp_path, target_path, mode="600")
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
 async def _upload_runtime_files_to_sandbox(
     sandbox: Any,
     *,
@@ -1129,23 +1100,41 @@ async def _upload_runtime_files_to_sandbox(
     )
     if result.return_code != 0:
         raise RuntimeError(_exec_details("prepare LiteLLM runtime directory", result))
-    await _upload_text(
-        sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml"
+    await upload_private_text(
+        sandbox,
+        yaml.safe_dump(config, sort_keys=False),
+        paths["config"],
+        suffix=".yaml",
     )
-    await _upload_text(sandbox, callback_module_source(), paths["callback"], ".py")
-    await _upload_text(sandbox, _redaction_module_source(), paths["redaction"], ".py")
-    await _upload_text(
+    await upload_private_text(
+        sandbox, callback_module_source(), paths["callback"], suffix=".py"
+    )
+    await upload_private_text(
+        sandbox,
+        canonical_redaction_module_source(),
+        paths["redaction"],
+        suffix=".py",
+    )
+    await upload_private_text(
         sandbox,
         Path(__file__).with_name("litellm_bedrock_patch.py").read_text(),
         paths["patch"],
-        ".py",
+        suffix=".py",
     )
-    await _upload_text(
-        sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
+    await upload_private_text(
+        sandbox,
+        f"import {_PATCH_MODULE}\n",
+        paths["sitecustomize"],
+        suffix=".py",
     )
-    await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
-    await _upload_text(
-        sandbox, BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
+    await upload_private_text(
+        sandbox, _sandbox_launcher_source(), paths["launcher"], suffix=".py"
+    )
+    await upload_private_text(
+        sandbox,
+        BEDROCK_PATCH_PREFLIGHT_SOURCE,
+        paths["preflight"],
+        suffix=".py",
     )
     return paths
 
@@ -1327,8 +1316,11 @@ async def _start_sandbox_litellm(
         "state": paths["state"],
         "env": env,
     }
-    await _upload_text(
-        sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
+    await upload_private_text(
+        sandbox,
+        json.dumps(launch_config),
+        paths["launch_config"],
+        suffix=".json",
     )
     # The launcher reads launch_config.json (provider env + master key) at
     # startup; unlink it immediately afterwards so the secret does not sit in
@@ -1677,13 +1669,11 @@ def _wire_litellm_agent_env(
         updated["OPENAI_BASE_URL"] = openai_base_url
         updated["OPENAI_API_KEY"] = master_key
         updated[LITELLM_MODEL_VIA_ENV] = "1"
-        apply_codex_provider_config(
+        apply_codex_proxy_config(
             updated,
             base_url=openai_base_url,
             model=route.model_alias,
             provider_name="litellm",
-            strict=True,
-            isolate=True,
         )
         return updated
     if agent == "opencode":
@@ -1869,7 +1859,6 @@ async def ensure_litellm_runtime(
             if is_running:
                 if sandbox_local:
                     artifact_custody = await _provider_capture_has_verified_custody(
-                        sandbox_local=True,
                         sandbox_user=sandbox_user,
                         sandbox=sandbox,
                         runtime_dir=getattr(server, "runtime_dir", None),
@@ -1933,7 +1922,6 @@ async def ensure_litellm_runtime(
 
     if sandbox_local:
         artifact_custody = await _provider_capture_has_verified_custody(
-            sandbox_local=True,
             sandbox_user=sandbox_user,
             sandbox=sandbox,
             runtime_dir=getattr(server, "runtime_dir", None),
@@ -1963,109 +1951,6 @@ async def ensure_litellm_runtime(
         ),
         new_runtime,
     )
-
-
-async def _provider_capture_has_verified_custody(
-    *,
-    sandbox_local: bool,
-    sandbox_user: str | None,
-    sandbox: Any | None,
-    runtime_dir: str | None,
-) -> bool:
-    """Prove the agent cannot read or mutate the real provider capture files."""
-
-    if not sandbox_local:
-        return True
-    if sandbox is None or sandbox_user in {None, "", "root", "0"} or not runtime_dir:
-        return False
-    try:
-        result = await sandbox.exec(
-            f"id -u -- {shlex.quote(sandbox_user)}",
-            user="root",
-            timeout_sec=10,
-        )
-    except Exception as exc:
-        logger.warning("Provider capture custody UID check failed: %s", exc)
-        return False
-    if result.return_code != 0:
-        logger.warning("Provider capture custody UID check returned non-zero")
-        return False
-    try:
-        effective_uid = int(result.stdout.strip())
-    except (AttributeError, ValueError):
-        logger.warning("Provider capture custody UID check returned invalid output")
-        return False
-    if effective_uid == 0:
-        return False
-
-    quoted_runtime = shlex.quote(runtime_dir)
-    quoted_log = shlex.quote(f"{runtime_dir}/callback.jsonl")
-    quoted_state = shlex.quote(f"{runtime_dir}/capture_state.json")
-    try:
-        secured = await sandbox.exec(
-            (
-                f"test -d {quoted_runtime} && test ! -L {quoted_runtime} && "
-                f"test -f {quoted_log} && test ! -L {quoted_log} && "
-                f"test -f {quoted_state} && test ! -L {quoted_state} && "
-                f"chown 0:0 {quoted_runtime} {quoted_log} {quoted_state} && "
-                f"chmod 700 {quoted_runtime} && "
-                f"chmod 600 {quoted_log} {quoted_state}"
-            ),
-            user="root",
-            timeout_sec=10,
-        )
-        if secured.return_code != 0:
-            logger.warning("Provider capture custody artifact hardening failed")
-            return False
-        access = await sandbox.exec(
-            (
-                f"for artifact in {quoted_log} {quoted_state}; do "
-                'if cat "$artifact" >/dev/null 2>&1; then exit 0; fi; '
-                'if [ -r "$artifact" ] || [ -w "$artifact" ]; then exit 0; fi; '
-                "done; "
-                f"if [ -r {quoted_runtime} ] || [ -w {quoted_runtime} ] || "
-                f"[ -x {quoted_runtime} ]; then exit 0; fi; "
-                "if command -v sudo >/dev/null 2>&1 && "
-                f"sudo -n cat {quoted_state} >/dev/null 2>&1; then exit 0; fi; "
-                "if command -v doas >/dev/null 2>&1 && "
-                f"doas -n cat {quoted_state} >/dev/null 2>&1; then exit 0; fi; "
-                "if id -G 2>/dev/null | tr ' ' '\\n' | grep -qx 0; "
-                "then exit 0; fi; "
-                "effective_caps=$(awk '/^CapEff:/ {print $2}' "
-                "/proc/self/status 2>/dev/null); "
-                'if [ -n "$effective_caps" ] && '
-                "[ \"$effective_caps\" != '0000000000000000' ]; then exit 0; fi; "
-                "for privilege_socket in /var/run/docker.sock "
-                "/run/containerd/containerd.sock /run/podman/podman.sock; do "
-                'if [ -S "$privilege_socket" ] && '
-                '[ -r "$privilege_socket" ] && '
-                '[ -w "$privilege_socket" ]; then exit 0; fi; done; '
-                "exit 1"
-            ),
-            user=sandbox_user,
-            timeout_sec=10,
-        )
-        if access.return_code != 1:
-            logger.warning(
-                "Provider capture custody probe found agent-accessible root data"
-            )
-            return False
-        verified = await sandbox.exec(
-            (
-                f"test \"$(stat -c '%u:%a' {quoted_runtime})\" = '0:700' && "
-                f"test \"$(stat -c '%u:%a' {quoted_log})\" = '0:600' && "
-                f"test \"$(stat -c '%u:%a' {quoted_state})\" = '0:600'"
-            ),
-            user="root",
-            timeout_sec=10,
-        )
-        if verified.return_code != 0:
-            logger.warning("Provider capture custody probe integrity check failed")
-            return False
-        return True
-    except Exception as exc:
-        logger.warning("Provider capture custody artifact probe failed: %s", exc)
-        return False
 
 
 async def stop_litellm_runtime(runtime: Any | None) -> None:

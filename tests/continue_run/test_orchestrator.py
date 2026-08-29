@@ -156,17 +156,14 @@ def test_live_forwarder_build_kwargs_resolves_route_offline():
     assert kwargs["temperature"] == 0.5
 
 
-def test_stitched_trajectory_recorded_prefix_plus_live_suffix(tmp_path):
+def test_stitched_trajectory_promotes_recorded_prefix(tmp_path):
     original = tmp_path / "orig.jsonl"
     original.write_text('{"a": 1}\n{"b": 2}\n')
-    live = [exchange(completion(content="LIVE"))]
-    lines = stitched_trajectory_lines(original, live)
-    assert len(lines) == 3
+    lines = stitched_trajectory_lines(original)
+    assert len(lines) == 2
     first = json.loads(lines[0])
     assert first["a"] == 1
     assert first["metadata"]["schema_version"] == 2
-    last = json.loads(lines[2])
-    assert last["response"]["body"]["choices"][0]["message"]["content"] == "LIVE"
 
 
 def test_write_stitched_trajectory_creates_file(tmp_path):
@@ -201,6 +198,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         exchange_count=1,
         request_complete=True,
         response_complete=True,
+        payload_redacted=True,
         started_at="2026-08-29T00:00:00Z",
         finished_at="2026-08-29T00:01:00Z",
     )
@@ -396,6 +394,7 @@ def test_root_sandbox_live_suffix_is_retained_but_audit_only(tmp_path):
         exchange_count=1,
         request_complete=True,
         response_complete=True,
+        payload_redacted=True,
         started_at="2026-08-29T00:00:00Z",
         finished_at="2026-08-29T00:01:00Z",
     )
@@ -743,6 +742,7 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
         exchange_count=1,
         request_complete=True,
         response_complete=True,
+        payload_redacted=True,
         started_at="2026-08-29T00:00:00Z",
         finished_at="2026-08-29T00:01:00Z",
     )
@@ -841,7 +841,7 @@ def test_stitching_structurally_redacts_escaped_secret(tmp_path):
     payload["request"]["body"]["authorization"] = f'Bearer {secret}\\"tail'
     source.write_text(json.dumps(payload) + "\n")
 
-    rendered = stitched_trajectory_lines(source, [])
+    rendered = stitched_trajectory_lines(source)
 
     assert len(rendered) == 1
     restored = json.loads(rendered[0])

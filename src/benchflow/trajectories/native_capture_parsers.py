@@ -552,7 +552,6 @@ def _exchange(
         "auth_mode": auth_mode,
         "request_complete": request_complete,
         "response_complete": response_complete,
-        "payload_redacted": True,
         **(extra_metadata or {}),
     }
     return LLMExchange(

@@ -468,6 +468,74 @@ def test_train_validate_source_health_requirements(tmp_path: Path) -> None:
     payload = json.loads(result.output)
     assert payload["source_health"]["total_rows"] == 1
     assert payload["source_health"]["rows_with_tool_calls"] == 1
+    assert payload["source_health"]["non_training_grade_llm_trajectory"] == 0
+
+
+def test_train_validate_rejects_non_training_grade_source_trajectory(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against admitting audit-only source trajectories."""
+
+    jobs = tmp_path / "jobs"
+    rollout = jobs / "run" / "task-a__abc123"
+    _write_rollout(rollout)
+    trajectory = rollout / "trajectory"
+    (trajectory / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "partial",
+                "capture_source": "claude_otel_raw_body",
+                "capture_fidelity": "agent_session",
+                "auth_mode": "oauth_subscription",
+                "agent": "claude-agent-acp",
+                "model": "claude-haiku-4-5-20251001",
+                "session_id": "session",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+                "payload_redacted": True,
+                "started_at": "2026-08-29T00:00:00Z",
+                "finished_at": "2026-08-29T00:00:01Z",
+                "missing_fields": [],
+                "errors": [],
+                "role_captures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "train.jsonl"
+    conversion = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(jobs),
+            "--out",
+            str(out),
+            "--expected-rows",
+            "0",
+        ],
+    )
+    assert conversion.exit_code == 0, conversion.output
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "validate",
+            str(out),
+            "--source-jobs",
+            str(jobs),
+            "--expected-rows",
+            "0",
+            "--require-llm-trajectory",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "non-training-grade" in result.output
+    assert "llm_trajectory.jsonl" in result.output
 
 
 def test_train_convert_rejects_malformed_llm_jsonl(tmp_path: Path) -> None:

@@ -227,6 +227,38 @@ def test_callback_preserves_post_transform_provider_request_body():
     assert "input" not in record["request"]["body"]
 
 
+def test_callback_uses_responses_path_for_responses_provider_body() -> None:
+    """Guards PR #1057 against labeling Responses wire data as chat completions."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    call_id = "call-responses-body"
+    provider_body = {"model": "gpt-5.5", "input": "hello"}
+    logger.log_pre_api_call(
+        provider_body["model"],
+        None,
+        {
+            "litellm_call_id": call_id,
+            "additional_args": {"complete_input_dict": provider_body},
+        },
+    )
+
+    record = logger._base_record(
+        {
+            "litellm_call_id": call_id,
+            "model": "gpt-5.5",
+            "input": "hello",
+            "call_type": "aresponses",
+        },
+        now,
+        now,
+    )
+
+    assert record["request_complete"] is True
+    assert record["request"]["path"] == "/v1/responses"
+    assert record["request"]["body"] == provider_body
+
+
 def test_callback_marks_proxy_ingress_request_incomplete():
     """Guards PR #1057 against promoting reconstructed proxy-ingress parameters."""
 

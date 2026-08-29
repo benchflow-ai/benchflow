@@ -389,7 +389,8 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     ]
     assert len(redaction_files) == 1
     assert (
-        sandbox.uploaded[redaction_files[0]] == runtime_mod._redaction_module_source()
+        sandbox.uploaded[redaction_files[0]]
+        == runtime_mod.canonical_redaction_module_source()
     )
     launch_command = next(call for call in sandbox.exec_calls if "launcher.py" in call)
     assert f"rc=$?; rm -f {launch_files[0]}; exit $rc" in launch_command
@@ -653,7 +654,7 @@ def test_runtime_packages_canonical_redactor_verbatim(tmp_path):
     runtime_mod._write_runtime_files(tmp_path, config={"model_list": []})
 
     packaged = tmp_path / "benchflow_trajectory_redaction.py"
-    assert packaged.read_text() == runtime_mod._redaction_module_source()
+    assert packaged.read_text() == runtime_mod.canonical_redaction_module_source()
     assert "def redact_trajectory_obj" in packaged.read_text()
     env = dict(os.environ)
     env["PYTHONPATH"] = str(tmp_path)

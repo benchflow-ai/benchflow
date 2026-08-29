@@ -212,6 +212,52 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _reconstruct_proxy_ingress_body(
+    kwargs: dict[str, Any],
+    *,
+    litellm_params: dict[str, Any],
+    optional_params: dict[str, Any],
+    proxy_body: Any,
+) -> dict[str, Any]:
+    # Build the explicitly incomplete fallback when provider input is absent.
+
+    request_body = dict(proxy_body) if isinstance(proxy_body, dict) else {}
+    for key in ("model", "messages", "input"):
+        if kwargs.get(key) is not None:
+            request_body[key] = kwargs[key]
+    for key in ("tools", "stream"):
+        if key in optional_params:
+            request_body[key] = optional_params[key]
+        elif kwargs.get(key) is not None:
+            request_body[key] = kwargs[key]
+    for key in ("reasoning_effort", "thinking", "output_config"):
+        value = optional_params.get(key)
+        if value is None:
+            value = kwargs.get(key)
+        if value is None:
+            value = litellm_params.get(key)
+        if value is not None:
+            request_body[key] = value
+    for key in ("logprobs", "top_logprobs"):
+        value = optional_params.get(key)
+        if value is None:
+            value = kwargs.get(key)
+        if value is not None:
+            request_body[key] = value
+    return {key: value for key, value in request_body.items() if value is not None}
+
+
+def _provider_request_path(call_type: Any) -> str:
+    # Map LiteLLM's provider call type to the captured upstream API path.
+
+    normalized = str(call_type or "").casefold()
+    if normalized == "anthropic_messages":
+        return "/v1/messages"
+    if "responses" in normalized:
+        return "/v1/responses"
+    return "/v1/chat/completions"
+
+
 def _iso(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -389,31 +435,15 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             request_body = dict(jsonable_provider_body)
             request_capture_source = "litellm_pre_api_call_complete_input_dict"
         else:
-            request_body = dict(proxy_body) if isinstance(proxy_body, dict) else {}
-            for key in ("model", "messages", "input"):
-                if kwargs.get(key) is not None:
-                    request_body[key] = kwargs[key]
-            for key in ("tools", "stream"):
-                if key in optional_params:
-                    request_body[key] = optional_params[key]
-                elif kwargs.get(key) is not None:
-                    request_body[key] = kwargs[key]
-            for key in ("reasoning_effort", "thinking", "output_config"):
-                value = optional_params.get(key)
-                if value is None:
-                    value = kwargs.get(key)
-                if value is None:
-                    value = litellm_params.get(key)
-                if value is not None:
-                    request_body[key] = value
-            for key in ("logprobs", "top_logprobs"):
-                value = optional_params.get(key)
-                if value is None:
-                    value = kwargs.get(key)
-                if value is not None:
-                    request_body[key] = value
+            request_body = _reconstruct_proxy_ingress_body(
+                kwargs,
+                litellm_params=litellm_params,
+                optional_params=optional_params,
+                proxy_body=proxy_body,
+            )
             request_capture_source = "proxy_ingress_reconstruction"
-        request_body = {k: v for k, v in request_body.items() if v is not None}
+        request_body = {key: value for key, value in request_body.items() if value is not None}
+        call_type = kwargs.get("call_type") or litellm_params.get("call_type")
         return {
             "benchflow_agent": os.environ.get("BENCHFLOW_LITELLM_AGENT"),
             "benchflow_role": os.environ.get("BENCHFLOW_LITELLM_ROLE"),
@@ -426,7 +456,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
-            "call_type": kwargs.get("call_type") or litellm_params.get("call_type"),
+            "call_type": call_type,
             "request_complete": request_complete,
             "request_capture_source": request_capture_source,
             "input_shape": {
@@ -436,7 +466,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             },
             "request": {
                 "method": "POST",
-                "path": "/v1/messages" if kwargs.get("call_type") == "anthropic_messages" else "/v1/chat/completions",
+                "path": _provider_request_path(call_type),
                 "body": request_body,
             },
             "start_time": _iso(start_time),

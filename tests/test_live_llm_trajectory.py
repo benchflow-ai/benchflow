@@ -157,6 +157,7 @@ async def test_host_proxy_mirrors_callback_before_stop(tmp_path, monkeypatch):
         stderr_path=tmp_path / "stderr.log",
         session_id="run",
         agent_name="opencode",
+        capture_state_path=tmp_path / "capture_state.json",
     )
 
     process.start_live_capture(output_path)
@@ -227,6 +228,7 @@ async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatc
         stderr_path="/tmp/runtime/stderr",
         session_id="run",
         agent_name="opencode",
+        capture_state_path="/tmp/runtime/capture_state.json",
     )
 
     process.start_live_capture(output_path)
@@ -256,6 +258,7 @@ def _sandbox_process(sandbox) -> SandboxLiteLLMProcess:
         stderr_path="/tmp/runtime/stderr",
         session_id="run",
         agent_name="prime-agent",
+        capture_state_path="/tmp/runtime/capture_state.json",
     )
 
 
@@ -457,6 +460,7 @@ async def test_daytona_proxy_uses_transient_exec_for_callback_poll(tmp_path):
         stderr_path="/tmp/runtime/stderr",
         session_id="run",
         agent_name="openhands",
+        capture_state_path="/tmp/runtime/capture_state.json",
     )
 
     chunk = await process._read_callback_chunk(0, 24 * 1024)

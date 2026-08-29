@@ -8,7 +8,6 @@ confuses a native-agent reconstruction with provider-wire traffic.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
@@ -16,6 +15,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
+
+from benchflow.trajectories.io import atomic_write_text
 
 LLM_TRAJECTORY_FILENAME = "llm_trajectory.jsonl"
 LLM_TRAJECTORY_MANIFEST_FILENAME = "llm_trajectory.manifest.json"
@@ -114,7 +115,7 @@ class LLMTrajectoryManifest(BaseModel):
     exchange_count: int = 0
     request_complete: bool = False
     response_complete: bool = False
-    payload_redacted: bool = True
+    payload_redacted: bool = False
     started_at: datetime
     finished_at: datetime | None = None
     missing_fields: list[str] = Field(default_factory=list)
@@ -135,7 +136,7 @@ def initialize_llm_trajectory_artifacts(
     trajectory_dir = rollout_dir / "trajectory"
     trajectory_dir.mkdir(parents=True, exist_ok=True)
     trajectory_path = trajectory_dir / LLM_TRAJECTORY_FILENAME
-    _atomic_write_text(trajectory_path, "")
+    atomic_write_text(trajectory_path, "")
     manifest = LLMTrajectoryManifest(
         agent=agent,
         model=model,
@@ -151,7 +152,7 @@ def write_llm_trajectory_manifest(
 ) -> None:
     path = rollout_dir / "trajectory" / LLM_TRAJECTORY_MANIFEST_FILENAME
     payload = json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True)
-    _atomic_write_text(path, payload + "\n")
+    atomic_write_text(path, payload + "\n")
 
 
 def read_llm_trajectory_manifest(rollout_dir: Path) -> dict[str, Any] | None:
@@ -205,6 +206,19 @@ def capture_artifact_allows_training(
             and successful_exchanges_have_positive_usage(exchanges)
         )
     return not any(_exchange_requires_manifest(exchange) for exchange in exchanges)
+
+
+def rollout_capture_is_training_grade(
+    rollout_dir: Path,
+    *,
+    exchanges: Sequence[dict[str, Any]],
+) -> bool:
+    """Apply the canonical training-admission contract for one rollout."""
+
+    return capture_artifact_allows_training(
+        read_llm_trajectory_manifest(rollout_dir),
+        exchanges=exchanges,
+    )
 
 
 def successful_exchanges_have_positive_usage(
@@ -353,12 +367,12 @@ def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> boo
         allowed_errors.add(CONTINUATION_SOURCE_AUDIT_ERROR)
     if has_oauth_capture:
         allowed_missing_fields.update(_OAUTH_AUDIT_MISSING_FIELDS)
-    return not (
-        REPLAY_PROXY_INGRESS_AUDIT_ERROR not in errors
-        or not errors.issubset(allowed_errors)
-        or _REPLAY_AUDIT_MISSING_FIELD not in missing_fields
-        or not missing_fields.issubset(allowed_missing_fields)
-        or manifest.get("response_complete") is not True
+    return bool(
+        REPLAY_PROXY_INGRESS_AUDIT_ERROR in errors
+        and errors.issubset(allowed_errors)
+        and _REPLAY_AUDIT_MISSING_FIELD in missing_fields
+        and missing_fields.issubset(allowed_missing_fields)
+        and manifest.get("response_complete") is True
     )
 
 
@@ -431,10 +445,3 @@ def _role_capture_preserves_audit_completion(capture: LLMRoleCapture) -> bool:
         and capture.request_complete is True
         and capture.response_complete is True
     )
-
-
-def _atomic_write_text(path: Path, payload: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload)
-    os.replace(temporary, path)

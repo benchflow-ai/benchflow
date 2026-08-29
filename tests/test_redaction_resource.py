@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from benchflow.continue_run.sandbox_proxy import sandbox_replay_runtime_source
 from benchflow.trajectories.redaction import canonical_redaction_module_source
 
 
@@ -18,4 +19,8 @@ def test_wheel_packages_canonical_redactor_as_data() -> None:
     assert (
         canonical_redaction_module_source()
         == (root / "src/benchflow/trajectories/redaction.py").read_text()
+    )
+    assert (
+        sandbox_replay_runtime_source()
+        == (root / "src/benchflow/continue_run/sandbox_replay_runtime.py").read_text()
     )

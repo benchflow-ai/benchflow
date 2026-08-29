@@ -41,7 +41,7 @@ from typing import Any, cast
 
 from benchflow._utils.json_safe import dumps_finite
 from benchflow.trajectories._export_common import ThoughtBuffer, content_blocks_to_text
-from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.trajectories.redaction import redact_trajectory_obj
 
 ATIF_SCHEMA_VERSION = "ATIF-v1.7"
 

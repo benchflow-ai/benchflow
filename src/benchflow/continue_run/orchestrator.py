@@ -744,6 +744,9 @@ async def _continue_run_with_sandbox_proxy(
         rollout._error = str(exc)
         logger.error("Run failed", exc_info=True)
     finally:
+        # Snapshot once before cleanup while sandbox capture files still exist.
+        # Re-render atomically after cleanup only to attach teardown errors that
+        # were unknowable during the first pass; the final call below is a no-op.
         await _safe_sandbox_continuation_teardown(
             rollout=rollout,
             replay_proxy=replay_proxy,

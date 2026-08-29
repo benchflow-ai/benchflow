@@ -109,9 +109,11 @@ def test_health_rejects_empty_terminal_llm_capture_manifest(tmp_path: Path) -> N
     health = build_health_summary(job)
 
     assert health["missing_llm_trajectory"] == 0
-    assert health["malformed_llm_trajectory"] == 1
+    assert health["malformed_llm_trajectory"] == 0
+    assert health["non_training_grade_llm_trajectory"] == 1
     assert health["rows"][0]["has_llm_trajectory"] is True
     assert health["rows"][0]["valid_llm_trajectory"] is False
+    assert health["rows"][0]["well_formed_llm_trajectory"] is True
     assert health["rows"][0]["llm_trajectory_rows"] == 0
 
 
@@ -126,9 +128,11 @@ def test_health_rejects_empty_llm_capture_without_manifest(tmp_path: Path) -> No
     health = build_health_summary(job)
 
     assert health["missing_llm_trajectory"] == 0
-    assert health["malformed_llm_trajectory"] == 1
+    assert health["malformed_llm_trajectory"] == 0
+    assert health["non_training_grade_llm_trajectory"] == 1
     assert health["rows"][0]["has_llm_trajectory"] is True
     assert health["rows"][0]["valid_llm_trajectory"] is False
+    assert health["rows"][0]["well_formed_llm_trajectory"] is True
     assert health["rows"][0]["llm_trajectory_rows"] == 0
 
 
@@ -143,9 +147,11 @@ def test_health_rejects_sidecarless_schema_v2_llm_capture(tmp_path: Path) -> Non
     health = build_health_summary(job)
 
     assert health["missing_llm_trajectory"] == 0
-    assert health["malformed_llm_trajectory"] == 1
+    assert health["malformed_llm_trajectory"] == 0
+    assert health["non_training_grade_llm_trajectory"] == 1
     assert health["rows"][0]["has_llm_trajectory"] is True
     assert health["rows"][0]["valid_llm_trajectory"] is False
+    assert health["rows"][0]["well_formed_llm_trajectory"] is True
     assert health["rows"][0]["llm_trajectory_rows"] == 1
 
 

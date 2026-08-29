@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow.trajectories.io import atomic_write_text
 from benchflow.trajectories.llm_capture_manifest import (
     CONTINUATION_SOURCE_AUDIT_ERROR,
     LLM_TRAJECTORY_SCHEMA_VERSION,
@@ -18,23 +18,27 @@ from benchflow.trajectories.llm_capture_manifest import (
     CaptureStatus,
     LLMRoleCapture,
     LLMTrajectoryManifest,
-    capture_artifact_allows_training,
     read_llm_trajectory_manifest,
+    rollout_capture_is_training_grade,
     successful_exchanges_have_positive_usage,
     write_llm_trajectory_manifest,
 )
-from benchflow.trajectories.types import LLMExchange, redact_trajectory_obj
+from benchflow.trajectories.redaction import (
+    jsonl_payload_is_redacted,
+    redact_trajectory_obj,
+    redact_trajectory_obj_with_audit,
+)
+from benchflow.trajectories.types import LLMExchange
+
+CONTINUATION_AGENT = "openhands"
 
 
-def stitched_trajectory_lines(
-    original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
-) -> list[str]:
-    """Build the continuous llm_trajectory: recorded prefix + live suffix.
+def stitched_trajectory_lines(original_llm_trajectory: Path) -> list[str]:
+    """Build the schema-promoted recorded prefix of a continuation trajectory.
 
     The recorded request/response payloads are preserved, while their metadata
     is promoted to the current schema so a newly stitched artifact can never be
-    mistaken for sidecar-optional legacy data. The live suffix is redacted on
-    the way out.
+    mistaken for sidecar-optional legacy data.
     """
     lines: list[str] = []
     if original_llm_trajectory.is_file():
@@ -54,9 +58,6 @@ def stitched_trajectory_lines(
                     payload["metadata"] = metadata
                 metadata["schema_version"] = LLM_TRAJECTORY_SCHEMA_VERSION
                 lines.append(json.dumps(redact_trajectory_obj(payload), default=str))
-    for exchange in live_exchanges:
-        payload = redact_trajectory_obj(exchange.model_dump(mode="json"))
-        lines.append(json.dumps(payload, default=str))
     return lines
 
 
@@ -77,13 +78,13 @@ def write_stitched_trajectory(
     """
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = stitched_trajectory_lines(original_llm_trajectory, [])
+    lines = stitched_trajectory_lines(original_llm_trajectory)
     for exchange in live_exchanges:
         payload = exchange.model_dump(mode="json")
         metadata = payload.setdefault("metadata", {})
         metadata.update(
             {
-                "agent": "openhands",
+                "agent": CONTINUATION_AGENT,
                 "role": "agent",
                 "model": live_model,
                 "auth_mode": AuthMode.API_KEY.value,
@@ -93,7 +94,6 @@ def write_stitched_trajectory(
                 "request_complete": False,
                 "response_complete": True,
                 "role_attribution_complete": True,
-                "payload_redacted": True,
                 "request_capture_source": "replay_proxy_ingress",
                 "capture_custody": (
                     "host_owned"
@@ -102,11 +102,18 @@ def write_stitched_trajectory(
                 ),
             }
         )
-        lines.append(json.dumps(redact_trajectory_obj(payload), default=str))
+        redacted, payload_redacted = redact_trajectory_obj_with_audit(payload)
+        if not isinstance(redacted, dict):
+            payload_redacted = False
+            redacted = {}
+        redacted_metadata = redacted.get("metadata")
+        if not isinstance(redacted_metadata, dict):
+            redacted_metadata = {}
+            redacted["metadata"] = redacted_metadata
+        redacted_metadata["payload_redacted"] = payload_redacted
+        lines.append(json.dumps(redacted, default=str))
     rendered = "\n".join(lines) + ("\n" if lines else "")
-    temporary = out.with_suffix(out.suffix + ".tmp")
-    temporary.write_text(rendered)
-    os.replace(temporary, out)
+    atomic_write_text(out, rendered)
     return out
 
 
@@ -174,7 +181,10 @@ def refresh_stitched_trajectory_manifest(
     source_allows_training = bool(
         source_raw is not None
         and len(source_rows) == n_recorded
-        and capture_artifact_allows_training(source_raw, exchanges=source_rows)
+        and rollout_capture_is_training_grade(
+            source_rollout_dir,
+            exchanges=source_rows,
+        )
     )
     live_capture_complete = live_attempt_count == n_live and not live_errors
     usage_complete = bool(
@@ -272,13 +282,13 @@ def refresh_stitched_trajectory_manifest(
         capture_source=capture_source,
         capture_fidelity=capture_fidelity,
         auth_mode=auth_mode,
-        agent="openhands",
+        agent=CONTINUATION_AGENT,
         model=stitched_model,
         session_id=current.session_id if current else rollout_dir.name,
         exchange_count=exchange_count,
         request_complete=request_complete,
         response_complete=response_complete,
-        payload_redacted=source.payload_redacted if source else True,
+        payload_redacted=jsonl_payload_is_redacted(trajectory_path),
         started_at=current.started_at if current else datetime.now(UTC),
         finished_at=datetime.now(UTC),
         missing_fields=sorted(set(missing_fields)),
@@ -327,7 +337,7 @@ def _continuation_role_captures(
             LLMRoleCapture(
                 role="agent",
                 leg="live",
-                agent="openhands",
+                agent=CONTINUATION_AGENT,
                 model=live_model,
                 auth_mode=AuthMode.API_KEY,
                 capture_source=CaptureSource.REPLAY_PROXY,

@@ -25,10 +25,9 @@ from benchflow.trajectories.export_prime_sft import (
     validate_prime_sft_row,
 )
 from benchflow.trajectories.llm_capture_manifest import (
-    capture_artifact_allows_training,
-    read_llm_trajectory_manifest,
+    rollout_capture_is_training_grade,
 )
-from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.trajectories.redaction import redact_trajectory_obj
 
 TrlSftRowMode = Literal["rollout", "exchange"]
 TrlSftContextPolicy = Literal["full", "message-window"]
@@ -324,9 +323,8 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
             continue
         trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
         exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
-        capture_manifest = read_llm_trajectory_manifest(rollout_dir)
-        if not capture_artifact_allows_training(
-            capture_manifest,
+        if not rollout_capture_is_training_grade(
+            rollout_dir,
             exchanges=exchanges,
         ):
             stats.skipped_insufficient_capture_fidelity += 1

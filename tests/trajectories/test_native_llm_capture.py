@@ -545,6 +545,32 @@ def test_capture_initialization_truncates_reused_rollout_jsonl(tmp_path: Path) -
     assert manifest["session_id"] == "second-session"
 
 
+def test_capture_failure_derives_unredacted_state_from_preserved_rows(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against self-attesting an unscanned failure artifact."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="failed-session",
+        started_at=STARTED_AT,
+    )
+    secret = "sk-ant-api03-" + "A" * 40
+    capture.trajectory_path.write_text(
+        json.dumps({"request": {"body": {"secret": secret}}}) + "\n"
+    )
+
+    capture.record_failure(RuntimeError("finalization stopped"), model_call_seen=True)
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert manifest["payload_redacted"] is False
+    assert manifest["status"] == CaptureStatus.CAPTURE_FAILED
+
+
 @pytest.mark.parametrize(
     ("auth_json", "expected"),
     [

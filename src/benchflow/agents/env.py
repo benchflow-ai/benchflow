@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
-from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.codex_config import apply_codex_custom_provider_config
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
@@ -615,12 +615,11 @@ def _configure_codex_custom_provider(
     if not base_url or not provider_model:
         return
 
-    apply_codex_provider_config(
+    apply_codex_custom_provider_config(
         agent_env,
         base_url=base_url,
         model=provider_model,
         provider_name=agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible"),
-        strict=True,
     )
 
 

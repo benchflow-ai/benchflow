@@ -50,7 +50,7 @@ from benchflow.trajectories._export_common import (
     aggregate_rollout_jsonl,
     content_blocks_to_text,
 )
-from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.trajectories.redaction import redact_trajectory_obj
 
 logger = logging.getLogger(__name__)
 

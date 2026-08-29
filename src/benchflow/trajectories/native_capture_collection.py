@@ -243,12 +243,21 @@ class NativeSessionCollector:
         )
         with tempfile.TemporaryDirectory(prefix="benchflow-native-llm-") as temporary:
             local_root = Path(temporary)
-            raw_claude_result = await self._collect_claude_raw_capture(
-                env,
-                local_root=local_root,
-                claude_targets=claude_targets,
-                bundles=bundles,
-                errors=errors,
+            try:
+                raw_claude_bundle = await self._collect_claude_raw_capture(
+                    env,
+                    local_root=local_root,
+                    claude_targets=claude_targets,
+                )
+            except Exception as exc:
+                warning = sanitized_capture_error(exc)
+                errors.append(warning)
+                logger.warning("Claude raw LLM capture collection failed: %s", exc)
+                raw_claude_bundle = None
+            if raw_claude_bundle is not None:
+                bundles.append(raw_claude_bundle)
+            raw_claude_result = (
+                raw_claude_bundle.result if raw_claude_bundle is not None else None
             )
             for index, target in enumerate(targets):
                 try:
@@ -286,28 +295,20 @@ class NativeSessionCollector:
         *,
         local_root: Path,
         claude_targets: tuple[CaptureTarget, ...],
-        bundles: list[NativeCaptureBundle],
-        errors: list[str],
-    ) -> NativeParseResult | None:
+    ) -> NativeCaptureBundle | None:
         if not self.otel.root_prepared:
             return None
         capture_dir = local_root / "capture"
-        try:
-            await env.download_dir(self.otel.remote_root, capture_dir)
-            result = parse_claude_raw_capture(
-                capture_dir,
-                agent=(claude_targets[0].agent if claude_targets else self.agent),
-                session_id=self.session_id,
-                started_at=self.started_at,
-            )
-        except Exception as exc:
-            errors.append(sanitized_capture_error(exc))
-            logger.warning("Claude raw LLM capture collection failed: %s", exc)
-            return None
+        await env.download_dir(self.otel.remote_root, capture_dir)
+        result = parse_claude_raw_capture(
+            capture_dir,
+            agent=(claude_targets[0].agent if claude_targets else self.agent),
+            session_id=self.session_id,
+            started_at=self.started_at,
+        )
         if result is None:
             return None
-        bundles.append(NativeCaptureBundle(targets=claude_targets, result=result))
-        return result
+        return NativeCaptureBundle(targets=claude_targets, result=result)
 
     async def _collect_claude_session_fallback(
         self,

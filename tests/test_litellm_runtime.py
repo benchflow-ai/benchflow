@@ -167,6 +167,43 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
     assert updated["LLM_MODEL"].startswith("openai/benchflow-aws-bedrock")
 
 
+class _CustodyProbeSandbox:
+    def __init__(self, *, agent_probe_return_code: int) -> None:
+        self.agent_probe_return_code = agent_probe_return_code
+        self.probe_path = ""
+
+    async def upload_file(self, source, target, *, mode):
+        assert mode == "600"
+        assert "callback.jsonl" in source.read_text()
+        self.probe_path = target
+
+    async def exec(self, command, **kwargs):
+        if command == "id -u -- agent":
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
+        if command.startswith("chown 0:0"):
+            assert self.probe_path in command
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        if f"{self.probe_path} harden " in command:
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        if f"{self.probe_path} probe " in command:
+            assert kwargs["user"] == "agent"
+            return SimpleNamespace(
+                return_code=self.agent_probe_return_code,
+                stdout="",
+                stderr="",
+            )
+        if f"{self.probe_path} verify " in command:
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        if command.startswith("rm -f"):
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected custody command: {command}")
+
+
 @pytest.mark.asyncio
 async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch):
     """Guards PR #1057's root/non-root provider-capture custody boundary."""
@@ -175,32 +212,6 @@ async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch)
         return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
 
     monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
-
-    class NonRootSandbox:
-        async def exec(self, command, **kwargs):
-            if command == "id -u -- agent":
-                assert kwargs["user"] == "root"
-                return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
-            if command.startswith("test -d"):
-                assert kwargs["user"] == "root"
-                assert "callback.jsonl" in command
-                assert "capture_state.json" in command
-                assert "chmod 700" in command
-                assert "chmod 600" in command
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            if kwargs["user"] == "agent":
-                assert "callback.jsonl" in command
-                assert "capture_state.json" in command
-                assert "sudo -n cat" in command
-                assert "CapEff" in command
-                assert "/var/run/docker.sock" in command
-                return SimpleNamespace(return_code=1, stdout="", stderr="")
-            if command.startswith('test "$(stat -c'):
-                assert kwargs["user"] == "root"
-                assert "callback.jsonl" in command
-                assert "capture_state.json" in command
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            raise AssertionError(f"unexpected custody command: {command}")
 
     _, provider_runtime = await ensure_litellm_runtime(
         agent="openhands",
@@ -212,7 +223,7 @@ async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch)
         runtime=None,
         environment="daytona",
         session_id="run-non-root",
-        sandbox=NonRootSandbox(),
+        sandbox=_CustodyProbeSandbox(agent_probe_return_code=1),
         sandbox_user="agent",
     )
 
@@ -229,19 +240,6 @@ async def test_passwordless_privilege_keeps_sandbox_capture_audit_only(monkeypat
 
     monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
 
-    class PrivilegedSandbox:
-        async def exec(self, command, **kwargs):
-            if command == "id -u -- agent":
-                return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
-            if command.startswith("test -d"):
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            if kwargs["user"] == "agent":
-                assert "callback.jsonl" in command
-                assert "capture_state.json" in command
-                assert "sudo -n cat" in command
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            raise AssertionError(f"unexpected custody command: {command}")
-
     _, provider_runtime = await ensure_litellm_runtime(
         agent="openhands",
         agent_env={
@@ -252,7 +250,7 @@ async def test_passwordless_privilege_keeps_sandbox_capture_audit_only(monkeypat
         runtime=None,
         environment="daytona",
         session_id="run-privileged-agent",
-        sandbox=PrivilegedSandbox(),
+        sandbox=_CustodyProbeSandbox(agent_probe_return_code=0),
         sandbox_user="agent",
     )
 
@@ -271,19 +269,6 @@ async def test_agent_access_to_real_capture_artifact_keeps_capture_audit_only(
 
     monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
 
-    class WritableArtifactSandbox:
-        async def exec(self, command, **kwargs):
-            if command == "id -u -- agent":
-                return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
-            if command.startswith("test -d"):
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            if kwargs["user"] == "agent":
-                assert "callback.jsonl" in command
-                assert "capture_state.json" in command
-                # Exit 0 is the probe's contract for any real-artifact access.
-                return SimpleNamespace(return_code=0, stdout="", stderr="")
-            raise AssertionError(f"unexpected custody command: {command}")
-
     _, provider_runtime = await ensure_litellm_runtime(
         agent="openhands",
         agent_env={
@@ -294,7 +279,7 @@ async def test_agent_access_to_real_capture_artifact_keeps_capture_audit_only(
         runtime=None,
         environment="daytona",
         session_id="run-writable-artifact",
-        sandbox=WritableArtifactSandbox(),
+        sandbox=_CustodyProbeSandbox(agent_probe_return_code=0),
         sandbox_user="agent",
     )
 

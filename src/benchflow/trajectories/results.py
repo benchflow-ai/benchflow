@@ -33,11 +33,11 @@ from benchflow.trajectories.export_prime_sft import (
     validate_prime_sft_row,
 )
 from benchflow.trajectories.llm_capture_manifest import (
-    capture_artifact_allows_training,
     capture_manifest_preserves_audit_completion,
     read_llm_trajectory_manifest,
+    rollout_capture_is_training_grade,
 )
-from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.trajectories.redaction import redact_trajectory_obj
 from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
@@ -181,9 +181,8 @@ def _llm_steps_from_trajectory(
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
         return _LLMStepsResult([], [], f"Invalid LLM trajectory JSONL: {exc}")
-    capture_manifest = read_llm_trajectory_manifest(rollout_dir)
-    if not capture_artifact_allows_training(
-        capture_manifest,
+    if not rollout_capture_is_training_grade(
+        rollout_dir,
         exchanges=exchanges,
     ):
         return _LLMStepsResult([], [], None, capture_contract_rejected=True)

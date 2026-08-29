@@ -230,6 +230,12 @@ from benchflow.usage_tracking import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sandbox_user_home(sandbox_user: str | None) -> str:
+    return f"/home/{sandbox_user}" if sandbox_user else "/root"
+
+
 _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Lifecycle phases from verify() onward. The agent will not run again in this
@@ -1221,7 +1227,7 @@ class Rollout:
                 workspace=self._agent_cwd,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
-        cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+        cred_home = _sandbox_user_home(cfg.sandbox_user)
         await self._planes.write_credential_files(
             self._env,
             agent_name,
@@ -1326,9 +1332,7 @@ class Rollout:
         )
         llm_capture = getattr(self, "_llm_capture", None)
         if llm_capture is not None:
-            credential_home = (
-                f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
-            )
+            credential_home = _sandbox_user_home(cfg.sandbox_user)
             llm_capture.bind_provider_capture_trust(
                 agent=cfg.primary_agent,
                 model=cfg.primary_model,
@@ -1380,9 +1384,7 @@ class Rollout:
         self._bind_llm_capture_session(
             agent=cfg.primary_agent,
             model=cfg.primary_model,
-            credential_home=(
-                f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
-            ),
+            credential_home=_sandbox_user_home(cfg.sandbox_user),
         )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
@@ -2398,7 +2400,7 @@ class Rollout:
         needs_role_credentials = (
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
-        cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+        cred_home = _sandbox_user_home(cfg.sandbox_user)
         if role_agent_differs:
             if cfg.skip_agent_install:
                 agent_cfg = None

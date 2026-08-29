@@ -6,8 +6,16 @@ from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-_REDACTOR_SOURCE = "src/benchflow/trajectories/redaction.py"
-_REDACTOR_RESOURCE = "benchflow/trajectories/resources/canonical_redaction.py.txt"
+_RUNTIME_RESOURCES = (
+    (
+        "src/benchflow/trajectories/redaction.py",
+        "benchflow/trajectories/resources/canonical_redaction.py.txt",
+    ),
+    (
+        "src/benchflow/continue_run/sandbox_replay_runtime.py",
+        "benchflow/continue_run/resources/sandbox_replay_runtime.py.txt",
+    ),
+)
 
 
 class CustomBuildHook(BuildHookInterface):
@@ -16,15 +24,18 @@ class CustomBuildHook(BuildHookInterface):
     def initialize(self, _version: str, build_data: dict[str, Any]) -> None:
         if self.target_name != "wheel":
             return
-        source = Path(self.root, _REDACTOR_SOURCE)
-        with tempfile.NamedTemporaryFile(
-            prefix="benchflow-redactor-",
-            suffix=".txt",
-            delete=False,
-        ) as generated:
-            generated.write(source.read_bytes())
-            self._generated_path = Path(generated.name)
-        build_data["force_include"][str(self._generated_path)] = _REDACTOR_RESOURCE
+        self._generated_paths: list[Path] = []
+        for source_name, resource_name in _RUNTIME_RESOURCES:
+            source = Path(self.root, source_name)
+            with tempfile.NamedTemporaryFile(
+                prefix="benchflow-runtime-resource-",
+                suffix=".txt",
+                delete=False,
+            ) as generated:
+                generated.write(source.read_bytes())
+                generated_path = Path(generated.name)
+            self._generated_paths.append(generated_path)
+            build_data["force_include"][str(generated_path)] = resource_name
 
     def finalize(
         self,
@@ -38,7 +49,6 @@ class CustomBuildHook(BuildHookInterface):
         self._discard_generated()
 
     def _discard_generated(self) -> None:
-        generated = getattr(self, "_generated_path", None)
-        if generated is not None:
+        for generated in getattr(self, "_generated_paths", []):
             generated.unlink(missing_ok=True)
-            self._generated_path = None
+        self._generated_paths = []

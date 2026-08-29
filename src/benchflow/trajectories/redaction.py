@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 # Human-facing redaction categories. Every canonical pattern below is tagged
@@ -365,6 +367,34 @@ def redact_trajectory_obj(obj: Any) -> Any:
     return obj
 
 
+def trajectory_obj_is_redacted(obj: Any) -> bool:
+    """Verify that a JSON-compatible value contains no canonical secret match."""
+
+    return redact_trajectory_obj(obj) == obj
+
+
+def redact_trajectory_obj_with_audit(obj: Any) -> tuple[Any, bool]:
+    """Redact one value and independently verify the emitted value is clean."""
+
+    redacted = redact_trajectory_obj(obj)
+    return redacted, trajectory_obj_is_redacted(redacted)
+
+
+def jsonl_payload_is_redacted(path: Path) -> bool:
+    """Verify every non-empty JSONL row is an object with no secret match."""
+
+    try:
+        for raw in path.read_text().splitlines():
+            if not raw.strip():
+                continue
+            row = json.loads(raw)
+            if not isinstance(row, dict) or not trajectory_obj_is_redacted(row):
+                return False
+    except (OSError, json.JSONDecodeError):
+        return False
+    return True
+
+
 def _redact_field(key: Any, value: Any) -> Any:
     """Redact a dict field's *value*, keeping the field name as carrier context.
 
@@ -381,8 +411,6 @@ def _redact_field(key: Any, value: Any) -> Any:
     if not isinstance(value, str):
         return value
     if isinstance(key, str):
-        import json
-
         probe = json.dumps({key: value})
         redacted = redact_trajectory_text(probe)
         if redacted == probe:

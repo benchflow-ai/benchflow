@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.agents.env import uses_native_subscription_auth
+from benchflow.trajectories.io import atomic_write_text
 from benchflow.trajectories.llm_capture_manifest import (
     LLM_TRAJECTORY_FILENAME,
     AuthMode,
@@ -44,6 +44,7 @@ from benchflow.trajectories.native_capture_collection import (
     sanitized_capture_error,
 )
 from benchflow.trajectories.native_capture_parsers import project_acp_trajectory
+from benchflow.trajectories.redaction import jsonl_payload_is_redacted
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +391,9 @@ class LLMTrajectoryCapture:
             model_call_seen=model_call_seen,
             fallback_auth=self.manifest.auth_mode,
         )
-        write_exchange_records(self.trajectory_path, assembly.records)
+        payload_redacted = write_exchange_records(
+            self.trajectory_path, assembly.records
+        )
         self.manifest.auth_mode = assembly.auth_mode
         self._finish_manifest(
             status=(
@@ -401,6 +404,7 @@ class LLMTrajectoryCapture:
             exchange_count=len(assembly.records),
             request_complete=assembly.request_complete,
             response_complete=assembly.response_complete,
+            payload_redacted=payload_redacted,
             missing_fields=assembly.missing_fields,
             errors=assembly.errors,
             role_captures=assembly.role_captures,
@@ -422,7 +426,7 @@ class LLMTrajectoryCapture:
         self.manifest.finished_at = datetime.now()
         exchange_count = _valid_jsonl_row_count(self.trajectory_path)
         if exchange_count is None:
-            _atomic_replace_text(self.trajectory_path, "")
+            atomic_write_text(self.trajectory_path, "")
             exchange_count = 0
         rows_preserved = exchange_count > 0
         self._finish_manifest(
@@ -442,6 +446,7 @@ class LLMTrajectoryCapture:
             exchange_count=exchange_count,
             request_complete=False,
             response_complete=False,
+            payload_redacted=jsonl_payload_is_redacted(self.trajectory_path),
             missing_fields=(
                 sorted(
                     {
@@ -470,6 +475,7 @@ class LLMTrajectoryCapture:
         exchange_count: int,
         request_complete: bool,
         response_complete: bool,
+        payload_redacted: bool,
         missing_fields: list[str] | None = None,
         errors: list[str] | None = None,
         role_captures: list[LLMRoleCapture] | None = None,
@@ -480,6 +486,7 @@ class LLMTrajectoryCapture:
         self.manifest.exchange_count = exchange_count
         self.manifest.request_complete = request_complete
         self.manifest.response_complete = response_complete
+        self.manifest.payload_redacted = payload_redacted
         self.manifest.missing_fields = sorted(set(missing_fields or []))
         self.manifest.errors = [sanitized_capture_error(item) for item in errors or []]
         self.manifest.role_captures = role_captures or []
@@ -545,12 +552,6 @@ def _resolve_auth_mode(
             if isinstance(auth.get("tokens"), dict):
                 return AuthMode.OAUTH_SUBSCRIPTION
     return AuthMode.OAUTH_SUBSCRIPTION
-
-
-def _atomic_replace_text(path: Path, payload: str) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload)
-    os.replace(temporary, path)
 
 
 def _valid_jsonl_row_count(path: Path) -> int | None:

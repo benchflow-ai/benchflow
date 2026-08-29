@@ -6,23 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from benchflow.trajectories import redaction as _redaction
-
-# Keep the historical ``benchflow.trajectories.types`` redaction imports
-# working for downstream callers. The implementation lives in the standalone,
-# stdlib-only module so the exact same code can be deployed beside LiteLLM.
-REDACTION_CATEGORY_API_KEY = _redaction.REDACTION_CATEGORY_API_KEY
-REDACTION_CATEGORY_BEARER_TOKEN = _redaction.REDACTION_CATEGORY_BEARER_TOKEN
-REDACTION_CATEGORY_CREDENTIAL_FIELD = _redaction.REDACTION_CATEGORY_CREDENTIAL_FIELD
-REDACTION_CATEGORY_PASSWORD = _redaction.REDACTION_CATEGORY_PASSWORD
-REDACTION_CATEGORY_PRIVATE_KEY = _redaction.REDACTION_CATEGORY_PRIVATE_KEY
-REDACTION_CATEGORY_URL_CREDENTIAL = _redaction.REDACTION_CATEGORY_URL_CREDENTIAL
-redact_trajectory_obj = _redaction.redact_trajectory_obj
-redact_trajectory_text = _redaction.redact_trajectory_text
-redact_trajectory_text_with_categories = (
-    _redaction.redact_trajectory_text_with_categories
-)
-redact_trajectory_text_with_count = _redaction.redact_trajectory_text_with_count
+from benchflow.trajectories.redaction import redact_trajectory_obj
 
 _USAGE_KEYS = {
     "input_tokens",

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from benchflow.providers.litellm_config import safe_model_alias
+from benchflow.trajectories.io import atomic_write_text
 from benchflow.trajectories.llm_capture_manifest import (
     LLM_TRAJECTORY_SCHEMA_VERSION,
     AuthMode,
@@ -19,7 +19,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     successful_exchanges_have_positive_usage,
 )
 from benchflow.trajectories.native_capture_parsers import NativeParseResult
-from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.trajectories.redaction import redact_trajectory_obj_with_audit
 
 
 @dataclass(frozen=True)
@@ -152,14 +152,13 @@ def load_provider_wire_records(
                 "role_attribution_complete": attribution_complete,
                 "request_complete": request_complete,
                 "response_complete": response_complete,
-                "payload_redacted": True,
             }
         )
         if not capture_trusted:
             metadata["capture_custody"] = _untrusted_provider_custody(target)
         if not attribution_complete:
             metadata["role_candidates"] = _role_candidates(targets)
-        records.append(redact_trajectory_obj(record))
+        records.append(record)
     return records
 
 
@@ -308,16 +307,25 @@ def assemble_capture(
     )
 
 
-def write_exchange_records(path: Path, records: list[dict[str, Any]]) -> None:
-    """Atomically replace the JSONL with redacted assembled records."""
+def write_exchange_records(path: Path, records: list[dict[str, Any]]) -> bool:
+    """Atomically write records and return the verified redaction state."""
 
-    payload = "".join(
-        json.dumps(redact_trajectory_obj(record), default=str) + "\n"
-        for record in records
-    )
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload)
-    os.replace(temporary, path)
+    rendered: list[str] = []
+    payload_redacted = True
+    for record in records:
+        redacted, row_redacted = redact_trajectory_obj_with_audit(record)
+        if not isinstance(redacted, dict):
+            row_redacted = False
+            redacted = {}
+        metadata = redacted.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            redacted["metadata"] = metadata
+        metadata["payload_redacted"] = row_redacted
+        payload_redacted = payload_redacted and row_redacted
+        rendered.append(json.dumps(redacted, default=str) + "\n")
+    atomic_write_text(path, "".join(rendered))
+    return payload_redacted
 
 
 def role_captures_for_targets(targets: list[CaptureTarget]) -> list[LLMRoleCapture]:
@@ -328,7 +336,7 @@ def role_captures_for_targets(targets: list[CaptureTarget]) -> list[LLMRoleCaptu
 
 def _native_bundle_records(bundle: NativeCaptureBundle) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for line in bundle.result.trajectory.to_jsonl(redact_keys=True).splitlines():
+    for line in bundle.result.trajectory.to_jsonl(redact_keys=False).splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
@@ -360,7 +368,7 @@ def _native_bundle_records(bundle: NativeCaptureBundle) -> list[dict[str, Any]]:
                     "role_candidates": _role_candidates(list(bundle.targets)),
                 }
             )
-        records.append(redact_trajectory_obj(record))
+        records.append(record)
     return records
 
 

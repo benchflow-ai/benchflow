@@ -283,9 +283,11 @@ def register_train(app: typer.Typer) -> None:
                 if require_llm_trajectory and (
                     health["missing_llm_trajectory"]
                     or health["malformed_llm_trajectory"]
+                    or health["non_training_grade_llm_trajectory"]
                 ):
                     raise ValueError(
-                        "source jobs contain missing/malformed llm_trajectory.jsonl"
+                        "source jobs contain missing, malformed, or non-training-grade "
+                        "llm_trajectory.jsonl"
                     )
                 if (
                     require_tool_calls
@@ -304,6 +306,7 @@ def register_train(app: typer.Typer) -> None:
                         "rows_with_tool_calls",
                         "missing_llm_trajectory",
                         "malformed_llm_trajectory",
+                        "non_training_grade_llm_trajectory",
                     )
                 }
             if source_canonical_selection is not None:

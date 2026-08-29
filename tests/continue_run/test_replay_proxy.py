@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from benchflow.continue_run import sandbox_replay_runtime as replay_runtime
 from benchflow.continue_run.replay_proxy import (
     ReplayDivergenceError,
     ReplayProxy,
@@ -18,7 +19,12 @@ from benchflow.continue_run.replay_proxy import (
 from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
     _ordered_live_exchange_log,
-    _sandbox_proxy_source,
+    sandbox_replay_runtime_source,
+)
+from benchflow.continue_run.sandbox_replay_runtime import (
+    ReplayHandler,
+    ReplayServer,
+    ReplayState,
 )
 from benchflow.trajectories.redaction import canonical_redaction_module_source
 
@@ -129,9 +135,7 @@ def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
 ) -> None:
     """Guards PR #1057 against labeling a synthesized sandbox 500 provider-wire."""
 
-    namespace: dict[str, object] = {}
-    exec(_sandbox_proxy_source(), namespace)
-    state = namespace["ReplayState"](
+    state = ReplayState(
         recorded=[],
         upstream_url="https://provider.invalid/v1",
         upstream_api_key="test-key",
@@ -144,7 +148,7 @@ def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
     def fail(*_args, **_kwargs):
         raise TimeoutError("provider unavailable")
 
-    monkeypatch.setattr(namespace["urllib"].request, "urlopen", fail)
+    monkeypatch.setattr(replay_runtime.urllib.request, "urlopen", fail)
     source, status, body = state.next_response({"messages": [{"role": "user"}]})
 
     assert source == "live"
@@ -159,10 +163,8 @@ def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
 def test_sandbox_live_exchange_is_redacted_before_journaling(tmp_path) -> None:
     """Guards PR #1057 against persisting raw continuation secrets."""
 
-    namespace: dict[str, object] = {}
-    exec(_sandbox_proxy_source(), namespace)
     live_log = tmp_path / "live.jsonl"
-    state = namespace["ReplayState"](
+    state = ReplayState(
         recorded=[],
         upstream_url="https://provider.invalid/v1",
         upstream_api_key="test-key",
@@ -202,7 +204,8 @@ async def test_sandbox_replay_uploads_canonical_redactor() -> None:
         async def exec(self, _command, **_kwargs):
             return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-        async def upload_file(self, source, target):
+        async def upload_file(self, source, target, *, mode):
+            assert mode == "600"
             self.uploaded[target] = source.read_text()
 
     sandbox = FakeSandbox()
@@ -220,17 +223,18 @@ async def test_sandbox_replay_uploads_canonical_redactor() -> None:
         "from benchflow_trajectory_redaction import"
         in sandbox.uploaded[f"{proxy.runtime_dir}/replay_proxy.py"]
     )
+    assert sandbox.uploaded[f"{proxy.runtime_dir}/replay_proxy.py"] == (
+        sandbox_replay_runtime_source()
+    )
 
 
 def test_sandbox_attempt_journal_failure_invalidates_stale_state(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Guards PR #1057 against completing an unjournaled sandbox call."""
-    namespace: dict[str, object] = {}
-    exec(_sandbox_proxy_source(), namespace)
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({"live_attempt_count": 0, "live_error_count": 0}))
-    state = namespace["ReplayState"](
+    state = ReplayState(
         recorded=[],
         upstream_url="https://provider.invalid/v1",
         upstream_api_key="test-key",
@@ -243,7 +247,7 @@ def test_sandbox_attempt_journal_failure_invalidates_stale_state(
     def fail_replace(*_args, **_kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(namespace["os"], "replace", fail_replace)
+    monkeypatch.setattr(replay_runtime.os, "replace", fail_replace)
 
     with pytest.raises(OSError, match="disk full"):
         state.next_response({"messages": [{"role": "user"}]})
@@ -255,9 +259,7 @@ def test_sandbox_attempt_journal_failure_invalidates_stale_state(
 
 def test_sandbox_quiesce_waits_for_live_handler_before_snapshot(tmp_path) -> None:
     """Guards PR #1057 against snapshotting before live calls are quiescent."""
-    namespace: dict[str, object] = {}
-    exec(_sandbox_proxy_source(), namespace)
-    state = namespace["ReplayState"](
+    state = ReplayState(
         recorded=[],
         upstream_url="https://provider.invalid/v1",
         upstream_api_key="test-key",
@@ -309,10 +311,8 @@ def test_sandbox_quiesce_waits_for_live_handler_before_snapshot(tmp_path) -> Non
 def test_sandbox_live_exchange_recovery_restores_attempt_order(tmp_path) -> None:
     """Guards PR #1057 against stitching sandbox calls in completion order."""
 
-    namespace: dict[str, object] = {}
-    exec(_sandbox_proxy_source(), namespace)
     live_log = tmp_path / "live.jsonl"
-    state = namespace["ReplayState"](
+    state = ReplayState(
         recorded=[],
         upstream_url="https://provider.invalid/v1",
         upstream_api_key="test-key",
@@ -355,9 +355,7 @@ def test_sandbox_quiesce_closes_listener_and_drains_accepted_handlers(
 ) -> None:
     """Guards PR #1057 against terminating a late rejected handler mid-journal."""
 
-    namespace: dict[str, object] = {}
-    exec(_sandbox_proxy_source(), namespace)
-    state = namespace["ReplayState"](
+    state = ReplayState(
         recorded=[],
         upstream_url="https://provider.invalid/v1",
         upstream_api_key="test-key",
@@ -375,9 +373,7 @@ def test_sandbox_quiesce_closes_listener_and_drains_accepted_handlers(
         return 200, completion(content="done"), True
 
     state._forward_live = forward
-    server = namespace["ReplayServer"](
-        ("127.0.0.1", 0), namespace["ReplayHandler"], state
-    )
+    server = ReplayServer(("127.0.0.1", 0), ReplayHandler, state)
     port = server.server_address[1]
     server_thread = threading.Thread(target=server.serve_forever)
     server_thread.start()
