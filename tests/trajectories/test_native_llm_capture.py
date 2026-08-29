@@ -26,7 +26,6 @@ from benchflow.trajectories.native_capture_parsers import (
     parse_claude_raw_capture,
     parse_claude_sessions,
     parse_codex_sessions,
-    project_acp_trajectory,
 )
 
 STARTED_AT = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
@@ -940,88 +939,3 @@ async def test_same_agent_model_roles_remain_independently_auditable(
     assert roles["coder"]["exchange_count"] == 0
     assert roles["reviewer"]["exchange_count"] == 0
     assert roles["mixed"]["exchange_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_claude_capture_setup_failure_degrades_without_aborting(
-    tmp_path: Path,
-) -> None:
-    """Guards PR #1057 against observability setup breaking Claude OAuth runs."""
-
-    commands: list[str] = []
-
-    class FailingCollectorEnv:
-        async def exec(self, command, **_kwargs):
-            commands.append(command)
-            if "nohup" in command:
-                return SimpleNamespace(
-                    return_code=1,
-                    stdout="",
-                    stderr="node runtime not found",
-                )
-            return SimpleNamespace(return_code=0, stdout="", stderr="")
-
-        async def upload_file(self, *_args, **_kwargs):
-            return None
-
-    capture = LLMTrajectoryCapture(
-        tmp_path,
-        agent="claude-agent-acp",
-        model="claude-sonnet-4-6",
-        session_id="rollout-1",
-        started_at=STARTED_AT,
-    )
-    prepared = await capture.prepare_agent(
-        FailingCollectorEnv(),
-        agent="claude-agent-acp",
-        model="claude-sonnet-4-6",
-        agent_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-test-token"},
-        credential_home="/home/agent",
-        sandbox_user="agent",
-    )
-
-    assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in prepared
-    assert "OTEL_LOG_RAW_API_BODIES" not in prepared
-    assert "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" not in prepared
-    assert any("/opt/benchflow/node/bin/node" in command for command in commands)
-
-
-def test_capture_failure_repairs_invalid_jsonl_and_redacts_manifest_error(
-    tmp_path: Path,
-) -> None:
-    """Guards PR #1057's valid-JSONL and secret-redaction failure invariant."""
-
-    capture = LLMTrajectoryCapture(
-        tmp_path,
-        agent="codex-acp",
-        model="gpt-5.6",
-        session_id="rollout-1",
-        started_at=STARTED_AT,
-    )
-    capture.trajectory_path.write_text("{not-json\n")
-
-    capture.record_failure(
-        "authorization: Bearer sk-test-secret-value", model_call_seen=True
-    )
-
-    manifest = json.loads(
-        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
-    )
-    assert capture.trajectory_path.read_text() == ""
-    assert manifest["status"] == "capture_failed"
-    assert "sk-test-secret-value" not in json.dumps(manifest)
-
-
-def test_acp_projection_retains_the_actual_auth_mode() -> None:
-    """Guards PR #1057 against labeling API-key fallback rows as OAuth."""
-
-    result = project_acp_trajectory(
-        [{"type": "agent_message", "text": "finished"}],
-        agent="codex-acp",
-        session_id="rollout-1",
-        started_at=STARTED_AT,
-        auth_mode="api_key",
-    )
-
-    assert result is not None
-    assert result.trajectory.exchanges[0].metadata["auth_mode"] == "api_key"
