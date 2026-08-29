@@ -97,3 +97,31 @@ def test_corrupt_capture_manifest_fails_closed_for_training(tmp_path: Path) -> N
         "missing_healthy_structured_llm_trajectory"
     )
     assert row["is_completed"] is False
+
+
+def test_manifest_count_mismatch_fails_closed_for_canonical_results(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on a truncated canonical trajectory."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "capture_fidelity": "provider_wire",
+                "auth_mode": "api_key",
+                "exchange_count": 2,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        )
+    )
+
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False

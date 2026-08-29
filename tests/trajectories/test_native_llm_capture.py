@@ -911,8 +911,8 @@ async def test_claude_capture_setup_failure_degrades_without_aborting(
         sandbox_user="agent",
     )
 
-    assert prepared["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
-    assert prepared["OTEL_LOG_RAW_API_BODIES"].startswith("file:")
+    assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in prepared
+    assert "OTEL_LOG_RAW_API_BODIES" not in prepared
     assert "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" not in prepared
     assert any("/opt/benchflow/node/bin/node" in command for command in commands)
 

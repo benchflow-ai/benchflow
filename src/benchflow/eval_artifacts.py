@@ -207,17 +207,10 @@ def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
     except PrimeSftTrajectoryJsonlError:
         return True, False, 0
     manifest = read_llm_trajectory_manifest(rollout_dir)
-    if manifest is not None:
-        try:
-            expected_rows = int(manifest.get("exchange_count") or 0)
-        except (TypeError, ValueError):
-            return True, False, len(rows)
-        if (
-            not capture_manifest_allows_training(manifest)
-            or not rows
-            or expected_rows != len(rows)
-        ):
-            return True, False, len(rows)
+    if manifest is not None and not capture_manifest_allows_training(
+        manifest, exchange_count=len(rows)
+    ):
+        return True, False, len(rows)
     return True, True, len(rows)
 
 

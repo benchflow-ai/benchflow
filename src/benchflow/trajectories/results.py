@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,6 +44,14 @@ JOB_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_ERRORS_FILENAME = "results.errors.json"
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _LLMStepsResult:
+    steps: list[dict[str, Any]]
+    tool_defs: list[dict[str, Any]]
+    export_error: str | None
+    capture_contract_rejected: bool = False
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
@@ -161,21 +170,21 @@ def _llm_steps_from_trajectory(
     reward: float,
     is_truncated: bool,
     trajectory_id_prefix: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+) -> _LLMStepsResult:
     path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     steps: list[dict[str, Any]] = []
     tool_defs: list[dict[str, Any]] = []
     if not path.exists():
-        return steps, tool_defs, None
+        return _LLMStepsResult(steps, tool_defs, None)
     try:
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
-        return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+        return _LLMStepsResult([], [], f"Invalid LLM trajectory JSONL: {exc}")
     capture_manifest = read_llm_trajectory_manifest(rollout_dir)
     if capture_manifest is not None and not capture_manifest_allows_training(
-        capture_manifest
+        capture_manifest, exchange_count=len(exchanges)
     ):
-        return [], [], None
+        return _LLMStepsResult([], [], None, capture_contract_rejected=True)
     training_success_indices = _training_success_exchange_indices(exchanges)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
@@ -248,13 +257,13 @@ def _llm_steps_from_trajectory(
         }
         steps.append(step)
     if skipped_successful:
-        return (
+        return _LLMStepsResult(
             steps,
             tool_defs,
             "Successful LLM exchanges were omitted from results.jsonl: "
             + "; ".join(skipped_successful),
         )
-    return steps, tool_defs, None
+    return _LLMStepsResult(steps, tool_defs, None)
 
 
 def _response_is_truncated(response_body: dict[str, Any]) -> bool:
@@ -463,12 +472,15 @@ def build_rollout_results_record(
         else f"{task_name}__{rollout_name}"
     )
     is_truncated = bool(partial_trajectory)
-    steps, tool_defs, llm_export_error = _llm_steps_from_trajectory(
+    llm_steps = _llm_steps_from_trajectory(
         rollout_path,
         reward=reward,
         is_truncated=is_truncated,
         trajectory_id_prefix=trajectory_id_prefix,
     )
+    steps = llm_steps.steps
+    tool_defs = llm_steps.tool_defs
+    llm_export_error = llm_steps.export_error
     prompt, completion = _top_level_prompt_completion(steps, prompts)
     validation_error = _prime_sft_validation_error(
         prompt=prompt,
@@ -483,10 +495,13 @@ def build_rollout_results_record(
     )
     terminal_health_error = bool(error or verifier_error or partial_trajectory)
     capture_manifest = read_llm_trajectory_manifest(rollout_path)
+    reported_exchange_count = (capture_manifest or {}).get("exchange_count")
     audit_only_capture = bool(
         capture_manifest is not None
-        and int(capture_manifest.get("exchange_count") or 0) > 0
-        and not capture_manifest_allows_training(capture_manifest)
+        and isinstance(reported_exchange_count, int)
+        and not isinstance(reported_exchange_count, bool)
+        and reported_exchange_count > 0
+        and llm_steps.capture_contract_rejected
     )
     native_subscription_without_llm = bool(
         (

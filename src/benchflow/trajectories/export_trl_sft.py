@@ -322,14 +322,14 @@ def convert_benchflow_rollouts_to_trl_sft_rows(
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
             continue
+        trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+        exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
         capture_manifest = read_llm_trajectory_manifest(rollout_dir)
         if capture_manifest is not None and not capture_manifest_allows_training(
-            capture_manifest
+            capture_manifest, exchange_count=len(exchanges)
         ):
             stats.skipped_insufficient_capture_fidelity += 1
             continue
-        trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-        exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
         if not exchanges:
             stats.skipped_no_trajectory += 1
             continue

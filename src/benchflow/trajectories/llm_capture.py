@@ -169,10 +169,12 @@ class LLMTrajectoryCapture:
             try:
                 port = await self._ensure_otel_sink(env, sandbox_user=sandbox_user)
             except Exception as exc:
+                prepared.pop("CLAUDE_CODE_ENABLE_TELEMETRY", None)
+                prepared.pop("OTEL_LOG_RAW_API_BODIES", None)
                 warning = _sanitized_error(exc)
                 self._preparation_errors.append(warning)
                 logger.warning(
-                    "Claude OTel correlation unavailable; raw/session fallback remains "
+                    "Claude OTel correlation unavailable; session fallback remains "
                     "enabled: %s",
                     warning,
                 )

@@ -137,14 +137,22 @@ def read_llm_trajectory_manifest(rollout_dir: Path) -> dict[str, Any] | None:
     return manifest
 
 
-def capture_manifest_allows_training(manifest: dict[str, Any]) -> bool:
-    """Return whether the rollout-level capture is safe for training export."""
+def capture_manifest_allows_training(
+    manifest: dict[str, Any], *, exchange_count: int
+) -> bool:
+    """Return whether manifest fidelity and JSONL cardinality allow training."""
+
+    expected_count = manifest.get("exchange_count")
+    if not isinstance(expected_count, int) or isinstance(expected_count, bool):
+        return False
 
     return bool(
         manifest.get("status") == "complete"
         and manifest.get("capture_fidelity") == "provider_wire"
         and manifest.get("request_complete") is True
         and manifest.get("response_complete") is True
+        and exchange_count > 0
+        and expected_count == exchange_count
     )
 
 
