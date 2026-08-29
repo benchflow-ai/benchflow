@@ -55,6 +55,14 @@ class AuthMode(StrEnum):
     UNKNOWN = "unknown"
 
 
+def provider_capture_has_trusted_custody(
+    *, sandbox_local: bool, sandbox_user: str | None
+) -> bool:
+    """Return whether an agent cannot rewrite its gateway's provider evidence."""
+
+    return not sandbox_local or bool(sandbox_user and sandbox_user not in {"root", "0"})
+
+
 class LLMRoleCapture(BaseModel):
     """Per prepared role provenance for mixed-auth/mixed-agent rollouts."""
 

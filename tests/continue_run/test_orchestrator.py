@@ -12,15 +12,17 @@ from benchflow.continue_run.orchestrator import (
     build_agent_env,
     build_rollout_config,
     continued_rollout_name,
-    refresh_stitched_trajectory_manifest,
     resolve_task_path,
     select_proxy_mode,
-    stitched_trajectory_lines,
     summarize_llm_trajectory_usage,
     update_continued_metadata,
-    write_stitched_trajectory,
 )
 from benchflow.continue_run.run_folder import RunFolderError, load_run_folder
+from benchflow.continue_run.trajectory_artifacts import (
+    refresh_stitched_trajectory_manifest,
+    stitched_trajectory_lines,
+    write_stitched_trajectory,
+)
 from benchflow.trajectories.llm_capture_manifest import (
     AuthMode,
     CaptureFidelity,

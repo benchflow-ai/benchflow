@@ -58,6 +58,9 @@ from benchflow.providers.litellm_logging import (
 )
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories.llm_capture_manifest import (
+    provider_capture_has_trusted_custody,
+)
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -1724,8 +1727,9 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
-    capture_trusted = not sandbox_local or bool(
-        sandbox_user and sandbox_user not in {"root", "0"}
+    capture_trusted = provider_capture_has_trusted_custody(
+        sandbox_local=sandbox_local,
+        sandbox_user=sandbox_user,
     )
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
