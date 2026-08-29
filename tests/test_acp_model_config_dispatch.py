@@ -346,6 +346,109 @@ async def test_effort_without_effort_config_id_fails_closed(tmp_path):
     mock_acp.close.assert_awaited()
 
 
+# Request-global classification (PR #1046 second review, P2-A): with Gemini
+# and --reasoning-effort high the run built the environment, snapshotted,
+# installed and connected the agent, and only then hit the effort rejection —
+# which ablation then retried in a branch child. These pin the two halves of
+# the fix's classification layer: a deterministic rejection of a global
+# request setting (effort/model) surfaces as ACPRequestGlobalError and
+# classifies as REQUEST_GLOBAL (non-retryable, never task-attributable),
+# while a mere timeout on the same call proves nothing about compatibility
+# and must NOT be branded request-global.
+
+
+@pytest.mark.asyncio
+async def test_unsupported_effort_is_a_request_global_rejection(tmp_path):
+    """The reviewer's exact shape: gemini declares no ACP effort config option,
+    so a requested effort is rejected — and the rejection must classify as
+    request-global, not as a retryable/task-attributable agent error."""
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+    from benchflow._utils.text import describe_exception
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    mock_acp = _make_mocks(config_options=[])
+    with pytest.raises(
+        ACPRequestGlobalError, match="does not declare an ACP effort"
+    ) as excinfo:
+        await _connect(
+            mock_acp,
+            agent="gemini",
+            model=None,
+            tmp_path=tmp_path,
+            reasoning_effort="high",
+        )
+
+    assert classify_error(describe_exception(excinfo.value)) == REQUEST_GLOBAL
+
+
+@pytest.mark.asyncio
+async def test_agent_rejected_effort_option_is_request_global(tmp_path):
+    """An agent *answering* set_config_option with a protocol error is a
+    deterministic rejection of the requested value — request-global."""
+    from unittest.mock import AsyncMock
+
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+    from benchflow._utils.text import describe_exception
+    from benchflow.acp.client import ACPError
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    mock_acp = _make_mocks(config_options=[{"id": "effort"}])
+    mock_acp.set_config_option = AsyncMock(
+        side_effect=ACPError(-32602, "unsupported effort: xhigh")
+    )
+    with pytest.raises(ACPRequestGlobalError) as excinfo:
+        await _connect(
+            mock_acp,
+            agent="claude-agent-acp",
+            model=None,
+            tmp_path=tmp_path,
+            reasoning_effort="xhigh",
+        )
+
+    assert classify_error(describe_exception(excinfo.value)) == REQUEST_GLOBAL
+
+
+@pytest.mark.asyncio
+async def test_timed_out_effort_option_is_not_request_global(tmp_path):
+    """A timeout on set_config_option is transport trouble, not evidence the
+    setting is unsupported — it must keep its ordinary (retryable) class."""
+    from unittest.mock import AsyncMock
+
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+    from benchflow._utils.text import describe_exception
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    mock_acp = _make_mocks(config_options=[{"id": "effort"}])
+    mock_acp.set_config_option = AsyncMock(side_effect=TimeoutError())
+    with pytest.raises(RuntimeError) as excinfo:
+        await _connect(
+            mock_acp,
+            agent="claude-agent-acp",
+            model=None,
+            tmp_path=tmp_path,
+            reasoning_effort="high",
+        )
+
+    assert not isinstance(excinfo.value, ACPRequestGlobalError)
+    assert classify_error(describe_exception(excinfo.value)) != REQUEST_GLOBAL
+
+
+def test_reasoning_effort_preflight_matches_the_runtime_dispatch():
+    """The static pre-flight must reject exactly what the runtime would reject
+    from registry facts alone: no acp_effort_config_id and no codex-style
+    effort-in-model-id. Agents the registry cannot vouch for are left to the
+    runtime's own fail-closed check."""
+    from benchflow.acp.runtime import reasoning_effort_preflight_error
+
+    assert reasoning_effort_preflight_error("gemini", None) is None
+    assert reasoning_effort_preflight_error("claude-agent-acp", "high") is None
+    assert reasoning_effort_preflight_error("codex-acp", "high") is None
+    assert reasoning_effort_preflight_error("no-such-agent", "high") is None
+    error = reasoning_effort_preflight_error("gemini", "high")
+    assert error is not None
+    assert "not supported by agent 'gemini'" in error
+
+
 @pytest.mark.asyncio
 async def test_env_owned_model_skips_advertised_model_option(tmp_path):
     """A manifest-shaped agent (supports_acp_set_model=False + a

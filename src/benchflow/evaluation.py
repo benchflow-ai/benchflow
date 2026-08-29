@@ -53,6 +53,7 @@ from benchflow._utils.scoring import (
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
     PROVIDER_REJECTED,
+    REQUEST_GLOBAL,
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
@@ -187,6 +188,11 @@ class RetryConfig:
             PROVIDER_AUTH,
             PROVIDER_RATE_LIMIT,
             PROVIDER_REJECTED,
+            # A rejected request-global setting (unsupported reasoning
+            # effort / model for the agent) re-fails identically on every
+            # attempt (PR #1046 second review, P2-A) — same family as the
+            # #917 provider_auth exclusion.
+            REQUEST_GLOBAL,
         }
     )
 

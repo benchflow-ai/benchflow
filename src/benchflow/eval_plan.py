@@ -442,6 +442,22 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
+    if eval_reasoning_effort and (request.tasks_dir or request.source_repo):
+        # Pre-flight the agent/effort pairing while it is knowable statically
+        # (PR #1046 second review, P2-A): an agent with no ACP effort channel
+        # otherwise rejects the run only after the sandbox was built and the
+        # agent installed — and ablation then retried the same doomed config
+        # in a branch child. Gated to the CLI-authoritative agent paths, the
+        # same rule as the effective_model() validation above: --config /
+        # --source-env may resolve their agent from YAML / the hosted source
+        # later, so pre-validating those would falsely reject.
+        from benchflow.acp.runtime import reasoning_effort_preflight_error
+
+        effort_error = reasoning_effort_preflight_error(
+            eval_agent, eval_reasoning_effort
+        )
+        if effort_error is not None:
+            raise EvalPlanError(effort_error)
     output_jobs_dir = request.jobs_dir or "jobs"
 
     # Resolve the optional Environment-plane manifest once and reuse across

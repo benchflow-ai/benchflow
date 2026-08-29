@@ -757,6 +757,93 @@ async def test_run_ablation_raises_when_the_boundary_is_never_reached(
         await run_ablation(_request(tmp_path))
 
 
+# Request-global settings (PR #1046 second review, P2-A): with Gemini and
+# --reasoning-effort high the parent built the environment, snapshotted,
+# installed and connected the agent, and only then hit the ACP effort
+# rejection — then ablation restored a child and failed the same way again.
+# Layer 1: what is knowable statically fails before anything is provisioned.
+# Layer 2: a parent that failed with a request-global error never has its
+# doomed configuration retried in branch children.
+
+
+async def test_an_unsupported_reasoning_effort_fails_before_any_provisioning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """gemini declares no ACP effort config option, so --reasoning-effort is
+    decidable from the request alone: the rejection must land before any
+    sandbox exists — no Rollout is even constructed. Guards ``fix(ablate):
+    validate request-global settings before provisioning``."""
+    built = _patch_rollout(monkeypatch)
+    request = AblationRequest(
+        task_path=_task_dir(tmp_path),
+        arms=parse_arms("with-skill,no-skill"),
+        agent="gemini",
+        model="gemini-3.1-pro-preview",
+        reasoning_effort="high",
+        out_dir=tmp_path / "out",
+    )
+
+    with pytest.raises(AblationSpecError, match="not supported by agent 'gemini'"):
+        await run_ablation(request)
+
+    assert built == []  # nothing provisioned, nothing to clean up
+
+
+async def test_a_request_global_parent_failure_is_never_retried_in_children(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An agent session rejecting a global option (effort/model) after
+    provisioning is not task-attributable: every branch child would restore
+    the snapshot, reinstall the agent, and fail identically. The engine must
+    skip the fork entirely and the report must say why. Guards ``fix(ablate):
+    ... never retry them in children``."""
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    class _EffortRejected(_FakeRollout):
+        async def connect(self) -> None:
+            self.calls.append("connect")
+            raise ACPRequestGlobalError(
+                "request-global setting rejected: reasoning_effort='high' was "
+                "requested for agent 'gemini', but that agent does not "
+                "declare an ACP effort config option"
+            )
+
+    built = _patch_rollout(monkeypatch, _EffortRejected)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert "does not declare an ACP effort" in report.parent_error
+    assert not any(c.startswith("branch_at_stage") for c in built[0].calls)
+    assert built[0].calls[-1] == "cleanup"
+    assert [arm.status for arm in report.arms] == ["skipped", "skipped"]
+    assert [arm.reward for arm in report.arms] == [None, None]
+    assert "request-global" in report.error
+    assert "not attempted" in report.error
+    assert report.has_errors is True
+
+
+async def test_a_task_attributable_parent_failure_still_forks_the_arms(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The complement of the request-global skip: an ordinary post-boundary
+    parent failure keeps the documented RFC §1 behavior — the arms still fork
+    from the recorded snapshot (same shape as
+    test_run_ablation_keeps_the_arms_when_the_parent_leg_fails, pinned here
+    against the new skip's classifier over-matching)."""
+
+    class _ExecuteDies(_FakeRollout):
+        async def execute(self) -> None:
+            raise RuntimeError("ACP error -32603: agent crashed mid-task")
+
+    built = _patch_rollout(monkeypatch, _ExecuteDies)
+
+    report = await run_ablation(_request(tmp_path))
+
+    assert "agent crashed mid-task" in report.parent_error
+    assert any(c.startswith("branch_at_stage") for c in built[0].calls)
+    assert [arm.reward for arm in report.arms] == [1.0, 0.0]
+
+
 # 4. The CLI surface
 
 

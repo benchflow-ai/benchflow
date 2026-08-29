@@ -23,11 +23,13 @@ import contextlib
 import logging
 from pathlib import Path
 
+from benchflow._utils.scoring import REQUEST_GLOBAL_MARKER
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
 from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.agents.errors import AgentProtocolError
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -53,14 +55,75 @@ from benchflow.trajectories._capture import _capture_session_trajectory
 # import ``IdleTimeoutError`` from this module. The canonical definition
 # lives in :mod:`benchflow.diagnostics` (issue #503).
 __all__ = [
+    "ACPRequestGlobalError",
     "AgentPromptTimeoutError",
     "IdleTimeoutError",
     "connect_acp",
     "execute_prompts",
+    "reasoning_effort_preflight_error",
     "selected_acp_transport",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class ACPRequestGlobalError(RuntimeError):
+    """The agent rejected a *request-global* setting (model or effort).
+
+    PR #1046 second review, P2-A: with Gemini and ``--reasoning-effort high``
+    the run provisioned the environment, snapshotted, installed and connected
+    the agent, and only then hit this rejection — which retries and branch
+    children then re-provoked identically. The rejection is a property of the
+    request/agent pairing, not of the task, so it is non-task-attributable
+    and non-retryable.
+
+    Every message carries :data:`~benchflow._utils.scoring.REQUEST_GLOBAL_MARKER`
+    so :func:`~benchflow._utils.scoring.classify_error` maps it to the
+    ``request_global`` category however the exception is re-stringified — the
+    provider_auth (#917) marker pattern. ``RuntimeError`` base keeps the
+    existing fail-closed callers and tests intact.
+    """
+
+
+def reasoning_effort_preflight_error(
+    agent: str, reasoning_effort: str | None
+) -> str | None:
+    """Why ``reasoning_effort`` can never be applied for ``agent`` — or None.
+
+    The static half of the P2-A fix: :func:`_configure_acp_session` decides
+    effort support from facts knowable before any provisioning — the
+    registry's ``acp_effort_config_id`` and the codex-acp effort-via-model-id
+    convention — so planning can fail the same way *before* a sandbox is
+    built and an agent installed. Kept next to the dispatch it mirrors: if
+    the runtime learns a new way to deliver effort, this predicate must learn
+    it in the same change.
+
+    Returns ``None`` for agents the registry cannot vouch for (existence is
+    validated elsewhere; manifest-registered agents land in ``AGENTS`` with
+    their declared option ids) and for non-ACP agents, whose runs never reach
+    the ACP effort dispatch.
+    """
+    if not reasoning_effort:
+        return None
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg is None:
+        return None
+    if agent_cfg.protocol != "acp":
+        return None
+    if agent == "codex-acp":
+        # Effort rides the ``model[effort]`` id, resolved against the live
+        # session's advertised catalog — not statically decidable.
+        return None
+    if agent_cfg.acp_effort_config_id:
+        return None
+    return (
+        f"--reasoning-effort {reasoning_effort!r} is not supported by agent "
+        f"{agent!r}: it declares no ACP effort config option and does not "
+        "encode effort in its model ids, so the run would only be rejected "
+        "after the sandbox was built and the agent installed. Drop "
+        "--reasoning-effort or choose an agent that supports it (e.g. "
+        "claude-agent-acp, codex-acp)."
+    )
 
 
 _ACP_CONNECT_MAX_RETRIES = 3
@@ -509,6 +572,13 @@ async def _set_acp_model(
             model_id,
             e,
         )
+        if isinstance(e, AgentProtocolError):
+            # The agent answered and refused the model — deterministic,
+            # request-global (same split as _set_acp_config_option).
+            raise ACPRequestGlobalError(
+                f"{REQUEST_GLOBAL_MARKER}: model {model_id!r} via ACP for "
+                f"agent {agent!r}: {e}"
+            ) from e
         raise RuntimeError(
             f"Failed to set model {model_id!r} via ACP for agent {agent!r}: {e}"
         ) from e
@@ -525,9 +595,12 @@ async def _set_acp_config_option(
 ) -> None:
     option_ids = _session_config_option_ids(session)
     if option_ids and config_id not in option_ids:
-        raise RuntimeError(
-            f"ACP agent {agent!r} does not expose {label} config option "
-            f"{config_id!r}; available options: {sorted(option_ids)!r}"
+        # The live session enumerates its config options and the wanted one
+        # is not among them — deterministic, request-global.
+        raise ACPRequestGlobalError(
+            f"{REQUEST_GLOBAL_MARKER}: ACP agent {agent!r} does not expose "
+            f"{label} config option {config_id!r}; available options: "
+            f"{sorted(option_ids)!r}"
         )
     try:
         await asyncio.wait_for(
@@ -542,6 +615,15 @@ async def _set_acp_config_option(
             value,
             e,
         )
+        if isinstance(e, AgentProtocolError):
+            # The agent *answered* and refused the value — a deterministic
+            # rejection of a global setting. A timeout or transport failure
+            # proves nothing about compatibility and keeps the plain
+            # (retryable) RuntimeError below.
+            raise ACPRequestGlobalError(
+                f"{REQUEST_GLOBAL_MARKER}: ACP {label} config option "
+                f"{config_id!r}={value!r} for agent {agent!r}: {e}"
+            ) from e
         raise RuntimeError(
             f"Failed to set ACP {label} config option {config_id!r}="
             f"{value!r} for agent {agent!r}: {e}"
@@ -628,9 +710,10 @@ async def _configure_acp_session(
         )
         return
     if not agent_cfg or not agent_cfg.acp_effort_config_id:
-        raise RuntimeError(
-            f"reasoning_effort={reasoning_effort!r} was requested for agent "
-            f"{agent!r}, but that agent does not declare an ACP effort config option"
+        raise ACPRequestGlobalError(
+            f"{REQUEST_GLOBAL_MARKER}: reasoning_effort={reasoning_effort!r} "
+            f"was requested for agent {agent!r}, but that agent does not "
+            "declare an ACP effort config option"
         )
     await _set_acp_config_option(
         acp_client,

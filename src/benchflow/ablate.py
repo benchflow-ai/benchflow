@@ -958,7 +958,22 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
         report.parent_reward, report.parent_error = await _run_parent(
             rollout, stage, research_end_marker=request.mark_research_end_on
         )
-        if request.mark_research_end_on is not None and stage not in getattr(
+        from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+
+        if classify_error(report.parent_error) == REQUEST_GLOBAL:
+            # The agent rejected a request-global setting (unsupported
+            # reasoning effort / model — PR #1046 second review, P2-A). Every
+            # child would restore the snapshot, reinstall the agent, and be
+            # rejected identically, so the fork is skipped outright: the
+            # error is a property of the request, never of a task or an arm.
+            branch_error = (
+                "the parent run failed with a request-global configuration "
+                f"error, so the arms were not attempted: "
+                f"{report.parent_error} — every branch child would re-run "
+                "the same rejected agent/model configuration"
+            )
+            logger.error("ablation branch at %r skipped: %s", stage, branch_error)
+        elif request.mark_research_end_on is not None and stage not in getattr(
             rollout, "_stage_snapshots", {}
         ):
             # The trigger never fired: branching would only raise
