@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from benchflow.continue_run.sandbox_proxy import (
     _ordered_live_exchange_log,
     _sandbox_proxy_source,
 )
+from benchflow.trajectories.redaction import canonical_redaction_module_source
 
 from ._helpers import completion, exchange
 
@@ -152,6 +154,72 @@ def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
     capture_state = json.loads((tmp_path / "state.json").read_text())
     assert capture_state["live_attempt_count"] == 1
     assert capture_state["live_error_count"] == 1
+
+
+def test_sandbox_live_exchange_is_redacted_before_journaling(tmp_path) -> None:
+    """Guards PR #1057 against persisting raw continuation secrets."""
+
+    namespace: dict[str, object] = {}
+    exec(_sandbox_proxy_source(), namespace)
+    live_log = tmp_path / "live.jsonl"
+    state = namespace["ReplayState"](
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(live_log),
+        state_path=str(tmp_path / "state.json"),
+        port=61357,
+    )
+    request_secret = "sk-ant-api03-requestsecret123456"
+    response_secret = "sk-ant-api03-responsesecret123456"
+    state._forward_live = lambda _request: (
+        401,
+        {"error": {"message": response_secret}},
+        True,
+    )
+
+    _source, status, response = state.next_response(
+        {"messages": [{"role": "user", "content": request_secret}]}
+    )
+
+    assert status == 401
+    assert response["error"]["message"] == response_secret
+    raw = live_log.read_text()
+    assert request_secret not in raw
+    assert response_secret not in raw
+    assert raw.count("***REDACTED***") == 2
+
+
+@pytest.mark.asyncio
+async def test_sandbox_replay_uploads_canonical_redactor() -> None:
+    """Guards PR #1057 against launching continuation without its redactor."""
+
+    class FakeSandbox:
+        def __init__(self) -> None:
+            self.uploaded: dict[str, str] = {}
+
+        async def exec(self, _command, **_kwargs):
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def upload_file(self, source, target):
+            self.uploaded[target] = source.read_text()
+
+    sandbox = FakeSandbox()
+    proxy = await SandboxReplayProxy.start(
+        sandbox=sandbox,
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+    )
+
+    redaction_path = f"{proxy.runtime_dir}/benchflow_trajectory_redaction.py"
+    assert sandbox.uploaded[redaction_path] == canonical_redaction_module_source()
+    assert (
+        "from benchflow_trajectory_redaction import"
+        in sandbox.uploaded[f"{proxy.runtime_dir}/replay_proxy.py"]
+    )
 
 
 def test_sandbox_attempt_journal_failure_invalidates_stale_state(

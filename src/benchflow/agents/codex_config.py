@@ -55,7 +55,10 @@ def apply_codex_provider_config(
     provider = dict(provider) if isinstance(provider, dict) else {}
     provider.setdefault("name", provider_name)
     provider["base_url"] = base_url
-    provider.setdefault("env_key", "OPENAI_API_KEY")
+    if strict:
+        provider["env_key"] = "OPENAI_API_KEY"
+    else:
+        provider.setdefault("env_key", "OPENAI_API_KEY")
     provider.setdefault("wire_api", "responses")
     provider.setdefault("supports_websockets", False)
 

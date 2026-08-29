@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from importlib.resources import files
 from typing import Any
 
 # Human-facing redaction categories. Every canonical pattern below is tagged
@@ -291,6 +292,16 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         REDACTION_CATEGORY_BEARER_TOKEN,
     ),
 ]
+
+
+def canonical_redaction_module_source() -> str:
+    """Read this packaged redactor for an isolated stdlib-only runtime."""
+
+    return (
+        files("benchflow.trajectories")
+        .joinpath("redaction.py")
+        .read_text(encoding="utf-8")
+    )
 
 
 def redact_trajectory_text(text: str) -> str:

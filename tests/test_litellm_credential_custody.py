@@ -131,6 +131,46 @@ def test_proxy_strips_every_supported_alternate_credential_alias():
     )
 
 
+def test_proxy_rebinds_custom_codex_provider_to_master_key():
+    """Guards PR #1057 against stripping a custom Codex provider's env key."""
+
+    master_key = "sk-benchflow-master"
+    route = resolve_litellm_route(
+        "openai/gpt-5.6-luna",
+        {"OPENAI_API_KEY": "sk-provider"},
+    )
+    updated = runtime_mod._wire_litellm_agent_env(
+        agent="codex-acp",
+        agent_env={
+            "CODEX_API_KEY": "sk-codex-provider",
+            "CODEX_CONFIG": json.dumps(
+                {
+                    "model_provider": "custom",
+                    "model_providers": {
+                        "custom": {
+                            "env_key": "CODEX_API_KEY",
+                            "wire_api": "responses",
+                        }
+                    },
+                }
+            ),
+        },
+        route=route,
+        base_url="http://127.0.0.1:4000",
+        master_key=master_key,
+    )
+
+    provider = json.loads(updated["CODEX_CONFIG"])["model_providers"]["custom"]
+    assert provider["env_key"] == "OPENAI_API_KEY"
+    assert updated["OPENAI_API_KEY"] == master_key
+    assert "CODEX_API_KEY" not in updated
+    runtime_mod._assert_proxy_isolated(
+        "codex-acp",
+        updated,
+        master_key=master_key,
+    )
+
+
 def test_proxy_isolation_guard_detects_unregistered_api_key_alias():
     """Guards PR #1057 against custom API-key aliases escaping the guard."""
 

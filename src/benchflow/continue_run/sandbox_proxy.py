@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from benchflow.trajectories.redaction import canonical_redaction_module_source
 from benchflow.trajectories.types import LLMExchange
 
 SANDBOX_REPLAY_ROOT = "/tmp/benchflow-replay"
@@ -49,6 +50,11 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from benchflow_trajectory_redaction import redact_trajectory_obj
+except ImportError:
+    from benchflow.trajectories.redaction import redact_trajectory_obj
 
 CAPTURE_STATE_WRITE_FAILED = "BENCHFLOW_CAPTURE_STATE_WRITE_FAILED"
 
@@ -289,11 +295,13 @@ class ReplayState:
             return 500, {"error": {"message": str(exc)}}, False
 
     def _append_live_exchange(self, request_body, status, body, live_attempt):
-        row = {
-            "request": {"body": request_body},
-            "response": {"status_code": status, "body": body},
-            "metadata": {"continuation_attempt": live_attempt},
-        }
+        row = redact_trajectory_obj(
+            {
+                "request": {"body": request_body},
+                "response": {"status_code": status, "body": body},
+                "metadata": {"continuation_attempt": live_attempt},
+            }
+        )
         with open(self.live_log_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(row) + "\n")
             handle.flush()
@@ -540,6 +548,7 @@ class SandboxReplayProxy:
         runtime_dir = f"{SANDBOX_REPLAY_ROOT}/{token}"
         paths = {
             "script": f"{runtime_dir}/replay_proxy.py",
+            "redaction": f"{runtime_dir}/benchflow_trajectory_redaction.py",
             "config": f"{runtime_dir}/config.json",
             "state": f"{runtime_dir}/state.json",
             "pid": f"{runtime_dir}/replay.pid",
@@ -572,6 +581,12 @@ class SandboxReplayProxy:
             "live_log_path": paths["live_log"],
         }
         await _upload_text(sandbox, _sandbox_proxy_source(), paths["script"], ".py")
+        await _upload_text(
+            sandbox,
+            canonical_redaction_module_source(),
+            paths["redaction"],
+            ".py",
+        )
         await _upload_text(sandbox, json.dumps(config), paths["config"], ".json")
 
         command = (

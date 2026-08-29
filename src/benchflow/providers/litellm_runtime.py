@@ -18,7 +18,6 @@ import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from uuid import uuid4
@@ -59,6 +58,7 @@ from benchflow.providers.litellm_logging import (
 )
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories.redaction import canonical_redaction_module_source
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -850,11 +850,7 @@ def _write_runtime_files(
 def _redaction_module_source() -> str:
     """Read the packaged canonical redactor for isolated proxy runtimes."""
 
-    return (
-        files("benchflow.trajectories")
-        .joinpath("redaction.py")
-        .read_text(encoding="utf-8")
-    )
+    return canonical_redaction_module_source()
 
 
 # How long to wait for the *host* per-run LiteLLM proxy to become healthy.
