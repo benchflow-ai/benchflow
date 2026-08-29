@@ -533,6 +533,44 @@ async def test_sandbox_teardown_passes_errors_when_agent_already_failed():
     assert rollout._error == "agent failed first"
 
 
+@pytest.mark.asyncio
+async def test_sandbox_teardown_refinalizes_manifest_after_cleanup(tmp_path):
+    """Guards PR #1057 against cleanup overwriting teardown capture errors."""
+    manifest_path = tmp_path / "manifest.json"
+
+    class FailingProxy:
+        async def stop(self):
+            raise RuntimeError("capture stop failed")
+
+    class FakeRollout:
+        _error = "agent failed first"
+
+        async def cleanup(self):
+            manifest_path.write_text(json.dumps({"status": "complete"}))
+
+    async def stop_provider_runtime(_runtime):
+        return None
+
+    async def before_cleanup(teardown_errors):
+        assert teardown_errors
+        manifest_path.write_text(json.dumps({"status": "partial"}))
+
+    async def after_cleanup(teardown_errors):
+        assert teardown_errors
+        manifest_path.write_text(json.dumps({"status": "partial"}))
+
+    await _safe_sandbox_continuation_teardown(
+        rollout=FakeRollout(),
+        replay_proxy=FailingProxy(),
+        provider_runtime=None,
+        stop_provider_runtime=stop_provider_runtime,
+        before_cleanup=before_cleanup,
+        after_cleanup=after_cleanup,
+    )
+
+    assert json.loads(manifest_path.read_text())["status"] == "partial"
+
+
 def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
     """Guards PR #1057 against retaining the pre-stitch trainer row."""
     rollout = tmp_path / "job" / "demo-task__continued"

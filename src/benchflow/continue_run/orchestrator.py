@@ -650,6 +650,7 @@ async def _safe_sandbox_continuation_teardown(
     provider_runtime: Any | None,
     stop_provider_runtime: Callable[[Any], Awaitable[None]],
     before_cleanup: Callable[[list[str]], Awaitable[None]] | None = None,
+    after_cleanup: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> list[str]:
     """Stop continuation sidecars but always let Rollout write final artifacts."""
     errors: list[str] = []
@@ -674,6 +675,8 @@ async def _safe_sandbox_continuation_teardown(
         await _capture("continuation artifact write", before_cleanup(errors))
 
     await _capture("rollout cleanup", rollout.cleanup())
+    if after_cleanup is not None:
+        await _capture("continuation artifact finalization", after_cleanup(errors))
 
     return errors
 
@@ -844,11 +847,13 @@ async def _continue_run_with_sandbox_proxy(
     live_exchanges: list[LLMExchange] = []
     artifacts_written = False
 
-    async def _write_artifacts_before_cleanup(
+    async def _write_artifacts(
         teardown_errors: list[str] | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         nonlocal artifacts_written, live_exchanges, result, rollout_dir
-        if artifacts_written:
+        if artifacts_written and not force:
             return
         result = _result_after_sandbox_teardown(rollout)
         if result is None:
@@ -970,14 +975,15 @@ async def _continue_run_with_sandbox_proxy(
             replay_proxy=replay_proxy,
             provider_runtime=provider_runtime,
             stop_provider_runtime=stop_provider_runtime,
-            before_cleanup=_write_artifacts_before_cleanup,
+            before_cleanup=_write_artifacts,
+            after_cleanup=lambda errors: _write_artifacts(errors, force=True),
         )
 
     if pending_acp_error is not None:
         rollout._error = rollout._classify_acp_error(pending_acp_error)
         logger.error(rollout._error)
 
-    await _write_artifacts_before_cleanup()
+    await _write_artifacts()
     if rollout_dir is None:
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
 
