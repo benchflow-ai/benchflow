@@ -111,7 +111,10 @@ def parse_claude_raw_capture(
                 response_timestamp=response_timestamp,
                 path="/v1/messages",
                 source=CaptureSource.CLAUDE_OTEL_RAW_BODY,
-                fidelity=CaptureFidelity.PROVIDER_WIRE,
+                # Claude writes this raw diagnostic surface from inside the
+                # agent sandbox. Its shape is exact, but its custody is not a
+                # trusted provider boundary, so it remains audit-only.
+                fidelity=CaptureFidelity.AGENT_SESSION,
                 auth_mode="oauth_subscription",
                 request_complete=True,
                 response_complete=True,
@@ -161,7 +164,7 @@ def parse_claude_raw_capture(
             exchanges=exchanges,
         ),
         source=CaptureSource.CLAUDE_OTEL_RAW_BODY,
-        fidelity=CaptureFidelity.PROVIDER_WIRE,
+        fidelity=CaptureFidelity.AGENT_SESSION,
         request_complete=not pairing_ambiguous,
         response_complete=True,
         errors=errors,

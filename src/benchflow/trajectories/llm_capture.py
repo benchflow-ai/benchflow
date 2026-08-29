@@ -121,8 +121,16 @@ class LLMTrajectoryCapture:
             session_id=session_id,
             started_at=started_at,
         )
-        self._targets: dict[tuple[str, str, str | None, str], _CaptureTarget] = {}
-        self._provisional_target_key: tuple[str, str, str | None, str] | None = None
+        self._targets: dict[
+            tuple[str, str, str | None, str, AuthMode], _CaptureTarget
+        ] = {}
+        self._active_target_keys: dict[
+            tuple[str, str, str | None, str],
+            tuple[str, str, str | None, str, AuthMode],
+        ] = {}
+        self._provisional_target_key: (
+            tuple[str, str, str | None, str, AuthMode] | None
+        ) = None
         self._collector_started = False
         self._collector_owned = False
         self._capture_root_prepared = False
@@ -170,6 +178,7 @@ class LLMTrajectoryCapture:
             model=model,
             credential_home=credential_home,
             role_name=role_name,
+            auth_mode=auth_mode,
         )
         previous_target = self._targets.get(target_key)
         if (
@@ -187,20 +196,27 @@ class LLMTrajectoryCapture:
             model=model,
             credential_home=credential_home,
             role_name=None,
+            auth_mode=auth_mode,
+        )
+        base_key = _capture_target_base_key(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            role_name=role_name,
         )
         if role_name is None:
-            if (
-                self._provisional_target_key is not None
-                and self._provisional_target_key != primary_key
-            ):
-                self._targets.pop(self._provisional_target_key, None)
             self._targets[primary_key] = target
             self._provisional_target_key = primary_key
         else:
             if self._provisional_target_key is not None:
-                self._targets.pop(self._provisional_target_key, None)
+                removed_key = self._provisional_target_key
+                self._targets.pop(removed_key, None)
+                for active_base, active_key in list(self._active_target_keys.items()):
+                    if active_key == removed_key:
+                        self._active_target_keys.pop(active_base, None)
                 self._provisional_target_key = None
             self._targets[target_key] = target
+        self._active_target_keys[base_key] = target_key
         self._refresh_manifest_auth_mode()
         if not native:
             write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
@@ -255,12 +271,15 @@ class LLMTrajectoryCapture:
     ) -> None:
         """Bind an ACP session ID to its prepared native capture target."""
 
-        key = _capture_target_key(
+        base_key = _capture_target_base_key(
             agent=agent,
             model=model,
             credential_home=credential_home,
             role_name=role_name,
         )
+        key = self._active_target_keys.get(base_key)
+        if key is None:
+            return
         target = self._targets.get(key)
         if target is None:
             return
@@ -807,6 +826,25 @@ async def _download_bound_session_files(
 
 
 def _capture_target_key(
+    *,
+    agent: str,
+    model: str | None,
+    credential_home: str,
+    role_name: str | None,
+    auth_mode: AuthMode,
+) -> tuple[str, str, str | None, str, AuthMode]:
+    return (
+        *_capture_target_base_key(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            role_name=role_name,
+        ),
+        auth_mode,
+    )
+
+
+def _capture_target_base_key(
     *,
     agent: str,
     model: str | None,

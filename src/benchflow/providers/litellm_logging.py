@@ -87,6 +87,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import traceback
 from datetime import datetime, timezone
@@ -223,14 +224,50 @@ def _failure_traceback(detail: Any) -> str:
 
 
 class BenchFlowLiteLLMLogger(CustomLogger):
+    def __init__(self) -> None:
+        super().__init__()
+        self._capture_lock = threading.Lock()
+        self._attempt_count = 0
+        self._terminal_count = 0
+        with self._capture_lock:
+            self._write_state_locked()
+
+    def _write_state_locked(self) -> None:
+        path = os.environ.get("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH")
+        if not path:
+            return
+        payload = {
+            "attempt_count": self._attempt_count,
+            "terminal_count": self._terminal_count,
+        }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+
+    def _journal_attempt(self) -> None:
+        with self._capture_lock:
+            self._attempt_count += 1
+            self._write_state_locked()
+
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
             return
         payload["logged_at"] = datetime.now(timezone.utc).isoformat()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(_jsonable(payload), separators=(",", ":")) + "\n")
+        with self._capture_lock:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(_jsonable(payload), separators=(",", ":")) + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._terminal_count += 1
+            self._write_state_locked()
 
     def _base_record(self, kwargs: dict[str, Any], start_time: Any, end_time: Any) -> dict[str, Any]:
         litellm_params = kwargs.get("litellm_params") or {}
@@ -291,6 +328,11 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     ):
         if not isinstance(data, dict):
             return None
+
+        # This hook is awaited before LiteLLM forwards the provider request.
+        # Persist the attempt first; the success/failure callback advances the
+        # terminal counter only after its full JSONL row is durable.
+        self._journal_attempt()
 
         _gate_opencode_skill_catalog(data)
 

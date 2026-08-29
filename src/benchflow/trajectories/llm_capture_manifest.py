@@ -165,11 +165,79 @@ def capture_artifact_allows_training(
     """Apply the sidecar contract while retaining genuine legacy JSONL support."""
 
     if manifest is not None:
-        return capture_manifest_allows_training(
-            manifest,
-            exchange_count=len(exchanges),
+        return bool(
+            capture_manifest_allows_training(
+                manifest,
+                exchange_count=len(exchanges),
+            )
+            and successful_exchanges_have_positive_usage(exchanges)
         )
     return not any(_exchange_requires_manifest(exchange) for exchange in exchanges)
+
+
+def successful_exchanges_have_positive_usage(
+    exchanges: Sequence[dict[str, Any]],
+) -> bool:
+    """Require positive token evidence for every successful provider response."""
+
+    successful = [
+        exchange
+        for exchange in exchanges
+        if isinstance((response := exchange.get("response")), dict)
+        and isinstance(response.get("status_code"), int)
+        and 200 <= response["status_code"] < 300
+    ]
+    return bool(successful) and all(
+        _exchange_has_positive_usage(exchange) for exchange in successful
+    )
+
+
+def _exchange_has_positive_usage(exchange: dict[str, Any]) -> bool:
+    response = exchange.get("response")
+    body = response.get("body") if isinstance(response, dict) else None
+    if not isinstance(body, dict):
+        return False
+    for container_name in ("usage", "usageMetadata"):
+        container = body.get(container_name)
+        if isinstance(container, dict) and _usage_payload_has_positive_tokens(
+            container
+        ):
+            return True
+    return False
+
+
+def _usage_payload_has_positive_tokens(payload: dict[str, Any]) -> bool:
+    token_keys = {
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+        "promptTokenCount",
+        "candidatesTokenCount",
+        "totalTokenCount",
+        "cachedContentTokenCount",
+        "toolUsePromptTokenCount",
+        "thoughtsTokenCount",
+        "cached_tokens",
+    }
+    for key, value in payload.items():
+        if key in token_keys:
+            if isinstance(value, bool):
+                continue
+            try:
+                if int(value) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        if isinstance(value, dict) and _usage_payload_has_positive_tokens(value):
+            return True
+    return False
 
 
 def _exchange_requires_manifest(exchange: dict[str, Any]) -> bool:

@@ -49,8 +49,9 @@ from benchflow.trajectories.llm_capture_manifest import (
     CaptureStatus,
     LLMRoleCapture,
     LLMTrajectoryManifest,
-    capture_manifest_allows_training,
+    capture_artifact_allows_training,
     read_llm_trajectory_manifest,
+    successful_exchanges_have_positive_usage,
     write_llm_trajectory_manifest,
 )
 from benchflow.trajectories.types import LLMExchange, redact_trajectory_obj
@@ -381,18 +382,37 @@ def refresh_stitched_trajectory_manifest(
         except ValueError:
             malformed_count += 1
     rows_valid = malformed_count == 0
+    parsed_rows: list[dict[str, Any]] = []
+    if rows_valid:
+        parsed_rows = [json.loads(line) for line in trajectory_lines]
     expected_count = n_recorded + live_attempt_count
     count_matches = exchange_count == expected_count
+    source_rows: list[dict[str, Any]] = []
+    try:
+        source_rows = [
+            json.loads(line)
+            for line in (source_rollout_dir / "trajectory" / "llm_trajectory.jsonl")
+            .read_text()
+            .splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError):
+        source_rows = []
     source_allows_training = bool(
         source_raw is not None
-        and capture_manifest_allows_training(source_raw, exchange_count=n_recorded)
+        and len(source_rows) == n_recorded
+        and capture_artifact_allows_training(source_raw, exchanges=source_rows)
     )
     live_capture_complete = live_attempt_count == n_live and not live_errors
+    usage_complete = bool(
+        parsed_rows and successful_exchanges_have_positive_usage(parsed_rows)
+    )
     complete = (
         source_allows_training
         and count_matches
         and live_capture_complete
         and rows_valid
+        and usage_complete
     )
 
     source_capture_source = source.capture_source if source else CaptureSource.NONE
@@ -450,6 +470,9 @@ def refresh_stitched_trajectory_manifest(
             f"stitched LLM trajectory contains {malformed_count} malformed row(s)"
         )
         missing_fields.append("valid_provider_exchange")
+    if rows_valid and not usage_complete:
+        errors.append("stitched LLM trajectory lacks positive provider token usage")
+        missing_fields.append("token_usage")
     if not live_capture_complete:
         missing_fields.append("live_provider_exchange")
 

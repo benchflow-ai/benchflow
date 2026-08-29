@@ -328,6 +328,10 @@ class _FakeSandbox:
             return _ExecResult(0)
         if command.strip().startswith("rm -rf"):
             return _ExecResult(0)
+        if command.strip().startswith("cat") and "capture_state.json" in command:
+            return _ExecResult(
+                0, stdout=json.dumps({"attempt_count": 1, "terminal_count": 1})
+            )
         if command.strip().startswith("cat") and "state.json" in command:
             if self._started:
                 return _ExecResult(0, stdout=json.dumps({"pid": 4242, "port": 45999}))
@@ -443,6 +447,41 @@ async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 11
     assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_stop_rejects_an_undrained_attempt_journal():
+    """Guards PR #1057 against completing an accepted provider call lost at stop."""
+
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox()
+    original_exec = sandbox.exec
+
+    async def mismatched_state(command, **kwargs):
+        if command.strip().startswith("cat") and "capture_state.json" in command:
+            return _ExecResult(
+                0, stdout=json.dumps({"attempt_count": 2, "terminal_count": 1})
+            )
+        return await original_exec(command, **kwargs)
+
+    sandbox.exec = mismatched_state
+    proc = await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+    )
+
+    with pytest.raises(RuntimeError, match="did not drain every accepted"):
+        await proc.stop()
 
 
 @pytest.mark.asyncio
@@ -701,7 +740,9 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     logger = namespace["proxy_handler_instance"]
 
     log_path = tmp_path / "callback.jsonl"
+    state_path = tmp_path / "capture_state.json"
     monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    monkeypatch.setenv("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH", str(state_path))
 
     response = {
         "model": "gpt-4.1-mini",
@@ -718,6 +759,7 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     start = datetime(2026, 6, 4, 10, 0, 0)
     end = datetime(2026, 6, 4, 10, 0, 1)
 
+    await logger.async_pre_call_hook(None, None, kwargs, "acompletion")
     await logger.async_log_success_event(kwargs, response, start, end)
 
     text = log_path.read_text()
@@ -732,6 +774,10 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 12
     assert usage["n_output_tokens"] == 4
+    assert json.loads(state_path.read_text()) == {
+        "attempt_count": 1,
+        "terminal_count": 1,
+    }
 
 
 def test_gemini_usage_metadata_is_detected_as_provider_usage():

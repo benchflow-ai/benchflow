@@ -200,6 +200,73 @@ def test_sandbox_quiesce_waits_for_live_handler_before_snapshot(tmp_path) -> Non
     assert capture_state["live_error_count"] == 1
 
 
+def test_sandbox_quiesce_closes_listener_and_drains_accepted_handlers(
+    tmp_path,
+) -> None:
+    """Guards PR #1057 against terminating a late rejected handler mid-journal."""
+
+    namespace: dict[str, object] = {}
+    exec(_sandbox_proxy_source(), namespace)
+    state = namespace["ReplayState"](
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(tmp_path / "live.jsonl"),
+        state_path=str(tmp_path / "state.json"),
+        port=0,
+    )
+    forward_started = threading.Event()
+    release_forward = threading.Event()
+
+    def forward(_request):
+        forward_started.set()
+        assert release_forward.wait(timeout=5)
+        return 200, completion(content="done"), True
+
+    state._forward_live = forward
+    server = namespace["ReplayServer"](
+        ("127.0.0.1", 0), namespace["ReplayHandler"], state
+    )
+    port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    chat_responses: list[httpx.Response] = []
+    chat_thread = threading.Thread(
+        target=lambda: chat_responses.append(
+            httpx.post(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                json={"messages": [{"role": "user"}]},
+                timeout=5,
+            )
+        )
+    )
+    chat_thread.start()
+    assert forward_started.wait(timeout=5)
+    quiesce_responses: list[httpx.Response] = []
+    quiesce_thread = threading.Thread(
+        target=lambda: quiesce_responses.append(
+            httpx.post(
+                f"http://127.0.0.1:{port}/benchflow/quiesce",
+                timeout=5,
+            )
+        )
+    )
+    quiesce_thread.start()
+    assert quiesce_thread.is_alive()
+
+    release_forward.set()
+    chat_thread.join(timeout=5)
+    quiesce_thread.join(timeout=5)
+    server_thread.join(timeout=5)
+
+    assert chat_responses[0].status_code == 200
+    assert quiesce_responses[0].status_code == 200
+    assert state.active_handlers == 0
+    with pytest.raises(httpx.ConnectError):
+        httpx.get(f"http://127.0.0.1:{port}/health", timeout=1)
+
+
 @pytest.mark.asyncio
 async def test_sandbox_attempt_journal_marker_reaches_host(
     monkeypatch: pytest.MonkeyPatch,

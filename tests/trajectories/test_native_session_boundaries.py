@@ -230,6 +230,58 @@ async def test_executed_primary_is_not_removed_by_later_named_role(
 
 
 @pytest.mark.asyncio
+async def test_repeated_role_preserves_auth_distinct_capture_targets(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against API auth replacing a bound OAuth role target."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    common = {
+        "env": None,
+        "agent": "codex-acp",
+        "model": "gpt-5.6",
+        "credential_home": "/home/agent",
+        "sandbox_user": "agent",
+        "role_name": "reviewer",
+    }
+    await capture.prepare_agent(
+        **common,
+        agent_env={
+            "CODEX_AUTH_JSON": (
+                '{"auth_mode":"chatgpt","tokens":{"refresh_token":"test"}}'
+            )
+        },
+    )
+    capture.bind_native_session(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        native_session_id="oauth-session",
+        role_name="reviewer",
+    )
+    await capture.prepare_agent(
+        **common,
+        agent_env={"OPENAI_API_KEY": "test-key"},
+    )
+
+    targets = list(capture._targets.values())
+    assert {target.auth_mode for target in targets} == {
+        AuthMode.OAUTH_SUBSCRIPTION,
+        AuthMode.API_KEY,
+    }
+    oauth_target = next(
+        target for target in targets if target.auth_mode is AuthMode.OAUTH_SUBSCRIPTION
+    )
+    assert oauth_target.native_session_ids == ("oauth-session",)
+
+
+@pytest.mark.asyncio
 async def test_claude_capture_setup_clears_reused_raw_attempt(
     tmp_path: Path,
 ) -> None:

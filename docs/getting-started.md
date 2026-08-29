@@ -221,7 +221,7 @@ the source of truth for interpreting the JSONL:
 | Agent/auth path | Primary source | `capture_fidelity` |
 |---|---|---|
 | API key through the BenchFlow gateway (including Azure) | LiteLLM provider request/response capture | `provider_wire` |
-| Claude Code subscription/OAuth | Claude Code raw API-body files correlated by local OTLP logs | `provider_wire` |
+| Claude Code subscription/OAuth | Claude Code raw API-body files correlated by local OTLP logs | `agent_session` |
 | Claude Code subscription/OAuth fallback | Claude Code native session JSONL | `agent_session` |
 | Codex subscription/OAuth | Codex native session JSONL | `agent_session` |
 
@@ -233,9 +233,12 @@ count.
 Missing or ambiguously attributed roles make the rollout-level capture
 `partial`. Reconstructed `agent_session` rows remain useful for audit and viewer
 workflows, but trainer exports fail closed unless the manifest says the capture
-is complete provider-wire data. Claude's own raw-body telemetry can still
-contain provider-redacted extended-thinking blocks; BenchFlow also applies its
-normal secret redaction before publishing the JSONL.
+is complete provider-wire data and every successful exchange has positive token
+usage. Claude's raw-body surface is deliberately audit-only because Claude Code
+writes it inside the agent-controlled sandbox; its API shape does not make its
+custody provider-trusted. It can also contain provider-redacted
+extended-thinking blocks. BenchFlow applies its normal secret redaction before
+publishing the JSONL.
 
 ### Reading results
 

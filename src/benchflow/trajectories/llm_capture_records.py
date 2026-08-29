@@ -16,6 +16,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     CaptureSource,
     CaptureStatus,
     LLMRoleCapture,
+    successful_exchanges_have_positive_usage,
 )
 from benchflow.trajectories.native_capture_parsers import NativeParseResult
 from benchflow.trajectories.types import redact_trajectory_obj
@@ -190,6 +191,18 @@ def assemble_capture(
     missing_fields = {
         field for bundle in native_bundles for field in bundle.result.missing_fields
     }
+    successful_records = [
+        record
+        for record in records
+        if isinstance((response := record.get("response")), dict)
+        and isinstance(response.get("status_code"), int)
+        and 200 <= response["status_code"] < 300
+    ]
+    usage_complete = not successful_records or successful_exchanges_have_positive_usage(
+        successful_records
+    )
+    if not usage_complete:
+        missing_fields.add("token_usage")
     if attribution_incomplete:
         missing_fields.add("role_attribution")
     source = _aggregate_source(records)
@@ -215,6 +228,7 @@ def assemble_capture(
         if fidelity is CaptureFidelity.PROVIDER_WIRE
         and request_complete
         and response_complete
+        and usage_complete
         and not errors
         else CaptureStatus.PARTIAL
     )

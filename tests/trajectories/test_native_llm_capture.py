@@ -52,8 +52,8 @@ def _otel_record(name: str, timestamp_ns: int, **attributes: str) -> dict:
     }
 
 
-def test_claude_otel_raw_bodies_become_provider_wire_exchanges(tmp_path: Path) -> None:
-    """Guards PR #1057's exact Claude OAuth raw-body capture contract."""
+def test_claude_otel_raw_bodies_remain_audit_only_exchanges(tmp_path: Path) -> None:
+    """Guards PR #1057 against trusting agent-writable Claude OAuth telemetry."""
 
     capture = tmp_path / "capture"
     raw = capture / "raw"
@@ -116,7 +116,7 @@ def test_claude_otel_raw_bodies_become_provider_wire_exchanges(tmp_path: Path) -
 
     assert result is not None
     assert result.source is CaptureSource.CLAUDE_OTEL_RAW_BODY
-    assert result.fidelity is CaptureFidelity.PROVIDER_WIRE
+    assert result.fidelity is CaptureFidelity.AGENT_SESSION
     assert result.request_complete is True
     assert result.response_complete is True
     assert len(result.trajectory.exchanges) == 1
@@ -594,7 +594,17 @@ async def test_provider_jsonl_gets_complete_fidelity_metadata(tmp_path: Path) ->
         json.dumps(
             {
                 "request": {"body": {"input": "hello"}},
-                "response": {"status_code": 200, "body": {"output": []}},
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "output": [],
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": 1,
+                            "total_tokens": 2,
+                        },
+                    },
+                },
             }
         )
         + "\n"

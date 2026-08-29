@@ -140,6 +140,7 @@ class ReplayState:
     condition: threading.Condition = field(init=False)
     quiescing: bool = False
     active_live_requests: int = 0
+    active_handlers: int = 0
 
     def __post_init__(self):
         self.condition = threading.Condition(self.lock)
@@ -234,12 +235,25 @@ class ReplayState:
         deadline = time.monotonic() + timeout
         with self.condition:
             self.quiescing = True
-            while self.active_live_requests:
+            while self.active_live_requests or self.active_handlers > 1:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
                 self.condition.wait(remaining)
             return True
+
+    def begin_quiesce(self):
+        with self.condition:
+            self.quiescing = True
+
+    def handler_started(self):
+        with self.condition:
+            self.active_handlers += 1
+
+    def handler_finished(self):
+        with self.condition:
+            self.active_handlers -= 1
+            self.condition.notify_all()
 
     def _forward_live(self, request_body):
         forwarded = dict(request_body)
@@ -321,6 +335,13 @@ class ReplayHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         if path == "/benchflow/quiesce":
+            # Stop the accept loop before the barrier can report success. The
+            # server counts connections in ``process_request`` (before their
+            # worker threads start), so every already-accepted handler is in
+            # ``active_handlers`` even if it has not reached ``do_POST`` yet.
+            self.state.begin_quiesce()
+            self.server.shutdown()
+            self.server.server_close()
             quiesced = self.state.quiesce()
             self._send_json(
                 200 if quiesced else 503,
@@ -361,9 +382,29 @@ class ReplayHandler(BaseHTTPRequestHandler):
 
 
 class ReplayServer(ThreadingHTTPServer):
+    # ``/benchflow/quiesce`` closes the listener from its own worker thread.
+    # Do not let ``server_close`` try to join that current thread; the normal
+    # non-daemon handler lifecycle still keeps the process alive until the
+    # response and every already-accepted request have finished.
+    block_on_close = False
+
     def __init__(self, address, handler, state):
         super().__init__(address, handler)
         self.state = state
+
+    def process_request(self, request, client_address):
+        self.state.handler_started()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.state.handler_finished()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.state.handler_finished()
 
 
 def main():

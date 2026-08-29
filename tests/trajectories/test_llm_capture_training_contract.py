@@ -36,6 +36,7 @@ def _write_exchange(
     *,
     fidelity: str,
     schema_version: int | None = None,
+    include_usage: bool = True,
 ) -> None:
     metadata: dict[str, str | bool | int] = {
         "capture_fidelity": fidelity,
@@ -44,6 +45,16 @@ def _write_exchange(
     }
     if schema_version is not None:
         metadata["schema_version"] = schema_version
+    response_body = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hi"}],
+    }
+    if include_usage:
+        response_body["usage"] = {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+        }
     (trajectory_dir / "llm_trajectory.jsonl").write_text(
         json.dumps(
             {
@@ -52,10 +63,7 @@ def _write_exchange(
                 },
                 "response": {
                     "status_code": 200,
-                    "body": {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": "hi"}],
-                    },
+                    "body": response_body,
                 },
                 "metadata": metadata,
             }
@@ -155,6 +163,41 @@ def test_manifest_count_mismatch_fails_closed_for_canonical_results(
     )
 
     row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+def test_provider_capture_without_positive_usage_is_not_training_ready(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on provider rows with zero token evidence."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        include_usage=False,
+    )
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "capture_fidelity": "provider_wire",
+                "auth_mode": "api_key",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "unavailable", "total_tokens": 0},
+    )
 
     assert row["info"]["training_ready"] is False
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"

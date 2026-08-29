@@ -36,6 +36,12 @@ from benchflow.providers.litellm_bedrock_preflight import (
     preflight_sandbox_bedrock_patch,
     route_requires_bedrock_patch,
 )
+from benchflow.providers.litellm_capture_lifecycle import (
+    LITELLM_CAPTURE_STATE_ENV,
+    capture_journal_error,
+    drain_host_process,
+    drain_sandbox_process,
+)
 from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
     LITELLM_MODEL_ALIAS_ENV,
@@ -410,12 +416,14 @@ class HostLiteLLMProcess(LiteLLMProcess):
         stderr_path: Path,
         session_id: str,
         agent_name: str,
+        capture_state_path: Path | None = None,
     ) -> None:
         self.route = route
         self.process = process
         self.runtime_dir = runtime_dir
         self.endpoint = endpoint
         self.log_path = log_path
+        self.capture_state_path = capture_state_path
         self.stdout_path = stdout_path
         self.stderr_path = stderr_path
         self.session_id = session_id
@@ -430,19 +438,22 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return self.process.poll() is None
 
     async def stop(self) -> None:
+        drain_error = await drain_host_process(self.process)
         await self._stop_live_capture()
         await _await_log_stable(self._log_size)
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                await asyncio.to_thread(self.process.wait, 10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                await asyncio.to_thread(self.process.wait, 10)
         self._load_callback_log()
         self.reconcile_live_capture()
+        trajectory = self.trajectory
+        assert trajectory is not None
+        journal_error = capture_journal_error(
+            self._load_capture_state(),
+            exchange_count=len(trajectory.exchanges),
+        )
         with contextlib.suppress(Exception):
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
+        error = drain_error or journal_error
+        if error is not None:
+            raise RuntimeError(error)
 
     def _log_size(self) -> int:
         try:
@@ -479,6 +490,20 @@ class HostLiteLLMProcess(LiteLLMProcess):
             agent_name=self.agent_name,
         )
 
+    def _load_capture_state(self) -> dict[str, Any] | None:
+        if self.capture_state_path is None:
+            trajectory = self.trajectory
+            assert trajectory is not None
+            return {
+                "attempt_count": len(trajectory.exchanges),
+                "terminal_count": len(trajectory.exchanges),
+            }
+        try:
+            payload = json.loads(self.capture_state_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def log_tail(self) -> str:
         chunks: list[str] = []
         for label, path in (("stdout", self.stdout_path), ("stderr", self.stderr_path)):
@@ -503,12 +528,14 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         stderr_path: str,
         session_id: str,
         agent_name: str,
+        capture_state_path: str | None = None,
     ) -> None:
         self.sandbox = sandbox
         self.route = route
         self.runtime_dir = runtime_dir
         self.endpoint = endpoint
         self.log_path = log_path
+        self.capture_state_path = capture_state_path
         self.pid_path = pid_path
         self.stdout_path = stdout_path
         self.stderr_path = stderr_path
@@ -532,23 +559,27 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
+        drain_error = await drain_sandbox_process(
+            self.sandbox,
+            pid_path=self.pid_path,
+        )
         await self._stop_live_capture()
         await _await_log_stable(self._remote_log_size)
-        with contextlib.suppress(Exception):
-            await self.sandbox.exec(
-                (
-                    f"if [ -s {shlex.quote(self.pid_path)} ]; then "
-                    f"kill -TERM $(cat {shlex.quote(self.pid_path)}) 2>/dev/null || true; "
-                    "fi"
-                ),
-                timeout_sec=10,
-            )
         await self._load_callback_log()
         self.reconcile_live_capture()
+        trajectory = self.trajectory
+        assert trajectory is not None
+        journal_error = capture_journal_error(
+            await self._load_capture_state(),
+            exchange_count=len(trajectory.exchanges),
+        )
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10
             )
+        error = drain_error or journal_error
+        if error is not None:
+            raise RuntimeError(error)
 
     async def _remote_log_size(self) -> int:
         with contextlib.suppress(Exception):
@@ -634,6 +665,26 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             session_id=self.session_id,
             agent_name=self.agent_name,
         )
+
+    async def _load_capture_state(self) -> dict[str, Any] | None:
+        if self.capture_state_path is None:
+            trajectory = self.trajectory
+            assert trajectory is not None
+            return {
+                "attempt_count": len(trajectory.exchanges),
+                "terminal_count": len(trajectory.exchanges),
+            }
+        result = await self.sandbox.exec(
+            f"cat {shlex.quote(self.capture_state_path)} 2>/dev/null || true",
+            timeout_sec=15,
+        )
+        if result.return_code != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout or "")
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     async def log_tail(self) -> str:
         chunks: list[str] = []
@@ -848,6 +899,7 @@ async def _start_host_litellm(
 ) -> HostLiteLLMProcess:
     runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-litellm-"))
     log_path = runtime_dir / "callback.jsonl"
+    capture_state_path = runtime_dir / "capture_state.json"
     stdout_path = runtime_dir / "stdout.log"
     stderr_path = runtime_dir / "stderr.log"
     port = _find_free_port()
@@ -861,6 +913,7 @@ async def _start_host_litellm(
             "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+            LITELLM_CAPTURE_STATE_ENV: str(capture_state_path),
             LITELLM_MODEL_ALIAS_ENV: route.model_alias,
             _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
             _LITELLM_AGENT_ENV: agent_name,
@@ -896,6 +949,7 @@ async def _start_host_litellm(
         runtime_dir=runtime_dir,
         endpoint=_agent_endpoint_for_environment(port, environment, bind),
         log_path=log_path,
+        capture_state_path=capture_state_path,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         session_id=session_id,
@@ -1002,6 +1056,7 @@ async def _upload_runtime_files_to_sandbox(
         "stdout": f"{runtime_dir}/stdout.log",
         "stderr": f"{runtime_dir}/stderr.log",
         "log": f"{runtime_dir}/callback.jsonl",
+        "capture_state": f"{runtime_dir}/capture_state.json",
         "pid": f"{runtime_dir}/litellm.pid",
         "state": f"{runtime_dir}/state.json",
         "venv": f"{runtime_dir}/venv",
@@ -1187,6 +1242,7 @@ async def _start_sandbox_litellm(
             "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+            LITELLM_CAPTURE_STATE_ENV: paths["capture_state"],
             LITELLM_MODEL_ALIAS_ENV: route.model_alias,
             _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
             _LITELLM_AGENT_ENV: agent_name,
@@ -1260,6 +1316,7 @@ async def _start_sandbox_litellm(
         runtime_dir=runtime_dir,
         endpoint=endpoint,
         log_path=paths["log"],
+        capture_state_path=paths["capture_state"],
         pid_path=paths["pid"],
         stdout_path=paths["stdout"],
         stderr_path=paths["stderr"],
