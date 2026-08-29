@@ -240,13 +240,41 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "attempt_count": self._attempt_count,
             "terminal_count": self._terminal_count,
         }
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         temporary = path + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except Exception:
+            # A previous, balanced journal must never survive a failed later
+            # update: cleanup could otherwise accept its stale counts and omit
+            # the rejected call. Both host and sandbox proxies execute this
+            # same embedded callback module.
+            self._invalidate_state_locked(path, temporary)
+            raise
+
+    def _invalidate_state_locked(self, path: str, temporary: str) -> None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # If removal itself is unavailable, corrupt the validity contract
+            # explicitly. Cleanup rejects this payload as a malformed journal.
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump({"valid": False}, handle, separators=(",", ":"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except OSError:
+                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
 
     def _journal_attempt(self) -> None:
         with self._capture_lock:

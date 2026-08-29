@@ -780,6 +780,38 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     }
 
 
+@pytest.mark.asyncio
+async def test_embedded_logger_invalidates_stale_journal_after_attempt_write_failure(
+    tmp_path, monkeypatch
+):
+    """Guards PR #1057 against accepting stale host or sandbox journal counts."""
+
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    state_path = tmp_path / "capture_state.json"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH", str(state_path))
+
+    logger._journal_attempt()
+    logger._terminal_count = 1
+    logger._write_state_locked()
+    assert json.loads(state_path.read_text()) == {
+        "attempt_count": 1,
+        "terminal_count": 1,
+    }
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(namespace["os"], "replace", fail_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        logger._journal_attempt()
+
+    assert not state_path.exists()
+    assert not state_path.with_suffix(".json.tmp").exists()
+
+
 def test_gemini_usage_metadata_is_detected_as_provider_usage():
     # LiteLLM normally normalizes to OpenAI shape, but a raw Gemini passthrough
     # reports usageMetadata; it must not silently degrade to 'unavailable'.
