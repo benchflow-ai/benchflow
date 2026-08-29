@@ -154,6 +154,23 @@ class LLMTrajectoryCapture:
             native=native,
             role=role_name or "primary",
         )
+        target_key = _capture_target_key(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            role_name=role_name,
+        )
+        previous_target = self._targets.get(target_key)
+        if (
+            previous_target is not None
+            and previous_target.native
+            and target.native
+            and previous_target.auth_mode is target.auth_mode
+        ):
+            target = replace(
+                target,
+                native_session_ids=previous_target.native_session_ids,
+            )
         primary_key = _capture_target_key(
             agent=agent,
             model=model,
@@ -172,14 +189,7 @@ class LLMTrajectoryCapture:
             if self._provisional_target_key is not None:
                 self._targets.pop(self._provisional_target_key, None)
                 self._provisional_target_key = None
-            self._targets[
-                _capture_target_key(
-                    agent=agent,
-                    model=model,
-                    credential_home=credential_home,
-                    role_name=role_name,
-                )
-            ] = target
+            self._targets[target_key] = target
         self._refresh_manifest_auth_mode()
         if not native:
             write_llm_trajectory_manifest(self.rollout_dir, self.manifest)

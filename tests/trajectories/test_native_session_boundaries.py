@@ -351,6 +351,54 @@ async def test_native_capture_binds_only_returned_acp_session_ids(
 
 
 @pytest.mark.asyncio
+async def test_native_role_reprepare_preserves_prior_session_ids(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057's prepare-bind reconnect sequence across rounds."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    prepare_kwargs = {
+        "agent": "codex-acp",
+        "model": "gpt-5.6",
+        "agent_env": {
+            "CODEX_AUTH_JSON": '{"auth_mode":"chatgpt","tokens":{"refresh_token":"test"}}'
+        },
+        "credential_home": "/home/agent",
+        "sandbox_user": "agent",
+        "role_name": "solver",
+    }
+    await capture.prepare_agent(None, **prepare_kwargs)
+    capture.bind_native_session(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        native_session_id="019effaf-3966-75d3-b61a-2916c84b0ac8",
+        role_name="solver",
+    )
+
+    await capture.prepare_agent(None, **prepare_kwargs)
+    capture.bind_native_session(
+        agent="codex-acp",
+        model="gpt-5.6",
+        credential_home="/home/agent",
+        native_session_id="019effaf-3ab7-71f1-8ff3-fdecf66b551e",
+        role_name="solver",
+    )
+
+    target = capture._native_targets()[0]
+    assert target.native_session_ids == (
+        "019effaf-3966-75d3-b61a-2916c84b0ac8",
+        "019effaf-3ab7-71f1-8ff3-fdecf66b551e",
+    )
+
+
+@pytest.mark.asyncio
 async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -> None:
     """Guards PR #1057 against leaking a replaced OAuth collector."""
 
