@@ -113,6 +113,7 @@ class LLMTrajectoryCapture:
         )
         self._targets: dict[tuple[str, str, str | None, str], _CaptureTarget] = {}
         self._collector_started = False
+        self._collector_owned = False
         self._capture_root_prepared = False
         self._preparation_errors: list[str] = []
 
@@ -285,12 +286,12 @@ class LLMTrajectoryCapture:
             dict.fromkeys([*self._preparation_errors, *(capture_errors or [])])
         )
         native_targets = self._native_targets()
-        native_resources_exist = self._collector_started or self._capture_root_prepared
+        native_resources_exist = self._collector_owned or self._capture_root_prepared
         if (native_targets or native_resources_exist) and env is not None:
             try:
                 if native_targets:
                     native_bundles = await self._collect_native_results(env)
-                elif self._collector_started:
+                elif self._collector_owned:
                     await self._stop_otel_sink(env)
             except Exception as exc:
                 collection_errors.append(_sanitized_error(exc))
@@ -429,6 +430,7 @@ done
 tail -c 300 {self._remote_capture_root}/collector.stderr >&2 2>/dev/null || true
 exit 1
 """
+        self._collector_owned = True
         result = await env.exec(
             command,
             user=sandbox_user or "root",
@@ -469,6 +471,7 @@ exit 1
             detail = (result.stderr or result.stdout or "collector did not stop")[:300]
             raise RuntimeError(f"Claude OTel sink shutdown failed: {detail}")
         self._collector_started = False
+        self._collector_owned = False
 
     async def _read_collector_port(self, env: Any) -> int:
         result = await env.exec(
@@ -481,7 +484,7 @@ exit 1
         return _parse_port(result.stdout)
 
     async def _collect_native_results(self, env: Any) -> list[_NativeCaptureBundle]:
-        if self._collector_started:
+        if self._collector_owned:
             await self._stop_otel_sink(env)
         bundles: list[_NativeCaptureBundle] = []
         native_targets = self._native_targets()

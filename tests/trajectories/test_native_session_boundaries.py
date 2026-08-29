@@ -128,6 +128,59 @@ async def test_claude_capture_setup_clears_reused_raw_attempt(
 
 
 @pytest.mark.asyncio
+async def test_claude_startup_timeout_still_releases_owned_collector(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against leaking a collector after startup timeout."""
+
+    commands: list[str] = []
+
+    class StartupTimeoutEnv:
+        async def exec(self, command, **_kwargs):
+            commands.append(command)
+            if "nohup" in command:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout="",
+                    stderr="collector port was not observed",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def upload_file(self, *_args, **_kwargs):
+            return None
+
+        async def download_dir(self, _remote, local):
+            Path(local).mkdir(parents=True)
+
+    env = StartupTimeoutEnv()
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    await capture.prepare_agent(
+        env,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        agent_env={"CLAUDE_CODE_OAUTH_TOKEN": "test-token"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+
+    assert capture._collector_started is False
+    assert capture._collector_owned is True
+
+    await capture.finalize(env, acp_events=[], model_call_seen=False)
+
+    stop_commands = [command for command in commands if "read -r old_pid" in command]
+    assert len(stop_commands) == 2
+    assert capture._collector_owned is False
+    assert any("-depth -delete" in command for command in commands)
+
+
+@pytest.mark.asyncio
 async def test_native_download_selects_recent_files_before_copying(
     tmp_path: Path,
 ) -> None:
@@ -234,6 +287,7 @@ async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -
     )
     capture.configure({"ANTHROPIC_API_KEY": "test-key"})
     capture._collector_started = True
+    capture._collector_owned = True
     capture._capture_root_prepared = True
 
     await capture.finalize(
@@ -245,6 +299,7 @@ async def test_replaced_native_target_still_releases_collector(tmp_path: Path) -
     assert any("kill -TERM" in command for command in commands)
     assert any("-depth -delete" in command for command in commands)
     assert capture._collector_started is False
+    assert capture._collector_owned is False
 
 
 def test_rollout_binds_the_acp_session_after_connect() -> None:
