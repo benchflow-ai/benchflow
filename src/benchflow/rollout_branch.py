@@ -82,6 +82,7 @@ from benchflow.branch_policy import (  # noqa: F401  (re-exports)
     BranchChildExecutionNotSupported,
     BranchParentSkillModeConflict,
     capture_stage,
+    finalize_stage_snapshots,
     gate_layers,
     recorded_stage_checkpoint,
     resolve_layers,

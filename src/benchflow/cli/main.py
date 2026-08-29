@@ -609,6 +609,22 @@ def eval_run(
         int,
         typer.Option("--trials", help="Number of trials for --matrix"),
     ] = 1,
+    keep_snapshots: Annotated[
+        bool,
+        typer.Option(
+            "--keep-snapshots",
+            help=(
+                "Export each captured stage-snapshot image (docker save) to "
+                "<run-dir>/snapshots/<ref>.tar before cleanup destroys it; "
+                "stage_snapshots.json records the tar's path, sha256 and "
+                "image id. Without it the images die with the run and each "
+                "recorded ref is marked ephemeral. Load them back later with "
+                "`bench eval import-snapshots`. Only meaningful when the run "
+                "captures stage snapshots (a task-declared branch_execution: "
+                "forked-snapshot, or an SDK snapshot_stages request)"
+            ),
+        ),
+    ] = False,
 ) -> None:
     # The supported --sandbox values are rendered from the provider registry
     # into that option's own help text. This docstring used to hand-copy them
@@ -679,6 +695,7 @@ def eval_run(
         eval_results_task=eval_results_task,
         matrix=matrix,
         trials=trials,
+        keep_snapshots=keep_snapshots,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
@@ -1095,6 +1112,51 @@ eval_app.command("create", deprecated=True)(eval_run)
 # public surface (``__all__``). Keep it as an import alias of ``eval_run`` so any
 # `from benchflow.cli.main import eval_create` keeps resolving.
 eval_create = eval_run
+
+
+@eval_app.command("import-snapshots")
+def eval_import_snapshots(
+    run_dir: Annotated[
+        Path,
+        typer.Argument(
+            help=(
+                "A completed run directory holding stage_snapshots.json "
+                "(and, from a --keep-snapshots run, snapshots/<ref>.tar)"
+            ),
+        ),
+    ],
+    stage: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--stage",
+            help=(
+                "Import only this stage's snapshot; repeatable "
+                "(default: every exported stage)"
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Load a run's exported stage-snapshot images back into Docker.
+
+    The import half of ``bench eval run --keep-snapshots`` (rollout-branching
+    RFC §3.6): verifies each exported tar's recorded sha256, ``docker load``s
+    it, and confirms the recorded ``bf-snap-…`` ref resolves to the recorded
+    image id — after which the recorded stage boundary can be restored and
+    branched even though the run that captured it is gone. Entries recorded
+    ``ephemeral: true`` fail closed with the flag to re-run with.
+    """
+    from benchflow.snapshot_import import SnapshotImportError, import_stage_snapshots
+
+    try:
+        imported = import_stage_snapshots(run_dir, stages=stage)
+    except SnapshotImportError as exc:
+        print_error(str(exc))
+        raise typer.Exit(1) from None
+    for snap in imported:
+        console.print(
+            f"[green]✓[/green] {escape(snap.stage)}: {escape(snap.sandbox_ref)} "
+            f"({escape(snap.image_id)})"
+        )
 
 
 @eval_app.command("list")

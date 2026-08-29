@@ -786,24 +786,6 @@ async def _run_parent(
     return (None if reward is None else float(reward)), None
 
 
-def _snapshot_tar_name(ref: str) -> str:
-    """A filesystem-safe tar basename for a snapshot image ref."""
-    import re
-
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", ref).strip("-") or "snapshot"
-
-
-def _file_sha256(path: Path) -> str:
-    """Streaming ``sha256:``-prefixed digest of a file (tars can be large)."""
-    import hashlib
-
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return f"sha256:{digest.hexdigest()}"
-
-
 async def export_stage_snapshot(
     sandbox: Any, *, sandbox_ref: str, out_dir: Path
 ) -> dict[str, Any]:
@@ -811,27 +793,31 @@ async def export_stage_snapshot(
 
     The durable half of ``--keep-snapshots`` (RFC §3.6): the tar lands at
     ``<out_dir>/snapshots/<ref>.tar`` and the returned record carries its
-    path and content sha256 — enough for a reader to verify and
-    ``docker load`` the world later. Raises when the sandbox backend cannot
-    export (the caller records the failure; the report stays truthful).
+    path, content sha256 and image id — enough for a reader to verify,
+    ``docker load`` and identity-check the world later (``bench eval
+    import-snapshots``). Raises :class:`AblationError` when the sandbox
+    backend cannot export (the caller records the failure; the report stays
+    truthful). Thin ablation-facing wrapper over the shared retention
+    machinery in :mod:`benchflow.branch_policy` — the same code path ``bench
+    eval run --keep-snapshots`` exports through, so the two artifacts cannot
+    drift.
     """
-    export = getattr(sandbox, "export_image", None)
-    if export is None:
-        backend = "no sandbox attached" if sandbox is None else type(sandbox).__name__
-        raise AblationError(
-            f"--keep-snapshots: the sandbox backend ({backend}) does not "
-            "support exporting snapshot images (export_image); the docker "
-            "backend does"
-        )
-    snapshots_dir = Path(out_dir) / "snapshots"
-    snapshots_dir.mkdir(parents=True, exist_ok=True)
-    tar_path = snapshots_dir / f"{_snapshot_tar_name(sandbox_ref)}.tar"
-    await export(sandbox_ref, tar_path)
-    return {"path": str(tar_path), "sha256": _file_sha256(tar_path)}
+    from benchflow.branch_policy import SnapshotExportUnsupported
+    from benchflow.branch_policy import export_stage_snapshot as _export_engine
+
+    try:
+        return await _export_engine(sandbox, sandbox_ref=sandbox_ref, out_dir=out_dir)
+    except SnapshotExportUnsupported as exc:
+        raise AblationError(str(exc)) from exc
 
 
 async def retain_stage_snapshot(
-    report: AblationReport, *, sandbox: Any, keep_snapshots: bool, out_dir: Path
+    report: AblationReport,
+    *,
+    sandbox: Any,
+    keep_snapshots: bool,
+    out_dir: Path,
+    run_dir: Path | str | None = None,
 ) -> None:
     """Make the report truthful about the stage snapshot's lifetime (RFC §3.6).
 
@@ -840,42 +826,41 @@ async def retain_stage_snapshot(
     image, and a report serialized afterwards once published a handle
     ``docker image inspect`` could no longer resolve. With
     ``keep_snapshots`` the image is exported to a tar and the entry records
-    ``ephemeral: false`` plus the tar's path and sha256; without it (or when
-    the export fails — recorded as ``export_error``) the entry records
-    ``ephemeral: true, exported: null`` so a reader knows the ref no longer
-    resolves. Never raises: the arms' rewards must survive a failed export.
+    ``ephemeral: false`` plus the tar's path, sha256 and image id; without it
+    (or when the export fails — recorded as ``export_error``) the entry
+    records ``ephemeral: true, exported: null`` so a reader knows the ref no
+    longer resolves. Never raises: the arms' rewards must survive a failed
+    export.
+
+    ``run_dir`` (the parent rollout's run directory, when known) receives the
+    same annotation into its ``stage_snapshots.json`` entry — the on-disk
+    twin of ``report.stage_snapshot`` — so the parent artifact and the
+    ablation report tell one story; ``Rollout.cleanup()``'s own lifetime
+    finalization then preserves this entry instead of re-marking it.
     """
+    from benchflow.branch_policy import annotate_stage_snapshot_lifetime
+
     snap = report.stage_snapshot
     if snap is None:
         return
-    snap["ephemeral"] = True
-    snap["exported"] = None
-    sandbox_ref = snap.get("sandbox_ref")
-    if not keep_snapshots:
-        return
-    if sandbox_ref is None:
-        snap["export_error"] = (
-            "--keep-snapshots: the branched stage recorded no sandbox-layer "
-            "image to export"
-        )
+    await annotate_stage_snapshot_lifetime(
+        snap, sandbox=sandbox, keep=keep_snapshots, out_dir=Path(out_dir)
+    )
+    if run_dir is None:
         return
     try:
-        exported = await export_stage_snapshot(
-            sandbox, sandbox_ref=sandbox_ref, out_dir=out_dir
-        )
-    except Exception as exc:
-        from benchflow._utils.text import describe_exception
+        from benchflow.branch_lineage import annotate_stage_snapshots_file
 
-        snap["export_error"] = describe_exception(exc)
-        logger.error(
-            "--keep-snapshots could not export %s — the report records the "
-            "snapshot as ephemeral: %s",
-            sandbox_ref,
-            snap["export_error"],
+        annotate_stage_snapshots_file(
+            run_dir=Path(run_dir), annotations={report.stage: snap}
         )
-    else:
-        snap["ephemeral"] = False
-        snap["exported"] = exported
+    except Exception:
+        logger.warning(
+            "stage-snapshot lifetime annotation under %s failed — the report "
+            "is unaffected",
+            run_dir,
+            exc_info=True,
+        )
 
 
 async def run_ablation(request: AblationRequest) -> AblationReport:
@@ -1018,6 +1003,7 @@ async def run_ablation(request: AblationRequest) -> AblationReport:
                 sandbox=getattr(rollout, "env", None),
                 keep_snapshots=request.keep_snapshots,
                 out_dir=Path(request.out_dir),
+                run_dir=getattr(rollout, "_rollout_dir", None),
             )
         finally:
             await rollout.cleanup()

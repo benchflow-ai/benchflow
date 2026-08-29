@@ -25,8 +25,10 @@ execution path.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow._utils.config_override import validate_overlay
@@ -641,3 +643,201 @@ def recorded_stage_checkpoint(
         )
     node = getattr(rollout, "_stage_nodes", {}).get(stage, rollout._cursor)
     return snapshot, node, layers
+
+
+# Snapshot lifetime (RFC §3.6) — the retention policy for what a capture
+# committed. A `bf-snap-*` image dies with the rollout's `compose down --rmi
+# all`, so every recorded ref must either be exported before cleanup or be
+# marked ephemeral in the artifact: a ref `docker image inspect` can no longer
+# resolve must never read as restorable. `bench eval ablate --keep-snapshots`
+# and `bench eval run --keep-snapshots` share this machinery, so
+# `ablation.json` and `stage_snapshots.json` teach readers one schema.
+
+
+class SnapshotExportUnsupported(RuntimeError):
+    """The active sandbox backend cannot ``docker save`` a snapshot image."""
+
+
+def _snapshot_tar_name(ref: str) -> str:
+    """A filesystem-safe tar basename for a snapshot image ref."""
+    import re
+
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", ref).strip("-") or "snapshot"
+
+
+def _file_sha256(path: Path) -> str:
+    """Streaming ``sha256:``-prefixed digest of a file (tars can be large)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def image_id_from_export_tar(tar_path: Path) -> str | None:
+    """The image id a ``docker save`` tar will load as, or ``None``.
+
+    ``docker save`` records the image's config digest in the tar's
+    ``manifest.json`` (``Config`` is ``blobs/sha256/<hex>`` in current
+    format, ``<hex>.json`` in the legacy one); that digest *is* the id
+    ``docker image inspect`` reports after ``docker load``, so recording it
+    at export time lets the import path verify it restored exactly the image
+    the run recorded. Best-effort by design: an unreadable/foreign tar
+    returns ``None`` — the honest "unverifiable", never a guess — and the
+    import path then verifies only that the recorded ref resolves.
+    """
+    import re
+    import tarfile
+
+    try:
+        with tarfile.open(tar_path) as tar:
+            handle = tar.extractfile("manifest.json")
+            if handle is None:
+                return None
+            manifest = json.loads(handle.read())
+        config = manifest[0]["Config"]
+        match = re.search(r"([0-9a-f]{64})", str(config))
+        return None if match is None else f"sha256:{match.group(1)}"
+    except Exception:
+        logger.debug("no image id readable from %s", tar_path, exc_info=True)
+        return None
+
+
+async def export_stage_snapshot(
+    sandbox: Any, *, sandbox_ref: str, out_dir: Path
+) -> dict[str, Any]:
+    """``docker save`` a stage snapshot's sandbox image into ``out_dir``.
+
+    The durable half of ``--keep-snapshots`` (RFC §3.6): the tar lands at
+    ``<out_dir>/snapshots/<ref>.tar`` and the returned record carries its
+    path, content sha256 and image id — enough for a reader to verify,
+    ``docker load`` and identity-check the world later
+    (:func:`benchflow.snapshot_import.import_stage_snapshots`). Raises
+    :class:`SnapshotExportUnsupported` when the sandbox backend cannot export
+    (the caller records the failure; the artifact stays truthful).
+    """
+    export = getattr(sandbox, "export_image", None)
+    if export is None:
+        backend = "no sandbox attached" if sandbox is None else type(sandbox).__name__
+        raise SnapshotExportUnsupported(
+            f"--keep-snapshots: the sandbox backend ({backend}) does not "
+            "support exporting snapshot images (export_image); the docker "
+            "backend does"
+        )
+    snapshots_dir = Path(out_dir) / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    tar_path = snapshots_dir / f"{_snapshot_tar_name(sandbox_ref)}.tar"
+    await export(sandbox_ref, tar_path)
+    return {
+        "path": str(tar_path),
+        "sha256": _file_sha256(tar_path),
+        "image_id": image_id_from_export_tar(tar_path),
+    }
+
+
+async def annotate_stage_snapshot_lifetime(
+    entry: dict[str, Any], *, sandbox: Any, keep: bool, out_dir: Path
+) -> None:
+    """Stamp one serialized stage entry with its snapshot's lifetime.
+
+    Mutates ``entry`` (a ``stage_snapshots_payload`` /
+    ``AblationReport.stage_snapshot`` entry) in place. With ``keep`` the
+    sandbox-layer image is exported to ``<out_dir>/snapshots/<ref>.tar`` and
+    the entry records ``ephemeral: false`` plus the tar's path, sha256 and
+    image id under ``exported``; without it — or when the export fails,
+    recorded as ``export_error`` — the entry records ``ephemeral: true,
+    exported: null`` so a reader knows the ref no longer resolves. Never
+    raises: the run's rewards must survive a failed export.
+    """
+    entry["ephemeral"] = True
+    entry["exported"] = None
+    sandbox_ref = entry.get("sandbox_ref")
+    if not keep:
+        return
+    if sandbox_ref is None:
+        entry["export_error"] = (
+            "--keep-snapshots: this stage recorded no sandbox-layer image to export"
+        )
+        return
+    try:
+        exported = await export_stage_snapshot(
+            sandbox, sandbox_ref=sandbox_ref, out_dir=Path(out_dir)
+        )
+    except Exception as exc:
+        from benchflow._utils.text import describe_exception
+
+        entry["export_error"] = describe_exception(exc)
+        logger.error(
+            "--keep-snapshots could not export %s — the artifact records the "
+            "snapshot as ephemeral: %s",
+            sandbox_ref,
+            entry["export_error"],
+        )
+    else:
+        entry["ephemeral"] = False
+        entry["exported"] = exported
+
+
+async def finalize_stage_snapshots(rollout: Rollout) -> None:
+    """Make ``stage_snapshots.json`` truthful before cleanup destroys images.
+
+    Called by ``Rollout.cleanup()`` immediately before the sandbox is stopped
+    with ``delete=True`` — the ``compose down --rmi all`` that destroys every
+    committed ``bf-snap-*`` image. Each recorded stage entry is annotated
+    with its lifetime (:func:`annotate_stage_snapshot_lifetime`):
+    ``RolloutConfig.keep_snapshots`` exports the images into
+    ``<run_dir>/snapshots/`` first and records the tars; otherwise the refs
+    are marked ``ephemeral: true, exported: null``, so the artifact never
+    shows a bare ref that no longer resolves (PR #1046 second review). An
+    entry an earlier writer already annotated — ``bench eval ablate
+    --keep-snapshots`` exports the branched stage into its own out-dir before
+    this runs — is preserved, not clobbered. Never raises: retention must not
+    block teardown.
+    """
+    run_dir = getattr(rollout, "_rollout_dir", None)
+    try:
+        registry: dict[str, StageSnapshot] = getattr(rollout, "_stage_snapshots", {})
+        if not registry or run_dir is None:
+            return
+        from benchflow.branch_lineage import (
+            stage_snapshots_payload,
+            write_stage_snapshots_stages,
+        )
+
+        keep = bool(getattr(getattr(rollout, "_config", None), "keep_snapshots", False))
+        path = Path(run_dir) / "stage_snapshots.json"
+        existing: dict[str, Any] = {}
+        if path.exists():
+            try:
+                recorded = json.loads(path.read_text()).get("stages")
+                if isinstance(recorded, dict):
+                    existing = recorded
+            except (json.JSONDecodeError, OSError):
+                logger.warning(
+                    "unreadable stage_snapshots.json under %s — rewriting it "
+                    "from the recorded registry",
+                    run_dir,
+                    exc_info=True,
+                )
+        stages: dict[str, dict[str, Any]] = {}
+        for stage, entry in stage_snapshots_payload(registry).items():
+            recorded_entry = existing.get(stage)
+            if isinstance(recorded_entry, dict) and "ephemeral" in recorded_entry:
+                stages[stage] = recorded_entry
+                continue
+            await annotate_stage_snapshot_lifetime(
+                entry,
+                sandbox=getattr(rollout, "_env", None),
+                keep=keep,
+                out_dir=Path(run_dir),
+            )
+            stages[stage] = entry
+        write_stage_snapshots_stages(run_dir=Path(run_dir), stages=stages)
+    except Exception:
+        logger.warning(
+            "stage-snapshot lifetime finalization under %s failed — cleanup continues",
+            run_dir,
+            exc_info=True,
+        )

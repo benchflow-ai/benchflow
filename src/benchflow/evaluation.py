@@ -509,6 +509,10 @@ class EvaluationConfig:
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
     # shape) is also accepted at runtime — __post_init__ materializes it.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Durable stage-snapshot retention (`bench eval run --keep-snapshots`,
+    # RFC §3.6): threaded to RolloutConfig.keep_snapshots so each rollout
+    # exports its captured stage images before cleanup destroys them.
+    keep_snapshots: bool = False
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -640,6 +644,7 @@ def task_rollout_config(
         task_digest=task_digest_value,
         usage_tracking=cfg.usage_tracking,
         loop_strategy=cfg.loop_strategy,
+        keep_snapshots=cfg.keep_snapshots,
     )
     kwargs.update(overrides)
     return RolloutConfig.from_legacy(**kwargs)
@@ -989,6 +994,7 @@ class Evaluation:
             environment_manifest=env_manifest,
             config_override=raw.get("config_override"),
             loop_strategy=raw.get("loop_strategy"),
+            keep_snapshots=bool(raw.get("keep_snapshots", False)),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 

@@ -132,6 +132,7 @@ class EvalCreateRequest:
     eval_results_task: str | None = None
     matrix: Path | None = None
     trials: int = 1
+    keep_snapshots: bool = False
 
 
 @dataclass
@@ -216,6 +217,7 @@ class EvalPlan:
             environment_manifest=self.eval_env_manifest,
             config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
+            keep_snapshots=req.keep_snapshots,
         )
 
 

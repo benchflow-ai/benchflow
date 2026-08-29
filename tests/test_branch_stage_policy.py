@@ -811,3 +811,217 @@ async def test_stage_snapshots_json_is_deterministic(tmp_path: Path):
         "  }\n"
         "}\n"
     )
+
+
+# 8. Snapshot lifetime at cleanup (RFC §3.6): stage_snapshots.json must say
+#    whether each recorded ref outlived the run — the P1-B finding of PR
+#    #1046's second review was three valid-looking bf-snap-… refs whose
+#    images `docker image inspect` could no longer resolve.
+
+
+class _StoppableSandbox:
+    """Cleanup-facing sandbox fake: records stop/export ordering."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def stop(self, delete: bool) -> None:
+        self.calls.append(f"stop:{delete}")
+
+
+class _ExportableSandbox(_StoppableSandbox):
+    """A sandbox that can docker-save its committed snapshot images."""
+
+    def __init__(self, tar_bytes: bytes = b"fake-docker-save-tar") -> None:
+        super().__init__()
+        self.tar_bytes = tar_bytes
+
+    async def export_image(self, ref: str, target_path) -> None:
+        self.calls.append(f"export:{ref}")
+        Path(target_path).write_bytes(self.tar_bytes)
+
+
+def _docker_save_tar_bytes(config_entry: str) -> bytes:
+    """Minimal bytes in `docker save` layout: a manifest.json naming Config."""
+    import io
+    import tarfile
+
+    manifest = json.dumps(
+        [{"Config": config_entry, "RepoTags": ["bf-snap-x:latest"], "Layers": []}]
+    ).encode()
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest)
+        tar.addfile(info, io.BytesIO(manifest))
+    return buffer.getvalue()
+
+
+def _cleanup_ready_rollout(tmp_path: Path, *, env, keep_snapshots: bool = False):
+    """A minimally-populated Rollout whose ``cleanup()`` runs against fakes.
+
+    Mirrors the ``Rollout.__new__`` pattern of ``test_usage_required``: only
+    the attributes cleanup() touches are set, plus a recorded ``pre-verify``
+    stage snapshot and its capture-time ``stage_snapshots.json``.
+    """
+    from benchflow.branch_lineage import write_stage_snapshots
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(
+        task_path=tmp_path / "task",
+        scenes=[Scene.single(agent="dummy")],
+        keep_snapshots=keep_snapshots,
+    )
+    rollout._error = None
+    rollout._trajectory = []
+    rollout._acp_client = None
+    rollout._agent_launch = ""
+    rollout._env = env
+    rollout._environment = None
+    rollout._rollout_dir = tmp_path
+    rollout._stage_snapshots = {
+        "pre-verify": StageSnapshot(
+            environment_ref=None,
+            sandbox_ref=SandboxImage(provider="fake", ref="bf-snap-77"),
+            stage="pre-verify",
+        )
+    }
+    write_stage_snapshots(run_dir=tmp_path, snapshots=rollout._stage_snapshots)
+    return rollout
+
+
+def _recorded_stage(tmp_path: Path, stage: str = "pre-verify") -> dict:
+    return json.loads((tmp_path / "stage_snapshots.json").read_text())["stages"][stage]
+
+
+async def test_cleanup_marks_destroyed_stage_refs_ephemeral(tmp_path: Path):
+    """Guards "feat(rollout): stage snapshots record their lifetime;
+    --keep-snapshots on bench eval run with a tested import path" (the
+    truthful half): a plain run's cleanup destroys the committed images, so
+    the artifact entry must say ``ephemeral: true, exported: null`` instead
+    of leaving a bare ref that no longer resolves."""
+    sandbox = _StoppableSandbox()
+    rollout = _cleanup_ready_rollout(tmp_path, env=sandbox)
+    assert "ephemeral" not in _recorded_stage(tmp_path)  # capture-time entry
+
+    await rollout.cleanup()
+
+    entry = _recorded_stage(tmp_path)
+    assert entry["ephemeral"] is True
+    assert entry["exported"] is None
+    assert "export_error" not in entry
+    # The recorded refs themselves are untouched — the lifetime is an
+    # annotation, not a rewrite of what was captured.
+    assert entry["sandbox_ref"] == "bf-snap-77"
+    assert entry["layers"] == ["sandbox"]
+    assert sandbox.calls == ["stop:True"]
+
+
+async def test_cleanup_with_keep_snapshots_exports_before_the_images_die(
+    tmp_path: Path,
+):
+    """The durable half: ``RolloutConfig.keep_snapshots`` docker-saves each
+    captured stage image into <run_dir>/snapshots/ *before* the sandbox stop
+    destroys it, recording the tar's path, sha256 and image id with
+    ``ephemeral: false``."""
+    import hashlib
+
+    config_hex = "ab" * 32
+    tar_bytes = _docker_save_tar_bytes(f"blobs/sha256/{config_hex}")
+    sandbox = _ExportableSandbox(tar_bytes)
+    rollout = _cleanup_ready_rollout(tmp_path, env=sandbox, keep_snapshots=True)
+
+    await rollout.cleanup()
+
+    assert sandbox.calls == ["export:bf-snap-77", "stop:True"]
+    tar_path = tmp_path / "snapshots" / "bf-snap-77.tar"
+    assert tar_path.read_bytes() == tar_bytes
+    entry = _recorded_stage(tmp_path)
+    assert entry["ephemeral"] is False
+    assert entry["exported"] == {
+        "path": str(tar_path),
+        "sha256": "sha256:" + hashlib.sha256(tar_bytes).hexdigest(),
+        "image_id": f"sha256:{config_hex}",
+    }
+
+
+async def test_cleanup_records_a_failed_export_and_still_stops(tmp_path: Path):
+    """A backend that cannot export (no export_image) records export_error,
+    keeps the entry ephemeral, and never blocks teardown."""
+    sandbox = _StoppableSandbox()
+    rollout = _cleanup_ready_rollout(tmp_path, env=sandbox, keep_snapshots=True)
+
+    await rollout.cleanup()
+
+    entry = _recorded_stage(tmp_path)
+    assert entry["ephemeral"] is True
+    assert entry["exported"] is None
+    assert "--keep-snapshots" in entry["export_error"]
+    assert sandbox.calls == ["stop:True"]
+    assert not (tmp_path / "snapshots").exists()
+
+
+async def test_cleanup_preserves_an_entry_an_earlier_writer_annotated(
+    tmp_path: Path,
+):
+    """`bench eval ablate --keep-snapshots` exports the branched stage into
+    its own out-dir and annotates the parent's stage_snapshots.json before
+    cleanup runs; cleanup must preserve that record instead of re-marking the
+    exported snapshot ephemeral."""
+    from benchflow.branch_lineage import annotate_stage_snapshots_file
+
+    sandbox = _StoppableSandbox()
+    rollout = _cleanup_ready_rollout(tmp_path, env=sandbox)
+    exported_entry = {
+        **_recorded_stage(tmp_path),
+        "ephemeral": False,
+        "exported": {
+            "path": str(tmp_path / "out" / "snapshots" / "bf-snap-77.tar"),
+            "sha256": "sha256:" + "cd" * 32,
+            "image_id": "sha256:" + "ab" * 32,
+        },
+    }
+    annotate_stage_snapshots_file(
+        run_dir=tmp_path, annotations={"pre-verify": exported_entry}
+    )
+
+    await rollout.cleanup()
+
+    assert _recorded_stage(tmp_path) == exported_entry
+
+
+async def test_cleanup_leaves_an_externally_owned_sandbox_and_its_file_alone(
+    tmp_path: Path,
+):
+    """An externally-owned sandbox (use_prebuilt_env, #388) is not stopped,
+    so its snapshot images survive cleanup — marking them ephemeral would be
+    the opposite lie. The capture-time file stays exactly as written."""
+    sandbox = _StoppableSandbox()
+    rollout = _cleanup_ready_rollout(tmp_path, env=sandbox)
+    rollout._env_externally_owned = True
+    before = (tmp_path / "stage_snapshots.json").read_text()
+
+    await rollout.cleanup()
+
+    assert (tmp_path / "stage_snapshots.json").read_text() == before
+    assert sandbox.calls == []
+
+
+def test_image_id_is_read_from_the_save_tars_manifest(tmp_path: Path):
+    """Both `docker save` manifest Config spellings resolve to the image id
+    (`sha256:<config digest>` — what `docker image inspect` reports after
+    `docker load`); unreadable bytes are the honest null, never a guess."""
+    from benchflow.branch_policy import image_id_from_export_tar
+
+    hex_id = "12" * 32
+    current = tmp_path / "current.tar"
+    current.write_bytes(_docker_save_tar_bytes(f"blobs/sha256/{hex_id}"))
+    assert image_id_from_export_tar(current) == f"sha256:{hex_id}"
+
+    legacy = tmp_path / "legacy.tar"
+    legacy.write_bytes(_docker_save_tar_bytes(f"{hex_id}.json"))
+    assert image_id_from_export_tar(legacy) == f"sha256:{hex_id}"
+
+    garbage = tmp_path / "garbage.tar"
+    garbage.write_bytes(b"fake-docker-save-tar")
+    assert image_id_from_export_tar(garbage) is None

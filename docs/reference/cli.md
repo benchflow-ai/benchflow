@@ -286,6 +286,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--eval-results-task` | — | Benchmark `task_id`, as defined in the dataset's `eval.yaml` |
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
+| `--keep-snapshots` | `false` | Export each captured stage-snapshot image (`docker save`) to `<run-dir>/snapshots/<ref>.tar` before cleanup destroys it; `stage_snapshots.json` records the tar's path, sha256 and image id per stage with `ephemeral: false`. Without the flag the committed `bf-snap-*` images die with the run, and cleanup marks each recorded ref `ephemeral: true` with `exported: null` so it never reads as restorable. Only meaningful when the run captures stage snapshots (a task-declared `branch_execution: forked-snapshot`, or an SDK `snapshot_stages` request). Load the exported images back later with [`bench eval import-snapshots`](#bench-eval-import-snapshots) |
 
 `--publish-hf`/`--publish-bucket` also write a `README.md` run summary
 (agent, model, per-task reward and any error/verifier issue, deduplicated
@@ -393,7 +394,7 @@ bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
 | `--mark-research-end-on` | — | Workspace file whose first appearance marks `post-research` (e.g. `/app/PLAN.md`, the FrontierPhysics convention): the engine polls the sandbox (`test -e`, every ~2s, plus a final check when the agent quiesces) and snapshots the stage the first time the file exists — so the capture lands within one poll of the file appearing, and may include up to that much post-plan agent work. Required for `--at-stage post-research`; rejected for any other stage. If the file never appears, the ablation reports that the marker never appeared instead of forking |
 | `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`, `env:<registry-ref>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators (quoted string values included); a comma inside a `config:@<file>` path is not representable |
 | `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
-| `--keep-snapshots` | `false` | Export the branched stage's sandbox snapshot image (`docker save`) to `<out-dir>/snapshots/<ref>.tar` before cleanup destroys it; `ablation.json` records the tar's path and sha256 (`stage_snapshot.exported`). Without the flag the committed image dies with the run, and the report records the handle as `ephemeral: true` with `exported: null` so a reader knows the ref no longer resolves |
+| `--keep-snapshots` | `false` | Export the branched stage's sandbox snapshot image (`docker save`) to `<out-dir>/snapshots/<ref>.tar` before cleanup destroys it; `ablation.json` records the tar's path, sha256 and image id (`stage_snapshot.exported`), mirrored into the parent run's `stage_snapshots.json`. Without the flag the committed image dies with the run, and the report records the handle as `ephemeral: true` with `exported: null` so a reader knows the ref no longer resolves. Load the exported image back later with [`bench eval import-snapshots`](#bench-eval-import-snapshots) |
 | `--json` | `false` | Emit the report as JSON on stdout instead of the table |
 
 Arm kinds map onto the `BranchDelta` fields the branch engine executes:
@@ -472,7 +473,8 @@ given — flag value or `task.md` declaration, never a machine-local path — it
 bound), the **branched stage's snapshot refs** (`stage_snapshot`: the
 committed sandbox image ref, the environment snapshot id, and the captured
 layers — the handles to restore that world and re-branch it by hand later,
-also on disk in the parent run's `stage_snapshots.json`), and
+also on disk in the parent run's `stage_snapshots.json`, which carries
+the same `ephemeral`/`exported` lifetime annotation the report does), and
 per arm its content-addressed delta provenance, reward, status, wall clock,
 the swapped-in environment stamp when an `env:` delta changed it
 (`environment`, absent for arms that inherit the parent's),
@@ -494,6 +496,39 @@ Exit code is 1 when any arm errors or is skipped — a child failure propagates
 out of the branch, so the arms after it do not run and are never scored 0.0. A
 parent run that failed *after* the boundary is reported but does not fail the
 command: attributing a failed run is what the ablation is for.
+
+### bench eval import-snapshots
+
+Load a completed run's exported stage-snapshot images back into the local
+Docker image store, so a recorded stage boundary can be restored and branched
+after the run that captured it is gone.
+
+```bash
+# Everything the run exported
+bench eval import-snapshots jobs/2026-08-29__10-00-00/my-task__ab12cd34
+
+# One stage only
+bench eval import-snapshots jobs/.../my-task__ab12cd34 --stage pre-verify
+```
+
+Reads `<run-dir>/stage_snapshots.json`; the tars exist only when the run was
+made with `--keep-snapshots` (on `bench eval run` or `bench eval ablate`).
+Each import verifies the tar's recorded sha256, `docker load`s it, and
+verifies the loaded image id matches the recorded one — a snapshot is only
+reported restored when `docker image inspect` agrees. Entries recorded
+`ephemeral: true` fail closed, naming the flag to re-run with. A run folder
+copied from another machine works: when the recorded absolute tar path does
+not exist, the tar is found at `<run-dir>/snapshots/<basename>`.
+
+After a successful import the recorded `bf-snap-*` ref resolves again and the
+snapshotted world can be branched — restore it into a live sandbox
+(`DockerSandbox.restore`) or inspect it directly (`docker run <ref>`). SDK
+equivalent: `benchflow.snapshot_import.import_stage_snapshots(run_dir)`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--stage` | every exported stage | Import only this stage's snapshot; repeatable |
+
 
 ## bench review
 
