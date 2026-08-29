@@ -260,18 +260,20 @@ def _digest_command(exclude_glob: str | None = None) -> str:
     """One deterministic line summarizing /app: file contents + tree + modes.
 
     Content hashes plus a ``stat`` listing of names and permission bits, all
-    piped through a final ``sha256sum``. ``exclude_glob`` drops files by
+    digested by a final ``sha256sum``. ``exclude_glob`` drops files by
     basename (used for the sqlite DB, whose ``.backup``-restored copy is
     logically — not necessarily byte — identical; the DB is asserted through
     a SQL query instead).
+
+    Delegates to the src helper so the proofs measure with the same oracle
+    production records — the reviewer's P1-A repro (PR #1046 second review)
+    drove *this* helper's original ``find | sort | xargs`` pipeline, which
+    word-split legal filenames and emitted a successful wrong digest; the
+    null-safe fail-closed form now lives in exactly one place.
     """
-    skip = f" ! -name '{exclude_glob}'" if exclude_glob else ""
-    return (
-        "cd /app && { "
-        f"find . -type f{skip} | sort | xargs -r sha256sum; "
-        f"find .{skip} | sort | xargs -r stat -c '%n %a'; "
-        "} | sha256sum"
-    )
+    from benchflow.sandbox.workspace_digest import workspace_digest_command
+
+    return workspace_digest_command("/app", exclude_basename=exclude_glob)
 
 
 async def test_container_layer_zero_delta_round_trip(
