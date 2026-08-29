@@ -183,6 +183,7 @@ def capture_manifest_allows_training(
         and manifest.get("capture_fidelity") == "provider_wire"
         and manifest.get("request_complete") is True
         and manifest.get("response_complete") is True
+        and manifest.get("payload_redacted") is True
         and exchange_count > 0
         and expected_count == exchange_count
     )

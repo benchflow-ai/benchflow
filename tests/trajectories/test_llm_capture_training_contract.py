@@ -12,6 +12,7 @@ from benchflow.trajectories.llm_capture import LLMTrajectoryCapture
 from benchflow.trajectories.llm_capture_manifest import (
     CONTINUATION_SOURCE_AUDIT_ERROR,
     REPLAY_PROXY_INGRESS_AUDIT_ERROR,
+    capture_manifest_allows_training,
     capture_manifest_preserves_audit_completion,
 )
 from benchflow.trajectories.results import build_rollout_results_record
@@ -182,6 +183,32 @@ def test_manifest_count_mismatch_fails_closed_for_canonical_results(
 
     row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
 
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+def test_unredacted_provider_capture_fails_closed_for_training(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on explicitly unredacted payloads."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire", schema_version=2)
+    manifest = {
+        "status": "complete",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": False,
+    }
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(json.dumps(manifest))
+
+    assert not capture_manifest_allows_training(manifest, exchange_count=1)
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
     assert row["info"]["training_ready"] is False
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
     assert row["is_completed"] is False
