@@ -60,6 +60,16 @@ class CaptureAssembly:
     role_captures: list[LLMRoleCapture]
 
 
+def _untrusted_provider_custody(target: CaptureTarget | None) -> str:
+    if target is not None and target.model:
+        from benchflow.agents.providers import find_provider
+
+        provider = find_provider(target.model)
+        if provider is not None and provider[1].credential_files:
+            return "agent_accessible_provider_credentials"
+    return "agent_writable_sandbox"
+
+
 def load_provider_wire_records(
     path: Path,
     *,
@@ -146,7 +156,7 @@ def load_provider_wire_records(
             }
         )
         if not capture_trusted:
-            metadata["capture_custody"] = "agent_writable_sandbox"
+            metadata["capture_custody"] = _untrusted_provider_custody(target)
         if not attribution_complete:
             metadata["role_candidates"] = _role_candidates(targets)
         records.append(redact_trajectory_obj(record))
@@ -175,6 +185,14 @@ def assemble_capture(
     ):
         errors.append(
             "sandbox-local LiteLLM capture shared root custody with the agent"
+        )
+    if any(
+        _record_metadata(record).get("capture_custody")
+        == "agent_accessible_provider_credentials"
+        for record in provider_records
+    ):
+        errors.append(
+            "provider credentials were available to the agent outside LiteLLM"
         )
     attribution_incomplete = any(
         _record_metadata(record).get("role_attribution_complete") is False

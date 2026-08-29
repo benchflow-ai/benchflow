@@ -1400,6 +1400,8 @@ def _provider_secret_env_names() -> set[str]:
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON",
         "AWS_BEARER_TOKEN_BEDROCK",
         "AZURE_API_KEY",
     }
@@ -1407,6 +1409,15 @@ def _provider_secret_env_names() -> set[str]:
         if cfg.auth_env:
             names.add(cfg.auth_env)
     return names
+
+
+def _provider_credentials_have_proxy_only_custody(route: LiteLLMRoute) -> bool:
+    """Whether no provider credential file is deliberately exposed to the agent."""
+
+    from benchflow.agents.providers import PROVIDERS
+
+    provider = PROVIDERS.get(route.provider_name)
+    return provider is None or not provider.credential_files
 
 
 def _provider_model_id(entry: object) -> str | None:
@@ -1765,7 +1776,8 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
-    capture_trusted = not sandbox_local
+    credentials_isolated = _provider_credentials_have_proxy_only_custody(route)
+    capture_trusted = not sandbox_local and credentials_isolated
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
         f"{session_id}:{role_name or 'primary'}:{sandbox_user or 'root'}:"
@@ -1777,12 +1789,13 @@ async def ensure_litellm_runtime(
             is_running = await server.is_running()
             if is_running:
                 if sandbox_local:
-                    capture_trusted = await _provider_capture_has_verified_custody(
+                    artifact_custody = await _provider_capture_has_verified_custody(
                         sandbox_local=True,
                         sandbox_user=sandbox_user,
                         sandbox=sandbox,
                         runtime_dir=getattr(server, "runtime_dir", None),
                     )
+                    capture_trusted = credentials_isolated and artifact_custody
                 runtime.capture_trusted = bool(
                     getattr(runtime, "capture_trusted", False) and capture_trusted
                 )
@@ -1840,12 +1853,13 @@ async def ensure_litellm_runtime(
         )
 
     if sandbox_local:
-        capture_trusted = await _provider_capture_has_verified_custody(
+        artifact_custody = await _provider_capture_has_verified_custody(
             sandbox_local=True,
             sandbox_user=sandbox_user,
             sandbox=sandbox,
             runtime_dir=getattr(server, "runtime_dir", None),
         )
+        capture_trusted = credentials_isolated and artifact_custody
 
     from benchflow.providers.runtime import ProviderRuntime
 

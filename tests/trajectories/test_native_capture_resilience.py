@@ -397,6 +397,74 @@ async def test_root_sandbox_provider_capture_is_retained_but_audit_only(
 
 
 @pytest.mark.asyncio
+async def test_vertex_provider_capture_is_audit_only_when_agent_has_adc(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on bypassable Vertex ADC capture."""
+
+    model = "google-vertex/gemini-2.5-flash"
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model=model,
+        session_id="rollout-vertex",
+        started_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+    )
+    await capture.prepare_agent(
+        None,
+        agent="codex-acp",
+        model=model,
+        agent_env={"GOOGLE_APPLICATION_CREDENTIALS_JSON": "test-adc"},
+        credential_home="/home/agent",
+        sandbox_user="agent",
+    )
+    capture.bind_provider_capture_trust(
+        agent="codex-acp",
+        model=model,
+        credential_home="/home/agent",
+        trusted=False,
+    )
+    capture.trajectory_path.write_text(
+        json.dumps(
+            {
+                "request": {"body": {"model": model, "contents": []}},
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "candidates": [{"content": {"parts": [{"text": "done"}]}}],
+                        "usageMetadata": {
+                            "promptTokenCount": 1,
+                            "candidatesTokenCount": 1,
+                        },
+                    },
+                },
+                "metadata": {
+                    "benchflow_agent": "codex-acp",
+                    "benchflow_role": "primary",
+                    "benchflow_requested_model": model,
+                    "request_complete": True,
+                    "response_complete": True,
+                    "request_capture_source": (
+                        "litellm_pre_api_call_complete_input_dict"
+                    ),
+                },
+            }
+        )
+        + "\n"
+    )
+
+    await capture.finalize(None, acp_events=[], model_call_seen=True)
+
+    record = json.loads(capture.trajectory_path.read_text())
+    assert record["metadata"]["capture_fidelity"] == "agent_session"
+    assert record["metadata"]["capture_custody"] == (
+        "agent_accessible_provider_credentials"
+    )
+    assert capture.manifest.status is CaptureStatus.PARTIAL
+    assert any("outside LiteLLM" in error for error in capture.manifest.errors)
+
+
+@pytest.mark.asyncio
 async def test_malformed_provider_capture_preserves_native_evidence_and_cleanup(
     tmp_path: Path,
 ) -> None:
