@@ -13,7 +13,6 @@ import pytest
 from benchflow.trajectories.llm_capture import (
     LLMTrajectoryCapture,
     _CaptureTarget,
-    _download_optional_dir,
     _NativeCaptureBundle,
 )
 from benchflow.trajectories.llm_capture_manifest import (
@@ -916,29 +915,6 @@ async def test_claude_capture_setup_failure_degrades_without_aborting(
     assert prepared["OTEL_LOG_RAW_API_BODIES"].startswith("file:")
     assert "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" not in prepared
     assert any("/opt/benchflow/node/bin/node" in command for command in commands)
-
-
-@pytest.mark.asyncio
-async def test_optional_session_download_creates_docker_copy_parent(
-    tmp_path: Path,
-) -> None:
-    """Guards PR #1057's Docker native-session download path."""
-
-    class DockerLikeEnv:
-        async def exec(self, *_args, **_kwargs):
-            return SimpleNamespace(return_code=0, stdout="", stderr="")
-
-        async def download_dir(self, _remote, local):
-            assert Path(local).parent.is_dir()
-            Path(local).mkdir()
-
-    destination = tmp_path / "missing-parent" / "sessions"
-    downloaded = await _download_optional_dir(
-        DockerLikeEnv(), "/home/agent/.claude/projects", destination
-    )
-
-    assert downloaded is True
-    assert destination.is_dir()
 
 
 def test_capture_failure_repairs_invalid_jsonl_and_redacts_manifest_error(

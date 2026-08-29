@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -10,7 +11,7 @@ import shlex
 import tempfile
 from contextlib import suppress
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow.agents.env import uses_native_subscription_auth
@@ -147,9 +148,13 @@ class LLMTrajectoryCapture:
             native=native,
             role=role_name or "primary",
         )
-        if role_name is not None:
+        primary_key = ("primary", agent, model, credential_home)
+        if role_name is None:
+            self._targets[primary_key] = target
+        else:
+            self._targets.pop(primary_key, None)
             self._targets[(role_name, agent, model, credential_home)] = target
-            self._refresh_manifest_auth_mode()
+        self._refresh_manifest_auth_mode()
         if not native:
             write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
             return prepared
@@ -437,8 +442,11 @@ exit 1
                 if (
                     home_claude_targets
                     and not raw_claude_captured
-                    and await _download_optional_dir(
-                        env, f"{credential_home}/.claude/projects", claude_local
+                    and await _download_recent_session_files(
+                        env,
+                        f"{credential_home}/.claude/projects",
+                        claude_local,
+                        started_at=self.started_at,
                     )
                 ):
                     target = home_claude_targets[0]
@@ -455,8 +463,11 @@ exit 1
                                 result=result,
                             )
                         )
-                if home_codex_targets and await _download_optional_dir(
-                    env, f"{credential_home}/.codex/sessions", codex_local
+                if home_codex_targets and await _download_recent_session_files(
+                    env,
+                    f"{credential_home}/.codex/sessions",
+                    codex_local,
+                    started_at=self.started_at,
                 ):
                     target = home_codex_targets[0]
                     result = parse_codex_sessions(
@@ -516,16 +527,42 @@ exit 1
         write_llm_trajectory_manifest(self.rollout_dir, self.manifest)
 
 
-async def _download_optional_dir(env: Any, remote: str, local: Path) -> bool:
-    probe = await env.exec(
-        f"test -d {shlex.quote(remote)}",
+async def _download_recent_session_files(
+    env: Any,
+    remote: str,
+    local: Path,
+    *,
+    started_at: datetime,
+) -> bool:
+    boundary = started_at.timestamp() - 1.0
+    remote_root = shlex.quote(remote)
+    result = await env.exec(
+        f"if test -d {remote_root}; then "
+        f"find {remote_root} -type f -name '*.jsonl' "
+        f"-newermt {shlex.quote(f'@{boundary}')} -printf '%P\\n' | head -n 1001; "
+        "fi",
         user="root",
-        timeout_sec=5,
+        timeout_sec=10,
     )
-    if probe.return_code != 0:
+    if result.return_code != 0:
+        detail = (result.stderr or result.stdout or "session discovery failed")[:300]
+        raise RuntimeError(f"Native session discovery failed: {detail}")
+    relative_paths = [line for line in result.stdout.splitlines() if line]
+    if len(relative_paths) > 1000:
+        raise RuntimeError("Native session discovery exceeded the 1000-file limit")
+    if not relative_paths:
         return False
-    local.parent.mkdir(parents=True, exist_ok=True)
-    await env.download_dir(remote, local)
+    downloads: list[tuple[str, Path]] = []
+    for value in relative_paths:
+        relative = PurePosixPath(value)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError("Native session discovery returned an unsafe path")
+        destination = local.joinpath(*relative.parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        downloads.append((f"{remote}/{relative.as_posix()}", destination))
+    await asyncio.gather(
+        *(env.download_file(source, destination) for source, destination in downloads)
+    )
     return True
 
 

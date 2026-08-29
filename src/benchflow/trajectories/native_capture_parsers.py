@@ -176,9 +176,41 @@ def parse_claude_sessions(
 ) -> NativeParseResult | None:
     """Reconstruct model turns from Claude Code's native session transcript."""
 
-    records = _read_jsonl_tree(sessions_dir, started_at=started_at)
-    if not records:
+    record_groups = _read_jsonl_files(sessions_dir, started_at=started_at)
+    exchanges = [
+        exchange
+        for records in record_groups
+        for exchange in _parse_claude_session_records(records, started_at=started_at)
+    ]
+    if not exchanges:
         return None
+    exchanges.sort(key=lambda exchange: exchange.request.timestamp)
+    return NativeParseResult(
+        trajectory=Trajectory(
+            session_id=session_id,
+            agent_name=agent,
+            started_at=started_at,
+            finished_at=max(exchange.response.timestamp for exchange in exchanges),
+            exchanges=exchanges,
+        ),
+        source=CaptureSource.CLAUDE_NATIVE_SESSION,
+        fidelity=CaptureFidelity.AGENT_SESSION,
+        request_complete=False,
+        response_complete=False,
+        missing_fields=[
+            "system_prompt",
+            "tool_definitions",
+            "provider_response_envelope",
+            "headers",
+        ],
+    )
+
+
+def _parse_claude_session_records(
+    records: list[dict[str, Any]], *, started_at: datetime
+) -> list[LLMExchange]:
+    """Parse one Claude session file without leaking history across sessions."""
+
     messages: list[dict[str, Any]] = []
     exchanges: list[LLMExchange] = []
     assistant_group: list[dict[str, Any]] = []
@@ -244,27 +276,7 @@ def parse_claude_sessions(
         group_key = key
         assistant_group.append(record)
     flush_group()
-    if not exchanges:
-        return None
-    return NativeParseResult(
-        trajectory=Trajectory(
-            session_id=session_id,
-            agent_name=agent,
-            started_at=started_at,
-            finished_at=max(exchange.response.timestamp for exchange in exchanges),
-            exchanges=exchanges,
-        ),
-        source=CaptureSource.CLAUDE_NATIVE_SESSION,
-        fidelity=CaptureFidelity.AGENT_SESSION,
-        request_complete=False,
-        response_complete=False,
-        missing_fields=[
-            "system_prompt",
-            "tool_definitions",
-            "provider_response_envelope",
-            "headers",
-        ],
-    )
+    return exchanges
 
 
 def parse_codex_sessions(
@@ -278,9 +290,50 @@ def parse_codex_sessions(
 ) -> NativeParseResult | None:
     """Reconstruct Responses-style calls from Codex native session records."""
 
-    records = _read_jsonl_tree(sessions_dir, started_at=started_at)
-    if not records:
+    record_groups = _read_jsonl_files(sessions_dir, started_at=started_at)
+    exchanges = [
+        exchange
+        for records in record_groups
+        for exchange in _parse_codex_session_records(
+            records,
+            started_at=started_at,
+            configured_model=configured_model,
+            auth_mode=auth_mode,
+        )
+    ]
+    if not exchanges:
         return None
+    exchanges.sort(key=lambda exchange: exchange.request.timestamp)
+    return NativeParseResult(
+        trajectory=Trajectory(
+            session_id=session_id,
+            agent_name=agent,
+            started_at=started_at,
+            finished_at=max(exchange.response.timestamp for exchange in exchanges),
+            exchanges=exchanges,
+        ),
+        source=CaptureSource.CODEX_NATIVE_SESSION,
+        fidelity=CaptureFidelity.AGENT_SESSION,
+        request_complete=False,
+        response_complete=False,
+        missing_fields=[
+            "instructions",
+            "tool_definitions",
+            "provider_response_envelope",
+            "headers",
+        ],
+    )
+
+
+def _parse_codex_session_records(
+    records: list[dict[str, Any]],
+    *,
+    started_at: datetime,
+    configured_model: str | None,
+    auth_mode: str,
+) -> list[LLMExchange]:
+    """Parse one Codex session file without leaking history across sessions."""
+
     history: list[dict[str, Any]] = []
     output: list[dict[str, Any]] = []
     exchanges: list[LLMExchange] = []
@@ -358,27 +411,7 @@ def parse_codex_sessions(
                 output_started_at = timestamp
             output.append(payload)
     flush_output(last_timestamp)
-    if not exchanges:
-        return None
-    return NativeParseResult(
-        trajectory=Trajectory(
-            session_id=session_id,
-            agent_name=agent,
-            started_at=started_at,
-            finished_at=max(exchange.response.timestamp for exchange in exchanges),
-            exchanges=exchanges,
-        ),
-        source=CaptureSource.CODEX_NATIVE_SESSION,
-        fidelity=CaptureFidelity.AGENT_SESSION,
-        request_complete=False,
-        response_complete=False,
-        missing_fields=[
-            "instructions",
-            "tool_definitions",
-            "provider_response_envelope",
-            "headers",
-        ],
-    )
+    return exchanges
 
 
 def project_acp_trajectory(
@@ -488,16 +521,17 @@ def _exchange(
     )
 
 
-def _read_jsonl_tree(
+def _read_jsonl_files(
     root: Path, *, started_at: datetime | None = None
-) -> list[dict[str, Any]]:
+) -> list[list[dict[str, Any]]]:
     if not root.is_dir():
         return []
     boundary = started_at.timestamp() - 1.0 if started_at is not None else None
-    records: list[dict[str, Any]] = []
+    record_groups: list[list[dict[str, Any]]] = []
     for path in sorted(root.rglob("*.jsonl"), key=lambda item: item.stat().st_mtime):
         if boundary is not None and path.stat().st_mtime < boundary:
             continue
+        records: list[dict[str, Any]] = []
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 record = json.loads(line)
@@ -512,7 +546,9 @@ def _read_jsonl_tree(
                 ):
                     continue
                 records.append(record)
-    return records
+        if records:
+            record_groups.append(records)
+    return record_groups
 
 
 def _load_body_files(root: Path) -> dict[Path, dict[str, Any]]:
