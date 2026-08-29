@@ -13,6 +13,7 @@ from benchflow.trajectories.types import (
     LLMRequest,
     LLMResponse,
     Trajectory,
+    canonical_redaction_source,
 )
 from benchflow.usage_tracking import usage_unavailable
 
@@ -81,7 +82,8 @@ _CONTEXT_LIMIT_HINT_RE = re.compile(
 
 def callback_module_source() -> str:
     """Return the Python module written next to LiteLLM config.yaml."""
-    return r"""
+    return (
+        r"""
 from __future__ import annotations
 
 import json
@@ -95,6 +97,9 @@ from typing import Any
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
+"""
+        + canonical_redaction_source()
+        + r"""
 
 
 _skill_catalog_gate_passed = False
@@ -181,80 +186,6 @@ def _jsonable(value: Any) -> Any:
         except Exception:
             pass
     return str(value)
-
-
-_SENSITIVE_FIELD_SUFFIXES = (
-    "api_key",
-    "access_key",
-    "account_key",
-    "secret_key",
-    "private_key",
-    "access_token",
-    "refresh_token",
-    "session_token",
-    "client_secret",
-    "token",
-    "secret",
-    "credential",
-    "password",
-    "passwd",
-    "credentials",
-)
-_SENSITIVE_FIELD_NAMES = {
-    "authorization",
-    "proxy_authorization",
-    "x_api_key",
-    "x_goog_api_key",
-    "api_key",
-    "apikey",
-}
-_URL_CREDENTIAL_RE = re.compile(
-    r"([?&](?:"
-    r"api_?key|access_key|access_token|refresh_token|session_token|"
-    r"session_id|sessionid|client_secret|aws_secret_access_key|account_key|"
-    r"secret|password_hash|password|passwd|"
-    r"signature|x-amz-signature|x-amz-credential|x-amz-security-token|sas"
-    r")=)[^&\s\"'*]+",
-    re.IGNORECASE,
-)
-_AZURE_SAS_RE = re.compile(r"([?&]sig=)[^&\s\"'*]{16,}", re.IGNORECASE)
-_AUTHORIZATION_RE = re.compile(
-    r"\b(Bearer|Token|Basic)\s+(?!\*\*\*REDACTED\*\*\*)[^\s,;\"']+",
-    re.IGNORECASE,
-)
-
-
-def _is_sensitive_field(key: Any) -> bool:
-    if not isinstance(key, str):
-        return False
-    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
-    return normalized in _SENSITIVE_FIELD_NAMES or normalized.endswith(
-        _SENSITIVE_FIELD_SUFFIXES
-    )
-
-
-def _redact_storage_text(value: str) -> str:
-    value = _URL_CREDENTIAL_RE.sub(r"\1***REDACTED***", value)
-    value = _AZURE_SAS_RE.sub(r"\1***REDACTED***", value)
-    return _AUTHORIZATION_RE.sub(r"\1 ***REDACTED***", value)
-
-
-def _redact_for_storage(value: Any) -> Any:
-    # Redact callback payloads before the durable append-only write.
-    if isinstance(value, dict):
-        return {
-            str(key): (
-                "***REDACTED***"
-                if _is_sensitive_field(key)
-                else _redact_for_storage(item)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_redact_for_storage(item) for item in value]
-    if isinstance(value, str):
-        return _redact_storage_text(value)
-    return value
 
 
 def _iso(value: Any) -> str:
@@ -361,7 +292,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         if not path:
             return
         payload["logged_at"] = datetime.now(timezone.utc).isoformat()
-        durable_payload = _redact_for_storage(_jsonable(payload))
+        durable_payload = redact_trajectory_obj(_jsonable(payload))
         with self._capture_lock:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as handle:
@@ -401,7 +332,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         if call_id is None or not isinstance(jsonable_body, dict):
             return
         with self._capture_lock:
-            self._provider_requests[call_id] = _redact_for_storage(jsonable_body)
+            self._provider_requests[call_id] = redact_trajectory_obj(jsonable_body)
 
     def _base_record(self, kwargs: dict[str, Any], start_time: Any, end_time: Any) -> dict[str, Any]:
         litellm_params = kwargs.get("litellm_params") or {}
@@ -618,6 +549,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
 
 proxy_handler_instance = BenchFlowLiteLLMLogger()
 """
+    )
 
 
 def _parse_time(value: Any) -> datetime:

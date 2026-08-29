@@ -37,11 +37,14 @@ request/response pairs from the original run. `bench eval continue`:
    with a stitched `llm_trajectory.jsonl` (recorded prefix + live suffix) and
    `continued_from` provenance — a drop-in replacement for the timed-out entry.
 
-The stitched manifest preserves capture custody. A live provider proxy across a
-trusted host/non-root boundary can contribute `provider_wire` rows. If replay
-and the untrusted agent share root custody in the sandbox, the live suffix is
-still written for audit but is labeled `agent_session`; the stitched run cannot
-be exported as training-ready provider evidence.
+The stitched manifest preserves both capture boundary and custody. The live
+suffix is observed at replay-proxy ingress, before the forwarder and LiteLLM can
+replace, filter, or transform the provider request. It is therefore always
+labeled `replay_proxy` / `agent_session` with an incomplete provider request,
+even when the proxy is host-owned. If replay and the untrusted agent also share
+root custody in the sandbox, the manifest records that additional limitation.
+The suffix remains useful for audit and continuity, but any continued run with
+a live suffix is excluded from training-ready provider evidence.
 
 Because the agent rebuilds its own state by re-doing its own steps, no
 reverse-engineering of OpenHands internals is needed, and the result is a single

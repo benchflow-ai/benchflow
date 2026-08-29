@@ -224,13 +224,16 @@ the source of truth for interpreting the JSONL:
 | Claude Code subscription/OAuth | Claude Code raw API-body files correlated by local OTLP logs | `agent_session` |
 | Claude Code subscription/OAuth fallback | Claude Code native session JSONL | `agent_session` |
 | Codex subscription/OAuth | Codex native session JSONL | `agent_session` |
+| Continued-run live suffix | Replay-proxy ingress before provider transformation | `agent_session` |
 
 The manifest status is `complete`, `partial`, `no_model_call`, or
 `capture_failed`. Mixed-role rollouts merge API-key and native-subscription
 exchanges into the same JSONL; `role_captures` records each prepared role's
 scene role, agent, model, auth mode, source, fidelity, completeness, and exchange
 count. Continued runs retain the source role entries as the `recorded` leg and
-append a separate `live` leg, so a model or auth switch remains auditable.
+append a separate `live` leg, so a model or auth switch remains auditable. The
+live continuation request is captured before provider transformation and is
+therefore audit-only even when its replay proxy is host-owned.
 Missing or ambiguously attributed roles make the rollout-level capture
 `partial`. Reconstructed `agent_session` rows remain useful for audit and viewer
 workflows, but trainer exports fail closed unless the manifest says the capture

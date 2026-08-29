@@ -236,7 +236,15 @@ def test_callback_redacts_secrets_before_durable_journal(
     monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
     api_key = "provider-key-without-a-recognizable-prefix"
     access_token = "oauth-token-without-a-recognizable-prefix"
+    anthropic_key = "sk-ant-api03-" + "A" * 40
+    google_key = "AIzaSy" + "B" * 33
     sas = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "PEMsecretMaterial1234567890\n"
+        "-----END PRIVATE KEY-----"
+    )
+    userinfo_password = "userinfo-password-without-prefix"
 
     logger._write(
         {
@@ -247,6 +255,11 @@ def test_callback_redacts_secrets_before_durable_journal(
                     "nested": {"access_token": access_token},
                     "download_url": f"https://blob.invalid/x?sig={sas}&sp=r",
                     "note": f"Authorization: Bearer {access_token}",
+                    "provider_error": (
+                        f"anthropic={anthropic_key} google={google_key} "
+                        f"api_key={api_key} private={pem} "
+                        f"url=https://user:{userinfo_password}@db.invalid/path"
+                    ),
                 }
             },
         }
@@ -255,12 +268,42 @@ def test_callback_redacts_secrets_before_durable_journal(
     raw = log_path.read_text()
     assert api_key not in raw
     assert access_token not in raw
+    assert anthropic_key not in raw
+    assert google_key not in raw
     assert sas not in raw
+    assert "PEMsecretMaterial1234567890" not in raw
+    assert userinfo_password not in raw
     row = json.loads(raw)
     body = row["request"]["body"]
     assert body["api_key"] == "***REDACTED***"
     assert body["nested"]["access_token"] == "***REDACTED***"
     assert "sig=***REDACTED***" in body["download_url"]
+
+
+def test_callback_uses_exact_canonical_object_redactor() -> None:
+    """Guards PR #1057 against callback redaction drifting from trajectories."""
+
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    callback_redactor = _callback_namespace()["redact_trajectory_obj"]
+    payload = {
+        "api_key": "prefixlessSecretValue1234567890",
+        "message": (
+            "sk-ant-api03-" + "C" * 40 + " "
+            "https://admin:password@db.invalid/x?access_token=token1234567890"
+        ),
+        "nested": [
+            {
+                "private_key": (
+                    "-----BEGIN PRIVATE KEY-----\n"
+                    "CANONICALpemMaterial12345\n"
+                    "-----END PRIVATE KEY-----"
+                )
+            }
+        ],
+    }
+
+    assert callback_redactor(payload) == redact_trajectory_obj(payload)
 
 
 @pytest.mark.asyncio

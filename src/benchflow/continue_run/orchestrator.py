@@ -599,7 +599,7 @@ async def _continue_run_with_sandbox_proxy(
         rollout_name=rollout_name,
     )
     rollout = await Rollout.create(config)
-    live_capture_trusted = False
+    live_capture_host_owned = False
     replay_proxy: SandboxReplayProxy | None = None
     provider_runtime: Any | None = None
     result: Any | None = None
@@ -616,7 +616,7 @@ async def _continue_run_with_sandbox_proxy(
     ) -> None:
         nonlocal \
             artifacts_written, \
-            live_capture_trusted, \
+            live_capture_host_owned, \
             live_exchanges, \
             result, \
             rollout_dir
@@ -626,7 +626,7 @@ async def _continue_run_with_sandbox_proxy(
         if result is None:
             return
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
-        live_capture_trusted = bool(
+        live_capture_host_owned = bool(
             provider_runtime is not None
             and getattr(provider_runtime, "capture_trusted", False)
         )
@@ -636,7 +636,7 @@ async def _continue_run_with_sandbox_proxy(
             run.path / "trajectory" / "llm_trajectory.jsonl",
             live_exchanges,
             live_model=live_model,
-            live_capture_trusted=live_capture_trusted,
+            live_capture_host_owned=live_capture_host_owned,
         )
         refresh_stitched_trajectory_manifest(
             rollout_dir,
@@ -652,7 +652,7 @@ async def _continue_run_with_sandbox_proxy(
                 *(replay_proxy.live_errors if replay_proxy is not None else []),
                 *(teardown_errors or []),
             ],
-            live_capture_trusted=live_capture_trusted,
+            live_capture_host_owned=live_capture_host_owned,
         )
         update_continued_metadata(
             rollout_dir,

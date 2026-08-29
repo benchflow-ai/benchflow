@@ -40,6 +40,7 @@ class CaptureFidelity(StrEnum):
 
 class CaptureSource(StrEnum):
     LITELLM_PROXY = "litellm_proxy"
+    REPLAY_PROXY = "replay_proxy"
     CLAUDE_OTEL_RAW_BODY = "claude_otel_raw_body"
     CLAUDE_NATIVE_SESSION = "claude_native_session"
     CODEX_NATIVE_SESSION = "codex_native_session"

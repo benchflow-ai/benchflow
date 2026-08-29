@@ -176,8 +176,8 @@ def test_write_stitched_trajectory_creates_file(tmp_path):
     assert len(out.read_text().strip().splitlines()) == 2
 
 
-def test_refresh_stitched_manifest_replaces_pre_stitch_finalization(tmp_path):
-    """Guards PR #1057 against stale continuation capture manifests."""
+def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_path):
+    """Guards PR #1057 against promoting continuation ingress to provider wire."""
 
     model = "openai/gpt-5.5"
     source = write_run_folder(
@@ -227,14 +227,21 @@ def test_refresh_stitched_manifest_replaces_pre_stitch_finalization(tmp_path):
         live_errors=[],
     )
 
-    assert manifest.status is CaptureStatus.COMPLETE
-    assert manifest.capture_fidelity is CaptureFidelity.PROVIDER_WIRE
+    assert manifest.status is CaptureStatus.PARTIAL
+    assert manifest.capture_source is CaptureSource.MIXED
+    assert manifest.capture_fidelity is CaptureFidelity.MIXED
     assert manifest.exchange_count == 2
-    assert capture_manifest_allows_training(
+    assert manifest.request_complete is False
+    assert "live_provider_request" in manifest.missing_fields
+    assert not capture_manifest_allows_training(
         manifest.model_dump(mode="json"), exchange_count=2
     )
     live_row = json.loads(out.read_text().splitlines()[-1])
-    assert live_row["metadata"]["capture_fidelity"] == "provider_wire"
+    assert live_row["metadata"]["capture_source"] == "replay_proxy"
+    assert live_row["metadata"]["capture_fidelity"] == "agent_session"
+    assert live_row["metadata"]["request_complete"] is False
+    assert live_row["metadata"]["response_complete"] is True
+    assert live_row["metadata"]["request_capture_source"] == "replay_proxy_ingress"
     assert live_row["metadata"]["model"] == model
     assert live_row["metadata"]["schema_version"] == 2
 
@@ -291,7 +298,7 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
 
     assert manifest.status is CaptureStatus.PARTIAL
     assert manifest.capture_source is CaptureSource.MIXED
-    assert manifest.capture_fidelity is CaptureFidelity.MIXED
+    assert manifest.capture_fidelity is CaptureFidelity.AGENT_SESSION
     assert manifest.auth_mode is AuthMode.MIXED
     assert [capture.leg for capture in manifest.role_captures] == [
         "recorded",
@@ -305,7 +312,10 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
     assert live.agent == "openhands"
     assert live.model == "openai/gpt-5.5"
     assert live.auth_mode is AuthMode.API_KEY
-    assert live.capture_fidelity is CaptureFidelity.PROVIDER_WIRE
+    assert live.capture_source is CaptureSource.REPLAY_PROXY
+    assert live.capture_fidelity is CaptureFidelity.AGENT_SESSION
+    assert live.request_complete is False
+    assert live.response_complete is True
     assert not capture_manifest_allows_training(
         manifest.model_dump(mode="json"), exchange_count=2
     )
@@ -349,7 +359,7 @@ def test_root_sandbox_live_suffix_is_retained_but_audit_only(tmp_path):
         source / "trajectory" / "llm_trajectory.jsonl",
         [exchange(completion(content="live"))],
         live_model=model,
-        live_capture_trusted=False,
+        live_capture_host_owned=False,
     )
     manifest = refresh_stitched_trajectory_manifest(
         rollout,
@@ -360,7 +370,7 @@ def test_root_sandbox_live_suffix_is_retained_but_audit_only(tmp_path):
         n_live=1,
         live_attempt_count=1,
         live_errors=[],
-        live_capture_trusted=False,
+        live_capture_host_owned=False,
     )
 
     live_row = json.loads(out.read_text().splitlines()[-1])

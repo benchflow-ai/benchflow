@@ -557,6 +557,39 @@ def _redact_field(key: Any, value: Any) -> Any:
     return redact_trajectory_text(value)
 
 
+def canonical_redaction_source() -> str:
+    """Render the canonical JSON-object redactor as a standalone source fragment.
+
+    LiteLLM callbacks also run in isolated sandbox virtualenvs where BenchFlow is
+    not installed.  Generate their stdlib-only redactor from these exact pattern
+    objects and function definitions instead of maintaining a second, inevitably
+    narrower implementation beside the callback.
+    """
+    import inspect
+
+    pattern_specs = [
+        (pattern.pattern, pattern.flags, replacement, category)
+        for pattern, replacement, category in _REDACTION_PATTERNS
+    ]
+    definitions = (
+        redact_trajectory_text,
+        redact_trajectory_text_with_count,
+        redact_trajectory_text_with_categories,
+        redact_trajectory_obj,
+        _redact_field,
+    )
+    return "\n".join(
+        [
+            f"_REDACTION_PATTERN_SPECS = {pattern_specs!r}",
+            "_REDACTION_PATTERNS = [",
+            "    (re.compile(pattern, flags), replacement, category)",
+            "    for pattern, flags, replacement, category in _REDACTION_PATTERN_SPECS",
+            "]",
+            *(inspect.getsource(definition) for definition in definitions),
+        ]
+    )
+
+
 def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
     """Serialize an ACP trajectory list to redacted JSONL.
 

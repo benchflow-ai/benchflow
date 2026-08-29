@@ -151,9 +151,10 @@ and what it is:
 
 `llm_trajectory.jsonl` is an audit artifact for every run, not an unconditional
 training claim. Only a `complete` manifest with `provider_wire` fidelity and
-positive provider token usage is training-ready. Native OAuth/session capture,
-and a sandbox-local proxy that shares root custody with the agent, stay
-available for audit but are marked lower-fidelity and excluded from training.
+positive provider token usage is training-ready. Native OAuth/session capture
+and continuation replay-proxy ingress stay available for audit but are marked
+lower-fidelity and excluded from training. A sandbox-local proxy that shares
+root custody with the agent records that additional custody limitation.
 
 Also note the job-level summary.json plus aggregated results.jsonl,
 verifiers.jsonl, and adp.jsonl in the job directory. The trainer/ files and the job-level

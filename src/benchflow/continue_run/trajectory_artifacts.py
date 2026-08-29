@@ -64,9 +64,15 @@ def write_stitched_trajectory(
     live_exchanges: list[LLMExchange],
     *,
     live_model: str | None = None,
-    live_capture_trusted: bool = True,
+    live_capture_host_owned: bool = True,
 ) -> Path:
-    """Write the stitched continuous trajectory into the new rollout folder."""
+    """Write a stitched trajectory without overstating the live request boundary.
+
+    Continuation captures the agent-facing request at replay-proxy ingress. The
+    live forwarder and LiteLLM can still replace, filter, or transform it before
+    provider dispatch, so the suffix remains useful for audit/replay but is never
+    provider-wire training evidence.
+    """
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = stitched_trajectory_lines(original_llm_trajectory, [])
@@ -79,21 +85,21 @@ def write_stitched_trajectory(
                 "role": "agent",
                 "model": live_model,
                 "auth_mode": AuthMode.API_KEY.value,
-                "capture_source": CaptureSource.LITELLM_PROXY.value,
-                "capture_fidelity": (
-                    CaptureFidelity.PROVIDER_WIRE.value
-                    if live_capture_trusted
-                    else CaptureFidelity.AGENT_SESSION.value
-                ),
+                "capture_source": CaptureSource.REPLAY_PROXY.value,
+                "capture_fidelity": CaptureFidelity.AGENT_SESSION.value,
                 "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
-                "request_complete": True,
+                "request_complete": False,
                 "response_complete": True,
                 "role_attribution_complete": True,
                 "payload_redacted": True,
+                "request_capture_source": "replay_proxy_ingress",
+                "capture_custody": (
+                    "host_owned"
+                    if live_capture_host_owned
+                    else "agent_writable_sandbox"
+                ),
             }
         )
-        if not live_capture_trusted:
-            metadata["capture_custody"] = "agent_writable_sandbox"
         lines.append(json.dumps(redact_trajectory_obj(payload), default=str))
     rendered = "\n".join(lines) + ("\n" if lines else "")
     temporary = out.with_suffix(out.suffix + ".tmp")
@@ -112,7 +118,7 @@ def refresh_stitched_trajectory_manifest(
     n_live: int,
     live_attempt_count: int,
     live_errors: list[str],
-    live_capture_trusted: bool = True,
+    live_capture_host_owned: bool = True,
 ) -> LLMTrajectoryManifest:
     """Replace rollout-finalization provenance with the final stitched contract."""
 
@@ -176,7 +182,7 @@ def refresh_stitched_trajectory_manifest(
         source_allows_training
         and count_matches
         and live_capture_complete
-        and (live_capture_trusted or n_live == 0)
+        and n_live == 0
         and rows_valid
         and usage_complete
     )
@@ -186,15 +192,9 @@ def refresh_stitched_trajectory_manifest(
     source_auth = source.auth_mode if source else AuthMode.UNKNOWN
     if n_live:
         capture_source = (
-            CaptureSource.LITELLM_PROXY
-            if source_capture_source is CaptureSource.LITELLM_PROXY
-            else CaptureSource.MIXED
+            CaptureSource.REPLAY_PROXY if n_recorded == 0 else CaptureSource.MIXED
         )
-        live_fidelity = (
-            CaptureFidelity.PROVIDER_WIRE
-            if live_capture_trusted
-            else CaptureFidelity.AGENT_SESSION
-        )
+        live_fidelity = CaptureFidelity.AGENT_SESSION
         capture_fidelity = (
             live_fidelity if source_fidelity is live_fidelity else CaptureFidelity.MIXED
         )
@@ -212,6 +212,7 @@ def refresh_stitched_trajectory_manifest(
         and count_matches
         and live_capture_complete
         and rows_valid
+        and n_live == 0
     )
     response_complete = bool(
         source
@@ -223,7 +224,13 @@ def refresh_stitched_trajectory_manifest(
     errors = list(source.errors) if source and not complete else []
     missing_fields = list(source.missing_fields) if source and not complete else []
     errors.extend(live_errors)
-    if n_live and not live_capture_trusted:
+    if n_live:
+        errors.append(
+            "live continuation request was captured at replay-proxy ingress, "
+            "before provider transformation"
+        )
+        missing_fields.append("live_provider_request")
+    if n_live and not live_capture_host_owned:
         errors.append("sandbox replay capture shared root custody with the agent")
     if source is None:
         errors.append("source LLM trajectory manifest is missing or malformed")
@@ -264,7 +271,6 @@ def refresh_stitched_trajectory_manifest(
         n_live=n_live,
         live_attempt_count=live_attempt_count,
         live_capture_complete=live_capture_complete,
-        live_capture_trusted=live_capture_trusted,
         rows_valid=rows_valid,
     )
     manifest = LLMTrajectoryManifest(
@@ -298,7 +304,6 @@ def _continuation_role_captures(
     n_live: int,
     live_attempt_count: int,
     live_capture_complete: bool,
-    live_capture_trusted: bool,
     rows_valid: bool,
 ) -> list[LLMRoleCapture]:
     """Preserve source-role provenance and append a distinct live leg."""
@@ -331,14 +336,10 @@ def _continuation_role_captures(
                 agent="openhands",
                 model=live_model,
                 auth_mode=AuthMode.API_KEY,
-                capture_source=CaptureSource.LITELLM_PROXY,
-                capture_fidelity=(
-                    CaptureFidelity.PROVIDER_WIRE
-                    if live_capture_trusted
-                    else CaptureFidelity.AGENT_SESSION
-                ),
+                capture_source=CaptureSource.REPLAY_PROXY,
+                capture_fidelity=CaptureFidelity.AGENT_SESSION,
                 exchange_count=n_live,
-                request_complete=live_complete,
+                request_complete=False,
                 response_complete=live_complete,
             )
         )
