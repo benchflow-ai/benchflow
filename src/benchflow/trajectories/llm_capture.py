@@ -475,8 +475,7 @@ def _is_claude_code_agent(agent: str) -> bool:
     config = AGENTS.get(agent)
     subscription = config.subscription_auth if config is not None else None
     return bool(
-        subscription is not None
-        and subscription.replaces_env == "ANTHROPIC_API_KEY"
+        subscription is not None and subscription.replaces_env == "ANTHROPIC_API_KEY"
     )
 
 
@@ -570,7 +569,11 @@ def model_call_seen_from_evidence(
     acp_events: list[dict[str, Any]],
 ) -> bool:
     for value in (usage_metrics or {}).values():
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value > 0
+        ):
             return True
     return any(
         event.get("type") in {"agent_message", "agent_thought", "tool_call"}

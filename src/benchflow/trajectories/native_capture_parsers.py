@@ -588,7 +588,9 @@ def _load_otel_events(root: Path) -> list[_OtelEvent]:
             timestamp = _unix_nanos_timestamp(
                 record.get("timeUnixNano") or record.get("observedTimeUnixNano")
             )
-            events.append(_OtelEvent(name=name, timestamp=timestamp, attributes=attributes))
+            events.append(
+                _OtelEvent(name=name, timestamp=timestamp, attributes=attributes)
+            )
     return events
 
 
@@ -676,7 +678,11 @@ def _merge_claude_assistant_group(records: list[dict[str, Any]]) -> dict[str, An
         if isinstance(message.get("usage"), dict):
             merged["usage"] = message["usage"]
         content = message.get("content")
-        blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+        blocks = (
+            content
+            if isinstance(content, list)
+            else [{"type": "text", "text": content}]
+        )
         for block in blocks:
             marker = json.dumps(block, sort_keys=True, default=str)
             if marker not in seen_content:
@@ -686,11 +692,7 @@ def _merge_claude_assistant_group(records: list[dict[str, Any]]) -> dict[str, An
 
 
 def _message_for_history(message: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in message.items()
-        if key in {"role", "content"}
-    }
+    return {key: value for key, value in message.items() if key in {"role", "content"}}
 
 
 def _codex_session_model(records: list[dict[str, Any]]) -> str:
@@ -706,9 +708,7 @@ def _codex_session_model(records: list[dict[str, Any]]) -> str:
 def _normalize_codex_usage(usage: dict[str, Any]) -> dict[str, Any]:
     return {
         "input_tokens": usage.get("input_tokens", 0),
-        "input_tokens_details": {
-            "cached_tokens": usage.get("cached_input_tokens", 0)
-        },
+        "input_tokens_details": {"cached_tokens": usage.get("cached_input_tokens", 0)},
         "output_tokens": usage.get("output_tokens", 0),
         "output_tokens_details": {
             "reasoning_tokens": usage.get("reasoning_output_tokens", 0)

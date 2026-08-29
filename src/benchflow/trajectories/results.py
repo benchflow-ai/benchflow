@@ -43,6 +43,7 @@ JOB_RESULTS_ERRORS_FILENAME = "results.errors.json"
 
 logger = logging.getLogger(__name__)
 
+
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
     redacted = redact_trajectory_obj(scrub_non_finite(record))
     return json.dumps(redacted, default=str, allow_nan=False)

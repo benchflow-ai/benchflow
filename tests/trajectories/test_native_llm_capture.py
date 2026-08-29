@@ -290,9 +290,7 @@ def test_claude_session_fallback_is_truthfully_lower_fidelity(tmp_path: Path) ->
                 "timestamp": "2026-08-28T12:00:02Z",
                 "message": {
                     "role": "assistant",
-                    "content": [
-                        {"type": "tool_use", "id": "tool-1", "name": "Read"}
-                    ],
+                    "content": [{"type": "tool_use", "id": "tool-1", "name": "Read"}],
                     "usage": {"input_tokens": 5, "output_tokens": 4},
                 },
             },
