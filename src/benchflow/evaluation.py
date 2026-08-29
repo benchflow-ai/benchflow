@@ -1084,6 +1084,10 @@ class Evaluation:
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.
 
+        Scoreless results whose verifier error is infra-retryable (per
+        ``RetryConfig.should_retry_verifier_error``) are not reused: the
+        verifier never scored the frozen workspace, so the task re-runs.
+
         Scoped to the current job directory (``_jobs_dir / _job_name``) to
         prevent cross-job contamination.  When multiple result.json files
         exist for the same task (retry artifacts), the newest by mtime wins.
@@ -1109,6 +1113,17 @@ class Evaluation:
         completed: dict[str, dict] = {}
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
+                # A scoreless result whose verifier error is infra-retryable
+                # (same taxonomy as the within-run retry) records no signal
+                # about the task; reusing it pins a lost score forever.
+                if r.get("rewards") is None and (
+                    self._config.retry.should_retry_verifier_error(r["verifier_error"])
+                ):
+                    logger.info(
+                        f"Re-running verifier-errored task on resume: {task} "
+                        f"({truncate_end(r['verifier_error'], 80)})"
+                    )
+                    continue
                 logger.info(
                     f"Reusing completed verifier-errored task on resume: {task} "
                     f"({truncate_end(r['verifier_error'], 80)})"

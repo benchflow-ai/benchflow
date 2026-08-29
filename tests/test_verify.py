@@ -489,8 +489,8 @@ class TestRetry:
 
 
 class TestResume:
-    def test_verifier_errored_is_complete(self, tmp_path, caplog):
-        """Guards the PR #819 fix for issue #542's misleading resume log."""
+    def test_infra_verifier_errored_reruns(self, tmp_path, caplog):
+        """A scoreless infra-retryable verifier error must not pin a lost score."""
         task_dir = tmp_path / "task1" / "trial-1"
         task_dir.mkdir(parents=True)
         (task_dir / "result.json").write_text(
@@ -500,6 +500,32 @@ class TestResume:
                     "rewards": None,
                     "error": None,
                     "verifier_error": "verifier timed out after 900s",
+                }
+            )
+        )
+        from benchflow.evaluation import Evaluation, EvaluationConfig
+
+        job = Evaluation(
+            tasks_dir=tmp_path, jobs_dir=tmp_path, config=EvaluationConfig()
+        )
+        with caplog.at_level(logging.INFO):
+            completed = job._get_completed_tasks()
+        assert "task1" not in completed
+        assert any(
+            "Re-running verifier-errored task" in m for m in caplog.messages
+        )
+
+    def test_contract_verifier_errored_is_complete(self, tmp_path, caplog):
+        """Guards the PR #819 fix for issue #542's misleading resume log."""
+        task_dir = tmp_path / "task1" / "trial-1"
+        task_dir.mkdir(parents=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task1",
+                    "rewards": None,
+                    "error": None,
+                    "verifier_error": "verifier crashed: No reward file found",
                 }
             )
         )
