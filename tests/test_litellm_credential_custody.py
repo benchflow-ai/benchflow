@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from benchflow.providers import litellm_runtime as runtime_mod
+from benchflow.providers.litellm_config import resolve_litellm_route
 from benchflow.providers.runtime import ensure_litellm_runtime
 
 
@@ -76,3 +78,65 @@ async def test_vertex_adc_stays_audit_only_with_verified_sandbox_artifacts(monke
 
     assert provider_runtime is not None
     assert provider_runtime.capture_trusted is False
+
+
+def test_proxy_strips_every_supported_alternate_credential_alias():
+    """Guards PR #1057 against alternate credentials bypassing the proxy."""
+
+    master_key = "sk-benchflow-master"
+    route = resolve_litellm_route(
+        "openai/gpt-5.6-luna",
+        {"OPENAI_API_KEY": "sk-provider"},
+    )
+    raw_credentials = {
+        "OPENAI_API_KEY": "sk-provider",
+        "CODEX_API_KEY": "sk-codex",
+        "CODEX_ACCESS_TOKEN": "codex-access",
+        "CODEX_AUTH_JSON": '{"tokens":{"access_token":"codex-json"}}',
+        "CLAUDE_CODE_OAUTH_TOKEN": "claude-code-oauth",
+        "CLAUDE_OAUTH_TOKEN": "claude-oauth",
+        "ANTHROPIC_AUTH_TOKEN": "anthropic-auth",
+        "AWS_ACCESS_KEY_ID": "aws-access",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        "AWS_SESSION_TOKEN": "aws-session",
+        "CUSTOM_API_KEY": "custom-provider-key",
+    }
+
+    agent_env = {
+        **raw_credentials,
+        "DEFAULT_AUTH_REQUEST": json.dumps(
+            {
+                "methodId": "api-key",
+                "_meta": {"api-key": {"apiKey": raw_credentials["CODEX_API_KEY"]}},
+            }
+        ),
+    }
+    updated = runtime_mod._wire_litellm_agent_env(
+        agent="codex-acp",
+        agent_env=agent_env,
+        route=route,
+        base_url="http://127.0.0.1:4000",
+        master_key=master_key,
+    )
+
+    for name, value in raw_credentials.items():
+        assert updated.get(name) != value, name
+        assert value not in json.dumps(updated), name
+    assert updated["OPENAI_API_KEY"] == master_key
+    assert updated["BENCHFLOW_PROVIDER_API_KEY"] == master_key
+    runtime_mod._assert_proxy_isolated(
+        "codex-acp",
+        updated,
+        master_key=master_key,
+    )
+
+
+def test_proxy_isolation_guard_detects_unregistered_api_key_alias():
+    """Guards PR #1057 against custom API-key aliases escaping the guard."""
+
+    with pytest.raises(RuntimeError, match="CUSTOM_API_KEY"):
+        runtime_mod._assert_proxy_isolated(
+            "custom-agent",
+            {"CUSTOM_API_KEY": "raw-provider-key"},
+            master_key="sk-benchflow-master",
+        )

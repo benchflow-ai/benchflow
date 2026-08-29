@@ -1389,8 +1389,36 @@ def _missing_required_env(route: LiteLLMRoute, env: dict[str, str]) -> list[str]
     return missing
 
 
-def _provider_secret_env_names() -> set[str]:
-    """Upstream provider credentials the proxy owns and the agent must not see."""
+_PROVIDER_CREDENTIAL_ENV_EXACT = frozenset(
+    {
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "CODEX_AUTH_JSON",
+    }
+)
+_PROVIDER_CREDENTIAL_ENV_SUFFIXES = (
+    "_API_KEY",
+    "_AUTH_TOKEN",
+    "_ACCESS_TOKEN",
+    "_OAUTH_TOKEN",
+    "_BEARER_TOKEN",
+    "_AUTH_JSON",
+    "_CREDENTIALS_JSON",
+    "_SECRET_ACCESS_KEY",
+    "_SESSION_TOKEN",
+)
+
+
+def _looks_like_provider_credential_env(name: str) -> bool:
+    return name in _PROVIDER_CREDENTIAL_ENV_EXACT or name.endswith(
+        _PROVIDER_CREDENTIAL_ENV_SUFFIXES
+    )
+
+
+def _provider_secret_env_names(env: Mapping[str, object] | None = None) -> set[str]:
+    """Upstream provider credential aliases the agent must never receive."""
     from benchflow.agents.providers import PROVIDERS
 
     names = {
@@ -1404,10 +1432,29 @@ def _provider_secret_env_names() -> set[str]:
         "GOOGLE_APPLICATION_CREDENTIALS_JSON",
         "AWS_BEARER_TOKEN_BEDROCK",
         "AZURE_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_AUTH_JSON",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_OAUTH_TOKEN",
+        "LLM_API_KEY",
+        "BENCHFLOW_PROVIDER_API_KEY",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
             names.add(cfg.auth_env)
+    for cfg in AGENTS.values():
+        names.update(cfg.requires_env)
+        names.update(file.env_source for file in cfg.credential_files)
+        names.update(
+            destination
+            for source, destination in cfg.env_mapping.items()
+            if source == "BENCHFLOW_PROVIDER_API_KEY"
+        )
+        if cfg.subscription_auth is not None:
+            names.add(cfg.subscription_auth.replaces_env)
+    if env is not None:
+        names.update(name for name in env if _looks_like_provider_credential_env(name))
     return names
 
 
@@ -1502,7 +1549,7 @@ def _assert_proxy_isolated(agent: str, env: dict[str, str], *, master_key: str) 
     """
     leaked = sorted(
         name
-        for name in _provider_secret_env_names()
+        for name in _provider_secret_env_names(env)
         if env.get(name) and env.get(name) != master_key
     )
     if leaked:
@@ -1563,7 +1610,7 @@ def _wire_litellm_agent_env(
     # proxy process holds them via its own env. (In sandbox-local mode the proxy
     # shares the agent's sandbox, so this reduces — but cannot fully remove — key
     # visibility.)
-    for secret_key in _provider_secret_env_names():
+    for secret_key in _provider_secret_env_names(updated):
         updated.pop(secret_key, None)
     for endpoint_key in _PROVIDER_ENDPOINT_ENV_NAMES:
         updated.pop(endpoint_key, None)
