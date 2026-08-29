@@ -17,9 +17,10 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
@@ -84,6 +85,9 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # it's ignored) and `NO_DOCS=true` so the docs route is skipped regardless of the
 # inherited environment.
 _PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
+_CONTAINER_HOST_ALIASES = frozenset(
+    {"host.docker.internal", "gateway.docker.internal", "host.containers.internal"}
+)
 _SKILL_CATALOG_GATE_AGENT_ENV = "BENCHFLOW_SKILL_CATALOG_GATE_AGENT"
 _REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
 # Live callback-log capture budgets. The reader tails the gateway's
@@ -802,6 +806,35 @@ def _host_bind_address(environment: str) -> str:
     except OSError:
         return "0.0.0.0"
     return address
+
+
+def _route_for_host_proxy(route: LiteLLMRoute, environment: str) -> LiteLLMRoute:
+    """Translate container-view host aliases for a host-owned proxy.
+
+    Before provider capture became mandatory, a Docker agent used names such as
+    ``host.docker.internal`` to reach a provider running on the host. The
+    always-on host LiteLLM process must instead use host loopback; those Docker
+    DNS aliases are often deliberately undefined in the host resolver.
+    """
+
+    if environment != "docker":
+        return route
+    api_base = route.litellm_params.get("api_base")
+    if not isinstance(api_base, str):
+        return route
+    parsed = urlsplit(api_base)
+    if (
+        parsed.hostname not in _CONTAINER_HOST_ALIASES
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return route
+    netloc = "127.0.0.1"
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    params = dict(route.litellm_params)
+    params["api_base"] = urlunsplit(parsed._replace(netloc=netloc))
+    return replace(route, litellm_params=params)
 
 
 def _agent_endpoint_for_environment(
@@ -1650,6 +1683,7 @@ def _wire_litellm_agent_env(
             model=route.model_alias,
             provider_name="litellm",
             strict=True,
+            isolate=True,
         )
         return updated
     if agent == "opencode":
@@ -1798,6 +1832,8 @@ async def ensure_litellm_runtime(
                 "directly — register the provider/model or fix the route."
             ),
         )
+    if not sandbox_local:
+        route = _route_for_host_proxy(route, environment)
     missing = _missing_required_env(route, agent_env)
     if missing:
         missing_text = ", ".join(missing)

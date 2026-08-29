@@ -27,8 +27,14 @@ def apply_codex_provider_config(
     model: str | None,
     provider_name: str,
     strict: bool = False,
+    isolate: bool = False,
 ) -> None:
-    """Create or update Codex's model provider entry in ``agent_env``."""
+    """Create or update Codex's model provider entry in ``agent_env``.
+
+    ``isolate`` discards caller config and is reserved for a BenchFlow-owned
+    proxy boundary. Direct provider configuration keeps unrelated caller
+    settings while ``strict`` still validates JSON and pins the credential key.
+    """
     raw_config = agent_env.get(CODEX_CONFIG_ENV)
     if not raw_config:
         config: dict[str, Any] = {}
@@ -44,7 +50,7 @@ def apply_codex_provider_config(
             raise ValueError(f"{CODEX_CONFIG_ENV} must decode to a JSON object")
         return
 
-    if strict:
+    if isolate:
         provider_id = codex_provider_id(provider_name)
         config = {}
         providers: dict[str, Any] = {}
@@ -69,7 +75,10 @@ def apply_codex_provider_config(
         provider = dict(provider_value) if isinstance(provider_value, dict) else {}
         provider.setdefault("name", provider_name)
         provider["base_url"] = base_url
-        provider.setdefault("env_key", "OPENAI_API_KEY")
+        if strict:
+            provider["env_key"] = "OPENAI_API_KEY"
+        else:
+            provider.setdefault("env_key", "OPENAI_API_KEY")
         provider.setdefault("wire_api", "responses")
         provider.setdefault("supports_websockets", False)
 

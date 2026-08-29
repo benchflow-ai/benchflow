@@ -403,6 +403,40 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
 
 
 @pytest.mark.asyncio
+async def test_host_proxy_translates_container_view_provider_alias(monkeypatch):
+    """Guards PR #1057 against host capture losing Docker-host providers."""
+
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://host.docker.internal:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": (
+                "http://host.docker.internal:18765/custom/v1?tenant=science"
+            ),
+            "BENCHFLOW_PROVIDER_API_KEY": "dummy-local-key",
+        },
+        model="vllm/gpt-5.6-luna",
+        runtime=None,
+        environment="docker",
+        session_id="run-local-provider",
+        usage_tracking="off",
+    )
+
+    assert provider_runtime is not None
+    assert starts[0]["route"].litellm_params["api_base"] == (
+        "http://127.0.0.1:18765/custom/v1?tenant=science"
+    )
+    assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:45678/v1"
+
+
+@pytest.mark.asyncio
 async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
     """Guards PR #803: Pi metadata follows the LiteLLM alias in proxy mode."""
 

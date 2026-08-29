@@ -5,17 +5,16 @@
 # to fail with a mocked 401. The test passes if codex-acp sends a request to
 # the local stub instead of api.openai.com.
 #
-# Two deliberate choices keep this a *direct* routing check:
-#   --usage-tracking off  — with the default (auto), benchflow stands up its
-#       own LiteLLM usage proxy in front of the agent (#587/#613). That proxy
-#       would intercept codex's call, fall back to codex's built-in default
-#       model, and 400 before forwarding upstream — so the stub would never
-#       see the request. Off sends provider traffic straight to the stub.
-#       (Usage-proxy forwarding for custom providers is a separate concern.)
-#   --model vllm/gpt-5.4  — codex-acp validates the model against its own
+# Two deliberate choices isolate custom-provider routing:
+#   --usage-tracking off  — disables the usage requirement. BenchFlow still
+#       routes API-key calls through its trajectory-capture proxy (PR #1057),
+#       so reaching the stub proves the configured provider remains the
+#       upstream destination after capture wiring.
+#   --model vllm/gpt-5.6-luna  — codex-acp validates the model against its own
 #       catalog at session/set_model, so a synthetic id like "mock-model" is
-#       rejected with -32603 before any HTTP request. gpt-5.4 is a real catalog
-#       id that is accepted but is NOT codex's built-in default (gpt-5.5), so
+#       rejected with -32603 before any HTTP request. gpt-5.6-luna is a real
+#       catalog id that is accepted but is NOT codex's built-in default
+#       (gpt-5.5), so
 #       the model assertion below also proves codex sent the *configured* model
 #       rather than silently falling back. The stub returns a mocked 401.
 #
@@ -95,7 +94,7 @@ env -u CODEX_ACCESS_TOKEN -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY 
   uv run bench eval run \
     --tasks-dir "$TASK" \
     --agent codex-acp \
-    --model vllm/gpt-5.4 \
+    --model vllm/gpt-5.6-luna \
     --sandbox docker \
     --usage-tracking off \
     --jobs-dir "$JOBS_DIR" \
@@ -126,11 +125,11 @@ fi
 
 # The configured model must reach the wire. If codex silently fell back to its
 # built-in default (gpt-5.5 — the failure mode when the usage proxy intercepts),
-# the request body's model field would not be gpt-5.4. Match the escaped model
-# field exactly; codex mentions "gpt-5.5" in its system prompt, so a loose grep
-# would give a false pass.
-if ! grep -q '\\"model\\":\\"gpt-5\.4\\"' "$LOG_FILE"; then
-  echo "FAIL: stub did not receive the configured model gpt-5.4 (codex may have fallen back to its default)"
+# the request body's model field would not be gpt-5.6-luna. Match the escaped
+# model field exactly; codex mentions "gpt-5.5" in its system prompt, so a
+# loose grep would give a false pass.
+if ! grep -q '\\"model\\":\\"gpt-5\.6-luna\\"' "$LOG_FILE"; then
+  echo "FAIL: stub did not receive the configured model gpt-5.6-luna (codex may have fallen back to its default)"
   cat "$LOG_FILE"
   exit 1
 fi

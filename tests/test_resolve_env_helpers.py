@@ -750,6 +750,60 @@ class TestResolveAgentEnvAzureFoundry:
             "supports_websockets": False,
         }
 
+    def test_codex_direct_provider_preserves_caller_settings(self, monkeypatch):
+        """Guards PR #1057 against minimalizing direct Codex provider config."""
+
+        monkeypatch.setenv("AZURE_API_KEY", "az-test")
+        monkeypatch.setenv(
+            "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+        )
+        caller_config = {
+            "model_reasoning_effort": "xhigh",
+            "service_tier": "priority",
+            "model_provider": "enterprise",
+            "model_providers": {
+                "enterprise": {
+                    "name": "Enterprise Azure",
+                    "base_url": "https://stale.example/v1",
+                    "env_key": "AZURE_API_KEY",
+                    "wire_api": "chat",
+                    "supports_websockets": True,
+                    "http_headers": {"x-organization": "science"},
+                },
+                "unused": {
+                    "name": "Unselected provider",
+                    "base_url": "https://unused.example/v1",
+                },
+            },
+        }
+
+        result = resolve_agent_env(
+            "codex-acp",
+            "azure-foundry-openai/gpt-5.5",
+            {
+                "CODEX_CONFIG": json.dumps(caller_config),
+                "MODEL_PROVIDER": "enterprise",
+            },
+        )
+
+        config = json.loads(result["CODEX_CONFIG"])
+        assert config["model_reasoning_effort"] == "xhigh"
+        assert config["service_tier"] == "priority"
+        assert config["model"] == "gpt-5.5"
+        assert config["model_provider"] == "enterprise"
+        assert (
+            config["model_providers"]["unused"]
+            == caller_config["model_providers"]["unused"]
+        )
+        assert config["model_providers"]["enterprise"] == {
+            "name": "Enterprise Azure",
+            "base_url": "https://example-resource.openai.azure.com/openai/v1",
+            "env_key": "OPENAI_API_KEY",
+            "wire_api": "chat",
+            "supports_websockets": True,
+            "http_headers": {"x-organization": "science"},
+        }
+
     def test_claude_uses_same_azure_key_on_anthropic_surface(self, monkeypatch):
         monkeypatch.setenv("AZURE_API_KEY", "az-test")
         monkeypatch.setenv(
