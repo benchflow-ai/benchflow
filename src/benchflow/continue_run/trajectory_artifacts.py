@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.trajectories.llm_capture_manifest import (
+    CONTINUATION_SOURCE_AUDIT_ERROR,
     LLM_TRAJECTORY_SCHEMA_VERSION,
+    REPLAY_PROXY_INGRESS_AUDIT_ERROR,
     AuthMode,
     CaptureFidelity,
     CaptureSource,
@@ -225,10 +227,7 @@ def refresh_stitched_trajectory_manifest(
     missing_fields = list(source.missing_fields) if source and not complete else []
     errors.extend(live_errors)
     if n_live:
-        errors.append(
-            "live continuation request was captured at replay-proxy ingress, "
-            "before provider transformation"
-        )
+        errors.append(REPLAY_PROXY_INGRESS_AUDIT_ERROR)
         missing_fields.append("live_provider_request")
     if n_live and not live_capture_host_owned:
         errors.append("sandbox replay capture shared root custody with the agent")
@@ -236,7 +235,7 @@ def refresh_stitched_trajectory_manifest(
         errors.append("source LLM trajectory manifest is missing or malformed")
         missing_fields.append("source_capture_provenance")
     elif not source_allows_training:
-        errors.append("source LLM trajectory is not complete provider-wire capture")
+        errors.append(CONTINUATION_SOURCE_AUDIT_ERROR)
     if not count_matches:
         errors.append(
             "stitched LLM trajectory count mismatch: "

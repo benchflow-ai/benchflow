@@ -34,8 +34,7 @@ from benchflow.trajectories.export_prime_sft import (
 )
 from benchflow.trajectories.llm_capture_manifest import (
     capture_artifact_allows_training,
-    capture_manifest_has_oauth_role_capture,
-    capture_manifest_has_replay_capture,
+    capture_manifest_preserves_audit_completion,
     read_llm_trajectory_manifest,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
@@ -508,20 +507,15 @@ def build_rollout_results_record(
     )
     audit_capture_preserves_completion = bool(
         (
-            (agent_result or {}).get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
-            or (capture_manifest or {}).get("auth_mode") == "oauth_subscription"
-            or (
-                capture_manifest is not None
-                and capture_manifest_has_oauth_role_capture(capture_manifest)
+            (
+                capture_manifest is None
+                and (agent_result or {}).get("usage_source")
+                == USAGE_SOURCE_AGENT_NATIVE_ACP
             )
             or (
                 capture_manifest is not None
-                and capture_manifest_has_replay_capture(capture_manifest)
+                and capture_manifest_preserves_audit_completion(capture_manifest)
             )
-        )
-        and (
-            capture_manifest is None
-            or capture_manifest.get("status") in {"no_model_call", "partial"}
         )
         and effective_export_error is None
         and not terminal_health_error

@@ -1740,11 +1740,7 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
-    capture_trusted = await _provider_capture_has_verified_custody(
-        sandbox_local=sandbox_local,
-        sandbox_user=sandbox_user,
-        sandbox=sandbox,
-    )
+    capture_trusted = not sandbox_local
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
         f"{session_id}:{role_name or 'primary'}:{sandbox_user or 'root'}:"
@@ -1755,6 +1751,13 @@ async def ensure_litellm_runtime(
         if getattr(runtime, "config_key", None) == config_key and server is not None:
             is_running = await server.is_running()
             if is_running:
+                if sandbox_local:
+                    capture_trusted = await _provider_capture_has_verified_custody(
+                        sandbox_local=True,
+                        sandbox_user=sandbox_user,
+                        sandbox=sandbox,
+                        runtime_dir=getattr(server, "runtime_dir", None),
+                    )
                 runtime.capture_trusted = bool(
                     getattr(runtime, "capture_trusted", False) and capture_trusted
                 )
@@ -1811,6 +1814,14 @@ async def ensure_litellm_runtime(
             ),
         )
 
+    if sandbox_local:
+        capture_trusted = await _provider_capture_has_verified_custody(
+            sandbox_local=True,
+            sandbox_user=sandbox_user,
+            sandbox=sandbox,
+            runtime_dir=getattr(server, "runtime_dir", None),
+        )
+
     from benchflow.providers.runtime import ProviderRuntime
 
     new_runtime = ProviderRuntime(
@@ -1837,13 +1848,17 @@ async def ensure_litellm_runtime(
 
 
 async def _provider_capture_has_verified_custody(
-    *, sandbox_local: bool, sandbox_user: str | None, sandbox: Any | None
+    *,
+    sandbox_local: bool,
+    sandbox_user: str | None,
+    sandbox: Any | None,
+    runtime_dir: str | None,
 ) -> bool:
-    """Verify that the sandbox agent's effective UID cannot rewrite capture data."""
+    """Prove the agent cannot read or mutate a root-owned runtime artifact."""
 
     if not sandbox_local:
         return True
-    if sandbox is None or sandbox_user in {None, "", "root", "0"}:
+    if sandbox is None or sandbox_user in {None, "", "root", "0"} or not runtime_dir:
         return False
     try:
         result = await sandbox.exec(
@@ -1862,7 +1877,74 @@ async def _provider_capture_has_verified_custody(
     except (AttributeError, ValueError):
         logger.warning("Provider capture custody UID check returned invalid output")
         return False
-    return effective_uid != 0
+    if effective_uid == 0:
+        return False
+
+    probe_path = f"{runtime_dir}/.benchflow-custody-{uuid4().hex}"
+    probe_value = secrets.token_hex(32)
+    quoted_path = shlex.quote(probe_path)
+    quoted_value = shlex.quote(probe_value)
+    try:
+        created = await sandbox.exec(
+            (
+                f"umask 077; printf %s {quoted_value} > {quoted_path}; "
+                f"chown 0:0 {quoted_path}; chmod 600 {quoted_path}"
+            ),
+            user="root",
+            timeout_sec=10,
+        )
+        if created.return_code != 0:
+            logger.warning("Provider capture custody probe creation failed")
+            return False
+        access = await sandbox.exec(
+            (
+                f"if cat {quoted_path} >/dev/null 2>&1; then exit 0; fi; "
+                f"if printf compromised >> {quoted_path} 2>/dev/null; "
+                "then exit 0; fi; "
+                f"if rm -f {quoted_path} 2>/dev/null; then exit 0; fi; "
+                "if command -v sudo >/dev/null 2>&1 && "
+                f"sudo -n cat {quoted_path} >/dev/null 2>&1; then exit 0; fi; "
+                "if command -v doas >/dev/null 2>&1 && "
+                f"doas -n cat {quoted_path} >/dev/null 2>&1; then exit 0; fi; "
+                "if id -G 2>/dev/null | tr ' ' '\\n' | grep -qx 0; "
+                "then exit 0; fi; "
+                "effective_caps=$(awk '/^CapEff:/ {print $2}' "
+                "/proc/self/status 2>/dev/null); "
+                'if [ -n "$effective_caps" ] && '
+                "[ \"$effective_caps\" != '0000000000000000' ]; then exit 0; fi; "
+                "for privilege_socket in /var/run/docker.sock "
+                "/run/containerd/containerd.sock /run/podman/podman.sock; do "
+                'if [ -S "$privilege_socket" ] && '
+                '[ -r "$privilege_socket" ] && '
+                '[ -w "$privilege_socket" ]; then exit 0; fi; done; '
+                "exit 1"
+            ),
+            user=sandbox_user,
+            timeout_sec=10,
+        )
+        if access.return_code != 1:
+            logger.warning(
+                "Provider capture custody probe found agent-accessible root data"
+            )
+            return False
+        verified = await sandbox.exec(
+            (
+                f'test "$(cat {quoted_path})" = {quoted_value} && '
+                f"test \"$(stat -c '%u:%a' {quoted_path})\" = '0:600'"
+            ),
+            user="root",
+            timeout_sec=10,
+        )
+        if verified.return_code != 0:
+            logger.warning("Provider capture custody probe integrity check failed")
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("Provider capture custody artifact probe failed: %s", exc)
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            await sandbox.exec(f"rm -f {quoted_path}", user="root", timeout_sec=10)
 
 
 async def stop_litellm_runtime(runtime: Any | None) -> None:

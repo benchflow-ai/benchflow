@@ -622,6 +622,7 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
         },
         "call_purpose": "agent",
         "request_complete": True,
+        "response_complete": True,
     }
     assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
         "agent",
@@ -731,6 +732,7 @@ def test_litellm_failure_records_become_error_exchanges():
 
     assert trajectory.exchanges[0].response.status_code == 500
     assert trajectory.exchanges[0].response.body["error"]["message"] == "bad key"
+    assert trajectory.exchanges[0].metadata["response_complete"] is False
     usage = extract_usage_from_trajectory(trajectory, fallback_model="openai/gpt-4")
     assert usage["usage_source"] == "unavailable"
 

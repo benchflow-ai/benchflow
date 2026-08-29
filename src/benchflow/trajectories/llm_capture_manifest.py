@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field, ValidationError
 LLM_TRAJECTORY_FILENAME = "llm_trajectory.jsonl"
 LLM_TRAJECTORY_MANIFEST_FILENAME = "llm_trajectory.manifest.json"
 LLM_TRAJECTORY_SCHEMA_VERSION = 2
+REPLAY_PROXY_INGRESS_AUDIT_ERROR = (
+    "live continuation request was captured at replay-proxy ingress, "
+    "before provider transformation"
+)
+CONTINUATION_SOURCE_AUDIT_ERROR = (
+    "source LLM trajectory is not complete provider-wire capture"
+)
 
 
 class CaptureStatus(StrEnum):
@@ -299,6 +306,59 @@ def capture_manifest_has_replay_capture(manifest: dict[str, Any]) -> bool:
         ):
             return True
     return False
+
+
+def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> bool:
+    """Accept only expected, internally complete audit-only capture states."""
+
+    if manifest.get("status") not in {
+        CaptureStatus.NO_MODEL_CALL.value,
+        CaptureStatus.PARTIAL.value,
+    }:
+        return False
+    raw_errors = manifest.get("errors", [])
+    if not isinstance(raw_errors, list) or not all(
+        isinstance(error, str) for error in raw_errors
+    ):
+        return False
+    errors = set(raw_errors)
+    has_oauth_capture = bool(
+        manifest.get("auth_mode") == AuthMode.OAUTH_SUBSCRIPTION.value
+        or capture_manifest_has_oauth_role_capture(manifest)
+    )
+    if not capture_manifest_has_replay_capture(manifest):
+        return has_oauth_capture and not errors
+
+    allowed_errors = {REPLAY_PROXY_INGRESS_AUDIT_ERROR}
+    if has_oauth_capture:
+        allowed_errors.add(CONTINUATION_SOURCE_AUDIT_ERROR)
+    if (
+        REPLAY_PROXY_INGRESS_AUDIT_ERROR not in errors
+        or not errors.issubset(allowed_errors)
+        or manifest.get("response_complete") is not True
+    ):
+        return False
+    role_captures = manifest.get("role_captures")
+    if not isinstance(role_captures, list):
+        return False
+    replay_captures: list[LLMRoleCapture] = []
+    for value in role_captures:
+        try:
+            role_capture = LLMRoleCapture.model_validate(value)
+        except ValidationError:
+            return False
+        if role_capture.capture_source is CaptureSource.REPLAY_PROXY:
+            replay_captures.append(role_capture)
+    return bool(
+        replay_captures
+        and all(
+            capture.capture_fidelity is CaptureFidelity.AGENT_SESSION
+            and capture.exchange_count > 0
+            and capture.request_complete is False
+            and capture.response_complete is True
+            for capture in replay_captures
+        )
+    )
 
 
 def _atomic_write_text(path: Path, payload: str) -> None:

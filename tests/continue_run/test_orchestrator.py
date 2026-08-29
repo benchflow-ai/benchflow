@@ -24,6 +24,7 @@ from benchflow.continue_run.trajectory_artifacts import (
     write_stitched_trajectory,
 )
 from benchflow.trajectories.llm_capture_manifest import (
+    REPLAY_PROXY_INGRESS_AUDIT_ERROR,
     AuthMode,
     CaptureFidelity,
     CaptureSource,
@@ -740,6 +741,7 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
             "capture_source": CaptureSource.MIXED,
             "capture_fidelity": CaptureFidelity.MIXED,
             "request_complete": False,
+            "errors": [REPLAY_PROXY_INGRESS_AUDIT_ERROR],
             "role_captures": [
                 LLMRoleCapture(
                     role="agent",

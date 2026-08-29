@@ -98,13 +98,25 @@ def load_provider_wire_records(
             metadata.get("request_capture_source")
             == "litellm_pre_api_call_complete_input_dict"
         )
+        response = record.get("response")
+        response_status = (
+            response.get("status_code") if isinstance(response, dict) else None
+        )
+        response_complete_value = metadata.get("response_complete")
+        response_complete = response_complete_value is True or (
+            response_complete_value is None
+            and isinstance(response_status, int)
+            and 200 <= response_status < 300
+        )
         metadata.update(
             {
                 "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
                 "capture_source": CaptureSource.LITELLM_PROXY.value,
                 "capture_fidelity": (
                     CaptureFidelity.PROVIDER_WIRE.value
-                    if capture_trusted and provider_request_observed
+                    if capture_trusted
+                    and provider_request_observed
+                    and response_complete
                     else CaptureFidelity.AGENT_SESSION.value
                 ),
                 "auth_mode": (
@@ -129,7 +141,7 @@ def load_provider_wire_records(
                 ),
                 "role_attribution_complete": attribution_complete,
                 "request_complete": request_complete,
-                "response_complete": True,
+                "response_complete": response_complete,
                 "payload_redacted": True,
             }
         )
@@ -218,6 +230,11 @@ def assemble_capture(
         for record in provider_records
     ):
         missing_fields.add("provider_request")
+    if any(
+        not _record_metadata_bool(record, "response_complete")
+        for record in provider_records
+    ):
+        missing_fields.add("provider_response")
     successful_records = [
         record
         for record in records

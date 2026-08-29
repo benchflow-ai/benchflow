@@ -617,6 +617,11 @@ def _exchange_metadata(
         request_body=request_body,
     )
     metadata["request_complete"] = record.get("request_complete") is True
+    # A success callback proves LiteLLM received a provider response. Failure
+    # callbacks can also represent local DNS/connect/timeout failures after
+    # ``pre_api_call``; without explicit provider-response evidence they must
+    # fail closed even when the transformed request was captured completely.
+    metadata["response_complete"] = record.get("event") == "success"
     return metadata
 
 

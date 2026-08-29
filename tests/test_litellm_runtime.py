@@ -20,6 +20,7 @@ class FakeLiteLLMServer:
     def __init__(self, base_url: str, route):
         self._base_url = base_url
         self.route = route
+        self.runtime_dir = "/tmp/benchflow-litellm/test-runtime"
         self.stopped = False
         self.trajectory = None
 
@@ -176,9 +177,24 @@ async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch)
     monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
 
     class NonRootSandbox:
-        async def exec(self, command, **_kwargs):
-            assert command == "id -u -- agent"
-            return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
+        async def exec(self, command, **kwargs):
+            if command == "id -u -- agent":
+                assert kwargs["user"] == "root"
+                return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
+            if command.startswith("umask 077"):
+                assert kwargs["user"] == "root"
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            if kwargs["user"] == "agent":
+                assert "sudo -n cat" in command
+                assert "CapEff" in command
+                assert "/var/run/docker.sock" in command
+                return SimpleNamespace(return_code=1, stdout="", stderr="")
+            if command.startswith('test "$(cat'):
+                assert kwargs["user"] == "root"
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            assert command.startswith("rm -f")
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
 
     _, provider_runtime = await ensure_litellm_runtime(
         agent="openhands",
@@ -196,6 +212,45 @@ async def test_non_root_agent_keeps_sandbox_gateway_capture_trusted(monkeypatch)
 
     assert provider_runtime is not None
     assert provider_runtime.capture_trusted is True
+
+
+@pytest.mark.asyncio
+async def test_passwordless_privilege_keeps_sandbox_capture_audit_only(monkeypatch):
+    """Guards PR #1057 against trusting users that can regain root access."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    class PrivilegedSandbox:
+        async def exec(self, command, **kwargs):
+            if command == "id -u -- agent":
+                return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
+            if command.startswith("umask 077"):
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            if kwargs["user"] == "agent":
+                assert "sudo -n cat" in command
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            assert command.startswith("rm -f")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    _, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={
+            "AWS_BEARER_TOKEN_BEDROCK": "token",
+            "AWS_REGION": "us-west-2",
+        },
+        model="aws-bedrock/us.anthropic.claude-opus-4-8",
+        runtime=None,
+        environment="daytona",
+        session_id="run-privileged-agent",
+        sandbox=PrivilegedSandbox(),
+        sandbox_user="agent",
+    )
+
+    assert provider_runtime is not None
+    assert provider_runtime.capture_trusted is False
 
 
 @pytest.mark.asyncio

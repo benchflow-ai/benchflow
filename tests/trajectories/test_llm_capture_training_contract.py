@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 
 from benchflow.trajectories.llm_capture import LLMTrajectoryCapture
+from benchflow.trajectories.llm_capture_manifest import (
+    REPLAY_PROXY_INGRESS_AUDIT_ERROR,
+)
 from benchflow.trajectories.results import build_rollout_results_record
 
 
@@ -296,6 +299,7 @@ def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) ->
                 "exchange_count": 1,
                 "request_complete": False,
                 "response_complete": True,
+                "errors": [REPLAY_PROXY_INGRESS_AUDIT_ERROR],
                 "role_captures": [
                     {
                         "role": "agent",
@@ -323,6 +327,20 @@ def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) ->
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
     assert row["is_completed"] is True
     assert row["error"] is None
+
+    manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
+    unhealthy_manifest = json.loads(manifest_path.read_text())
+    unhealthy_manifest["errors"].append("live attempt journal mismatch")
+    manifest_path.write_text(json.dumps(unhealthy_manifest))
+
+    unhealthy_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert unhealthy_row["info"]["training_ready"] is False
+    assert unhealthy_row["is_completed"] is False
+    assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
 
 
 @pytest.mark.asyncio

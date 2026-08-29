@@ -18,6 +18,7 @@ from benchflow.trajectories.llm_capture_manifest import (
 )
 from benchflow.trajectories.llm_capture_records import (
     NativeCaptureBundle,
+    assemble_capture,
     load_provider_wire_records,
 )
 from benchflow.trajectories.native_capture_collection import NativeCollection
@@ -158,6 +159,72 @@ def test_provider_role_attribution_uses_proxy_model_aliases(tmp_path: Path) -> N
     assert all(
         record["metadata"]["role_attribution_complete"] is True for record in records
     )
+
+
+def test_local_provider_failure_downgrades_mixed_capture(tmp_path: Path) -> None:
+    """Guards PR #1057 against treating local LiteLLM failures as responses."""
+
+    trajectory_path = tmp_path / "llm_trajectory.jsonl"
+    rows = [
+        {
+            "request": {"body": {"model": "gpt-5.6", "input": "first"}},
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "output": [],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+            "metadata": {
+                "benchflow_requested_model": "openai/gpt-5.6",
+                "request_complete": True,
+                "response_complete": True,
+                "request_capture_source": ("litellm_pre_api_call_complete_input_dict"),
+            },
+        },
+        {
+            "request": {"body": {"model": "gpt-5.6", "input": "second"}},
+            "response": {
+                "status_code": 500,
+                "body": {"error": {"message": "connection failed locally"}},
+            },
+            "metadata": {
+                "benchflow_requested_model": "openai/gpt-5.6",
+                "request_complete": True,
+                "response_complete": False,
+                "request_capture_source": ("litellm_pre_api_call_complete_input_dict"),
+            },
+        },
+    ]
+    trajectory_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    target = _CaptureTarget(
+        agent="codex-acp",
+        model="openai/gpt-5.6",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.API_KEY,
+        native=False,
+    )
+
+    provider_records = load_provider_wire_records(
+        trajectory_path,
+        targets=[target],
+        fallback_agent="codex-acp",
+        fallback_model="openai/gpt-5.6",
+        fallback_auth=AuthMode.API_KEY,
+    )
+    assembly = assemble_capture(
+        provider_records=provider_records,
+        native_bundles=[],
+        targets=[target],
+        collection_errors=[],
+        model_call_seen=True,
+        fallback_auth=AuthMode.API_KEY,
+    )
+
+    assert assembly.status is CaptureStatus.PARTIAL
+    assert assembly.fidelity is CaptureFidelity.MIXED
+    assert assembly.response_complete is False
+    assert "provider_response" in assembly.missing_fields
 
 
 def test_provider_role_attribution_uses_runtime_identity_for_same_model(
