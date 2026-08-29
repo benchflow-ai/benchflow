@@ -27,6 +27,18 @@ REPLAY_PROXY_INGRESS_AUDIT_ERROR = (
 CONTINUATION_SOURCE_AUDIT_ERROR = (
     "source LLM trajectory is not complete provider-wire capture"
 )
+_OAUTH_AUDIT_MISSING_FIELDS = frozenset(
+    {
+        "headers",
+        "instructions",
+        "provider_request",
+        "provider_response",
+        "provider_response_envelope",
+        "system_prompt",
+        "tool_definitions",
+    }
+)
+_REPLAY_AUDIT_MISSING_FIELD = "live_provider_request"
 
 
 class CaptureStatus(StrEnum):
@@ -322,19 +334,33 @@ def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> boo
     ):
         return False
     errors = set(raw_errors)
+    raw_missing_fields = manifest.get("missing_fields", [])
+    if not isinstance(raw_missing_fields, list) or not all(
+        isinstance(field, str) for field in raw_missing_fields
+    ):
+        return False
+    missing_fields = set(raw_missing_fields)
     has_oauth_capture = bool(
         manifest.get("auth_mode") == AuthMode.OAUTH_SUBSCRIPTION.value
         or capture_manifest_has_oauth_role_capture(manifest)
     )
     if not capture_manifest_has_replay_capture(manifest):
-        return has_oauth_capture and not errors
+        return bool(
+            has_oauth_capture
+            and not errors
+            and missing_fields.issubset(_OAUTH_AUDIT_MISSING_FIELDS)
+        )
 
     allowed_errors = {REPLAY_PROXY_INGRESS_AUDIT_ERROR}
+    allowed_missing_fields = {_REPLAY_AUDIT_MISSING_FIELD}
     if has_oauth_capture:
         allowed_errors.add(CONTINUATION_SOURCE_AUDIT_ERROR)
+        allowed_missing_fields.update(_OAUTH_AUDIT_MISSING_FIELDS)
     if (
         REPLAY_PROXY_INGRESS_AUDIT_ERROR not in errors
         or not errors.issubset(allowed_errors)
+        or _REPLAY_AUDIT_MISSING_FIELD not in missing_fields
+        or not missing_fields.issubset(allowed_missing_fields)
         or manifest.get("response_complete") is not True
     ):
         return False

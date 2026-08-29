@@ -236,6 +236,12 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
                 "exchange_count": 2,
                 "request_complete": False,
                 "response_complete": True,
+                "missing_fields": [
+                    "headers",
+                    "provider_response_envelope",
+                    "system_prompt",
+                    "tool_definitions",
+                ],
                 "role_captures": [
                     {
                         "role": "coder",
@@ -272,6 +278,20 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
     assert row["is_completed"] is True
     assert row["error"] is None
 
+    manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
+    unhealthy_manifest = json.loads(manifest_path.read_text())
+    unhealthy_manifest["missing_fields"].append("token_usage")
+    manifest_path.write_text(json.dumps(unhealthy_manifest))
+
+    unhealthy_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert unhealthy_row["info"]["training_ready"] is False
+    assert unhealthy_row["is_completed"] is False
+    assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
+
 
 def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) -> None:
     """Guards PR #1057 against marking successful continuations incomplete."""
@@ -299,6 +319,7 @@ def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) ->
                 "exchange_count": 1,
                 "request_complete": False,
                 "response_complete": True,
+                "missing_fields": ["live_provider_request"],
                 "errors": [REPLAY_PROXY_INGRESS_AUDIT_ERROR],
                 "role_captures": [
                     {
@@ -329,18 +350,23 @@ def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) ->
     assert row["error"] is None
 
     manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
-    unhealthy_manifest = json.loads(manifest_path.read_text())
-    unhealthy_manifest["errors"].append("live attempt journal mismatch")
-    manifest_path.write_text(json.dumps(unhealthy_manifest))
+    healthy_manifest = json.loads(manifest_path.read_text())
+    for field, value in (
+        ("missing_fields", "token_usage"),
+        ("errors", "live attempt journal mismatch"),
+    ):
+        unhealthy_manifest = json.loads(json.dumps(healthy_manifest))
+        unhealthy_manifest[field].append(value)
+        manifest_path.write_text(json.dumps(unhealthy_manifest))
 
-    unhealthy_row = _build_results_row(
-        tmp_path,
-        agent_result={"usage_source": "provider_response", "total_tokens": 2},
-    )
+        unhealthy_row = _build_results_row(
+            tmp_path,
+            agent_result={"usage_source": "provider_response", "total_tokens": 2},
+        )
 
-    assert unhealthy_row["info"]["training_ready"] is False
-    assert unhealthy_row["is_completed"] is False
-    assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
+        assert unhealthy_row["info"]["training_ready"] is False
+        assert unhealthy_row["is_completed"] is False
+        assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
 
 
 @pytest.mark.asyncio

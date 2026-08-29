@@ -741,6 +741,7 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
             "capture_source": CaptureSource.MIXED,
             "capture_fidelity": CaptureFidelity.MIXED,
             "request_complete": False,
+            "missing_fields": ["live_provider_request"],
             "errors": [REPLAY_PROXY_INGRESS_AUDIT_ERROR],
             "role_captures": [
                 LLMRoleCapture(
