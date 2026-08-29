@@ -10,7 +10,9 @@ import pytest
 
 from benchflow.trajectories.llm_capture import LLMTrajectoryCapture
 from benchflow.trajectories.llm_capture_manifest import (
+    CONTINUATION_SOURCE_AUDIT_ERROR,
     REPLAY_PROXY_INGRESS_AUDIT_ERROR,
+    capture_manifest_preserves_audit_completion,
 )
 from benchflow.trajectories.results import build_rollout_results_record
 
@@ -398,6 +400,18 @@ def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) ->
 
     manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
     healthy_manifest = json.loads(manifest_path.read_text())
+    repeated_manifest = json.loads(json.dumps(healthy_manifest))
+    repeated_manifest["exchange_count"] = 2
+    repeated_manifest["errors"].append(CONTINUATION_SOURCE_AUDIT_ERROR)
+    repeated_manifest["role_captures"][0]["leg"] = "recorded"
+    live_role = json.loads(json.dumps(repeated_manifest["role_captures"][0]))
+    live_role["leg"] = "live"
+    repeated_manifest["role_captures"].append(live_role)
+    assert capture_manifest_preserves_audit_completion(repeated_manifest) is True
+
+    repeated_manifest["role_captures"][0]["leg"] = "live"
+    assert capture_manifest_preserves_audit_completion(repeated_manifest) is False
+
     for field, value in (
         ("missing_fields", "token_usage"),
         ("errors", "live attempt journal mismatch"),

@@ -343,8 +343,14 @@ def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> boo
 
     allowed_errors = {REPLAY_PROXY_INGRESS_AUDIT_ERROR}
     allowed_missing_fields = {_REPLAY_AUDIT_MISSING_FIELD}
-    if has_oauth_capture:
+    has_recorded_replay_capture = any(
+        capture.capture_source is CaptureSource.REPLAY_PROXY
+        and capture.leg == "recorded"
+        for capture in role_captures
+    )
+    if has_oauth_capture or has_recorded_replay_capture:
         allowed_errors.add(CONTINUATION_SOURCE_AUDIT_ERROR)
+    if has_oauth_capture:
         allowed_missing_fields.update(_OAUTH_AUDIT_MISSING_FIELDS)
     return not (
         REPLAY_PROXY_INGRESS_AUDIT_ERROR not in errors

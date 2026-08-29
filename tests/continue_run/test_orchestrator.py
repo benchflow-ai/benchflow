@@ -24,6 +24,7 @@ from benchflow.continue_run.trajectory_artifacts import (
     write_stitched_trajectory,
 )
 from benchflow.trajectories.llm_capture_manifest import (
+    CONTINUATION_SOURCE_AUDIT_ERROR,
     REPLAY_PROXY_INGRESS_AUDIT_ERROR,
     AuthMode,
     CaptureFidelity,
@@ -32,6 +33,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     LLMRoleCapture,
     LLMTrajectoryManifest,
     capture_manifest_allows_training,
+    capture_manifest_preserves_audit_completion,
     initialize_llm_trajectory_artifacts,
     write_llm_trajectory_manifest,
 )
@@ -246,6 +248,42 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
     assert live_row["metadata"]["request_capture_source"] == "replay_proxy_ingress"
     assert live_row["metadata"]["model"] == model
     assert live_row["metadata"]["schema_version"] == 2
+
+    repeated_rollout = tmp_path / "continued-twice"
+    initialize_llm_trajectory_artifacts(
+        repeated_rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued-twice",
+        started_at=manifest.finished_at,
+    )
+    write_stitched_trajectory(
+        repeated_rollout,
+        rollout / "trajectory" / "llm_trajectory.jsonl",
+        [exchange(completion(content="live-again"))],
+        live_model=model,
+    )
+    repeated_manifest = refresh_stitched_trajectory_manifest(
+        repeated_rollout,
+        rollout,
+        original_model=model,
+        live_model=model,
+        n_recorded=2,
+        n_live=1,
+        live_attempt_count=1,
+        live_errors=[],
+    )
+
+    assert repeated_manifest.exchange_count == 3
+    assert CONTINUATION_SOURCE_AUDIT_ERROR in repeated_manifest.errors
+    assert [capture.leg for capture in repeated_manifest.role_captures] == [
+        "recorded",
+        "recorded",
+        "live",
+    ]
+    assert capture_manifest_preserves_audit_completion(
+        repeated_manifest.model_dump(mode="json")
+    )
 
 
 def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path):
