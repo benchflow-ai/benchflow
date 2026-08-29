@@ -259,6 +259,8 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
+            "benchflow_agent": os.environ.get("BENCHFLOW_LITELLM_AGENT"),
+            "benchflow_role": os.environ.get("BENCHFLOW_LITELLM_ROLE"),
             "benchflow_requested_model": os.environ.get(
                 "BENCHFLOW_LITELLM_REQUESTED_MODEL"
             ),
@@ -453,6 +455,8 @@ def _exchange_metadata(
     metadata = {
         key: record.get(key)
         for key in (
+            "benchflow_agent",
+            "benchflow_role",
             "benchflow_requested_model",
             "benchflow_model_alias",
             "request_model",

@@ -64,6 +64,8 @@ LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _LITELLM_REQUESTED_MODEL_ENV = "BENCHFLOW_LITELLM_REQUESTED_MODEL"
+_LITELLM_AGENT_ENV = "BENCHFLOW_LITELLM_AGENT"
+_LITELLM_ROLE_ENV = "BENCHFLOW_LITELLM_ROLE"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 
 # The proxy is an internal single-route gateway — it must never register the
@@ -842,6 +844,7 @@ async def _start_host_litellm(
     environment: str,
     session_id: str,
     agent_name: str,
+    role_name: str | None = None,
 ) -> HostLiteLLMProcess:
     runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-litellm-"))
     log_path = runtime_dir / "callback.jsonl"
@@ -860,6 +863,8 @@ async def _start_host_litellm(
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
             LITELLM_MODEL_ALIAS_ENV: route.model_alias,
             _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
+            _LITELLM_AGENT_ENV: agent_name,
+            _LITELLM_ROLE_ENV: role_name or "primary",
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -1162,6 +1167,7 @@ async def _start_sandbox_litellm(
     agent_env: dict[str, str],
     session_id: str,
     agent_name: str,
+    role_name: str | None = None,
     install_timeout_sec: int = 600,
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
@@ -1183,6 +1189,8 @@ async def _start_sandbox_litellm(
             "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
             LITELLM_MODEL_ALIAS_ENV: route.model_alias,
             _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
+            _LITELLM_AGENT_ENV: agent_name,
+            _LITELLM_ROLE_ENV: role_name or "primary",
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -1591,6 +1599,7 @@ async def ensure_litellm_runtime(
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
     force_sandbox_local: bool = False,
+    role_name: str | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1659,7 +1668,7 @@ async def ensure_litellm_runtime(
     proxy_location = "sandbox" if sandbox_local else "host"
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
-        f"{session_id}:{skill_gate_key}"
+        f"{session_id}:{role_name or 'primary'}:{skill_gate_key}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
@@ -1694,6 +1703,7 @@ async def ensure_litellm_runtime(
                 agent_env=proxy_env,
                 session_id=session_id,
                 agent_name=agent,
+                role_name=role_name,
                 install_timeout_sec=max(600, int(sandbox_setup_timeout)),
             )
         else:
@@ -1704,6 +1714,7 @@ async def ensure_litellm_runtime(
                 environment=environment,
                 session_id=session_id,
                 agent_name=agent,
+                role_name=role_name,
             )
     except BedrockPatchPreflightError:
         raise

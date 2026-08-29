@@ -125,6 +125,8 @@ def test_callback_record_preserves_benchflow_route_identity(
         "BENCHFLOW_LITELLM_MODEL_ALIAS",
         "benchflow-azure-foundry-openai-gpt-5.5",
     )
+    monkeypatch.setenv("BENCHFLOW_LITELLM_AGENT", "codex-acp")
+    monkeypatch.setenv("BENCHFLOW_LITELLM_ROLE", "reviewer")
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     now = datetime.now()
 
@@ -136,6 +138,8 @@ def test_callback_record_preserves_benchflow_route_identity(
 
     assert record["benchflow_requested_model"] == ("azure-foundry-openai/gpt-5.5")
     assert record["benchflow_model_alias"] == ("benchflow-azure-foundry-openai-gpt-5.5")
+    assert record["benchflow_agent"] == "codex-acp"
+    assert record["benchflow_role"] == "reviewer"
 
 
 def test_callback_module_source_exposes_proxy_handler_instance():

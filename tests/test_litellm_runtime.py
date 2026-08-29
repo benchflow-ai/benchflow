@@ -311,6 +311,42 @@ async def test_runtime_reuse_and_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runtime_is_not_reused_across_same_model_roles(monkeypatch):
+    """Guards PR #1057 by binding callback identity to one scene role."""
+    created = []
+
+    async def fake_start(**kwargs):
+        server = FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+        created.append((kwargs["role_name"], server))
+        return server
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    env = {"OPENAI_API_KEY": "sk-openai"}
+    _updated, first = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env=env,
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+        role_name="solver",
+    )
+    _updated, second = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env=env,
+        model="openai/gpt-4.1-mini",
+        runtime=first,
+        environment="local",
+        session_id="run-1",
+        role_name="reviewer",
+    )
+
+    assert second is not first
+    assert [role for role, _server in created] == ["solver", "reviewer"]
+    assert created[0][1].stopped is True
+
+
+@pytest.mark.asyncio
 async def test_required_usage_fails_when_litellm_lacks_provider_key(monkeypatch):
     monkeypatch.setattr(runtime_mod, "uses_native_subscription_auth", lambda *_: False)
 

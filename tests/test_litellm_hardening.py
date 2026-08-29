@@ -356,6 +356,7 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
         },
         session_id="s",
         agent_name="openhands",
+        role_name="solver",
     )
 
     # launch_config is uploaded as a file (proxy needs the key)...
@@ -369,6 +370,8 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     assert launch_config["env"]["BENCHFLOW_LITELLM_MODEL_ALIAS"] == (
         "benchflow-minimax-MiniMax-M3"
     )
+    assert launch_config["env"]["BENCHFLOW_LITELLM_AGENT"] == "openhands"
+    assert launch_config["env"]["BENCHFLOW_LITELLM_ROLE"] == "solver"
     assert set(sandbox.uploaded_modes.values()) == {"600"}
     # ...and the secret never appears on any exec command line (/proc exposure).
     assert all(secret not in call for call in sandbox.exec_calls)

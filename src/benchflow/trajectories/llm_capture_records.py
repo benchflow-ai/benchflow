@@ -370,8 +370,22 @@ def _target_for_provider_record(
 ) -> CaptureTarget | None:
     if len(targets) == 1:
         return targets[0]
-    candidates = {_record_model(record)}
     metadata = _record_metadata(record)
+    stamped_role = metadata.get("benchflow_role")
+    stamped_agent = metadata.get("benchflow_agent")
+    if isinstance(stamped_role, str) and stamped_role:
+        identity_matches = [
+            target
+            for target in targets
+            if target.role == stamped_role
+            and (
+                not isinstance(stamped_agent, str)
+                or not stamped_agent
+                or target.agent == stamped_agent
+            )
+        ]
+        return identity_matches[0] if len(identity_matches) == 1 else None
+    candidates = {_record_model(record)}
     candidates.update(
         value
         for key in (

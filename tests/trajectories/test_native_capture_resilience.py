@@ -146,6 +146,58 @@ def test_provider_role_attribution_uses_proxy_model_aliases(tmp_path: Path) -> N
     )
 
 
+def test_provider_role_attribution_uses_runtime_identity_for_same_model(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 for API-key scene roles sharing one model route."""
+    model = "openai/gpt-5.5"
+    targets = [
+        _CaptureTarget(
+            agent="opencode",
+            model=model,
+            credential_home=f"/home/{role}",
+            auth_mode=AuthMode.API_KEY,
+            native=False,
+            role=role,
+        )
+        for role in ("solver", "reviewer")
+    ]
+    trajectory = tmp_path / "llm_trajectory.jsonl"
+    trajectory.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "request": {"body": {"model": "gpt-5.5"}},
+                    "response": {"status_code": 200, "body": {}},
+                    "metadata": {
+                        "benchflow_agent": "opencode",
+                        "benchflow_role": role,
+                        "benchflow_requested_model": model,
+                    },
+                }
+            )
+            + "\n"
+            for role in ("solver", "reviewer")
+        )
+    )
+
+    records = load_provider_wire_records(
+        trajectory,
+        targets=targets,
+        fallback_agent="opencode",
+        fallback_model=model,
+        fallback_auth=AuthMode.API_KEY,
+    )
+
+    assert [record["metadata"]["role"] for record in records] == [
+        "solver",
+        "reviewer",
+    ]
+    assert all(
+        record["metadata"]["role_attribution_complete"] is True for record in records
+    )
+
+
 @pytest.mark.asyncio
 async def test_malformed_provider_capture_stops_owned_collector_before_cleanup(
     tmp_path: Path,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import httpx
 import pytest
@@ -144,6 +145,55 @@ def test_sandbox_attempt_journal_failure_invalidates_stale_state(
     assert state.live_attempt_count == 1
     assert state.live_error_count == 1
     assert not state_path.exists()
+
+
+def test_sandbox_quiesce_waits_for_live_handler_before_snapshot(tmp_path) -> None:
+    """Guards PR #1057 against snapshotting before live calls are quiescent."""
+    namespace: dict[str, object] = {}
+    exec(_sandbox_proxy_source(), namespace)
+    state = namespace["ReplayState"](
+        recorded=[],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(tmp_path / "live.jsonl"),
+        state_path=str(tmp_path / "state.json"),
+        port=61357,
+    )
+    forward_started = threading.Event()
+    release_forward = threading.Event()
+    responses: list[tuple] = []
+    quiesced: list[bool] = []
+
+    def forward(_request):
+        forward_started.set()
+        assert release_forward.wait(timeout=5)
+        return 200, completion(content="done"), True
+
+    state._forward_live = forward
+    worker = threading.Thread(
+        target=lambda: responses.append(
+            state.next_response({"messages": [{"role": "user"}]})
+        )
+    )
+    worker.start()
+    assert forward_started.wait(timeout=5)
+    barrier = threading.Thread(target=lambda: quiesced.append(state.quiesce(timeout=5)))
+    barrier.start()
+    assert barrier.is_alive()
+
+    release_forward.set()
+    worker.join(timeout=5)
+    barrier.join(timeout=5)
+
+    assert quiesced == [True]
+    assert responses[0][0] == "live"
+    assert state.live_attempt_count == 1
+    assert len((tmp_path / "live.jsonl").read_text().splitlines()) == 1
+    late = state.next_response({"messages": [{"role": "user"}]})
+    assert late[0] == "error"
+    assert late[1] == 503
+    assert state.live_attempt_count == 1
 
 
 @pytest.mark.asyncio

@@ -2378,6 +2378,7 @@ class Rollout:
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
             force_sandbox_local=disallow_web_tools,
+            role_name=role.name,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent

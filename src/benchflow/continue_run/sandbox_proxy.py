@@ -137,6 +137,12 @@ class ReplayState:
     live_attempt_count: int = 0
     live_error_count: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    condition: threading.Condition = field(init=False)
+    quiescing: bool = False
+    active_live_requests: int = 0
+
+    def __post_init__(self):
+        self.condition = threading.Condition(self.lock)
 
     def _write_state(self):
         payload = {
@@ -177,7 +183,11 @@ class ReplayState:
             print(message, file=sys.stderr, flush=True)
 
     def next_response(self, request_body):
-        with self.lock:
+        with self.condition:
+            if self.quiescing:
+                return "error", 503, {
+                    "error": {"message": "replay proxy is quiescing"}
+                }
             if self.cursor < len(self.recorded):
                 exchange = self.recorded[self.cursor]
                 self._check_divergence(
@@ -189,22 +199,44 @@ class ReplayState:
                 return "replay", int(response.get("status_code") or 200), dict(response.get("body") or {})
             self.cursor += 1
             self.live_attempt_count += 1
-            self._write_state()
-
-        status, body, provider_observed = self._forward_live(request_body)
-        if provider_observed:
+            self.active_live_requests += 1
             try:
-                self._append_live_exchange(request_body, status, body)
+                self._write_state()
             except Exception:
+                self.active_live_requests -= 1
+                self.condition.notify_all()
+                raise
+
+        try:
+            status, body, provider_observed = self._forward_live(request_body)
+            if provider_observed:
+                try:
+                    self._append_live_exchange(request_body, status, body)
+                except Exception:
+                    with self.lock:
+                        self.live_error_count += 1
+                        self._write_state()
+                    raise
+            else:
                 with self.lock:
                     self.live_error_count += 1
                     self._write_state()
-                raise
-        else:
-            with self.lock:
-                self.live_error_count += 1
-                self._write_state()
-        return "live", status, body
+            return "live", status, body
+        finally:
+            with self.condition:
+                self.active_live_requests -= 1
+                self.condition.notify_all()
+
+    def quiesce(self, timeout=610):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            self.quiescing = True
+            while self.active_live_requests:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.condition.wait(remaining)
+            return True
 
     def _forward_live(self, request_body):
         forwarded = dict(request_body)
@@ -285,6 +317,13 @@ class ReplayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if path == "/benchflow/quiesce":
+            quiesced = self.state.quiesce()
+            self._send_json(
+                200 if quiesced else 503,
+                {"status": "quiesced" if quiesced else "quiesce_timeout"},
+            )
+            return
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._send_json(404, {"error": {"message": f"not found: {path}"}})
             return
@@ -494,21 +533,51 @@ class SandboxReplayProxy:
         )
 
     async def stop(self) -> None:
+        await self._quiesce()
+        await self._terminate()
         self.live_exchanges = await self._load_live_exchanges()
         await self._load_live_state()
         await self._load_runtime_errors()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
-                f"if [ -s {shlex.quote(self.pid_path)} ]; then "
-                f"kill -TERM $(cat {shlex.quote(self.pid_path)}) 2>/dev/null || true; "
-                "fi",
-                timeout_sec=10,
-            )
-        with contextlib.suppress(Exception):
-            await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}",
                 timeout_sec=10,
             )
+
+    async def _quiesce(self) -> None:
+        command = (
+            "python3 - <<'PY'\n"
+            "import urllib.request\n"
+            "request = urllib.request.Request(\n"
+            f"    'http://127.0.0.1:{self.port}/benchflow/quiesce',\n"
+            "    data=b'{}', method='POST')\n"
+            "urllib.request.urlopen(request, timeout=615).read()\n"
+            "PY"
+        )
+        try:
+            result = await self.sandbox.exec(command, timeout_sec=620)
+        except Exception as exc:
+            self.live_errors.append(f"sandbox replay quiesce failed: {exc}")
+            return
+        if result.return_code != 0:
+            detail = (result.stderr or result.stdout or "unavailable").strip()
+            self.live_errors.append(f"sandbox replay quiesce failed: {detail}")
+
+    async def _terminate(self) -> None:
+        command = (
+            f"if [ -s {shlex.quote(self.pid_path)} ]; then "
+            f"pid=$(cat {shlex.quote(self.pid_path)}); "
+            'kill -TERM "$pid" 2>/dev/null || true; i=0; '
+            'while kill -0 "$pid" 2>/dev/null; do '
+            '[ "$i" -ge 100 ] && exit 1; i=$((i + 1)); sleep 0.1; done; fi'
+        )
+        try:
+            result = await self.sandbox.exec(command, timeout_sec=15)
+        except Exception as exc:
+            self.live_errors.append(f"sandbox replay termination failed: {exc}")
+            return
+        if result.return_code != 0:
+            self.live_errors.append("sandbox replay termination did not quiesce")
 
     async def _load_live_exchanges(self) -> list[LLMExchange]:
         text = await _read_remote_text(self.sandbox, self.live_log_path)
