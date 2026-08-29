@@ -12,6 +12,7 @@ from benchflow.continue_run.orchestrator import (
     build_agent_env,
     build_rollout_config,
     continued_rollout_name,
+    refresh_stitched_trajectory_manifest,
     resolve_task_path,
     select_proxy_mode,
     stitched_trajectory_lines,
@@ -20,6 +21,16 @@ from benchflow.continue_run.orchestrator import (
     write_stitched_trajectory,
 )
 from benchflow.continue_run.run_folder import RunFolderError, load_run_folder
+from benchflow.trajectories.llm_capture_manifest import (
+    AuthMode,
+    CaptureFidelity,
+    CaptureSource,
+    CaptureStatus,
+    LLMTrajectoryManifest,
+    capture_manifest_allows_training,
+    initialize_llm_trajectory_artifacts,
+    write_llm_trajectory_manifest,
+)
 
 from ._helpers import completion, exchange, write_run_folder
 
@@ -159,6 +170,123 @@ def test_write_stitched_trajectory_creates_file(tmp_path):
     )
     assert out == rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     assert len(out.read_text().strip().splitlines()) == 2
+
+
+def test_refresh_stitched_manifest_replaces_pre_stitch_finalization(tmp_path):
+    """Guards PR #1057 against stale continuation capture manifests."""
+
+    model = "openai/gpt-5.5"
+    source = write_run_folder(
+        tmp_path / "source",
+        exchanges=[exchange(completion(content="recorded"))],
+        model=model,
+    )
+    source_manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE,
+        capture_source=CaptureSource.LITELLM_PROXY,
+        capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
+        auth_mode=AuthMode.API_KEY,
+        agent="openhands",
+        model=model,
+        session_id="source",
+        exchange_count=1,
+        request_complete=True,
+        response_complete=True,
+        started_at="2026-08-29T00:00:00Z",
+        finished_at="2026-08-29T00:01:00Z",
+    )
+    write_llm_trajectory_manifest(source, source_manifest)
+
+    rollout = tmp_path / "continued"
+    initialize_llm_trajectory_artifacts(
+        rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued",
+        started_at=source_manifest.finished_at,
+    )
+    live = [exchange(completion(content="live"))]
+    out = write_stitched_trajectory(
+        rollout,
+        source / "trajectory" / "llm_trajectory.jsonl",
+        live,
+        live_model=model,
+    )
+    manifest = refresh_stitched_trajectory_manifest(
+        rollout,
+        source,
+        original_model=model,
+        live_model=model,
+        n_recorded=1,
+        n_live=1,
+    )
+
+    assert manifest.status is CaptureStatus.COMPLETE
+    assert manifest.capture_fidelity is CaptureFidelity.PROVIDER_WIRE
+    assert manifest.exchange_count == 2
+    assert capture_manifest_allows_training(
+        manifest.model_dump(mode="json"), exchange_count=2
+    )
+    live_row = json.loads(out.read_text().splitlines()[-1])
+    assert live_row["metadata"]["capture_fidelity"] == "provider_wire"
+    assert live_row["metadata"]["model"] == model
+
+
+def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path):
+    """Guards PR #1057 against promoting audit-only continuation prefixes."""
+
+    source = write_run_folder(
+        tmp_path / "source",
+        exchanges=[exchange(completion(content="recorded"))],
+        model="claude-sonnet-4-6",
+    )
+    source_manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.PARTIAL,
+        capture_source=CaptureSource.CLAUDE_NATIVE_SESSION,
+        capture_fidelity=CaptureFidelity.AGENT_SESSION,
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="source",
+        exchange_count=1,
+        request_complete=False,
+        response_complete=True,
+        started_at="2026-08-29T00:00:00Z",
+        finished_at="2026-08-29T00:01:00Z",
+        missing_fields=["provider_request"],
+    )
+    write_llm_trajectory_manifest(source, source_manifest)
+
+    rollout = tmp_path / "continued"
+    initialize_llm_trajectory_artifacts(
+        rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued",
+        started_at=source_manifest.finished_at,
+    )
+    write_stitched_trajectory(
+        rollout,
+        source / "trajectory" / "llm_trajectory.jsonl",
+        [exchange(completion(content="live"))],
+        live_model="openai/gpt-5.5",
+    )
+    manifest = refresh_stitched_trajectory_manifest(
+        rollout,
+        source,
+        original_model="claude-sonnet-4-6",
+        live_model="openai/gpt-5.5",
+        n_recorded=1,
+        n_live=1,
+    )
+
+    assert manifest.status is CaptureStatus.PARTIAL
+    assert manifest.capture_source is CaptureSource.MIXED
+    assert manifest.capture_fidelity is CaptureFidelity.MIXED
+    assert manifest.auth_mode is AuthMode.MIXED
+    assert not capture_manifest_allows_training(
+        manifest.model_dump(mode="json"), exchange_count=2
+    )
 
 
 def test_summarize_llm_trajectory_usage_splits_recorded_and_live(tmp_path):

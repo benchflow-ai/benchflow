@@ -27,6 +27,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,6 +41,17 @@ from benchflow.continue_run.sandbox_proxy import (
 from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
+from benchflow.trajectories.llm_capture_manifest import (
+    AuthMode,
+    CaptureFidelity,
+    CaptureSource,
+    CaptureStatus,
+    LLMRoleCapture,
+    LLMTrajectoryManifest,
+    capture_manifest_allows_training,
+    read_llm_trajectory_manifest,
+    write_llm_trajectory_manifest,
+)
 from benchflow.trajectories.types import LLMExchange, redact_trajectory_text
 
 logger = logging.getLogger(__name__)
@@ -274,14 +286,162 @@ def stitched_trajectory_lines(
 
 
 def write_stitched_trajectory(
-    rollout_dir: Path, original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
+    rollout_dir: Path,
+    original_llm_trajectory: Path,
+    live_exchanges: list[LLMExchange],
+    *,
+    live_model: str | None = None,
 ) -> Path:
     """Write the stitched continuous trajectory into the new rollout folder."""
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = stitched_trajectory_lines(original_llm_trajectory, live_exchanges)
-    out.write_text("\n".join(lines) + ("\n" if lines else ""))
+    lines = stitched_trajectory_lines(original_llm_trajectory, [])
+    for exchange in live_exchanges:
+        payload = exchange.model_dump(mode="json")
+        metadata = payload.setdefault("metadata", {})
+        metadata.update(
+            {
+                "agent": "openhands",
+                "role": "agent",
+                "model": live_model,
+                "auth_mode": AuthMode.API_KEY.value,
+                "capture_source": CaptureSource.LITELLM_PROXY.value,
+                "capture_fidelity": CaptureFidelity.PROVIDER_WIRE.value,
+                "request_complete": True,
+                "response_complete": True,
+                "role_attribution_complete": True,
+                "payload_redacted": True,
+            }
+        )
+        lines.append(redact_trajectory_text(json.dumps(payload, default=str)))
+    rendered = "\n".join(lines) + ("\n" if lines else "")
+    temporary = out.with_suffix(out.suffix + ".tmp")
+    temporary.write_text(rendered)
+    os.replace(temporary, out)
     return out
+
+
+def refresh_stitched_trajectory_manifest(
+    rollout_dir: Path,
+    source_rollout_dir: Path,
+    *,
+    original_model: str | None,
+    live_model: str | None,
+    n_recorded: int,
+    n_live: int,
+) -> LLMTrajectoryManifest:
+    """Replace rollout-finalization provenance with the final stitched contract."""
+
+    current_raw = read_llm_trajectory_manifest(rollout_dir)
+    source_raw = read_llm_trajectory_manifest(source_rollout_dir)
+    try:
+        current = (
+            LLMTrajectoryManifest.model_validate(current_raw)
+            if current_raw is not None
+            else None
+        )
+    except ValueError:
+        current = None
+    try:
+        source = (
+            LLMTrajectoryManifest.model_validate(source_raw)
+            if source_raw is not None
+            else None
+        )
+    except ValueError:
+        source = None
+
+    trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+    exchange_count = sum(
+        bool(line.strip()) for line in trajectory_path.read_text().splitlines()
+    )
+    expected_count = n_recorded + n_live
+    count_matches = exchange_count == expected_count
+    source_allows_training = bool(
+        source_raw is not None
+        and capture_manifest_allows_training(source_raw, exchange_count=n_recorded)
+    )
+    complete = source_allows_training and count_matches
+
+    source_capture_source = source.capture_source if source else CaptureSource.NONE
+    source_fidelity = source.capture_fidelity if source else CaptureFidelity.NONE
+    source_auth = source.auth_mode if source else AuthMode.UNKNOWN
+    if n_live:
+        capture_source = (
+            CaptureSource.LITELLM_PROXY
+            if source_capture_source is CaptureSource.LITELLM_PROXY
+            else CaptureSource.MIXED
+        )
+        capture_fidelity = (
+            CaptureFidelity.PROVIDER_WIRE
+            if source_fidelity is CaptureFidelity.PROVIDER_WIRE
+            else CaptureFidelity.MIXED
+        )
+        auth_mode = (
+            AuthMode.API_KEY if source_auth is AuthMode.API_KEY else AuthMode.MIXED
+        )
+    else:
+        capture_source = source_capture_source
+        capture_fidelity = source_fidelity
+        auth_mode = source_auth
+
+    request_complete = bool(source and source.request_complete and count_matches)
+    response_complete = bool(source and source.response_complete and count_matches)
+    errors = list(source.errors) if source and not complete else []
+    missing_fields = list(source.missing_fields) if source and not complete else []
+    if source is None:
+        errors.append("source LLM trajectory manifest is missing or malformed")
+        missing_fields.append("source_capture_provenance")
+    elif not source_allows_training:
+        errors.append("source LLM trajectory is not complete provider-wire capture")
+    if not count_matches:
+        errors.append(
+            "stitched LLM trajectory count mismatch: "
+            f"expected {expected_count}, found {exchange_count}"
+        )
+        missing_fields.append("exchange_count")
+
+    models = {
+        value
+        for value, present in (
+            (original_model, n_recorded > 0),
+            (live_model, n_live > 0),
+        )
+        if present and value
+    }
+    stitched_model = next(iter(models)) if len(models) == 1 else None
+    manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE if complete else CaptureStatus.PARTIAL,
+        capture_source=capture_source,
+        capture_fidelity=capture_fidelity,
+        auth_mode=auth_mode,
+        agent="openhands",
+        model=stitched_model,
+        session_id=current.session_id if current else rollout_dir.name,
+        exchange_count=exchange_count,
+        request_complete=request_complete,
+        response_complete=response_complete,
+        payload_redacted=source.payload_redacted if source else True,
+        started_at=current.started_at if current else datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        missing_fields=sorted(set(missing_fields)),
+        errors=errors,
+        role_captures=[
+            LLMRoleCapture(
+                role="agent",
+                agent="openhands",
+                model=stitched_model,
+                auth_mode=auth_mode,
+                capture_source=capture_source,
+                capture_fidelity=capture_fidelity,
+                exchange_count=exchange_count,
+                request_complete=request_complete,
+                response_complete=response_complete,
+            )
+        ],
+    )
+    write_llm_trajectory_manifest(rollout_dir, manifest)
+    return manifest
 
 
 def _usage_int(usage: dict[str, Any], *keys: str) -> int:
@@ -561,6 +721,15 @@ async def continue_run(
         rollout_dir,
         run.path / "trajectory" / "llm_trajectory.jsonl",
         router.live_exchanges,
+        live_model=live_model,
+    )
+    refresh_stitched_trajectory_manifest(
+        rollout_dir,
+        run.path,
+        original_model=run.model,
+        live_model=live_model,
+        n_recorded=run.n_recorded_exchanges,
+        n_live=len(router.live_exchanges),
     )
     update_continued_metadata(
         rollout_dir,
@@ -631,6 +800,15 @@ async def _continue_run_with_sandbox_proxy(
             rollout_dir,
             run.path / "trajectory" / "llm_trajectory.jsonl",
             live_exchanges,
+            live_model=live_model,
+        )
+        refresh_stitched_trajectory_manifest(
+            rollout_dir,
+            run.path,
+            original_model=run.model,
+            live_model=live_model,
+            n_recorded=run.n_recorded_exchanges,
+            n_live=len(live_exchanges),
         )
         update_continued_metadata(
             rollout_dir,
