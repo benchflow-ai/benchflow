@@ -13,10 +13,13 @@ environment and continues its own loop with **no injected prompt**.
 
 ## The problem it solves
 
-A finished run keeps nothing of the container — cleanup tears the sandbox down.
-What survives on disk is the run folder: `config.json`, `result.json`,
-`prompts.json`, and `trajectory/llm_trajectory.jsonl`. So a historical timeout
-has only its *trajectory* + the *task*; there is no saved container to restore.
+A finished run keeps nothing of the container unless it opted into snapshot
+retention (`bench eval run --keep-snapshots`, rollout-branching RFC §3.6) —
+cleanup tears the sandbox down and marks any recorded stage refs `ephemeral`
+in `stage_snapshots.json`. What survives on disk otherwise is the run folder:
+`config.json`, `result.json`, `prompts.json`, and
+`trajectory/llm_trajectory.jsonl`. So a historical timeout has only its
+*trajectory* + the *task*; there is no saved container to restore.
 
 `bench eval continue` reconstructs the missing state from the trajectory.
 
@@ -142,8 +145,11 @@ went wrong in.
 - **Replay fidelity is best-effort.** Replay re-runs the original shell
   commands for real; if a command's output diverges from the original
   (network, timestamps, nondeterminism), the agent may see a different
-  observation than recorded. A message-count check warns on divergence
-  (`--strict-divergence` aborts instead).
+  observation than recorded. Divergence warns rather than aborts
+  (`--strict-divergence` aborts instead): through the host replay proxy the
+  per-exchange check compares content digests of the comparable
+  `{messages, tools}` projection ([Cut-points](#cut-points)); the in-sandbox
+  proxy checks message counts only.
 - **"Identical output" means a faithful continuation**, not a bit-identical
   result — the model samples, and no "original full run" exists past the
   timeout. The bar is: the stitched trajectory reads as one continuous run, as

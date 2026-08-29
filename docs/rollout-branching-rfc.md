@@ -32,16 +32,19 @@ Concretely, after this RFC a task author or reviewer can run:
 
 | Substrate | Where | State |
 |---|---|---|
-| Branch engine: `Rollout.branch(n)` — quiesce → checkpoint → fork → restore → aggregate over a tree-native rollout | `src/benchflow/rollout_branch.py`, `src/benchflow/branch.py`, `docs/architecture.md` ("Branch lifecycle") | **Live**, but checkpoints the Environment plane only |
-| Container snapshots: `Sandbox.snapshot()/restore()`, `SandboxImage`, `supports_snapshot` (fail-closed default) | `src/benchflow/sandbox/protocol.py` (from #384/#470); Docker = `docker commit`, Daytona-direct = provider snapshots | **Live**, but the branch engine gates on `supports_snapshot` and never calls it |
-| Environment-state snapshots (declared sqlite files, `sqlite3 .backup`, fail-closed `EnvironmentSnapshotError`) | `src/benchflow/environment/manifest_env.py` (from #387/#486) | **Live**; sole restore point used by the branch engine |
-| Record-replay of a finished run: replay `llm_trajectory.jsonl` responses by index through a proxy into a fresh sandbox | `src/benchflow/continue_run/` (`bench eval continue`) | **Live** (openhands-only), replays the full prefix only |
-| Per-run variation axes: env-registry refs (S-axis), allowlisted `--config-override` patches (C-axis), `skill_mode` | `environment/_registry/`, `_utils/config_override.py`, `rollout/_config.py` | **Live**, but bound once at rollout setup — no per-child variation |
+| Branch engine: `Rollout.branch(n)` — quiesce → checkpoint → fork → restore → aggregate over a tree-native rollout | `src/benchflow/rollout_branch.py`, `src/benchflow/branch.py`, `docs/architecture.md` ("Branch lifecycle") | **Live**; composes the checkpoint from the layers the fork requests (`snapshot_layers` — Environment state by default, the container layer on request, §3.1) |
+| Container snapshots: `Sandbox.snapshot()/restore()`, `SandboxImage`, `supports_snapshot` (fail-closed default) | `src/benchflow/sandbox/protocol.py` (from #384/#470); Docker = `docker commit`, Daytona-direct = provider snapshots | **Live**; gated on `supports_snapshot` and composed into the branch checkpoint whenever the `sandbox` layer is requested |
+| Environment-state snapshots (declared sqlite files, `sqlite3 .backup`, fail-closed `EnvironmentSnapshotError`) | `src/benchflow/environment/manifest_env.py` (from #387/#486) | **Live**; the branch engine's default restore layer, composed with the container layer when the fork requests both |
+| Record-replay of a finished run: replay `llm_trajectory.jsonl` responses by index through a proxy into a fresh sandbox | `src/benchflow/continue_run/` (`bench eval continue`) | **Live** (openhands-only); replays the full prefix, or cuts short at `--max-exchanges` / `--cut-stage` (§3.5) |
+| Per-run variation axes: env-registry refs (S-axis), allowlisted `--config-override` patches (C-axis), `skill_mode` | `environment/_registry/`, `_utils/config_override.py`, `rollout/_config.py` | **Live**; bound at rollout setup, and executable per branch child as §3.3 deltas |
 | Task-authoring surface: `branch_execution: forked-snapshot` | `docs/task-standard.md` | **Live** — compiles to a stage-capture request the launch policy honors (snapshot-capable sandboxes only; see task-standard) |
 
-The gap is stated in `docs/architecture.md`: *"container and agent-session checkpoint
-composition remain future work."* Branch children today also leave **no artifacts** —
-no per-child `result.json`, no serialized tree, no record of what differed.
+The gap, as `docs/architecture.md` stated it when this RFC was drafted: *"container
+and agent-session checkpoint composition remain future work."* Container + environment
+composition has since shipped (§3.1's `snapshot_layers`); agent-session composition is
+still future work (§7). Branch children, which then left **no artifacts** — no
+per-child `result.json`, no serialized tree, no record of what differed — now leave
+the §3.4 lineage.
 
 ## 3. Design
 
@@ -64,10 +67,10 @@ Restore is symmetric and reversed: restore container, then environment state, th
 and typed error (`SandboxSnapshotNotSupported`, `EnvironmentSnapshotError`). A branch
 request declares which layers it requires; missing capability **fails closed with a
 diagnostic**, never silently degrades. This generalizes today's behavior instead of
-changing it: an env-state-only checkpoint (the current engine) remains expressible as
-`require_layers={"environment"}`. It also *relaxes* today's hard constraint that any
-branch requires declared sqlite state: a stateless env + snapshot-capable sandbox can
-branch with `require_layers={"sandbox"}`.
+changing it: an env-state-only checkpoint (the historical engine, still the default)
+remains expressible as `snapshot_layers={"environment"}`. It also *relaxes* the prior
+hard constraint that any branch requires declared sqlite state: a stateless env +
+snapshot-capable sandbox can branch with `snapshot_layers={"sandbox"}`.
 
 Agent-session state is **explicitly layer three and out of scope for v1** (§7).
 
@@ -154,7 +157,7 @@ already installed and children continue in place.
 
 ### 3.4 Lineage: branched runs must be auditable and trainable
 
-Today `RolloutTree` lives and dies in memory. This RFC makes branching leave the same
+`RolloutTree` used to live and die in memory. This RFC makes branching leave the same
 quality of evidence as a linear run:
 
 - **`tree.json`** in the run folder: nodes, edges, stage tags, snapshot refs,
@@ -301,9 +304,11 @@ intervention matters at or before stage X") is only earned by a *second*
 ablation at a second boundary, which is the T3 table, not one invocation of the
 command.
 
-Out of the command's reach, by construction: `post-research` (only an
-explicit `Rollout.mark_stage()` records a mid-`execute()` cut point, §3.2),
-image-changing `env:` arms (the image-vs-services boundary, §3.3 — an image
+Out of the command's reach, by construction: `post-research` without a
+research-end trigger (only an explicit `Rollout.mark_stage()` records a
+mid-`execute()` cut point, §3.2 — `--mark-research-end-on <workspace-path>`
+is what supplies that mark from the CLI), image-changing `env:` arms (the
+image-vs-services boundary, §3.3 — an image
 delta needs a rebuild, which contradicts branching from a snapshot), and
 repeated arms for variance — one run per arm is one observation, not an
 estimate. `config:` and service-level `env:` arms execute (§3.3) at
