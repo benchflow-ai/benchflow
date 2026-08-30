@@ -389,7 +389,7 @@ class TestPrivDropCommand:
 
         cmd = build_priv_drop_cmd(
             "awk '/^NoNewPrivs:/ {print $2}' /proc/self/status",
-            "nobody",
+            "daemon",
         )
 
         result = subprocess.run(
