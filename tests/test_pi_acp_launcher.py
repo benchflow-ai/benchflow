@@ -32,7 +32,6 @@ def _pi_env(monkeypatch, tmp_path):
         "BENCHFLOW_PROVIDER_MODEL",
         "BENCHFLOW_PROVIDER_MODELS",
         "BENCHFLOW_PROVIDER_NAME",
-        "BENCHFLOW_LITELLM_MODEL_ALIAS",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_MODEL",
@@ -144,56 +143,6 @@ class TestSetupProviderOpenAI:
         config = json.loads((config_dir / "models.json").read_text())
         assert "other" in config["providers"], "pre-existing provider must survive"
         assert "vllm" in config["providers"], "new provider must be added"
-
-    def test_proxy_mode_replaces_existing_providers(self, monkeypatch, tmp_path):
-        """Guards PR #1057 review r3888489750 against a Pi proxy escape.
-
-        Proxy mode must discard every pre-existing provider and top-level field,
-        including literal API keys, so Pi can only route through LiteLLM.
-        """
-        config_dir = tmp_path / ".pi" / "agent"
-        config_dir.mkdir(parents=True)
-        stale_key = "stale-direct-provider-key"
-        existing = {
-            "providers": {
-                "direct-anthropic": {
-                    "baseUrl": "https://api.anthropic.com",
-                    "api": "anthropic-messages",
-                    "apiKey": stale_key,
-                    "models": [{"id": "claude", "name": "claude"}],
-                },
-                "direct-openai": {
-                    "baseUrl": "https://api.openai.com/v1",
-                    "api": "openai-completions",
-                    "apiKey": "another-stale-key",
-                    "models": [{"id": "gpt", "name": "gpt"}],
-                },
-            },
-            "unrelated": {"credential": "must-also-be-removed"},
-        }
-        models_path = config_dir / "models.json"
-        models_path.write_text(json.dumps(existing))
-
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://127.0.0.1:4000/v1")
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "proxy-master-key")
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "benchflow-model-alias")
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", "litellm")
-        monkeypatch.setenv("BENCHFLOW_LITELLM_MODEL_ALIAS", "benchflow-model-alias")
-
-        from benchflow.agents.pi_acp_launcher import setup_provider
-
-        setup_provider()
-
-        serialized = models_path.read_text()
-        config = json.loads(serialized)
-        assert set(config) == {"providers"}
-        assert set(config["providers"]) == {"litellm"}
-        assert config["providers"]["litellm"]["baseUrl"] == ("http://127.0.0.1:4000/v1")
-        assert config["providers"]["litellm"]["apiKey"] == "proxy-master-key"
-        assert stale_key not in serialized
-        assert "another-stale-key" not in serialized
-        assert "must-also-be-removed" not in serialized
 
     def test_overwrites_corrupt_models_json(self, monkeypatch, tmp_path, capsys):
         config_dir = tmp_path / ".pi" / "agent"

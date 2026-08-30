@@ -65,6 +65,24 @@ def _proxy_process_isolation_guard(cred_home: str) -> tuple[str, bool]:
     )
 
 
+def _proxy_auth_cleanup_command(
+    process_guard: str,
+    paths: list[str],
+    settings_targets: list[dict[str, object]],
+) -> str:
+    """Build the no-follow cleanup command gated by process isolation."""
+
+    return f"{process_guard} && " + " ".join(
+        (
+            f"{_BENCHFLOW_NODE_BIN} -e",
+            shlex.quote(_PROXY_AUTH_CLEANUP_JS),
+            "--",
+            shlex.quote(json.dumps(paths, separators=(",", ":"))),
+            shlex.quote(json.dumps(settings_targets, separators=(",", ":"))),
+        )
+    )
+
+
 async def upload_credential(
     env,
     path: str,
@@ -242,16 +260,39 @@ async def isolate_agent_for_proxy_capture(
     process_guard, processes_safe = _proxy_process_isolation_guard(cred_home)
 
     if subscription_auth is None:
+        if agent == "pi-acp":
+            home = PurePosixPath(cred_home)
+            relative_models_path = PurePosixPath(".pi/agent/models.json")
+            paths = [str(home / relative_models_path)]
+            paths_safe = True
+            for home_env in ("HOME", "BENCHFLOW_AGENT_HOME"):
+                override_value = agent_env.get(home_env, "")
+                if override_value and override_value != cred_home:
+                    override_home = _safe_proxy_auth_root(
+                        override_value,
+                        cred_home=cred_home,
+                        agent=agent,
+                    )
+                    if override_home is None:
+                        paths_safe = False
+                    else:
+                        paths.append(str(override_home / relative_models_path))
+                agent_env[home_env] = cred_home
+            paths = list(dict.fromkeys(paths))
+            cleanup_command = _proxy_auth_cleanup_command(process_guard, paths, [])
+        else:
+            paths_safe = True
+            cleanup_command = process_guard
         try:
             result = await env.exec(
-                process_guard,
+                cleanup_command,
                 user="root",
                 timeout_sec=10,
             )
         except Exception as exc:
             logger.warning("Failed to isolate %s agent processes: %s", agent, exc)
             return False
-        return bool(result.return_code == 0 and processes_safe)
+        return bool(result.return_code == 0 and paths_safe and processes_safe)
 
     primary_files = [
         auth_file
@@ -319,14 +360,10 @@ async def isolate_agent_for_proxy_capture(
         settings_targets = list(
             {str(target["path"]): target for target in settings_targets}.values()
         )
-    cleanup_command = f"{process_guard} && " + " ".join(
-        (
-            f"{_BENCHFLOW_NODE_BIN} -e",
-            shlex.quote(_PROXY_AUTH_CLEANUP_JS),
-            "--",
-            shlex.quote(json.dumps(paths, separators=(",", ":"))),
-            shlex.quote(json.dumps(settings_targets, separators=(",", ":"))),
-        )
+    cleanup_command = _proxy_auth_cleanup_command(
+        process_guard,
+        paths,
+        settings_targets,
     )
     try:
         result = await env.exec(

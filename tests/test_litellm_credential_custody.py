@@ -152,7 +152,62 @@ async def test_proxy_process_guard_applies_without_subscription_auth(agent) -> N
     assert "pgrep -u" in sandbox.commands[0]
     assert '"$bf_agent_uid" -ne 0' in sandbox.commands[0]
     assert '"$bf_pgrep_rc" -eq 1' in sandbox.commands[0]
-    assert _PROXY_AUTH_CLEANUP_JS not in sandbox.commands[0]
+    if agent == "pi-acp":
+        assert _PROXY_AUTH_CLEANUP_JS in sandbox.commands[0]
+        assert "/home/agent/.pi/agent/models.json" in sandbox.commands[0]
+    else:
+        assert _PROXY_AUTH_CLEANUP_JS not in sandbox.commands[0]
+
+
+@pytest.mark.asyncio
+async def test_pi_proxy_cleanup_removes_every_safe_effective_models_config() -> None:
+    """Guards PR #1057 review r3888489750 against stale direct Pi routes."""
+
+    sandbox = _SubscriptionIsolationSandbox()
+    agent_env = {
+        "HOME": "/home/agent/custom-home",
+        "BENCHFLOW_AGENT_HOME": "/home/agent/custom-agent-home",
+    }
+
+    trusted = await isolate_agent_for_proxy_capture(
+        sandbox,
+        agent="pi-acp",
+        agent_env=agent_env,
+        cred_home="/home/agent",
+    )
+
+    assert trusted is True
+    assert agent_env["HOME"] == "/home/agent"
+    assert agent_env["BENCHFLOW_AGENT_HOME"] == "/home/agent"
+    assert len(sandbox.commands) == 1
+    command = sandbox.commands[0]
+    assert "/home/agent/.pi/agent/models.json" in command
+    assert "/home/agent/custom-home/.pi/agent/models.json" in command
+    assert "/home/agent/custom-agent-home/.pi/agent/models.json" in command
+    assert "O_NOFOLLOW" in command
+    assert "/proc/self/fd/" in command
+
+
+@pytest.mark.asyncio
+async def test_pi_proxy_cleanup_rejects_models_config_outside_sandbox_home() -> None:
+    """Guards PR #1057 review r3888489750 against unsafe root deletion."""
+
+    sandbox = _SubscriptionIsolationSandbox()
+    agent_env = {"HOME": "/etc/pi-home"}
+
+    trusted = await isolate_agent_for_proxy_capture(
+        sandbox,
+        agent="pi-acp",
+        agent_env=agent_env,
+        cred_home="/home/agent",
+    )
+
+    assert trusted is False
+    assert agent_env["HOME"] == "/home/agent"
+    assert agent_env["BENCHFLOW_AGENT_HOME"] == "/home/agent"
+    assert len(sandbox.commands) == 1
+    assert "/home/agent/.pi/agent/models.json" in sandbox.commands[0]
+    assert "/etc/pi-home" not in sandbox.commands[0]
 
 
 @pytest.mark.asyncio
