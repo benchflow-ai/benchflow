@@ -376,8 +376,11 @@ async def test_disconnect_waits_for_role_agent_process_to_quiesce():
     assert len(env.calls) == 1
     command, kwargs = env.calls[0]
     assert "id -u -- agent" in command
-    assert 'pkill -u "$bf_agent_uid" -f' in command
     assert 'pgrep -u "$bf_agent_uid" -f' in command
+    assert 'pgrep -u "$bf_agent_uid" -P "$bf_pid"' in command
+    assert 'kill -STOP "$bf_pid"' in command
+    assert "kill -TERM $bf_pids" in command
+    assert "kill -KILL $bf_alive" in command
     assert 'while [ "$bf_wait" -lt 20 ]' in command
     assert "sleep 0.1" in command
     assert kwargs == {"timeout_sec": 10}

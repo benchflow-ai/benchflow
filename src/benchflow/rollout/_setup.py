@@ -186,6 +186,73 @@ def _agent_process_kill_pattern(agent_launch: str) -> str | None:
     return None
 
 
+def _agent_process_termination_command(
+    agent_launch: str, sandbox_user: str | None
+) -> str | None:
+    """Return a bounded command that terminates one agent process tree.
+
+    ACP wrappers commonly spawn the real CLI as a child. Killing only the
+    wrapper can orphan that child under PID 1, which both leaks context across
+    roles and prevents the next provider-proxy role from proving exclusive
+    credential custody. For non-root sandbox users, freeze each discovered
+    descendant before walking deeper, then terminate only the recorded tree.
+    Unrelated processes owned by the same user are deliberately untouched.
+    """
+
+    pattern = _agent_process_kill_pattern(agent_launch)
+    if pattern is None:
+        return None
+    quoted_pattern = shlex.quote(pattern)
+    if not sandbox_user:
+        return f"pkill -f {quoted_pattern} || true"
+
+    quoted_user = shlex.quote(sandbox_user)
+    return (
+        f"bf_agent_uid=$(id -u -- {quoted_user}) || exit 1\n"
+        f'bf_frontier=$(pgrep -u "$bf_agent_uid" -f {quoted_pattern} '
+        "2>/dev/null || true)\n"
+        "bf_pids=\n"
+        'while [ -n "$bf_frontier" ]; do\n'
+        "  bf_next=\n"
+        "  for bf_pid in $bf_frontier; do\n"
+        "    case \"$bf_pid\" in ''|*[!0-9]*) exit 1 ;; esac\n"
+        '    case " $bf_pids " in *" $bf_pid "*) continue ;; esac\n'
+        '    bf_pids="$bf_pids $bf_pid"\n'
+        '    kill -STOP "$bf_pid" 2>/dev/null || true\n'
+        '    bf_children=$(pgrep -u "$bf_agent_uid" -P "$bf_pid" '
+        "2>/dev/null || true)\n"
+        '    bf_next="$bf_next $bf_children"\n'
+        "  done\n"
+        '  bf_frontier="$bf_next"\n'
+        "done\n"
+        'if [ -n "$bf_pids" ]; then\n'
+        "  kill -TERM $bf_pids 2>/dev/null || true\n"
+        "  kill -CONT $bf_pids 2>/dev/null || true\n"
+        "fi\n"
+        "bf_wait=0\n"
+        'while [ "$bf_wait" -lt 20 ]; do\n'
+        "  bf_alive=\n"
+        "  for bf_pid in $bf_pids; do\n"
+        '    if kill -0 "$bf_pid" 2>/dev/null; then '
+        'bf_alive="$bf_alive $bf_pid"; fi\n'
+        "  done\n"
+        '  [ -z "$bf_alive" ] && break\n'
+        "  sleep 0.1\n"
+        "  bf_wait=$((bf_wait + 1))\n"
+        "done\n"
+        'if [ -n "$bf_alive" ]; then\n'
+        "  kill -KILL $bf_alive 2>/dev/null || true\n"
+        "  sleep 0.1\n"
+        "fi\n"
+        "bf_alive=\n"
+        "for bf_pid in $bf_pids; do\n"
+        '  if kill -0 "$bf_pid" 2>/dev/null; then '
+        'bf_alive="$bf_alive $bf_pid"; fi\n'
+        "done\n"
+        '[ -z "$bf_alive" ]'
+    )
+
+
 def _configured_task_workdir(task: Any) -> str | None:
     """Return the task-declared sandbox workdir, if any."""
 

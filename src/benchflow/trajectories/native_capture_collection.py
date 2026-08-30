@@ -88,9 +88,10 @@ class ClaudeOtelCollector:
             f"find {self.remote_root} -depth -mindepth 1 -delete "
             "2>/dev/null || true\n"
             f"mkdir -p {self.remote_root}/raw {self.remote_root}/otel\n"
-            f"chown -R {capture_owner} {self.remote_root}\n"
-            f"chmod 700 {self.remote_root} "
-            f"{self.remote_root}/raw {self.remote_root}/otel",
+            f"chown root:root {self.remote_root} {self.remote_root}/otel\n"
+            f"chown {capture_owner} {self.remote_root}/raw\n"
+            f"chmod 711 {self.remote_root}\n"
+            f"chmod 700 {self.remote_root}/raw {self.remote_root}/otel",
             user="root",
             timeout_sec=10,
         )
@@ -133,7 +134,12 @@ tail -c 300 {self.remote_root}/collector.stderr >&2 2>/dev/null || true
 exit 1
 """
         self.owned = True
-        result = await env.exec(command, user=sandbox_user or "root", timeout_sec=10)
+        # The sink is BenchFlow infrastructure, not part of the agent process
+        # tree. Keep it root-owned so role teardown and the next API-proxy
+        # custody proof can require zero live sandbox-user processes. Claude
+        # still writes its raw-body files into the separately agent-owned
+        # ``raw`` directory and exports OTel to this loopback listener.
+        result = await env.exec(command, user="root", timeout_sec=10)
         if result.return_code != 0:
             detail = (result.stderr or result.stdout or "collector did not start")[:300]
             raise RuntimeError(f"Claude OTel sink failed to start: {detail}")

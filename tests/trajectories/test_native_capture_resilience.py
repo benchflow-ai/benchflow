@@ -22,13 +22,46 @@ from benchflow.trajectories.llm_capture_records import (
     assemble_capture,
     load_provider_wire_records,
 )
-from benchflow.trajectories.native_capture_collection import NativeCollection
+from benchflow.trajectories.native_capture_collection import (
+    ClaudeOtelCollector,
+    NativeCollection,
+)
 from benchflow.trajectories.native_capture_parsers import (
     parse_codex_sessions,
     project_acp_trajectory,
 )
 
 STARTED_AT = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_claude_otel_collector_is_outside_agent_process_custody() -> None:
+    """Guards PR #1057 mixed auth against its sink blocking the next role."""
+
+    calls: list[tuple[str, dict]] = []
+
+    class RecordingEnv:
+        async def exec(self, command, **kwargs):
+            calls.append((command, kwargs))
+            if "nohup" in command:
+                return SimpleNamespace(return_code=0, stdout="43123\n", stderr="")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def upload_file(self, *_args, **_kwargs):
+            return None
+
+    collector = ClaudeOtelCollector("/tmp/benchflow-capture-test")
+    port = await collector.ensure(RecordingEnv(), sandbox_user="agent")
+
+    assert port == 43123
+    setup_command, setup_kwargs = calls[1]
+    assert "chown agent /tmp/benchflow-capture-test/raw" in setup_command
+    assert "chown root:root /tmp/benchflow-capture-test" in setup_command
+    assert "chmod 711 /tmp/benchflow-capture-test" in setup_command
+    assert setup_kwargs["user"] == "root"
+    launch_command, launch_kwargs = calls[2]
+    assert "nohup" in launch_command
+    assert launch_kwargs["user"] == "root"
 
 
 @pytest.mark.asyncio
