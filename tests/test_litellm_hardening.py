@@ -288,6 +288,7 @@ class _FakeSandbox:
         self,
         *,
         fail_launch: bool = False,
+        fail_install: bool = False,
         fail_preflight: bool = False,
         log_content: str = _SUCCESS_LOG,
     ):
@@ -296,6 +297,7 @@ class _FakeSandbox:
         self.exec_calls: list[str] = []
         self.exec_timeouts: list[int | None] = []
         self.fail_launch = fail_launch
+        self.fail_install = fail_install
         self.fail_preflight = fail_preflight
         self.log_content = log_content
         self._started = False
@@ -309,6 +311,8 @@ class _FakeSandbox:
     ) -> _ExecResult:
         self.exec_calls.append(command)
         self.exec_timeouts.append(timeout_sec)
+        if "pip install" in command and "litellm" in command and self.fail_install:
+            return _ExecResult(1, stderr="install failed")
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -445,6 +449,37 @@ async def test_vertex_sandbox_litellm_has_google_runtime_and_local_adc():
     assert (
         "GOOGLE_APPLICATION_CREDENTIALS_JSON"
         not in json.loads(sandbox.uploaded[launch_path])["env"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_vertex_install_failure_cleans_runtime_without_uploading_adc():
+    """Guards PR #985 cleanup when Vertex dependency installation fails."""
+    route = resolve_litellm_route(
+        "anthropic-vertex/claude-sonnet-4-6",
+        {"GOOGLE_CLOUD_PROJECT": "project", "GOOGLE_CLOUD_LOCATION": "region"},
+    )
+    sandbox = _FakeSandbox(fail_install=True)
+
+    with pytest.raises(RuntimeError, match="install LiteLLM in sandbox"):
+        await runtime_mod._start_sandbox_litellm(
+            sandbox=sandbox,
+            route=route,
+            master_key="sk-master",
+            agent_env={"GOOGLE_APPLICATION_CREDENTIALS_JSON": '{"type":"test"}'},
+            session_id="s",
+            agent_name="claude-agent-acp",
+        )
+
+    runtime_dir = next(
+        path.rsplit("/", 1)[0]
+        for path in sandbox.uploaded
+        if path.endswith("config.yaml")
+    )
+    assert f"rm -rf {runtime_dir}" in sandbox.exec_calls
+    assert not any(
+        path.endswith("application_default_credentials.json")
+        for path in sandbox.uploaded
     )
 
 

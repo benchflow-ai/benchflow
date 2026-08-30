@@ -1169,60 +1169,62 @@ async def _start_sandbox_litellm(
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
     runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
+    pid_path = f"{runtime_dir}/litellm.pid"
     config = litellm_proxy_config(route, master_key=master_key)
-    paths = await _upload_runtime_files_to_sandbox(
-        sandbox,
-        runtime_dir=runtime_dir,
-        config=config,
-    )
     proxy_agent_env = dict(agent_env)
     extra_requirements: tuple[str, ...] = ()
+    adc_json = None
     if route.provider_name in {"google-vertex", "anthropic-vertex"}:
         extra_requirements = ("google-cloud-aiplatform>=1.133.0,<2.0",)
         adc_json = proxy_agent_env.pop("GOOGLE_APPLICATION_CREDENTIALS_JSON", None)
+    try:
+        paths = await _upload_runtime_files_to_sandbox(
+            sandbox,
+            runtime_dir=runtime_dir,
+            config=config,
+        )
+        python = await _ensure_sandbox_litellm(
+            sandbox,
+            venv_dir=paths["venv"],
+            extra_requirements=extra_requirements,
+            install_timeout_sec=install_timeout_sec,
+        )
         if adc_json:
             adc_path = f"{runtime_dir}/application_default_credentials.json"
             await _upload_text(sandbox, adc_json, adc_path, ".json")
             proxy_agent_env["GOOGLE_APPLICATION_CREDENTIALS"] = adc_path
-    python = await _ensure_sandbox_litellm(
-        sandbox,
-        venv_dir=paths["venv"],
-        extra_requirements=extra_requirements,
-        install_timeout_sec=install_timeout_sec,
-    )
-    env = proxy_agent_env
-    env.update(
-        {
-            "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
-            "LITELLM_MASTER_KEY": master_key,
-            "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
-            **_PROXY_DOCS_DISABLE_ENV,
+        env = proxy_agent_env
+        env.update(
+            {
+                "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
+                "LITELLM_MASTER_KEY": master_key,
+                "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+                **_PROXY_DOCS_DISABLE_ENV,
+            }
+        )
+        launch_config = {
+            "python": python,
+            "litellm": f"{paths['venv']}/bin/litellm",
+            "config": paths["config"],
+            "stdout": paths["stdout"],
+            "stderr": paths["stderr"],
+            "pid": paths["pid"],
+            "state": paths["state"],
+            "env": env,
         }
-    )
-    launch_config = {
-        "python": python,
-        "litellm": f"{paths['venv']}/bin/litellm",
-        "config": paths["config"],
-        "stdout": paths["stdout"],
-        "stderr": paths["stderr"],
-        "pid": paths["pid"],
-        "state": paths["state"],
-        "env": env,
-    }
-    await _upload_text(
-        sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
-    )
-    # The launcher reads launch_config.json (provider env + master key) at
-    # startup; unlink it immediately afterwards so the secret does not sit in
-    # the sandbox filesystem for the life of the run.
-    command = (
-        f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
-        f"{shlex.quote(paths['log'])} && "
-        f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
-        f"{shlex.quote(paths['launch_config'])}; "
-        f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
-    )
-    try:
+        await _upload_text(
+            sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
+        )
+        # The launcher reads launch_config.json (provider env + master key) at
+        # startup; unlink it immediately afterwards so the secret does not sit in
+        # the sandbox filesystem for the life of the run.
+        command = (
+            f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
+            f"{shlex.quote(paths['log'])} && "
+            f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
+            f"{shlex.quote(paths['launch_config'])}; "
+            f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
+        )
         result = await sandbox.exec(command, timeout_sec=20)
         if result.return_code != 0:
             raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
@@ -1251,7 +1253,7 @@ async def _start_sandbox_litellm(
     except BaseException:
         # Never leak a half-started proxy (provider keys + master_key on disk).
         await _terminate_sandbox_litellm(
-            sandbox, pid_path=paths["pid"], runtime_dir=runtime_dir
+            sandbox, pid_path=pid_path, runtime_dir=runtime_dir
         )
         raise
     endpoint = LiteLLMEndpoint(
