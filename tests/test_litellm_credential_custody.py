@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from benchflow.agents.credentials import isolate_subscription_auth_for_proxy
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import resolve_litellm_route
 from benchflow.providers.runtime import ensure_litellm_runtime
@@ -22,36 +23,97 @@ class _SubscriptionIsolationSandbox:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("return_code", "trusted"), [(0, True), (1, False)])
-async def test_claude_api_proxy_isolates_preexisting_subscription_credential(
-    monkeypatch, return_code: int, trusted: bool
+@pytest.mark.parametrize(
+    ("agent", "override_env", "default_auth_path", "return_code", "trusted"),
+    [
+        (
+            "claude-agent-acp",
+            "CLAUDE_CONFIG_DIR",
+            "/home/agent/.claude/.credentials.json",
+            0,
+            True,
+        ),
+        (
+            "codex-acp",
+            "CODEX_HOME",
+            "/home/agent/.codex/auth.json",
+            0,
+            True,
+        ),
+        (
+            "claude-agent-acp",
+            "CLAUDE_CONFIG_DIR",
+            "/home/agent/.claude/.credentials.json",
+            1,
+            False,
+        ),
+    ],
+)
+async def test_api_proxy_isolates_preexisting_subscription_credential(
+    monkeypatch,
+    agent: str,
+    override_env: str,
+    default_auth_path: str,
+    return_code: int,
+    trusted: bool,
 ) -> None:
-    """Guards PR #1057 against a reused Claude OAuth file bypassing capture."""
+    """Guards PR #1057 against reused native auth bypassing capture."""
 
     async def fake_start(**_kwargs):
         return SimpleNamespace(base_url="http://127.0.0.1:4000")
 
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
     sandbox = _SubscriptionIsolationSandbox(return_code=return_code)
+    agent_env = {
+        "ANTHROPIC_API_KEY": "sk-ant-provider",
+        "OPENAI_API_KEY": "sk-openai-provider",
+        override_env: f"/home/agent/custom-{agent}",
+    }
 
-    _, provider_runtime = await ensure_litellm_runtime(
-        agent="claude-agent-acp",
-        agent_env={"ANTHROPIC_API_KEY": "sk-ant-provider"},
-        model="claude-sonnet-4-6",
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=agent_env,
+        model="claude-sonnet-4-6" if agent == "claude-agent-acp" else "gpt-5.6-sol",
         runtime=None,
         environment="docker",
-        session_id="run-claude-api-with-stale-oauth",
+        session_id=f"run-{agent}-api-with-stale-oauth",
         sandbox=sandbox,
         sandbox_user="agent",
     )
 
     assert provider_runtime is not None
     assert provider_runtime.capture_trusted is trusted
+    assert override_env not in updated
+    assert override_env not in agent_env
     assert len(sandbox.commands) == 1
-    assert "/home/agent/.claude/.credentials.json" in sandbox.commands[0]
+    assert default_auth_path in sandbox.commands[0]
+    assert (
+        f"custom-{agent}/{default_auth_path.rsplit('/', 1)[-1]}" in sandbox.commands[0]
+    )
     assert "rm -f" in sandbox.commands[0]
     assert "! test -e" in sandbox.commands[0]
     assert "! test -L" in sandbox.commands[0]
+
+
+@pytest.mark.asyncio
+async def test_proxy_auth_cleanup_rejects_override_outside_sandbox_home() -> None:
+    """Guards PR #1057 against root deletion through a config-home override."""
+
+    sandbox = _SubscriptionIsolationSandbox()
+    agent_env = {"CODEX_HOME": "/etc/custom-codex"}
+
+    trusted = await isolate_subscription_auth_for_proxy(
+        sandbox,
+        agent="codex-acp",
+        agent_env=agent_env,
+        cred_home="/home/agent",
+    )
+
+    assert trusted is False
+    assert "CODEX_HOME" not in agent_env
+    assert len(sandbox.commands) == 1
+    assert "/home/agent/.codex/auth.json" in sandbox.commands[0]
+    assert "/etc/custom-codex" not in sandbox.commands[0]
 
 
 @pytest.mark.asyncio

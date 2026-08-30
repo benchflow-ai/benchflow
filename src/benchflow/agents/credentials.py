@@ -22,7 +22,7 @@ import logging
 import os
 import shlex
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from benchflow.agents.registry import AGENTS
 
@@ -185,14 +185,18 @@ async def isolate_subscription_auth_for_proxy(
     env,
     *,
     agent: str,
+    agent_env: dict[str, str],
     cred_home: str,
 ) -> bool:
     """Remove the primary native-login credential before an API proxy run.
 
     A reused image may already contain the CLI login detected by
     ``SubscriptionAuth.detect_file``. API-key mode must not leave that alternate
-    provider route available to the agent. Return false unless the registry's
-    primary credential can be identified, removed, and verified absent.
+    provider route available to the agent. A safe CLI config-home override is
+    scrubbed as well as removed before launch; an override outside the sandbox
+    user's home fails capture trust without allowing a root deletion there.
+    Return false unless every eligible credential can be identified, removed,
+    and verified absent.
     """
 
     agent_cfg = AGENTS.get(agent)
@@ -210,18 +214,56 @@ async def isolate_subscription_auth_for_proxy(
         )
         return False
 
-    path = primary_files[0].container_path.format(home=cred_home)
-    quoted_path = shlex.quote(path)
+    primary_path = primary_files[0].container_path.format(home=cred_home)
+    paths = [primary_path]
+    paths_safe = True
+    if subscription_auth.config_dir_env:
+        override_value = agent_env.pop(subscription_auth.config_dir_env, "")
+        if override_value:
+            override_dir = PurePosixPath(override_value)
+            home = PurePosixPath(cred_home)
+            try:
+                override_dir.relative_to(home)
+            except ValueError:
+                paths_safe = False
+            if (
+                not override_dir.is_absolute()
+                or ".." in override_dir.parts
+                or "\x00" in override_value
+            ):
+                paths_safe = False
+            if paths_safe:
+                paths.append(str(override_dir / PurePosixPath(primary_path).name))
+            else:
+                logger.warning(
+                    "Refusing root cleanup outside the sandbox home for %s", agent
+                )
+
+    paths = list(dict.fromkeys(paths))
+    quoted_paths = [shlex.quote(path) for path in paths]
+    parent_paths: set[str] = set()
+    for path in paths:
+        parent = PurePosixPath(path).parent
+        parent_paths.update(
+            str(candidate)
+            for candidate in (*reversed(parent.parents), parent)
+            if str(candidate) != "/"
+        )
+    command_parts = [
+        *(f"! test -L {shlex.quote(parent)}" for parent in sorted(parent_paths)),
+        f"rm -f -- {' '.join(quoted_paths)}",
+        *(f"! test -e {path} && ! test -L {path}" for path in quoted_paths),
+    ]
     try:
         result = await env.exec(
-            f"rm -f -- {quoted_path} && ! test -e {quoted_path} && ! test -L {quoted_path}",
+            " && ".join(command_parts),
             user="root",
             timeout_sec=10,
         )
     except Exception as exc:
         logger.warning("Failed to isolate %s subscription credential: %s", agent, exc)
         return False
-    if result.return_code != 0:
+    if result.return_code != 0 or not paths_safe:
         logger.warning(
             "Subscription credential remained accessible in proxy mode for %s",
             agent,

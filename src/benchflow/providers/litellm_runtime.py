@@ -1838,12 +1838,11 @@ async def ensure_litellm_runtime(
             ),
         )
 
-    credential_home = agent_env.get("BENCHFLOW_AGENT_HOME", "").strip() or (
-        f"/home/{sandbox_user}" if sandbox_user else "/root"
-    )
+    credential_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
     subscription_credentials_isolated = await isolate_subscription_auth_for_proxy(
         sandbox,
         agent=agent,
+        agent_env=agent_env,
         cred_home=credential_home,
     )
 
