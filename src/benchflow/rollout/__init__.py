@@ -2441,9 +2441,17 @@ class Rollout:
         )
         self._adopt_usage_runtime(previous_usage_runtime, next_usage_runtime)
 
+        native_subscription = uses_native_subscription_auth(
+            role.agent,
+            role.model,
+            agent_env,
+        )
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
-            role_agent_differs or role.model != cfg.primary_model or bool(role.env)
+            role_agent_differs
+            or role.model != cfg.primary_model
+            or bool(role.env)
+            or native_subscription
         )
         cred_home = _sandbox_user_home(cfg.sandbox_user)
         if role_agent_differs:
@@ -2555,11 +2563,7 @@ class Rollout:
             credential_home=cred_home,
             role_name=role.name,
         )
-        self._current_usage_is_native_subscription = uses_native_subscription_auth(
-            role.agent,
-            role.model,
-            agent_env,
-        )
+        self._current_usage_is_native_subscription = native_subscription
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
