@@ -39,6 +39,15 @@ def _provenance_validation_script(preview: dict) -> str:
     )
 
 
+def _provenance_discovery_script(preview: dict) -> str:
+    steps = preview["jobs"]["provenance"]["steps"]
+    return next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Find tested release provenance"
+    )
+
+
 def _run_main_gate(
     tmp_path: Path,
     integration: dict,
@@ -125,6 +134,37 @@ def _run_provenance_validation(
     return result, github_output
 
 
+def _run_provenance_discovery(
+    tmp_path: Path,
+    preview: dict,
+    *,
+    artifact_count: int,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text("#!/bin/sh\nprintf '%s\\n' \"$ARTIFACT_COUNT\"\n")
+    fake_gh.chmod(0o755)
+    output = tmp_path / "github-output"
+    result = subprocess.run(
+        ["bash", "-c", _provenance_discovery_script(preview)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "ARTIFACT_COUNT": str(artifact_count),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_REPOSITORY": "benchflow-ai/benchflow",
+            "INTEGRATION_RUN_ID": "123",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    github_output = output.read_text() if output.exists() else ""
+    return result, github_output
+
+
 def test_preview_publish_is_downstream_of_tested_main_live_gate() -> None:
     """Guards the 0.6.6 fix for the workflow-chain regression from PR #802."""
     integration = _workflow("integration-light.yml")
@@ -199,10 +239,17 @@ def test_preview_publish_is_downstream_of_tested_main_live_gate() -> None:
     assert upload_step["with"]["path"] == "release-provenance"
 
     preview_steps = preview["jobs"]["publish"]["steps"]
-    preview_gate = preview["jobs"]["publish"]["if"]
+    preview_gate = preview["jobs"]["provenance"]["if"]
     assert "github.event.workflow_run.conclusion == 'success'" in preview_gate
     assert "github.event.workflow_run.event == 'workflow_run'" in preview_gate
     assert "github.event.workflow_run.head_branch == 'main'" in preview_gate
+    assert preview["jobs"]["provenance"]["outputs"]["available"] == (
+        "${{ steps.artifact.outputs.available }}"
+    )
+    assert preview["jobs"]["publish"]["needs"] == "provenance"
+    assert preview["jobs"]["publish"]["if"] == (
+        "needs.provenance.outputs.available == 'true'"
+    )
     download_step = next(
         step
         for step in preview_steps
@@ -222,6 +269,30 @@ def test_preview_publish_is_downstream_of_tested_main_live_gate() -> None:
         if step.get("name") == "Compute internal preview version"
     )
     assert "${{ steps.provenance.outputs.source_run_number }}" in version_step["run"]
+
+
+def test_preview_requires_exactly_one_release_provenance_artifact(
+    tmp_path: Path,
+) -> None:
+    """Guards the fix from PR #997 against PR-only preview publication failures."""
+    preview = _workflow("internal-preview-release.yml")
+
+    missing, missing_output = _run_provenance_discovery(
+        tmp_path / "missing", preview, artifact_count=0
+    )
+    present, present_output = _run_provenance_discovery(
+        tmp_path / "present", preview, artifact_count=1
+    )
+    duplicate, duplicate_output = _run_provenance_discovery(
+        tmp_path / "duplicate", preview, artifact_count=2
+    )
+
+    assert missing.returncode == 0, missing.stderr
+    assert missing_output == "available=false\n"
+    assert present.returncode == 0, present.stderr
+    assert present_output == "available=true\n"
+    assert duplicate.returncode != 0
+    assert duplicate_output == ""
 
 
 def test_pr_integration_is_not_cancelled_by_test_workflow_completion() -> None:

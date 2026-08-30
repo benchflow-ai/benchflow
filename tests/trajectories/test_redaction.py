@@ -17,6 +17,7 @@ from benchflow.trajectories.types import (
     Trajectory,
     redact_acp_trajectory_jsonl,
     redact_trajectory_text,
+    redact_trajectory_text_with_count,
 )
 
 # Fake token fixtures assembled from split literals so the full token string
@@ -705,6 +706,25 @@ def test_redaction_preserves_json_when_code_mentions_token_label():
     assert "***REDACTED***" not in redacted
 
 
+def test_query_param_redaction_is_idempotent_after_replacement():
+    """Guards PR #1008: the query-param carriers re-matched their own
+    ``***REDACTED***`` marker (the value classes allowed ``*``), so every rescan
+    counted a fresh replacement — the publish-layer stability loop diverged and
+    the server-side rescan rejected already-clean uploads."""
+    raw = (
+        f"GET https://api/v1?access_token={_FAKE_QUERY_SECRET}"
+        f"&sig={_FAKE_QUERY_SECRET}{_FAKE_QUERY_SECRET}&page=2"
+    )
+
+    once, first = redact_trajectory_text_with_count(raw)
+    twice, second = redact_trajectory_text_with_count(once)
+
+    assert first == 2
+    assert (twice, second) == (once, 0)
+    assert "?access_token=***REDACTED***" in once
+    assert once.endswith("&page=2")
+
+
 def test_redaction_does_not_corrupt_python_authorization_fstrings():
     """A Python f-string prefix after an Authorization key is syntax, not a secret."""
     raw = "headers={'Authorization': f'Bearer {token}'}"
@@ -957,3 +977,145 @@ def test_redact_trajectory_obj_preserves_key_context_for_structured_secret():
     out = redact_trajectory_obj({"x-api-key": _PREFIXLESS_SECRET, "note": "plain text"})
     assert out["x-api-key"] == "***REDACTED***"
     assert out["note"] == "plain text"
+
+
+# Redaction transparency: the upload preview itemizes WHAT was masked
+# ("2 API keys, 1 bearer token"), so every rule reports a category and the
+# per-category counts must sum to the backward-compatible total.
+
+_FAKE_PEM = (
+    "-----BEGIN PRIVATE KEY-----\nMIIEvNOTAREALKEYxyz\n-----END PRIVATE KEY-----"
+)
+
+
+@pytest.mark.parametrize(
+    "text,expected_category",
+    [
+        pytest.param(
+            "sk-abc1234567defghijklmnop987654", "API key", id="token-family-api-key"
+        ),
+        pytest.param(
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnopqrstuv",
+            "bearer token",
+            id="jwt-bearer",
+        ),
+        pytest.param(_FAKE_PEM, "private key block", id="pem-private-key"),
+        pytest.param(
+            "postgres://user:hunter2@db.example.com/app",
+            "URL credential",
+            id="url-userinfo",
+        ),
+        pytest.param(
+            "GITHUB_TOKEN=prefixlessSecretValue1234567890",
+            "credential-bearing field value",
+            id="generic-name-carrier",
+        ),
+    ],
+)
+def test_canonical_text_redaction_reports_a_category(text, expected_category):
+    """Guards the redaction-transparency feature from PR #1022: each canonical rule tags its replacements with the
+    kind of secret it actually detects."""
+    from benchflow.trajectories.types import redact_trajectory_text_with_categories
+
+    redacted, categories = redact_trajectory_text_with_categories(text)
+    assert categories == {expected_category: 1}
+    assert redacted != text
+
+
+def test_text_categories_sum_to_the_backward_compatible_count():
+    """Guards the redaction-transparency feature from PR #1022: the categorized scan and the count scan agree, so
+    ``redaction_replacements`` stays backward-compatible."""
+    from benchflow.trajectories.types import (
+        redact_trajectory_text_with_categories,
+        redact_trajectory_text_with_count,
+    )
+
+    text = (
+        "sk-abc1234567defghijklmnop987654 and "
+        "GITHUB_TOKEN=prefixlessSecretValue1234567890 and "
+        "https://user:hunter2@host/"
+    )
+    counted_text, count = redact_trajectory_text_with_count(text)
+    categorized_text, categories = redact_trajectory_text_with_categories(text)
+    assert counted_text == categorized_text
+    assert count == sum(categories.values()) == 3
+    assert categories == {
+        "API key": 1,
+        "credential-bearing field value": 1,
+        "URL credential": 1,
+    }
+
+
+def test_publish_redaction_accumulates_structural_field_categories():
+    """Guards the redaction-transparency feature from PR #1022: structural (field-name keyed) masking categorizes
+    by the credential-bearing name that fired, and the counter total equals the
+    returned replacement count."""
+    from collections import Counter
+
+    from benchflow.publish.redact import REDACTED, redact_value
+
+    categories: Counter[str] = Counter()
+    value = {
+        "password": "hunter2",
+        "api_key": "prefixlessSecretValue1234567890",
+        "client_secret": "prefixlessSecretValue0987654321",
+        "note": "no secret here",
+    }
+    redacted, count = redact_value(value, categories=categories)
+    assert redacted["password"] == REDACTED
+    assert redacted["api_key"] == REDACTED
+    assert redacted["client_secret"] == REDACTED
+    assert redacted["note"] == "no secret here"
+    assert count == 3
+    assert categories == Counter(
+        {
+            "password": 1,
+            "API key": 1,
+            "credential-bearing field value": 1,
+        }
+    )
+
+
+def test_publish_redaction_categorizes_cli_password_options():
+    """Guards the redaction-transparency feature from PR #1022: CLI-argument masking attributes the replacement to
+    the sensitive option name (``--password`` → password)."""
+    from collections import Counter
+
+    from benchflow.publish.redact import redact_value
+
+    categories: Counter[str] = Counter()
+    _, count = redact_value(["mysql", "--password", "hunter2"], categories=categories)
+    assert count == 1
+    assert categories == Counter({"password": 1})
+
+
+def test_stability_redaction_counter_matches_total():
+    """Guards the redaction-transparency feature from PR #1022: the multi-pass stability loop reports the same
+    total through the category counter as through its return value."""
+    from collections import Counter
+
+    from benchflow.publish.redact import redact_value_to_stability
+
+    categories: Counter[str] = Counter()
+    value = {
+        "text": "Bearer prefixlessSecretValue1234567890",
+        "password": "hunter2",
+    }
+    _, count = redact_value_to_stability(value, categories=categories)
+    assert count == sum(categories.values()) >= 2
+    assert categories["bearer token"] >= 1
+    assert categories["password"] == 1
+
+
+def test_format_redaction_breakdown_orders_and_pluralizes():
+    """Guards the redaction-transparency feature from PR #1022: breakdown prose is display-ordered and pluralized
+    (``2 API keys, 1 bearer token``)."""
+    from benchflow.publish.redact import (
+        format_redaction_breakdown,
+        redaction_breakdown,
+    )
+
+    counts = {"bearer token": 1, "API key": 2, "password": 0}
+    assert redaction_breakdown(counts) == (("API key", 2), ("bearer token", 1))
+    assert format_redaction_breakdown(counts) == "2 API keys, 1 bearer token"
+    assert format_redaction_breakdown({}) == ""

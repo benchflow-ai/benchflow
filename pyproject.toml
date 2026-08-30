@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.6.8.dev0"
+version = "0.7.6.dev0"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,6 +40,20 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+azure = [
+    # Direct Azure Blob trajectory uploads (bench traj upload --direct).
+    # Broker-mode uploads need neither package.
+    "azure-storage-blob>=12.19",
+    "azure-identity>=1.16",
+]
+azure-service = [
+    # Dependencies baked into the public trajectory broker/validator image.
+    "azure-storage-blob>=12.19",
+    "azure-identity>=1.16",
+    "azure-data-tables>=12.5",
+    "azure-storage-queue>=12.9",
+    "uvicorn>=0.30",
+]
 dev = [
     "pre-commit>=3.7",
     # AgentCore's CodeBuild path must reproduce Docker's ignore rules in tests
@@ -47,6 +61,11 @@ dev = [
     "pathspec>=0.12",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
+    # Browser-level viewer tests (tests/trajectories/test_viewer_browser.py):
+    # drives the interactive template in real Chromium. Tests self-skip when
+    # playwright or its browser binary is absent, so plain `pytest tests/`
+    # stays runnable without `playwright install chromium`.
+    "playwright>=1.49",
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
 ]
@@ -140,16 +159,24 @@ testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
     "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
+    "browser: drives the viewer template in real Chromium via Playwright (self-skips without playwright/chromium; deselect with -m 'not browser')",
 ]
 
 [tool.ruff]
 target-version = "py312"
 # Vendored third-party service packages baked into task images (e.g. the
 # smolclaws claw-* sources copied under a ClawsBench task's environment/) are
-# not BenchFlow code — do not lint them.
+# not BenchFlow code — do not lint them. The skill-creator, task-creator, and
+# task-review skills are verbatim upstream copies; keeping them byte-identical
+# matters more than local style, so they are excluded too. Skills authored here
+# (e.g. benchflow-experiment-review) stay linted.
 extend-exclude = [
     ".agents/skills/skill-creator",
+    ".agents/skills/task-creator",
+    ".agents/skills/task-review",
     ".claude/skills/skill-creator",
+    ".claude/skills/task-creator",
+    ".claude/skills/task-review",
     "benchmarks/**/tasks/**/environment/claw-*",
     "tests/fixtures/skillsbench_slice",
 ]

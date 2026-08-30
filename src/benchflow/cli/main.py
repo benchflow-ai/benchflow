@@ -57,6 +57,7 @@ from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
 from benchflow.cli.train import register_train
+from benchflow.cli.traj import register_traj
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.sandbox.providers import providers_phrase
@@ -580,6 +581,31 @@ def eval_run(
             "--hf-public-read-check", help="Verify public HF reads after upload"
         ),
     ] = False,
+    publish_bucket: Annotated[
+        str | None,
+        typer.Option(
+            "--publish-bucket", help="Upload final eval artifacts to a HF bucket"
+        ),
+    ] = None,
+    eval_results_model: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-model",
+            help="HF model repo to open a community eval-results PR on",
+        ),
+    ] = None,
+    eval_results_dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-dataset", help="HF benchmark dataset id, e.g. org/benchmark"
+        ),
+    ] = None,
+    eval_results_task: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-task", help="Benchmark task_id from the dataset's eval.yaml"
+        ),
+    ] = None,
     matrix: Annotated[
         Path | None,
         typer.Option("--matrix", help="YAML model matrix for repeated evals"),
@@ -652,6 +678,10 @@ def eval_run(
         publish_hf=publish_hf,
         hf_prefix=hf_prefix,
         hf_public_read_check=hf_public_read_check,
+        publish_bucket=publish_bucket,
+        eval_results_model=eval_results_model,
+        eval_results_dataset=eval_results_dataset,
+        eval_results_task=eval_results_task,
         matrix=matrix,
         trials=trials,
     )
@@ -1221,15 +1251,53 @@ def eval_metrics(
 @eval_app.command("view")
 def eval_view(
     rollout_dir: Annotated[
-        Path,
-        typer.Argument(help="Rollout or job directory with trajectories"),
+        # A str, not a Path: hf:// specs must arrive verbatim — Path
+        # normalization would collapse the double slash into hf:/.
+        str,
+        typer.Argument(
+            help=(
+                "Rollout directory, job directory, trajectory JSONL file, or "
+                "an hf://<org>/<dataset> trajectory dataset "
+                "(optionally with /subpath)"
+            )
+        ),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Show an Approve & submit / Not this one bar on the page; "
+                "print DECISION: approved|rejected and exit 0 on approve, "
+                "3 on reject."
+            ),
+        ),
+    ] = False,
+    redaction_summary: Annotated[
+        str | None,
+        typer.Option(
+            "--redaction-summary",
+            help=(
+                "Masked-secret breakdown shown in the --confirm bar, e.g. "
+                "'2 API keys, 1 bearer token' (lift it from "
+                "`bench traj upload PATH --dry-run`). Display-only; no effect "
+                "without --confirm."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """View a trial trajectory in the browser."""
-    from benchflow.trajectories.viewer import serve
+    """View a trial or session trajectory in the browser."""
+    from benchflow.trajectories import viewer
 
-    serve(str(rollout_dir), port)
+    decision = viewer.serve(
+        rollout_dir, port, confirm=confirm, redaction_summary=redaction_summary
+    )
+    # Exit-code contract for --confirm: 0 approved, 3 rejected. 3 is chosen
+    # so a rejection never collides with the CLI's existing error exits
+    # (1 = errors, 2 = Typer usage errors).
+    if decision == "rejected":
+        raise typer.Exit(3)
 
 
 # ── Command-group wiring ──────────────────────────────────────────────
@@ -1242,6 +1310,7 @@ register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_review(app)
 register_tasks(app)
+register_traj(app)
 register_train(app)
 register_hub(app)
 register_agent(app)

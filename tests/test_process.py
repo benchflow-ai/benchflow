@@ -46,6 +46,40 @@ async def test_subprocess_close_cancels_stderr_drain_that_never_reaches_eof(
     )
     await process.close()
     assert process._stderr_task.cancelled()
+    await process.close()
+
+
+@pytest.mark.asyncio
+async def test_subprocess_readline_keeps_typed_error_when_stderr_drain_fails() -> None:
+    """Guards PR #980 against stderr failures masking transport diagnostics."""
+    from benchflow.diagnostics import TransportClosedError
+    from benchflow.sandbox.process import SubprocessLiveProcess
+
+    class _LiveProcess(SubprocessLiveProcess):
+        async def start(self, command, env=None, cwd=None) -> None:
+            pass
+
+    async def fail_stderr_drain() -> None:
+        raise ConnectionResetError("stderr transport reset")
+
+    stdout = MagicMock()
+    stdout.readline = AsyncMock(return_value=b"")
+    child = MagicMock(
+        stdout=stdout,
+        stderr=None,
+        returncode=1,
+        pid=12345,
+    )
+    process = _LiveProcess()
+    process._process = child
+    process._stderr_tail = bytearray(b"diagnostic before reset")
+    process._stderr_task = asyncio.create_task(fail_stderr_drain())
+
+    with pytest.raises(TransportClosedError) as exc_info:
+        await process.readline()
+
+    assert exc_info.value.diagnostic.stderr_snippet == "diagnostic before reset"
+    assert exc_info.value.diagnostic.transport_diagnosis == "process_exited"
 
 
 class _FakeStdin:

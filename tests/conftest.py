@@ -33,6 +33,26 @@ def isolate_local_dotenv(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(tmp_path / ".env"))
 
 
+@pytest.fixture(autouse=True)
+def skip_update_check(monkeypatch) -> None:
+    """Keep the `bench traj` PyPI latest-version check out of unit tests.
+
+    Tests that exercise the hint delete this variable and monkeypatch the
+    fetch instead of touching the network.
+    """
+    monkeypatch.setenv("BENCHFLOW_SKIP_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def skip_traj_wait(monkeypatch) -> None:
+    """Keep the post-upload storage-verification poll out of unit tests.
+
+    Tests that exercise the wait loop set their own budget and monkeypatch
+    the status fetch instead of touching the network.
+    """
+    monkeypatch.setenv("BENCHFLOW_TRAJ_WAIT_SECONDS", "0")
+
+
 @pytest.fixture
 def hello_world_task_dir() -> Path:
     path = REF_TASKS / "hello-world"

@@ -26,13 +26,17 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from pydantic import ValidationError
+
 from benchflow.review.config import (
     REVIEW_RESULT_FILENAME,
     ReviewRubricError,
     Rubric,
+    build_review_response_model,
     find_task_rubric,
     load_rubric,
 )
+from benchflow.review.scoring import ReviewScoring, score_weighted_review
 from benchflow.review.wrapper import (
     REVIEWER_AGENT_TIMEOUT_SEC,
     REVIEWER_IMAGE,
@@ -67,12 +71,15 @@ class TrialReview:
     rubric_path: str | None = None
     criteria: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    rubric_contract: str | None = None
+    criterion_metadata: list[dict[str, str | int | None]] = field(default_factory=list)
+    scoring: ReviewScoring | None = None
 
     def outcome_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {key: 0 for key in _OUTCOME_KEYS}
         for check in (self.checks or {}).values():
             outcome = check.get("outcome")
-            if outcome in counts:
+            if isinstance(outcome, str) and outcome in counts:
                 counts[outcome] += 1
         return counts
 
@@ -94,7 +101,17 @@ class ReviewReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "path": self.path,
-            "rubric": {"path": self.rubric_path, "criteria": self.criteria},
+            "rubric": {
+                "path": self.rubric_path,
+                "criteria": self.criteria,
+                "contracts": list(
+                    dict.fromkeys(
+                        trial.rubric_contract
+                        for trial in self.trials
+                        if trial.rubric_contract is not None
+                    )
+                ),
+            },
             "reviewer": {
                 "agent": self.agent,
                 "model": self.model,
@@ -112,7 +129,10 @@ class ReviewReport:
                     "error": trial.error,
                     "reviewer_rollout": trial.reviewer_rollout,
                     "rubric_path": trial.rubric_path,
+                    "rubric_contract": trial.rubric_contract,
                     "criteria": trial.criteria,
+                    "criterion_metadata": trial.criterion_metadata,
+                    "scoring": trial.scoring.to_dict() if trial.scoring else None,
                     "notes": trial.notes,
                 }
                 for trial in self.trials
@@ -147,7 +167,12 @@ def _is_passing(rollout_dir: Path) -> bool:
         return False
     rewards = result.get("rewards")
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    return reward == 1.0 and result.get("error") is None
+    return (
+        isinstance(reward, int | float)
+        and not isinstance(reward, bool)
+        and reward == 1.0
+        and result.get("error") is None
+    )
 
 
 def discover_rollouts(
@@ -294,12 +319,13 @@ def _coerce_summary(value: Any) -> str | None:
 
 
 def _coerce_checks(value: Any) -> dict[str, dict[str, Any]] | None:
-    """Normalize reviewer checks so hostile shapes cannot crash consumers.
+    """Normalize invalid reviewer checks for diagnostic display only.
 
     Even invalid reviews are retained for diagnostics, so a criterion whose
     value is a list (or anything else non-dict) must not raise later in
-    outcome counting or table rendering; it is preserved as an explanation
-    string with no outcome.
+    table rendering. Weighted reviews cross the typed boundary in
+    :func:`_validate_review_payload` and never use this lossy representation
+    for scoring; legacy reviews retain their wrapper-authoritative behavior.
     """
 
     if not isinstance(value, dict):
@@ -307,13 +333,35 @@ def _coerce_checks(value: Any) -> dict[str, dict[str, Any]] | None:
     normalized: dict[str, dict[str, Any]] = {}
     for name, check in value.items():
         if isinstance(check, dict):
-            normalized[str(name)] = {
-                "outcome": check.get("outcome"),
-                "explanation": _coerce_summary(check.get("explanation")),
+            normalized_check: dict[str, Any] = {
+                "explanation": _coerce_summary(check.get("explanation"))
             }
+            if "outcome" in check:
+                normalized_check["outcome"] = check.get("outcome")
+            if "score" in check:
+                normalized_check["score"] = check.get("score")
+            normalized[str(name)] = normalized_check
         else:
-            normalized[str(name)] = {"outcome": None, "explanation": str(check)}
+            normalized[str(name)] = {"explanation": str(check)}
     return normalized
+
+
+def _validate_review_payload(
+    rubric: Rubric,
+    review: dict[str, Any],
+    *,
+    expected_trial_name: str,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """Validate and canonicalize one artifact before it can be scored."""
+
+    response = build_review_response_model(rubric).model_validate(review)
+    payload = response.model_dump(mode="json")
+    actual_trial_name = payload["trial_name"]
+    if actual_trial_name != expected_trial_name:
+        raise ValueError(
+            f"trial_name must be {expected_trial_name!r}, got {actual_trial_name!r}"
+        )
+    return payload["summary"], payload["checks"]
 
 
 def _reviewer_rollout_leaf(runtime_dir: Path) -> Path | None:
@@ -408,7 +456,9 @@ async def _review_one(
         trial.error = str(exc)
         return trial
     trial.rubric_path = str(resolved_rubric)
+    trial.rubric_contract = rubric.contract
     trial.criteria = [criterion.name for criterion in rubric.criteria]
+    trial.criterion_metadata = [criterion.metadata() for criterion in rubric.criteria]
 
     wrapper_dir = workdir / f"review-{rollout_dir.name}"
     # Unique per invocation: reusing --out-dir must never let this run see a
@@ -460,6 +510,31 @@ async def _review_one(
         trial.checks = _coerce_checks(review.get("checks"))
         if not trial.review_valid:
             trial.error = "reviewer output failed structural validation"
+        elif rubric.is_weighted:
+            try:
+                trial.summary, trial.checks = _validate_review_payload(
+                    rubric,
+                    review,
+                    expected_trial_name=rollout_dir.name,
+                )
+            except (ValidationError, ValueError) as exc:
+                trial.review_valid = False
+                trial.error = (
+                    f"reviewer output failed host-side structural validation: {exc}"
+                )
+        if trial.review_valid and rubric.is_weighted and trial.checks is not None:
+            try:
+                trial.scoring = score_weighted_review(
+                    rubric,
+                    trial.checks,
+                    deterministic_pass=_is_passing(rollout_dir),
+                )
+            except ValueError as exc:
+                # Defense in depth for an internal aggregation invariant.
+                trial.review_valid = False
+                trial.error = (
+                    f"reviewer output failed host-side structural validation: {exc}"
+                )
         logger.info(
             "Reviewed %s with rubric %s (valid=%s)",
             rollout_dir.name,
@@ -508,22 +583,43 @@ def _summarize_job(trials: list[TrialReview]) -> str | None:
     for trial in reviewed:
         for name, check in (trial.checks or {}).items():
             outcome = check.get("outcome")
-            if outcome in total:
+            if isinstance(outcome, str) and outcome in total:
                 total[outcome] += 1
                 bucket = per_criterion.setdefault(
                     name, {key: 0 for key in _OUTCOME_KEYS}
                 )
                 bucket[outcome] += 1
-    lines = [
-        f"{len(reviewed)} of {len(trials)} runs reviewed (valid reviews only): "
-        f"{total['pass']} pass, {total['fail']} fail, "
-        f"{total['not_applicable']} not applicable across all criteria."
-    ]
+    weighted = [trial.scoring for trial in reviewed if trial.scoring is not None]
+    if weighted:
+        lines = [
+            f"{len(reviewed)} of {len(trials)} runs reviewed (valid reviews only).",
+            "Binary judgments (legacy criteria and weighted blockers only): "
+            f"{total['pass']} pass, {total['fail']} fail, "
+            f"{total['not_applicable']} not applicable.",
+        ]
+    else:
+        lines = [
+            f"{len(reviewed)} of {len(trials)} runs reviewed (valid reviews only): "
+            f"{total['pass']} pass, {total['fail']} fail, "
+            f"{total['not_applicable']} not applicable across all criteria."
+        ]
     for name in sorted(per_criterion):
         bucket = per_criterion[name]
         lines.append(
             f"{name}: {bucket['pass']} pass / {bucket['fail']} fail / "
             f"{bucket['not_applicable']} n-a"
+        )
+    if weighted:
+        decision_counts: dict[str, int] = {}
+        for scoring in weighted:
+            key = scoring.decision.value
+            decision_counts[key] = decision_counts.get(key, 0) + 1
+        average_quality = sum(item.raw_quality for item in weighted) / len(weighted)
+        decisions = ", ".join(
+            f"{name}={decision_counts[name]}" for name in sorted(decision_counts)
+        )
+        lines.append(
+            f"weighted reviews: average raw quality {average_quality:.3f}; {decisions}."
         )
     failures = [trial.trial_name for trial in trials if trial.error]
     if failures:

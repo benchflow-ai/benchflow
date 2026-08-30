@@ -350,14 +350,14 @@ The gate combines two requirements:
 uv run python tests/integration/agent_judge.py jobs/integration-eval --json
 ```
 
-The lightweight `.github/workflows/integration-eval.yml` workflow runs one
-small task through `bench eval run --agent openhands --model
-deepseek/deepseek-v4-flash --sandbox docker`, then runs the agent judge over
-the rollout and fails the job if the run is not REAL or the judge fails. It
-triggers on `workflow_dispatch` and nightly, and is capped at one task to keep
-the check cheap. It references the `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and
-`GEMINI_API_KEY` repository secrets; the judge SDKs come from the `judge`
-extra (`uv sync --extra judge`).
+The lightweight `.github/workflows/integration-light.yml` workflow selects the
+first exposed provider that passes a live probe, runs one small task through
+`bench eval run --sandbox docker`, then judges that rollout with the same
+provider. It fails when the rollout is not REAL or the judge fails. It runs for
+internal pull requests, after a successful `test` workflow on `main`, and on
+manual dispatch. Provider credentials come from the `pypi-internal-preview`
+environment; GitHub Models is the built-in fallback. The judge SDKs come from
+the `judge` extra (`uv sync --extra judge`).
 
 ## Robust integration suite (`tests/test_integration_suite.py`)
 

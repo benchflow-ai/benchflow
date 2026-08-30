@@ -3,8 +3,9 @@
 Rubric review is a detached, agentic quality review of finished rollouts. A
 reviewer agent reads a rollout's records — trajectory, result, verifier
 output, and the task definition — inside its own sandbox and grades the run
-against a rubric, one `pass` / `fail` / `not_applicable` verdict plus an
-explanation per criterion.
+against a rubric. Legacy rubrics produce one `pass` / `fail` /
+`not_applicable` verdict per criterion; weighted rubrics combine binary
+blocker verdicts with 0–2 scores.
 
 Review is **report-only**. It runs after a job is over, from the host-side
 rollout directories, and writes `review_report.json`. It never modifies a
@@ -17,9 +18,14 @@ an llm-judge is part of a task's verifier and *produces* the reward, while
 rubric review is downstream quality assurance *about* finished runs — is the
 task well specified, did the agent game the grader, was the method sound.
 
-## The rubric (contract v0.1)
+## The rubric (versionless contracts v0.1 and v0.2)
 
-A rubric is a JSON file with one list:
+A rubric is a JSON file with one `criteria` list and no in-file version key.
+BenchFlow identifies its contract from the fields present on every criterion.
+
+### Legacy v0.1 rubric
+
+The original shape remains fully supported:
 
 ```json
 {
@@ -33,7 +39,7 @@ A rubric is a JSON file with one list:
 }
 ```
 
-Each criterion is exactly three strings:
+Each v0.1 criterion is exactly three strings:
 
 | Field | Purpose |
 |---|---|
@@ -41,16 +47,74 @@ Each criterion is exactly three strings:
 | `description` | Documentation for humans reading the rubric. **Never included in the reviewer prompt** — grading must not depend on it. |
 | `guidance` | The grading contract the reviewer follows. Put the full pass/fail/not-applicable conditions here. |
 
-There are no weights, gates, thresholds, or aggregate scores. Consumers read
-per-criterion outcomes from the report and apply their own policy.
+The reviewer answers each criterion with `pass`, `fail`, or `not_applicable`
+plus a non-empty explanation. There are no weights, gates, thresholds, or
+aggregate scores. Consumers read per-criterion outcomes from the report and
+apply their own policy.
 
-The contract is named **v0.1**; the document itself carries no version key
-— a rubric is exactly its `criteria` list.
+### Weighted v0.2 rubric
+
+The weighted contract used by
+[FrontierPhysics PR #109](https://github.com/benchflow-ai/FrontierPhysics/pull/109)
+adds `blocker` and `weight` to **every** criterion:
+
+```json
+{
+  "criteria": [
+    {
+      "name": "required_artifact",
+      "blocker": 1,
+      "weight": 10,
+      "description": "The required artifact must be present and usable.",
+      "guidance": "PASS only when the evidence contains the complete artifact. Otherwise FAIL."
+    },
+    {
+      "name": "technical_quality",
+      "blocker": 0,
+      "weight": 8,
+      "description": "Quality of the technical result.",
+      "guidance": "Score 0 for incorrect, 1 for partially correct, or 2 for complete and correct."
+    }
+  ]
+}
+```
+
+`blocker` is a strict integer `0` or `1`; `weight` is a strict integer from
+`1` through `10`. Booleans, numeric strings, floats, omitted fields, and mixed
+v0.1/v0.2 criteria are rejected. A v0.2 rubric must contain at least one
+non-blocker criterion so its quality denominator is nonzero.
+
+- A criterion with `blocker: 1` receives `pass` or `fail`. Any failure closes
+  the blocker gate. Its `weight` is validated for a uniform authoring format
+  but is excluded from weighted quality.
+- A criterion with `blocker: 0` receives an integer score of `0`, `1`, or `2`.
+  Its contribution is `score * weight` out of `2 * weight`.
+
+BenchFlow aggregates a structurally valid v0.2 review on the host:
+
+```text
+raw_quality = sum(score * weight) / (2 * sum(non-blocker weights))
+gates_pass = deterministic reward is 1.0 with no recorded error
+             AND every blocker passes
+gated_quality = raw_quality if gates_pass, otherwise 0
+```
+
+The raw quality remains visible when a gate fails, making the rubric judgment
+auditable without mistaking it for a publishable result. A failed gate always
+produces `not_publishable`. With both gates open, the publication bands are:
+
+| Gated quality | Decision |
+|---|---|
+| `>= 0.80` | `publishable` |
+| `>= 0.65` and `< 0.80` | `presentable_with_revisions` |
+| `< 0.65` | `not_publishable` |
+
+### Validation and discovery
 
 A rubric must contain at least one criterion, names must be unique, and
 unknown fields are rejected. (Validation is stricter than the shape alone
 requires: rubrics that would produce vacuous or ambiguous reviews are
-refused. Every rubric that passes is exactly the v0.1 shape.) `rubric.json` is an overloaded filename —
+refused.) `rubric.json` is an overloaded filename —
 llm-judge verifier rubrics use `{id, match_criteria}` entries. Discovery is
 fail-closed: a `rubric.json` is treated as a review rubric — and validated
 loudly — **unless** every entry carries the full judge shape (both `id`
@@ -148,23 +212,28 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   evidence** and says so in `notes`; an old or unverifiable rollout is never
   reviewed against current task content.
 - **The rubric never enters the sandbox.** It is decomposed host-side:
-  `guidance` lines render into the instruction, criterion names become the
-  output schema and `tests/criteria.json`. `description` goes nowhere.
+  `guidance` lines render into the instruction; names and the minimum contract
+  metadata needed for structural validation become the output schema and
+  `tests/criteria.json`. `description` goes nowhere.
 - **Validity-only reward.** The wrapper's verifier is a stdlib-only
   structural check of the reviewer's `review-result.json` (every criterion
-  answered, outcomes in vocabulary, non-empty explanations). Reward 1.0
-  means "a well-formed review exists" — never "the reviewed run was good".
+  answered, outcomes or scores in the contract's vocabulary, non-empty
+  explanations). Its reward remains structural for both rubric contracts:
+  reward 1.0 means "a well-formed review exists" — never "the reviewed run
+  was good." Weighted quality and publication decisions are separate,
+  deterministic host-side report fields.
 - **Failure isolation.** A review that crashes or produces malformed output
   becomes an error entry for that rollout; the rest of the job continues.
 
 ## Output
 
-The review job directory contains `review_report.json`:
+The review job directory contains `review_report.json`. This v0.1 example has
+no aggregate score:
 
 ```json
 {
   "path": "…/jobs/2026-08-03__12-00-00",
-  "rubric": {"path": "…", "criteria": ["…"]},
+  "rubric": {"path": "…", "criteria": ["…"], "contracts": ["v0.1"]},
   "reviewer": {"agent": "opencode", "model": "gemini/gemini-2.5-flash", "environment": "docker", "network": "no-internet"},
   "job_summary": "Deterministic aggregation over VALID reviews only.",
   "trials": [
@@ -180,7 +249,13 @@ The review job directory contains `review_report.json`:
       "error": null,
       "reviewer_rollout": "…/runtime/hello-world-task__829cddb8/<run-id>/…",
       "rubric_path": "…/verifier/rubric.json",
+      "rubric_contract": "v0.1",
       "criteria": ["reward_hacking", "task_specification"],
+      "criterion_metadata": [
+        {"name": "reward_hacking", "blocker": null, "weight": null},
+        {"name": "task_specification", "blocker": null, "weight": null}
+      ],
+      "scoring": null,
       "notes": ["task evidence skipped: no --tasks-root was given"]
     }
   ]
@@ -196,13 +271,36 @@ otherwise it is `null` rather than an ambiguous parent directory. Reusing
 aggregation, not a model call — a host-side LLM call would bypass the
 sandbox backend, egress policy, and telemetry.
 
+For v0.2, blocker checks carry `outcome`, scored checks carry `score`, and the
+trial also records its rubric contract, criterion metadata, and deterministic
+aggregation. The scoring object has this shape:
+
+```json
+{
+  "deterministic_pass": true,
+  "all_blockers_pass": true,
+  "failed_blockers": [],
+  "weighted_points": 24,
+  "max_weighted_points": 30,
+  "raw_quality": 0.8,
+  "gated_quality": 0.8,
+  "decision": "publishable"
+}
+```
+
+Aggregation is emitted only for a structurally valid v0.2 review. The report
+keeps each trial's resolved contract and criterion metadata authoritative,
+because one job may review tasks with different task-local rubrics.
+
 ## Writing good criteria
 
-- Put the entire decision rule in `guidance`, including when to answer
-  `not_applicable` (for example: infrastructure failure before the agent
-  ever attempted the task).
+- Put the entire decision rule in `guidance`. For v0.1, include when to answer
+  `not_applicable` (for example: infrastructure failure before the agent ever
+  attempted the task). V0.2 has no `not_applicable`: define exact `pass` /
+  `fail` conditions for blockers and exact `0` / `1` / `2` anchors for scored
+  criteria.
 - One judgment per criterion. A criterion that bundles several claims makes
-  `fail` ambiguous.
+  a blocker verdict or numeric score ambiguous.
 - The reviewer reads evidence produced by the solver. Guidance should direct
   it to concrete records (`trial/result.json`, `trial/trajectory/`,
   `trial/verifier/`) rather than to intent.

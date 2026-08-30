@@ -156,6 +156,26 @@ class SubprocessLiveProcess(LiveProcess):
             if len(self._stderr_tail) > _STDERR_TAIL_LIMIT:
                 del self._stderr_tail[:-_STDERR_TAIL_LIMIT]
 
+    async def _finish_stderr_drain(self, *, cancel_on_timeout: bool) -> None:
+        """Bound the stderr drain without leaking its transport failures."""
+        stderr_task = getattr(self, "_stderr_task", None)
+        if not stderr_task or stderr_task.cancelled():
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(stderr_task), timeout=_STDERR_DRAIN_TIMEOUT_SEC
+            )
+        except asyncio.CancelledError:
+            if not stderr_task.cancelled():
+                raise
+        except TimeoutError:
+            if cancel_on_timeout:
+                stderr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stderr_task
+        except Exception:
+            logger.debug("Could not finish draining subprocess stderr", exc_info=True)
+
     @property
     def stderr_tail(self) -> str:
         """Bounded stderr captured while the subprocess was alive."""
@@ -176,10 +196,7 @@ class SubprocessLiveProcess(LiveProcess):
         if not line:
             stderr_task = getattr(self, "_stderr_task", None)
             if stderr_task:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        asyncio.shield(stderr_task), timeout=_STDERR_DRAIN_TIMEOUT_SEC
-                    )
+                await self._finish_stderr_drain(cancel_on_timeout=False)
                 stderr_text = self.stderr_tail.strip()
             else:
                 stderr_text = ""
@@ -257,16 +274,7 @@ class SubprocessLiveProcess(LiveProcess):
                 except TimeoutError:
                     self._process.kill()
                     await self._process.wait()
-            stderr_task = getattr(self, "_stderr_task", None)
-            if stderr_task:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(stderr_task), timeout=_STDERR_DRAIN_TIMEOUT_SEC
-                    )
-                except TimeoutError:
-                    stderr_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await stderr_task
+            await self._finish_stderr_drain(cancel_on_timeout=True)
             logger.info("Process terminated")
 
     @property

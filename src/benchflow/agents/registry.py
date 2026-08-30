@@ -605,13 +605,16 @@ AGENTS: dict[str, AgentConfig] = {
         # Pinned for reproducibility: an unpinned @agentclientprotocol install
         # floats to latest and can silently break agent activation when the ACP
         # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
-        # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
-        # implements session/set_model. If a future bump advertises a model
-        # config option instead, runtime.py's capability-first dispatch routes
-        # the model through that option — but re-verify model selection when
-        # bumping this pin.
+        # dropped session/set_model). 1.6.0 still implements session/set_model,
+        # but validates its modelId argument as ``model[effort]`` (0.0.45
+        # accepted bare names); _codex_session_model_id maps bare ids onto the
+        # session's advertised ``model[effort]`` variants, so model selection
+        # keeps working across the bump. 1.6.0 also advertises a "model"
+        # config option, but that option rejects ``model[effort]`` ids
+        # (-32602), so runtime.py keeps codex on session/set_model — verified
+        # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
         install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
+            "codex-acp", "@agentclientprotocol/codex-acp@1.6.0"
         ),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),

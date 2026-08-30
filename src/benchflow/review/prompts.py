@@ -62,7 +62,21 @@ OUTPUT_TEMPLATE = """When you are done, write your answer as JSON to {result_pat
 
 {output_schema}
 
-"trial_name" must be exactly {trial_name_json}. Every criterion listed in the schema must appear in "checks" with an "outcome" of "pass", "fail", or "not_applicable" and a non-empty "explanation". Write the file and nothing else; do not print the JSON instead of writing it."""
+"trial_name" must be exactly {trial_name_json}. {judgment_contract} Write the file and nothing else; do not print the JSON instead of writing it."""
+
+LEGACY_JUDGMENT_CONTRACT = (
+    'Every criterion listed in the schema must appear in "checks" with an '
+    '"outcome" of "pass", "fail", or "not_applicable" and a non-empty '
+    '"explanation".'
+)
+
+WEIGHTED_JUDGMENT_CONTRACT = (
+    'Every criterion listed in the schema must appear in "checks" with a '
+    'non-empty "explanation". BLOCKER criteria require an "outcome" of '
+    '"pass" or "fail". SCORED criteria require an integer "score" of 0, 1, '
+    "or 2. Do not calculate an aggregate score; Benchflow derives it "
+    "deterministically from the individual judgments and rubric weights."
+)
 
 
 def render_task_section(task_path: str | None) -> str:
@@ -97,6 +111,11 @@ def render_review_instruction(
             "result_path": result_path,
             "trial_name_json": json.dumps(trial_name),
             "output_schema": json.dumps(output_schema or {}, indent=2),
+            "judgment_contract": (
+                WEIGHTED_JUDGMENT_CONTRACT
+                if rubric.is_weighted
+                else LEGACY_JUDGMENT_CONTRACT
+            ),
         }
     )
     return f"{body.rstrip()}\n\n{output.strip()}\n"

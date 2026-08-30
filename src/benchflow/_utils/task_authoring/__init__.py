@@ -146,10 +146,10 @@ def task_digest(task_dir: Path) -> str:
 def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str]:
     """Validate a review ``rubric.json`` when the task ships one.
 
-    Review rubrics are ``{"criteria": [{name, description, guidance}]}``
-    JSON documents. A ``rubric.json`` that is not shaped like that (for
-    example an llm-judge rubric owned by the verifier-strategy machinery)
-    is not checked here.
+    Review rubrics use either the legacy ``{name, description, guidance}``
+    criterion shape or the weighted shape that adds ``blocker`` and
+    ``weight``. A ``rubric.json`` in the full llm-judge dialect is owned by
+    the verifier-strategy machinery and is not checked here.
     """
     from benchflow.review.config import (
         ReviewRubricError,
