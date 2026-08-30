@@ -894,6 +894,15 @@ async def _prompt_with_idle_watchdog(
                 seen_update_count = session.tool_call_update_count
                 pending_since = now
                 last_tool_update_at = datetime.now(UTC)
+            # Observe the pending set every poll as well: a new tool call also
+            # grows the activity count, and tracking the snapshot only in the
+            # elif below would start its grace clock one poll late.
+            current_pending = tuple(sorted(session.pending_tool_call_ids()))
+            if current_pending != pending_snapshot:
+                pending_snapshot = current_pending
+                if current_pending:
+                    pending_since = now
+                    pending_set_changed_at = datetime.now(UTC)
             if cur_count > last_count:
                 last_progress = now
                 last_activity_at = datetime.now(UTC)
@@ -909,12 +918,7 @@ async def _prompt_with_idle_watchdog(
             # budget (#1061). A genuine model-side hang has no pending tool call
             # (the prior tool already completed via tool_call_update), so it
             # trips the idle path.
-            elif session.pending_tool_call_ids():
-                snapshot = tuple(sorted(session.pending_tool_call_ids()))
-                if snapshot != pending_snapshot:
-                    pending_snapshot = snapshot
-                    pending_since = now
-                    pending_set_changed_at = datetime.now(UTC)
+            elif current_pending:
                 if now - pending_since < pending_grace:
                     last_progress = now
                     last_activity_at = datetime.now(UTC)
