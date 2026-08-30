@@ -85,6 +85,8 @@ async def test_api_proxy_isolates_preexisting_subscription_credential(
     assert provider_runtime.capture_trusted is trusted
     assert override_env not in updated
     assert override_env not in agent_env
+    assert updated["HOME"] == "/home/agent"
+    assert updated["BENCHFLOW_AGENT_HOME"] == "/home/agent"
     assert len(sandbox.commands) == 1
     assert default_auth_path in sandbox.commands[0]
     assert (
@@ -114,6 +116,61 @@ async def test_proxy_auth_cleanup_rejects_override_outside_sandbox_home() -> Non
     assert len(sandbox.commands) == 1
     assert "/home/agent/.codex/auth.json" in sandbox.commands[0]
     assert "/etc/custom-codex" not in sandbox.commands[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("custom_home", "trusted", "expected_in_command"),
+    [
+        ("/root/custom-agent-home", True, True),
+        ("/tmp/custom-agent-home", False, False),
+    ],
+)
+async def test_root_proxy_auth_cleanup_handles_effective_agent_home(
+    monkeypatch,
+    custom_home: str,
+    trusted: bool,
+    expected_in_command: bool,
+) -> None:
+    """Guards PR #1057 against root HOME redirects bypassing capture."""
+
+    proxy_agent_env: dict[str, str] = {}
+
+    async def fake_start(**kwargs):
+        proxy_agent_env.update(kwargs["agent_env"])
+        return SimpleNamespace(base_url="http://127.0.0.1:4000")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    sandbox = _SubscriptionIsolationSandbox()
+    agent_env = {
+        "ANTHROPIC_API_KEY": "sk-ant-provider",
+        "HOME": custom_home,
+        "BENCHFLOW_AGENT_HOME": custom_home,
+    }
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="claude-agent-acp",
+        agent_env=agent_env,
+        model="claude-sonnet-4-6",
+        runtime=None,
+        environment="docker",
+        session_id="run-root-claude-api-with-stale-oauth",
+        sandbox=sandbox,
+        sandbox_user=None,
+    )
+
+    assert provider_runtime is not None
+    assert provider_runtime.capture_trusted is trusted
+    assert updated["HOME"] == "/root"
+    assert updated["BENCHFLOW_AGENT_HOME"] == "/root"
+    assert agent_env["HOME"] == "/root"
+    assert agent_env["BENCHFLOW_AGENT_HOME"] == "/root"
+    assert "HOME" not in proxy_agent_env
+    assert "BENCHFLOW_AGENT_HOME" not in proxy_agent_env
+    assert (f"{custom_home}/.claude/.credentials.json" in sandbox.commands[0]) is (
+        expected_in_command
+    )
+    assert "/root/.claude/.credentials.json" in sandbox.commands[0]
 
 
 @pytest.mark.asyncio

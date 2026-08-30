@@ -1606,6 +1606,11 @@ def _litellm_proxy_env(
     *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    # These values describe the sandbox agent, not the LiteLLM process. A host
+    # proxy must retain its real host HOME; a sandbox-local proxy runs as root
+    # and likewise must not inherit the unprivileged agent's config root.
+    updated.pop("HOME", None)
+    updated.pop("BENCHFLOW_AGENT_HOME", None)
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     expected = sorted(set(required_skill_names))

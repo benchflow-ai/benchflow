@@ -214,30 +214,38 @@ async def isolate_subscription_auth_for_proxy(
         )
         return False
 
+    home = PurePosixPath(cred_home)
     primary_path = primary_files[0].container_path.format(home=cred_home)
+    primary_relative_path = PurePosixPath(primary_path).relative_to(home)
     paths = [primary_path]
     paths_safe = True
+
+    for home_env in ("HOME", "BENCHFLOW_AGENT_HOME"):
+        override_value = agent_env.get(home_env, "")
+        if override_value and override_value != cred_home:
+            override_home = _safe_proxy_auth_root(
+                override_value,
+                cred_home=cred_home,
+                agent=agent,
+            )
+            if override_home is None:
+                paths_safe = False
+            else:
+                paths.append(str(override_home / primary_relative_path))
+        agent_env[home_env] = cred_home
+
     if subscription_auth.config_dir_env:
         override_value = agent_env.pop(subscription_auth.config_dir_env, "")
         if override_value:
-            override_dir = PurePosixPath(override_value)
-            home = PurePosixPath(cred_home)
-            try:
-                override_dir.relative_to(home)
-            except ValueError:
+            override_dir = _safe_proxy_auth_root(
+                override_value,
+                cred_home=cred_home,
+                agent=agent,
+            )
+            if override_dir is None:
                 paths_safe = False
-            if (
-                not override_dir.is_absolute()
-                or ".." in override_dir.parts
-                or "\x00" in override_value
-            ):
-                paths_safe = False
-            if paths_safe:
-                paths.append(str(override_dir / PurePosixPath(primary_path).name))
             else:
-                logger.warning(
-                    "Refusing root cleanup outside the sandbox home for %s", agent
-                )
+                paths.append(str(override_dir / PurePosixPath(primary_path).name))
 
     paths = list(dict.fromkeys(paths))
     quoted_paths = [shlex.quote(path) for path in paths]
@@ -270,3 +278,29 @@ async def isolate_subscription_auth_for_proxy(
         )
         return False
     return True
+
+
+def _safe_proxy_auth_root(
+    value: str,
+    *,
+    cred_home: str,
+    agent: str,
+) -> PurePosixPath | None:
+    """Return an in-home auth root, refusing unsafe root-owned deletion paths."""
+
+    candidate = PurePosixPath(value)
+    home = PurePosixPath(cred_home)
+    try:
+        candidate.relative_to(home)
+    except ValueError:
+        candidate_safe = False
+    else:
+        candidate_safe = bool(
+            candidate.is_absolute()
+            and ".." not in candidate.parts
+            and "\x00" not in value
+        )
+    if not candidate_safe:
+        logger.warning("Refusing root cleanup outside the sandbox home for %s", agent)
+        return None
+    return candidate
