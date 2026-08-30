@@ -205,6 +205,10 @@ def capture_artifact_allows_training(
                 manifest,
                 exchange_count=len(exchanges),
             )
+            and all(
+                _exchange_matches_training_manifest(exchange, manifest)
+                for exchange in exchanges
+            )
             and successful_exchanges_have_positive_usage(exchanges)
         )
     return not any(_exchange_requires_manifest(exchange) for exchange in exchanges)
@@ -298,6 +302,48 @@ def _exchange_requires_manifest(exchange: dict[str, Any]) -> bool:
         and not isinstance(schema_version, bool)
         and schema_version >= LLM_TRAJECTORY_SCHEMA_VERSION
     )
+
+
+def _exchange_matches_training_manifest(
+    exchange: dict[str, Any], manifest: dict[str, Any]
+) -> bool:
+    """Require every canonical row to agree with its trusted sidecar."""
+
+    metadata = exchange.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    if (
+        metadata.get("schema_version") != LLM_TRAJECTORY_SCHEMA_VERSION
+        or metadata.get("capture_fidelity") != CaptureFidelity.PROVIDER_WIRE.value
+        or metadata.get("request_complete") is not True
+        or metadata.get("response_complete") is not True
+        or metadata.get("payload_redacted") is not True
+    ):
+        return False
+
+    for field, mixed_value in (
+        ("capture_source", CaptureSource.MIXED.value),
+        ("auth_mode", AuthMode.MIXED.value),
+    ):
+        manifest_value = manifest.get(field)
+        if not isinstance(manifest_value, str):
+            return False
+        allowed = {manifest_value} if manifest_value != mixed_value else set()
+        if manifest_value == mixed_value:
+            role_captures = manifest.get("role_captures")
+            if not isinstance(role_captures, list):
+                return False
+            allowed = {
+                capture.get(field)
+                for capture in role_captures
+                if isinstance(capture, dict)
+                and capture.get("capture_fidelity")
+                == CaptureFidelity.PROVIDER_WIRE.value
+                and isinstance(capture.get(field), str)
+            }
+        if not allowed or metadata.get(field) not in allowed:
+            return False
+    return True
 
 
 def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> bool:

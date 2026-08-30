@@ -171,10 +171,100 @@ def test_write_stitched_trajectory_creates_file(tmp_path):
     original.write_text('{"a": 1}\n')
     rollout_dir = tmp_path / "rollout"
     out = write_stitched_trajectory(
-        rollout_dir, original, [exchange(completion(content="L"))]
+        rollout_dir,
+        original,
+        [exchange(completion(content="L"))],
+        recorded_consumed_count=1,
     )
     assert out == rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     assert len(out.read_text().strip().splitlines()) == 2
+
+
+def test_stitching_rejects_unconsumed_recorded_suffix(tmp_path):
+    """Guards PR #1057 against training on replay responses never consumed."""
+
+    model = "openai/gpt-5.5"
+    source = write_run_folder(
+        tmp_path / "source",
+        exchanges=[
+            exchange(completion(content="consumed")),
+            exchange(completion(content="never-consumed")),
+        ],
+        model=model,
+    )
+    trajectory_path = source / "trajectory" / "llm_trajectory.jsonl"
+    source_rows = [
+        json.loads(line) for line in trajectory_path.read_text().splitlines()
+    ]
+    for row in source_rows:
+        row["metadata"].update(
+            {
+                "schema_version": 2,
+                "capture_source": "litellm_proxy",
+                "capture_fidelity": "provider_wire",
+                "auth_mode": "api_key",
+                "request_complete": True,
+                "response_complete": True,
+                "payload_redacted": True,
+            }
+        )
+    trajectory_path.write_text("".join(json.dumps(row) + "\n" for row in source_rows))
+    source_manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE,
+        capture_source=CaptureSource.LITELLM_PROXY,
+        capture_fidelity=CaptureFidelity.PROVIDER_WIRE,
+        auth_mode=AuthMode.API_KEY,
+        agent="openhands",
+        model=model,
+        session_id="source",
+        exchange_count=2,
+        request_complete=True,
+        response_complete=True,
+        payload_redacted=True,
+        started_at="2026-08-29T00:00:00Z",
+        finished_at="2026-08-29T00:01:00Z",
+    )
+    write_llm_trajectory_manifest(source, source_manifest)
+
+    rollout = tmp_path / "continued"
+    initialize_llm_trajectory_artifacts(
+        rollout,
+        agent="openhands",
+        model=None,
+        session_id="continued",
+        started_at=source_manifest.finished_at,
+    )
+    stitched = write_stitched_trajectory(
+        rollout,
+        trajectory_path,
+        [],
+        recorded_consumed_count=1,
+        live_model=model,
+    )
+    manifest = refresh_stitched_trajectory_manifest(
+        rollout,
+        source,
+        original_model=model,
+        live_model=model,
+        n_recorded=2,
+        n_recorded_consumed=1,
+        n_live=0,
+        live_attempt_count=0,
+        live_errors=[],
+    )
+
+    stitched_rows = [json.loads(line) for line in stitched.read_text().splitlines()]
+    assert len(stitched_rows) == 1
+    assert "consumed" in json.dumps(stitched_rows[0])
+    assert "never-consumed" not in stitched.read_text()
+    assert manifest.status is CaptureStatus.PARTIAL
+    assert manifest.exchange_count == 1
+    assert manifest.request_complete is False
+    assert manifest.response_complete is False
+    assert manifest.role_captures[0].exchange_count == 1
+    assert "recorded_replay_prefix" in manifest.missing_fields
+    assert any("1 of 2 recorded" in error for error in manifest.errors)
+    assert CONTINUATION_SOURCE_AUDIT_ERROR not in manifest.errors
 
 
 def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_path):
@@ -217,6 +307,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         rollout,
         source / "trajectory" / "llm_trajectory.jsonl",
         live,
+        recorded_consumed_count=1,
         live_model=continued_model,
     )
     manifest = refresh_stitched_trajectory_manifest(
@@ -225,6 +316,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         original_model=recorded_model,
         live_model=continued_model,
         n_recorded=1,
+        n_recorded_consumed=1,
         n_live=1,
         live_attempt_count=1,
         live_errors=[],
@@ -265,6 +357,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         repeated_rollout,
         rollout / "trajectory" / "llm_trajectory.jsonl",
         [exchange(completion(content="live-again"))],
+        recorded_consumed_count=2,
         live_model=continued_model,
     )
     repeated_manifest = refresh_stitched_trajectory_manifest(
@@ -276,6 +369,7 @@ def test_refresh_stitched_manifest_rejects_replay_ingress_as_provider_wire(tmp_p
         original_model=continued_model,
         live_model=continued_model,
         n_recorded=2,
+        n_recorded_consumed=2,
         n_live=1,
         live_attempt_count=1,
         live_errors=[],
@@ -336,6 +430,7 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
         rollout,
         source / "trajectory" / "llm_trajectory.jsonl",
         [exchange(completion(content="live"))],
+        recorded_consumed_count=1,
         live_model="openai/gpt-5.5",
     )
     manifest = refresh_stitched_trajectory_manifest(
@@ -344,6 +439,7 @@ def test_refresh_stitched_manifest_keeps_lower_fidelity_prefix_partial(tmp_path)
         original_model="claude-sonnet-4-6",
         live_model="openai/gpt-5.5",
         n_recorded=1,
+        n_recorded_consumed=1,
         n_live=1,
         live_attempt_count=1,
         live_errors=[],
@@ -412,6 +508,7 @@ def test_root_sandbox_live_suffix_is_retained_but_audit_only(tmp_path):
         rollout,
         source / "trajectory" / "llm_trajectory.jsonl",
         [exchange(completion(content="live"))],
+        recorded_consumed_count=1,
         live_model=model,
         live_capture_host_owned=False,
     )
@@ -421,6 +518,7 @@ def test_root_sandbox_live_suffix_is_retained_but_audit_only(tmp_path):
         original_model=model,
         live_model=model,
         n_recorded=1,
+        n_recorded_consumed=1,
         n_live=1,
         live_attempt_count=1,
         live_errors=[],
@@ -473,6 +571,7 @@ def test_refresh_stitched_manifest_rejects_missing_live_attempt(tmp_path):
         rollout,
         source / "trajectory" / "llm_trajectory.jsonl",
         [],
+        recorded_consumed_count=1,
         live_model=model,
     )
 
@@ -482,6 +581,7 @@ def test_refresh_stitched_manifest_rejects_missing_live_attempt(tmp_path):
         original_model=model,
         live_model=model,
         n_recorded=1,
+        n_recorded_consumed=1,
         n_live=0,
         live_attempt_count=1,
         live_errors=["live provider request failed before capture"],
@@ -889,6 +989,7 @@ def test_refresh_stitched_manifest_rejects_malformed_row(tmp_path):
         original_model=model,
         live_model=model,
         n_recorded=1,
+        n_recorded_consumed=1,
         n_live=0,
         live_attempt_count=0,
         live_errors=[],

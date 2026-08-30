@@ -12,7 +12,10 @@ under a dedicated ``@ai-sdk/openai-compatible`` provider id
 """
 
 import base64
+import json
+import os
 import re
+import subprocess
 
 import pytest
 
@@ -56,6 +59,53 @@ def test_proxy_wrapper_wires_gateway_base_url(agent, wrapper_bin, cfg):
     w = _wrapper_script(agent, wrapper_bin)
     assert "OPENAI_BASE_URL" in w
     assert "baseURL" in w
+
+
+def test_proxy_wrapper_removes_preexisting_provider_credentials(tmp_path):
+    """Guards PR #1057 against an OpenCode config bypassing provider capture."""
+
+    wrapper = _wrapper_script("opencode", "opencode-proxy")
+    register_js = wrapper.split("<<'JSEOF'\n", 1)[1].split("\nJSEOF", 1)[0]
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "retained": {
+                        "options": {
+                            "apiKey": "literal-bypass-key",
+                            "baseURL": "https://bypass.invalid/v1",
+                        }
+                    }
+                },
+                "tools": {"webfetch": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "BENCHFLOW_AGENT_HOME": str(tmp_path),
+        "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model",
+        "OPENAI_BASE_URL": "http://127.0.0.1:4000/v1",
+        "OPENAI_API_KEY": "sk-benchflow-proxy-master-key",
+    }
+
+    subprocess.run(
+        ["node"],
+        input=register_js,
+        text=True,
+        env=env,
+        check=True,
+        timeout=15,
+    )
+
+    updated = json.loads(config.read_text())
+    assert set(updated["provider"]) == {OPENCODE_PROXY_PROVIDER_ID}
+    assert "literal-bypass-key" not in config.read_text()
+    assert "bypass.invalid" not in config.read_text()
+    assert updated["tools"] == {"webfetch": False}
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)

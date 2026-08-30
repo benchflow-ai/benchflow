@@ -121,6 +121,7 @@ class ReplayState:
     def _write_state(self):
         payload = {
             "port": self.port,
+            "recorded_consumed_count": min(self.cursor, len(self.recorded)),
             "live_attempt_count": self.live_attempt_count,
             "live_error_count": self.live_error_count,
         }
@@ -166,6 +167,10 @@ class ReplayState:
                     ((exchange.get("request") or {}).get("body") or {}),
                 )
                 self.cursor += 1
+                # Journal the recorded prefix before returning the response.
+                # If this write fails, the handler returns 500 and the host
+                # cannot mistake an unjournaled replay for a completed prefix.
+                self._write_state()
                 response = exchange.get("response") or {}
                 return (
                     "replay",

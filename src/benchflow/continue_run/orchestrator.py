@@ -540,6 +540,7 @@ async def continue_run(
         rollout_dir,
         run.path / "trajectory" / "llm_trajectory.jsonl",
         router.live_exchanges,
+        recorded_consumed_count=router.recorded_consumed_count,
         live_model=live_model,
     )
     refresh_stitched_trajectory_manifest(
@@ -548,6 +549,7 @@ async def continue_run(
         original_model=run.model,
         live_model=live_model,
         n_recorded=run.n_recorded_exchanges,
+        n_recorded_consumed=router.recorded_consumed_count,
         n_live=len(router.live_exchanges),
         live_attempt_count=router.live_attempt_count,
         live_errors=list(router.live_errors),
@@ -557,7 +559,7 @@ async def continue_run(
         live_model=live_model,
         usage=summarize_llm_trajectory_usage(
             stitched_path,
-            n_recorded=run.n_recorded_exchanges,
+            n_recorded=router.recorded_consumed_count,
         ),
         environment=run.environment,
     )
@@ -566,7 +568,7 @@ async def continue_run(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=router.recorded_consumed_count,
         n_live=len(router.live_exchanges),
         divergences=router.divergences,
     )
@@ -635,6 +637,9 @@ async def _continue_run_with_sandbox_proxy(
             rollout_dir,
             run.path / "trajectory" / "llm_trajectory.jsonl",
             live_exchanges,
+            recorded_consumed_count=(
+                replay_proxy.recorded_consumed_count if replay_proxy is not None else 0
+            ),
             live_model=live_model,
             live_capture_host_owned=live_capture_host_owned,
         )
@@ -644,6 +649,9 @@ async def _continue_run_with_sandbox_proxy(
             original_model=run.model,
             live_model=live_model,
             n_recorded=run.n_recorded_exchanges,
+            n_recorded_consumed=(
+                replay_proxy.recorded_consumed_count if replay_proxy is not None else 0
+            ),
             n_live=len(live_exchanges),
             live_attempt_count=(
                 replay_proxy.live_attempt_count if replay_proxy is not None else 0
@@ -659,7 +667,11 @@ async def _continue_run_with_sandbox_proxy(
             live_model=live_model,
             usage=summarize_llm_trajectory_usage(
                 stitched_path,
-                n_recorded=run.n_recorded_exchanges,
+                n_recorded=(
+                    replay_proxy.recorded_consumed_count
+                    if replay_proxy is not None
+                    else 0
+                ),
             ),
             environment=run.environment,
         )
@@ -768,7 +780,9 @@ async def _continue_run_with_sandbox_proxy(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=(
+            replay_proxy.recorded_consumed_count if replay_proxy is not None else 0
+        ),
         n_live=len(live_exchanges),
         divergences=0,
     )

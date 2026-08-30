@@ -66,6 +66,7 @@ def write_stitched_trajectory(
     original_llm_trajectory: Path,
     live_exchanges: list[LLMExchange],
     *,
+    recorded_consumed_count: int,
     live_model: str | None = None,
     live_capture_host_owned: bool = True,
 ) -> Path:
@@ -79,6 +80,15 @@ def write_stitched_trajectory(
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = stitched_trajectory_lines(original_llm_trajectory)
+    if (
+        isinstance(recorded_consumed_count, bool)
+        or recorded_consumed_count < 0
+        or recorded_consumed_count > len(lines)
+    ):
+        raise ValueError(
+            "recorded_consumed_count must identify an available trajectory prefix"
+        )
+    lines = lines[:recorded_consumed_count]
     for exchange in live_exchanges:
         payload = exchange.model_dump(mode="json")
         metadata = payload.setdefault("metadata", {})
@@ -124,6 +134,7 @@ def refresh_stitched_trajectory_manifest(
     original_model: str | None,
     live_model: str | None,
     n_recorded: int,
+    n_recorded_consumed: int,
     n_live: int,
     live_attempt_count: int,
     live_errors: list[str],
@@ -150,6 +161,13 @@ def refresh_stitched_trajectory_manifest(
     except ValueError:
         source = None
 
+    if (
+        isinstance(n_recorded_consumed, bool)
+        or n_recorded_consumed < 0
+        or n_recorded_consumed > n_recorded
+    ):
+        raise ValueError("n_recorded_consumed must be between zero and n_recorded")
+
     trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     trajectory_lines = [
         line for line in trajectory_path.read_text().splitlines() if line.strip()
@@ -165,7 +183,7 @@ def refresh_stitched_trajectory_manifest(
     parsed_rows: list[dict[str, Any]] = []
     if rows_valid:
         parsed_rows = [json.loads(line) for line in trajectory_lines]
-    expected_count = n_recorded + live_attempt_count
+    expected_count = n_recorded_consumed + live_attempt_count
     count_matches = exchange_count == expected_count
     source_rows: list[dict[str, Any]] = []
     try:
@@ -186,12 +204,14 @@ def refresh_stitched_trajectory_manifest(
             exchanges=source_rows,
         )
     )
+    recorded_prefix_complete = n_recorded_consumed == n_recorded
     live_capture_complete = live_attempt_count == n_live and not live_errors
     usage_complete = bool(
         parsed_rows and successful_exchanges_have_positive_usage(parsed_rows)
     )
     complete = (
         source_allows_training
+        and recorded_prefix_complete
         and count_matches
         and live_capture_complete
         and n_live == 0
@@ -225,6 +245,7 @@ def refresh_stitched_trajectory_manifest(
         and live_capture_complete
         and rows_valid
         and n_live == 0
+        and recorded_prefix_complete
     )
     response_complete = bool(
         source
@@ -232,6 +253,7 @@ def refresh_stitched_trajectory_manifest(
         and count_matches
         and live_capture_complete
         and rows_valid
+        and recorded_prefix_complete
     )
     errors = list(source.errors) if source and not complete else []
     missing_fields = list(source.missing_fields) if source and not complete else []
@@ -246,6 +268,12 @@ def refresh_stitched_trajectory_manifest(
         missing_fields.append("source_capture_provenance")
     elif not source_allows_training:
         errors.append(CONTINUATION_SOURCE_AUDIT_ERROR)
+    if not recorded_prefix_complete:
+        errors.append(
+            "continuation stopped after consuming "
+            f"{n_recorded_consumed} of {n_recorded} recorded provider exchanges"
+        )
+        missing_fields.append("recorded_replay_prefix")
     if not count_matches:
         errors.append(
             "stitched LLM trajectory count mismatch: "
@@ -267,7 +295,7 @@ def refresh_stitched_trajectory_manifest(
         source=source,
         original_model=original_model,
         live_model=live_model,
-        n_recorded=n_recorded,
+        n_recorded=n_recorded_consumed,
         n_live=n_live,
         live_attempt_count=live_attempt_count,
         live_capture_complete=live_capture_complete,
@@ -312,10 +340,17 @@ def _continuation_role_captures(
 ) -> list[LLMRoleCapture]:
     """Preserve source-role provenance and append a distinct live leg."""
 
-    captures = [
-        capture.model_copy(update={"leg": "recorded"})
-        for capture in (source.role_captures if source else [])
-    ]
+    captures: list[LLMRoleCapture] = []
+    remaining = n_recorded
+    for capture in source.role_captures if source else []:
+        retained = min(capture.exchange_count, remaining)
+        if retained:
+            captures.append(
+                capture.model_copy(
+                    update={"leg": "recorded", "exchange_count": retained}
+                )
+            )
+        remaining -= retained
     if source is not None and n_recorded and not captures:
         captures.append(
             LLMRoleCapture(

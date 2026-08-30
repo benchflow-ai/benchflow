@@ -12,6 +12,7 @@ from benchflow.trajectories.llm_capture import LLMTrajectoryCapture
 from benchflow.trajectories.llm_capture_manifest import (
     CONTINUATION_SOURCE_AUDIT_ERROR,
     REPLAY_PROXY_INGRESS_AUDIT_ERROR,
+    capture_artifact_allows_training,
     capture_manifest_allows_training,
     capture_manifest_preserves_audit_completion,
 )
@@ -252,6 +253,64 @@ def test_complete_manifest_with_capture_gaps_fails_closed_for_training(
     row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
     assert row["info"]["training_ready"] is False
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+@pytest.mark.parametrize(
+    ("contradictory_field", "value"),
+    [
+        ("capture_fidelity", "agent_session"),
+        ("request_complete", False),
+        ("response_complete", False),
+        ("payload_redacted", False),
+        ("capture_source", "codex_native_session"),
+        ("auth_mode", "oauth_subscription"),
+    ],
+)
+def test_schema_v2_row_cannot_contradict_training_manifest(
+    tmp_path: Path, contradictory_field: str, value: str | bool
+) -> None:
+    """Guards PR #1057 against trusting a sidecar over contradictory rows."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        schema_version=2,
+    )
+    exchange = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "litellm_proxy",
+            "auth_mode": "api_key",
+            "payload_redacted": True,
+        }
+    )
+    manifest = {
+        "status": "complete",
+        "capture_source": "litellm_proxy",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+        "missing_fields": [],
+        "errors": [],
+    }
+
+    assert capture_artifact_allows_training(manifest, exchanges=[exchange])
+    exchange["metadata"][contradictory_field] = value
+    assert not capture_artifact_allows_training(manifest, exchanges=[exchange])
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(exchange) + "\n", encoding="utf-8"
+    )
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+    assert row["info"]["training_ready"] is False
     assert row["is_completed"] is False
 
 

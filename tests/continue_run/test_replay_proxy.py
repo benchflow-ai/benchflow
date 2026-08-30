@@ -49,11 +49,13 @@ def test_serves_recorded_responses_in_order_then_live():
     r1 = router.next_response({"messages": [{"role": "user"}]})
     assert r1.source == "replay"
     assert r1.body["choices"][0]["message"]["content"] == "first"
+    assert router.recorded_consumed_count == 1
 
     r2 = router.next_response({"messages": [{"role": "user"}]})
     assert r2.source == "replay"
     assert r2.body["choices"][0]["message"]["content"] == "second"
     assert router.exhausted is True
+    assert router.recorded_consumed_count == 2
 
     r3 = router.next_response({"messages": [{"role": "user"}]})
     assert r3.source == "live"
@@ -158,6 +160,28 @@ def test_sandbox_forwarding_failure_is_not_logged_as_provider_exchange(
     capture_state = json.loads((tmp_path / "state.json").read_text())
     assert capture_state["live_attempt_count"] == 1
     assert capture_state["live_error_count"] == 1
+
+
+def test_sandbox_recorded_prefix_is_journaled_before_response(tmp_path) -> None:
+    """Guards PR #1057 against overstating a sandbox replay prefix."""
+
+    state = ReplayState(
+        recorded=[exchange(completion(content="recorded")).model_dump(mode="json")],
+        upstream_url="https://provider.invalid/v1",
+        upstream_api_key="test-key",
+        upstream_model="openai/test-model",
+        live_log_path=str(tmp_path / "live.jsonl"),
+        state_path=str(tmp_path / "state.json"),
+        port=61357,
+    )
+
+    source, status, _body = state.next_response({"messages": [{"role": "user"}]})
+
+    assert source == "replay"
+    assert status == 200
+    capture_state = json.loads((tmp_path / "state.json").read_text())
+    assert capture_state["recorded_consumed_count"] == 1
+    assert capture_state["live_attempt_count"] == 0
 
 
 def test_sandbox_live_exchange_is_redacted_before_journaling(tmp_path) -> None:
@@ -440,6 +464,44 @@ async def test_sandbox_attempt_journal_marker_reaches_host(
     await proxy._load_runtime_errors()
 
     assert proxy.live_errors == ["sandbox live attempt journal failed 1 time(s)"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_replay_count_is_recovered_by_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1057 against stitching unconsumed sandbox responses."""
+
+    proxy = SandboxReplayProxy(
+        sandbox=object(),
+        runtime_dir="/tmp/runtime",
+        port=61357,
+        pid_path="/tmp/runtime/pid",
+        live_log_path="/tmp/runtime/live.jsonl",
+        state_path="/tmp/runtime/state.json",
+        stdout_path="/tmp/runtime/stdout.log",
+        stderr_path="/tmp/runtime/stderr.log",
+        recorded_exchange_count=3,
+    )
+
+    async def read_remote_text(_sandbox, path, **_kwargs):
+        assert path == proxy.state_path
+        return json.dumps(
+            {
+                "recorded_consumed_count": 2,
+                "live_attempt_count": 0,
+                "live_error_count": 0,
+            }
+        )
+
+    monkeypatch.setattr(
+        "benchflow.continue_run.sandbox_proxy._read_remote_text", read_remote_text
+    )
+
+    await proxy._load_live_state()
+
+    assert proxy.recorded_consumed_count == 2
+    assert proxy.live_errors == []
 
 
 def test_divergence_warns_by_default():

@@ -316,9 +316,9 @@ def _json_settings_merge(path: str, mutator: str) -> str:
 # routes through the proxy.
 def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
     """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
-    proxy mode, registers the LiteLLM gateway alias under a dedicated
-    OpenCode provider, then execs the isolated agent binary. Idempotent
-    (preserves existing config); no-op outside proxy mode.
+    proxy mode, replaces the provider map with the dedicated LiteLLM gateway
+    provider, then execs the isolated agent binary. Non-provider settings are
+    preserved; no-op outside proxy mode.
 
     The gateway alias is registered under the ``{OPENCODE_PROXY_PROVIDER_ID}``
     provider using ``@ai-sdk/openai-compatible`` — NOT the built-in ``openai``
@@ -357,7 +357,11 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             "  const d = text ? JSON.parse(text) : {};",
             # Dedicated provider id (see docstring) → chat completions, not the
             # Responses API the built-in ``openai`` id is hard-coded to.
-            "  const providers = d.provider ||= {};",
+            # An image can carry a pre-existing provider with a literal key or
+            # endpoint. Retaining it would let the agent bypass the capture
+            # proxy even after BenchFlow strips provider credentials from the
+            # process environment, so proxy mode owns the entire provider map.
+            "  const providers = d.provider = {};",
             f"  const prov = providers[{provider_id!r}] ||= {{}};",
             '  prov.npm = "@ai-sdk/openai-compatible";',
             '  prov.name ||= "BenchFlow Gateway";',

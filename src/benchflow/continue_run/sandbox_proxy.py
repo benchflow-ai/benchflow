@@ -109,6 +109,8 @@ class SandboxReplayProxy:
     state_path: str
     stdout_path: str
     stderr_path: str
+    recorded_exchange_count: int = 0
+    recorded_consumed_count: int = 0
     live_exchanges: list[LLMExchange] = field(default_factory=list)
     live_attempt_count: int = 0
     live_errors: list[str] = field(default_factory=list)
@@ -205,6 +207,7 @@ class SandboxReplayProxy:
             state_path=paths["state"],
             stdout_path=paths["stdout"],
             stderr_path=paths["stderr"],
+            recorded_exchange_count=len(recorded),
         )
         try:
             await proxy._wait_until_ready()
@@ -297,8 +300,18 @@ class SandboxReplayProxy:
         if not isinstance(state, dict):
             self.live_errors.append("sandbox live capture state was unavailable")
             return
+        recorded_consumed_count = state.get("recorded_consumed_count")
         attempt_count = state.get("live_attempt_count")
         error_count = state.get("live_error_count")
+        if (
+            not isinstance(recorded_consumed_count, int)
+            or isinstance(recorded_consumed_count, bool)
+            or recorded_consumed_count < 0
+            or recorded_consumed_count > self.recorded_exchange_count
+        ):
+            self.live_errors.append("sandbox recorded replay count was invalid")
+        else:
+            self.recorded_consumed_count = recorded_consumed_count
         if (
             not isinstance(attempt_count, int)
             or isinstance(attempt_count, bool)

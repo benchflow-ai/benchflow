@@ -93,7 +93,15 @@ class ReplayRouter:
 
     @property
     def exhausted(self) -> bool:
-        return self._cursor >= len(self._recorded)
+        with self._lock:
+            return self._cursor >= len(self._recorded)
+
+    @property
+    def recorded_consumed_count(self) -> int:
+        """Return the recorded prefix actually served to the agent."""
+
+        with self._lock:
+            return min(self._cursor, len(self._recorded))
 
     def _check_divergence(
         self, incoming: dict[str, Any], recorded_req: dict[str, Any]
