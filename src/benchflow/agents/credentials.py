@@ -70,9 +70,16 @@ def _proxy_auth_cleanup_command(
     paths: list[str],
     settings_targets: list[dict[str, object]],
 ) -> str:
-    """Build the no-follow cleanup command gated by process isolation."""
+    """Build the no-follow cleanup command gated by process isolation.
 
-    return f"{process_guard} && " + " ".join(
+    JavaScript agents install BenchFlow's private Node runtime before this
+    command executes. Python-only agents need not pay that installation cost:
+    when the runtime is absent they remain trusted only if every possible
+    credential and settings target is already absent. A present target fails
+    closed instead of attempting a weaker shell rewrite.
+    """
+
+    cleanup = " ".join(
         (
             f"{_BENCHFLOW_NODE_BIN} -e",
             shlex.quote(_PROXY_AUTH_CLEANUP_JS),
@@ -80,6 +87,17 @@ def _proxy_auth_cleanup_command(
             shlex.quote(json.dumps(paths, separators=(",", ":"))),
             shlex.quote(json.dumps(settings_targets, separators=(",", ":"))),
         )
+    )
+    target_paths = [*paths, *(str(target["path"]) for target in settings_targets)]
+    absence_checks = " && ".join(
+        f"[ ! -e {shlex.quote(path)} ] && [ ! -L {shlex.quote(path)} ]"
+        for path in dict.fromkeys(target_paths)
+    )
+    if not absence_checks:
+        absence_checks = "true"
+    return (
+        f"{process_guard} && if [ -x {_BENCHFLOW_NODE_BIN} ]; then "
+        f"{cleanup}; else {absence_checks}; fi"
     )
 
 
@@ -234,83 +252,25 @@ async def isolate_agent_for_proxy_capture(
     agent_env: dict[str, str],
     cred_home: str,
 ) -> bool:
-    """Prove process isolation and remove native auth before an API proxy run.
+    """Prove process isolation and remove every native route before API proxying.
 
-    A reused image may already contain the CLI login detected by
-    ``SubscriptionAuth.detect_file``. API-key mode must not leave that alternate
-    provider route available to the agent. A safe CLI config-home override is
-    scrubbed as well as removed before launch; an override outside the sandbox
-    user's home fails capture trust without allowing a root deletion there.
-    Every API-proxied agent first requires a non-root sandbox user with no live
-    processes; an existing agent or task process is preserved and makes capture
-    audit-only. Subscription-capable agents then use their already-required
-    JavaScript runtime to traverse with no-follow directory descriptors, remove
-    native login files, and sanitize registry-declared credential settings.
-    Root-agent runs remain audit-only because stale root processes cannot be
-    safely distinguished. Return false unless process isolation is proven and
-    every eligible credential can be identified, removed, and verified absent.
+    A shared sandbox can retain credentials from an earlier role. The current
+    agent's login file is therefore not a sufficient cleanup boundary: all
+    registry-declared subscription files, credential-bearing settings, and Pi's
+    generated provider map are removed through the same no-follow traversal.
+    Unsafe effective/config homes and any live sandbox-user process fail capture
+    trust closed. Root-agent runs remain audit-only because their processes
+    cannot be distinguished safely from orchestration.
     """
 
-    agent_cfg = AGENTS.get(agent)
-    subscription_auth = agent_cfg.subscription_auth if agent_cfg else None
     if env is None:
         logger.warning("Cannot prove proxy process isolation for %s", agent)
         return False
 
     process_guard, processes_safe = _proxy_process_isolation_guard(cred_home)
-
-    if subscription_auth is None:
-        if agent == "pi-acp":
-            home = PurePosixPath(cred_home)
-            relative_models_path = PurePosixPath(".pi/agent/models.json")
-            paths = [str(home / relative_models_path)]
-            paths_safe = True
-            for home_env in ("HOME", "BENCHFLOW_AGENT_HOME"):
-                override_value = agent_env.get(home_env, "")
-                if override_value and override_value != cred_home:
-                    override_home = _safe_proxy_auth_root(
-                        override_value,
-                        cred_home=cred_home,
-                        agent=agent,
-                    )
-                    if override_home is None:
-                        paths_safe = False
-                    else:
-                        paths.append(str(override_home / relative_models_path))
-                agent_env[home_env] = cred_home
-            paths = list(dict.fromkeys(paths))
-            cleanup_command = _proxy_auth_cleanup_command(process_guard, paths, [])
-        else:
-            paths_safe = True
-            cleanup_command = process_guard
-        try:
-            result = await env.exec(
-                cleanup_command,
-                user="root",
-                timeout_sec=10,
-            )
-        except Exception as exc:
-            logger.warning("Failed to isolate %s agent processes: %s", agent, exc)
-            return False
-        return bool(result.return_code == 0 and paths_safe and processes_safe)
-
-    primary_files = [
-        auth_file
-        for auth_file in subscription_auth.files
-        if auth_file.host_path == subscription_auth.detect_file
-    ]
-    if len(primary_files) != 1:
-        logger.warning(
-            "Cannot prove proxy isolation for %s subscription credentials", agent
-        )
-        return False
-
     home = PurePosixPath(cred_home)
-    primary_path = primary_files[0].container_path.format(home=cred_home)
-    primary_relative_path = PurePosixPath(primary_path).relative_to(home)
-    paths = [primary_path]
+    roots = [home]
     paths_safe = True
-
     for home_env in ("HOME", "BENCHFLOW_AGENT_HOME"):
         override_value = agent_env.get(home_env, "")
         if override_value and override_value != cred_home:
@@ -322,44 +282,99 @@ async def isolate_agent_for_proxy_capture(
             if override_home is None:
                 paths_safe = False
             else:
-                paths.append(str(override_home / primary_relative_path))
+                roots.append(override_home)
         agent_env[home_env] = cred_home
 
-    if subscription_auth.config_dir_env:
-        override_value = agent_env.pop(subscription_auth.config_dir_env, "")
-        if override_value:
-            override_dir = _safe_proxy_auth_root(
-                override_value,
-                cred_home=cred_home,
-                agent=agent,
+    roots = list(dict.fromkeys(roots))
+    paths = [str(root / ".pi/agent/models.json") for root in roots]
+    settings_targets: list[dict[str, object]] = []
+    seen_auth: set[int] = set()
+    for registered_agent in AGENTS.values():
+        subscription_auth = registered_agent.subscription_auth
+        if subscription_auth is None or id(subscription_auth) in seen_auth:
+            continue
+        seen_auth.add(id(subscription_auth))
+        primary_files = [
+            auth_file
+            for auth_file in subscription_auth.files
+            if auth_file.host_path == subscription_auth.detect_file
+        ]
+        if len(primary_files) != 1:
+            logger.warning(
+                "Cannot prove proxy isolation for registered %s credentials",
+                registered_agent.name,
             )
-            if override_dir is None:
+            paths_safe = False
+            continue
+
+        relative_files: list[PurePosixPath] = []
+        for auth_file in subscription_auth.files:
+            try:
+                rendered = PurePosixPath(
+                    auth_file.container_path.format(home=cred_home)
+                )
+                relative_files.append(rendered.relative_to(home))
+            except (KeyError, ValueError):
+                logger.warning(
+                    "Unsafe registered credential path for %s",
+                    registered_agent.name,
+                )
                 paths_safe = False
-            else:
-                paths.append(str(override_dir / PurePosixPath(primary_path).name))
+        for root in roots:
+            paths.extend(str(root / relative_path) for relative_path in relative_files)
+
+        try:
+            primary_rendered = PurePosixPath(
+                primary_files[0].container_path.format(home=cred_home)
+            )
+            primary_relative = primary_rendered.relative_to(home)
+        except (KeyError, ValueError):
+            paths_safe = False
+            continue
+        settings_parents = [root / primary_relative.parent for root in roots]
+
+        if subscription_auth.config_dir_env:
+            override_value = agent_env.pop(subscription_auth.config_dir_env, "")
+            if override_value:
+                override_dir = _safe_proxy_auth_root(
+                    override_value,
+                    cred_home=cred_home,
+                    agent=agent,
+                )
+                if override_dir is None:
+                    paths_safe = False
+                else:
+                    paths.extend(
+                        str(override_dir / relative_path.name)
+                        for relative_path in relative_files
+                    )
+                    settings_parents.append(override_dir)
+
+        if subscription_auth.proxy_settings_file:
+            settings_file = PurePosixPath(subscription_auth.proxy_settings_file)
+            if (
+                not subscription_auth.proxy_settings_drop_keys
+                or settings_file.is_absolute()
+                or len(settings_file.parts) != 1
+                or settings_file.name != subscription_auth.proxy_settings_file
+            ):
+                logger.warning(
+                    "Cannot prove proxy settings isolation for %s",
+                    registered_agent.name,
+                )
+                paths_safe = False
+                continue
+            for parent in settings_parents:
+                target: dict[str, object] = {
+                    "path": str(parent / settings_file),
+                    "drop_keys": list(subscription_auth.proxy_settings_drop_keys),
+                }
+                settings_targets.append(target)
 
     paths = list(dict.fromkeys(paths))
-    settings_targets: list[dict[str, object]] = []
-    if subscription_auth.proxy_settings_file:
-        settings_file = PurePosixPath(subscription_auth.proxy_settings_file)
-        if (
-            not subscription_auth.proxy_settings_drop_keys
-            or settings_file.is_absolute()
-            or len(settings_file.parts) != 1
-            or settings_file.name != subscription_auth.proxy_settings_file
-        ):
-            logger.warning("Cannot prove proxy settings isolation for %s", agent)
-            return False
-        settings_targets = [
-            {
-                "path": str(PurePosixPath(credential_path).parent / settings_file),
-                "drop_keys": list(subscription_auth.proxy_settings_drop_keys),
-            }
-            for credential_path in paths
-        ]
-        settings_targets = list(
-            {str(target["path"]): target for target in settings_targets}.values()
-        )
+    settings_targets = list(
+        {str(target["path"]): target for target in settings_targets}.values()
+    )
     cleanup_command = _proxy_auth_cleanup_command(
         process_guard,
         paths,
@@ -372,13 +387,17 @@ async def isolate_agent_for_proxy_capture(
             timeout_sec=10,
         )
     except Exception as exc:
-        logger.warning("Failed to isolate %s subscription credential: %s", agent, exc)
+        logger.warning("Failed to isolate %s proxy credentials: %s", agent, exc)
         return False
     if result.return_code != 0 or not paths_safe or not processes_safe:
         detail = (getattr(result, "stderr", "") or "").strip()[:500]
         logger.warning(
-            "Subscription credential remained accessible in proxy mode for %s%s",
+            "Proxy credential/process isolation failed for %s "
+            "(rc=%s, paths_safe=%s, processes_safe=%s)%s",
             agent,
+            result.return_code,
+            paths_safe,
+            processes_safe,
             f": {detail}" if detail else "",
         )
         return False

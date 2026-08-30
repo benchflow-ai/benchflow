@@ -8,6 +8,7 @@ kernel path is exercised without omnigent/sandbox deps.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -337,6 +338,49 @@ async def test_disconnect_clears_session_factory_state():
     assert rollout._session_tool_count == 0
     assert rollout._session_traj_count == 0
     assert rollout._phase == "installed"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_waits_for_role_agent_process_to_quiesce():
+    """Guards PR #1057 mixed auth against cross-role process overlap."""
+
+    class _RecordingEnv:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def exec(self, command: str, **kwargs):
+            self.calls.append((command, kwargs))
+            return SimpleNamespace(return_code=0)
+
+    from benchflow.rollout import Rollout
+
+    env = _RecordingEnv()
+    rollout = Rollout.__new__(Rollout)
+    rollout._acp_client = None
+    rollout._session = _FakeSession()
+    rollout._session_adapter = None
+    rollout._is_session_factory = True
+    rollout._agent_launch = "/opt/benchflow/bin/claude-agent-acp"
+    rollout._env = env
+    rollout._config = SimpleNamespace(sandbox_user="agent")
+    rollout._active_role = object()
+    rollout._session_tool_count = 0
+    rollout._session_traj_count = 0
+    rollout._trajectory = []
+    rollout._partial_trajectory = False
+    rollout._trajectory_source = None
+    rollout._phase = "connected"
+
+    await rollout.disconnect()
+
+    assert len(env.calls) == 1
+    command, kwargs = env.calls[0]
+    assert "id -u -- agent" in command
+    assert 'pkill -u "$bf_agent_uid" -f' in command
+    assert 'pgrep -u "$bf_agent_uid" -f' in command
+    assert 'while [ "$bf_wait" -lt 20 ]' in command
+    assert "sleep 0.1" in command
+    assert kwargs == {"timeout_sec": 10}
 
 
 @pytest.mark.asyncio

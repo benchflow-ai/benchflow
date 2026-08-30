@@ -152,11 +152,41 @@ async def test_proxy_process_guard_applies_without_subscription_auth(agent) -> N
     assert "pgrep -u" in sandbox.commands[0]
     assert '"$bf_agent_uid" -ne 0' in sandbox.commands[0]
     assert '"$bf_pgrep_rc" -eq 1' in sandbox.commands[0]
-    if agent == "pi-acp":
-        assert _PROXY_AUTH_CLEANUP_JS in sandbox.commands[0]
-        assert "/home/agent/.pi/agent/models.json" in sandbox.commands[0]
-    else:
-        assert _PROXY_AUTH_CLEANUP_JS not in sandbox.commands[0]
+    assert _PROXY_AUTH_CLEANUP_JS in sandbox.commands[0]
+    assert "if [ -x /opt/benchflow/node/bin/node ]" in sandbox.commands[0]
+    assert "[ ! -e /home/agent/.codex/auth.json ]" in sandbox.commands[0]
+    assert "[ ! -L /home/agent/.codex/auth.json ]" in sandbox.commands[0]
+    assert "/home/agent/.pi/agent/models.json" in sandbox.commands[0]
+    assert "/home/agent/.claude/.credentials.json" in sandbox.commands[0]
+    assert "/home/agent/.codex/auth.json" in sandbox.commands[0]
+    assert "/home/agent/.gemini/oauth_creds.json" in sandbox.commands[0]
+
+
+@pytest.mark.asyncio
+async def test_proxy_cleanup_covers_credentials_from_previous_agent_roles() -> None:
+    """Guards PR #1057 mixed auth against cross-role subscription leakage."""
+
+    sandbox = _SubscriptionIsolationSandbox()
+
+    trusted = await isolate_agent_for_proxy_capture(
+        sandbox,
+        agent="codex-acp",
+        agent_env={"AZURE_API_KEY": "provider-key"},
+        cred_home="/home/agent",
+    )
+
+    assert trusted is True
+    command = sandbox.commands[0]
+    for credential_path in (
+        "/home/agent/.claude/.credentials.json",
+        "/home/agent/.codex/auth.json",
+        "/home/agent/.gemini/oauth_creds.json",
+        "/home/agent/.gemini/settings.json",
+        "/home/agent/.gemini/google_accounts.json",
+        "/home/agent/.pi/agent/models.json",
+    ):
+        assert credential_path in command
+    assert "/home/agent/.claude/settings.json" in command
 
 
 @pytest.mark.asyncio
@@ -226,7 +256,9 @@ async def test_proxy_process_guard_rejects_root_agent_without_subscription_auth(
     )
 
     assert trusted is False
-    assert sandbox.commands == ["false"]
+    assert len(sandbox.commands) == 1
+    assert sandbox.commands[0].startswith("false && ")
+    assert _PROXY_AUTH_CLEANUP_JS in sandbox.commands[0]
 
 
 @pytest.mark.parametrize(
@@ -279,7 +311,9 @@ async def test_root_opencode_proxy_capture_remains_audit_only(monkeypatch) -> No
 
     assert provider_runtime is not None
     assert provider_runtime.capture_trusted is False
-    assert sandbox.commands == ["false"]
+    assert len(sandbox.commands) == 1
+    assert sandbox.commands[0].startswith("false && ")
+    assert _PROXY_AUTH_CLEANUP_JS in sandbox.commands[0]
 
 
 @pytest.mark.skipif(
@@ -407,6 +441,44 @@ def test_proxy_auth_cleanup_sanitizes_claude_credential_settings(tmp_path) -> No
     after = settings_path.stat()
     assert after.st_mode & 0o777 == before.st_mode & 0o777
     assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("node") is None,
+    reason="the sandbox credential cleanup requires Linux procfs and Node.js",
+)
+def test_proxy_auth_cleanup_removes_credentials_from_every_agent_role(tmp_path) -> None:
+    """Guards PR #1057 mixed auth against a previous role's native login."""
+
+    sandbox_home = tmp_path / "home" / "agent"
+    credential_paths = [
+        sandbox_home / ".claude" / ".credentials.json",
+        sandbox_home / ".codex" / "auth.json",
+        sandbox_home / ".gemini" / "oauth_creds.json",
+        sandbox_home / ".gemini" / "settings.json",
+        sandbox_home / ".gemini" / "google_accounts.json",
+        sandbox_home / ".pi" / "agent" / "models.json",
+    ]
+    for credential_path in credential_paths:
+        credential_path.parent.mkdir(parents=True, exist_ok=True)
+        credential_path.write_text("subscription-secret")
+
+    removed = subprocess.run(
+        [
+            "node",
+            "-e",
+            _PROXY_AUTH_CLEANUP_JS,
+            "--",
+            json.dumps([str(path) for path in credential_paths]),
+            json.dumps([]),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert removed.returncode == 0, removed.stderr
+    assert all(not path.exists() for path in credential_paths)
 
 
 @pytest.mark.skipif(

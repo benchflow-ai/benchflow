@@ -1464,10 +1464,35 @@ class Rollout:
         # Kill any lingering agent processes to prevent context bleed between scenes
         agent_pattern = _agent_process_kill_pattern(self._agent_launch)
         if self._env and agent_pattern:
-            with contextlib.suppress(Exception):
-                await self._env.exec(
-                    f"pkill -f {shlex.quote(agent_pattern)} || true",
+            sandbox_user = getattr(getattr(self, "_config", None), "sandbox_user", None)
+            if sandbox_user:
+                quoted_user = shlex.quote(sandbox_user)
+                quoted_pattern = shlex.quote(agent_pattern)
+                termination_command = (
+                    f"bf_agent_uid=$(id -u -- {quoted_user}) || exit 1\n"
+                    f'pkill -u "$bf_agent_uid" -f {quoted_pattern} '
+                    ">/dev/null 2>&1 || true\n"
+                    "bf_wait=0\n"
+                    f'while [ "$bf_wait" -lt 20 ] && pgrep -u "$bf_agent_uid" -f '
+                    f"{quoted_pattern} >/dev/null 2>&1; do\n"
+                    "  sleep 0.1\n"
+                    "  bf_wait=$((bf_wait + 1))\n"
+                    "done\n"
+                    f'! pgrep -u "$bf_agent_uid" -f {quoted_pattern} '
+                    ">/dev/null 2>&1"
+                )
+            else:
+                termination_command = f"pkill -f {shlex.quote(agent_pattern)} || true"
+            try:
+                terminated = await self._env.exec(
+                    termination_command,
                     timeout_sec=10,
+                )
+                if getattr(terminated, "return_code", 0) != 0:
+                    logger.warning("Agent process did not quiesce after disconnect")
+            except Exception as exc:
+                logger.warning(
+                    "Agent process cleanup failed during disconnect: %s", exc
                 )
         self._active_role = None
         self._session_tool_count = 0
