@@ -285,6 +285,8 @@ def test_schema_v2_row_cannot_contradict_training_manifest(
             "capture_source": "litellm_proxy",
             "auth_mode": "api_key",
             "payload_redacted": True,
+            "role": "agent",
+            "agent": "codex-acp",
         }
     )
     manifest = {
@@ -298,9 +300,34 @@ def test_schema_v2_row_cannot_contradict_training_manifest(
         "payload_redacted": True,
         "missing_fields": [],
         "errors": [],
+        "role_captures": [
+            {
+                "role": "agent",
+                "agent": "codex-acp",
+                "auth_mode": "api_key",
+                "capture_source": "litellm_proxy",
+                "capture_fidelity": "provider_wire",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        ],
     }
 
     assert capture_artifact_allows_training(manifest, exchanges=[exchange])
+    manifest_without_roles = json.loads(json.dumps(manifest))
+    manifest_without_roles["role_captures"] = []
+    assert not capture_artifact_allows_training(
+        manifest_without_roles, exchanges=[exchange]
+    )
+    manifest_with_wrong_attribution = json.loads(json.dumps(manifest))
+    manifest_with_wrong_attribution["role_captures"][0]["agent"] = "claude-agent-acp"
+    assert capture_manifest_allows_training(
+        manifest_with_wrong_attribution, exchange_count=1
+    )
+    assert not capture_artifact_allows_training(
+        manifest_with_wrong_attribution, exchanges=[exchange]
+    )
     exchange["metadata"][contradictory_field] = value
     assert not capture_artifact_allows_training(manifest, exchanges=[exchange])
     (trajectory_dir / "llm_trajectory.jsonl").write_text(
@@ -312,6 +339,66 @@ def test_schema_v2_row_cannot_contradict_training_manifest(
     row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
     assert row["info"]["training_ready"] is False
     assert row["is_completed"] is False
+
+
+@pytest.mark.parametrize(
+    ("role_field", "value"),
+    [
+        ("capture_source", "codex_native_session"),
+        ("capture_fidelity", "agent_session"),
+        ("exchange_count", 0),
+        ("request_complete", False),
+        ("response_complete", False),
+    ],
+)
+def test_role_capture_cannot_contradict_training_manifest(
+    tmp_path: Path, role_field: str, value: str | int | bool
+) -> None:
+    """Guards PR #1057 against training on contradictory role provenance."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        schema_version=2,
+    )
+    exchange = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "litellm_proxy",
+            "auth_mode": "api_key",
+            "payload_redacted": True,
+        }
+    )
+    manifest = {
+        "status": "complete",
+        "capture_source": "litellm_proxy",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+        "missing_fields": [],
+        "errors": [],
+        "role_captures": [
+            {
+                "role": "agent",
+                "agent": "codex-acp",
+                "auth_mode": "api_key",
+                "capture_source": "litellm_proxy",
+                "capture_fidelity": "provider_wire",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        ],
+    }
+    manifest["role_captures"][0][role_field] = value
+
+    assert not capture_manifest_allows_training(manifest, exchange_count=1)
+    assert not capture_artifact_allows_training(manifest, exchanges=[exchange])
 
 
 def test_provider_capture_without_positive_usage_is_not_training_ready(

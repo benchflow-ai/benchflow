@@ -8,6 +8,7 @@ confuses a native-agent reconstruction with provider-wire traffic.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
@@ -178,9 +179,11 @@ def capture_manifest_allows_training(
     expected_count = manifest.get("exchange_count")
     if not isinstance(expected_count, int) or isinstance(expected_count, bool):
         return False
+    role_captures = _validated_role_captures(manifest)
 
     return bool(
         manifest.get("status") == "complete"
+        and manifest.get("capture_source") == CaptureSource.LITELLM_PROXY.value
         and manifest.get("capture_fidelity") == "provider_wire"
         and manifest.get("request_complete") is True
         and manifest.get("response_complete") is True
@@ -189,6 +192,16 @@ def capture_manifest_allows_training(
         and manifest.get("errors") == []
         and exchange_count > 0
         and expected_count == exchange_count
+        and role_captures
+        and _role_captures_match_manifest(manifest, role_captures)
+        and all(
+            capture.capture_source is CaptureSource.LITELLM_PROXY
+            and capture.capture_fidelity is CaptureFidelity.PROVIDER_WIRE
+            and capture.exchange_count > 0
+            and capture.request_complete is True
+            and capture.response_complete is True
+            for capture in role_captures
+        )
     )
 
 
@@ -209,6 +222,7 @@ def capture_artifact_allows_training(
                 _exchange_matches_training_manifest(exchange, manifest)
                 for exchange in exchanges
             )
+            and _exchanges_match_training_roles(exchanges, manifest)
             and successful_exchanges_have_positive_usage(exchanges)
         )
     return not any(_exchange_requires_manifest(exchange) for exchange in exchanges)
@@ -344,6 +358,50 @@ def _exchange_matches_training_manifest(
         if not allowed or metadata.get(field) not in allowed:
             return False
     return True
+
+
+def _exchanges_match_training_roles(
+    exchanges: Sequence[dict[str, Any]], manifest: dict[str, Any]
+) -> bool:
+    """Require row attribution and cardinality to match per-role provenance."""
+
+    role_captures = _validated_role_captures(manifest)
+    if not role_captures:
+        return False
+    expected: Counter[tuple[str, str, str | None, str, str, str]] = Counter()
+    for capture in role_captures:
+        expected[
+            (
+                capture.role,
+                capture.agent,
+                capture.model,
+                capture.auth_mode.value,
+                capture.capture_source.value,
+                capture.capture_fidelity.value,
+            )
+        ] += capture.exchange_count
+    actual: Counter[tuple[str, str, str | None, str, str, str]] = Counter()
+    for exchange in exchanges:
+        metadata = exchange.get("metadata")
+        if not isinstance(metadata, dict):
+            return False
+        role = metadata.get("role")
+        agent = metadata.get("agent")
+        model = metadata.get("model")
+        auth_mode = metadata.get("auth_mode")
+        capture_source = metadata.get("capture_source")
+        capture_fidelity = metadata.get("capture_fidelity")
+        if not (
+            isinstance(role, str)
+            and isinstance(agent, str)
+            and (model is None or isinstance(model, str))
+            and isinstance(auth_mode, str)
+            and isinstance(capture_source, str)
+            and isinstance(capture_fidelity, str)
+        ):
+            return False
+        actual[(role, agent, model, auth_mode, capture_source, capture_fidelity)] += 1
+    return actual == expected
 
 
 def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> bool:

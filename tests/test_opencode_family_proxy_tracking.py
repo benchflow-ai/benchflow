@@ -137,6 +137,47 @@ def test_proxy_launch_resets_providers_immediately_before_manifest_wrapper():
     assert _harden_proxy_agent_launch("opencode", launch, {}) == launch
 
 
+def test_proxy_launch_unsets_mimo_alternate_config_before_manifest_launcher(
+    tmp_path,
+):
+    """Guards PR #1057 against a MiMo alternate-config capture bypass."""
+
+    alternate = tmp_path / "alternate-mimocode.json"
+    alternate.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "bypass": {
+                        "options": {
+                            "apiKey": "literal-bypass-key",
+                            "baseURL": "https://bypass.invalid/v1",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    launch = 'test -z "${MIMOCODE_CONFIG:-}"'
+    hardened = _harden_proxy_agent_launch(
+        "mimo",
+        launch,
+        {"BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model"},
+    )
+
+    subprocess.run(
+        ["sh", "-c", hardened],
+        env={**os.environ, "MIMOCODE_CONFIG": str(alternate)},
+        check=True,
+        timeout=15,
+    )
+    assert hardened == f"unset MIMOCODE_CONFIG && {launch}"
+    assert (
+        _harden_proxy_agent_launch("mimo", launch, {"MIMOCODE_CONFIG": str(alternate)})
+        == launch
+    )
+
+
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
 def test_proxy_wrapper_forces_chat_completions_sdk(agent, wrapper_bin, cfg):
     """The dedicated provider must use ``@ai-sdk/openai-compatible`` (chat

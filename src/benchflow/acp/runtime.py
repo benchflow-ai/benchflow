@@ -78,9 +78,18 @@ def _harden_proxy_agent_launch(
 ) -> str:
     """Insert agent-side config hardening after proxy selection."""
 
-    if agent != "opencode" or not agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
+    if not agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return agent_launch
-    return f"{opencode_provider_reset_command()} && {agent_launch}"
+    if agent == "opencode":
+        return f"{opencode_provider_reset_command()} && {agent_launch}"
+    if agent == "mimo":
+        # MiMo's manifest-owned launcher replaces both canonical config files
+        # in proxy mode, but the CLI also honors this arbitrary alternate path.
+        # Do not let an image-baked config bypass the capture proxy. Direct mode
+        # deliberately retains the override as part of the caller's provider
+        # configuration.
+        return f"unset MIMOCODE_CONFIG && {agent_launch}"
+    return agent_launch
 
 
 def _acp_handshake_timeout_sec() -> float:
