@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -149,7 +150,8 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
             "-e",
             _PROXY_AUTH_CLEANUP_JS,
             "--",
-            "-1",
+            "2147483646",
+            json.dumps(["/opt/benchflow/js-agents/bin/codex-acp"]),
             json.dumps([str(credential_path)]),
         ],
         check=False,
@@ -169,7 +171,8 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
             "-e",
             _PROXY_AUTH_CLEANUP_JS,
             "--",
-            "-1",
+            "2147483646",
+            json.dumps(["/opt/benchflow/js-agents/bin/codex-acp"]),
             json.dumps([str(credential_path)]),
         ],
         check=False,
@@ -183,11 +186,53 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
     assert outside_auth.read_text() == "subscription-secret"
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("node") is None,
+    reason="the sandbox cleanup primitive requires Linux procfs and Node.js",
+)
+def test_proxy_auth_cleanup_preserves_unrelated_user_processes(tmp_path) -> None:
+    """Guards PR #1057 review r3888337690 against killing task processes."""
+
+    credential_path = tmp_path / ".codex" / "auth.json"
+    credential_path.parent.mkdir()
+    credential_path.write_text("subscription-secret")
+    absent_agent_marker = "/opt/benchflow/js-agents/bin/not-this-process"
+
+    unrelated = subprocess.Popen(
+        ["node", "-e", "setInterval(() => {}, 1000)", absent_agent_marker],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        refused = subprocess.run(
+            [
+                "node",
+                "-e",
+                _PROXY_AUTH_CLEANUP_JS,
+                "--",
+                str(os.getuid()),
+                json.dumps([absent_agent_marker]),
+                json.dumps([str(credential_path)]),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert refused.returncode != 0
+        assert "unrelated sandbox-user process" in refused.stderr
+        assert credential_path.read_text() == "subscription-secret"
+        assert unrelated.poll() is None
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("custom_home", "trusted", "expected_in_command"),
     [
-        ("/root/custom-agent-home", True, True),
+        ("/root/custom-agent-home", False, True),
         ("/tmp/custom-agent-home", False, False),
     ],
 )

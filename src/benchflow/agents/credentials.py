@@ -29,12 +29,14 @@ from benchflow.agents.registry import AGENTS
 logger = logging.getLogger(__name__)
 
 
-_BENCHFLOW_NODE_BIN = "/opt/benchflow/node/bin/node"
+_BENCHFLOW_PREFIX = "/opt/benchflow"
+_BENCHFLOW_NODE_BIN = f"{_BENCHFLOW_PREFIX}/node/bin/node"
 _PROXY_AUTH_CLEANUP_JS = r"""
 const fs = require("fs");
 
 const sandboxUid = Number(process.argv[1]);
-const targets = JSON.parse(process.argv[2]);
+const agentProcessMarkers = JSON.parse(process.argv[2]);
+const targets = JSON.parse(process.argv[3]);
 const constants = fs.constants;
 const directoryFlags =
   constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -48,7 +50,11 @@ function processesForUid(uid) {
       const owner = /^Uid:\s+(\d+)/m.exec(status);
       const state = /^State:\s+(\S+)/m.exec(status);
       if (owner && Number(owner[1]) === uid && (!state || state[1] !== "Z")) {
-        matches.push(Number(entry));
+        const argv = fs
+          .readFileSync(`/proc/${entry}/cmdline`, "utf8")
+          .split("\0")
+          .filter(Boolean);
+        matches.push({pid: Number(entry), argv});
       }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -57,12 +63,22 @@ function processesForUid(uid) {
   return matches;
 }
 
-function stopPriorAgentProcesses(uid) {
-  if (!Number.isInteger(uid) || uid < 0) return;
+function isManagedAgentProcess(processInfo, markers) {
+  return markers.some(
+    (marker) => processInfo.argv[0] === marker || processInfo.argv[1] === marker,
+  );
+}
+
+function quiescePriorAgentProcesses(uid, markers) {
+  if (!Number.isInteger(uid) || uid < 0) {
+    throw new Error("root sandbox agents cannot prove stale-process isolation");
+  }
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const pids = processesForUid(uid);
-    if (pids.length === 0) return;
-    for (const pid of pids) {
+    const agents = processesForUid(uid).filter((processInfo) =>
+      isManagedAgentProcess(processInfo, markers),
+    );
+    if (agents.length === 0) break;
+    for (const {pid} of agents) {
       try {
         process.kill(pid, "SIGKILL");
       } catch (error) {
@@ -71,7 +87,16 @@ function stopPriorAgentProcesses(uid) {
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
   }
-  throw new Error("sandbox user still has a live process after isolation");
+  const remaining = processesForUid(uid);
+  const staleAgents = remaining.filter((processInfo) =>
+    isManagedAgentProcess(processInfo, markers),
+  );
+  if (staleAgents.length !== 0) {
+    throw new Error("stale agent process survived credential isolation");
+  }
+  if (remaining.length !== 0) {
+    throw new Error("unrelated sandbox-user process prevents trusted cleanup");
+  }
 }
 
 function openDirectoryNoFollow(parts) {
@@ -121,7 +146,7 @@ function removeCredentialNoFollow(target) {
   }
 }
 
-stopPriorAgentProcesses(sandboxUid);
+quiescePriorAgentProcesses(sandboxUid, agentProcessMarkers);
 for (const target of targets) removeCredentialNoFollow(target);
 """.strip()
 
@@ -292,10 +317,13 @@ async def isolate_subscription_auth_for_proxy(
     provider route available to the agent. A safe CLI config-home override is
     scrubbed as well as removed before launch; an override outside the sandbox
     user's home fails capture trust without allowing a root deletion there. The
-    cleanup stops stale processes for a non-root sandbox user, then uses the
+    cleanup stops only stale ACP processes for a non-root sandbox user and
+    refuses trust when unrelated user processes are alive. It then uses the
     JavaScript runtime already required by every subscription-capable agent to
-    traverse with no-follow directory descriptors. Return false unless every
-    eligible credential can be identified, removed, and verified absent.
+    traverse with no-follow directory descriptors. Root-agent runs remain
+    audit-only because stale root processes cannot be safely distinguished.
+    Return false unless every eligible credential can be identified, removed,
+    and verified absent.
     """
 
     agent_cfg = AGENTS.get(agent)
@@ -348,13 +376,20 @@ async def isolate_subscription_auth_for_proxy(
 
     paths = list(dict.fromkeys(paths))
     sandbox_owner = _owner_from_home(cred_home)
+    if sandbox_owner is None:
+        paths_safe = False
     uid_command = f"$(id -u -- {shlex.quote(sandbox_owner)})" if sandbox_owner else "-1"
+    agent_process_markers = (
+        f"{_BENCHFLOW_PREFIX}/js-agents/bin/{agent}",
+        f"{_BENCHFLOW_PREFIX}/bin/{agent}",
+    )
     cleanup_command = " ".join(
         (
             f"{_BENCHFLOW_NODE_BIN} -e",
             shlex.quote(_PROXY_AUTH_CLEANUP_JS),
             "--",
             uid_command,
+            shlex.quote(json.dumps(agent_process_markers, separators=(",", ":"))),
             shlex.quote(json.dumps(paths, separators=(",", ":"))),
         )
     )
