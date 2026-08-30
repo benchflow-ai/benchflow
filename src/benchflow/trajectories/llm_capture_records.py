@@ -207,11 +207,16 @@ def assemble_capture(
         *_captured_targets(native_records, targets),
     }
     missing_targets = [target for target in targets if target not in captured_targets]
-    errors.extend(
-        f"no capture was attributable to {target.agent} "
-        f"({target.model or 'unknown model'}, {target.auth_mode.value})"
-        for target in missing_targets
-    )
+    # A prepared role is expected to have no attributable capture when the
+    # rollout never made a model call.  Captured rows are themselves evidence
+    # of a call when the ACP-level signal is unavailable, so keep the
+    # fail-closed missing-role check for every non-empty assembly.
+    if model_call_seen or records:
+        errors.extend(
+            f"no capture was attributable to {target.agent} "
+            f"({target.model or 'unknown model'}, {target.auth_mode.value})"
+            for target in missing_targets
+        )
     role_captures = _role_captures(records, targets=targets)
     auth_mode = _aggregate_auth_mode(
         records, targets=targets, fallback_auth=fallback_auth

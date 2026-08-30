@@ -15,6 +15,7 @@ from benchflow.trajectories.llm_capture_manifest import (
     AuthMode,
     CaptureFidelity,
     CaptureStatus,
+    capture_manifest_preserves_audit_completion,
 )
 from benchflow.trajectories.llm_capture_records import (
     NativeCaptureBundle,
@@ -28,6 +29,61 @@ from benchflow.trajectories.native_capture_parsers import (
 )
 
 STARTED_AT = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_zero_call_oauth_target_preserves_clean_audit_completion(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 review r3888576789 for clean zero-call OAuth runs."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        session_id="rollout-1",
+        started_at=STARTED_AT,
+    )
+    target = _CaptureTarget(
+        agent="claude-agent-acp",
+        model="claude-sonnet-4-6",
+        credential_home="/home/agent",
+        auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
+        native=True,
+    )
+    capture._targets[(target.agent, target.model, target.credential_home)] = target
+    capture._refresh_manifest_auth_mode()
+
+    async def collect_native(_env, *, targets):
+        assert targets == [target]
+        return NativeCollection()
+
+    capture._native_collector.collect = collect_native
+
+    await capture.finalize(None, acp_events=[], model_call_seen=False)
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert manifest["status"] == CaptureStatus.NO_MODEL_CALL
+    assert manifest["errors"] == []
+    assert manifest["missing_fields"] == []
+    assert manifest["exchange_count"] == 0
+    assert manifest["role_captures"] == [
+        {
+            "role": "agent",
+            "agent": "claude-agent-acp",
+            "model": "claude-sonnet-4-6",
+            "auth_mode": "oauth_subscription",
+            "capture_source": "none",
+            "capture_fidelity": "none",
+            "exchange_count": 0,
+            "request_complete": False,
+            "response_complete": False,
+            "leg": None,
+        }
+    ]
+    assert capture_manifest_preserves_audit_completion(manifest) is True
 
 
 def test_native_parser_normalizes_fallback_and_record_timestamps(
