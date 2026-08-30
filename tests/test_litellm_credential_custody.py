@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from benchflow.agents.credentials import isolate_subscription_auth_for_proxy
+from benchflow.agents.credentials import (
+    _PROXY_AUTH_CLEANUP_JS,
+    isolate_subscription_auth_for_proxy,
+)
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import resolve_litellm_route
 from benchflow.providers.runtime import ensure_litellm_runtime
@@ -92,9 +98,10 @@ async def test_api_proxy_isolates_preexisting_subscription_credential(
     assert (
         f"custom-{agent}/{default_auth_path.rsplit('/', 1)[-1]}" in sandbox.commands[0]
     )
-    assert "rm -f" in sandbox.commands[0]
-    assert "! test -e" in sandbox.commands[0]
-    assert "! test -L" in sandbox.commands[0]
+    assert "O_NOFOLLOW" in sandbox.commands[0]
+    assert "/proc/self/fd/" in sandbox.commands[0]
+    assert "SIGKILL" in sandbox.commands[0]
+    assert "rm -f" not in sandbox.commands[0]
 
 
 @pytest.mark.asyncio
@@ -116,6 +123,64 @@ async def test_proxy_auth_cleanup_rejects_override_outside_sandbox_home() -> Non
     assert len(sandbox.commands) == 1
     assert "/home/agent/.codex/auth.json" in sandbox.commands[0]
     assert "/etc/custom-codex" not in sandbox.commands[0]
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("node") is None,
+    reason="the sandbox cleanup primitive requires Linux procfs and Node.js",
+)
+def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
+    """Guards PR #1057 review r3888287847 against credential cleanup TOCTOU."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_auth = outside / "auth.json"
+    outside_auth.write_text("subscription-secret")
+
+    sandbox_home = tmp_path / "home" / "agent"
+    sandbox_home.mkdir(parents=True)
+    auth_dir = sandbox_home / ".codex"
+    auth_dir.symlink_to(outside, target_is_directory=True)
+    credential_path = auth_dir / "auth.json"
+
+    refused = subprocess.run(
+        [
+            "node",
+            "-e",
+            _PROXY_AUTH_CLEANUP_JS,
+            "--",
+            "-1",
+            json.dumps([str(credential_path)]),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert refused.returncode != 0
+    assert outside_auth.read_text() == "subscription-secret"
+
+    auth_dir.unlink()
+    auth_dir.mkdir()
+    credential_path.symlink_to(outside_auth)
+    removed = subprocess.run(
+        [
+            "node",
+            "-e",
+            _PROXY_AUTH_CLEANUP_JS,
+            "--",
+            "-1",
+            json.dumps([str(credential_path)]),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert removed.returncode == 0, removed.stderr
+    assert not credential_path.exists()
+    assert not credential_path.is_symlink()
+    assert outside_auth.read_text() == "subscription-secret"
 
 
 @pytest.mark.asyncio

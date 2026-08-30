@@ -29,6 +29,103 @@ from benchflow.agents.registry import AGENTS
 logger = logging.getLogger(__name__)
 
 
+_BENCHFLOW_NODE_BIN = "/opt/benchflow/node/bin/node"
+_PROXY_AUTH_CLEANUP_JS = r"""
+const fs = require("fs");
+
+const sandboxUid = Number(process.argv[1]);
+const targets = JSON.parse(process.argv[2]);
+const constants = fs.constants;
+const directoryFlags =
+  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+
+function processesForUid(uid) {
+  const matches = [];
+  for (const entry of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+    try {
+      const status = fs.readFileSync(`/proc/${entry}/status`, "utf8");
+      const owner = /^Uid:\s+(\d+)/m.exec(status);
+      const state = /^State:\s+(\S+)/m.exec(status);
+      if (owner && Number(owner[1]) === uid && (!state || state[1] !== "Z")) {
+        matches.push(Number(entry));
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return matches;
+}
+
+function stopPriorAgentProcesses(uid) {
+  if (!Number.isInteger(uid) || uid < 0) return;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const pids = processesForUid(uid);
+    if (pids.length === 0) return;
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+  throw new Error("sandbox user still has a live process after isolation");
+}
+
+function openDirectoryNoFollow(parts) {
+  let descriptor = fs.openSync("/", directoryFlags);
+  try {
+    for (const part of parts) {
+      const next = fs.openSync(
+        `/proc/self/fd/${descriptor}/${part}`,
+        directoryFlags,
+      );
+      fs.closeSync(descriptor);
+      descriptor = next;
+    }
+    return descriptor;
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
+  }
+}
+
+function removeCredentialNoFollow(target) {
+  const parts = target.split("/").filter(Boolean);
+  const basename = parts.pop();
+  let parent;
+  try {
+    parent = openDirectoryNoFollow(parts);
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    const descriptorPath = `/proc/self/fd/${parent}/${basename}`;
+    try {
+      fs.unlinkSync(descriptorPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    try {
+      fs.lstatSync(descriptorPath);
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    throw new Error(`credential remained after deletion: ${target}`);
+  } finally {
+    fs.closeSync(parent);
+  }
+}
+
+stopPriorAgentProcesses(sandboxUid);
+for (const target of targets) removeCredentialNoFollow(target);
+""".strip()
+
+
 def _owner_from_home(cred_home: str) -> str | None:
     """Return sandbox username for /home/<user> credential homes."""
     parts = Path(cred_home).parts
@@ -194,9 +291,11 @@ async def isolate_subscription_auth_for_proxy(
     ``SubscriptionAuth.detect_file``. API-key mode must not leave that alternate
     provider route available to the agent. A safe CLI config-home override is
     scrubbed as well as removed before launch; an override outside the sandbox
-    user's home fails capture trust without allowing a root deletion there.
-    Return false unless every eligible credential can be identified, removed,
-    and verified absent.
+    user's home fails capture trust without allowing a root deletion there. The
+    cleanup stops stale processes for a non-root sandbox user, then uses the
+    JavaScript runtime already required by every subscription-capable agent to
+    traverse with no-follow directory descriptors. Return false unless every
+    eligible credential can be identified, removed, and verified absent.
     """
 
     agent_cfg = AGENTS.get(agent)
@@ -248,23 +347,20 @@ async def isolate_subscription_auth_for_proxy(
                 paths.append(str(override_dir / PurePosixPath(primary_path).name))
 
     paths = list(dict.fromkeys(paths))
-    quoted_paths = [shlex.quote(path) for path in paths]
-    parent_paths: set[str] = set()
-    for path in paths:
-        parent = PurePosixPath(path).parent
-        parent_paths.update(
-            str(candidate)
-            for candidate in (*reversed(parent.parents), parent)
-            if str(candidate) != "/"
+    sandbox_owner = _owner_from_home(cred_home)
+    uid_command = f"$(id -u -- {shlex.quote(sandbox_owner)})" if sandbox_owner else "-1"
+    cleanup_command = " ".join(
+        (
+            f"{_BENCHFLOW_NODE_BIN} -e",
+            shlex.quote(_PROXY_AUTH_CLEANUP_JS),
+            "--",
+            uid_command,
+            shlex.quote(json.dumps(paths, separators=(",", ":"))),
         )
-    command_parts = [
-        *(f"! test -L {shlex.quote(parent)}" for parent in sorted(parent_paths)),
-        f"rm -f -- {' '.join(quoted_paths)}",
-        *(f"! test -e {path} && ! test -L {path}" for path in quoted_paths),
-    ]
+    )
     try:
         result = await env.exec(
-            " && ".join(command_parts),
+            cleanup_command,
             user="root",
             timeout_sec=10,
         )
@@ -272,9 +368,11 @@ async def isolate_subscription_auth_for_proxy(
         logger.warning("Failed to isolate %s subscription credential: %s", agent, exc)
         return False
     if result.return_code != 0 or not paths_safe:
+        detail = (getattr(result, "stderr", "") or "").strip()[:500]
         logger.warning(
-            "Subscription credential remained accessible in proxy mode for %s",
+            "Subscription credential remained accessible in proxy mode for %s%s",
             agent,
+            f": {detail}" if detail else "",
         )
         return False
     return True
