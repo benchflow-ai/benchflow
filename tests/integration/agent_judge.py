@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import posixpath
 import re
 import sys
 from collections.abc import Mapping
@@ -99,12 +100,16 @@ _SCRATCH_TOKEN_RE = re.compile(r"(?<![\w/])(?:/tmp|/var/tmp|/dev/shm)/[^\s;&|<>'
 
 
 def _is_scratch_path(path: str) -> bool:
-    return bool(_SCRATCH_PATH_RE.match(path.strip().strip("'\"")))
+    normalized = posixpath.normpath(path.strip().strip("'\""))
+    return bool(_SCRATCH_PATH_RE.match(normalized))
 
 
 def _mask_scratch_paths(command: str) -> str:
     """Blank scratch-rooted path tokens so the name sweep cannot match them."""
-    return _SCRATCH_TOKEN_RE.sub("<scratch>", command)
+    return _SCRATCH_TOKEN_RE.sub(
+        lambda match: "<scratch>" if _is_scratch_path(match.group()) else match.group(),
+        command,
+    )
 
 
 _REDIRECT_TARGET_RE = re.compile(
@@ -130,6 +135,7 @@ _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 # tampering. Only the command after ``: $ `` is the agent's actual action, so the
 # execute scan must strip the description first.
 _ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
+_ACP_EDIT_PATH_RE = re.compile(r"\bEditing\s+(?P<path>\S+)\s*$")
 
 
 def _acp_execute_command(title: str) -> str:
@@ -143,11 +149,13 @@ def _acp_execute_command(title: str) -> str:
     return _ACP_EXECUTE_PREFIX_RE.sub("", title, count=1)
 
 
-def _acp_write_target(title: str) -> str:
+def _acp_write_target(title: str, *, native_edit: bool = False) -> str:
     """Return the file target for ACP write titles when the target is structured.
 
     OpenHands file-editor calls can record titles like
     ``file_editor: {"command": "create", "path": "...", "file_text": "..."}``.
+    Native edit titles can instead end in ``Editing <path>``; callers opt into
+    parsing that exact suffix only for ``edit`` events.
     Only the ``path`` is the mutation target; scanning the entire serialized
     payload would treat benign solution text containing words like "verify" as
     a verifier-file mutation.
@@ -155,6 +163,9 @@ def _acp_write_target(title: str) -> str:
     stripped = title.strip()
     prefix = "file_editor:"
     if not stripped.startswith(prefix):
+        match = _ACP_EDIT_PATH_RE.search(stripped) if native_edit else None
+        if match:
+            return match.group("path")
         return title
     # Titles carry trailing prose after the JSON payload (observed live:
     # ``file_editor: {...}: Editing /tmp/test_rnn.py``), so parse the LEADING
@@ -207,13 +218,10 @@ def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
         return []
     # A write-like kind mutating a score-defining file (the mutation is implied
     # by the kind, so no destructive-op token is required in the title).
-    target = _acp_write_target(title)
-    if (
-        kind in _ACP_WRITE_KINDS
-        and not _is_scratch_path(target)
-        and _VERIFIER_FILE_RE.search(target)
-    ):
-        return [f"{kind} -> {title[:160]}"]
+    if kind in _ACP_WRITE_KINDS:
+        target = _acp_write_target(title, native_edit=kind == "edit")
+        if not _is_scratch_path(target) and _VERIFIER_FILE_RE.search(target):
+            return [f"{kind} -> {title[:160]}"]
     # execute / other: OpenHands writes the title as "<description>: $ <command>".
     # Scan ONLY the command so prose like "Verify the output" can't collide with
     # the verifier-file token; a real tamper command still appears after "$ ".

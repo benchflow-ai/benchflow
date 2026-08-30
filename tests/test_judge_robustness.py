@@ -77,6 +77,7 @@ def _native(kind: str, title: str) -> dict:
         (_tc("bash", command="rm -f /tmp/verify.py && cd /app && ls"), False),
         (_tc("write_file", path="/tmp/verify.py", content="import jax"), False),
         (_tc("bash", command="echo x > /var/tmp/test_check.py"), False),
+        (_tc("bash", command="rm -f /tmp/../verifier/test.sh"), True),
         # ...but the exemption is scratch-ROOTS only: workspace/protected paths
         # with the same names still flag.
         (_tc("write_file", path="/app/verify.py", content="x"), True),
@@ -126,6 +127,13 @@ def test_scan_verifier_tamper(event, should_flag):
             ),
             False,
         ),
+        (_native("edit", "Create test script: Editing /tmp/test_rnn.py"), False),
+        (_native("edit", "Update checks: Editing /verifier/test.sh"), True),
+        (
+            _native("edit", "Create test: Editing /tmp/test_rnn.py then run it"),
+            True,
+        ),
+        (_native("delete", "Clean up: Editing /tmp/test_rnn.py"), True),
         (
             _native(
                 "edit",
@@ -152,7 +160,7 @@ def test_scan_verifier_tamper(event, should_flag):
     ],
 )
 def test_scratch_root_exemption_native_shape(event, should_flag):
-    """Scratch-root exemption on the native ACP record shape (the live shape):
+    """Guards PR #979's native ACP scratch-title fix and PR #949's exemption:
     an agent's own /tmp validation tooling is not verifier tamper; mutations of
     score-defining locations still fail closed."""
     flagged = agent_judge._scan_verifier_tamper([event])
