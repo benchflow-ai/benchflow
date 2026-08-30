@@ -214,6 +214,47 @@ def test_unredacted_provider_capture_fails_closed_for_training(
     assert row["is_completed"] is False
 
 
+@pytest.mark.parametrize(
+    ("contradictory_field", "value"),
+    [
+        ("errors", ["capture journal missing"]),
+        ("missing_fields", ["provider_request"]),
+    ],
+)
+def test_complete_manifest_with_capture_gaps_fails_closed_for_training(
+    tmp_path: Path,
+    contradictory_field: str,
+    value: list[str],
+) -> None:
+    """Guards PR #1057 against training on contradictory complete manifests."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire", schema_version=2)
+    manifest = {
+        "status": "complete",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+        "missing_fields": [],
+        "errors": [],
+    }
+    manifest[contradictory_field] = value
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
+    assert not capture_manifest_allows_training(manifest, exchange_count=1)
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
 def test_provider_capture_without_positive_usage_is_not_training_ready(
     tmp_path: Path,
 ) -> None:
