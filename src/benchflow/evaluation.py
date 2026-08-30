@@ -1111,12 +1111,18 @@ class Evaluation:
             except Exception as e:
                 logger.debug(f"Skipping corrupt result file {rfile}: {e}")
         completed: dict[str, dict] = {}
+        # Re-running an errored task is only safe when rollouts are
+        # independent. A sequential-shared job advances one persisted learner
+        # state in task order, so replaying an earlier task after later tasks
+        # committed their skills would corrupt the learning curve; there the
+        # errored result stays reused, matching the pre-existing behavior.
+        rerun_ok = self._config.job_mode != "sequential-shared"
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 # A scoreless result whose verifier error is infra-retryable
                 # (same taxonomy as the within-run retry) records no signal
                 # about the task; reusing it pins a lost score forever.
-                if r.get("rewards") is None and (
+                if rerun_ok and r.get("rewards") is None and (
                     self._config.retry.should_retry_verifier_error(r["verifier_error"])
                 ):
                     logger.info(
