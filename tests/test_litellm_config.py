@@ -274,3 +274,13 @@ def test_proxy_config_no_responses_bridge_for_non_openai_upstream():
     config = litellm_proxy_config(route, master_key="sk-local")
     names = [entry["model_name"] for entry in config["model_list"]]
     assert not any(n.endswith("-responses-bridge") for n in names)
+
+
+def test_google_gemini_model_uses_single_litellm_provider_prefix():
+    """Guards models.dev Google IDs from becoming gemini/google/... routes."""
+    route = resolve_litellm_route(
+        "google/gemini-3.1-flash-lite-preview",
+        {"GEMINI_API_KEY": "key"},
+    )
+    assert route.upstream_model == "gemini/gemini-3.1-flash-lite-preview"
+    assert route.litellm_params["model"] == "gemini/gemini-3.1-flash-lite-preview"
