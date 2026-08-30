@@ -44,6 +44,10 @@ from benchflow.continue_run.trajectory_artifacts import (
 from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
+from benchflow.trajectories.llm_capture_manifest import (
+    LLMTrajectoryManifest,
+    read_llm_trajectory_manifest,
+)
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -332,10 +336,11 @@ def update_continued_metadata(
     HF-compatible artifacts still need the actual live model and token usage.
     The stitched LLM trajectory is authoritative for provider usage.
     """
+    attributed_model = _continued_attributed_model(rollout_dir, fallback=live_model)
     config_path = rollout_dir / "config.json"
     if config_path.is_file():
         config = json.loads(config_path.read_text())
-        config["model"] = live_model
+        config["model"] = attributed_model
         config.setdefault("source", {})["usage_source"] = "stitched_llm_trajectory"
         config["usage_tracking"] = {
             "requested": "required",
@@ -356,7 +361,7 @@ def update_continued_metadata(
     if not result_path.is_file():
         return
     result = json.loads(result_path.read_text())
-    result["model"] = live_model
+    result["model"] = attributed_model
     agent_result = result.setdefault("agent_result", {})
     if isinstance(agent_result, dict):
         agent_result.update(usage.as_agent_result_patch())
@@ -385,6 +390,36 @@ def update_continued_metadata(
     from benchflow.trajectories.results import refresh_rollout_results_jsonl
 
     refresh_rollout_results_jsonl(rollout_dir)
+
+
+def _continued_attributed_model(
+    rollout_dir: Path, *, fallback: str | None
+) -> str | None:
+    """Return the model represented by finalized continuation exchanges.
+
+    Legacy/direct callers without a valid manifest retain the requested-model
+    fallback. Once continuation finalization has written a valid manifest, its
+    active role captures are authoritative: a replay-only run must not claim a
+    requested live model that never produced an exchange, and a mixed-model
+    run must not collapse to either model.
+    """
+
+    raw = read_llm_trajectory_manifest(rollout_dir)
+    if raw is None:
+        return fallback
+    try:
+        manifest = LLMTrajectoryManifest.model_validate(raw)
+    except ValueError:
+        return fallback
+
+    active_models = {
+        capture.model
+        for capture in manifest.role_captures
+        if capture.exchange_count > 0
+    }
+    if active_models:
+        return next(iter(active_models)) if len(active_models) == 1 else None
+    return manifest.model
 
 
 def _host_proxy_binding(environment: str) -> tuple[str, str]:

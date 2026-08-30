@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -133,8 +134,108 @@ def test_proxy_launch_resets_providers_immediately_before_manifest_wrapper():
 
     assert "opencode.json" in hardened
     assert "d.provider = {}" in hardened
+    assert (
+        "unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR "
+        "OPENCODE_CONFIG_CONTENT XDG_CONFIG_HOME"
+    ) in hardened
+    for alternate in (
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_CONFIG_CONTENT",
+        "XDG_CONFIG_HOME",
+    ):
+        assert alternate in hardened
+    assert "OPENCODE_DISABLE_PROJECT_CONFIG=1" in hardened
     assert hardened.endswith("&& " + launch)
     assert _harden_proxy_agent_launch("opencode", launch, {}) == launch
+
+
+def test_proxy_launch_isolates_every_effective_opencode_config_source(tmp_path):
+    """Guards PR #1057 review r3888738113 against alternate config bypasses."""
+
+    home = tmp_path / "home"
+    global_dir = home / ".config" / "opencode"
+    dot_dir = home / ".opencode"
+    project_dir = tmp_path / "project"
+    alternate_dir = tmp_path / "alternate-dir"
+    for directory in (global_dir, dot_dir, project_dir, alternate_dir):
+        directory.mkdir(parents=True)
+
+    bypass = json.dumps(
+        {
+            "provider": {
+                "bypass": {
+                    "options": {
+                        "apiKey": "literal-bypass-key",
+                        "baseURL": "https://bypass.invalid/v1",
+                    }
+                }
+            }
+        }
+    )
+    canonical = global_dir / "opencode.json"
+    canonical.write_text(
+        json.dumps({"provider": json.loads(bypass)["provider"], "theme": "dark"})
+    )
+    for path in (
+        global_dir / "config",
+        global_dir / "config.json",
+        global_dir / "opencode.jsonc",
+        dot_dir / "opencode.json",
+        dot_dir / "opencode.jsonc",
+    ):
+        path.write_text(bypass)
+    alternate_file = tmp_path / "alternate.json"
+    alternate_file.write_text(bypass)
+    (alternate_dir / "opencode.json").write_text(bypass)
+    (project_dir / "opencode.json").write_text(bypass)
+
+    launch = (
+        'test -z "${OPENCODE_CONFIG:-}" && '
+        'test -z "${OPENCODE_CONFIG_DIR:-}" && '
+        'test -z "${OPENCODE_CONFIG_CONTENT:-}" && '
+        'test "$OPENCODE_DISABLE_PROJECT_CONFIG" = 1 && '
+        'test "$HOME" = "$BENCHFLOW_AGENT_HOME" && '
+        'test "$XDG_CONFIG_HOME" = "$HOME/.config"'
+    )
+    hardened = _harden_proxy_agent_launch(
+        "opencode",
+        launch,
+        {"BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model"},
+    )
+    node = shutil.which("node")
+    assert node is not None
+    executable_hardened = hardened.replace("/opt/benchflow/node/bin/node", node, 1)
+    subprocess.run(
+        ["sh", "-c", executable_hardened],
+        cwd=project_dir,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "alternate-home"),
+            "BENCHFLOW_AGENT_HOME": str(home),
+            "OPENCODE_CONFIG": str(alternate_file),
+            "OPENCODE_CONFIG_DIR": str(alternate_dir),
+            "OPENCODE_CONFIG_CONTENT": bypass,
+            "XDG_CONFIG_HOME": str(tmp_path / "alternate-xdg"),
+        },
+        check=True,
+        timeout=15,
+    )
+
+    sanitized = json.loads(canonical.read_text())
+    assert sanitized == {"provider": {}, "theme": "dark"}
+    for removed in (
+        global_dir / "config",
+        global_dir / "config.json",
+        global_dir / "opencode.jsonc",
+        dot_dir / "opencode.json",
+        dot_dir / "opencode.jsonc",
+    ):
+        assert not removed.exists()
+    # Alternate/project sources are not destructively edited; the launch
+    # boundary makes them unreachable in proxy mode.
+    assert alternate_file.read_text() == bypass
+    assert (project_dir / "opencode.json").read_text() == bypass
 
 
 def test_proxy_launch_unsets_mimo_alternate_config_before_manifest_launcher(

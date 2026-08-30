@@ -9,7 +9,7 @@ _OPENCODE_NODE = "/opt/benchflow/node/bin/node"
 
 
 def opencode_provider_reset_source() -> str:
-    """Return stdlib Node.js that removes every pre-existing provider."""
+    """Return stdlib Node.js that isolates OpenCode's file config sources."""
 
     return "\n".join(
         [
@@ -17,8 +17,27 @@ def opencode_provider_reset_source() -> str:
             'const os = require("os");',
             'const path = require("path");',
             'const home = (process.env.BENCHFLOW_AGENT_HOME || "").trim() || os.homedir();',
+            'const globalDir = path.join(home, ".config", "opencode");',
             f"const p = path.join(home, {OPENCODE_CONFIG_RELATIVE_PATH!r});",
-            "fs.mkdirSync(path.dirname(p), { recursive: true });",
+            "fs.mkdirSync(globalDir, { recursive: true });",
+            "function removeConfigFile(target) {",
+            "  try {",
+            "    const stat = fs.lstatSync(target);",
+            "    if (stat.isDirectory()) throw new Error(`config source is a directory: ${target}`);",
+            "    fs.unlinkSync(target);",
+            "  } catch (error) {",
+            '    if (error.code !== "ENOENT") throw error;',
+            "  }",
+            "}",
+            # OpenCode merges all three global JSON names plus a legacy TOML
+            # file. Keep only the manifest-owned opencode.json boundary.
+            'for (const name of ["config", "config.json", "opencode.jsonc"]) {',
+            "  removeConfigFile(path.join(globalDir, name));",
+            "}",
+            # It also loads ~/.opencode independently of project-config flags.
+            'for (const name of ["opencode.json", "opencode.jsonc"]) {',
+            '  removeConfigFile(path.join(home, ".opencode", name));',
+            "}",
             'const text = fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() : "";',
             "const d = text ? JSON.parse(text) : {};",
             # The manifest-owned wrapper adds the one BenchFlow gateway provider
@@ -33,6 +52,6 @@ def opencode_provider_reset_source() -> str:
 
 
 def opencode_provider_reset_command() -> str:
-    """Return the shell-safe reset command run immediately before OpenCode."""
+    """Return the shell-safe file reset run immediately before OpenCode."""
 
     return f"{_OPENCODE_NODE} -e {shlex.quote(opencode_provider_reset_source())}"

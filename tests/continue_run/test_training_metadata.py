@@ -23,7 +23,7 @@ from ._helpers import completion, exchange
 
 
 def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
-    """Guards PR #1057 against retaining stale or incomplete continuation rows."""
+    """Guards PR #1057 review r3888738115 and stale continuation rows."""
     rollout = tmp_path / "job" / "demo-task__continued"
     (rollout / "trajectory").mkdir(parents=True)
     model = "openai/gpt-5.5"
@@ -99,15 +99,20 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
         json.dumps({"info": {"training_ready": False, "model": None}}) + "\n"
     )
 
+    requested_but_unused_model = "openai/gpt-5.6"
     update_continued_metadata(
         rollout,
-        live_model=model,
+        live_model=requested_but_unused_model,
         usage=summarize_llm_trajectory_usage(trajectory_path, n_recorded=0),
         environment="docker",
     )
 
+    refreshed_config = json.loads((rollout / "config.json").read_text())
+    refreshed_result = json.loads((rollout / "result.json").read_text())
     refreshed = json.loads((rollout / "results.jsonl").read_text())
     aggregated = json.loads((rollout.parent / "results.jsonl").read_text())
+    assert refreshed_config["model"] == model
+    assert refreshed_result["model"] == model
     assert refreshed["info"]["model"] == model
     assert refreshed["info"]["training_ready"] is True
     assert refreshed["token_usage"]["total_tokens"] == 2

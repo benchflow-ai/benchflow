@@ -81,7 +81,23 @@ def _harden_proxy_agent_launch(
     if not agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return agent_launch
     if agent == "opencode":
-        return f"{opencode_provider_reset_command()} && {agent_launch}"
+        # OpenCode merges several global filenames, ~/.opencode, project
+        # configs, an arbitrary file/directory, and inline JSON. Proxy mode
+        # must expose exactly the manifest-owned config that the wrapper
+        # registers below. Pin XDG to the same canonical agent home, disable
+        # project discovery, and remove every supported alternate env source
+        # before the process imports its configuration flags.
+        isolate_sources = (
+            "unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR "
+            "OPENCODE_CONFIG_CONTENT XDG_CONFIG_HOME && "
+            'export HOME="${BENCHFLOW_AGENT_HOME:-$HOME}" && '
+            'export XDG_CONFIG_HOME="$HOME/.config" && '
+            "export OPENCODE_DISABLE_PROJECT_CONFIG=1"
+        )
+        return (
+            f"{isolate_sources} && {opencode_provider_reset_command()} "
+            f"&& {agent_launch}"
+        )
     if agent == "mimo":
         # MiMo's manifest-owned launcher replaces both canonical config files
         # in proxy mode, but the CLI also honors this arbitrary alternate path.
