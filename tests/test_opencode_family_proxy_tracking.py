@@ -136,12 +136,17 @@ def test_proxy_launch_resets_providers_immediately_before_manifest_wrapper():
     assert "d.provider = {}" in hardened
     assert (
         "unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR "
-        "OPENCODE_CONFIG_CONTENT XDG_CONFIG_HOME"
+        "OPENCODE_CONFIG_CONTENT OPENCODE_AUTH_CONTENT OPENCODE_DB "
+        "OPENCODE_TEST_HOME OPENCODE_TEST_MANAGED_CONFIG_DIR XDG_CONFIG_HOME"
     ) in hardened
     for alternate in (
         "OPENCODE_CONFIG",
         "OPENCODE_CONFIG_DIR",
         "OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_AUTH_CONTENT",
+        "OPENCODE_DB",
+        "OPENCODE_TEST_HOME",
+        "OPENCODE_TEST_MANAGED_CONFIG_DIR",
         "XDG_CONFIG_HOME",
     ):
         assert alternate in hardened
@@ -156,9 +161,18 @@ def test_proxy_launch_isolates_every_effective_opencode_config_source(tmp_path):
     home = tmp_path / "home"
     global_dir = home / ".config" / "opencode"
     dot_dir = home / ".opencode"
+    data_dir = home / ".local" / "share" / "opencode"
+    managed_dir = global_dir / "benchflow-managed-disabled"
     project_dir = tmp_path / "project"
     alternate_dir = tmp_path / "alternate-dir"
-    for directory in (global_dir, dot_dir, project_dir, alternate_dir):
+    for directory in (
+        global_dir,
+        dot_dir,
+        data_dir,
+        managed_dir,
+        project_dir,
+        alternate_dir,
+    ):
         directory.mkdir(parents=True)
 
     bypass = json.dumps(
@@ -183,17 +197,38 @@ def test_proxy_launch_isolates_every_effective_opencode_config_source(tmp_path):
         global_dir / "opencode.jsonc",
         dot_dir / "opencode.json",
         dot_dir / "opencode.jsonc",
+        managed_dir / "opencode.json",
+        managed_dir / "opencode.jsonc",
     ):
         path.write_text(bypass)
+    auth_file = data_dir / "auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "https://bypass.invalid": {
+                    "type": "wellknown",
+                    "key": "BYPASS_TOKEN",
+                    "token": "literal-bypass-key",
+                }
+            }
+        )
+    )
     alternate_file = tmp_path / "alternate.json"
     alternate_file.write_text(bypass)
     (alternate_dir / "opencode.json").write_text(bypass)
     (project_dir / "opencode.json").write_text(bypass)
+    alternate_database = tmp_path / "alternate-opencode.db"
+    alternate_database.write_text("bypass-account-database")
 
     launch = (
         'test -z "${OPENCODE_CONFIG:-}" && '
         'test -z "${OPENCODE_CONFIG_DIR:-}" && '
         'test -z "${OPENCODE_CONFIG_CONTENT:-}" && '
+        'test "$OPENCODE_AUTH_CONTENT" = "{}" && '
+        'test "$OPENCODE_DB" = ":memory:" && '
+        'test "$OPENCODE_TEST_HOME" = "$HOME" && '
+        'test "$OPENCODE_TEST_MANAGED_CONFIG_DIR" = '
+        '"$HOME/.config/opencode/benchflow-managed-disabled" && '
         'test "$OPENCODE_DISABLE_PROJECT_CONFIG" = 1 && '
         'test "$HOME" = "$BENCHFLOW_AGENT_HOME" && '
         'test "$XDG_CONFIG_HOME" = "$HOME/.config"'
@@ -216,6 +251,10 @@ def test_proxy_launch_isolates_every_effective_opencode_config_source(tmp_path):
             "OPENCODE_CONFIG": str(alternate_file),
             "OPENCODE_CONFIG_DIR": str(alternate_dir),
             "OPENCODE_CONFIG_CONTENT": bypass,
+            "OPENCODE_AUTH_CONTENT": auth_file.read_text(),
+            "OPENCODE_DB": str(alternate_database),
+            "OPENCODE_TEST_HOME": str(tmp_path / "alternate-test-home"),
+            "OPENCODE_TEST_MANAGED_CONFIG_DIR": str(tmp_path / "alternate-managed"),
             "XDG_CONFIG_HOME": str(tmp_path / "alternate-xdg"),
         },
         check=True,
@@ -230,12 +269,16 @@ def test_proxy_launch_isolates_every_effective_opencode_config_source(tmp_path):
         global_dir / "opencode.jsonc",
         dot_dir / "opencode.json",
         dot_dir / "opencode.jsonc",
+        managed_dir / "opencode.json",
+        managed_dir / "opencode.jsonc",
     ):
         assert not removed.exists()
     # Alternate/project sources are not destructively edited; the launch
     # boundary makes them unreachable in proxy mode.
     assert alternate_file.read_text() == bypass
     assert (project_dir / "opencode.json").read_text() == bypass
+    assert auth_file.read_text().find("literal-bypass-key") >= 0
+    assert alternate_database.read_text() == "bypass-account-database"
 
 
 def test_proxy_launch_unsets_mimo_alternate_config_before_manifest_launcher(

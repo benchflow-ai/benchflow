@@ -18,6 +18,9 @@ def opencode_provider_reset_source() -> str:
             'const path = require("path");',
             'const home = (process.env.BENCHFLOW_AGENT_HOME || "").trim() || os.homedir();',
             'const globalDir = path.join(home, ".config", "opencode");',
+            "const managedDir = "
+            '(process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR || "").trim() || '
+            'path.join(globalDir, "benchflow-managed-disabled");',
             f"const p = path.join(home, {OPENCODE_CONFIG_RELATIVE_PATH!r});",
             "fs.mkdirSync(globalDir, { recursive: true });",
             "function removeConfigFile(target) {",
@@ -34,9 +37,12 @@ def opencode_provider_reset_source() -> str:
             'for (const name of ["config", "config.json", "opencode.jsonc"]) {',
             "  removeConfigFile(path.join(globalDir, name));",
             "}",
-            # It also loads ~/.opencode independently of project-config flags.
+            # It also loads ~/.opencode independently of project-config flags
+            # and a late system-managed directory. Runtime hardening redirects
+            # the latter to this agent-owned empty boundary.
             'for (const name of ["opencode.json", "opencode.jsonc"]) {',
             '  removeConfigFile(path.join(home, ".opencode", name));',
+            "  removeConfigFile(path.join(managedDir, name));",
             "}",
             'const text = fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() : "";',
             "const d = text ? JSON.parse(text) : {};",

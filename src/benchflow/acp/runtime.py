@@ -81,17 +81,25 @@ def _harden_proxy_agent_launch(
     if not agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return agent_launch
     if agent == "opencode":
-        # OpenCode merges several global filenames, ~/.opencode, project
-        # configs, an arbitrary file/directory, and inline JSON. Proxy mode
-        # must expose exactly the manifest-owned config that the wrapper
-        # registers below. Pin XDG to the same canonical agent home, disable
-        # project discovery, and remove every supported alternate env source
-        # before the process imports its configuration flags.
+        # OpenCode merges several global filenames, ~/.opencode, project and
+        # system-managed configs, arbitrary env file/directory/content sources,
+        # remote configs from auth/account state, and test-only path overrides.
+        # Proxy mode must expose exactly the manifest-owned config that the
+        # wrapper registers below. Pin every path to the canonical agent home,
+        # replace auth/account state with empty in-memory state, disable project
+        # discovery, and remove every alternate source before module import.
         isolate_sources = (
             "unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR "
-            "OPENCODE_CONFIG_CONTENT XDG_CONFIG_HOME && "
+            "OPENCODE_CONFIG_CONTENT OPENCODE_AUTH_CONTENT OPENCODE_DB "
+            "OPENCODE_TEST_HOME OPENCODE_TEST_MANAGED_CONFIG_DIR "
+            "XDG_CONFIG_HOME && "
             'export HOME="${BENCHFLOW_AGENT_HOME:-$HOME}" && '
             'export XDG_CONFIG_HOME="$HOME/.config" && '
+            'export OPENCODE_AUTH_CONTENT="{}" && '
+            'export OPENCODE_DB=":memory:" && '
+            'export OPENCODE_TEST_HOME="$HOME" && '
+            "export OPENCODE_TEST_MANAGED_CONFIG_DIR="
+            '"$HOME/.config/opencode/benchflow-managed-disabled" && '
             "export OPENCODE_DISABLE_PROJECT_CONFIG=1"
         )
         return (
