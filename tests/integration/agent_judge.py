@@ -135,7 +135,7 @@ _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 # tampering. Only the command after ``: $ `` is the agent's actual action, so the
 # execute scan must strip the description first.
 _ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
-_ACP_EDIT_PATH_RE = re.compile(r"\bEditing\s+(?P<path>\S+)\s*$")
+_ACP_EDIT_PATH_RE = re.compile(r"""\bEditing\s+(?P<path>"[^"]+"|'[^']+'|\S+)\s*$""")
 
 
 def _acp_execute_command(title: str) -> str:
