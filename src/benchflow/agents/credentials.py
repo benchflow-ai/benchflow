@@ -22,6 +22,7 @@ import logging
 import os
 import shlex
 import tempfile
+from importlib.resources import files as resource_files
 from pathlib import Path, PurePosixPath
 
 from benchflow.agents.registry import AGENTS
@@ -31,63 +32,12 @@ logger = logging.getLogger(__name__)
 
 _BENCHFLOW_PREFIX = "/opt/benchflow"
 _BENCHFLOW_NODE_BIN = f"{_BENCHFLOW_PREFIX}/node/bin/node"
-_PROXY_AUTH_CLEANUP_JS = r"""
-const fs = require("fs");
-
-const targets = JSON.parse(process.argv[1]);
-const constants = fs.constants;
-const directoryFlags =
-  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-
-function openDirectoryNoFollow(parts) {
-  let descriptor = fs.openSync("/", directoryFlags);
-  try {
-    for (const part of parts) {
-      const next = fs.openSync(
-        `/proc/self/fd/${descriptor}/${part}`,
-        directoryFlags,
-      );
-      fs.closeSync(descriptor);
-      descriptor = next;
-    }
-    return descriptor;
-  } catch (error) {
-    fs.closeSync(descriptor);
-    throw error;
-  }
-}
-
-function removeCredentialNoFollow(target) {
-  const parts = target.split("/").filter(Boolean);
-  const basename = parts.pop();
-  let parent;
-  try {
-    parent = openDirectoryNoFollow(parts);
-  } catch (error) {
-    if (error.code === "ENOENT") return;
-    throw error;
-  }
-  try {
-    const descriptorPath = `/proc/self/fd/${parent}/${basename}`;
-    try {
-      fs.unlinkSync(descriptorPath);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    try {
-      fs.lstatSync(descriptorPath);
-    } catch (error) {
-      if (error.code === "ENOENT") return;
-      throw error;
-    }
-    throw new Error(`credential remained after deletion: ${target}`);
-  } finally {
-    fs.closeSync(parent);
-  }
-}
-
-for (const target of targets) removeCredentialNoFollow(target);
-""".strip()
+_PROXY_AUTH_CLEANUP_JS = (
+    resource_files("benchflow.agents")
+    .joinpath("resources", "proxy_auth_cleanup.js")
+    .read_text(encoding="utf-8")
+    .strip()
+)
 
 
 def _owner_from_home(cred_home: str) -> str | None:
@@ -276,7 +226,8 @@ async def isolate_agent_for_proxy_capture(
     Every API-proxied agent first requires a non-root sandbox user with no live
     processes; an existing agent or task process is preserved and makes capture
     audit-only. Subscription-capable agents then use their already-required
-    JavaScript runtime to traverse with no-follow directory descriptors.
+    JavaScript runtime to traverse with no-follow directory descriptors, remove
+    native login files, and sanitize registry-declared credential settings.
     Root-agent runs remain audit-only because stale root processes cannot be
     safely distinguished. Return false unless process isolation is proven and
     every eligible credential can be identified, removed, and verified absent.
@@ -347,12 +298,34 @@ async def isolate_agent_for_proxy_capture(
                 paths.append(str(override_dir / PurePosixPath(primary_path).name))
 
     paths = list(dict.fromkeys(paths))
+    settings_targets: list[dict[str, object]] = []
+    if subscription_auth.proxy_settings_file:
+        settings_file = PurePosixPath(subscription_auth.proxy_settings_file)
+        if (
+            not subscription_auth.proxy_settings_drop_keys
+            or settings_file.is_absolute()
+            or len(settings_file.parts) != 1
+            or settings_file.name != subscription_auth.proxy_settings_file
+        ):
+            logger.warning("Cannot prove proxy settings isolation for %s", agent)
+            return False
+        settings_targets = [
+            {
+                "path": str(PurePosixPath(credential_path).parent / settings_file),
+                "drop_keys": list(subscription_auth.proxy_settings_drop_keys),
+            }
+            for credential_path in paths
+        ]
+        settings_targets = list(
+            {str(target["path"]): target for target in settings_targets}.values()
+        )
     cleanup_command = f"{process_guard} && " + " ".join(
         (
             f"{_BENCHFLOW_NODE_BIN} -e",
             shlex.quote(_PROXY_AUTH_CLEANUP_JS),
             "--",
             shlex.quote(json.dumps(paths, separators=(",", ":"))),
+            shlex.quote(json.dumps(settings_targets, separators=(",", ":"))),
         )
     )
     try:

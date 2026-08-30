@@ -441,6 +441,11 @@ class SubscriptionAuth:
     # Optional CLI config-home override. Proxy mode removes this variable so a
     # reused image cannot select an alternate native-login file outside the
     # registry-owned container path.
+    proxy_settings_file: str = ""
+    proxy_settings_drop_keys: tuple[str, ...] = ()
+    # Optional settings file stored beside the primary credential. Proxy mode
+    # atomically removes these top-level keys at every effective config root so
+    # a reused image cannot inject a direct-provider token, endpoint, or helper.
 
 
 @dataclass
@@ -547,6 +552,13 @@ AGENTS: dict[str, AgentConfig] = {
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
                 ),
             ],
+            proxy_settings_file="settings.json",
+            proxy_settings_drop_keys=(
+                "env",
+                "apiKeyHelper",
+                "awsAuthRefresh",
+                "awsCredentialExport",
+            ),
         ),
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.claude/settings.json",

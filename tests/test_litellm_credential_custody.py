@@ -100,6 +100,11 @@ async def test_api_proxy_isolates_preexisting_subscription_credential(
     assert (
         f"custom-{agent}/{default_auth_path.rsplit('/', 1)[-1]}" in sandbox.commands[0]
     )
+    if agent == "claude-agent-acp":
+        assert "/home/agent/.claude/settings.json" in sandbox.commands[0]
+        assert f"custom-{agent}/settings.json" in sandbox.commands[0]
+        for key in ("env", "apiKeyHelper", "awsAuthRefresh", "awsCredentialExport"):
+            assert key in sandbox.commands[0]
     assert "O_NOFOLLOW" in sandbox.commands[0]
     assert "/proc/self/fd/" in sandbox.commands[0]
     assert "pgrep -u" in sandbox.commands[0]
@@ -249,6 +254,7 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
             _PROXY_AUTH_CLEANUP_JS,
             "--",
             json.dumps([str(credential_path)]),
+            json.dumps([]),
         ],
         check=False,
         capture_output=True,
@@ -268,6 +274,7 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
             _PROXY_AUTH_CLEANUP_JS,
             "--",
             json.dumps([str(credential_path)]),
+            json.dumps([]),
         ],
         check=False,
         capture_output=True,
@@ -278,6 +285,117 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
     assert not credential_path.exists()
     assert not credential_path.is_symlink()
     assert outside_auth.read_text() == "subscription-secret"
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("node") is None,
+    reason="the sandbox settings sanitizer requires Linux procfs and Node.js",
+)
+def test_proxy_auth_cleanup_sanitizes_claude_credential_settings(tmp_path) -> None:
+    """Guards PR #1057 review r3888455412 against settings-based auth bypass."""
+
+    claude_dir = tmp_path / "home" / "agent" / ".claude"
+    claude_dir.mkdir(parents=True)
+    credential_path = claude_dir / ".credentials.json"
+    credential_path.write_text("subscription-secret")
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "literal-provider-secret",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.example",
+                },
+                "apiKeyHelper": "/opt/provider-key-helper",
+                "awsAuthRefresh": "/opt/aws-login",
+                "awsCredentialExport": "/opt/aws-export",
+                "permissions": {"deny": ["WebSearch", "WebFetch"]},
+                "theme": "dark",
+            }
+        )
+    )
+    settings_path.chmod(0o640)
+    before = settings_path.stat()
+
+    sanitized = subprocess.run(
+        [
+            "node",
+            "-e",
+            _PROXY_AUTH_CLEANUP_JS,
+            "--",
+            json.dumps([str(credential_path)]),
+            json.dumps(
+                [
+                    {
+                        "path": str(settings_path),
+                        "drop_keys": [
+                            "env",
+                            "apiKeyHelper",
+                            "awsAuthRefresh",
+                            "awsCredentialExport",
+                        ],
+                    }
+                ]
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert sanitized.returncode == 0, sanitized.stderr
+    assert not credential_path.exists()
+    assert json.loads(settings_path.read_text()) == {
+        "permissions": {"deny": ["WebSearch", "WebFetch"]},
+        "theme": "dark",
+    }
+    after = settings_path.stat()
+    assert after.st_mode & 0o777 == before.st_mode & 0o777
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("node") is None,
+    reason="the sandbox settings sanitizer requires Linux procfs and Node.js",
+)
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "malformed"])
+def test_proxy_auth_cleanup_fails_closed_for_unsafe_claude_settings(
+    tmp_path, unsafe_kind: str
+) -> None:
+    """Guards PR #1057 review r3888455412 against unsafe settings rewrites."""
+
+    claude_dir = tmp_path / "home" / "agent" / ".claude"
+    claude_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-settings.json"
+    outside.write_text('{"env":{"ANTHROPIC_AUTH_TOKEN":"outside-secret"}}')
+    settings_path = claude_dir / "settings.json"
+    if unsafe_kind == "symlink":
+        settings_path.symlink_to(outside)
+    else:
+        settings_path.write_text("{not-json")
+
+    refused = subprocess.run(
+        [
+            "node",
+            "-e",
+            _PROXY_AUTH_CLEANUP_JS,
+            "--",
+            json.dumps([]),
+            json.dumps([{"path": str(settings_path), "drop_keys": ["env"]}]),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert refused.returncode != 0
+    if unsafe_kind == "symlink":
+        assert settings_path.is_symlink()
+        assert json.loads(outside.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == (
+            "outside-secret"
+        )
+    else:
+        assert settings_path.read_text() == "{not-json"
 
 
 @pytest.mark.skipif(
