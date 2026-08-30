@@ -273,6 +273,77 @@ def test_extract_usage_reads_litellm_runtime_trajectory():
     assert usage["n_output_tokens"] == 2
 
 
+def test_merge_provider_usage_metrics_across_role_runtimes():
+    """Guards PR #1057 review r3888535158 against role-rotation undercount."""
+
+    from benchflow.rollout._usage import _merge_provider_usage_metrics
+
+    merged = _merge_provider_usage_metrics(
+        [
+            {
+                "n_input_tokens": 10,
+                "n_output_tokens": 2,
+                "n_cache_read_tokens": 1,
+                "n_cache_creation_tokens": 0,
+                "total_tokens": 13,
+                "cost_usd": 0.01,
+                "usage_source": "provider_response",
+                "price_source": "litellm",
+            },
+            {
+                "n_input_tokens": 20,
+                "n_output_tokens": 3,
+                "n_cache_read_tokens": 0,
+                "n_cache_creation_tokens": 2,
+                "total_tokens": 25,
+                "cost_usd": 0.02,
+                "usage_source": "provider_response",
+                "price_source": "litellm",
+            },
+        ]
+    )
+
+    assert merged == {
+        "n_input_tokens": 30,
+        "n_output_tokens": 5,
+        "n_cache_read_tokens": 1,
+        "n_cache_creation_tokens": 2,
+        "total_tokens": 38,
+        "cost_usd": 0.03,
+        "usage_source": "provider_response",
+        "price_source": "litellm",
+    }
+
+
+def test_merge_provider_usage_keeps_mixed_pricing_unknown():
+    """Unpriced role traffic must not make aggregate cost look complete."""
+
+    from benchflow.rollout._usage import _merge_provider_usage_metrics
+
+    priced = {
+        "n_input_tokens": 10,
+        "n_output_tokens": 2,
+        "total_tokens": 12,
+        "cost_usd": 0.01,
+        "usage_source": "provider_response",
+        "price_source": "litellm",
+    }
+    unpriced = {
+        "n_input_tokens": 4,
+        "n_output_tokens": 1,
+        "total_tokens": 5,
+        "cost_usd": None,
+        "usage_source": "provider_response",
+        "price_source": None,
+    }
+
+    merged = _merge_provider_usage_metrics([priced, unpriced])
+
+    assert merged["total_tokens"] == 17
+    assert merged["cost_usd"] is None
+    assert merged["price_source"] is None
+
+
 def test_rollout_final_reconcile_preserves_prior_provider_runtime(tmp_path):
     """Guards PR #1057's cumulative writer across runtime-switch cleanup."""
 
@@ -355,6 +426,67 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
 
     assert rollout._usage_metrics["usage_source"] == "provider_response"
     assert (tmp_path / "trajectory" / "llm_trajectory.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_rollout_cleanup_accumulates_rotated_provider_usage(tmp_path):
+    """Guards PR #1057 review r3888535158 against final-role-only metrics."""
+
+    from benchflow.rollout import Rollout, RolloutConfig
+
+    class FakeServer:
+        def __init__(self, input_tokens: int, output_tokens: int):
+            self.trajectory = _trajectory(
+                {
+                    "model": "gpt-5.6",
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                    },
+                }
+            )
+
+        async def stop(self):
+            return None
+
+        def reconcile_live_capture(self):
+            LiveLLMTrajectoryWriter(
+                tmp_path / "trajectory" / "llm_trajectory.jsonl"
+            ).reconcile(self.trajectory)
+
+    def runtime(input_tokens: int, output_tokens: int) -> ProviderRuntime:
+        return ProviderRuntime(
+            kind="litellm",
+            agent_base_url="http://127.0.0.1:4000",
+            backend_model="gpt-5.6",
+            server=FakeServer(input_tokens, output_tokens),
+        )
+
+    first = runtime(10, 2)
+    final = runtime(20, 3)
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(task_path=tmp_path / "task")
+    rollout._trajectory = []
+    rollout._acp_client = None
+    rollout._agent_launch = ""
+    rollout._env = SimpleNamespace(stop=AsyncMock())
+    rollout._environment = None
+    rollout._retired_usage_runtimes = [first]
+    rollout._usage_runtime = final
+    rollout._planes = SimpleNamespace(
+        stop_provider_runtime=lambda provider_runtime: provider_runtime.server.stop(),
+        extract_usage=extract_usage,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._env_externally_owned = False
+
+    await rollout.cleanup()
+
+    assert rollout._usage_metrics["usage_source"] == "provider_response"
+    assert rollout._usage_metrics["n_input_tokens"] == 30
+    assert rollout._usage_metrics["n_output_tokens"] == 5
+    assert rollout._usage_metrics["total_tokens"] == 35
+    assert rollout._retired_usage_runtimes == []
 
 
 @pytest.mark.asyncio

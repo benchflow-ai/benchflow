@@ -10,6 +10,7 @@ from importlib.resources import files
 from typing import Any
 
 from benchflow.sandbox.files import upload_private_text
+from benchflow.sandbox.lockdown import build_priv_drop_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,11 @@ async def provider_capture_has_verified_custody(
             logger.warning("Provider capture custody artifact hardening failed")
             return False
         access = await sandbox.exec(
-            f"{quoted_probe} probe {quoted_runtime}",
-            user=sandbox_user,
+            build_priv_drop_cmd(
+                f"{quoted_probe} probe {quoted_runtime}",
+                sandbox_user,
+            ),
+            user="root",
             timeout_sec=10,
         )
         if access.return_code != 1:

@@ -129,14 +129,18 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     """Build a shell command that drops to sandbox_user via setpriv or su.
 
-    setpriv (util-linux) execs directly; su -l is the fallback for Alpine/BusyBox.
-    No outer sh -c wrapper — DockerProcess wraps in bash -c already.
+    A capable util-linux ``setpriv`` also sets ``no_new_privs`` so setuid/file-
+    capability helpers cannot regain privilege after launch. ``su -l`` remains
+    the compatibility fallback; capture custody independently treats that path
+    as audit-only because it cannot prove the same kernel boundary. No outer
+    sh -c wrapper — DockerProcess wraps in bash -c already.
     """
     inner = f"export HOME=/home/{sandbox_user} && {agent_launch}"
     quoted = shlex.quote(inner)
     return (
-        f"if setpriv --help 2>&1 | grep -q reuid; then"
-        f" exec setpriv --reuid={sandbox_user} --regid={sandbox_user}"
+        f"if setpriv --help 2>&1 | grep -q reuid &&"
+        f" setpriv --help 2>&1 | grep -q no-new-privs; then"
+        f" exec setpriv --no-new-privs --reuid={sandbox_user} --regid={sandbox_user}"
         f" --init-groups -- bash -c {quoted};"
         f" else exec su -l {sandbox_user} -c {quoted};"
         f" fi"

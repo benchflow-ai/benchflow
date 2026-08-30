@@ -103,9 +103,19 @@ def _provider_api_failure_summary_from_runtime(runtime: Any) -> dict[str, Any] |
     counts, and the dominant failure's (subcategory, transient, fingerprint)
     classification. Reads only integer status codes (#546/#564).
     """
-    server = getattr(runtime, "server", None)
-    trajectory = getattr(server, "trajectory", None)
-    exchanges = getattr(trajectory, "exchanges", None) or []
+    return _provider_api_failure_summary_from_runtimes([runtime])
+
+
+def _provider_api_failure_summary_from_runtimes(
+    runtimes: list[Any],
+) -> dict[str, Any] | None:
+    """Summarize HTTP failures across role-scoped provider runtimes."""
+
+    exchanges = []
+    for runtime in runtimes:
+        server = getattr(runtime, "server", None)
+        trajectory = getattr(server, "trajectory", None)
+        exchanges.extend(getattr(trajectory, "exchanges", None) or [])
     total = 0
     failed: dict[int, int] = {}
     last_failed_status: int | None = None
@@ -136,6 +146,45 @@ def _provider_api_failure_summary_from_runtime(runtime: Any) -> dict[str, Any] |
             fingerprint=f"{subcategory}:{dominant}",
         )
     return summary
+
+
+_PROVIDER_USAGE_COUNT_FIELDS = (
+    "n_input_tokens",
+    "n_output_tokens",
+    "n_cache_read_tokens",
+    "n_cache_creation_tokens",
+    "total_tokens",
+)
+
+
+def _merge_provider_usage_metrics(
+    metrics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Sum trusted provider metrics from successively rotated gateways.
+
+    Cost remains unknown if any contributing provider response was unpriced;
+    summing only the priced subset would silently under-report the rollout.
+    """
+
+    available = [
+        item for item in metrics if item.get("usage_source") == "provider_response"
+    ]
+    if not available:
+        return usage_unavailable()
+    merged = usage_unavailable()
+    for field in _PROVIDER_USAGE_COUNT_FIELDS:
+        merged[field] = sum(_as_nonnegative_int(item.get(field)) for item in available)
+    costs = [item.get("cost_usd") for item in available]
+    numeric_costs = [float(cost) for cost in costs if isinstance(cost, int | float)]
+    if len(numeric_costs) == len(costs):
+        merged["cost_usd"] = round(sum(numeric_costs), 10)
+        merged["price_source"] = (
+            "litellm"
+            if all(item.get("price_source") == "litellm" for item in available)
+            else None
+        )
+    merged["usage_source"] = "provider_response"
+    return merged
 
 
 def classify_api_failure(

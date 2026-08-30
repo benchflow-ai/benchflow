@@ -27,6 +27,7 @@ from benchflow.models import RunResult
 from benchflow.rollout._usage import (
     _api_error_subcategory,
     _provider_api_failure_summary_from_runtime,
+    _provider_api_failure_summary_from_runtimes,
     classify_api_failure,
 )
 
@@ -115,6 +116,18 @@ class TestFailureSummary:
         assert s["total_requests"] == 2
         assert s["failed_requests"] == 1
         assert s["subcategory"] == "auth"
+
+    def test_role_runtime_summaries_are_combined(self):
+        """Guards PR #1057 review r3888535158 beyond token accounting."""
+
+        summary = _provider_api_failure_summary_from_runtimes(
+            [_runtime([429]), _runtime([200, 500])]
+        )
+
+        assert summary is not None
+        assert summary["total_requests"] == 3
+        assert summary["failed_requests"] == 2
+        assert summary["status_counts"] == {"429": 1, "500": 1}
 
 
 class TestClassifyApiFailure:

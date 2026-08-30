@@ -19,6 +19,8 @@ case "$mode" in
     chmod 600 "$callback_log" "$capture_state"
     ;;
   probe)
+    no_new_privs=$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status 2>/dev/null || true)
+    if [ "$no_new_privs" != 1 ]; then exit 0; fi
     for artifact in "$callback_log" "$capture_state"; do
       if cat "$artifact" >/dev/null 2>&1; then exit 0; fi
       if [ -r "$artifact" ] || [ -w "$artifact" ]; then exit 0; fi

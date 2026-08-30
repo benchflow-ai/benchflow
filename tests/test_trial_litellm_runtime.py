@@ -61,6 +61,8 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
+    """Guards PR #1057 review r3888535158 across role runtime rotation."""
+
     rollout = Rollout.__new__(Rollout)
     rollout._config = RolloutConfig(
         task_path=tmp_path / "task",
@@ -73,7 +75,10 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
     rollout._rollout_name = "rollout"
     rollout._agent_cwd = "/workspace"
     rollout._env = SimpleNamespace()
-    rollout._usage_runtime = None
+    previous_runtime = SimpleNamespace(kind="litellm", name="primary")
+    next_runtime = SimpleNamespace(kind="litellm", name="reviewer")
+    rollout._usage_runtime = previous_runtime
+    rollout._retired_usage_runtimes = []
     rollout._timing = {}
     rollout._disallow_web_tools = False
     rollout._agent_cfg = SimpleNamespace()
@@ -90,9 +95,10 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
     async def fake_litellm(**kwargs):
         calls.append("litellm")
         assert kwargs["agent"] == "claude-agent-acp"
+        assert kwargs["runtime"] is previous_runtime
         env = dict(kwargs["agent_env"])
         env["ANTHROPIC_BASE_URL"] = "http://host.docker.internal:4000"
-        return env, SimpleNamespace(kind="litellm")
+        return env, next_runtime
 
     async def fake_connect_acp(**kwargs):
         calls.append("acp")
@@ -115,3 +121,5 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
     await rollout.connect_as(role)
 
     assert calls == ["litellm", "acp"]
+    assert rollout._usage_runtime is next_runtime
+    assert rollout._retired_usage_runtimes == [previous_runtime]

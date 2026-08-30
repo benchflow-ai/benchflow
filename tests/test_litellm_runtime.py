@@ -194,7 +194,9 @@ class _CustodyProbeSandbox:
             assert kwargs["user"] == "root"
             return SimpleNamespace(return_code=0, stdout="", stderr="")
         if f"{self.probe_path} probe " in command:
-            assert kwargs["user"] == "agent"
+            assert kwargs["user"] == "root"
+            assert "setpriv --no-new-privs" in command
+            assert "--reuid=agent" in command
             return SimpleNamespace(
                 return_code=self.agent_probe_return_code,
                 stdout="",

@@ -1,6 +1,9 @@
 """Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
+import os
+import shutil
 import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -365,8 +368,38 @@ class TestPrivDropCommand:
 
     def test_contains_setpriv_and_su_fallback(self):
         cmd = build_priv_drop_cmd("my-agent --stdio", "agent")
-        assert "setpriv --reuid=agent --regid=agent --init-groups" in cmd
+        assert "setpriv --no-new-privs --reuid=agent --regid=agent --init-groups" in cmd
         assert "su -l agent -c" in cmd
+
+    def test_privilege_regain_is_blocked(self):
+        """Guards PR #1057 review r3888535162 against setuid regain."""
+
+        cmd = build_priv_drop_cmd("my-agent", "agent")
+        assert "grep -q no-new-privs" in cmd
+        assert "setpriv --no-new-privs" in cmd
+
+    @pytest.mark.skipif(
+        sys.platform != "linux"
+        or getattr(os, "geteuid", lambda: -1)() != 0
+        or shutil.which("setpriv") is None,
+        reason="real no_new_privs launch proof requires root and Linux setpriv",
+    )
+    def test_linux_launch_really_sets_no_new_privs(self):
+        """Guards PR #1057 review r3888535162 at the kernel boundary."""
+
+        cmd = build_priv_drop_cmd(
+            "awk '/^NoNewPrivs:/ {print $2}' /proc/self/status",
+            "nobody",
+        )
+
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.stdout.strip() == "1"
 
     def test_exec_prefix(self):
         """Both branches use exec to replace the shell (no lingering parent)."""
