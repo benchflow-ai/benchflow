@@ -28,6 +28,7 @@ from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
+from benchflow.agents.opencode_config import opencode_provider_reset_command
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -70,6 +71,16 @@ _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
 _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+def _harden_proxy_agent_launch(
+    agent: str, agent_launch: str, agent_env: dict[str, str]
+) -> str:
+    """Insert agent-side config hardening after proxy selection."""
+
+    if agent != "opencode" or not agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
+        return agent_launch
+    return f"{opencode_provider_reset_command()} && {agent_launch}"
 
 
 def _acp_handshake_timeout_sec() -> float:
@@ -609,6 +620,8 @@ async def connect_acp(
             parts[0] = full_path
             agent_launch = " ".join(parts)
             logger.info(f"Resolved agent path: {agent_launch}")
+
+    agent_launch = _harden_proxy_agent_launch(agent, agent_launch, agent_env)
 
     if sandbox_user:
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)

@@ -19,6 +19,8 @@ import subprocess
 
 import pytest
 
+from benchflow.acp.runtime import _harden_proxy_agent_launch
+from benchflow.agents.opencode_config import opencode_provider_reset_source
 from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 
 # (agent name, proxy wrapper binary, agent config filename). MiMo is an
@@ -93,6 +95,17 @@ def test_proxy_wrapper_removes_preexisting_provider_credentials(tmp_path):
     }
 
     subprocess.run(
+        ["node", "-e", opencode_provider_reset_source()],
+        text=True,
+        env=env,
+        check=True,
+        timeout=15,
+    )
+    sanitized = json.loads(config.read_text())
+    assert sanitized["provider"] == {}
+    assert sanitized["tools"] == {"webfetch": False}
+
+    subprocess.run(
         ["node"],
         input=register_js,
         text=True,
@@ -106,6 +119,22 @@ def test_proxy_wrapper_removes_preexisting_provider_credentials(tmp_path):
     assert "literal-bypass-key" not in config.read_text()
     assert "bypass.invalid" not in config.read_text()
     assert updated["tools"] == {"webfetch": False}
+
+
+def test_proxy_launch_resets_providers_immediately_before_manifest_wrapper():
+    """Guards PR #1057 without drifting the external agent manifest."""
+
+    launch = "/opt/benchflow/bin/opencode-proxy acp"
+    hardened = _harden_proxy_agent_launch(
+        "opencode",
+        launch,
+        {"BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model"},
+    )
+
+    assert "opencode.json" in hardened
+    assert "d.provider = {}" in hardened
+    assert hardened.endswith("&& " + launch)
+    assert _harden_proxy_agent_launch("opencode", launch, {}) == launch
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
