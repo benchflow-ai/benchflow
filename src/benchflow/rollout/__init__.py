@@ -1380,8 +1380,15 @@ class Rollout:
         self._session = None
         self._session_adapter = None
         self._is_session_factory = False
-        # Kill any lingering agent processes to prevent context bleed between scenes
-        agent_pattern = _agent_process_kill_pattern(self._agent_launch)
+        # Kill any lingering agent processes to prevent context bleed between scenes.
+        # Oracle solve.sh is awaited synchronously and has no live agent process;
+        # treating its registry label as a process pattern can match the host
+        # command line (``--agent oracle``) on runtimes without a PID namespace.
+        agent_pattern = (
+            None
+            if self._config.primary_agent == "oracle"
+            else _agent_process_kill_pattern(self._agent_launch)
+        )
         if self._env and agent_pattern:
             with contextlib.suppress(Exception):
                 await self._env.exec(

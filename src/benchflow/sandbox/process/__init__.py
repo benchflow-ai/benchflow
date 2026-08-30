@@ -4,6 +4,7 @@ Provides a bidirectional pipe (send lines in, read lines out) needed for
 ACP agents running inside containers. Implementations:
 
 - DockerProcess:         `docker compose exec -i` (local Docker)
+- ApptainerProcess:      `apptainer exec` (local Apptainer instance)
 - AppleContainerProcess: `container exec -i` (Apple Container)
 - DaytonaProcess:        SSH to a Daytona sandbox
 - DaytonaPtyProcess:     Daytona PTY WebSocket
@@ -24,11 +25,13 @@ from benchflow.sandbox.process._base import (
 )
 from benchflow.sandbox.process.agentcore import AgentCoreProcess
 from benchflow.sandbox.process.apple import AppleContainerProcess
+from benchflow.sandbox.process.apptainer import ApptainerProcess
 from benchflow.sandbox.process.daytona import DaytonaProcess, DaytonaPtyProcess
 from benchflow.sandbox.process.docker import DockerProcess
 
 __all__ = [
     "AgentCoreProcess",
+    "ApptainerProcess",
     "AppleContainerProcess",
     "DaytonaProcess",
     "DaytonaPtyProcess",
