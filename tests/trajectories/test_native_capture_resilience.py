@@ -119,6 +119,25 @@ async def test_zero_call_oauth_target_preserves_clean_audit_completion(
     assert capture_manifest_preserves_audit_completion(manifest) is True
 
 
+def test_zero_call_oauth_manifest_requires_a_prepared_role() -> None:
+    """Guards PR #1057 review r3888793598 against vacuous zero-call evidence."""
+
+    manifest = {
+        "status": "no_model_call",
+        "capture_source": "none",
+        "capture_fidelity": "none",
+        "auth_mode": "oauth_subscription",
+        "exchange_count": 0,
+        "request_complete": False,
+        "response_complete": False,
+        "errors": [],
+        "missing_fields": [],
+        "role_captures": [],
+    }
+
+    assert capture_manifest_preserves_audit_completion(manifest, exchanges=[]) is False
+
+
 def test_native_parser_normalizes_fallback_and_record_timestamps(
     tmp_path: Path,
 ) -> None:

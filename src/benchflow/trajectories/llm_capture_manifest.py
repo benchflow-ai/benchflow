@@ -222,7 +222,7 @@ def capture_artifact_allows_training(
                 _exchange_matches_training_manifest(exchange, manifest)
                 for exchange in exchanges
             )
-            and _exchanges_match_training_roles(exchanges, manifest)
+            and _exchanges_match_roles(exchanges, manifest)
             and successful_exchanges_have_positive_usage(exchanges)
         )
     return not any(_exchange_requires_manifest(exchange) for exchange in exchanges)
@@ -361,7 +361,7 @@ def _exchange_matches_training_manifest(
     return True
 
 
-def _exchanges_match_training_roles(
+def _exchanges_match_roles(
     exchanges: Sequence[dict[str, Any]], manifest: dict[str, Any]
 ) -> bool:
     """Require row attribution and cardinality to match per-role provenance."""
@@ -405,7 +405,11 @@ def _exchanges_match_training_roles(
     return actual == expected
 
 
-def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> bool:
+def capture_manifest_preserves_audit_completion(
+    manifest: dict[str, Any],
+    *,
+    exchanges: Sequence[dict[str, Any]] | None = None,
+) -> bool:
     """Accept only expected, internally complete audit-only capture states."""
 
     if manifest.get("status") not in {
@@ -426,9 +430,9 @@ def capture_manifest_preserves_audit_completion(manifest: dict[str, Any]) -> boo
         return False
     missing_fields = set(raw_missing_fields)
     role_captures = _validated_role_captures(manifest)
-    if role_captures is None or not _role_captures_match_manifest(
-        manifest, role_captures
-    ):
+    if not role_captures or not _role_captures_match_manifest(manifest, role_captures):
+        return False
+    if exchanges is not None and not _exchanges_match_roles(exchanges, manifest):
         return False
     has_oauth_capture = any(
         _is_oauth_audit_role_capture(capture) for capture in role_captures

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,6 +53,7 @@ class _LLMStepsResult:
     tool_defs: list[dict[str, Any]]
     export_error: str | None
     capture_contract_rejected: bool = False
+    exchanges: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
@@ -185,7 +186,13 @@ def _llm_steps_from_trajectory(
         rollout_dir,
         exchanges=exchanges,
     ):
-        return _LLMStepsResult([], [], None, capture_contract_rejected=True)
+        return _LLMStepsResult(
+            [],
+            [],
+            None,
+            capture_contract_rejected=True,
+            exchanges=exchanges,
+        )
     training_success_indices = _training_success_exchange_indices(exchanges)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
@@ -263,8 +270,9 @@ def _llm_steps_from_trajectory(
             tool_defs,
             "Successful LLM exchanges were omitted from results.jsonl: "
             + "; ".join(skipped_successful),
+            exchanges=exchanges,
         )
-    return _LLMStepsResult(steps, tool_defs, None)
+    return _LLMStepsResult(steps, tool_defs, None, exchanges=exchanges)
 
 
 def _response_is_truncated(response_body: dict[str, Any]) -> bool:
@@ -513,7 +521,10 @@ def build_rollout_results_record(
             )
             or (
                 capture_manifest is not None
-                and capture_manifest_preserves_audit_completion(capture_manifest)
+                and capture_manifest_preserves_audit_completion(
+                    capture_manifest,
+                    exchanges=llm_steps.exchanges,
+                )
             )
         )
         and effective_export_error is None

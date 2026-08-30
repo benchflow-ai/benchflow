@@ -144,6 +144,15 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
         }
     )
     write_llm_trajectory_manifest(rollout, replay_manifest)
+    replay_row = json.loads(trajectory_path.read_text())
+    replay_row["metadata"].update(
+        {
+            "capture_source": "replay_proxy",
+            "capture_fidelity": "agent_session",
+            "request_complete": False,
+        }
+    )
+    trajectory_path.write_text(json.dumps(replay_row) + "\n")
     (rollout / "results.jsonl").write_text(
         json.dumps({"info": {"training_ready": True}, "is_completed": False}) + "\n"
     )

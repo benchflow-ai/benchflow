@@ -85,6 +85,17 @@ def test_agent_session_capture_is_audit_only_not_training_ready(tmp_path: Path) 
     trajectory_dir = tmp_path / "trajectory"
     trajectory_dir.mkdir()
     _write_exchange(trajectory_dir, fidelity="agent_session")
+    exchange_path = trajectory_dir / "llm_trajectory.jsonl"
+    exchange = json.loads(exchange_path.read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "codex_native_session",
+            "auth_mode": "oauth_subscription",
+            "role": "agent",
+            "agent": "codex-acp",
+        }
+    )
+    exchange_path.write_text(json.dumps(exchange) + "\n")
     (trajectory_dir / "llm_trajectory.manifest.json").write_text(
         json.dumps(
             {
@@ -120,6 +131,67 @@ def test_agent_session_capture_is_audit_only_not_training_ready(tmp_path: Path) 
     assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
     assert row["is_completed"] is True
     assert row["error"] is None
+
+
+@pytest.mark.parametrize("corruption", ["truncated", "wrong_role"])
+def test_corrupt_audit_rows_fail_closed_for_completion(
+    tmp_path: Path, corruption: str
+) -> None:
+    """Guards PR #1057 review r3888793594 against stale audit sidecars."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="agent_session")
+    exchange_path = trajectory_dir / "llm_trajectory.jsonl"
+    exchange = json.loads(exchange_path.read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "codex_native_session",
+            "auth_mode": "oauth_subscription",
+            "role": "agent",
+            "agent": "codex-acp",
+        }
+    )
+    if corruption == "truncated":
+        exchange_path.write_text("")
+    else:
+        exchange["metadata"]["role"] = "unprepared-role"
+        exchange_path.write_text(json.dumps(exchange) + "\n")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_source": "codex_native_session",
+                "capture_fidelity": "agent_session",
+                "auth_mode": "oauth_subscription",
+                "exchange_count": 1,
+                "request_complete": False,
+                "response_complete": True,
+                "role_captures": [
+                    {
+                        "role": "agent",
+                        "agent": "codex-acp",
+                        "auth_mode": "oauth_subscription",
+                        "capture_source": "codex_native_session",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "agent_native_acp", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+    assert row["error"]["error"] == "missing_llm_trajectory"
 
 
 def test_corrupt_capture_manifest_fails_closed_for_training(tmp_path: Path) -> None:
@@ -447,12 +519,24 @@ def test_mixed_oauth_audit_capture_preserves_successful_completion(
     trajectory_dir.mkdir()
     _write_exchange(trajectory_dir, fidelity="provider_wire")
     provider_row = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    provider_row["metadata"].update(
+        {
+            "capture_source": "litellm_proxy",
+            "auth_mode": "api_key",
+            "role": "coder",
+            "agent": "codex-acp",
+        }
+    )
     oauth_row = json.loads(json.dumps(provider_row))
     oauth_row["metadata"].update(
         {
             "capture_fidelity": "agent_session",
+            "capture_source": "claude_native_session",
             "auth_mode": "oauth_subscription",
             "request_complete": False,
+            "response_complete": False,
+            "role": "reviewer",
+            "agent": "claude-agent-acp",
         }
     )
     (trajectory_dir / "llm_trajectory.jsonl").write_text(
@@ -571,6 +655,9 @@ def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) ->
             "request_capture_source": "replay_proxy_ingress",
             "auth_mode": "api_key",
             "request_complete": False,
+            "role": "agent",
+            "agent": "openhands",
+            "model": "openai/gpt-5.6",
         }
     )
     (trajectory_dir / "llm_trajectory.jsonl").write_text(json.dumps(replay_row) + "\n")
