@@ -813,7 +813,14 @@ async def _prompt_with_wall_clock_budget(
             await _cancel_and_drain_prompt_task(prompt_task)
 
 
-async def _prompt_with_idle_watchdog(
+async # A pending tool call defers the idle watchdog for at most this many idle
+# budgets while staying silent (no update traffic). Sized so legitimate silent
+# tools several times the idle budget survive, while a lost completion stops
+# disarming hang detection within the same order of magnitude (#1061).
+PENDING_GRACE_MULTIPLIER = 3
+
+
+def _prompt_with_idle_watchdog(
     acp_client: ACPClient,
     session,
     prompt: str,
@@ -851,7 +858,7 @@ async def _prompt_with_idle_watchdog(
     # _activity_count — and a call still streaming progress is demonstrably
     # alive. Only a call that stays pending AND silent for the full grace
     # stops deferring the idle path.
-    pending_grace = idle_timeout * 3
+    pending_grace = idle_timeout * PENDING_GRACE_MULTIPLIER
     pending_snapshot: tuple[str, ...] = ()
     pending_since = last_progress
     seen_update_count = session.tool_call_update_count
