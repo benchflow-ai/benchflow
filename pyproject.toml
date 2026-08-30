@@ -146,11 +146,15 @@ build-backend = "hatchling.build"
 only-include = [
     "src",
     "tests",
+    "hatch_build.py",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
 ]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

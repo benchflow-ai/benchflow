@@ -20,15 +20,15 @@ def codex_provider_id(provider_name: str | None) -> str:
     return f"{_CODEX_PROVIDER_ID_PREFIX}{safe_name or 'provider'}"
 
 
-def apply_codex_provider_config(
+def apply_codex_custom_provider_config(
     agent_env: dict[str, str],
     *,
     base_url: str,
     model: str | None,
     provider_name: str,
-    strict: bool = False,
 ) -> None:
-    """Create or update Codex's model provider entry in ``agent_env``."""
+    """Update caller-owned Codex config for a direct custom provider."""
+
     raw_config = agent_env.get(CODEX_CONFIG_ENV)
     if not raw_config:
         config: dict[str, Any] = {}
@@ -36,28 +36,80 @@ def apply_codex_provider_config(
         try:
             config = json.loads(raw_config)
         except json.JSONDecodeError as exc:
-            if strict:
-                raise ValueError(f"{CODEX_CONFIG_ENV} must be valid JSON") from exc
-            return
+            raise ValueError(f"{CODEX_CONFIG_ENV} must be valid JSON") from exc
     if not isinstance(config, dict):
-        if strict:
-            raise ValueError(f"{CODEX_CONFIG_ENV} must decode to a JSON object")
-        return
+        raise ValueError(f"{CODEX_CONFIG_ENV} must decode to a JSON object")
 
-    provider_id = (
-        agent_env.get(CODEX_MODEL_PROVIDER_ENV)
-        or config.get("model_provider")
-        or codex_provider_id(provider_name)
+    configured_provider_id = agent_env.get(CODEX_MODEL_PROVIDER_ENV) or config.get(
+        "model_provider"
     )
-    providers = config.get("model_providers")
-    providers = {} if not isinstance(providers, dict) else dict(providers)
-    provider = providers.get(provider_id)
-    provider = dict(provider) if isinstance(provider, dict) else {}
+    provider_id = (
+        configured_provider_id
+        if isinstance(configured_provider_id, str) and configured_provider_id
+        else codex_provider_id(provider_name)
+    )
+    providers_value = config.get("model_providers")
+    providers = {} if not isinstance(providers_value, dict) else dict(providers_value)
+    provider_value = providers.get(provider_id)
+    provider = dict(provider_value) if isinstance(provider_value, dict) else {}
     provider.setdefault("name", provider_name)
     provider["base_url"] = base_url
-    provider.setdefault("env_key", "OPENAI_API_KEY")
+    provider["env_key"] = "OPENAI_API_KEY"
     provider.setdefault("wire_api", "responses")
     provider.setdefault("supports_websockets", False)
+
+    _write_codex_provider_config(
+        agent_env,
+        config=config,
+        providers=providers,
+        provider_id=provider_id,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        provider_name=provider_name,
+    )
+
+
+def apply_codex_proxy_config(
+    agent_env: dict[str, str],
+    *,
+    base_url: str,
+    model: str | None,
+    provider_name: str,
+) -> None:
+    """Replace Codex config with one BenchFlow-owned proxy provider."""
+
+    provider_id = codex_provider_id(provider_name)
+    _write_codex_provider_config(
+        agent_env,
+        config={},
+        providers={},
+        provider_id=provider_id,
+        provider={
+            "name": provider_name,
+            "base_url": base_url,
+            "env_key": "OPENAI_API_KEY",
+            "wire_api": "responses",
+            "supports_websockets": False,
+        },
+        model=model,
+        base_url=base_url,
+        provider_name=provider_name,
+    )
+
+
+def _write_codex_provider_config(
+    agent_env: dict[str, str],
+    *,
+    config: dict[str, Any],
+    providers: dict[str, Any],
+    provider_id: str,
+    provider: dict[str, Any],
+    model: str | None,
+    base_url: str,
+    provider_name: str,
+) -> None:
+    """Serialize one already-resolved Codex provider configuration."""
 
     providers[provider_id] = provider
     config["model_providers"] = providers
@@ -65,7 +117,7 @@ def apply_codex_provider_config(
     if model:
         config["model"] = model
 
-    agent_env[CODEX_MODEL_PROVIDER_ENV] = str(provider_id)
+    agent_env[CODEX_MODEL_PROVIDER_ENV] = provider_id
     agent_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
     _apply_codex_default_auth_request(
         agent_env,

@@ -19,14 +19,18 @@ import json
 import shlex
 import tempfile
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from benchflow.sandbox.files import upload_private_text
+from benchflow.trajectories.redaction import canonical_redaction_module_source
 from benchflow.trajectories.types import LLMExchange
 
 SANDBOX_REPLAY_ROOT = "/tmp/benchflow-replay"
 DEFAULT_SANDBOX_REPLAY_PORT = 61357
+_CAPTURE_STATE_WRITE_FAILED = "BENCHFLOW_CAPTURE_STATE_WRITE_FAILED"
 
 
 def sandbox_replay_base_url(port: int = DEFAULT_SANDBOX_REPLAY_PORT) -> str:
@@ -34,279 +38,44 @@ def sandbox_replay_base_url(port: int = DEFAULT_SANDBOX_REPLAY_PORT) -> str:
     return f"http://127.0.0.1:{port}/v1"
 
 
-def _sandbox_proxy_source() -> str:
-    return r"""
-from __future__ import annotations
+def sandbox_replay_runtime_source() -> str:
+    """Read the real replay runtime module for sandbox deployment."""
 
-import json
-import sys
-import threading
-import time
-import traceback
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-
-def _n_messages(body):
-    messages = body.get("messages")
-    return len(messages) if isinstance(messages, list) else 0
-
-
-def _completion_to_sse(body):
-    base_id = body.get("id") or f"chatcmpl-replay-{int(time.time() * 1000)}"
-    created = body.get("created") or int(time.time())
-    model = body.get("model") or "replay"
-    choices = body.get("choices") or [{}]
-    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-    message = choice.get("message") or {}
-    finish_reason = choice.get("finish_reason") or "stop"
-
-    def chunk(delta, finish=None):
-        return json.dumps(
-            {
-                "id": base_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-            }
-        )
-
-    payloads = [chunk({"role": "assistant"})]
-    content = message.get("content")
-    if content:
-        delta = {"content": content}
-        for key in ("reasoning_content", "thinking"):
-            if message.get(key):
-                delta[key] = message[key]
-        payloads.append(chunk(delta))
-
-    for i, tool_call in enumerate(message.get("tool_calls") or []):
-        if not isinstance(tool_call, dict):
-            continue
-        function = tool_call.get("function") or {}
-        payloads.append(
-            chunk(
-                {
-                    "tool_calls": [
-                        {
-                            "index": tool_call.get("index", i),
-                            "id": tool_call.get("id"),
-                            "type": tool_call.get("type", "function"),
-                            "function": {
-                                "name": function.get("name"),
-                                "arguments": function.get("arguments", ""),
-                            },
-                        }
-                    ]
-                }
-            )
-        )
-
-    final = {
-        "id": base_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-    }
-    if isinstance(body.get("usage"), dict):
-        final["usage"] = body["usage"]
-    payloads.append(json.dumps(final))
-    return payloads
-
-
-@dataclass
-class ReplayState:
-    recorded: list
-    upstream_url: str
-    upstream_api_key: str
-    upstream_model: str
-    live_log_path: str
-    strict_divergence: bool = False
-    cursor: int = 0
-    divergences: int = 0
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def _check_divergence(self, incoming, recorded_request):
-        want = _n_messages(recorded_request)
-        got = _n_messages(incoming)
-        if want and got and want != got:
-            self.divergences += 1
-            message = (
-                f"replay divergence at turn {self.cursor}: agent sent {got} "
-                f"messages, recorded turn had {want}"
-            )
-            if self.strict_divergence:
-                raise RuntimeError(message)
-            print(message, file=sys.stderr, flush=True)
-
-    def next_response(self, request_body):
-        with self.lock:
-            if self.cursor < len(self.recorded):
-                exchange = self.recorded[self.cursor]
-                self._check_divergence(
-                    request_body,
-                    ((exchange.get("request") or {}).get("body") or {}),
-                )
-                self.cursor += 1
-                response = exchange.get("response") or {}
-                return "replay", int(response.get("status_code") or 200), dict(response.get("body") or {})
-            self.cursor += 1
-
-        status, body = self._forward_live(request_body)
-        self._append_live_exchange(request_body, status, body)
-        return "live", status, body
-
-    def _forward_live(self, request_body):
-        forwarded = dict(request_body)
-        forwarded["model"] = self.upstream_model
-        forwarded["stream"] = False
-        data = json.dumps(forwarded).encode("utf-8")
-        request = urllib.request.Request(
-            self.upstream_url.rstrip("/") + "/chat/completions",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.upstream_api_key}",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=600) as response:
-                raw = response.read().decode("utf-8")
-                return int(response.status), json.loads(raw or "{}")
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                body = json.loads(raw or "{}")
-            except json.JSONDecodeError:
-                body = {"error": {"message": raw or str(exc)}}
-            return int(exc.code), body
-        except Exception as exc:
-            traceback.print_exc()
-            return 500, {"error": {"message": str(exc)}}
-
-    def _append_live_exchange(self, request_body, status, body):
-        row = {
-            "request": {"body": request_body},
-            "response": {"status_code": status, "body": body},
-        }
-        with open(self.live_log_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row) + "\n")
-            handle.flush()
-
-
-class ReplayHandler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        print("replay-proxy " + fmt % args, file=sys.stderr, flush=True)
-
-    @property
-    def state(self):
-        return self.server.state
-
-    def _send_json(self, status, payload):
-        data = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _send_sse(self, payloads):
-        self.close_connection = True
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        for payload in payloads:
-            self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
-        self.wfile.write(b"data: [DONE]\n\n")
-        self.wfile.flush()
-
-    def do_GET(self):
-        path = self.path.split("?", 1)[0]
-        if path in ("/health", "/health/liveliness", "/v1/health"):
-            self._send_json(200, {"status": "ok"})
-            return
-        if path in ("/v1/models", "/models"):
-            self._send_json(200, {"object": "list", "data": [{"id": "replay", "object": "model"}]})
-            return
-        self._send_json(404, {"error": {"message": f"not found: {path}"}})
-
-    def do_POST(self):
-        path = self.path.split("?", 1)[0]
-        if path not in ("/v1/chat/completions", "/chat/completions"):
-            self._send_json(404, {"error": {"message": f"not found: {path}"}})
-            return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b"{}"
-            body = json.loads(raw or b"{}")
-            if not isinstance(body, dict):
-                raise ValueError("request body must be a JSON object")
-        except Exception as exc:
-            self._send_json(400, {"error": {"message": f"bad request: {exc}"}})
-            return
-
-        want_stream = bool(body.get("stream"))
-        try:
-            _, status, response = self.state.next_response(body)
-        except RuntimeError as exc:
-            self._send_json(409, {"error": {"message": str(exc), "type": "divergence"}})
-            return
-        except Exception as exc:
-            traceback.print_exc()
-            self._send_json(500, {"error": {"message": str(exc)}})
-            return
-
-        if status >= 400 or not response.get("choices"):
-            self._send_json(status, response)
-            return
-        if want_stream:
-            self._send_sse(_completion_to_sse(response))
-        else:
-            self._send_json(status, response)
-
-
-class ReplayServer(ThreadingHTTPServer):
-    def __init__(self, address, handler, state):
-        super().__init__(address, handler)
-        self.state = state
-
-
-def main():
-    cfg = json.load(open(sys.argv[1], encoding="utf-8"))
-    state = ReplayState(
-        recorded=cfg["recorded"],
-        upstream_url=cfg["upstream_url"],
-        upstream_api_key=cfg["upstream_api_key"],
-        upstream_model=cfg["upstream_model"],
-        live_log_path=cfg["live_log_path"],
-        strict_divergence=bool(cfg.get("strict_divergence")),
+    package = files("benchflow.continue_run")
+    resource = package.joinpath(
+        "resources",
+        "sandbox_replay_runtime.py.txt",
     )
-    server = ReplayServer(("127.0.0.1", int(cfg["port"])), ReplayHandler, state)
-    with open(cfg["state_path"], "w", encoding="utf-8") as handle:
-        json.dump({"port": int(cfg["port"])}, handle)
-    server.serve_forever()
+    if resource.is_file():
+        return resource.read_text(encoding="utf-8")
+    return package.joinpath("sandbox_replay_runtime.py").read_text(encoding="utf-8")
 
 
-if __name__ == "__main__":
-    main()
-"""
-
-
-async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False) as tmp:
-        tmp.write(text)
-        tmp_path = Path(tmp.name)
-    try:
-        await sandbox.upload_file(tmp_path, target_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+def _ordered_live_exchange_log(text: str) -> tuple[list[LLMExchange], int]:
+    """Parse sandbox live rows and restore their assigned attempt order."""
+    sequenced: list[tuple[int, LLMExchange]] = []
+    malformed = 0
+    seen: set[int] = set()
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            exchange = LLMExchange.model_validate_json(raw)
+        except Exception:
+            malformed += 1
+            continue
+        attempt = exchange.metadata.get("continuation_attempt")
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt <= 0
+            or attempt in seen
+        ):
+            malformed += 1
+            continue
+        seen.add(attempt)
+        sequenced.append((attempt, exchange))
+    return [exchange for _, exchange in sorted(sequenced)], malformed
 
 
 async def _read_remote_text(sandbox: Any, path: str, *, timeout_sec: int = 15) -> str:
@@ -340,7 +109,11 @@ class SandboxReplayProxy:
     state_path: str
     stdout_path: str
     stderr_path: str
+    recorded_exchange_count: int = 0
+    recorded_consumed_count: int = 0
     live_exchanges: list[LLMExchange] = field(default_factory=list)
+    live_attempt_count: int = 0
+    live_errors: list[str] = field(default_factory=list)
 
     @property
     def base_url(self) -> str:
@@ -362,6 +135,7 @@ class SandboxReplayProxy:
         runtime_dir = f"{SANDBOX_REPLAY_ROOT}/{token}"
         paths = {
             "script": f"{runtime_dir}/replay_proxy.py",
+            "redaction": f"{runtime_dir}/benchflow_trajectory_redaction.py",
             "config": f"{runtime_dir}/config.json",
             "state": f"{runtime_dir}/state.json",
             "pid": f"{runtime_dir}/replay.pid",
@@ -393,8 +167,24 @@ class SandboxReplayProxy:
             "state_path": paths["state"],
             "live_log_path": paths["live_log"],
         }
-        await _upload_text(sandbox, _sandbox_proxy_source(), paths["script"], ".py")
-        await _upload_text(sandbox, json.dumps(config), paths["config"], ".json")
+        await upload_private_text(
+            sandbox,
+            sandbox_replay_runtime_source(),
+            paths["script"],
+            suffix=".py",
+        )
+        await upload_private_text(
+            sandbox,
+            canonical_redaction_module_source(),
+            paths["redaction"],
+            suffix=".py",
+        )
+        await upload_private_text(
+            sandbox,
+            json.dumps(config),
+            paths["config"],
+            suffix=".json",
+        )
 
         command = (
             f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
@@ -417,6 +207,7 @@ class SandboxReplayProxy:
             state_path=paths["state"],
             stdout_path=paths["stdout"],
             stderr_path=paths["stderr"],
+            recorded_exchange_count=len(recorded),
         )
         try:
             await proxy._wait_until_ready()
@@ -445,28 +236,111 @@ class SandboxReplayProxy:
         )
 
     async def stop(self) -> None:
+        await self._quiesce()
+        await self._terminate()
         self.live_exchanges = await self._load_live_exchanges()
-        with contextlib.suppress(Exception):
-            await self.sandbox.exec(
-                f"if [ -s {shlex.quote(self.pid_path)} ]; then "
-                f"kill -TERM $(cat {shlex.quote(self.pid_path)}) 2>/dev/null || true; "
-                "fi",
-                timeout_sec=10,
-            )
+        await self._load_live_state()
+        await self._load_runtime_errors()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}",
                 timeout_sec=10,
             )
 
+    async def _quiesce(self) -> None:
+        command = (
+            "python3 - <<'PY'\n"
+            "import urllib.request\n"
+            "request = urllib.request.Request(\n"
+            f"    'http://127.0.0.1:{self.port}/benchflow/quiesce',\n"
+            "    data=b'{}', method='POST')\n"
+            "urllib.request.urlopen(request, timeout=615).read()\n"
+            "PY"
+        )
+        try:
+            result = await self.sandbox.exec(command, timeout_sec=620)
+        except Exception as exc:
+            self.live_errors.append(f"sandbox replay quiesce failed: {exc}")
+            return
+        if result.return_code != 0:
+            detail = (result.stderr or result.stdout or "unavailable").strip()
+            self.live_errors.append(f"sandbox replay quiesce failed: {detail}")
+
+    async def _terminate(self) -> None:
+        command = (
+            f"if [ -s {shlex.quote(self.pid_path)} ]; then "
+            f"pid=$(cat {shlex.quote(self.pid_path)}); "
+            'kill -TERM "$pid" 2>/dev/null || true; i=0; '
+            'while kill -0 "$pid" 2>/dev/null; do '
+            '[ "$i" -ge 100 ] && exit 1; i=$((i + 1)); sleep 0.1; done; fi'
+        )
+        try:
+            result = await self.sandbox.exec(command, timeout_sec=15)
+        except Exception as exc:
+            self.live_errors.append(f"sandbox replay termination failed: {exc}")
+            return
+        if result.return_code != 0:
+            self.live_errors.append("sandbox replay termination did not quiesce")
+
     async def _load_live_exchanges(self) -> list[LLMExchange]:
         text = await _read_remote_text(self.sandbox, self.live_log_path)
-        exchanges: list[LLMExchange] = []
-        for raw in text.splitlines():
-            if not raw.strip():
-                continue
-            try:
-                exchanges.append(LLMExchange.model_validate_json(raw))
-            except Exception:
-                continue
+        exchanges, malformed = _ordered_live_exchange_log(text)
+        if malformed:
+            self.live_errors.append(
+                f"{malformed} sandbox live exchange record(s) were malformed"
+            )
         return exchanges
+
+    async def _load_live_state(self) -> None:
+        text = await _read_remote_text(self.sandbox, self.state_path)
+        try:
+            state = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            state = None
+        if not isinstance(state, dict):
+            self.live_errors.append("sandbox live capture state was unavailable")
+            return
+        recorded_consumed_count = state.get("recorded_consumed_count")
+        attempt_count = state.get("live_attempt_count")
+        error_count = state.get("live_error_count")
+        if (
+            not isinstance(recorded_consumed_count, int)
+            or isinstance(recorded_consumed_count, bool)
+            or recorded_consumed_count < 0
+            or recorded_consumed_count > self.recorded_exchange_count
+        ):
+            self.live_errors.append("sandbox recorded replay count was invalid")
+        else:
+            self.recorded_consumed_count = recorded_consumed_count
+        if (
+            not isinstance(attempt_count, int)
+            or isinstance(attempt_count, bool)
+            or attempt_count < 0
+        ):
+            self.live_errors.append("sandbox live attempt count was invalid")
+            return
+        self.live_attempt_count = attempt_count
+        if (
+            not isinstance(error_count, int)
+            or isinstance(error_count, bool)
+            or error_count < 0
+        ):
+            self.live_errors.append("sandbox live error count was invalid")
+        elif error_count:
+            self.live_errors.append(
+                f"{error_count} sandbox live provider request(s) failed before capture"
+            )
+        if self.live_attempt_count != len(self.live_exchanges):
+            self.live_errors.append(
+                "sandbox live exchange recovery mismatch: "
+                f"attempted {self.live_attempt_count}, "
+                f"recovered {len(self.live_exchanges)}"
+            )
+
+    async def _load_runtime_errors(self) -> None:
+        stderr = await _read_remote_text(self.sandbox, self.stderr_path)
+        failures = stderr.count(_CAPTURE_STATE_WRITE_FAILED)
+        if failures:
+            self.live_errors.append(
+                f"sandbox live attempt journal failed {failures} time(s)"
+            )

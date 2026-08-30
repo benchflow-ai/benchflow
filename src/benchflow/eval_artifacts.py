@@ -15,6 +15,9 @@ from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
 )
+from benchflow.trajectories.llm_capture_manifest import (
+    rollout_capture_is_training_grade,
+)
 
 CanonicalizePolicy = Literal["none", "one-healthy-per-task"]
 RetryPolicy = Literal["default", "unscored-only"]
@@ -194,15 +197,18 @@ def _tool_call_count(result: dict[str, Any]) -> int:
     return 0
 
 
-def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
+def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, bool, int]:
     path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     if not path.is_file():
-        return False, False, 0
+        return False, False, False, 0
     try:
         rows = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError:
-        return True, False, 0
-    return True, True, len(rows)
+        return True, False, False, 0
+    training_grade = bool(
+        rows and rollout_capture_is_training_grade(rollout_dir, exchanges=rows)
+    )
+    return True, True, training_grade, len(rows)
 
 
 def build_health_summary(
@@ -217,6 +223,7 @@ def build_health_summary(
         "zero_tool_rows": 0,
         "missing_llm_trajectory": 0,
         "malformed_llm_trajectory": 0,
+        "non_training_grade_llm_trajectory": 0,
     }
     rollout_dirs = (
         _iter_selected_rollouts(canonical_selection)
@@ -239,11 +246,15 @@ def build_health_summary(
             counts["rows_with_tool_calls"] += 1
         else:
             counts["zero_tool_rows"] += 1
-        has_llm, valid_llm, llm_rows = _llm_trajectory_status(rollout_dir)
+        has_llm, well_formed_llm, training_grade_llm, llm_rows = _llm_trajectory_status(
+            rollout_dir
+        )
         if not has_llm:
             counts["missing_llm_trajectory"] += 1
-        elif not valid_llm:
+        elif not well_formed_llm:
             counts["malformed_llm_trajectory"] += 1
+        elif not training_grade_llm:
+            counts["non_training_grade_llm_trajectory"] += 1
         rows.append(
             {
                 "task_id": result.get("task_name") or rollout_dir.name,
@@ -252,7 +263,9 @@ def build_health_summary(
                 "scored": scored,
                 "tool_calls": tool_calls,
                 "has_llm_trajectory": has_llm,
-                "valid_llm_trajectory": valid_llm,
+                "well_formed_llm_trajectory": well_formed_llm,
+                "valid_llm_trajectory": training_grade_llm,
+                "training_grade_llm_trajectory": training_grade_llm,
                 "llm_trajectory_rows": llm_rows,
                 "error": result.get("error"),
                 "verifier_error": result.get("verifier_error"),

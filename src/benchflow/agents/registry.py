@@ -437,6 +437,15 @@ class SubscriptionAuth:
     replaces_env: str  # The env var this substitutes, e.g. "ANTHROPIC_API_KEY"
     detect_file: str  # Host path to check for login, e.g. "~/.claude/.credentials.json"
     files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
+    config_dir_env: str = ""
+    # Optional CLI config-home override. Proxy mode removes this variable so a
+    # reused image cannot select an alternate native-login file outside the
+    # registry-owned container path.
+    proxy_settings_file: str = ""
+    proxy_settings_drop_keys: tuple[str, ...] = ()
+    # Optional settings file stored beside the primary credential. Proxy mode
+    # atomically removes these top-level keys at every effective config root so
+    # a reused image cannot inject a direct-provider token, endpoint, or helper.
 
 
 @dataclass
@@ -537,11 +546,19 @@ AGENTS: dict[str, AgentConfig] = {
         subscription_auth=SubscriptionAuth(
             replaces_env="ANTHROPIC_API_KEY",
             detect_file="~/.claude/.credentials.json",
+            config_dir_env="CLAUDE_CONFIG_DIR",
             files=[
                 HostAuthFile(
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
                 ),
             ],
+            proxy_settings_file="settings.json",
+            proxy_settings_drop_keys=(
+                "env",
+                "apiKeyHelper",
+                "awsAuthRefresh",
+                "awsCredentialExport",
+            ),
         ),
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
@@ -643,6 +660,7 @@ AGENTS: dict[str, AgentConfig] = {
         subscription_auth=SubscriptionAuth(
             replaces_env="OPENAI_API_KEY",
             detect_file="~/.codex/auth.json",
+            config_dir_env="CODEX_HOME",
             files=[
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],

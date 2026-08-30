@@ -12,10 +12,16 @@ under a dedicated ``@ai-sdk/openai-compatible`` provider id
 """
 
 import base64
+import json
+import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
+from benchflow.acp.runtime import _harden_proxy_agent_launch
+from benchflow.agents.opencode_config import opencode_provider_reset_source
 from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 
 # (agent name, proxy wrapper binary, agent config filename). MiMo is an
@@ -56,6 +62,264 @@ def test_proxy_wrapper_wires_gateway_base_url(agent, wrapper_bin, cfg):
     w = _wrapper_script(agent, wrapper_bin)
     assert "OPENAI_BASE_URL" in w
     assert "baseURL" in w
+
+
+def test_proxy_wrapper_removes_preexisting_provider_credentials(tmp_path):
+    """Guards PR #1057 against an OpenCode config bypassing provider capture."""
+
+    wrapper = _wrapper_script("opencode", "opencode-proxy")
+    register_js = wrapper.split("<<'JSEOF'\n", 1)[1].split("\nJSEOF", 1)[0]
+    config = tmp_path / ".config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "retained": {
+                        "options": {
+                            "apiKey": "literal-bypass-key",
+                            "baseURL": "https://bypass.invalid/v1",
+                        }
+                    }
+                },
+                "tools": {"webfetch": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "BENCHFLOW_AGENT_HOME": str(tmp_path),
+        "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model",
+        "OPENAI_BASE_URL": "http://127.0.0.1:4000/v1",
+        "OPENAI_API_KEY": "sk-benchflow-proxy-master-key",
+    }
+
+    subprocess.run(
+        ["node", "-e", opencode_provider_reset_source()],
+        text=True,
+        env=env,
+        check=True,
+        timeout=15,
+    )
+    sanitized = json.loads(config.read_text())
+    assert sanitized["provider"] == {}
+    assert sanitized["tools"] == {"webfetch": False}
+
+    subprocess.run(
+        ["node"],
+        input=register_js,
+        text=True,
+        env=env,
+        check=True,
+        timeout=15,
+    )
+
+    updated = json.loads(config.read_text())
+    assert set(updated["provider"]) == {OPENCODE_PROXY_PROVIDER_ID}
+    assert "literal-bypass-key" not in config.read_text()
+    assert "bypass.invalid" not in config.read_text()
+    assert updated["tools"] == {"webfetch": False}
+
+
+def test_proxy_launch_resets_providers_immediately_before_manifest_wrapper():
+    """Guards PR #1057 without drifting the external agent manifest."""
+
+    launch = "/opt/benchflow/bin/opencode-proxy acp"
+    hardened = _harden_proxy_agent_launch(
+        "opencode",
+        launch,
+        {"BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model"},
+    )
+
+    assert "opencode.json" in hardened
+    assert "d.provider = {}" in hardened
+    assert (
+        "unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR "
+        "OPENCODE_CONFIG_CONTENT OPENCODE_AUTH_CONTENT OPENCODE_DB "
+        "OPENCODE_TEST_HOME OPENCODE_TEST_MANAGED_CONFIG_DIR XDG_CONFIG_HOME"
+    ) in hardened
+    for alternate in (
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_AUTH_CONTENT",
+        "OPENCODE_DB",
+        "OPENCODE_TEST_HOME",
+        "OPENCODE_TEST_MANAGED_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+    ):
+        assert alternate in hardened
+    assert "OPENCODE_DISABLE_PROJECT_CONFIG=1" in hardened
+    assert hardened.endswith("&& " + launch)
+    assert _harden_proxy_agent_launch("opencode", launch, {}) == launch
+
+
+def test_proxy_launch_isolates_every_effective_opencode_config_source(tmp_path):
+    """Guards PR #1057 review r3888738113 against alternate config bypasses."""
+
+    home = tmp_path / "home"
+    global_dir = home / ".config" / "opencode"
+    dot_dir = home / ".opencode"
+    data_dir = home / ".local" / "share" / "opencode"
+    managed_dir = global_dir / "benchflow-managed-disabled"
+    project_dir = tmp_path / "project"
+    alternate_dir = tmp_path / "alternate-dir"
+    for directory in (
+        global_dir,
+        dot_dir,
+        data_dir,
+        managed_dir,
+        project_dir,
+        alternate_dir,
+    ):
+        directory.mkdir(parents=True)
+
+    bypass = json.dumps(
+        {
+            "provider": {
+                "bypass": {
+                    "options": {
+                        "apiKey": "literal-bypass-key",
+                        "baseURL": "https://bypass.invalid/v1",
+                    }
+                }
+            }
+        }
+    )
+    canonical = global_dir / "opencode.json"
+    canonical.write_text(
+        json.dumps({"provider": json.loads(bypass)["provider"], "theme": "dark"})
+    )
+    for path in (
+        global_dir / "config",
+        global_dir / "config.json",
+        global_dir / "opencode.jsonc",
+        dot_dir / "opencode.json",
+        dot_dir / "opencode.jsonc",
+        managed_dir / "opencode.json",
+        managed_dir / "opencode.jsonc",
+    ):
+        path.write_text(bypass)
+    auth_file = data_dir / "auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "https://bypass.invalid": {
+                    "type": "wellknown",
+                    "key": "BYPASS_TOKEN",
+                    "token": "literal-bypass-key",
+                }
+            }
+        )
+    )
+    alternate_file = tmp_path / "alternate.json"
+    alternate_file.write_text(bypass)
+    (alternate_dir / "opencode.json").write_text(bypass)
+    (project_dir / "opencode.json").write_text(bypass)
+    alternate_database = tmp_path / "alternate-opencode.db"
+    alternate_database.write_text("bypass-account-database")
+
+    launch = (
+        'test -z "${OPENCODE_CONFIG:-}" && '
+        'test -z "${OPENCODE_CONFIG_DIR:-}" && '
+        'test -z "${OPENCODE_CONFIG_CONTENT:-}" && '
+        'test "$OPENCODE_AUTH_CONTENT" = "{}" && '
+        'test "$OPENCODE_DB" = ":memory:" && '
+        'test "$OPENCODE_TEST_HOME" = "$HOME" && '
+        'test "$OPENCODE_TEST_MANAGED_CONFIG_DIR" = '
+        '"$HOME/.config/opencode/benchflow-managed-disabled" && '
+        'test "$OPENCODE_DISABLE_PROJECT_CONFIG" = 1 && '
+        'test "$HOME" = "$BENCHFLOW_AGENT_HOME" && '
+        'test "$XDG_CONFIG_HOME" = "$HOME/.config"'
+    )
+    hardened = _harden_proxy_agent_launch(
+        "opencode",
+        launch,
+        {"BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model"},
+    )
+    node = shutil.which("node")
+    assert node is not None
+    executable_hardened = hardened.replace("/opt/benchflow/node/bin/node", node, 1)
+    subprocess.run(
+        ["sh", "-c", executable_hardened],
+        cwd=project_dir,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "alternate-home"),
+            "BENCHFLOW_AGENT_HOME": str(home),
+            "OPENCODE_CONFIG": str(alternate_file),
+            "OPENCODE_CONFIG_DIR": str(alternate_dir),
+            "OPENCODE_CONFIG_CONTENT": bypass,
+            "OPENCODE_AUTH_CONTENT": auth_file.read_text(),
+            "OPENCODE_DB": str(alternate_database),
+            "OPENCODE_TEST_HOME": str(tmp_path / "alternate-test-home"),
+            "OPENCODE_TEST_MANAGED_CONFIG_DIR": str(tmp_path / "alternate-managed"),
+            "XDG_CONFIG_HOME": str(tmp_path / "alternate-xdg"),
+        },
+        check=True,
+        timeout=15,
+    )
+
+    sanitized = json.loads(canonical.read_text())
+    assert sanitized == {"provider": {}, "theme": "dark"}
+    for removed in (
+        global_dir / "config",
+        global_dir / "config.json",
+        global_dir / "opencode.jsonc",
+        dot_dir / "opencode.json",
+        dot_dir / "opencode.jsonc",
+        managed_dir / "opencode.json",
+        managed_dir / "opencode.jsonc",
+    ):
+        assert not removed.exists()
+    # Alternate/project sources are not destructively edited; the launch
+    # boundary makes them unreachable in proxy mode.
+    assert alternate_file.read_text() == bypass
+    assert (project_dir / "opencode.json").read_text() == bypass
+    assert auth_file.read_text().find("literal-bypass-key") >= 0
+    assert alternate_database.read_text() == "bypass-account-database"
+
+
+def test_proxy_launch_unsets_mimo_alternate_config_before_manifest_launcher(
+    tmp_path,
+):
+    """Guards PR #1057 against a MiMo alternate-config capture bypass."""
+
+    alternate = tmp_path / "alternate-mimocode.json"
+    alternate.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "bypass": {
+                        "options": {
+                            "apiKey": "literal-bypass-key",
+                            "baseURL": "https://bypass.invalid/v1",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    launch = 'test -z "${MIMOCODE_CONFIG:-}"'
+    hardened = _harden_proxy_agent_launch(
+        "mimo",
+        launch,
+        {"BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-provider-model"},
+    )
+
+    subprocess.run(
+        ["sh", "-c", hardened],
+        env={**os.environ, "MIMOCODE_CONFIG": str(alternate)},
+        check=True,
+        timeout=15,
+    )
+    assert hardened == f"unset MIMOCODE_CONFIG && {launch}"
+    assert (
+        _harden_proxy_agent_launch("mimo", launch, {"MIMOCODE_CONFIG": str(alternate)})
+        == launch
+    )
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)

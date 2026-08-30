@@ -87,6 +87,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import traceback
 from datetime import datetime, timezone
@@ -95,8 +96,37 @@ from typing import Any
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
+try:
+    from benchflow_trajectory_redaction import redact_trajectory_obj
+except ModuleNotFoundError:
+    # Direct source execution in BenchFlow tests/development. Production proxy
+    # runtimes always receive the packaged standalone module beside this file;
+    # isolated sandboxes fail loudly if that deployment artifact is absent.
+    from benchflow.trajectories.redaction import redact_trajectory_obj
+
 
 _skill_catalog_gate_passed = False
+
+
+def _secure_parent(path: str) -> None:
+    parent = os.path.dirname(path)
+    if not parent:
+        return
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    os.chmod(parent, 0o700)
+
+
+def _secure_text_file(path: str, *, append: bool):
+    _secure_parent(path)
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "a" if append else "w", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _required_skill_names() -> tuple[str, ...]:
@@ -182,6 +212,52 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _reconstruct_proxy_ingress_body(
+    kwargs: dict[str, Any],
+    *,
+    litellm_params: dict[str, Any],
+    optional_params: dict[str, Any],
+    proxy_body: Any,
+) -> dict[str, Any]:
+    # Build the explicitly incomplete fallback when provider input is absent.
+
+    request_body = dict(proxy_body) if isinstance(proxy_body, dict) else {}
+    for key in ("model", "messages", "input"):
+        if kwargs.get(key) is not None:
+            request_body[key] = kwargs[key]
+    for key in ("tools", "stream"):
+        if key in optional_params:
+            request_body[key] = optional_params[key]
+        elif kwargs.get(key) is not None:
+            request_body[key] = kwargs[key]
+    for key in ("reasoning_effort", "thinking", "output_config"):
+        value = optional_params.get(key)
+        if value is None:
+            value = kwargs.get(key)
+        if value is None:
+            value = litellm_params.get(key)
+        if value is not None:
+            request_body[key] = value
+    for key in ("logprobs", "top_logprobs"):
+        value = optional_params.get(key)
+        if value is None:
+            value = kwargs.get(key)
+        if value is not None:
+            request_body[key] = value
+    return {key: value for key, value in request_body.items() if value is not None}
+
+
+def _provider_request_path(call_type: Any) -> str:
+    # Map LiteLLM's provider call type to the captured upstream API path.
+
+    normalized = str(call_type or "").casefold()
+    if normalized == "anthropic_messages":
+        return "/v1/messages"
+    if "responses" in normalized:
+        return "/v1/responses"
+    return "/v1/chat/completions"
+
+
 def _iso(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -223,46 +299,166 @@ def _failure_traceback(detail: Any) -> str:
 
 
 class BenchFlowLiteLLMLogger(CustomLogger):
+    def __init__(self) -> None:
+        super().__init__()
+        self._capture_lock = threading.Lock()
+        self._attempt_count = 0
+        self._terminal_count = 0
+        self._provider_requests: dict[str, dict[str, Any]] = {}
+        with self._capture_lock:
+            self._write_state_locked()
+
+    def _write_state_locked(self) -> None:
+        path = os.environ.get("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH")
+        if not path:
+            return
+        payload = {
+            "attempt_count": self._attempt_count,
+            "terminal_count": self._terminal_count,
+        }
+        temporary = path + ".tmp"
+        try:
+            with _secure_text_file(temporary, append=False) as handle:
+                json.dump(payload, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except Exception:
+            # A previous, balanced journal must never survive a failed later
+            # update: cleanup could otherwise accept its stale counts and omit
+            # the rejected call. Both host and sandbox proxies execute this
+            # same embedded callback module.
+            self._invalidate_state_locked(path, temporary)
+            raise
+
+    def _invalidate_state_locked(self, path: str, temporary: str) -> None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # If removal itself is unavailable, corrupt the validity contract
+            # explicitly. Cleanup rejects this payload as a malformed journal.
+            try:
+                with _secure_text_file(path, append=False) as handle:
+                    json.dump({"valid": False}, handle, separators=(",", ":"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except OSError:
+                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+
+    def _journal_attempt(self) -> None:
+        with self._capture_lock:
+            self._attempt_count += 1
+            self._write_state_locked()
+
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
             return
         payload["logged_at"] = datetime.now(timezone.utc).isoformat()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(_jsonable(payload), separators=(",", ":")) + "\n")
+        durable_payload = redact_trajectory_obj(_jsonable(payload))
+        with self._capture_lock:
+            with _secure_text_file(path, append=True) as handle:
+                handle.write(
+                    json.dumps(durable_payload, separators=(",", ":")) + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._terminal_count += 1
+            self._write_state_locked()
+
+    @staticmethod
+    def _call_id(kwargs: dict[str, Any]) -> str | None:
+        direct = kwargs.get("litellm_call_id")
+        if isinstance(direct, str) and direct:
+            return direct
+        litellm_params = kwargs.get("litellm_params") or {}
+        nested = (
+            litellm_params.get("litellm_call_id")
+            if isinstance(litellm_params, dict)
+            else None
+        )
+        return nested if isinstance(nested, str) and nested else None
+
+    def log_pre_api_call(self, model, messages, kwargs) -> None:
+        # Retain LiteLLM's post-transform body until its terminal callback.
+        if not isinstance(kwargs, dict):
+            return
+        call_id = self._call_id(kwargs)
+        additional_args = kwargs.get("additional_args") or {}
+        provider_body = (
+            additional_args.get("complete_input_dict")
+            if isinstance(additional_args, dict)
+            else None
+        )
+        jsonable_body = _jsonable(provider_body)
+        if call_id is None or not isinstance(jsonable_body, dict):
+            return
+        with self._capture_lock:
+            self._provider_requests[call_id] = redact_trajectory_obj(jsonable_body)
 
     def _base_record(self, kwargs: dict[str, Any], start_time: Any, end_time: Any) -> dict[str, Any]:
         litellm_params = kwargs.get("litellm_params") or {}
         optional_params = kwargs.get("optional_params") or {}
         metadata = kwargs.get("metadata") or litellm_params.get("metadata") or {}
-        request_body = {
-            "model": kwargs.get("model"),
-            "messages": kwargs.get("messages"),
-            "input": kwargs.get("input"),
-            "tools": optional_params.get("tools") or kwargs.get("tools"),
-            "stream": optional_params.get("stream") or kwargs.get("stream"),
-        }
-        for key in ("reasoning_effort", "thinking", "output_config"):
-            value = optional_params.get(key)
-            if value is None:
-                value = kwargs.get(key)
-            if value is None:
-                value = litellm_params.get(key)
-            if value is not None:
-                request_body[key] = value
-        for key in ("logprobs", "top_logprobs"):
-            value = optional_params.get(key)
-            if value is None:
-                value = kwargs.get(key)
-            if value is not None:
-                request_body[key] = value
-        request_body = {k: v for k, v in request_body.items() if v is not None}
+        additional_args = kwargs.get("additional_args") or {}
+        callback_provider_body = (
+            additional_args.get("complete_input_dict")
+            if isinstance(additional_args, dict)
+            else None
+        )
+        call_id = self._call_id(kwargs)
+        with self._capture_lock:
+            provider_body = (
+                self._provider_requests.pop(call_id, None)
+                if call_id is not None
+                else None
+            )
+        if provider_body is None:
+            provider_body = callback_provider_body
+        jsonable_provider_body = _jsonable(provider_body)
+        request_complete = isinstance(jsonable_provider_body, dict)
+        proxy_request = litellm_params.get("proxy_server_request") or {}
+        proxy_body = (
+            proxy_request.get("body") if isinstance(proxy_request, dict) else None
+        )
+        if request_complete:
+            # ``Logging.pre_call(..., complete_input_dict=...)`` is populated
+            # after provider-specific transformation and is the body handed to
+            # the HTTP client. Proxy ingress is only an audit fallback: routes
+            # may drop or rewrite its fields before the provider sees them.
+            request_body = dict(jsonable_provider_body)
+            request_capture_source = "litellm_pre_api_call_complete_input_dict"
+        else:
+            request_body = _reconstruct_proxy_ingress_body(
+                kwargs,
+                litellm_params=litellm_params,
+                optional_params=optional_params,
+                proxy_body=proxy_body,
+            )
+            request_capture_source = "proxy_ingress_reconstruction"
+        request_body = {key: value for key, value in request_body.items() if value is not None}
+        call_type = kwargs.get("call_type") or litellm_params.get("call_type")
         return {
+            "benchflow_agent": os.environ.get("BENCHFLOW_LITELLM_AGENT"),
+            "benchflow_role": os.environ.get("BENCHFLOW_LITELLM_ROLE"),
+            "benchflow_requested_model": os.environ.get(
+                "BENCHFLOW_LITELLM_REQUESTED_MODEL"
+            ),
+            "benchflow_model_alias": os.environ.get(
+                "BENCHFLOW_LITELLM_MODEL_ALIAS"
+            ),
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
-            "call_type": kwargs.get("call_type") or litellm_params.get("call_type"),
+            "call_type": call_type,
+            "request_complete": request_complete,
+            "request_capture_source": request_capture_source,
             "input_shape": {
                 "has_messages": bool(kwargs.get("messages")),
                 "has_input": kwargs.get("input") is not None,
@@ -270,7 +466,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             },
             "request": {
                 "method": "POST",
-                "path": "/v1/messages" if kwargs.get("call_type") == "anthropic_messages" else "/v1/chat/completions",
+                "path": _provider_request_path(call_type),
                 "body": request_body,
             },
             "start_time": _iso(start_time),
@@ -283,6 +479,11 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     ):
         if not isinstance(data, dict):
             return None
+
+        # This hook is awaited before LiteLLM forwards the provider request.
+        # Persist the attempt first; the success/failure callback advances the
+        # terminal counter only after its full JSONL row is durable.
+        self._journal_attempt()
 
         _gate_opencode_skill_catalog(data)
 
@@ -447,11 +648,16 @@ def _exchange_metadata(
     metadata = {
         key: record.get(key)
         for key in (
+            "benchflow_agent",
+            "benchflow_role",
+            "benchflow_requested_model",
+            "benchflow_model_alias",
             "request_model",
             "provider_model",
             "model_group",
             "call_type",
             "input_shape",
+            "request_capture_source",
         )
         if record.get(key) is not None
     }
@@ -459,6 +665,12 @@ def _exchange_metadata(
         agent_name=agent_name,
         request_body=request_body,
     )
+    metadata["request_complete"] = record.get("request_complete") is True
+    # A success callback proves LiteLLM received a provider response. Failure
+    # callbacks can also represent local DNS/connect/timeout failures after
+    # ``pre_api_call``; without explicit provider-response evidence they must
+    # fail closed even when the transformed request was captured completely.
+    metadata["response_complete"] = record.get("event") == "success"
     return metadata
 
 

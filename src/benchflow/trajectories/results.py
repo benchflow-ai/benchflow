@@ -3,14 +3,16 @@
 This is the canonical trainer-facing rollout surface. It intentionally lives
 beside, not inside, raw traces:
 
-- ``trajectory/llm_trajectory.jsonl`` remains the provider HTTP audit log.
+- ``trajectory/llm_trajectory.jsonl`` remains the LLM exchange audit log; its
+  manifest distinguishes provider-wire traffic from native-agent reconstruction.
 - ``trajectory/acp_trajectory.jsonl`` remains the ACP event audit log.
 - ``results.jsonl`` is a Verifiers/Prime-RL-shaped rollout record.
 
 The writer is fail-closed for training readiness but not for artifact
 emission: even errored or unstructured rollouts get one JSONL row with an
 ``error``. The trainer-shaped trajectory is produced only from healthy
-``llm_trajectory.jsonl`` exchanges; ACP is never used as a training fallback.
+complete provider-wire ``llm_trajectory.jsonl`` exchanges; native session and
+ACP projections are never used as a training fallback.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,7 +32,12 @@ from benchflow.trajectories.export_prime_sft import (
     prime_sft_last_user_training_window,
     validate_prime_sft_row,
 )
-from benchflow.trajectories.types import redact_trajectory_obj
+from benchflow.trajectories.llm_capture_manifest import (
+    capture_manifest_preserves_audit_completion,
+    read_llm_trajectory_manifest,
+    rollout_capture_is_training_grade,
+)
+from benchflow.trajectories.redaction import redact_trajectory_obj
 from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
@@ -37,6 +45,15 @@ JOB_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_ERRORS_FILENAME = "results.errors.json"
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _LLMStepsResult:
+    steps: list[dict[str, Any]]
+    tool_defs: list[dict[str, Any]]
+    export_error: str | None
+    capture_contract_rejected: bool = False
+    exchanges: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
@@ -155,16 +172,27 @@ def _llm_steps_from_trajectory(
     reward: float,
     is_truncated: bool,
     trajectory_id_prefix: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+) -> _LLMStepsResult:
     path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     steps: list[dict[str, Any]] = []
     tool_defs: list[dict[str, Any]] = []
     if not path.exists():
-        return steps, tool_defs, None
+        return _LLMStepsResult(steps, tool_defs, None)
     try:
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
-        return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+        return _LLMStepsResult([], [], f"Invalid LLM trajectory JSONL: {exc}")
+    if not rollout_capture_is_training_grade(
+        rollout_dir,
+        exchanges=exchanges,
+    ):
+        return _LLMStepsResult(
+            [],
+            [],
+            None,
+            capture_contract_rejected=True,
+            exchanges=exchanges,
+        )
     training_success_indices = _training_success_exchange_indices(exchanges)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
@@ -205,12 +233,17 @@ def _llm_steps_from_trajectory(
             if isinstance(response.get("body"), dict)
             else {}
         )
+        exchange_metadata = exchange.get("metadata")
+        tracking_source = "litellm_callback"
+        if isinstance(exchange_metadata, dict) and isinstance(
+            exchange_metadata.get("capture_source"), str
+        ):
+            tracking_source = str(exchange_metadata["capture_source"])
         extras = {
             "source": "llm_trajectory",
-            "tracking_source": "litellm_callback",
+            "tracking_source": tracking_source,
             "exchange_index": exchange_idx,
         }
-        exchange_metadata = exchange.get("metadata")
         if isinstance(exchange_metadata, dict):
             extras.update(
                 {
@@ -232,13 +265,14 @@ def _llm_steps_from_trajectory(
         }
         steps.append(step)
     if skipped_successful:
-        return (
+        return _LLMStepsResult(
             steps,
             tool_defs,
             "Successful LLM exchanges were omitted from results.jsonl: "
             + "; ".join(skipped_successful),
+            exchanges=exchanges,
         )
-    return steps, tool_defs, None
+    return _LLMStepsResult(steps, tool_defs, None, exchanges=exchanges)
 
 
 def _response_is_truncated(response_body: dict[str, Any]) -> bool:
@@ -447,12 +481,15 @@ def build_rollout_results_record(
         else f"{task_name}__{rollout_name}"
     )
     is_truncated = bool(partial_trajectory)
-    steps, tool_defs, llm_export_error = _llm_steps_from_trajectory(
+    llm_steps = _llm_steps_from_trajectory(
         rollout_path,
         reward=reward,
         is_truncated=is_truncated,
         trajectory_id_prefix=trajectory_id_prefix,
     )
+    steps = llm_steps.steps
+    tool_defs = llm_steps.tool_defs
+    llm_export_error = llm_steps.export_error
     prompt, completion = _top_level_prompt_completion(steps, prompts)
     validation_error = _prime_sft_validation_error(
         prompt=prompt,
@@ -466,9 +503,30 @@ def build_rollout_results_record(
         export_error=effective_export_error,
     )
     terminal_health_error = bool(error or verifier_error or partial_trajectory)
-    native_subscription_without_llm = bool(
-        (agent_result or {}).get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
-        and not (rollout_path / "trajectory" / "llm_trajectory.jsonl").exists()
+    capture_manifest = read_llm_trajectory_manifest(rollout_path)
+    reported_exchange_count = (capture_manifest or {}).get("exchange_count")
+    audit_only_capture = bool(
+        capture_manifest is not None
+        and isinstance(reported_exchange_count, int)
+        and not isinstance(reported_exchange_count, bool)
+        and reported_exchange_count > 0
+        and llm_steps.capture_contract_rejected
+    )
+    audit_capture_preserves_completion = bool(
+        (
+            (
+                capture_manifest is None
+                and (agent_result or {}).get("usage_source")
+                == USAGE_SOURCE_AGENT_NATIVE_ACP
+            )
+            or (
+                capture_manifest is not None
+                and capture_manifest_preserves_audit_completion(
+                    capture_manifest,
+                    exchanges=llm_steps.exchanges,
+                )
+            )
+        )
         and effective_export_error is None
         and not terminal_health_error
     )
@@ -490,6 +548,8 @@ def build_rollout_results_record(
             training_ready_reason = "invalid_prime_sft_row"
         elif effective_export_error:
             training_ready_reason = "export_error"
+        elif audit_only_capture:
+            training_ready_reason = "insufficient_capture_fidelity"
         elif not steps or not completion:
             training_ready_reason = "missing_healthy_structured_llm_trajectory"
         elif partial_trajectory:
@@ -500,7 +560,7 @@ def build_rollout_results_record(
             training_ready_reason = "verifier_error"
         else:
             training_ready_reason = "missing_healthy_structured_llm_trajectory"
-        if error_obj is None and not native_subscription_without_llm:
+        if error_obj is None and not audit_capture_preserves_completion:
             error_name = (
                 training_ready_reason
                 if training_ready_reason
@@ -600,6 +660,71 @@ def write_rollout_results_jsonl(
     out = Path(rollout_dir) / ROLLOUT_RESULTS_FILENAME
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_record_to_redacted_json_line(record) + "\n")
+    return record
+
+
+def refresh_rollout_results_jsonl(rollout_dir: str | Path) -> dict[str, Any] | None:
+    """Rebuild the trainer-facing row from finalized rollout artifacts.
+
+    Continuation replaces the LLM trajectory and its manifest after Rollout's
+    normal result-building phase. Rebuilding here keeps ``results.jsonl`` in
+    lockstep with the final capture contract, model identity, and token usage.
+    """
+    rollout_path = Path(rollout_dir)
+    result_path = rollout_path / "result.json"
+    if not result_path.is_file():
+        return None
+    result = json.loads(result_path.read_text())
+    if not isinstance(result, dict):
+        raise ValueError(f"Invalid rollout result object: {result_path}")
+
+    prompts: list[str] = []
+    prompts_path = rollout_path / "prompts.json"
+    if prompts_path.is_file():
+        raw_prompts = json.loads(prompts_path.read_text())
+        if isinstance(raw_prompts, list):
+            prompts = [item for item in raw_prompts if isinstance(item, str)]
+
+    task_name = str(result.get("task_name") or rollout_path.name.split("__", 1)[0])
+    rollout_name = str(result.get("rollout_name") or rollout_path.name)
+    agent = str(result.get("agent") or "unknown")
+    agent_name = str(result.get("agent_name") or agent)
+    n_tool_calls = result.get("n_tool_calls")
+    if not isinstance(n_tool_calls, int) or isinstance(n_tool_calls, bool):
+        n_tool_calls = 0
+    record = write_rollout_results_jsonl(
+        rollout_path,
+        task_name=task_name,
+        rollout_name=rollout_name,
+        agent=agent,
+        agent_name=agent_name,
+        model=result.get("model") if isinstance(result.get("model"), str) else None,
+        n_tool_calls=n_tool_calls,
+        prompts=prompts,
+        trajectory=[],
+        partial_trajectory=bool(result.get("partial_trajectory")),
+        rewards=result.get("rewards")
+        if isinstance(result.get("rewards"), dict)
+        else None,
+        error=result.get("error") if isinstance(result.get("error"), str) else None,
+        verifier_error=(
+            result.get("verifier_error")
+            if isinstance(result.get("verifier_error"), str)
+            else None
+        ),
+        export_error=(
+            result.get("export_error")
+            if isinstance(result.get("export_error"), str)
+            else None
+        ),
+        timing=result.get("timing") if isinstance(result.get("timing"), dict) else None,
+        agent_result=(
+            result.get("agent_result")
+            if isinstance(result.get("agent_result"), dict)
+            else None
+        ),
+    )
+    write_job_results_jsonl(rollout_path.parent)
     return record
 
 

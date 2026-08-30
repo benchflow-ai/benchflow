@@ -20,6 +20,7 @@ class TestAgentSubscriptionAuth:
         assert sa is not None
         assert sa.replaces_env == "ANTHROPIC_API_KEY"
         assert ".claude/.credentials.json" in sa.detect_file
+        assert sa.config_dir_env == "CLAUDE_CONFIG_DIR"
         assert len(sa.files) == 1
 
     def test_codex_subscription_auth(self):
@@ -28,6 +29,7 @@ class TestAgentSubscriptionAuth:
         assert sa is not None
         assert sa.replaces_env == "OPENAI_API_KEY"
         assert ".codex/auth.json" in sa.detect_file
+        assert sa.config_dir_env == "CODEX_HOME"
         assert len(sa.files) == 1
 
     def test_gemini_subscription_auth(self):

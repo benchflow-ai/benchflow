@@ -22,7 +22,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.redaction import redact_trajectory_text
 
 logger = logging.getLogger(__name__)
 

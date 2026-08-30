@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 
 import pytest
@@ -112,11 +113,255 @@ def test_callback_record_preserves_logprob_request_fields():
     assert record["request"]["body"]["top_logprobs"] == 1
 
 
+def test_callback_record_preserves_benchflow_route_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1057 against LiteLLM erasing provider-role identity."""
+
+    monkeypatch.setenv(
+        "BENCHFLOW_LITELLM_REQUESTED_MODEL",
+        "azure-foundry-openai/gpt-5.5",
+    )
+    monkeypatch.setenv(
+        "BENCHFLOW_LITELLM_MODEL_ALIAS",
+        "benchflow-azure-foundry-openai-gpt-5.5",
+    )
+    monkeypatch.setenv("BENCHFLOW_LITELLM_AGENT", "codex-acp")
+    monkeypatch.setenv("BENCHFLOW_LITELLM_ROLE", "reviewer")
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]},
+        now,
+        now,
+    )
+
+    assert record["benchflow_requested_model"] == ("azure-foundry-openai/gpt-5.5")
+    assert record["benchflow_model_alias"] == ("benchflow-azure-foundry-openai-gpt-5.5")
+    assert record["benchflow_agent"] == "codex-acp"
+    assert record["benchflow_role"] == "reviewer"
+
+
 def test_callback_module_source_exposes_proxy_handler_instance():
     source = callback_module_source()
 
     assert "class BenchFlowLiteLLMLogger" in source
+    assert "from benchflow_trajectory_redaction import redact_trajectory_obj" in source
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
+
+
+def test_callback_forces_private_artifacts_under_permissive_umask(
+    tmp_path, monkeypatch
+):
+    """Guards PR #1057 against permissive umasks exposing provider capture."""
+
+    namespace = _callback_namespace()
+    runtime_dir = tmp_path / "runtime"
+    log_path = runtime_dir / "callback.jsonl"
+    state_path = runtime_dir / "capture_state.json"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    monkeypatch.setenv("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH", str(state_path))
+
+    previous_umask = os.umask(0)
+    try:
+        logger = namespace["BenchFlowLiteLLMLogger"]()
+        logger._write({"event": "failure"})
+    finally:
+        os.umask(previous_umask)
+
+    assert runtime_dir.stat().st_mode & 0o777 == 0o700
+    assert log_path.stat().st_mode & 0o777 == 0o600
+    assert state_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_callback_preserves_post_transform_provider_request_body():
+    """Guards PR #1057 against labeling proxy ingress as provider wire."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    proxy_body = {
+        "model": "benchflow-openai-gpt-5.6",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.25,
+        "max_tokens": 321,
+        "top_p": 0.8,
+        "stop": ["DONE"],
+        "tool_choice": "required",
+        "response_format": {"type": "json_object"},
+        "input": "removed before provider dispatch",
+    }
+    provider_body = {key: value for key, value in proxy_body.items() if key != "input"}
+    provider_body["model"] = "gpt-5.6-deployment"
+    provider_body["stream"] = False
+    call_id = "call-provider-body"
+    logger.log_pre_api_call(
+        provider_body["model"],
+        provider_body["messages"],
+        {
+            "litellm_call_id": call_id,
+            "additional_args": {"complete_input_dict": provider_body},
+        },
+    )
+
+    record = logger._base_record(
+        {
+            "litellm_call_id": call_id,
+            "model": "benchflow-openai-gpt-5.6",
+            "messages": proxy_body["messages"],
+            "litellm_params": {
+                "model": "openai/gpt-5.6",
+                "proxy_server_request": {"body": proxy_body},
+            },
+            "optional_params": {"stream": False},
+        },
+        now,
+        now,
+    )
+
+    assert record["request_complete"] is True
+    assert record["request_capture_source"] == (
+        "litellm_pre_api_call_complete_input_dict"
+    )
+    assert record["request"]["body"] == provider_body
+    assert "input" not in record["request"]["body"]
+
+
+def test_callback_uses_responses_path_for_responses_provider_body() -> None:
+    """Guards PR #1057 against labeling Responses wire data as chat completions."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    call_id = "call-responses-body"
+    provider_body = {"model": "gpt-5.5", "input": "hello"}
+    logger.log_pre_api_call(
+        provider_body["model"],
+        None,
+        {
+            "litellm_call_id": call_id,
+            "additional_args": {"complete_input_dict": provider_body},
+        },
+    )
+
+    record = logger._base_record(
+        {
+            "litellm_call_id": call_id,
+            "model": "gpt-5.5",
+            "input": "hello",
+            "call_type": "aresponses",
+        },
+        now,
+        now,
+    )
+
+    assert record["request_complete"] is True
+    assert record["request"]["path"] == "/v1/responses"
+    assert record["request"]["body"] == provider_body
+
+
+def test_callback_marks_proxy_ingress_request_incomplete():
+    """Guards PR #1057 against promoting reconstructed proxy-ingress parameters."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "gpt-5.6",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_params": {
+                "proxy_server_request": {
+                    "body": {"model": "alias", "temperature": 0.25}
+                }
+            },
+        },
+        now,
+        now,
+    )
+
+    assert record["request_complete"] is False
+    assert record["request_capture_source"] == "proxy_ingress_reconstruction"
+    assert record["request"]["body"]["temperature"] == 0.25
+
+
+def test_callback_redacts_secrets_before_durable_journal(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1057 against persisting raw secrets before finalization."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    api_key = "provider-key-without-a-recognizable-prefix"
+    access_token = "oauth-token-without-a-recognizable-prefix"
+    anthropic_key = "sk-ant-api03-" + "A" * 40
+    google_key = "AIzaSy" + "B" * 33
+    sas = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "PEMsecretMaterial1234567890\n"
+        "-----END PRIVATE KEY-----"
+    )
+    userinfo_password = "userinfo-password-without-prefix"
+
+    logger._write(
+        {
+            "event": "success",
+            "request": {
+                "body": {
+                    "api_key": api_key,
+                    "nested": {"access_token": access_token},
+                    "download_url": f"https://blob.invalid/x?sig={sas}&sp=r",
+                    "note": f"Authorization: Bearer {access_token}",
+                    "provider_error": (
+                        f"anthropic={anthropic_key} google={google_key} "
+                        f"api_key={api_key} private={pem} "
+                        f"url=https://user:{userinfo_password}@db.invalid/path"
+                    ),
+                }
+            },
+        }
+    )
+
+    raw = log_path.read_text()
+    assert api_key not in raw
+    assert access_token not in raw
+    assert anthropic_key not in raw
+    assert google_key not in raw
+    assert sas not in raw
+    assert "PEMsecretMaterial1234567890" not in raw
+    assert userinfo_password not in raw
+    row = json.loads(raw)
+    body = row["request"]["body"]
+    assert body["api_key"] == "***REDACTED***"
+    assert body["nested"]["access_token"] == "***REDACTED***"
+    assert "sig=***REDACTED***" in body["download_url"]
+
+
+def test_callback_uses_exact_canonical_object_redactor() -> None:
+    """Guards PR #1057 against callback redaction drifting from trajectories."""
+
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    callback_redactor = _callback_namespace()["redact_trajectory_obj"]
+    payload = {
+        "api_key": "prefixlessSecretValue1234567890",
+        "message": (
+            "sk-ant-api03-" + "C" * 40 + " "
+            "https://admin:password@db.invalid/x?access_token=token1234567890"
+        ),
+        "nested": [
+            {
+                "private_key": (
+                    "-----BEGIN PRIVATE KEY-----\n"
+                    "CANONICALpemMaterial12345\n"
+                    "-----END PRIVATE KEY-----"
+                )
+            }
+        ],
+    }
+
+    assert callback_redactor(payload) == redact_trajectory_obj(payload)
 
 
 @pytest.mark.asyncio
@@ -315,6 +560,7 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
         "provider_model": "openai/glm-5.1",
         "model_group": "benchflow-glm-5.1",
         "call_type": "completion",
+        "request_complete": True,
         "input_shape": {
             "has_messages": True,
             "has_input": True,
@@ -432,6 +678,8 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
             "n_messages": 2,
         },
         "call_purpose": "agent",
+        "request_complete": True,
+        "response_complete": True,
     }
     assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
         "agent",
@@ -541,6 +789,7 @@ def test_litellm_failure_records_become_error_exchanges():
 
     assert trajectory.exchanges[0].response.status_code == 500
     assert trajectory.exchanges[0].response.body["error"]["message"] == "bad key"
+    assert trajectory.exchanges[0].metadata["response_complete"] is False
     usage = extract_usage_from_trajectory(trajectory, fallback_model="openai/gpt-4")
     assert usage["usage_source"] == "unavailable"
 

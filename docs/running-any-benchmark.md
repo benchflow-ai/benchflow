@@ -217,11 +217,19 @@ Every layer terminates at the *same* output contract, written per rollout under
 | `results.jsonl` | Verifiers/Prime-RL shaped rollout row |
 | `rewards.jsonl` | The reward record for the rollout (ORS / OpenReward shape) |
 | `trajectory/acp_trajectory.jsonl` | Full agent trace as ACP events |
-| `trajectory/llm_trajectory.jsonl` | Raw provider requests/responses (when captured) |
+| `trajectory/llm_trajectory.jsonl` | Always-present LLM exchange log (possibly empty for `no_model_call`) |
+| `trajectory/llm_trajectory.manifest.json` | Capture source, fidelity, completeness, and errors |
 | `trainer/verifiers.jsonl` | Trainer-ready scored trajectory (Verifiers record) |
 | `trainer/atif.json` | ATIF trajectory record |
 | `trainer/adp.jsonl` | ADP trajectory record |
 | `verifier/` | Raw verifier output (`reward.txt`, `ctrf.json`, stdout) |
+
+The JSONL file is always an audit artifact; its sidecar determines whether it
+is also training-ready. Training requires complete `provider_wire` capture with
+positive provider token usage. Native OAuth/session capture and sandbox-local
+capture that shares root custody with the agent are retained but marked
+lower-fidelity, so exporters reject them rather than treating agent-writable
+records as trusted provider evidence.
 
 Hosted runs share this artifact contract too (see the `hosted_env.py` module
 docstring), with `source.type="hosted_env"` / `trajectory_source="hosted_env"`

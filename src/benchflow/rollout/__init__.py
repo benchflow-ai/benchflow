@@ -77,6 +77,7 @@ from benchflow._utils.scoring import classify_error as classify_error
 from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
@@ -123,7 +124,7 @@ from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
 from benchflow.rollout._setup import (
-    _agent_process_kill_pattern as _agent_process_kill_pattern,
+    _agent_process_termination_command as _agent_process_termination_command,
 )
 from benchflow.rollout._setup import _apply_prompt_prefix as _apply_prompt_prefix
 from benchflow.rollout._setup import _apply_web_policy as _apply_web_policy
@@ -163,9 +164,15 @@ from benchflow.rollout._usage import (
     ProviderFailure as ProviderFailure,
 )
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
+from benchflow.rollout._usage import (
+    _merge_provider_and_native_usage_metrics as _merge_provider_and_native_usage_metrics,
+)
+from benchflow.rollout._usage import (
+    _merge_provider_usage_metrics as _merge_provider_usage_metrics,
+)
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
-    _provider_api_failure_summary_from_runtime as _provider_api_failure_summary_from_runtime,
+    _provider_api_failure_summary_from_runtimes as _provider_api_failure_summary_from_runtimes,
 )
 from benchflow.rollout._usage import (
     _provider_auth_status_from_runtime as _provider_auth_status_from_runtime,
@@ -218,15 +225,23 @@ from benchflow.trajectories._capture import (
     _scrape_agent_trajectory,
     make_trajectory_sink,
 )
-from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories.llm_capture import (
+    LLMTrajectoryCapture,
+    model_call_seen_from_evidence,
+)
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.usage_tracking import (
     USAGE_SOURCE_AGENT_NATIVE_ACP,
-    USAGE_SOURCE_PROVIDER_RESPONSE,
     is_token_usage_available,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sandbox_user_home(sandbox_user: str | None) -> str:
+    return f"/home/{sandbox_user}" if sandbox_user else "/root"
+
+
 _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Lifecycle phases from verify() onward. The agent will not run again in this
@@ -645,6 +660,7 @@ class Rollout:
         self._started_at: datetime | None = None
         self._job_name: str | None = None
         self._rollout_name: str | None = None
+        self._llm_capture: LLMTrajectoryCapture | None = None
         self._agent_env: dict[str, str] = {}
         self._resolved_prompts: list[str] = []
         self._agent_launch: str = ""
@@ -667,9 +683,11 @@ class Rollout:
         self._task_tmp: Path | None = None
         self._task_skill_policy: TaskSkillPolicy | None = None
         self._usage_runtime: Any = None
+        self._retired_usage_runtimes: list[Any] = []
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
         self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
         self._native_usage_checkpoint: dict[str, int | None] | None = None
+        self._current_usage_is_native_subscription = False
         # Provider failure snapshotted during cleanup, after the usage proxy
         # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
         # on stop()). Read by _provider_failure() so ACP-error classification can
@@ -938,6 +956,17 @@ class Rollout:
             self._rollout_name,
         ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
 
+        # Create the artifact contract as soon as the rollout directory exists.
+        # Even setup/start failures therefore leave a valid (possibly empty)
+        # JSONL plus a sidecar explaining why no exchange was captured.
+        self._llm_capture = LLMTrajectoryCapture(
+            self._rollout_dir,
+            agent=cfg.primary_agent,
+            model=cfg.primary_model,
+            session_id=self._rollout_name or "",
+            started_at=self._started_at,
+        )
+
         # C-axis overlay: deep-merge cfg.config_override into the task's resolved
         # config here at the rollout layer (not in the Task constructor), so only
         # this run's tasks are patched and every downstream read sees it. No-op
@@ -954,10 +983,11 @@ class Rollout:
         ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
-                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+                cfg.primary_agent, cfg.primary_model, cfg.primary_env
             ),
             disallow=self._disallow_web_tools,
         )
+        self._llm_capture.configure(self._agent_env)
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
             task_path=cfg.task_path,
@@ -1205,7 +1235,7 @@ class Rollout:
                 workspace=self._agent_cwd,
                 timeout_sec=cfg.sandbox_setup_timeout,
             )
-        cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
+        cred_home = _sandbox_user_home(cfg.sandbox_user)
         await self._planes.write_credential_files(
             self._env,
             agent_name,
@@ -1224,6 +1254,16 @@ class Rollout:
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await self._planes.upload_subscription_auth(
                 self._env, agent_name, cred_home
+            )
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            self._agent_env = await llm_capture.prepare_agent(
+                self._env,
+                agent=agent_name,
+                model=cfg.primary_model,
+                agent_env=self._agent_env,
+                credential_home=cred_home,
+                sandbox_user=cfg.sandbox_user,
             )
         await self._planes.apply_web_tool_policy(
             self._env,
@@ -1280,14 +1320,12 @@ class Rollout:
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
-        (
-            self._agent_env,
-            self._usage_runtime,
-        ) = await self._planes.ensure_litellm_runtime(
+        previous_usage_runtime = getattr(self, "_usage_runtime", None)
+        self._agent_env, next_usage_runtime = await self._planes.ensure_litellm_runtime(
             agent=cfg.primary_agent,
             agent_env=self._agent_env,
             model=cfg.primary_model,
-            runtime=getattr(self, "_usage_runtime", None),
+            runtime=previous_usage_runtime,
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
@@ -1296,7 +1334,18 @@ class Rollout:
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
             force_sandbox_local=getattr(self, "_disallow_web_tools", False),
+            sandbox_user=cfg.sandbox_user,
         )
+        self._adopt_usage_runtime(previous_usage_runtime, next_usage_runtime)
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            credential_home = _sandbox_user_home(cfg.sandbox_user)
+            llm_capture.bind_provider_capture_trust(
+                agent=cfg.primary_agent,
+                model=cfg.primary_model,
+                credential_home=credential_home,
+                trusted=getattr(self._usage_runtime, "capture_trusted", True),
+            )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
@@ -1339,6 +1388,16 @@ class Rollout:
                     getattr(self, "_agent_cfg", None),
                 ),
             )
+        self._bind_llm_capture_session(
+            agent=cfg.primary_agent,
+            model=cfg.primary_model,
+            credential_home=_sandbox_user_home(cfg.sandbox_user),
+        )
+        self._current_usage_is_native_subscription = uses_native_subscription_auth(
+            cfg.primary_agent,
+            cfg.primary_model,
+            self._agent_env,
+        )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -1365,12 +1424,56 @@ class Rollout:
             TrajectoryWriter(traj_path), prior
         )
 
+    def _bind_llm_capture_session(
+        self,
+        *,
+        agent: str,
+        model: str | None,
+        credential_home: str,
+        role_name: str | None = None,
+    ) -> None:
+        """Bind the current ACP ID to the native session files it owns."""
+
+        llm_capture = getattr(self, "_llm_capture", None)
+        native_session_id = getattr(self._session, "session_id", None)
+        if llm_capture is None or not isinstance(native_session_id, str):
+            return
+        llm_capture.bind_native_session(
+            agent=agent,
+            model=model,
+            credential_home=credential_home,
+            native_session_id=native_session_id,
+            role_name=role_name,
+        )
+
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
         if getattr(self, "_is_session_factory", False):
             self._capture_partial_session_factory_trajectory()
         else:
             self._capture_partial_acp_trajectory()
+        # Terminate the complete agent tree while the ACP wrapper still owns its
+        # children. Closing the transport first can orphan the real CLI under
+        # PID 1, making it impossible to distinguish from an unrelated task
+        # process during the next role's proxy-custody check.
+        termination_command = _agent_process_termination_command(
+            self._agent_launch,
+            getattr(getattr(self, "_config", None), "sandbox_user", None),
+        )
+        if self._env and termination_command:
+            try:
+                terminated = await self._env.exec(
+                    termination_command,
+                    timeout_sec=10,
+                )
+                if getattr(terminated, "return_code", 0) != 0:
+                    logger.warning(
+                        "Agent process tree did not quiesce after disconnect"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Agent process-tree cleanup failed during disconnect: %s", exc
+                )
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -1380,14 +1483,6 @@ class Rollout:
         self._session = None
         self._session_adapter = None
         self._is_session_factory = False
-        # Kill any lingering agent processes to prevent context bleed between scenes
-        agent_pattern = _agent_process_kill_pattern(self._agent_launch)
-        if self._env and agent_pattern:
-            with contextlib.suppress(Exception):
-                await self._env.exec(
-                    f"pkill -f {shlex.quote(agent_pattern)} || true",
-                    timeout_sec=10,
-                )
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
@@ -1700,6 +1795,8 @@ class Rollout:
 
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
+        if getattr(self, "_current_usage_is_native_subscription", True) is False:
+            return
         session = getattr(self, "_session", None)
         latest_fn = getattr(session, "latest_usage_totals", None)
         if not callable(latest_fn):
@@ -1967,41 +2064,28 @@ class Rollout:
                 self._evolved_skills = None
 
         usage_runtime = getattr(self, "_usage_runtime", None)
+        retired_usage_runtimes = list(getattr(self, "_retired_usage_runtimes", []))
+        all_usage_runtimes = [*retired_usage_runtimes]
+        if usage_runtime is not None:
+            all_usage_runtimes.append(usage_runtime)
+        provider_capture_errors: list[str] = []
         if usage_runtime is not None:
             try:
                 await self._planes.stop_provider_runtime(usage_runtime)
                 self._usage_metrics = self._planes.extract_usage(usage_runtime)
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
+                provider_capture_errors.append(
+                    "provider runtime stop or remote capture import failed"
+                )
                 self._usage_metrics = self._planes.extract_usage(None)
-            # Snapshot any provider failure (401/403/429/503) now that captures
-            # are imported (stop() populated the trajectory). This must happen
-            # before we drop the runtime reference below, and is read later by
-            # ACP-error classification — for Daytona the trajectory is empty
-            # until here (#546/#564).
-            #
-            # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
-            # auth failures flow through `self._provider_runtime`, whose server
-            # (BedrockProxyServer) exposes no `.trajectory`/`.exchanges`, so a
-            # fallback scan of it would always return None — useless, so it's
-            # not implemented. The direct-AWS-Bedrock case (remote sandbox,
-            # runtime=None) bypasses both proxies entirely and is out of scope.
-            self._provider_failure_cached = _provider_failure_from_runtime(
-                usage_runtime
-            )
-            self._provider_auth_status_cached = (
-                self._provider_failure_cached.status
-                if self._provider_failure_cached is not None
-                and self._provider_failure_cached.marker == "provider auth failed"
-                else None
-            )
-            self._api_failure_summary_cached = (
-                _provider_api_failure_summary_from_runtime(usage_runtime)
-            )
             try:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
                 logger.warning(f"LLM trajectory write failed: {e}")
+                provider_capture_errors.append(
+                    "provider live trajectory reconciliation failed"
+                )
             try:
                 self._reconcile_acp_tool_evidence(usage_runtime)
             except Exception as e:
@@ -2009,7 +2093,55 @@ class Rollout:
             finally:
                 self._usage_runtime = None
 
+        # Role-specific gateways are stopped during connect_as() rotation. Keep
+        # their token/cost and failure evidence alongside the final gateway;
+        # the live trajectory writer already preserves their exchange rows.
+        prior_provider_metrics = [
+            self._planes.extract_usage(completed_runtime)
+            for completed_runtime in retired_usage_runtimes
+        ]
+        self._usage_metrics = _merge_provider_usage_metrics(
+            [*prior_provider_metrics, getattr(self, "_usage_metrics", {})]
+        )
+        self._retired_usage_runtimes = []
+        self._provider_failure_cached = None
+        for completed_runtime in all_usage_runtimes:
+            failure = _provider_failure_from_runtime(completed_runtime)
+            if failure is not None:
+                self._provider_failure_cached = failure
+        self._provider_auth_status_cached = (
+            self._provider_failure_cached.status
+            if self._provider_failure_cached is not None
+            and self._provider_failure_cached.marker == "provider auth failed"
+            else None
+        )
+        self._api_failure_summary_cached = _provider_api_failure_summary_from_runtimes(
+            all_usage_runtimes
+        )
+
         self._finalize_usage_metrics()
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            acp_events = list(getattr(self, "_trajectory", None) or [])
+            model_call_seen = model_call_seen_from_evidence(
+                getattr(self, "_usage_metrics", None), acp_events
+            )
+            try:
+                await llm_capture.finalize(
+                    self._env,
+                    acp_events=acp_events,
+                    model_call_seen=model_call_seen,
+                    capture_errors=provider_capture_errors,
+                )
+            except Exception as e:
+                logger.warning(f"LLM trajectory finalization failed: {e}")
+                try:
+                    llm_capture.record_failure(e, model_call_seen=model_call_seen)
+                except Exception as record_error:
+                    logger.warning(
+                        "LLM trajectory failure manifest write failed: %s",
+                        record_error,
+                    )
         self._enforce_required_usage_tracking()
 
         if self._environment is not None:
@@ -2032,18 +2164,27 @@ class Rollout:
 
         self._phase = "cleaned"
 
+    def _adopt_usage_runtime(self, previous: Any, current: Any) -> None:
+        """Retain stopped role runtimes for final usage/failure aggregation."""
+
+        if previous is not None and previous is not current:
+            retired = getattr(self, "_retired_usage_runtimes", None)
+            if retired is None:
+                retired = []
+                self._retired_usage_runtimes = retired
+            retired.append(previous)
+        self._usage_runtime = current
+
     def _finalize_usage_metrics(self) -> None:
-        """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
+        """Combine every trusted token source used by this rollout."""
         current_metrics = getattr(
             self, "_usage_metrics", {"usage_source": "unavailable"}
         )
-        if current_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE:
-            return
         native_metrics = getattr(self, "_native_usage_metrics", None)
-        if isinstance(native_metrics, dict) and is_token_usage_available(
-            native_metrics
-        ):
-            self._usage_metrics = native_metrics
+        self._usage_metrics = _merge_provider_and_native_usage_metrics(
+            current_metrics,
+            native_metrics if isinstance(native_metrics, dict) else None,
+        )
 
     def _enforce_required_usage_tracking(self) -> None:
         usage_cfg = self._config.usage_tracking.with_env_defaults()
@@ -2281,11 +2422,12 @@ class Rollout:
             ),
             disallow=disallow_web_tools,
         )
-        agent_env, self._usage_runtime = await self._planes.ensure_litellm_runtime(
+        previous_usage_runtime = getattr(self, "_usage_runtime", None)
+        agent_env, next_usage_runtime = await self._planes.ensure_litellm_runtime(
             agent=role.agent,
             agent_env=agent_env,
             model=role.model,
-            runtime=getattr(self, "_usage_runtime", None),
+            runtime=previous_usage_runtime,
             environment=cfg.environment,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
@@ -2294,12 +2436,24 @@ class Rollout:
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
             force_sandbox_local=disallow_web_tools,
+            role_name=role.name,
+            sandbox_user=cfg.sandbox_user,
         )
+        self._adopt_usage_runtime(previous_usage_runtime, next_usage_runtime)
 
+        native_subscription = uses_native_subscription_auth(
+            role.agent,
+            role.model,
+            agent_env,
+        )
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
-            role_agent_differs or role.model != cfg.primary_model or bool(role.env)
+            role_agent_differs
+            or role.model != cfg.primary_model
+            or bool(role.env)
+            or native_subscription
         )
+        cred_home = _sandbox_user_home(cfg.sandbox_user)
         if role_agent_differs:
             if cfg.skip_agent_install:
                 agent_cfg = None
@@ -2313,7 +2467,6 @@ class Rollout:
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
         if needs_role_credentials:
-            cred_home = f"/home/{cfg.sandbox_user}" if cfg.sandbox_user else "/root"
             await self._planes.write_credential_files(
                 self._env,
                 role.agent,
@@ -2339,6 +2492,25 @@ class Rollout:
                 agent_cfg,
                 cred_home,
                 disallow=disallow_web_tools,
+            )
+
+        llm_capture = getattr(self, "_llm_capture", None)
+        if llm_capture is not None:
+            agent_env = await llm_capture.prepare_agent(
+                self._env,
+                agent=role.agent,
+                model=role.model,
+                agent_env=agent_env,
+                credential_home=cred_home,
+                sandbox_user=cfg.sandbox_user,
+                role_name=role.name,
+            )
+            llm_capture.bind_provider_capture_trust(
+                agent=role.agent,
+                model=role.model,
+                credential_home=cred_home,
+                trusted=getattr(self._usage_runtime, "capture_trusted", True),
+                role_name=role.name,
             )
 
         self._agent_launch = agent_launch
@@ -2385,6 +2557,14 @@ class Rollout:
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
             )
+        self._bind_llm_capture_session(
+            agent=role.agent,
+            model=role.model,
+            credential_home=cred_home,
+            role_name=role.name,
+        )
+        self._current_usage_is_native_subscription = native_subscription
+        self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role
@@ -2487,12 +2667,13 @@ class Rollout:
         """Persist captured provider HTTP exchanges as JSONL."""
         if self._rollout_dir is None:
             return
-        trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
+        server = getattr(usage_runtime, "server", None)
+        if server is None:
+            return
+        trajectory = server.trajectory
         if trajectory is None or not trajectory.exchanges:
             return
-        LiveLLMTrajectoryWriter(
-            self._rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-        ).reconcile(trajectory)
+        server.reconcile_live_capture()
 
     def _reconcile_acp_tool_evidence(self, usage_runtime: Any) -> None:
         """Repair lossy ACP tool details from trusted provider capture."""

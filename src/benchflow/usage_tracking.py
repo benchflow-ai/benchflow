@@ -7,20 +7,31 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 UsageTrackingMode = Literal["auto", "required", "off"]
-UsageSource = Literal["provider_response", "agent_native_acp", "unavailable"]
+UsageSource = Literal[
+    "provider_response",
+    "agent_native_acp",
+    "mixed",
+    "unavailable",
+]
 
 USAGE_TRACKING_ENV = "BENCHFLOW_USAGE_TRACKING"
 USAGE_SOURCE_PROVIDER_RESPONSE = "provider_response"
 USAGE_SOURCE_AGENT_NATIVE_ACP = "agent_native_acp"
+USAGE_SOURCE_MIXED = "mixed"
 USAGE_SOURCE_UNAVAILABLE = "unavailable"
 TRUSTED_USAGE_SOURCES: frozenset[str] = frozenset(
-    {USAGE_SOURCE_PROVIDER_RESPONSE, USAGE_SOURCE_AGENT_NATIVE_ACP}
+    {
+        USAGE_SOURCE_PROVIDER_RESPONSE,
+        USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_MIXED,
+    }
 )
 
 _MODES: set[str] = {"auto", "required", "off"}
 _USAGE_SOURCES: set[str] = {
     USAGE_SOURCE_PROVIDER_RESPONSE,
     USAGE_SOURCE_AGENT_NATIVE_ACP,
+    USAGE_SOURCE_MIXED,
     USAGE_SOURCE_UNAVAILABLE,
 }
 _LEGACY_USAGE_PROXY_KEYS: frozenset[str] = frozenset(
@@ -174,6 +185,8 @@ class UsageTrackingConfig:
         endpoint_kind = "sandbox" if environment == "daytona" else "host"
         if usage_source == USAGE_SOURCE_AGENT_NATIVE_ACP:
             endpoint_kind = "agent_native"
+        elif usage_source == USAGE_SOURCE_MIXED:
+            endpoint_kind = "mixed"
         elif usage_source == USAGE_SOURCE_UNAVAILABLE:
             endpoint_kind = "none"
         return {

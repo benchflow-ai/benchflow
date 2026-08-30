@@ -314,6 +314,16 @@ def test_agent_credential_and_subscription_auth(name, cfg):
         sa = cfg.subscription_auth
         assert sa.replaces_env, "SubscriptionAuth.replaces_env must be set"
         assert sa.detect_file, "SubscriptionAuth.detect_file must be set"
+        assert bool(sa.proxy_settings_file) is bool(sa.proxy_settings_drop_keys), (
+            "Proxy settings filename and drop keys must be declared together"
+        )
+        if sa.proxy_settings_file:
+            assert "/" not in sa.proxy_settings_file
+            assert sa.proxy_settings_file not in {".", ".."}
+            assert len(set(sa.proxy_settings_drop_keys)) == len(
+                sa.proxy_settings_drop_keys
+            )
+            assert all(sa.proxy_settings_drop_keys)
         for f in sa.files:
             assert f.host_path, "HostAuthFile.host_path must be set"
             assert f.container_path, "HostAuthFile.container_path must be set"

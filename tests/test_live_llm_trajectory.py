@@ -117,6 +117,21 @@ def test_writer_deduplicates_unchanged_snapshot_and_reconciles(tmp_path):
     assert len(path.read_text().splitlines()) == 2
 
 
+def test_writer_preserves_prior_runtime_rows_across_scene_switch(tmp_path):
+    """Guards PR #1057 against replacing an earlier API-key role's rows."""
+
+    path = tmp_path / "llm_trajectory.jsonl"
+    assert LiveLLMTrajectoryWriter(path).write(_trajectory(content="first")) is True
+
+    second_writer = LiveLLMTrajectoryWriter(path)
+    second = _trajectory(content="first")
+    assert second_writer.write(second) is True
+    assert len(path.read_text().splitlines()) == 2
+
+    assert second_writer.reconcile(second) is False
+    assert len(path.read_text().splitlines()) == 2
+
+
 def test_writer_does_not_create_empty_live_artifact(tmp_path):
     """Guards empty-artifact suppression from commit c86adfb."""
     path = tmp_path / "llm_trajectory.jsonl"
@@ -142,6 +157,7 @@ async def test_host_proxy_mirrors_callback_before_stop(tmp_path, monkeypatch):
         stderr_path=tmp_path / "stderr.log",
         session_id="run",
         agent_name="opencode",
+        capture_state_path=tmp_path / "capture_state.json",
     )
 
     process.start_live_capture(output_path)
@@ -212,6 +228,7 @@ async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatc
         stderr_path="/tmp/runtime/stderr",
         session_id="run",
         agent_name="opencode",
+        capture_state_path="/tmp/runtime/capture_state.json",
     )
 
     process.start_live_capture(output_path)
@@ -241,6 +258,7 @@ def _sandbox_process(sandbox) -> SandboxLiteLLMProcess:
         stderr_path="/tmp/runtime/stderr",
         session_id="run",
         agent_name="prime-agent",
+        capture_state_path="/tmp/runtime/capture_state.json",
     )
 
 
@@ -442,6 +460,7 @@ async def test_daytona_proxy_uses_transient_exec_for_callback_poll(tmp_path):
         stderr_path="/tmp/runtime/stderr",
         session_id="run",
         agent_name="openhands",
+        capture_state_path="/tmp/runtime/capture_state.json",
     )
 
     chunk = await process._read_callback_chunk(0, 24 * 1024)

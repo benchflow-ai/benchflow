@@ -295,6 +295,7 @@ class _FakeSandbox:
         self.uploaded_modes: dict[str, str | None] = {}
         self.exec_calls: list[str] = []
         self.exec_timeouts: list[int | None] = []
+        self.exec_users: list[str | None] = []
         self.fail_launch = fail_launch
         self.fail_preflight = fail_preflight
         self.log_content = log_content
@@ -309,6 +310,7 @@ class _FakeSandbox:
     ) -> _ExecResult:
         self.exec_calls.append(command)
         self.exec_timeouts.append(timeout_sec)
+        self.exec_users.append(user)
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -328,6 +330,10 @@ class _FakeSandbox:
             return _ExecResult(0)
         if command.strip().startswith("rm -rf"):
             return _ExecResult(0)
+        if command.strip().startswith("cat") and "capture_state.json" in command:
+            return _ExecResult(
+                0, stdout=json.dumps({"attempt_count": 1, "terminal_count": 1})
+            )
         if command.strip().startswith("cat") and "state.json" in command:
             if self._started:
                 return _ExecResult(0, stdout=json.dumps({"pid": 4242, "port": 45999}))
@@ -356,20 +362,40 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
         },
         session_id="s",
         agent_name="openhands",
+        role_name="solver",
     )
 
     # launch_config is uploaded as a file (proxy needs the key)...
     launch_files = [k for k in sandbox.uploaded if k.endswith("launch_config.json")]
     assert launch_files, "launch_config.json should be uploaded"
     assert secret in sandbox.uploaded[launch_files[0]]
+    launch_config = json.loads(sandbox.uploaded[launch_files[0]])
+    assert launch_config["env"]["BENCHFLOW_LITELLM_REQUESTED_MODEL"] == (
+        "minimax/MiniMax-M3"
+    )
+    assert launch_config["env"]["BENCHFLOW_LITELLM_MODEL_ALIAS"] == (
+        "benchflow-minimax-MiniMax-M3"
+    )
+    assert launch_config["env"]["BENCHFLOW_LITELLM_AGENT"] == "openhands"
+    assert launch_config["env"]["BENCHFLOW_LITELLM_ROLE"] == "solver"
     assert set(sandbox.uploaded_modes.values()) == {"600"}
     # ...and the secret never appears on any exec command line (/proc exposure).
     assert all(secret not in call for call in sandbox.exec_calls)
     # config.yaml uses os.environ/ refs, so the secret is not inlined there either.
     config_files = [k for k in sandbox.uploaded if k.endswith("config.yaml")]
     assert config_files and secret not in sandbox.uploaded[config_files[0]]
+    redaction_files = [
+        k for k in sandbox.uploaded if k.endswith("benchflow_trajectory_redaction.py")
+    ]
+    assert len(redaction_files) == 1
+    assert (
+        sandbox.uploaded[redaction_files[0]]
+        == runtime_mod.canonical_redaction_module_source()
+    )
     launch_command = next(call for call in sandbox.exec_calls if "launcher.py" in call)
     assert f"rc=$?; rm -f {launch_files[0]}; exit $rc" in launch_command
+    launch_index = sandbox.exec_calls.index(launch_command)
+    assert sandbox.exec_users[launch_index] == "root"
 
     assert proc.base_url == "http://127.0.0.1:45999"
     assert await proc.is_running() is True
@@ -433,6 +459,41 @@ async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 11
     assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_stop_rejects_an_undrained_attempt_journal():
+    """Guards PR #1057 against completing an accepted provider call lost at stop."""
+
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox()
+    original_exec = sandbox.exec
+
+    async def mismatched_state(command, **kwargs):
+        if command.strip().startswith("cat") and "capture_state.json" in command:
+            return _ExecResult(
+                0, stdout=json.dumps({"attempt_count": 2, "terminal_count": 1})
+            )
+        return await original_exec(command, **kwargs)
+
+    sandbox.exec = mismatched_state
+    proc = await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+    )
+
+    with pytest.raises(RuntimeError, match="did not drain every accepted"):
+        await proc.stop()
 
 
 @pytest.mark.asyncio
@@ -583,6 +644,53 @@ def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_pat
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_runtime_packages_canonical_redactor_verbatim(tmp_path):
+    """Guards PR #1057 against reflective callback source reconstruction."""
+
+    import os
+    import subprocess
+    import sys
+
+    runtime_mod._write_runtime_files(tmp_path, config={"model_list": []})
+
+    packaged = tmp_path / "benchflow_trajectory_redaction.py"
+    assert packaged.read_text() == runtime_mod.canonical_redaction_module_source()
+    assert "def redact_trajectory_obj" in packaged.read_text()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import benchflow_litellm_callback as callback; "
+            "assert callback.redact_trajectory_obj.__module__ == "
+            "'benchflow_trajectory_redaction'",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runtime_files_are_private_even_with_permissive_umask(tmp_path):
+    """Guards PR #1057 against permissive host runtime-file permissions."""
+
+    import os
+
+    runtime_dir = tmp_path / "runtime"
+    previous_umask = os.umask(0)
+    try:
+        runtime_mod._write_runtime_files(runtime_dir, config={"model_list": []})
+    finally:
+        os.umask(previous_umask)
+
+    assert runtime_dir.stat().st_mode & 0o777 == 0o700
+    for path in runtime_dir.iterdir():
+        assert path.stat().st_mode & 0o777 == 0o600, path
+
+
 def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):
     """THE regression test for issue #602's fail-open (fixed in PR #668): when the patch never
     loads (sitecustomize missing from PYTHONPATH — the exact silent-failure
@@ -691,7 +799,9 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     logger = namespace["proxy_handler_instance"]
 
     log_path = tmp_path / "callback.jsonl"
+    state_path = tmp_path / "capture_state.json"
     monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+    monkeypatch.setenv("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH", str(state_path))
 
     response = {
         "model": "gpt-4.1-mini",
@@ -699,15 +809,38 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
         "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
     }
     kwargs = {
+        "litellm_call_id": "round-trip-provider-request",
         "model": "benchflow-openai-gpt-4.1-mini",
         "messages": [{"role": "user", "content": "hi"}],
-        "litellm_params": {"model": "openai/gpt-4.1-mini"},
+        "litellm_params": {
+            "model": "openai/gpt-4.1-mini",
+            "proxy_server_request": {
+                "body": {
+                    "model": "benchflow-openai-gpt-4.1-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                }
+            },
+        },
         "optional_params": {},
         "call_type": "acompletion",
     }
     start = datetime(2026, 6, 4, 10, 0, 0)
     end = datetime(2026, 6, 4, 10, 0, 1)
 
+    await logger.async_pre_call_hook(None, None, kwargs, "acompletion")
+    logger.log_pre_api_call(
+        "openai/gpt-4.1-mini",
+        kwargs["messages"],
+        {
+            "litellm_call_id": kwargs["litellm_call_id"],
+            "additional_args": {
+                "complete_input_dict": {
+                    "model": "gpt-4.1-mini",
+                    "messages": kwargs["messages"],
+                }
+            },
+        },
+    )
     await logger.async_log_success_event(kwargs, response, start, end)
 
     text = log_path.read_text()
@@ -722,6 +855,43 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
     assert usage["usage_source"] == "provider_response"
     assert usage["n_input_tokens"] == 12
     assert usage["n_output_tokens"] == 4
+    assert trajectory.exchanges[0].metadata["request_complete"] is True
+    assert json.loads(state_path.read_text()) == {
+        "attempt_count": 1,
+        "terminal_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_embedded_logger_invalidates_stale_journal_after_attempt_write_failure(
+    tmp_path, monkeypatch
+):
+    """Guards PR #1057 against accepting stale host or sandbox journal counts."""
+
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    state_path = tmp_path / "capture_state.json"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_CAPTURE_STATE_PATH", str(state_path))
+
+    logger._journal_attempt()
+    logger._terminal_count = 1
+    logger._write_state_locked()
+    assert json.loads(state_path.read_text()) == {
+        "attempt_count": 1,
+        "terminal_count": 1,
+    }
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(namespace["os"], "replace", fail_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        logger._journal_attempt()
+
+    assert not state_path.exists()
+    assert not state_path.with_suffix(".json.tmp").exists()
 
 
 def test_gemini_usage_metadata_is_detected_as_provider_usage():

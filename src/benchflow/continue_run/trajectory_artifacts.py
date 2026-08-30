@@ -1,0 +1,385 @@
+"""Pure trajectory stitching and provenance reconciliation for continuation."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from benchflow.trajectories.io import atomic_write_text
+from benchflow.trajectories.llm_capture_manifest import (
+    CONTINUATION_SOURCE_AUDIT_ERROR,
+    LLM_TRAJECTORY_SCHEMA_VERSION,
+    REPLAY_PROXY_INGRESS_AUDIT_ERROR,
+    AuthMode,
+    CaptureFidelity,
+    CaptureSource,
+    CaptureStatus,
+    LLMRoleCapture,
+    LLMTrajectoryManifest,
+    read_llm_trajectory_manifest,
+    rollout_capture_is_training_grade,
+    successful_exchanges_have_positive_usage,
+    write_llm_trajectory_manifest,
+)
+from benchflow.trajectories.redaction import (
+    jsonl_payload_is_redacted,
+    redact_trajectory_obj,
+    redact_trajectory_obj_with_audit,
+)
+from benchflow.trajectories.types import LLMExchange
+
+CONTINUATION_AGENT = "openhands"
+
+
+def stitched_trajectory_lines(original_llm_trajectory: Path) -> list[str]:
+    """Build the schema-promoted recorded prefix of a continuation trajectory.
+
+    The recorded request/response payloads are preserved, while their metadata
+    is promoted to the current schema so a newly stitched artifact can never be
+    mistaken for sidecar-optional legacy data.
+    """
+    lines: list[str] = []
+    if original_llm_trajectory.is_file():
+        for raw in original_llm_trajectory.read_text().splitlines():
+            if raw.strip():
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    lines.append(raw)
+                    continue
+                if not isinstance(payload, dict):
+                    lines.append(raw)
+                    continue
+                metadata = payload.setdefault("metadata", {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    payload["metadata"] = metadata
+                metadata["schema_version"] = LLM_TRAJECTORY_SCHEMA_VERSION
+                lines.append(json.dumps(redact_trajectory_obj(payload), default=str))
+    return lines
+
+
+def write_stitched_trajectory(
+    rollout_dir: Path,
+    original_llm_trajectory: Path,
+    live_exchanges: list[LLMExchange],
+    *,
+    recorded_consumed_count: int,
+    live_model: str | None = None,
+    live_capture_host_owned: bool = True,
+) -> Path:
+    """Write a stitched trajectory without overstating the live request boundary.
+
+    Continuation captures the agent-facing request at replay-proxy ingress. The
+    live forwarder and LiteLLM can still replace, filter, or transform it before
+    provider dispatch, so the suffix remains useful for audit/replay but is never
+    provider-wire training evidence.
+    """
+    out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = stitched_trajectory_lines(original_llm_trajectory)
+    if (
+        isinstance(recorded_consumed_count, bool)
+        or recorded_consumed_count < 0
+        or recorded_consumed_count > len(lines)
+    ):
+        raise ValueError(
+            "recorded_consumed_count must identify an available trajectory prefix"
+        )
+    lines = lines[:recorded_consumed_count]
+    for exchange in live_exchanges:
+        payload = exchange.model_dump(mode="json")
+        metadata = payload.setdefault("metadata", {})
+        metadata.update(
+            {
+                "agent": CONTINUATION_AGENT,
+                "role": "agent",
+                "model": live_model,
+                "auth_mode": AuthMode.API_KEY.value,
+                "capture_source": CaptureSource.REPLAY_PROXY.value,
+                "capture_fidelity": CaptureFidelity.AGENT_SESSION.value,
+                "schema_version": LLM_TRAJECTORY_SCHEMA_VERSION,
+                "request_complete": False,
+                "response_complete": True,
+                "role_attribution_complete": True,
+                "request_capture_source": "replay_proxy_ingress",
+                "capture_custody": (
+                    "host_owned"
+                    if live_capture_host_owned
+                    else "agent_writable_sandbox"
+                ),
+            }
+        )
+        redacted, payload_redacted = redact_trajectory_obj_with_audit(payload)
+        if not isinstance(redacted, dict):
+            payload_redacted = False
+            redacted = {}
+        redacted_metadata = redacted.get("metadata")
+        if not isinstance(redacted_metadata, dict):
+            redacted_metadata = {}
+            redacted["metadata"] = redacted_metadata
+        redacted_metadata["payload_redacted"] = payload_redacted
+        lines.append(json.dumps(redacted, default=str))
+    rendered = "\n".join(lines) + ("\n" if lines else "")
+    atomic_write_text(out, rendered)
+    return out
+
+
+def refresh_stitched_trajectory_manifest(
+    rollout_dir: Path,
+    source_rollout_dir: Path,
+    *,
+    original_model: str | None,
+    live_model: str | None,
+    n_recorded: int,
+    n_recorded_consumed: int,
+    n_live: int,
+    live_attempt_count: int,
+    live_errors: list[str],
+    live_capture_host_owned: bool = True,
+) -> LLMTrajectoryManifest:
+    """Replace rollout-finalization provenance with the final stitched contract."""
+
+    current_raw = read_llm_trajectory_manifest(rollout_dir)
+    source_raw = read_llm_trajectory_manifest(source_rollout_dir)
+    try:
+        current = (
+            LLMTrajectoryManifest.model_validate(current_raw)
+            if current_raw is not None
+            else None
+        )
+    except ValueError:
+        current = None
+    try:
+        source = (
+            LLMTrajectoryManifest.model_validate(source_raw)
+            if source_raw is not None
+            else None
+        )
+    except ValueError:
+        source = None
+
+    if (
+        isinstance(n_recorded_consumed, bool)
+        or n_recorded_consumed < 0
+        or n_recorded_consumed > n_recorded
+    ):
+        raise ValueError("n_recorded_consumed must be between zero and n_recorded")
+
+    trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+    trajectory_lines = [
+        line for line in trajectory_path.read_text().splitlines() if line.strip()
+    ]
+    exchange_count = len(trajectory_lines)
+    malformed_count = 0
+    for line in trajectory_lines:
+        try:
+            LLMExchange.model_validate_json(line)
+        except ValueError:
+            malformed_count += 1
+    rows_valid = malformed_count == 0
+    parsed_rows: list[dict[str, Any]] = []
+    if rows_valid:
+        parsed_rows = [json.loads(line) for line in trajectory_lines]
+    expected_count = n_recorded_consumed + live_attempt_count
+    count_matches = exchange_count == expected_count
+    source_rows: list[dict[str, Any]] = []
+    try:
+        source_rows = [
+            json.loads(line)
+            for line in (source_rollout_dir / "trajectory" / "llm_trajectory.jsonl")
+            .read_text()
+            .splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError):
+        source_rows = []
+    source_allows_training = bool(
+        source_raw is not None
+        and len(source_rows) == n_recorded
+        and rollout_capture_is_training_grade(
+            source_rollout_dir,
+            exchanges=source_rows,
+        )
+    )
+    recorded_prefix_complete = n_recorded_consumed == n_recorded
+    live_capture_complete = live_attempt_count == n_live and not live_errors
+    usage_complete = bool(
+        parsed_rows and successful_exchanges_have_positive_usage(parsed_rows)
+    )
+    complete = (
+        source_allows_training
+        and recorded_prefix_complete
+        and count_matches
+        and live_capture_complete
+        and n_live == 0
+        and rows_valid
+        and usage_complete
+    )
+
+    source_capture_source = source.capture_source if source else CaptureSource.NONE
+    source_fidelity = source.capture_fidelity if source else CaptureFidelity.NONE
+    source_auth = source.auth_mode if source else AuthMode.UNKNOWN
+    if n_live:
+        capture_source = (
+            CaptureSource.REPLAY_PROXY if n_recorded == 0 else CaptureSource.MIXED
+        )
+        live_fidelity = CaptureFidelity.AGENT_SESSION
+        capture_fidelity = (
+            live_fidelity if source_fidelity is live_fidelity else CaptureFidelity.MIXED
+        )
+        auth_mode = (
+            AuthMode.API_KEY if source_auth is AuthMode.API_KEY else AuthMode.MIXED
+        )
+    else:
+        capture_source = source_capture_source
+        capture_fidelity = source_fidelity
+        auth_mode = source_auth
+
+    request_complete = bool(
+        source
+        and source.request_complete
+        and count_matches
+        and live_capture_complete
+        and rows_valid
+        and n_live == 0
+        and recorded_prefix_complete
+    )
+    response_complete = bool(
+        source
+        and source.response_complete
+        and count_matches
+        and live_capture_complete
+        and rows_valid
+        and recorded_prefix_complete
+    )
+    errors = list(source.errors) if source and not complete else []
+    missing_fields = list(source.missing_fields) if source and not complete else []
+    errors.extend(live_errors)
+    if n_live:
+        errors.append(REPLAY_PROXY_INGRESS_AUDIT_ERROR)
+        missing_fields.append("live_provider_request")
+    if n_live and not live_capture_host_owned:
+        errors.append("sandbox replay capture shared root custody with the agent")
+    if source is None:
+        errors.append("source LLM trajectory manifest is missing or malformed")
+        missing_fields.append("source_capture_provenance")
+    elif not source_allows_training:
+        errors.append(CONTINUATION_SOURCE_AUDIT_ERROR)
+    if not recorded_prefix_complete:
+        errors.append(
+            "continuation stopped after consuming "
+            f"{n_recorded_consumed} of {n_recorded} recorded provider exchanges"
+        )
+        missing_fields.append("recorded_replay_prefix")
+    if not count_matches:
+        errors.append(
+            "stitched LLM trajectory count mismatch: "
+            f"expected {expected_count}, found {exchange_count}"
+        )
+        missing_fields.append("exchange_count")
+    if not rows_valid:
+        errors.append(
+            f"stitched LLM trajectory contains {malformed_count} malformed row(s)"
+        )
+        missing_fields.append("valid_provider_exchange")
+    if rows_valid and not usage_complete:
+        errors.append("stitched LLM trajectory lacks positive provider token usage")
+        missing_fields.append("token_usage")
+    if not live_capture_complete:
+        missing_fields.append("live_provider_exchange")
+
+    role_captures = _continuation_role_captures(
+        source=source,
+        original_model=original_model,
+        live_model=live_model,
+        n_recorded=n_recorded_consumed,
+        n_live=n_live,
+        live_attempt_count=live_attempt_count,
+        live_capture_complete=live_capture_complete,
+        rows_valid=rows_valid,
+    )
+    active_models = {
+        capture.model for capture in role_captures if capture.exchange_count > 0
+    }
+    stitched_model = next(iter(active_models)) if len(active_models) == 1 else None
+    manifest = LLMTrajectoryManifest(
+        status=CaptureStatus.COMPLETE if complete else CaptureStatus.PARTIAL,
+        capture_source=capture_source,
+        capture_fidelity=capture_fidelity,
+        auth_mode=auth_mode,
+        agent=CONTINUATION_AGENT,
+        model=stitched_model,
+        session_id=current.session_id if current else rollout_dir.name,
+        exchange_count=exchange_count,
+        request_complete=request_complete,
+        response_complete=response_complete,
+        payload_redacted=jsonl_payload_is_redacted(trajectory_path),
+        started_at=current.started_at if current else datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        missing_fields=sorted(set(missing_fields)),
+        errors=errors,
+        role_captures=role_captures,
+    )
+    write_llm_trajectory_manifest(rollout_dir, manifest)
+    return manifest
+
+
+def _continuation_role_captures(
+    *,
+    source: LLMTrajectoryManifest | None,
+    original_model: str | None,
+    live_model: str | None,
+    n_recorded: int,
+    n_live: int,
+    live_attempt_count: int,
+    live_capture_complete: bool,
+    rows_valid: bool,
+) -> list[LLMRoleCapture]:
+    """Preserve source-role provenance and append a distinct live leg."""
+
+    captures: list[LLMRoleCapture] = []
+    remaining = n_recorded
+    for capture in source.role_captures if source else []:
+        retained = min(capture.exchange_count, remaining)
+        if retained:
+            captures.append(
+                capture.model_copy(
+                    update={"leg": "recorded", "exchange_count": retained}
+                )
+            )
+        remaining -= retained
+    if source is not None and n_recorded and not captures:
+        captures.append(
+            LLMRoleCapture(
+                role="agent",
+                leg="recorded",
+                agent=source.agent,
+                model=source.model or original_model,
+                auth_mode=source.auth_mode,
+                capture_source=source.capture_source,
+                capture_fidelity=source.capture_fidelity,
+                exchange_count=n_recorded,
+                request_complete=source.request_complete,
+                response_complete=source.response_complete,
+            )
+        )
+    if live_attempt_count or n_live:
+        live_complete = live_capture_complete and rows_valid
+        captures.append(
+            LLMRoleCapture(
+                role="agent",
+                leg="live",
+                agent=CONTINUATION_AGENT,
+                model=live_model,
+                auth_mode=AuthMode.API_KEY,
+                capture_source=CaptureSource.REPLAY_PROXY,
+                capture_fidelity=CaptureFidelity.AGENT_SESSION,
+                exchange_count=n_live,
+                request_complete=False,
+                response_complete=live_complete,
+            )
+        )
+    return captures

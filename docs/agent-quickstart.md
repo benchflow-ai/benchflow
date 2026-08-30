@@ -138,8 +138,9 @@ and what it is:
     agent/                           — agent-side logs
     trajectory/acp_trajectory.jsonl  — the full agent trace (every ACP event:
                                        prompts, tool calls, outputs)
-    trajectory/llm_trajectory.jsonl  — raw provider requests/responses captured
-                                       by the usage-tracking proxy
+    trajectory/llm_trajectory.jsonl  — always-present LLM exchange log
+    trajectory/llm_trajectory.manifest.json
+                                     — source/fidelity/completeness for that log
     trainer/verifiers.jsonl          — trainer-ready scored trajectory record
     trainer/atif.json                — the trajectory in ATIF interchange
                                        format (omitted if the trajectory is empty)
@@ -147,6 +148,14 @@ and what it is:
     verifier/reward.txt              — raw verifier reward
     verifier/test-stdout.txt         — verifier stdout (and ctrf.json when the
                                        test emits a CTRF report)
+
+`llm_trajectory.jsonl` is an audit artifact for every run, not an unconditional
+training claim. Only a `complete` manifest with `provider_wire` fidelity and
+positive provider token usage is training-ready. Native OAuth/session capture
+and continuation replay-proxy ingress stay available for audit but are marked
+lower-fidelity and excluded from training. A sandbox-local proxy that shares
+root custody with the agent records that additional custody limitation.
+
 Also note the job-level summary.json plus aggregated results.jsonl,
 verifiers.jsonl, and adp.jsonl in the job directory. The trainer/ files and the job-level
 aggregates are written by current BenchFlow releases; if they are missing,

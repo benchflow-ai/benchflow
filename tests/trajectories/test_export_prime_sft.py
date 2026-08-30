@@ -15,6 +15,9 @@ from benchflow.trajectories.export_prime_sft import (
     normalize_prime_sft_exchange,
     validate_prime_sft_jsonl,
 )
+from benchflow.trajectories.export_trl_sft import (
+    convert_benchflow_rollouts_to_trl_sft_rows,
+)
 
 
 def _write_rollout(
@@ -186,6 +189,121 @@ def test_anthropic_tool_use_content_preserved_as_tool_calls(tmp_path: Path) -> N
         "command": "ls"
     }
     assert stats.rows_with_tool_calls == 1
+
+
+def test_native_session_exchange_is_not_exported_for_training(tmp_path: Path) -> None:
+    """Guards PR #1057's fail-closed export boundary for reconstructed capture."""
+
+    exchange = _anthropic_exchange()
+    exchange["metadata"] = {
+        "capture_fidelity": "agent_session",
+        "request_complete": False,
+        "response_complete": False,
+    }
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert rows == []
+    assert stats.skipped_insufficient_capture_fidelity == 1
+    assert stats.skipped_invalid == 0
+
+
+def test_partial_manifest_blocks_prime_and_trl_training_exports(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against exporting individually complete partial capture."""
+
+    exchange = _exchange(final=True)
+    exchange["metadata"] = {
+        "capture_fidelity": "provider_wire",
+        "request_complete": True,
+        "response_complete": True,
+    }
+    rollout = tmp_path / "job" / "rollout-1"
+    _write_rollout(rollout, exchanges=[exchange])
+    (rollout / "trajectory" / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_fidelity": "provider_wire",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        )
+    )
+
+    prime_rows, prime_stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        tmp_path / "job"
+    )
+    trl_rows, trl_stats = convert_benchflow_rollouts_to_trl_sft_rows(tmp_path / "job")
+
+    assert prime_rows == []
+    assert prime_stats.skipped_insufficient_capture_fidelity == 1
+    assert trl_rows == []
+    assert trl_stats.skipped_insufficient_capture_fidelity == 1
+
+
+def test_sidecarless_schema_v2_blocks_prime_and_trl_training_exports(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against exporting detached schema-v2 capture rows."""
+
+    exchange = _exchange(final=True)
+    exchange["metadata"] = {
+        "schema_version": 2,
+        "capture_fidelity": "provider_wire",
+        "request_complete": True,
+        "response_complete": True,
+    }
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+
+    prime_rows, prime_stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        tmp_path / "job"
+    )
+    trl_rows, trl_stats = convert_benchflow_rollouts_to_trl_sft_rows(tmp_path / "job")
+
+    assert prime_rows == []
+    assert prime_stats.skipped_insufficient_capture_fidelity == 1
+    assert trl_rows == []
+    assert trl_stats.skipped_insufficient_capture_fidelity == 1
+
+
+def test_manifest_count_mismatch_blocks_prime_and_trl_training_exports(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against exporting a truncated provider-wire JSONL file."""
+
+    exchange = _exchange(final=True)
+    exchange["metadata"] = {
+        "capture_fidelity": "provider_wire",
+        "request_complete": True,
+        "response_complete": True,
+    }
+    rollout = tmp_path / "job" / "rollout-1"
+    _write_rollout(rollout, exchanges=[exchange])
+    (rollout / "trajectory" / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "capture_fidelity": "provider_wire",
+                "exchange_count": 2,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        )
+    )
+
+    prime_rows, prime_stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        tmp_path / "job"
+    )
+    trl_rows, trl_stats = convert_benchflow_rollouts_to_trl_sft_rows(tmp_path / "job")
+
+    assert prime_rows == []
+    assert prime_stats.skipped_insufficient_capture_fidelity == 1
+    assert trl_rows == []
+    assert trl_stats.skipped_insufficient_capture_fidelity == 1
 
 
 def test_skipped_provider_error_counts_rollouts_not_exchanges(tmp_path: Path) -> None:

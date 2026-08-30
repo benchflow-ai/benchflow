@@ -11,7 +11,10 @@ import pytest
 from benchflow.agents.install import apply_web_tool_policy, deploy_skills, install_agent
 from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
-from benchflow.rollout._setup import _agent_process_kill_pattern
+from benchflow.rollout._setup import (
+    _agent_process_kill_pattern,
+    _agent_process_termination_command,
+)
 
 
 class LocalShellEnv:
@@ -879,3 +882,28 @@ def test_agent_kill_pattern_targets_agent_not_python_services(launch, agent_argv
 def test_agent_kill_pattern_empty_launch_is_none():
     assert _agent_process_kill_pattern("") is None
     assert _agent_process_kill_pattern("   ") is None
+
+
+def test_agent_termination_command_tracks_descendants_before_killing_wrapper():
+    """Guards PR #1057 mixed auth against orphaned native-agent children."""
+
+    command = _agent_process_termination_command(
+        "/opt/benchflow/bin/claude-agent-acp", "agent"
+    )
+
+    assert command is not None
+    assert "id -u -- agent" in command
+    assert 'pgrep -u "$bf_agent_uid" -f' in command
+    assert 'pgrep -u "$bf_agent_uid" -P "$bf_pid"' in command
+    assert 'kill -STOP "$bf_pid"' in command
+    assert "kill -TERM $bf_pids" in command
+    assert "kill -KILL $bf_alive" in command
+    assert 'while [ "$bf_wait" -lt 20 ]' in command
+    assert "pkill -u" not in command
+
+
+def test_agent_termination_command_preserves_legacy_root_scope():
+    command = _agent_process_termination_command("codex-acp", None)
+
+    assert command is not None
+    assert command.startswith("pkill -f ")

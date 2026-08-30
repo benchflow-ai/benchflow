@@ -1,0 +1,772 @@
+"""Training boundaries for the uniform LLM capture manifest."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from benchflow.trajectories.llm_capture import LLMTrajectoryCapture
+from benchflow.trajectories.llm_capture_manifest import (
+    CONTINUATION_SOURCE_AUDIT_ERROR,
+    REPLAY_PROXY_INGRESS_AUDIT_ERROR,
+    capture_artifact_allows_training,
+    capture_manifest_allows_training,
+    capture_manifest_preserves_audit_completion,
+)
+from benchflow.trajectories.results import build_rollout_results_record
+
+
+def _build_results_row(rollout_dir: Path, *, agent_result: dict) -> dict:
+    return build_rollout_results_record(
+        rollout_dir,
+        task_name="task",
+        rollout_name="rollout",
+        agent="claude-agent-acp",
+        agent_name="Claude Code",
+        model="claude-opus-4-1",
+        n_tool_calls=0,
+        prompts=["hello"],
+        trajectory=[],
+        partial_trajectory=False,
+        rewards={"reward": 1.0},
+        error=None,
+        verifier_error=None,
+        agent_result=agent_result,
+    )
+
+
+def _write_exchange(
+    trajectory_dir: Path,
+    *,
+    fidelity: str,
+    schema_version: int | None = None,
+    include_usage: bool = True,
+) -> None:
+    metadata: dict[str, str | bool | int] = {
+        "capture_fidelity": fidelity,
+        "request_complete": fidelity == "provider_wire",
+        "response_complete": True,
+    }
+    if schema_version is not None:
+        metadata["schema_version"] = schema_version
+    response_body = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hi"}],
+    }
+    if include_usage:
+        response_body["usage"] = {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+        }
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(
+            {
+                "request": {
+                    "body": {"messages": [{"role": "user", "content": "hello"}]}
+                },
+                "response": {
+                    "status_code": 200,
+                    "body": response_body,
+                },
+                "metadata": metadata,
+            }
+        )
+        + "\n"
+    )
+
+
+def test_agent_session_capture_is_audit_only_not_training_ready(tmp_path: Path) -> None:
+    """Guards PR #1057 against silently training on reconstructed OAuth payloads."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="agent_session")
+    exchange_path = trajectory_dir / "llm_trajectory.jsonl"
+    exchange = json.loads(exchange_path.read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "codex_native_session",
+            "auth_mode": "oauth_subscription",
+            "role": "agent",
+            "agent": "codex-acp",
+        }
+    )
+    exchange_path.write_text(json.dumps(exchange) + "\n")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_source": "codex_native_session",
+                "capture_fidelity": "agent_session",
+                "auth_mode": "oauth_subscription",
+                "exchange_count": 1,
+                "request_complete": False,
+                "response_complete": True,
+                "role_captures": [
+                    {
+                        "role": "agent",
+                        "agent": "codex-acp",
+                        "auth_mode": "oauth_subscription",
+                        "capture_source": "codex_native_session",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "agent_native_acp", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is True
+    assert row["error"] is None
+
+
+@pytest.mark.parametrize("corruption", ["truncated", "wrong_role"])
+def test_corrupt_audit_rows_fail_closed_for_completion(
+    tmp_path: Path, corruption: str
+) -> None:
+    """Guards PR #1057 review r3888793594 against stale audit sidecars."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="agent_session")
+    exchange_path = trajectory_dir / "llm_trajectory.jsonl"
+    exchange = json.loads(exchange_path.read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "codex_native_session",
+            "auth_mode": "oauth_subscription",
+            "role": "agent",
+            "agent": "codex-acp",
+        }
+    )
+    if corruption == "truncated":
+        exchange_path.write_text("")
+    else:
+        exchange["metadata"]["role"] = "unprepared-role"
+        exchange_path.write_text(json.dumps(exchange) + "\n")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_source": "codex_native_session",
+                "capture_fidelity": "agent_session",
+                "auth_mode": "oauth_subscription",
+                "exchange_count": 1,
+                "request_complete": False,
+                "response_complete": True,
+                "role_captures": [
+                    {
+                        "role": "agent",
+                        "agent": "codex-acp",
+                        "auth_mode": "oauth_subscription",
+                        "capture_source": "codex_native_session",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "agent_native_acp", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+    assert row["error"]["error"] == "missing_llm_trajectory"
+
+
+def test_corrupt_capture_manifest_fails_closed_for_training(tmp_path: Path) -> None:
+    """Guards PR #1057 against treating a corrupt new sidecar as a legacy artifact."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text("{broken")
+
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == (
+        "missing_healthy_structured_llm_trajectory"
+    )
+    assert row["is_completed"] is False
+
+
+def test_sidecarless_schema_v2_capture_fails_closed_for_canonical_results(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against treating detached schema-v2 rows as legacy."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        schema_version=2,
+    )
+
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == (
+        "missing_healthy_structured_llm_trajectory"
+    )
+    assert row["is_completed"] is False
+
+
+def test_manifest_count_mismatch_fails_closed_for_canonical_results(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on a truncated canonical trajectory."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "capture_fidelity": "provider_wire",
+                "auth_mode": "api_key",
+                "exchange_count": 2,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        )
+    )
+
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+def test_unredacted_provider_capture_fails_closed_for_training(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on explicitly unredacted payloads."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire", schema_version=2)
+    manifest = {
+        "status": "complete",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": False,
+    }
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(json.dumps(manifest))
+
+    assert not capture_manifest_allows_training(manifest, exchange_count=1)
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+@pytest.mark.parametrize(
+    ("contradictory_field", "value"),
+    [
+        ("errors", ["capture journal missing"]),
+        ("missing_fields", ["provider_request"]),
+    ],
+)
+def test_complete_manifest_with_capture_gaps_fails_closed_for_training(
+    tmp_path: Path,
+    contradictory_field: str,
+    value: list[str],
+) -> None:
+    """Guards PR #1057 against training on contradictory complete manifests."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire", schema_version=2)
+    manifest = {
+        "status": "complete",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+        "missing_fields": [],
+        "errors": [],
+    }
+    manifest[contradictory_field] = value
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
+    assert not capture_manifest_allows_training(manifest, exchange_count=1)
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+@pytest.mark.parametrize(
+    ("contradictory_field", "value"),
+    [
+        ("capture_fidelity", "agent_session"),
+        ("request_complete", False),
+        ("response_complete", False),
+        ("payload_redacted", False),
+        ("role_attribution_complete", False),
+        ("capture_source", "codex_native_session"),
+        ("auth_mode", "oauth_subscription"),
+    ],
+)
+def test_schema_v2_row_cannot_contradict_training_manifest(
+    tmp_path: Path, contradictory_field: str, value: str | bool
+) -> None:
+    """Guards PR #1057 against trusting a sidecar over contradictory rows."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        schema_version=2,
+    )
+    exchange = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "litellm_proxy",
+            "auth_mode": "api_key",
+            "payload_redacted": True,
+            "role_attribution_complete": True,
+            "role": "agent",
+            "agent": "codex-acp",
+        }
+    )
+    manifest = {
+        "status": "complete",
+        "capture_source": "litellm_proxy",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+        "missing_fields": [],
+        "errors": [],
+        "role_captures": [
+            {
+                "role": "agent",
+                "agent": "codex-acp",
+                "auth_mode": "api_key",
+                "capture_source": "litellm_proxy",
+                "capture_fidelity": "provider_wire",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        ],
+    }
+
+    assert capture_artifact_allows_training(manifest, exchanges=[exchange])
+    manifest_without_roles = json.loads(json.dumps(manifest))
+    manifest_without_roles["role_captures"] = []
+    assert not capture_artifact_allows_training(
+        manifest_without_roles, exchanges=[exchange]
+    )
+    manifest_with_wrong_attribution = json.loads(json.dumps(manifest))
+    manifest_with_wrong_attribution["role_captures"][0]["agent"] = "claude-agent-acp"
+    assert capture_manifest_allows_training(
+        manifest_with_wrong_attribution, exchange_count=1
+    )
+    assert not capture_artifact_allows_training(
+        manifest_with_wrong_attribution, exchanges=[exchange]
+    )
+    exchange["metadata"][contradictory_field] = value
+    assert not capture_artifact_allows_training(manifest, exchanges=[exchange])
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(exchange) + "\n", encoding="utf-8"
+    )
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    row = _build_results_row(tmp_path, agent_result={"total_tokens": 2})
+    assert row["info"]["training_ready"] is False
+    assert row["is_completed"] is False
+
+
+@pytest.mark.parametrize(
+    ("role_field", "value"),
+    [
+        ("capture_source", "codex_native_session"),
+        ("capture_fidelity", "agent_session"),
+        ("exchange_count", 0),
+        ("request_complete", False),
+        ("response_complete", False),
+    ],
+)
+def test_role_capture_cannot_contradict_training_manifest(
+    tmp_path: Path, role_field: str, value: str | int | bool
+) -> None:
+    """Guards PR #1057 against training on contradictory role provenance."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        schema_version=2,
+    )
+    exchange = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    exchange["metadata"].update(
+        {
+            "capture_source": "litellm_proxy",
+            "auth_mode": "api_key",
+            "payload_redacted": True,
+        }
+    )
+    manifest = {
+        "status": "complete",
+        "capture_source": "litellm_proxy",
+        "capture_fidelity": "provider_wire",
+        "auth_mode": "api_key",
+        "exchange_count": 1,
+        "request_complete": True,
+        "response_complete": True,
+        "payload_redacted": True,
+        "missing_fields": [],
+        "errors": [],
+        "role_captures": [
+            {
+                "role": "agent",
+                "agent": "codex-acp",
+                "auth_mode": "api_key",
+                "capture_source": "litellm_proxy",
+                "capture_fidelity": "provider_wire",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        ],
+    }
+    manifest["role_captures"][0][role_field] = value
+
+    assert not capture_manifest_allows_training(manifest, exchange_count=1)
+    assert not capture_artifact_allows_training(manifest, exchanges=[exchange])
+
+
+def test_provider_capture_without_positive_usage_is_not_training_ready(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on provider rows with zero token evidence."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(
+        trajectory_dir,
+        fidelity="provider_wire",
+        include_usage=False,
+    )
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "capture_fidelity": "provider_wire",
+                "auth_mode": "api_key",
+                "exchange_count": 1,
+                "request_complete": True,
+                "response_complete": True,
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "unavailable", "total_tokens": 0},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is False
+
+
+def test_mixed_oauth_audit_capture_preserves_successful_completion(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against turning successful mixed-auth runs into errors."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="provider_wire")
+    provider_row = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    provider_row["metadata"].update(
+        {
+            "capture_source": "litellm_proxy",
+            "auth_mode": "api_key",
+            "role": "coder",
+            "agent": "codex-acp",
+        }
+    )
+    oauth_row = json.loads(json.dumps(provider_row))
+    oauth_row["metadata"].update(
+        {
+            "capture_fidelity": "agent_session",
+            "capture_source": "claude_native_session",
+            "auth_mode": "oauth_subscription",
+            "request_complete": False,
+            "response_complete": False,
+            "role": "reviewer",
+            "agent": "claude-agent-acp",
+        }
+    )
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(provider_row) + "\n" + json.dumps(oauth_row) + "\n"
+    )
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_fidelity": "mixed",
+                "auth_mode": "mixed",
+                "exchange_count": 2,
+                "request_complete": False,
+                "response_complete": True,
+                "missing_fields": [
+                    "headers",
+                    "provider_response_envelope",
+                    "system_prompt",
+                    "tool_definitions",
+                ],
+                "role_captures": [
+                    {
+                        "role": "coder",
+                        "agent": "codex-acp",
+                        "auth_mode": "api_key",
+                        "capture_source": "litellm_proxy",
+                        "capture_fidelity": "provider_wire",
+                        "exchange_count": 1,
+                        "request_complete": True,
+                        "response_complete": True,
+                    },
+                    {
+                        "role": "reviewer",
+                        "agent": "claude-agent-acp",
+                        "auth_mode": "oauth_subscription",
+                        "capture_source": "claude_native_session",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": False,
+                    },
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is True
+    assert row["error"] is None
+
+    manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
+    healthy_manifest = json.loads(manifest_path.read_text())
+    unhealthy_manifest = json.loads(json.dumps(healthy_manifest))
+    unhealthy_manifest["missing_fields"].append("token_usage")
+    manifest_path.write_text(json.dumps(unhealthy_manifest))
+
+    unhealthy_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert unhealthy_row["info"]["training_ready"] is False
+    assert unhealthy_row["is_completed"] is False
+    assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
+
+    cross_role_manifest = json.loads(json.dumps(healthy_manifest))
+    cross_role_manifest["missing_fields"] = [
+        "headers",
+        "provider_response",
+        "provider_response_envelope",
+        "system_prompt",
+        "tool_definitions",
+    ]
+    cross_role_manifest["role_captures"][0]["response_complete"] = False
+    manifest_path.write_text(json.dumps(cross_role_manifest))
+
+    cross_role_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert cross_role_row["info"]["training_ready"] is False
+    assert cross_role_row["is_completed"] is False
+    assert cross_role_row["error"]["error"] == "missing_llm_trajectory"
+
+    omitted_role_manifest = json.loads(json.dumps(healthy_manifest))
+    omitted_role_manifest["role_captures"].pop(0)
+    manifest_path.write_text(json.dumps(omitted_role_manifest))
+
+    omitted_role_row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert omitted_role_row["info"]["training_ready"] is False
+    assert omitted_role_row["is_completed"] is False
+    assert omitted_role_row["error"]["error"] == "missing_llm_trajectory"
+
+
+def test_mixed_replay_capture_preserves_successful_completion(tmp_path: Path) -> None:
+    """Guards PR #1057 against marking successful continuations incomplete."""
+
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    _write_exchange(trajectory_dir, fidelity="agent_session")
+    replay_row = json.loads((trajectory_dir / "llm_trajectory.jsonl").read_text())
+    replay_row["metadata"].update(
+        {
+            "capture_source": "replay_proxy",
+            "request_capture_source": "replay_proxy_ingress",
+            "auth_mode": "api_key",
+            "request_complete": False,
+            "role": "agent",
+            "agent": "openhands",
+            "model": "openai/gpt-5.6",
+        }
+    )
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(json.dumps(replay_row) + "\n")
+    (trajectory_dir / "llm_trajectory.manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "partial",
+                "capture_source": "mixed",
+                "capture_fidelity": "mixed",
+                "auth_mode": "api_key",
+                "exchange_count": 1,
+                "request_complete": False,
+                "response_complete": True,
+                "missing_fields": ["live_provider_request"],
+                "errors": [REPLAY_PROXY_INGRESS_AUDIT_ERROR],
+                "role_captures": [
+                    {
+                        "role": "agent",
+                        "leg": "live",
+                        "agent": "openhands",
+                        "model": "openai/gpt-5.6",
+                        "auth_mode": "api_key",
+                        "capture_source": "replay_proxy",
+                        "capture_fidelity": "agent_session",
+                        "exchange_count": 1,
+                        "request_complete": False,
+                        "response_complete": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "insufficient_capture_fidelity"
+    assert row["is_completed"] is True
+    assert row["error"] is None
+
+    manifest_path = trajectory_dir / "llm_trajectory.manifest.json"
+    healthy_manifest = json.loads(manifest_path.read_text())
+    repeated_manifest = json.loads(json.dumps(healthy_manifest))
+    repeated_manifest["exchange_count"] = 2
+    repeated_manifest["errors"].append(CONTINUATION_SOURCE_AUDIT_ERROR)
+    repeated_manifest["role_captures"][0]["leg"] = "recorded"
+    live_role = json.loads(json.dumps(repeated_manifest["role_captures"][0]))
+    live_role["leg"] = "live"
+    repeated_manifest["role_captures"].append(live_role)
+    assert capture_manifest_preserves_audit_completion(repeated_manifest) is True
+
+    repeated_manifest["role_captures"][0]["leg"] = "live"
+    assert capture_manifest_preserves_audit_completion(repeated_manifest) is False
+
+    for field, value in (
+        ("missing_fields", "token_usage"),
+        ("errors", "live attempt journal mismatch"),
+    ):
+        unhealthy_manifest = json.loads(json.dumps(healthy_manifest))
+        unhealthy_manifest[field].append(value)
+        manifest_path.write_text(json.dumps(unhealthy_manifest))
+
+        unhealthy_row = _build_results_row(
+            tmp_path,
+            agent_result={"usage_source": "provider_response", "total_tokens": 2},
+        )
+
+        assert unhealthy_row["info"]["training_ready"] is False
+        assert unhealthy_row["is_completed"] is False
+        assert unhealthy_row["error"]["error"] == "missing_llm_trajectory"
+
+
+@pytest.mark.asyncio
+async def test_provider_finalization_error_rejects_complete_live_prefix(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1057 against training on a truncated provider prefix."""
+
+    capture = LLMTrajectoryCapture(
+        tmp_path,
+        agent="codex-acp",
+        model="gpt-5.6",
+        session_id="rollout-1",
+        started_at=datetime(2026, 8, 29, tzinfo=UTC),
+    )
+    capture.configure({"OPENAI_API_KEY": "test-key"})
+    _write_exchange(tmp_path / "trajectory", fidelity="provider_wire")
+
+    await capture.finalize(
+        None,
+        acp_events=[],
+        model_call_seen=True,
+        capture_errors=["provider runtime stop or remote capture import failed"],
+    )
+
+    manifest = json.loads(
+        (tmp_path / "trajectory" / "llm_trajectory.manifest.json").read_text()
+    )
+    assert manifest["status"] == "partial"
+    assert manifest["exchange_count"] == 1
+    assert manifest["errors"] == [
+        "provider runtime stop or remote capture import failed"
+    ]
+    row = _build_results_row(
+        tmp_path,
+        agent_result={"usage_source": "provider_response", "total_tokens": 2},
+    )
+    assert row["info"]["training_ready"] is False
+    assert row["is_completed"] is False

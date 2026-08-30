@@ -55,6 +55,7 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
     session = ACPSession("session-1")
     rollout = Rollout.__new__(Rollout)
     rollout._session = session
+    rollout._current_usage_is_native_subscription = True
     rollout._native_usage_checkpoint = None
 
     session.record_prompt_usage(
@@ -93,17 +94,46 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
     }
 
 
-def test_rollout_provider_usage_wins_over_native_acp_usage():
-    """Guards PR #613 follow-up: LiteLLM provider telemetry remains authoritative."""
+def test_rollout_provider_acp_usage_is_not_double_counted_as_native():
+    """Guards PR #1057 review r3888606859 against mixed-source duplication."""
+    from benchflow.acp.session import ACPSession
+    from benchflow.rollout import Rollout, _zero_native_acp_usage_metrics
+
+    session = ACPSession("session-1")
+    session.record_prompt_usage(
+        SimpleNamespace(
+            input_tokens=10,
+            output_tokens=4,
+            total_tokens=14,
+            cached_read_tokens=0,
+            cached_write_tokens=0,
+            thought_tokens=0,
+        )
+    )
+    rollout = Rollout.__new__(Rollout)
+    rollout._session = session
+    rollout._current_usage_is_native_subscription = False
+    rollout._native_usage_metrics = _zero_native_acp_usage_metrics()
+    rollout._native_usage_checkpoint = None
+
+    rollout._collect_native_acp_usage()
+
+    assert rollout._native_usage_metrics["usage_source"] == "unavailable"
+    assert rollout._native_usage_metrics["total_tokens"] == 0
+    assert rollout._native_usage_checkpoint is None
+
+
+def test_rollout_mixed_auth_sums_provider_and_native_acp_usage():
+    """Guards PR #1057 review r3888606859 against dropping OAuth usage."""
     from benchflow.rollout import Rollout
 
     rollout = Rollout.__new__(Rollout)
     rollout._usage_metrics = {
         "n_input_tokens": 100,
         "n_output_tokens": 20,
-        "n_cache_read_tokens": 0,
-        "n_cache_creation_tokens": 0,
-        "total_tokens": 120,
+        "n_cache_read_tokens": 4,
+        "n_cache_creation_tokens": 2,
+        "total_tokens": 126,
         "cost_usd": 0.01,
         "usage_source": "provider_response",
         "price_source": "litellm",
@@ -111,19 +141,67 @@ def test_rollout_provider_usage_wins_over_native_acp_usage():
     rollout._native_usage_metrics = {
         "n_input_tokens": 10,
         "n_output_tokens": 5,
-        "n_cache_read_tokens": 0,
-        "n_cache_creation_tokens": 0,
-        "total_tokens": 15,
+        "n_cache_read_tokens": 3,
+        "n_cache_creation_tokens": 1,
+        "total_tokens": 19,
         "cost_usd": None,
         "usage_source": "agent_native_acp",
         "price_source": None,
-        "usage_details": {"thought_tokens": 0},
+        "usage_details": {"thought_tokens": 2},
     }
 
     rollout._finalize_usage_metrics()
 
-    assert rollout._usage_metrics["usage_source"] == "provider_response"
-    assert rollout._usage_metrics["total_tokens"] == 120
+    assert rollout._usage_metrics == {
+        "n_input_tokens": 110,
+        "n_output_tokens": 25,
+        "n_cache_read_tokens": 7,
+        "n_cache_creation_tokens": 3,
+        "total_tokens": 145,
+        "cost_usd": None,
+        "usage_source": "mixed",
+        "price_source": None,
+        "usage_details": {
+            "thought_tokens": 2,
+            "source_breakdown": {
+                "provider_response": {
+                    "n_input_tokens": 100,
+                    "n_output_tokens": 20,
+                    "n_cache_read_tokens": 4,
+                    "n_cache_creation_tokens": 2,
+                    "total_tokens": 126,
+                    "cost_usd": 0.01,
+                    "price_source": "litellm",
+                },
+                "agent_native_acp": {
+                    "n_input_tokens": 10,
+                    "n_output_tokens": 5,
+                    "n_cache_read_tokens": 3,
+                    "n_cache_creation_tokens": 1,
+                    "total_tokens": 19,
+                    "usage_details": {"thought_tokens": 2},
+                },
+            },
+        },
+    }
+
+    first_finalization = rollout._usage_metrics
+    rollout._finalize_usage_metrics()
+    assert rollout._usage_metrics is first_finalization
+
+
+def test_mixed_usage_metadata_reports_both_endpoint_kinds():
+    """Guards PR #1057 review r3888606859 for explicit mixed provenance."""
+    from benchflow.usage_tracking import UsageTrackingConfig
+
+    metadata = UsageTrackingConfig(mode="required").to_result_metadata(
+        environment="docker",
+        status="enabled",
+        usage_source="mixed",
+    )
+
+    assert metadata["usage_source"] == "mixed"
+    assert metadata["endpoint_kind"] == "mixed"
 
 
 def test_required_usage_accepts_native_acp_usage(tmp_path):

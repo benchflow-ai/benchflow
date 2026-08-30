@@ -17,16 +17,18 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
 import yaml
 
 from benchflow._utils.text import describe_exception
-from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.codex_config import apply_codex_proxy_config
+from benchflow.agents.credentials import isolate_agent_for_proxy_capture
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_bedrock_preflight import (
@@ -35,6 +37,15 @@ from benchflow.providers.litellm_bedrock_preflight import (
     preflight_host_bedrock_patch,
     preflight_sandbox_bedrock_patch,
     route_requires_bedrock_patch,
+)
+from benchflow.providers.litellm_capture_custody import (
+    provider_capture_has_verified_custody as _provider_capture_has_verified_custody,
+)
+from benchflow.providers.litellm_capture_lifecycle import (
+    LITELLM_CAPTURE_STATE_ENV,
+    capture_journal_error,
+    drain_host_process,
+    drain_sandbox_process,
 )
 from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
@@ -50,8 +61,10 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.files import upload_private_text
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
+from benchflow.trajectories.redaction import canonical_redaction_module_source
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -63,6 +76,10 @@ logger = logging.getLogger(__name__)
 LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
+_REDACTION_MODULE = "benchflow_trajectory_redaction"
+_LITELLM_REQUESTED_MODEL_ENV = "BENCHFLOW_LITELLM_REQUESTED_MODEL"
+_LITELLM_AGENT_ENV = "BENCHFLOW_LITELLM_AGENT"
+_LITELLM_ROLE_ENV = "BENCHFLOW_LITELLM_ROLE"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 
 # The proxy is an internal single-route gateway — it must never register the
@@ -73,6 +90,9 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # it's ignored) and `NO_DOCS=true` so the docs route is skipped regardless of the
 # inherited environment.
 _PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
+_CONTAINER_HOST_ALIASES = frozenset(
+    {"host.docker.internal", "gateway.docker.internal", "host.containers.internal"}
+)
 _SKILL_CATALOG_GATE_AGENT_ENV = "BENCHFLOW_SKILL_CATALOG_GATE_AGENT"
 _REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
 # Live callback-log capture budgets. The reader tails the gateway's
@@ -373,7 +393,9 @@ class LiteLLMProcess:
         with contextlib.suppress(Exception):
             await self._capture_live_records()
 
-    def _reconcile_live_capture(self) -> None:
+    def reconcile_live_capture(self) -> None:
+        """Publish this runtime's final snapshot without dropping prior runtimes."""
+
         writer = getattr(self, "_live_writer", None)
         if writer is not None:
             writer.reconcile(self.trajectory)
@@ -405,12 +427,14 @@ class HostLiteLLMProcess(LiteLLMProcess):
         stderr_path: Path,
         session_id: str,
         agent_name: str,
+        capture_state_path: Path,
     ) -> None:
         self.route = route
         self.process = process
         self.runtime_dir = runtime_dir
         self.endpoint = endpoint
         self.log_path = log_path
+        self.capture_state_path = capture_state_path
         self.stdout_path = stdout_path
         self.stderr_path = stderr_path
         self.session_id = session_id
@@ -425,19 +449,22 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return self.process.poll() is None
 
     async def stop(self) -> None:
+        drain_error = await drain_host_process(self.process)
         await self._stop_live_capture()
         await _await_log_stable(self._log_size)
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                await asyncio.to_thread(self.process.wait, 10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                await asyncio.to_thread(self.process.wait, 10)
         self._load_callback_log()
-        self._reconcile_live_capture()
+        self.reconcile_live_capture()
+        trajectory = self.trajectory
+        assert trajectory is not None
+        journal_error = capture_journal_error(
+            self._load_capture_state(),
+            exchange_count=len(trajectory.exchanges),
+        )
         with contextlib.suppress(Exception):
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
+        error = drain_error or journal_error
+        if error is not None:
+            raise RuntimeError(error)
 
     def _log_size(self) -> int:
         try:
@@ -474,6 +501,13 @@ class HostLiteLLMProcess(LiteLLMProcess):
             agent_name=self.agent_name,
         )
 
+    def _load_capture_state(self) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(self.capture_state_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def log_tail(self) -> str:
         chunks: list[str] = []
         for label, path in (("stdout", self.stdout_path), ("stderr", self.stderr_path)):
@@ -498,12 +532,14 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         stderr_path: str,
         session_id: str,
         agent_name: str,
+        capture_state_path: str,
     ) -> None:
         self.sandbox = sandbox
         self.route = route
         self.runtime_dir = runtime_dir
         self.endpoint = endpoint
         self.log_path = log_path
+        self.capture_state_path = capture_state_path
         self.pid_path = pid_path
         self.stdout_path = stdout_path
         self.stderr_path = stderr_path
@@ -527,23 +563,27 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
+        drain_error = await drain_sandbox_process(
+            self.sandbox,
+            pid_path=self.pid_path,
+        )
         await self._stop_live_capture()
         await _await_log_stable(self._remote_log_size)
-        with contextlib.suppress(Exception):
-            await self.sandbox.exec(
-                (
-                    f"if [ -s {shlex.quote(self.pid_path)} ]; then "
-                    f"kill -TERM $(cat {shlex.quote(self.pid_path)}) 2>/dev/null || true; "
-                    "fi"
-                ),
-                timeout_sec=10,
-            )
         await self._load_callback_log()
-        self._reconcile_live_capture()
+        self.reconcile_live_capture()
+        trajectory = self.trajectory
+        assert trajectory is not None
+        journal_error = capture_journal_error(
+            await self._load_capture_state(),
+            exchange_count=len(trajectory.exchanges),
+        )
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10
             )
+        error = drain_error or journal_error
+        if error is not None:
+            raise RuntimeError(error)
 
     async def _remote_log_size(self) -> int:
         with contextlib.suppress(Exception):
@@ -629,6 +669,19 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             session_id=self.session_id,
             agent_name=self.agent_name,
         )
+
+    async def _load_capture_state(self) -> dict[str, Any] | None:
+        result = await self.sandbox.exec(
+            f"cat {shlex.quote(self.capture_state_path)} 2>/dev/null || true",
+            timeout_sec=15,
+        )
+        if result.return_code != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout or "")
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     async def log_tail(self) -> str:
         chunks: list[str] = []
@@ -746,6 +799,35 @@ def _host_bind_address(environment: str) -> str:
     return address
 
 
+def _route_for_host_proxy(route: LiteLLMRoute, environment: str) -> LiteLLMRoute:
+    """Translate container-view host aliases for a host-owned proxy.
+
+    Before provider capture became mandatory, a Docker agent used names such as
+    ``host.docker.internal`` to reach a provider running on the host. The
+    always-on host LiteLLM process must instead use host loopback; those Docker
+    DNS aliases are often deliberately undefined in the host resolver.
+    """
+
+    if environment != "docker":
+        return route
+    api_base = route.litellm_params.get("api_base")
+    if not isinstance(api_base, str):
+        return route
+    parsed = urlsplit(api_base)
+    if (
+        parsed.hostname not in _CONTAINER_HOST_ALIASES
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return route
+    netloc = "127.0.0.1"
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    params = dict(route.litellm_params)
+    params["api_base"] = urlunsplit(parsed._replace(netloc=netloc))
+    return replace(route, litellm_params=params)
+
+
 def _agent_endpoint_for_environment(
     port: int, environment: str, bind: str
 ) -> LiteLLMEndpoint:
@@ -766,15 +848,26 @@ def _write_runtime_files(
     config: dict[str, object],
 ) -> tuple[Path, Path, Path]:
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir.chmod(0o700)
     callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
+    redaction_path = runtime_dir / f"{_REDACTION_MODULE}.py"
     patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
+    redaction_path.write_text(canonical_redaction_module_source())
     patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
     sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    for path in (
+        callback_path,
+        redaction_path,
+        patch_path,
+        sitecustomize_path,
+        config_path,
+    ):
+        path.chmod(0o600)
     return config_path, callback_path, patch_path
 
 
@@ -839,9 +932,11 @@ async def _start_host_litellm(
     environment: str,
     session_id: str,
     agent_name: str,
+    role_name: str | None = None,
 ) -> HostLiteLLMProcess:
     runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-litellm-"))
     log_path = runtime_dir / "callback.jsonl"
+    capture_state_path = runtime_dir / "capture_state.json"
     stdout_path = runtime_dir / "stdout.log"
     stderr_path = runtime_dir / "stderr.log"
     port = _find_free_port()
@@ -855,6 +950,11 @@ async def _start_host_litellm(
             "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+            LITELLM_CAPTURE_STATE_ENV: str(capture_state_path),
+            LITELLM_MODEL_ALIAS_ENV: route.model_alias,
+            _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
+            _LITELLM_AGENT_ENV: agent_name,
+            _LITELLM_ROLE_ENV: role_name or "primary",
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -886,6 +986,7 @@ async def _start_host_litellm(
         runtime_dir=runtime_dir,
         endpoint=_agent_endpoint_for_environment(port, environment, bind),
         log_path=log_path,
+        capture_state_path=capture_state_path,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         session_id=session_id,
@@ -928,6 +1029,8 @@ import socket
 import subprocess
 import sys
 
+os.umask(0o077)
+
 # Read launch config from a file (argv[1]), never the command line: provider
 # keys live in cfg["env"], and a shared sandbox exposes exec argv via /proc.
 cfg = json.loads(open(sys.argv[1], encoding="utf-8").read())
@@ -964,19 +1067,6 @@ print(json.dumps({"pid": proc.pid, "port": port}))
 """
 
 
-async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False) as tmp:
-        tmp.write(text)
-        tmp_path = Path(tmp.name)
-    try:
-        # Runtime files carry the provider environment and proxy master key;
-        # ``mode`` is part of the sandbox protocol, so every backend either
-        # honors it or fails loudly — never a silently world-readable secret.
-        await sandbox.upload_file(tmp_path, target_path, mode="600")
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
 async def _upload_runtime_files_to_sandbox(
     sandbox: Any,
     *,
@@ -986,37 +1076,66 @@ async def _upload_runtime_files_to_sandbox(
     paths = {
         "config": f"{runtime_dir}/config.yaml",
         "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
+        "redaction": f"{runtime_dir}/{_REDACTION_MODULE}.py",
         "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
         "stdout": f"{runtime_dir}/stdout.log",
         "stderr": f"{runtime_dir}/stderr.log",
         "log": f"{runtime_dir}/callback.jsonl",
+        "capture_state": f"{runtime_dir}/capture_state.json",
         "pid": f"{runtime_dir}/litellm.pid",
         "state": f"{runtime_dir}/state.json",
         "venv": f"{runtime_dir}/venv",
         "launch_config": f"{runtime_dir}/launch_config.json",
         "preflight": f"{runtime_dir}/bedrock_patch_preflight.py",
     }
-    result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
+    quoted_runtime_dir = shlex.quote(runtime_dir)
+    result = await sandbox.exec(
+        (
+            f"umask 077; mkdir -p {quoted_runtime_dir}; "
+            f"chown 0:0 {quoted_runtime_dir}; chmod 700 {quoted_runtime_dir}"
+        ),
+        user="root",
+        timeout_sec=20,
+    )
     if result.return_code != 0:
         raise RuntimeError(_exec_details("prepare LiteLLM runtime directory", result))
-    await _upload_text(
-        sandbox, yaml.safe_dump(config, sort_keys=False), paths["config"], ".yaml"
+    await upload_private_text(
+        sandbox,
+        yaml.safe_dump(config, sort_keys=False),
+        paths["config"],
+        suffix=".yaml",
     )
-    await _upload_text(sandbox, callback_module_source(), paths["callback"], ".py")
-    await _upload_text(
+    await upload_private_text(
+        sandbox, callback_module_source(), paths["callback"], suffix=".py"
+    )
+    await upload_private_text(
+        sandbox,
+        canonical_redaction_module_source(),
+        paths["redaction"],
+        suffix=".py",
+    )
+    await upload_private_text(
         sandbox,
         Path(__file__).with_name("litellm_bedrock_patch.py").read_text(),
         paths["patch"],
-        ".py",
+        suffix=".py",
     )
-    await _upload_text(
-        sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
+    await upload_private_text(
+        sandbox,
+        f"import {_PATCH_MODULE}\n",
+        paths["sitecustomize"],
+        suffix=".py",
     )
-    await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
-    await _upload_text(
-        sandbox, BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
+    await upload_private_text(
+        sandbox, _sandbox_launcher_source(), paths["launcher"], suffix=".py"
+    )
+    await upload_private_text(
+        sandbox,
+        BEDROCK_PATCH_PREFLIGHT_SOURCE,
+        paths["preflight"],
+        suffix=".py",
     )
     return paths
 
@@ -1143,10 +1262,13 @@ async def _terminate_sandbox_litellm(
         await sandbox.exec(
             f"if [ -s {shlex.quote(pid_path)} ]; then "
             f"kill -TERM $(cat {shlex.quote(pid_path)}) 2>/dev/null || true; fi",
+            user="root",
             timeout_sec=10,
         )
     with contextlib.suppress(Exception):
-        await sandbox.exec(f"rm -rf {shlex.quote(runtime_dir)}", timeout_sec=10)
+        await sandbox.exec(
+            f"rm -rf {shlex.quote(runtime_dir)}", user="root", timeout_sec=10
+        )
 
 
 async def _start_sandbox_litellm(
@@ -1157,6 +1279,7 @@ async def _start_sandbox_litellm(
     agent_env: dict[str, str],
     session_id: str,
     agent_name: str,
+    role_name: str | None = None,
     install_timeout_sec: int = 600,
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
@@ -1176,6 +1299,11 @@ async def _start_sandbox_litellm(
             "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+            LITELLM_CAPTURE_STATE_ENV: paths["capture_state"],
+            LITELLM_MODEL_ALIAS_ENV: route.model_alias,
+            _LITELLM_REQUESTED_MODEL_ENV: route.requested_model,
+            _LITELLM_AGENT_ENV: agent_name,
+            _LITELLM_ROLE_ENV: role_name or "primary",
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -1189,21 +1317,27 @@ async def _start_sandbox_litellm(
         "state": paths["state"],
         "env": env,
     }
-    await _upload_text(
-        sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
+    await upload_private_text(
+        sandbox,
+        json.dumps(launch_config),
+        paths["launch_config"],
+        suffix=".json",
     )
     # The launcher reads launch_config.json (provider env + master key) at
     # startup; unlink it immediately afterwards so the secret does not sit in
     # the sandbox filesystem for the life of the run.
     command = (
         f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
-        f"{shlex.quote(paths['log'])} && "
+        f"{shlex.quote(paths['log'])} {shlex.quote(paths['capture_state'])} && "
+        f"umask 077 && : > {shlex.quote(paths['log'])} && "
+        f"chown 0:0 {shlex.quote(paths['log'])} && "
+        f"chmod 600 {shlex.quote(paths['log'])} && "
         f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
         f"{shlex.quote(paths['launch_config'])}; "
         f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
     )
     try:
-        result = await sandbox.exec(command, timeout_sec=20)
+        result = await sandbox.exec(command, user="root", timeout_sec=20)
         if result.return_code != 0:
             raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
         state = await _wait_for_sandbox_state(
@@ -1245,6 +1379,7 @@ async def _start_sandbox_litellm(
         runtime_dir=runtime_dir,
         endpoint=endpoint,
         log_path=paths["log"],
+        capture_state_path=paths["capture_state"],
         pid_path=paths["pid"],
         stdout_path=paths["stdout"],
         stderr_path=paths["stderr"],
@@ -1276,8 +1411,36 @@ def _missing_required_env(route: LiteLLMRoute, env: dict[str, str]) -> list[str]
     return missing
 
 
-def _provider_secret_env_names() -> set[str]:
-    """Upstream provider credentials the proxy owns and the agent must not see."""
+_PROVIDER_CREDENTIAL_ENV_EXACT = frozenset(
+    {
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "CODEX_AUTH_JSON",
+    }
+)
+_PROVIDER_CREDENTIAL_ENV_SUFFIXES = (
+    "_API_KEY",
+    "_AUTH_TOKEN",
+    "_ACCESS_TOKEN",
+    "_OAUTH_TOKEN",
+    "_BEARER_TOKEN",
+    "_AUTH_JSON",
+    "_CREDENTIALS_JSON",
+    "_SECRET_ACCESS_KEY",
+    "_SESSION_TOKEN",
+)
+
+
+def _looks_like_provider_credential_env(name: str) -> bool:
+    return name in _PROVIDER_CREDENTIAL_ENV_EXACT or name.endswith(
+        _PROVIDER_CREDENTIAL_ENV_SUFFIXES
+    )
+
+
+def _provider_secret_env_names(env: Mapping[str, object] | None = None) -> set[str]:
+    """Upstream provider credential aliases the agent must never receive."""
     from benchflow.agents.providers import PROVIDERS
 
     names = {
@@ -1287,13 +1450,43 @@ def _provider_secret_env_names() -> set[str]:
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON",
         "AWS_BEARER_TOKEN_BEDROCK",
         "AZURE_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_AUTH_JSON",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_OAUTH_TOKEN",
+        "LLM_API_KEY",
+        "BENCHFLOW_PROVIDER_API_KEY",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
             names.add(cfg.auth_env)
+    for cfg in AGENTS.values():
+        names.update(cfg.requires_env)
+        names.update(file.env_source for file in cfg.credential_files)
+        names.update(
+            destination
+            for source, destination in cfg.env_mapping.items()
+            if source == "BENCHFLOW_PROVIDER_API_KEY"
+        )
+        if cfg.subscription_auth is not None:
+            names.add(cfg.subscription_auth.replaces_env)
+    if env is not None:
+        names.update(name for name in env if _looks_like_provider_credential_env(name))
     return names
+
+
+def _provider_credentials_have_proxy_only_custody(route: LiteLLMRoute) -> bool:
+    """Whether no provider credential file is deliberately exposed to the agent."""
+
+    from benchflow.agents.providers import PROVIDERS
+
+    provider = PROVIDERS.get(route.provider_name)
+    return provider is None or not provider.credential_files
 
 
 def _provider_model_id(entry: object) -> str | None:
@@ -1378,7 +1571,7 @@ def _assert_proxy_isolated(agent: str, env: dict[str, str], *, master_key: str) 
     """
     leaked = sorted(
         name
-        for name in _provider_secret_env_names()
+        for name in _provider_secret_env_names(env)
         if env.get(name) and env.get(name) != master_key
     )
     if leaked:
@@ -1413,6 +1606,11 @@ def _litellm_proxy_env(
     *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    # These values describe the sandbox agent, not the LiteLLM process. A host
+    # proxy must retain its real host HOME; a sandbox-local proxy runs as root
+    # and likewise must not inherit the unprivileged agent's config root.
+    updated.pop("HOME", None)
+    updated.pop("BENCHFLOW_AGENT_HOME", None)
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     expected = sorted(set(required_skill_names))
@@ -1439,7 +1637,7 @@ def _wire_litellm_agent_env(
     # proxy process holds them via its own env. (In sandbox-local mode the proxy
     # shares the agent's sandbox, so this reduces — but cannot fully remove — key
     # visibility.)
-    for secret_key in _provider_secret_env_names():
+    for secret_key in _provider_secret_env_names(updated):
         updated.pop(secret_key, None)
     for endpoint_key in _PROVIDER_ENDPOINT_ENV_NAMES:
         updated.pop(endpoint_key, None)
@@ -1477,12 +1675,11 @@ def _wire_litellm_agent_env(
         updated["OPENAI_BASE_URL"] = openai_base_url
         updated["OPENAI_API_KEY"] = master_key
         updated[LITELLM_MODEL_VIA_ENV] = "1"
-        apply_codex_provider_config(
+        apply_codex_proxy_config(
             updated,
             base_url=openai_base_url,
             model=route.model_alias,
             provider_name="litellm",
-            strict=True,
         )
         return updated
     if agent == "opencode":
@@ -1584,6 +1781,8 @@ async def ensure_litellm_runtime(
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
     force_sandbox_local: bool = False,
+    role_name: str | None = None,
+    sandbox_user: str | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1629,6 +1828,8 @@ async def ensure_litellm_runtime(
                 "directly — register the provider/model or fix the route."
             ),
         )
+    if not sandbox_local:
+        route = _route_for_host_proxy(route, environment)
     missing = _missing_required_env(route, agent_env)
     if missing:
         missing_text = ", ".join(missing)
@@ -1642,6 +1843,14 @@ async def ensure_litellm_runtime(
             ),
         )
 
+    credential_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    agent_capture_isolated = await isolate_agent_for_proxy_capture(
+        sandbox,
+        agent=agent,
+        agent_env=agent_env,
+        cred_home=credential_home,
+    )
+
     master_key = (
         agent_env.get(LITELLM_MASTER_KEY_ENV)
         or f"sk-benchflow-{secrets.token_urlsafe(24)}"
@@ -1650,15 +1859,30 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
+    credentials_isolated = bool(
+        _provider_credentials_have_proxy_only_custody(route) and agent_capture_isolated
+    )
+    capture_trusted = not sandbox_local and credentials_isolated
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
-        f"{session_id}:{skill_gate_key}"
+        f"{session_id}:{role_name or 'primary'}:{sandbox_user or 'root'}:"
+        f"{skill_gate_key}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
         if getattr(runtime, "config_key", None) == config_key and server is not None:
             is_running = await server.is_running()
             if is_running:
+                if sandbox_local:
+                    artifact_custody = await _provider_capture_has_verified_custody(
+                        sandbox_user=sandbox_user,
+                        sandbox=sandbox,
+                        runtime_dir=getattr(server, "runtime_dir", None),
+                    )
+                    capture_trusted = credentials_isolated and artifact_custody
+                runtime.capture_trusted = bool(
+                    getattr(runtime, "capture_trusted", False) and capture_trusted
+                )
                 if live_trajectory_path is not None:
                     server.start_live_capture(live_trajectory_path)
                 return (
@@ -1687,6 +1911,7 @@ async def ensure_litellm_runtime(
                 agent_env=proxy_env,
                 session_id=session_id,
                 agent_name=agent,
+                role_name=role_name,
                 install_timeout_sec=max(600, int(sandbox_setup_timeout)),
             )
         else:
@@ -1697,6 +1922,7 @@ async def ensure_litellm_runtime(
                 environment=environment,
                 session_id=session_id,
                 agent_name=agent,
+                role_name=role_name,
             )
     except BedrockPatchPreflightError:
         raise
@@ -1710,6 +1936,14 @@ async def ensure_litellm_runtime(
             ),
         )
 
+    if sandbox_local:
+        artifact_custody = await _provider_capture_has_verified_custody(
+            sandbox_user=sandbox_user,
+            sandbox=sandbox,
+            runtime_dir=getattr(server, "runtime_dir", None),
+        )
+        capture_trusted = credentials_isolated and artifact_custody
+
     from benchflow.providers.runtime import ProviderRuntime
 
     new_runtime = ProviderRuntime(
@@ -1719,6 +1953,7 @@ async def ensure_litellm_runtime(
         server=server,
         config_key=config_key,
         master_key=master_key,
+        capture_trusted=capture_trusted,
     )
     if live_trajectory_path is not None:
         server.start_live_capture(live_trajectory_path)

@@ -37,10 +37,18 @@ from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
     sandbox_replay_base_url,
 )
+from benchflow.continue_run.trajectory_artifacts import (
+    refresh_stitched_trajectory_manifest,
+    write_stitched_trajectory,
+)
 from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
-from benchflow.trajectories.types import LLMExchange, redact_trajectory_text
+from benchflow.trajectories.llm_capture_manifest import (
+    LLMTrajectoryManifest,
+    read_llm_trajectory_manifest,
+)
+from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
 
@@ -253,37 +261,6 @@ class LiteLLMLiveForwarder:
         return dump() if callable(dump) else dict(response)
 
 
-def stitched_trajectory_lines(
-    original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
-) -> list[str]:
-    """Build the continuous llm_trajectory: recorded prefix + live suffix.
-
-    The recorded prefix is taken verbatim from the source file (already redacted
-    and byte-identical to what the agent replayed); the live suffix is the
-    exchanges the proxy captured after the cut-point, redacted on the way out.
-    """
-    lines: list[str] = []
-    if original_llm_trajectory.is_file():
-        for raw in original_llm_trajectory.read_text().splitlines():
-            if raw.strip():
-                lines.append(raw)
-    for exchange in live_exchanges:
-        raw = json.dumps(exchange.model_dump(mode="json"), default=str)
-        lines.append(redact_trajectory_text(raw))
-    return lines
-
-
-def write_stitched_trajectory(
-    rollout_dir: Path, original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
-) -> Path:
-    """Write the stitched continuous trajectory into the new rollout folder."""
-    out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    lines = stitched_trajectory_lines(original_llm_trajectory, live_exchanges)
-    out.write_text("\n".join(lines) + ("\n" if lines else ""))
-    return out
-
-
 def _usage_int(usage: dict[str, Any], *keys: str) -> int:
     for key in keys:
         value = usage.get(key)
@@ -359,10 +336,11 @@ def update_continued_metadata(
     HF-compatible artifacts still need the actual live model and token usage.
     The stitched LLM trajectory is authoritative for provider usage.
     """
+    attributed_model = _continued_attributed_model(rollout_dir, fallback=live_model)
     config_path = rollout_dir / "config.json"
     if config_path.is_file():
         config = json.loads(config_path.read_text())
-        config["model"] = live_model
+        config["model"] = attributed_model
         config.setdefault("source", {})["usage_source"] = "stitched_llm_trajectory"
         config["usage_tracking"] = {
             "requested": "required",
@@ -383,7 +361,7 @@ def update_continued_metadata(
     if not result_path.is_file():
         return
     result = json.loads(result_path.read_text())
-    result["model"] = live_model
+    result["model"] = attributed_model
     agent_result = result.setdefault("agent_result", {})
     if isinstance(agent_result, dict):
         agent_result.update(usage.as_agent_result_patch())
@@ -409,6 +387,39 @@ def update_continued_metadata(
             else usage_tracking.get("status", "off")
         )
     result_path.write_text(json.dumps(result, indent=2) + "\n")
+    from benchflow.trajectories.results import refresh_rollout_results_jsonl
+
+    refresh_rollout_results_jsonl(rollout_dir)
+
+
+def _continued_attributed_model(
+    rollout_dir: Path, *, fallback: str | None
+) -> str | None:
+    """Return the model represented by finalized continuation exchanges.
+
+    Legacy/direct callers without a valid manifest retain the requested-model
+    fallback. Once continuation finalization has written a valid manifest, its
+    active role captures are authoritative: a replay-only run must not claim a
+    requested live model that never produced an exchange, and a mixed-model
+    run must not collapse to either model.
+    """
+
+    raw = read_llm_trajectory_manifest(rollout_dir)
+    if raw is None:
+        return fallback
+    try:
+        manifest = LLMTrajectoryManifest.model_validate(raw)
+    except ValueError:
+        return fallback
+
+    active_models = {
+        capture.model
+        for capture in manifest.role_captures
+        if capture.exchange_count > 0
+    }
+    if active_models:
+        return next(iter(active_models)) if len(active_models) == 1 else None
+    return manifest.model
 
 
 def _host_proxy_binding(environment: str) -> tuple[str, str]:
@@ -434,7 +445,8 @@ async def _safe_sandbox_continuation_teardown(
     replay_proxy: SandboxReplayProxy | None,
     provider_runtime: Any | None,
     stop_provider_runtime: Callable[[Any], Awaitable[None]],
-    before_cleanup: Callable[[], Awaitable[None]] | None = None,
+    before_cleanup: Callable[[list[str]], Awaitable[None]] | None = None,
+    after_cleanup: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> list[str]:
     """Stop continuation sidecars but always let Rollout write final artifacts."""
     errors: list[str] = []
@@ -456,9 +468,11 @@ async def _safe_sandbox_continuation_teardown(
         rollout._error = "Continuation teardown warning: " + "; ".join(errors)
 
     if before_cleanup is not None:
-        await _capture("continuation artifact write", before_cleanup())
+        await _capture("continuation artifact write", before_cleanup(errors))
 
     await _capture("rollout cleanup", rollout.cleanup())
+    if after_cleanup is not None:
+        await _capture("continuation artifact finalization", after_cleanup(errors))
 
     return errors
 
@@ -561,13 +575,26 @@ async def continue_run(
         rollout_dir,
         run.path / "trajectory" / "llm_trajectory.jsonl",
         router.live_exchanges,
+        recorded_consumed_count=router.recorded_consumed_count,
+        live_model=live_model,
+    )
+    refresh_stitched_trajectory_manifest(
+        rollout_dir,
+        run.path,
+        original_model=run.model,
+        live_model=live_model,
+        n_recorded=run.n_recorded_exchanges,
+        n_recorded_consumed=router.recorded_consumed_count,
+        n_live=len(router.live_exchanges),
+        live_attempt_count=router.live_attempt_count,
+        live_errors=list(router.live_errors),
     )
     update_continued_metadata(
         rollout_dir,
         live_model=live_model,
         usage=summarize_llm_trajectory_usage(
             stitched_path,
-            n_recorded=run.n_recorded_exchanges,
+            n_recorded=router.recorded_consumed_count,
         ),
         environment=run.environment,
     )
@@ -576,7 +603,7 @@ async def continue_run(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=router.recorded_consumed_count,
         n_live=len(router.live_exchanges),
         divergences=router.divergences,
     )
@@ -609,6 +636,7 @@ async def _continue_run_with_sandbox_proxy(
         rollout_name=rollout_name,
     )
     rollout = await Rollout.create(config)
+    live_capture_host_owned = False
     replay_proxy: SandboxReplayProxy | None = None
     provider_runtime: Any | None = None
     result: Any | None = None
@@ -618,26 +646,67 @@ async def _continue_run_with_sandbox_proxy(
     live_exchanges: list[LLMExchange] = []
     artifacts_written = False
 
-    async def _write_artifacts_before_cleanup() -> None:
-        nonlocal artifacts_written, live_exchanges, result, rollout_dir
-        if artifacts_written:
+    async def _write_artifacts(
+        teardown_errors: list[str] | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        nonlocal \
+            artifacts_written, \
+            live_capture_host_owned, \
+            live_exchanges, \
+            result, \
+            rollout_dir
+        if artifacts_written and not force:
             return
         result = _result_after_sandbox_teardown(rollout)
         if result is None:
             return
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
+        live_capture_host_owned = bool(
+            provider_runtime is not None
+            and getattr(provider_runtime, "capture_trusted", False)
+        )
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
         stitched_path = write_stitched_trajectory(
             rollout_dir,
             run.path / "trajectory" / "llm_trajectory.jsonl",
             live_exchanges,
+            recorded_consumed_count=(
+                replay_proxy.recorded_consumed_count if replay_proxy is not None else 0
+            ),
+            live_model=live_model,
+            live_capture_host_owned=live_capture_host_owned,
+        )
+        refresh_stitched_trajectory_manifest(
+            rollout_dir,
+            run.path,
+            original_model=run.model,
+            live_model=live_model,
+            n_recorded=run.n_recorded_exchanges,
+            n_recorded_consumed=(
+                replay_proxy.recorded_consumed_count if replay_proxy is not None else 0
+            ),
+            n_live=len(live_exchanges),
+            live_attempt_count=(
+                replay_proxy.live_attempt_count if replay_proxy is not None else 0
+            ),
+            live_errors=[
+                *(replay_proxy.live_errors if replay_proxy is not None else []),
+                *(teardown_errors or []),
+            ],
+            live_capture_host_owned=live_capture_host_owned,
         )
         update_continued_metadata(
             rollout_dir,
             live_model=live_model,
             usage=summarize_llm_trajectory_usage(
                 stitched_path,
-                n_recorded=run.n_recorded_exchanges,
+                n_recorded=(
+                    replay_proxy.recorded_consumed_count
+                    if replay_proxy is not None
+                    else 0
+                ),
             ),
             environment=run.environment,
         )
@@ -658,6 +727,7 @@ async def _continue_run_with_sandbox_proxy(
             session_id=rollout_name,
             usage_tracking="required",
             sandbox=rollout.env,
+            sandbox_user=config.sandbox_user,
         )
         replay_proxy = await SandboxReplayProxy.start(
             sandbox=rollout.env,
@@ -721,19 +791,23 @@ async def _continue_run_with_sandbox_proxy(
         rollout._error = str(exc)
         logger.error("Run failed", exc_info=True)
     finally:
+        # Snapshot once before cleanup while sandbox capture files still exist.
+        # Re-render atomically after cleanup only to attach teardown errors that
+        # were unknowable during the first pass; the final call below is a no-op.
         await _safe_sandbox_continuation_teardown(
             rollout=rollout,
             replay_proxy=replay_proxy,
             provider_runtime=provider_runtime,
             stop_provider_runtime=stop_provider_runtime,
-            before_cleanup=_write_artifacts_before_cleanup,
+            before_cleanup=_write_artifacts,
+            after_cleanup=lambda errors: _write_artifacts(errors, force=True),
         )
 
     if pending_acp_error is not None:
         rollout._error = rollout._classify_acp_error(pending_acp_error)
         logger.error(rollout._error)
 
-    await _write_artifacts_before_cleanup()
+    await _write_artifacts()
     if rollout_dir is None:
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
 
@@ -741,7 +815,9 @@ async def _continue_run_with_sandbox_proxy(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=(
+            replay_proxy.recorded_consumed_count if replay_proxy is not None else 0
+        ),
         n_live=len(live_exchanges),
         divergences=0,
     )

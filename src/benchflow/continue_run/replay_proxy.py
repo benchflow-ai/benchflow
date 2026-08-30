@@ -73,12 +73,35 @@ class ReplayRouter:
         self._lock = threading.Lock()
         self._cursor = 0
         self.divergences = 0
-        # Live-leg exchanges, in order, for stitching onto the recorded prefix.
-        self.live_exchanges: list[LLMExchange] = []
+        self.live_attempt_count = 0
+        self.live_errors: list[str] = []
+        # Provider calls can complete out of order. Retain the attempt sequence
+        # assigned at dispatch so stitching follows agent request order rather
+        # than response arrival order.
+        self._live_exchanges: list[tuple[int, LLMExchange]] = []
+
+    @property
+    def live_exchanges(self) -> list[LLMExchange]:
+        """Return captured live exchanges in provider-attempt order."""
+        with self._lock:
+            return [
+                exchange
+                for _, exchange in sorted(
+                    self._live_exchanges, key=lambda item: item[0]
+                )
+            ]
 
     @property
     def exhausted(self) -> bool:
-        return self._cursor >= len(self._recorded)
+        with self._lock:
+            return self._cursor >= len(self._recorded)
+
+    @property
+    def recorded_consumed_count(self) -> int:
+        """Return the recorded prefix actually served to the agent."""
+
+        with self._lock:
+            return min(self._cursor, len(self._recorded))
 
     def _check_divergence(
         self, incoming: dict[str, Any], recorded_req: dict[str, Any]
@@ -115,9 +138,12 @@ class ReplayRouter:
                 )
             # Past the cut-point: live continuation.
             self._cursor += 1
+            self.live_attempt_count += 1
+            live_attempt = self.live_attempt_count
             forwarder = self._live_forwarder
 
         if forwarder is None:
+            self.live_errors.append("live continuation had no configured forwarder")
             logger.error(
                 "recorded responses exhausted at turn %d and no live forwarder "
                 "is configured — returning an error to the agent.",
@@ -137,15 +163,26 @@ class ReplayRouter:
                 },
             )
 
-        body = forwarder(request_body)
+        try:
+            body = forwarder(request_body)
+        except Exception:
+            self.live_errors.append(
+                "live provider request failed before a response could be captured"
+            )
+            raise
         # Capture the live exchange so the caller can stitch a continuous
         # llm_trajectory.jsonl (recorded prefix + live suffix).
-        self.live_exchanges.append(
-            LLMExchange(
-                request=LLMRequest(body=request_body),
-                response=LLMResponse(status_code=200, body=body),
+        with self._lock:
+            self._live_exchanges.append(
+                (
+                    live_attempt,
+                    LLMExchange(
+                        request=LLMRequest(body=request_body),
+                        response=LLMResponse(status_code=200, body=body),
+                        metadata={"continuation_attempt": live_attempt},
+                    ),
+                )
             )
-        )
         return ReplayResult(source="live", status=200, body=body)
 
 

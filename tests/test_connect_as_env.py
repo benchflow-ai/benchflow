@@ -32,6 +32,20 @@ def _make_config(agent_env=None, role_env=None):
 class TestConnectAsEnvMerge:
     """Verify connect_as() merges cfg.agent_env with role.env correctly."""
 
+    def test_primary_setup_env_includes_role_scoped_credentials(self):
+        """Guards PR #1057 mixed-auth setup against requiring global secrets."""
+
+        config = _make_config(
+            agent_env={"GLOBAL": "yes", "SHARED": "config"},
+            role_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth", "SHARED": "role"},
+        )
+
+        assert config.primary_env == {
+            "GLOBAL": "yes",
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+            "SHARED": "role",
+        }
+
     @pytest.fixture()
     def _mock_trial(self, tmp_path):
         """Return a Rollout stub wired to capture the agent_env passed to connect_acp."""
@@ -166,3 +180,34 @@ class TestConnectAsEnvMerge:
         args, _kwargs = _mock_trial._planes.write_credential_files.await_args
         assert args[1] == "claude-agent-acp"
         assert args[4] == "other-model"
+
+    @pytest.mark.asyncio
+    async def test_same_primary_oauth_role_reuploads_cleaned_credentials(
+        self, _mock_trial
+    ):
+        """Guards PR #1057 review r3888704109 for OAuth -> API -> OAuth."""
+
+        role = Role(
+            name="primary",
+            agent="claude-agent-acp",
+            model="claude-sonnet-4-6",
+        )
+        _mock_trial._config.scenes[0].roles = [role]
+        native_env = {"_BENCHFLOW_SUBSCRIPTION_AUTH": "1"}
+        _mock_trial._planes.resolve_agent_env.side_effect = None
+        _mock_trial._planes.resolve_agent_env.return_value = dict(native_env)
+        _mock_trial._planes.ensure_litellm_runtime.return_value = (
+            dict(native_env),
+            None,
+        )
+
+        await _mock_trial.connect_as(role)
+
+        _mock_trial._planes.install_agent.assert_not_awaited()
+        _mock_trial._planes.write_credential_files.assert_awaited_once()
+        _mock_trial._planes.upload_subscription_auth.assert_awaited_once_with(
+            _mock_trial._env,
+            "claude-agent-acp",
+            "/home/agent",
+        )
+        _mock_trial._planes.apply_web_tool_policy.assert_awaited_once()

@@ -28,6 +28,7 @@ from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
+from benchflow.agents.opencode_config import opencode_provider_reset_command
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -70,6 +71,49 @@ _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
 _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+def _harden_proxy_agent_launch(
+    agent: str, agent_launch: str, agent_env: dict[str, str]
+) -> str:
+    """Insert agent-side config hardening after proxy selection."""
+
+    if not agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
+        return agent_launch
+    if agent == "opencode":
+        # OpenCode merges several global filenames, ~/.opencode, project and
+        # system-managed configs, arbitrary env file/directory/content sources,
+        # remote configs from auth/account state, and test-only path overrides.
+        # Proxy mode must expose exactly the manifest-owned config that the
+        # wrapper registers below. Pin every path to the canonical agent home,
+        # replace auth/account state with empty in-memory state, disable project
+        # discovery, and remove every alternate source before module import.
+        isolate_sources = (
+            "unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR "
+            "OPENCODE_CONFIG_CONTENT OPENCODE_AUTH_CONTENT OPENCODE_DB "
+            "OPENCODE_TEST_HOME OPENCODE_TEST_MANAGED_CONFIG_DIR "
+            "XDG_CONFIG_HOME && "
+            'export HOME="${BENCHFLOW_AGENT_HOME:-$HOME}" && '
+            'export XDG_CONFIG_HOME="$HOME/.config" && '
+            'export OPENCODE_AUTH_CONTENT="{}" && '
+            'export OPENCODE_DB=":memory:" && '
+            'export OPENCODE_TEST_HOME="$HOME" && '
+            "export OPENCODE_TEST_MANAGED_CONFIG_DIR="
+            '"$HOME/.config/opencode/benchflow-managed-disabled" && '
+            "export OPENCODE_DISABLE_PROJECT_CONFIG=1"
+        )
+        return (
+            f"{isolate_sources} && {opencode_provider_reset_command()} "
+            f"&& {agent_launch}"
+        )
+    if agent == "mimo":
+        # MiMo's manifest-owned launcher replaces both canonical config files
+        # in proxy mode, but the CLI also honors this arbitrary alternate path.
+        # Do not let an image-baked config bypass the capture proxy. Direct mode
+        # deliberately retains the override as part of the caller's provider
+        # configuration.
+        return f"unset MIMOCODE_CONFIG && {agent_launch}"
+    return agent_launch
 
 
 def _acp_handshake_timeout_sec() -> float:
@@ -609,6 +653,8 @@ async def connect_acp(
             parts[0] = full_path
             agent_launch = " ".join(parts)
             logger.info(f"Resolved agent path: {agent_launch}")
+
+    agent_launch = _harden_proxy_agent_launch(agent, agent_launch, agent_env)
 
     if sandbox_user:
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)

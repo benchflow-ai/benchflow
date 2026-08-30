@@ -229,7 +229,7 @@ class SubprocessLiveProcess(LiveProcess):
             msg = f"Process closed stdout (rc={rc}): {hint}"
             stderr_snippet: str | None = None
             if stderr_text:
-                from benchflow.trajectories.types import redact_trajectory_text
+                from benchflow.trajectories.redaction import redact_trajectory_text
 
                 stderr_snippet = redact_trajectory_text(stderr_text)[:_DIAG_TRUNCATE]
                 msg += f"\nstderr: {stderr_snippet}"
