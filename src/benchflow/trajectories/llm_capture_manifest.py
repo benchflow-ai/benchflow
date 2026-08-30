@@ -332,6 +332,7 @@ def _exchange_matches_training_manifest(
         or metadata.get("request_complete") is not True
         or metadata.get("response_complete") is not True
         or metadata.get("payload_redacted") is not True
+        or metadata.get("role_attribution_complete") is not True
     ):
         return False
 

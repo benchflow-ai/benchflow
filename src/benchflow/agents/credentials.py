@@ -5,6 +5,7 @@ Single home for "writes a file under the agent's credential dir":
     - write_credential_files  agent + provider credential files (cf. AgentConfig)
     - write_gemini_vertex_settings  ~/.gemini/settings.json for Vertex backend
     - upload_subscription_auth  host login files (e.g. ~/.claude/.credentials.json)
+    - isolate_subscription_auth_for_proxy  remove stale native login in API mode
 
 The Gemini Vertex settings helper lives here (not in _agent_env.py) so the
 module has a single coherent role and zero horizontal imports between phase
@@ -178,3 +179,52 @@ async def upload_subscription_auth(
             host_path,
             container_path,
         )
+
+
+async def isolate_subscription_auth_for_proxy(
+    env,
+    *,
+    agent: str,
+    cred_home: str,
+) -> bool:
+    """Remove the primary native-login credential before an API proxy run.
+
+    A reused image may already contain the CLI login detected by
+    ``SubscriptionAuth.detect_file``. API-key mode must not leave that alternate
+    provider route available to the agent. Return false unless the registry's
+    primary credential can be identified, removed, and verified absent.
+    """
+
+    agent_cfg = AGENTS.get(agent)
+    subscription_auth = agent_cfg.subscription_auth if agent_cfg else None
+    if subscription_auth is None:
+        return True
+    primary_files = [
+        auth_file
+        for auth_file in subscription_auth.files
+        if auth_file.host_path == subscription_auth.detect_file
+    ]
+    if len(primary_files) != 1 or env is None:
+        logger.warning(
+            "Cannot prove proxy isolation for %s subscription credentials", agent
+        )
+        return False
+
+    path = primary_files[0].container_path.format(home=cred_home)
+    quoted_path = shlex.quote(path)
+    try:
+        result = await env.exec(
+            f"rm -f -- {quoted_path} && ! test -e {quoted_path} && ! test -L {quoted_path}",
+            user="root",
+            timeout_sec=10,
+        )
+    except Exception as exc:
+        logger.warning("Failed to isolate %s subscription credential: %s", agent, exc)
+        return False
+    if result.return_code != 0:
+        logger.warning(
+            "Subscription credential remained accessible in proxy mode for %s",
+            agent,
+        )
+        return False
+    return True

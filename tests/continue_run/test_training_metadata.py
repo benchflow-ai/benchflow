@@ -37,6 +37,7 @@ def test_update_continued_metadata_rebuilds_trainer_results(tmp_path):
         "request_complete": True,
         "response_complete": True,
         "payload_redacted": True,
+        "role_attribution_complete": True,
         "role": "agent",
         "agent": "openhands",
         "model": model,

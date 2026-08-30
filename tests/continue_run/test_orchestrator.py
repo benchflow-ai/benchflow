@@ -205,6 +205,7 @@ def test_stitching_rejects_unconsumed_recorded_suffix(tmp_path):
                 "request_complete": True,
                 "response_complete": True,
                 "payload_redacted": True,
+                "role_attribution_complete": True,
                 "role": "agent",
                 "agent": "openhands",
                 "model": model,

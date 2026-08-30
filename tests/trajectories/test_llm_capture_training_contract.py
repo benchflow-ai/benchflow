@@ -263,6 +263,7 @@ def test_complete_manifest_with_capture_gaps_fails_closed_for_training(
         ("request_complete", False),
         ("response_complete", False),
         ("payload_redacted", False),
+        ("role_attribution_complete", False),
         ("capture_source", "codex_native_session"),
         ("auth_mode", "oauth_subscription"),
     ],
@@ -285,6 +286,7 @@ def test_schema_v2_row_cannot_contradict_training_manifest(
             "capture_source": "litellm_proxy",
             "auth_mode": "api_key",
             "payload_redacted": True,
+            "role_attribution_complete": True,
             "role": "agent",
             "agent": "codex-acp",
         }

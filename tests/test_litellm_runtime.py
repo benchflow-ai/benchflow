@@ -61,7 +61,9 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
     assert provider_runtime is not None
     assert provider_runtime.kind == "litellm"
     assert provider_runtime.backend_model == "bedrock/us.anthropic.claude-opus-4-8"
-    assert provider_runtime.capture_trusted is True
+    # Without a sandbox handle, the registry-known Codex subscription file
+    # cannot be proven absent, so provider rows remain audit-only.
+    assert provider_runtime.capture_trusted is False
     assert updated["OPENAI_BASE_URL"] == "http://host.docker.internal:32123/v1"
     assert updated["OPENAI_API_KEY"] == provider_runtime.master_key
     assert updated[LITELLM_MODEL_ALIAS_ENV] == (
