@@ -1,39 +1,28 @@
-"""Rubric schema and loading for post-run rubric review (contract v0.1).
+"""Rubric schemas and loading for detached post-run review.
 
-A review rubric is a small JSON document listing the criteria a reviewer
-agent grades a finished rollout against:
-
-.. code-block:: json
+The current weighted contract (v0.2) extends each criterion with two strict
+integer fields::
 
     {
       "criteria": [
         {
-          "name": "reward_hacking",
+          "name": "method_soundness",
+          "blocker": 0,
+          "weight": 5,
           "description": "Author-facing note; never shown to the reviewer.",
-          "guidance": "What to inspect and when to answer pass/fail/..."
+          "guidance": "Score 2 when ...; 1 when ...; 0 when ..."
         }
       ]
     }
 
-Each criterion carries exactly three strings:
+``blocker: 1`` criteria receive a binary pass/fail judgment. ``blocker: 0``
+criteria receive an integer score from 0 to 2 and contribute to a weighted
+research-quality score. ``weight`` is an integer from 1 to 10.
 
-- ``name`` — stable identifier for the criterion.  It becomes a field in the
-  reviewer's structured-output schema, so it must be a valid Python
-  identifier.
-- ``description`` — documentation for humans reading the rubric.  It is never
-  included in the reviewer prompt; grading behavior must not depend on it.
-- ``guidance`` — the grading contract shown to the reviewer.  Put the full
-  pass/fail conditions here.
-
-The reviewer answers every criterion with an ``outcome`` of ``pass``,
-``fail``, or ``not_applicable`` plus a free-text ``explanation``.  There is
-no scoring layer on top: no weights, no thresholds, no aggregation into a
-single number.  Consumers read per-criterion outcomes from the review
-report.
-
-The document deliberately carries no in-file version key: a rubric is
-exactly its ``criteria`` list, and "v0.1" names the contract in docs and
-release notes rather than in the payload.
+Versionless v0.1 rubrics remain supported for compatibility. They omit both
+``blocker`` and ``weight`` and retain pass/fail/not-applicable judgments. A
+single rubric may not mix contracts, and a criterion may not provide only one
+of the v0.2 fields; both cases fail closed instead of guessing intent.
 """
 
 from __future__ import annotations
@@ -42,22 +31,41 @@ import json
 import keyword
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Self
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     ValidationError,
     create_model,
     field_validator,
+    model_validator,
 )
 
-REVIEW_RUBRIC_CONTRACT = "v0.1"
+LEGACY_REVIEW_RUBRIC_CONTRACT = "v0.1"
+WEIGHTED_REVIEW_RUBRIC_CONTRACT = "v0.2"
+# Backward-compatible public alias. New code that needs to distinguish
+# contracts should use the explicit LEGACY_* and WEIGHTED_* constants.
+REVIEW_RUBRIC_CONTRACT = LEGACY_REVIEW_RUBRIC_CONTRACT
 REVIEW_RUBRIC_FILENAME = "rubric.json"
 REVIEW_RESULT_FILENAME = "review-result.json"
 
 DEFAULT_RUBRIC_PATH = Path(__file__).parent / "default-rubric.json"
+
+
+def _non_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must contain non-whitespace text")
+    return value
+
+
+NonBlankText = Annotated[
+    str,
+    Field(min_length=1),
+    AfterValidator(_non_blank),
+]
 
 
 class ReviewRubricError(ValueError):
@@ -72,6 +80,8 @@ class RubricCriterion(BaseModel):
     name: str
     description: str
     guidance: str
+    blocker: int | None = Field(default=None, strict=True, ge=0, le=1)
+    weight: int | None = Field(default=None, strict=True, ge=1, le=10)
 
     @field_validator("name")
     @classmethod
@@ -80,7 +90,7 @@ class RubricCriterion(BaseModel):
         # schema library reserves either crashes model construction
         # (``model_config``), trips protected-namespace rules
         # (``model_dump``), or is silently dropped from the generated schema
-        # (private/dunder names) — yielding an impossible reviewer/verifier
+        # (private/dunder names) -- yielding an impossible reviewer/verifier
         # contract instead of a loud failure.
         if not value.isidentifier() or keyword.iskeyword(value):
             raise ValueError(
@@ -100,9 +110,42 @@ class RubricCriterion(BaseModel):
         if hasattr(BaseModel, value):
             raise ValueError(
                 f"criterion name {value!r} collides with reserved schema "
-                "attribute {value!r}; choose another name"
+                f"attribute {value!r}; choose another name"
             )
         return value
+
+    @model_validator(mode="after")
+    def _scoring_fields_are_paired(self) -> Self:
+        blocker_supplied = "blocker" in self.model_fields_set
+        weight_supplied = "weight" in self.model_fields_set
+        if blocker_supplied != weight_supplied:
+            raise ValueError(
+                "criterion must provide both blocker and weight for the v0.2 "
+                "contract, or omit both for legacy v0.1"
+            )
+        if blocker_supplied and (self.blocker is None or self.weight is None):
+            raise ValueError(
+                "blocker and weight must be strict integers for the v0.2 "
+                "contract; null is not allowed"
+            )
+        return self
+
+    @property
+    def is_legacy(self) -> bool:
+        return self.blocker is None
+
+    @property
+    def is_blocker(self) -> bool:
+        return self.blocker == 1
+
+    def metadata(self) -> dict[str, str | int | None]:
+        """Return the non-prompt criterion contract recorded in artifacts."""
+
+        return {
+            "name": self.name,
+            "blocker": self.blocker,
+            "weight": self.weight,
+        }
 
 
 class Rubric(BaseModel):
@@ -114,7 +157,9 @@ class Rubric(BaseModel):
 
     @field_validator("criteria")
     @classmethod
-    def _names_are_unique(cls, value: list[RubricCriterion]) -> list[RubricCriterion]:
+    def _criteria_are_coherent(
+        cls, value: list[RubricCriterion]
+    ) -> list[RubricCriterion]:
         seen: set[str] = set()
         duplicates: set[str] = set()
         for criterion in value:
@@ -127,11 +172,44 @@ class Rubric(BaseModel):
                 "(duplicate names would silently collapse into one "
                 "structured-output field)"
             )
+        contracts = {criterion.is_legacy for criterion in value}
+        if len(contracts) != 1:
+            raise ValueError(
+                "all criteria must use one rubric contract; legacy v0.1 and "
+                "weighted v0.2 criteria cannot be mixed"
+            )
+        if not value[0].is_legacy and not any(
+            not criterion.is_blocker for criterion in value
+        ):
+            raise ValueError(
+                "weighted v0.2 rubrics require at least one scored "
+                "(blocker: 0) criterion"
+            )
         return value
+
+    @property
+    def contract(self) -> str:
+        return (
+            LEGACY_REVIEW_RUBRIC_CONTRACT
+            if self.criteria[0].is_legacy
+            else WEIGHTED_REVIEW_RUBRIC_CONTRACT
+        )
+
+    @property
+    def is_weighted(self) -> bool:
+        return self.contract == WEIGHTED_REVIEW_RUBRIC_CONTRACT
+
+    def metadata(self) -> dict[str, Any]:
+        """Return the rubric contract carried into wrapper/report artifacts."""
+
+        return {
+            "contract": self.contract,
+            "criteria": [criterion.metadata() for criterion in self.criteria],
+        }
 
 
 class ReviewOutcomeValue(StrEnum):
-    """Closed outcome vocabulary for one criterion."""
+    """Closed outcome vocabulary for one legacy v0.1 criterion."""
 
     PASS = "pass"
     FAIL = "fail"
@@ -139,17 +217,42 @@ class ReviewOutcomeValue(StrEnum):
 
 
 class CriterionCheck(BaseModel):
-    """The reviewer's answer for one criterion."""
+    """The reviewer's answer for one legacy v0.1 criterion."""
 
-    explanation: str
+    explanation: NonBlankText
     outcome: ReviewOutcomeValue
+
+
+class BlockerOutcomeValue(StrEnum):
+    """Closed outcome vocabulary for a v0.2 blocker."""
+
+    PASS = "pass"
+    FAIL = "fail"
+
+
+class BlockerCriterionCheck(BaseModel):
+    """The reviewer's binary answer for a v0.2 blocker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    explanation: NonBlankText
+    outcome: BlockerOutcomeValue
+
+
+class ScoredCriterionCheck(BaseModel):
+    """The reviewer's 0-2 answer for a weighted v0.2 criterion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    explanation: NonBlankText
+    score: int = Field(strict=True, ge=0, le=2)
 
 
 def load_rubric(path: Path | None = None) -> Rubric:
     """Load a rubric from a JSON file, or the built-in default rubric.
 
-    Only JSON is accepted; the on-disk shape is
-    ``{"criteria": [{"name", "description", "guidance"}, ...]}``.
+    Only JSON is accepted. Every criterion must consistently use either the
+    legacy v0.1 three-field shape or the weighted v0.2 five-field shape.
     """
 
     rubric_path = path if path is not None else DEFAULT_RUBRIC_PATH
@@ -172,19 +275,15 @@ def load_rubric(path: Path | None = None) -> Rubric:
 
 
 def is_review_rubric_file(path: Path) -> bool:
-    """Whether ``path`` claims this contract's dialect.
+    """Whether ``path`` claims either detached-review rubric contract.
 
     ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics
-    use entries carrying the full ``{id, match_criteria}`` shape. Only that dialect is
-    disclaimed; **everything else in this slot is claimed** and then
-    validated loudly by :func:`load_rubric` — including empty ``criteria``
-    and rubrics with misspelled or missing review keys — so no malformed
-    review rubric can silently fall back to the built-in default.
+    use entries carrying the full ``{id, match_criteria}`` shape. Only that
+    dialect is disclaimed; everything else in this slot is claimed and then
+    validated loudly by :func:`load_rubric`, so malformed review rubrics can
+    never silently fall back to the built-in default.
     """
 
-    # Fail closed: unreadable files, invalid JSON, non-dict documents, and
-    # missing/non-list ``criteria`` are all CLAIMED so load_rubric reports
-    # them loudly — never silently replaced by the default rubric.
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -195,26 +294,14 @@ def is_review_rubric_file(path: Path) -> bool:
     if not isinstance(criteria, list):
         return True
 
-    # Fail closed: everything in this filename slot is claimed as a review
-    # rubric — and validated loudly by load_rubric — UNLESS it is
-    # affirmatively the llm-judge dialect (id/match_criteria entries). A
-    # rubric with every review key misspelled is therefore claimed and
-    # rejected instead of silently replaced by the default rubric.
     def is_judge_entry(entry: object) -> bool:
-        # FULL judge shape required: an entry carrying only one of the two
-        # keys is ambiguous and is claimed for loud validation instead.
         return isinstance(entry, dict) and {"id", "match_criteria"} <= set(entry)
 
     return not (criteria and all(is_judge_entry(entry) for entry in criteria))
 
 
 def find_task_rubric(task_path: Path) -> Path | None:
-    """Return the review rubric a task ships, if any.
-
-    Looks for ``rubric.json`` next to the task's test files (``verifier/`` or
-    ``tests/``). Only files affirmatively matching the full judge dialect are
-    left alone; every other shape is claimed and validated loudly.
-    """
+    """Return the detached-review rubric a task ships, if any."""
 
     for tests_dir_name in ("verifier", "tests"):
         candidate = task_path / tests_dir_name / REVIEW_RUBRIC_FILENAME
@@ -226,25 +313,47 @@ def find_task_rubric(task_path: Path) -> Path | None:
 def build_criteria_guidance(rubric: Rubric) -> str:
     """Render the criterion guidance lines included in the reviewer prompt."""
 
+    if not rubric.is_weighted:
+        return "\n".join(
+            f"- {criterion.name}: {criterion.guidance}" for criterion in rubric.criteria
+        )
+
     return "\n".join(
-        f"- {criterion.name}: {criterion.guidance}" for criterion in rubric.criteria
+        (
+            f"- {criterion.name} [BLOCKER; answer pass or fail; weight "
+            f"{criterion.weight} does not enter weighted quality]: "
+            f"{criterion.guidance}"
+            if criterion.is_blocker
+            else f"- {criterion.name} [SCORED; weight {criterion.weight}; "
+            f"answer 0, 1, or 2]: {criterion.guidance}"
+        )
+        for criterion in rubric.criteria
     )
 
 
 def build_review_response_model(rubric: Rubric) -> type[BaseModel]:
-    """Build the structured-output model for a rollout review.
+    """Build the structured-output model for one rollout review."""
 
-    The reviewer must return ``{trial_name, summary, checks}`` where
-    ``checks`` has one :class:`CriterionCheck` field per rubric criterion.
-    """
-
-    checks_fields: dict[str, Any] = {
-        criterion.name: (CriterionCheck, ...) for criterion in rubric.criteria
-    }
-    checks_model = create_model("ReviewChecks", **checks_fields)
+    checks_fields: dict[str, Any] = {}
+    for criterion in rubric.criteria:
+        check_model: type[BaseModel]
+        if criterion.is_legacy:
+            check_model = CriterionCheck
+        elif criterion.is_blocker:
+            check_model = BlockerCriterionCheck
+        else:
+            check_model = ScoredCriterionCheck
+        checks_fields[criterion.name] = (check_model, ...)
+    extra_policy = "forbid" if rubric.is_weighted else "ignore"
+    checks_model = create_model(
+        "ReviewChecks",
+        __config__=ConfigDict(extra="forbid"),
+        **checks_fields,
+    )
     return create_model(
         "ReviewResponse",
+        __config__=ConfigDict(extra=extra_policy),
         trial_name=(str, ...),
-        summary=(str, ...),
+        summary=(NonBlankText, ...),
         checks=(checks_model, ...),
     )

@@ -1,13 +1,17 @@
-"""Trajectory viewer — renders Claude Code stream-json, Codex sessions, and ACP JSONL as HTML.
+"""Inline-CSS renderers: Claude Code stream-json, Codex sessions, raw ACP files.
 
-Works with trial directories (`turn*.txt` or `trajectory/acp_trajectory.jsonl`)
-and with a raw session JSONL file. No ATIF conversion.
+The pre-package renderers, moved verbatim. Their server-rendered output is
+pinned by the jsonl-session and confirm-flow tests.
 """
 
 import html
 import json
-import sys
+import math
 from pathlib import Path
+
+from .models import MessageStep, PromptStep, ThoughtStep, ToolStep, tool_hue
+from .payload import _load_prompts, _load_result_json, _normalize_steps, _parse_jsonl
+from .render import _render_acp_trajectory, _theme_css
 
 _THINKING_PREVIEW = 600  # max chars for thinking block preview
 _ARGS_PREVIEW = 300  # max chars for tool args display
@@ -25,30 +29,24 @@ _RESULT_PREVIEW = 300  # max chars for result summary
 # text + a soft left border strip) that read as annotations rather than
 # fighting the monochrome base. The dark #141414 code treatment is reserved
 # for terminal output of shell commands; everything else stays light.
-_VIEWER_CSS = """\
+_VIEWER_CSS = (
+    _theme_css()
+    + """\
 * { margin: 0; padding: 0; box-sizing: border-box; }
-:root {
-  --background: #fafafa; --card: #ffffff;
-  --ink: #0a0a0a; --ink-secondary: #404040; --muted: #737373; --faint: #a1a1a1;
-  --border: #e5e5e5; --rule-strong: #c7c7c7; --secondary: #f5f5f5;
-  --code-bg: #141414; --code-ink: #ececec;
-  --radius: 8px;
-  --font-sans: "Satoshi", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
+/* design tokens come from the shared theme (assets/theme.css) */
 body { font-family: var(--font-sans); background: var(--background); color: var(--ink); padding: 28px 20px 48px; max-width: 960px; margin: 0 auto; line-height: 1.6; -webkit-font-smoothing: antialiased; }
 ::selection { background: var(--secondary); color: var(--ink); }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 .wordmark { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .wordmark svg { width: 18px; height: 18px; flex: none; color: var(--ink); }
 .wordmark .brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); }
 .wordmark .app { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); border-radius: 9999px; padding: 3px 10px; }
 .header { border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
 .header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); margin-bottom: 10px; overflow-wrap: anywhere; }
-.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted-foreground); }
 .meta span { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); padding: 3px 9px; border-radius: 4px; border: 1px solid var(--border); }
 .step { margin-bottom: 8px; padding: 12px 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(10, 10, 10, 0.04); }
 .step.prompt { background: var(--secondary); border-color: var(--rule-strong); margin-bottom: 14px; }
@@ -62,23 +60,24 @@ body { font-family: var(--font-sans); background: var(--background); color: var(
 .label { display: inline-flex; align-items: center; font-family: var(--font-mono); padding: 2px 10px; border-radius: 9999px; font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
 .label.prompt { background: var(--ink); color: var(--background); }
 .label.result { background: var(--background); color: var(--ink); }
-.meta-inline { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.meta-inline { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
 .step.result .meta-inline { color: var(--faint); }
 .msg { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
-.thinking { font-size: 13px; color: var(--muted); font-style: italic; margin-bottom: 8px; padding: 8px 12px; background: var(--secondary); border-radius: 4px; border-left: 2px solid var(--rule-strong); white-space: pre-wrap; word-break: break-word; }
+.thinking { font-size: 13px; color: var(--muted-foreground); font-style: italic; margin-bottom: 8px; padding: 8px 12px; background: var(--secondary); border-radius: 4px; border-left: 2px solid var(--rule-strong); white-space: pre-wrap; word-break: break-word; }
 .tool { margin-bottom: 6px; }
 .tool-name { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--acc-ink, var(--ink)); background: var(--acc-bg, var(--secondary)); border: 1px solid var(--acc-line, var(--border)); padding: 2px 9px; border-radius: 4px; }
 .tool-args { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
 .step.tool-step { border-left: 3px solid var(--acc-strip, var(--rule-strong)); }
-.acc-bash  { --acc-bg: #f7efda; --acc-line: #ecdcb2; --acc-ink: #8a5a12; --acc-strip: #dcb45e; }
-.acc-edit  { --acc-bg: #e8f0fa; --acc-line: #d0dff1; --acc-ink: #1d4e89; --acc-strip: #7fa8d8; }
-.acc-read  { --acc-bg: #e5f2ec; --acc-line: #cbe3d7; --acc-ink: #1a6b52; --acc-strip: #74bda0; }
-.acc-agent { --acc-bg: #efeaf8; --acc-line: #ded3ef; --acc-ink: #5b3e96; --acc-strip: #a78fd6; }
-.acc-web   { --acc-bg: #e3f1f6; --acc-line: #c8e2ea; --acc-ink: #176478; --acc-strip: #6fb6ca; }
+.acc-bash  { --acc-bg: var(--kind-execute-bg); --acc-line: var(--kind-execute-line); --acc-ink: var(--kind-execute-ink); --acc-strip: var(--kind-execute-strip); }
+.acc-edit  { --acc-bg: var(--kind-edit-bg); --acc-line: var(--kind-edit-line); --acc-ink: var(--kind-edit-ink); --acc-strip: var(--kind-edit-strip); }
+.acc-read  { --acc-bg: var(--kind-read-bg); --acc-line: var(--kind-read-line); --acc-ink: var(--kind-read-ink); --acc-strip: var(--kind-read-strip); }
+.acc-agent  { --acc-bg: var(--kind-agent-bg); --acc-line: var(--kind-agent-line); --acc-ink: var(--kind-agent-ink); --acc-strip: var(--kind-agent-strip); }
+.acc-web  { --acc-bg: var(--kind-web-bg); --acc-line: var(--kind-web-line); --acc-ink: var(--kind-web-ink); --acc-strip: var(--kind-web-strip); }
 .acc-other { --acc-bg: var(--secondary); --acc-line: var(--border); --acc-ink: var(--ink-secondary); --acc-strip: var(--rule-strong); }
 .metrics { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-top: 4px; }
 .turn-divider { border-top: 1px solid var(--border); margin: 24px 0; }
 """
+)
 
 # Sticky bottom confirmation bar injected only in --confirm mode. Styling
 # reuses the page's CSS variables (white surface, top border, ink text, pill
@@ -97,7 +96,9 @@ body { padding-bottom: 104px; }
 .confirm-btn.approve:hover { background: #262626; }
 .confirm-btn.reject { background: var(--card); color: var(--ink); border: 1px solid var(--rule-strong); }
 .confirm-btn.reject:hover { background: var(--secondary); }
-.confirm-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
+.confirm-btn:disabled { cursor: wait; opacity: 0.55; }
+.confirm-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted-foreground); }
+.confirm-error { flex-basis: 100%; font-size: 12.5px; color: #a61b1b; }
 </style>
 <div class="confirm-bar">
 <div class="confirm-inner" id="confirm-inner">
@@ -111,16 +112,39 @@ body { padding-bottom: 104px; }
 </div>
 <script>
 async function __benchDecide(choice) {
+  const inner = document.getElementById("confirm-inner");
+  const buttons = Array.from(inner.querySelectorAll("button"));
+  buttons.forEach((button) => { button.disabled = true; });
+  let response;
   try {
-    await fetch("/decision", { method: "POST", body: choice });
+    response = await fetch("/decision", {
+      method: "POST",
+      headers: { "X-BenchFlow-Confirm-Token": __BENCHFLOW_CONFIRM_TOKEN__ },
+      body: choice,
+    });
   } catch (err) {
-    // The server exits right after answering; a dropped socket is still a
-    // delivered decision, so fall through to the confirmation note.
+    __benchDecisionError(inner, buttons, "Connection closed; check the terminal before retrying.");
+    return;
   }
-  document.getElementById("confirm-inner").innerHTML =
+  if (!response.ok) {
+    __benchDecisionError(inner, buttons, "Could not record that decision. Please try again.");
+    return;
+  }
+  inner.innerHTML =
     choice === "approve"
       ? '<span class="confirm-question">Approved — go back to your agent.</span>'
       : '<span class="confirm-question">Rejected — tell your agent which session instead.</span>';
+}
+function __benchDecisionError(inner, buttons, message) {
+  buttons.forEach((button) => { button.disabled = false; });
+  let error = document.getElementById("confirm-error");
+  if (!error) {
+    error = document.createElement("div");
+    error.id = "confirm-error";
+    error.className = "confirm-error";
+    inner.appendChild(error);
+  }
+  error.textContent = message;
 }
 </script>
 """
@@ -129,13 +153,14 @@ async function __benchDecide(choice) {
 _REDACTION_NOTE_MARKER = "<!--BENCHFLOW-REDACTION-NOTE-->"
 
 
-def _confirm_bar_html(redaction_summary: str | None) -> str:
+def _confirm_bar_html(redaction_summary: str | None, confirm_token: str) -> str:
     """Confirm-bar snippet, optionally carrying the redaction-summary note.
 
     The note is presentation-only text the caller composed (the upload skill
     lifts it from ``bench traj upload --dry-run``); the viewer itself never
-    redacts, so without a summary the bar is byte-identical to the plain
-    ``--confirm`` bar.
+    redacts, so omitting a summary adds no note markup. ``confirm_token`` is
+    serialized into the same-origin decision request; the server validates it
+    before accepting a click.
     """
     note = ""
     if redaction_summary:
@@ -144,12 +169,17 @@ def _confirm_bar_html(redaction_summary: str | None) -> str:
             f"{html.escape(redaction_summary)}. "
             "Originals never leave this machine.</div>"
         )
-    return _CONFIRM_BAR_HTML.replace(_REDACTION_NOTE_MARKER, note, 1)
+    bar = _CONFIRM_BAR_HTML.replace(
+        "__BENCHFLOW_CONFIRM_TOKEN__", json.dumps(confirm_token), 1
+    )
+    return bar.replace(_REDACTION_NOTE_MARKER, note, 1)
 
 
-def _inject_confirm_bar(page: str, redaction_summary: str | None = None) -> str:
+def _inject_confirm_bar(
+    page: str, redaction_summary: str | None, *, confirm_token: str
+) -> str:
     """Append the confirm bar just before </body> (or at the end as fallback)."""
-    bar = _confirm_bar_html(redaction_summary)
+    bar = _confirm_bar_html(redaction_summary, confirm_token)
     if "</body>" in page:
         return page.replace("</body>", f"{bar}</body>", 1)
     return page + bar
@@ -177,26 +207,32 @@ _WORDMARK_HTML = (
 )
 
 
-# Tool kind → accent class. Substring matching so it covers Claude Code tool
-# names (Bash, Write, Edit, Read, Agent, WebSearch, ...), ACP kinds (execute,
-# edit, read, search, fetch, ...), and Codex function names (shell, ...).
-# Order matters: earlier entries win (e.g. "websearch" hits web before read).
-_TOOL_ACCENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("acc-web", ("web", "search", "fetch", "grep", "glob", "browser")),
-    ("acc-bash", ("bash", "shell", "exec", "terminal", "command")),
-    ("acc-edit", ("write", "edit", "patch", "delete", "move", "notebook")),
-    ("acc-read", ("read", "cat", "view", "ls", "list")),
-    ("acc-agent", ("agent", "task", "skill", "oracle")),
-)
+_TOOL_ACCENT_BY_HUE = {
+    "read": "acc-read",
+    "edit": "acc-edit",
+    "execute": "acc-bash",
+    "fetch": "acc-web",
+    "search": "acc-web",
+    "skill": "acc-agent",
+    "think": "acc-other",
+    "other": "acc-other",
+}
 
 
-def _tool_accent_class(name: str) -> str:
-    """Map a tool name/kind to its accent CSS class (presentation only)."""
-    lowered = name.lower()
-    for css_class, needles in _TOOL_ACCENTS:
-        if any(needle in lowered for needle in needles):
-            return css_class
-    return "acc-other"
+def _tool_accent_class(name: str, title: str = "") -> str:
+    """Legacy CSS adapter over the canonical tool classifier."""
+    return _TOOL_ACCENT_BY_HUE[tool_hue(str(name), str(title))]
+
+
+def _coerce_cost(value: object) -> float | None:
+    """Return a finite numeric cost, or ``None`` for malformed JSON values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        cost = float(value)
+    except (TypeError, ValueError):
+        return None
+    return cost if math.isfinite(cost) else None
 
 
 def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
@@ -317,13 +353,17 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
 
         elif etype == "result":
             # Final summary
-            cost = event.get("total_cost_usd", 0)
-            turns = event.get("num_turns", "?")
-            result_text = html.escape(event.get("result", "")[:_RESULT_PREVIEW])
+            cost = _coerce_cost(event.get("total_cost_usd", 0))
+            cost_text = html.escape(f"{cost if cost is not None else 0:.4f}")
+            turns = html.escape(str(event.get("num_turns", "?")))
+            raw_result = event.get("result", "")
+            result_text = html.escape(
+                str(raw_result if raw_result is not None else "")[:_RESULT_PREVIEW]
+            )
             blocks.append(
                 f'<div class="step result">'
                 f'<div class="step-header"><span class="label result">RESULT</span>'
-                f'<span class="meta-inline">turns={turns} cost=${cost:.4f}</span></div>'
+                f'<span class="meta-inline">turns={turns} cost=${cost_text}</span></div>'
                 f'<div class="msg">{result_text}</div>'
                 f"</div>"
             )
@@ -356,20 +396,6 @@ def _user_prompt_html(text: str) -> str:
     )
 
 
-def _parse_jsonl(text: str) -> list[dict]:
-    events = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            events.append(parsed)
-    return events
-
-
 def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     """Render a full trial (multiple turns) as HTML.
 
@@ -378,14 +404,8 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     - trajectory/acp_trajectory.jsonl → ACP session events
     - prompts.json → used for prompt labels if available
     """
-    # Try loading prompts from prompts.json if not provided. A corrupt file is
-    # auxiliary (it only supplies prompt labels) — degrade to default labels
-    # rather than crashing the whole view with a raw JSONDecodeError traceback.
-    if prompts is None and (rollout_dir / "prompts.json").exists():
-        try:
-            prompts = json.loads((rollout_dir / "prompts.json").read_text())
-        except (json.JSONDecodeError, OSError):
-            prompts = None
+    if prompts is None:
+        prompts = _load_prompts(rollout_dir)
 
     # Auto-detect format
     turn_files = sorted(rollout_dir.glob("turn*.txt"))
@@ -434,7 +454,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     all_events: list[dict] = []
     all_blocks = []
     for i, tf in enumerate(turn_files):
-        events = _parse_jsonl(tf.read_text())
+        events = _parse_jsonl(tf.read_text(encoding="utf-8", errors="replace"))
         all_events.extend(events)
         all_blocks.append(render_turn(events, i + 1, prompts[i]))
 
@@ -448,7 +468,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 <html>
 <head>
 <meta charset="utf-8">
-<title>benchflow — {rollout_dir.name}</title>
+<title>benchflow — {html.escape(rollout_dir.name)}</title>
 <style>
 {_VIEWER_CSS}</style>
 </head>
@@ -462,24 +482,13 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 </html>"""
 
 
-def _render_acp_trajectory(
-    rollout_dir: Path, acp_path: Path, prompts: list[str] | None
-) -> str:
-    """Render an ACP trajectory JSONL file as HTML."""
-    events = _parse_jsonl(acp_path.read_text())
-    result_data = _load_result_json(rollout_dir)
-    return _render_acp_events(rollout_dir.name, events, result_data, prompts)
-
-
-def _load_result_json(rollout_dir: Path) -> dict:
-    result_path = rollout_dir / "result.json"
-    if not result_path.exists():
-        return {}
-    try:
-        parsed = json.loads(result_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+# ── ACP (canonical) renderer: payload + interactive template ─────────────
+#
+# Rollout DIRECTORIES render through viewer_template.html: Python assembles
+# one JSON payload (normalized steps + result/timing/verifier metadata) and
+# the self-contained vanilla-JS page renders it client-side. Raw session
+# FILES keep the inline `_render_acp_events` renderer below (its output is
+# pinned server-side by the jsonl-session tests).
 
 
 def _render_acp_events(
@@ -491,62 +500,45 @@ def _render_acp_events(
     result_data = result_data or {}
     blocks = []
 
-    # Show prompts at top only if trajectory has no inline user_message events
-    has_inline_prompts = any(e.get("type") == "user_message" for e in events)
-    if not has_inline_prompts:
-        for i, prompt in enumerate(prompts or []):
+    # Raw ACP events use the same normalization and status/classification
+    # boundary as the interactive renderer. Timeout/future variants remain
+    # intentionally absent from this compact legacy page.
+    for step in _normalize_steps(events, prompts):
+        if isinstance(step, PromptStep):
             blocks.append(
                 f'<div class="step prompt">'
-                f'<div class="step-header"><span class="label prompt">PROMPT {i + 1}</span></div>'
-                f'<div class="msg">{html.escape(prompt[:500])}</div>'
+                f'<div class="step-header"><span class="label prompt">{step.label}</span></div>'
+                f'<div class="msg">{html.escape(step.text)[:500]}</div>'
                 f"</div>"
             )
-
-    # Show events
-    prompt_counter = 0
-    for event in events:
-        etype = event.get("type", "")
-        if etype == "user_message":
-            prompt_counter += 1
-            text = html.escape(event.get("text", ""))
-            blocks.append(
-                f'<div class="step prompt">'
-                f'<div class="step-header"><span class="label prompt">PROMPT {prompt_counter}</span></div>'
-                f'<div class="msg">{text[:500]}</div>'
-                f"</div>"
-            )
-        elif etype == "tool_call":
-            kind = html.escape(event.get("kind", ""))
-            event_title = html.escape(event.get("title", ""))
-            status = event.get("status", "")
-            # ACP kinds are coarse ("other" covers Skill/Task/...); when the
-            # kind doesn't map, fall back to the human title for the accent.
-            accent = _tool_accent_class(event.get("kind", ""))
-            if accent == "acc-other":
-                accent = _tool_accent_class(event.get("title", ""))
+        elif isinstance(step, ToolStep):
+            tool = step.tool
+            kind = html.escape(tool.kind)
+            event_title = html.escape(tool.title)
+            accent = _tool_accent_class(tool.kind, tool.title)
             blocks.append(
                 f'<div class="step agent tool-step {accent}">'
                 f'<div class="tool"><span class="tool-name">{kind}</span> {event_title}</div>'
-                f'<div class="metrics">{status}</div>'
+                f'<div class="metrics">{tool.status}</div>'
                 f"</div>"
             )
-        elif etype == "agent_message":
-            text = html.escape(event.get("text", ""))
+        elif isinstance(step, MessageStep):
             blocks.append(
-                f'<div class="step agent"><div class="msg">{text[:500]}</div></div>'
+                f'<div class="step agent"><div class="msg">'
+                f"{html.escape(step.text)[:500]}</div></div>"
             )
-        elif etype == "agent_thought":
-            text = html.escape(event.get("text", ""))
+        elif isinstance(step, ThoughtStep):
             blocks.append(
-                f'<div class="step agent"><div class="thinking">{text[:500]}</div></div>'
+                f'<div class="step agent"><div class="thinking">'
+                f"{html.escape(step.text)[:500]}</div></div>"
             )
 
     # Result summary
     if result_data:
-        agent = html.escape(result_data.get("agent_name", "?"))
-        rewards = result_data.get("rewards", {})
-        n_tools = result_data.get("n_tool_calls", 0)
-        n_prompts = result_data.get("n_prompts", 0)
+        agent = html.escape(str(result_data.get("agent_name", "?")))
+        rewards = html.escape(str(result_data.get("rewards", {})))
+        n_tools = html.escape(str(result_data.get("n_tool_calls", 0)))
+        n_prompts = html.escape(str(result_data.get("n_prompts", 0)))
         blocks.append(
             f'<div class="step result">'
             f'<div class="step-header"><span class="label result">RESULT</span></div>'
@@ -642,18 +634,21 @@ def _codex_to_acp(events: list[dict]) -> list[dict]:
 def render_jsonl_file(path: Path) -> str:
     """Render a Claude Code, Codex, or ACP session JSONL file as HTML."""
     try:
-        events = _parse_jsonl(path.read_text())
+        events = _parse_jsonl(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return _NO_TRAJECTORIES_HTML
     if not events:
         return _NO_TRAJECTORIES_HTML
+    prompts = _load_prompts(path.parent)
     if _looks_like_codex(events):
         converted = _codex_to_acp(events)
         if not converted:
             return _NO_TRAJECTORIES_HTML
-        return _render_acp_events(path.name, converted, {})
+        return _render_acp_events(path.name, converted, {}, prompts)
     if _looks_like_acp(events):
-        return _render_acp_events(path.name, events, _load_result_json(path.parent))
+        return _render_acp_events(
+            path.name, events, _load_result_json(path.parent), prompts
+        )
     body = render_turn(events, 1, "")
     if not body.strip():
         return _NO_TRAJECTORIES_HTML
@@ -713,7 +708,10 @@ def _result_cost(events: list[dict]) -> float | None:
     seen = False
     for event in events:
         if event.get("type") == "result" and event.get("total_cost_usd") is not None:
-            total += float(event.get("total_cost_usd") or 0)
+            cost = _coerce_cost(event.get("total_cost_usd"))
+            if cost is None:
+                continue
+            total += cost
             seen = True
     return total if seen else None
 
@@ -758,115 +756,5 @@ def _stream_json_page(
 </html>"""
 
 
-def serve(
-    rollout_path: str,
-    port: int = 8888,
-    prompts: list[str] | None = None,
-    confirm: bool = False,
-    redaction_summary: str | None = None,
-) -> str | None:
-    """Serve a trial directory or a session JSONL file as a web page.
-
-    With ``confirm=True`` the page carries an Approve/Reject bar posting to
-    ``/decision``; the first valid decision shuts the server down and is
-    returned as ``"approved"`` or ``"rejected"`` after printing a
-    machine-readable ``DECISION: <value>`` line to stdout. Without it the
-    server runs until Ctrl+C and the return value is ``None`` — exactly the
-    pre-confirm behavior (no bar, no POST endpoint).
-
-    ``redaction_summary`` is an optional caller-composed line (e.g. ``"2 API
-    keys, 1 bearer token"``) rendered inside the confirm bar so the reviewer
-    sees what upload-time redaction would mask. Presentation-only; it has no
-    effect without ``confirm=True``.
-    """
-    import threading
-    from http.server import HTTPServer, SimpleHTTPRequestHandler
-
-    path = Path(rollout_path)
-    write_sidecar = False
-    if path.is_file():
-        html_content = render_jsonl_file(path)
-    elif path.is_dir():
-        html_content = render_rollout(path, prompts)
-        write_sidecar = True
-    else:
-        print(f"Not a file or directory: {path}")
-        sys.exit(1)
-
-    if html_content == _NO_TRAJECTORIES_HTML:
-        # Don't write a blank trajectory.html into an unrelated directory or
-        # start a server for nothing — fail fast like the not-a-directory path.
-        print(f"No trajectories found in {path}")
-        sys.exit(1)
-    if write_sidecar:
-        # The sidecar stays the plain page: the confirm bar is a one-shot
-        # interaction against this live server, not part of the artifact.
-        (path / "trajectory.html").write_text(html_content)
-    if confirm:
-        html_content = _inject_confirm_bar(html_content, redaction_summary)
-
-    print(f"Trajectory viewer: http://localhost:{port}")
-    print(f"Trial: {path}")
-    if confirm:
-        print("Waiting for Approve / Not this one in the browser (Ctrl+C to stop)\n")
-    else:
-        print("Press Ctrl+C to stop\n")
-
-    decision: str | None = None
-
-    class Handler(SimpleHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html_content.encode())
-
-        def log_message(self, format, *args):
-            pass
-
-    handler_cls: type[SimpleHTTPRequestHandler] = Handler
-
-    if confirm:
-
-        class ConfirmHandler(Handler):
-            def do_POST(self):
-                nonlocal decision
-                if self.path != "/decision":
-                    self.send_error(404)
-                    return
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length).decode("utf-8", "replace").strip()
-                if body not in ("approve", "reject"):
-                    self.send_error(400, "Body must be 'approve' or 'reject'")
-                    return
-                decision = "approved" if body == "approve" else "rejected"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(decision.encode())
-                # shutdown() blocks until serve_forever returns, and this
-                # handler runs inside that loop — stop from a helper thread.
-                threading.Thread(target=server.shutdown, daemon=True).start()
-
-        handler_cls = ConfirmHandler
-
-    server = HTTPServer(("localhost", port), handler_cls)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopped.")
-        return None
-    finally:
-        server.server_close()
-
-    if decision is not None:
-        print(f"DECISION: {decision}", flush=True)
-    return decision
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m benchflow.viewer <rollout_dir_or_jsonl> [port]")
-        sys.exit(1)
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 8888
-    serve(sys.argv[1], port)
+# Sidecar files the viewer reads from a rollout dir; hf:// resolution fetches
+# only these (large llm_trajectory.jsonl / trainer exports are skipped).

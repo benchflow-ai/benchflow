@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from threading import Lock
 from typing import Protocol
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Path, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from services.trajectory_upload.contract import UploadGrant, UploadRequest
+from services.trajectory_upload.contract import (
+    CaptureStatusInfo,
+    UploadGrant,
+    UploadRequest,
+)
 
 MAX_HANDSHAKE_BYTES = 1024**2
+DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class AlreadyUploaded(Exception):
@@ -38,6 +44,10 @@ class UploadBroker(Protocol):
     def create_upload(
         self, request: UploadRequest, *, client_ip: str
     ) -> UploadGrant: ...
+
+    def get_capture_status(
+        self, digest: str, *, client_ip: str
+    ) -> CaptureStatusInfo: ...
 
 
 def create_app(
@@ -131,6 +141,36 @@ def create_app(
                 },
             )
         return JSONResponse(status_code=200, content=grant.as_dict())
+
+    @app.get("/v1/uploads/{digest}")
+    def capture_status(
+        request: Request,
+        digest: str = Path(min_length=64, max_length=64),
+    ) -> JSONResponse:
+        """Report the ledger state of one capture digest.
+
+        Contributors already hold the digest of anything they can ask about
+        (it is content-derived and printed by the CLI), and the response never
+        includes contributor identity, source ids, or storage internals beyond
+        the public promotion prefix. An unknown digest is a 200 ``unknown``
+        rather than a 404 so clients can use 404 to detect a deployment that
+        predates this endpoint.
+        """
+        if DIGEST_PATTERN.fullmatch(digest) is None:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "digest must be 64 lowercase hex characters"},
+            )
+        service = _backend(request.app)
+        try:
+            info = service.get_capture_status(digest, client_ip=_client_ip(request))
+        except RateLimited as exc:
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(exc.retry_after)},
+                content={"detail": "status rate limit exceeded"},
+            )
+        return JSONResponse(status_code=200, content=info.as_dict())
 
     return app
 

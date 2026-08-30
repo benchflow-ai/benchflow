@@ -2,6 +2,141 @@
 
 ## [Unreleased]
 
+### Added
+- **ACP rollout directories render as an interactive reviewer page.**
+  `bench eval view <rollout>` now assembles a JSON payload (normalized
+  events + result/timing/verifier metadata) and renders it client-side in a
+  self-contained template (no build step, zero network requests): full
+  event stream with collapse instead of truncation, harness/model/skills
+  identity row, reward badge and `result.json` failure-diagnostic banners,
+  Verifier and Metrics tabs, Focus/Full modes, per-kind filters and hues,
+  text search, and per-event `#e42` anchors. Trajectory content is treated
+  as untrusted end to end (data-only embedding, `textContent` rendering).
+  Raw session JSONL files and legacy `turn*.txt` runs remain supported, and
+  the `--confirm` approve/reject contract remains compatible.
+- **Directories of rollouts serve a run catalog.** Pointing
+  `bench eval view` at a job directory (or a whole `jobs/` tree) serves a
+  browsable index: corpus counts, grouping by task or model + harness with
+  per-group pass/fail aggregates and pass rates, sorting by
+  name/reward/duration/cost, text filtering, collapsible groups with
+  incremental pagination, and URL-preserved state — selecting a run opens
+  the detail page and the back control restores the exact catalog view.
+  Traces load dynamically from `/api/rollout?id=…` (ids resolve only by
+  exact membership in a fresh directory scan, so crafted ids cannot reach
+  the filesystem) and `?run=<id>` deep-links a run. `--confirm` on a
+  multi-run directory errors out: a confirmation needs exactly one
+  trajectory.
+- **`hf://` sources browse HuggingFace trajectory datasets directly.**
+  `bench eval view hf://<org>/<dataset>[@revision][/subpath]` fetches the
+  viewer-relevant slice of a trajectory dataset into the shared
+  `huggingface_hub` cache and serves it through browse mode, making the
+  community ground-truth uploads reviewable with one command. The download
+  allowlist is exact — trajectories, result/timing/prompts, and the four
+  verifier sidecars the viewer renders — with no wildcards, so large run
+  artifacts and `llm_trajectory`/`trainer` exports are never fetched. The
+  CLI passes the spec as a string into a typed
+  `LocalPathSource | HfDatasetSource` parser (never through `pathlib.Path`,
+  whose normalization would mangle `hf://` into `hf:/`), and dataset
+  subpaths are validated.
+- **The viewer renders per-event timelines the moment captures provide
+  timestamps.** Steps gain a `+m:ss` offset chip and tool calls a duration
+  chip whenever events carry `ts` / `started_at` / `finished_at` fields;
+  with today's captures (which carry none) nothing changes visually.
+
+## 0.7.5 — 2026-08-19
+
+### Added
+
+- **Weighted rubric-review contract (v0.2).** `bench review` now accepts the
+  versionless `rubric.json` shape introduced by FrontierPhysics PR #109, where
+  every criterion adds strict `blocker` (`0` or `1`) and `weight` (`1` through
+  `10`) fields. Binary blockers gate publication; non-blockers receive weighted
+  `0` / `1` / `2` scores with raw and gated quality plus publication bands in
+  the report. Blocker weights are excluded from quality, and the wrapper reward
+  remains a structural-validity signal. Existing three-field v0.1 rubrics keep
+  their `pass` / `fail` / `not_applicable` behavior unchanged. Docker runs now
+  probe whether verifier-log bind mounts are genuinely visible to the container
+  and fall back to explicit copy-out when path translation is unavailable.
+
+### Fixed
+
+- **Linked-worktree `.git` pointer files stay out of workspace attachments.**
+  Workspace capture now excludes `.git` files as well as directories, preventing
+  local absolute worktree metadata from entering uploaded archives. (#1032)
+
+## 0.7.4 — 2026-08-16
+
+### Added
+- **Uploads are confirmed all the way into cloud storage.** After the
+  progress bar finishes, `bench traj upload` now polls the contribution
+  service's new `GET /v1/uploads/{digest}` capture-status endpoint (the
+  validation ledger) until the validator's verdict: `✓ Verified in cloud
+  storage` once the capture is promoted to `sources/community/<digest>/`, a
+  concise exit-1 error with the fixable detail if the validator rejects it,
+  and a `bench traj status sha256:<digest>` handoff line if validation is
+  still running when the budget (default 240 s, `BENCHFLOW_TRAJ_WAIT_SECONDS`
+  override, `--no-wait` opt-out) runs out. A handshake 409 ("already
+  submitted") prints the verified line immediately, and a deployed broker
+  that predates the endpoint (404) keeps today's behavior unchanged. The new
+  `bench traj status DIGEST` command runs one check on demand. Status polls
+  consume a separate, higher rate-limit budget (`TRAJ_STATUS_RATE_LIMIT`,
+  default 720/hour/IP) and reveal only the ledger state, the bounded
+  rejection detail, and the public promotion prefix — never contributor
+  identity or quarantine internals. The broker must be redeployed
+  (`deploy-trajectory-upload` workflow or `scripts/deploy.sh`) before the
+  endpoint answers in production; the CLI degrades gracefully until then.
+- **The `bench traj` family shares one polished terminal design language.**
+  A new presentation-only kit (`cli/_traj_tui.py`) gives `traj setup`,
+  `traj upload`, and `traj status` a coherent look: a `◆ benchflow · <command>`
+  banner, styled `◇` input prompts, an arrow-key recent-session picker (↑/↓,
+  1-9 jump, esc to fall back to typing a path) on real terminals, colored
+  step kinds in the report preview matching the browser viewer's palette,
+  and rounded panels. Every interactive affordance degrades to the exact
+  previous prompt-driven flow off-TTY (agents, pipes, CI, Windows), and all
+  machine-read lines (`Masked for you:`, `Digest:`, `Repo:`) stay plain.
+- **Uploads can carry the session's workspace folder as a zip attachment.**
+  `bench traj upload` reads the session's recorded working directory (the
+  same Claude `cwd` / Codex `session_meta` provenance as repo tagging) and
+  archives it into the capture as `workspace/<name>.zip`, printing
+  `Workspace: <path> (from session cwd; use --no-workspace to omit)` and a
+  `Workspace attached:` line with size, file count, and exclusion count.
+  VCS internals, dependency trees, caches, symlinks, and secret-shaped
+  filenames (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.netrc`, …) never enter
+  the archive; everything else is archived as-is without content redaction,
+  and the attach line says so. Workspaces over 1 GiB (measured before
+  compression, so the zip is never created), over 50,000 files, missing, or
+  empty are skipped with a printed reason instead of failing the upload.
+  When detection fails on a real terminal, one optional prompt accepts a
+  folder or skips on Enter; `--workspace-dir` overrides detection and
+  `--no-workspace` opts out. The archive is staged in the upload's
+  temporary directory and always deleted afterwards. Server side, the
+  contribution service accepts the new `workspace/*.zip` namespace with a
+  1 GiB per-archive cap (trajectory JSONL keeps 128 MiB), allows at most
+  one archive per capture and never an archive alone, verifies the zip
+  container format instead of JSONL strictness, promotes it with an
+  `application/zip` content type, and scopes trajectory-report
+  cross-checks to trajectory artifacts so an attachment cannot fail
+  report equality.
+
+## 0.7.3 — 2026-08-16
+
+### Added
+- **`bench traj upload` waits out short rate-limit responses instead of
+  failing.** When the contribution service answers 429 with a short
+  `Retry-After`, the handshake now sleeps it out with jitter and retries up
+  to three times (two-minute cap per wait), so a crowd of simultaneous
+  contributors self-heals instead of surfacing errors. Longer waits still
+  fail fast with the actionable retry-after message. (#1027)
+
+### Changed
+- **The contribution service rate-limits per contributor, not per venue.**
+  Upload budgets are token buckets keyed on contributor identity with a
+  wide per-IP abuse backstop, refill continuously, and answer 429 with
+  seconds-until-next-token instead of the remainder of the clock hour, so
+  many contributors behind one NAT no longer starve each other. Contended
+  bucket updates back off with jitter rather than shedding simultaneous
+  crowds. (#1027, #1028)
+
 ## 0.7.2 — 2026-08-16
 
 ### Added

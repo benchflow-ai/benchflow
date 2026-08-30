@@ -173,6 +173,7 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._logs_are_mounted = True
 
         verifier_dir = (
             str(rollout_paths.verifier_dir.resolve().absolute())
@@ -229,7 +230,40 @@ class DockerSandbox(BaseSandbox):
 
     @property
     def is_mounted(self) -> bool:
-        return True
+        return self._logs_are_mounted
+
+    async def _probe_verifier_log_mount(self) -> None:
+        """Confirm that the daemon can see the host verifier-log bind mount.
+
+        Docker Desktop normally translates WSL paths before they reach its VM.
+        A client connected directly to the underlying daemon can bypass that
+        translation: Compose still accepts the bind mount, but the container
+        and Benchflow then write to different directories.  Treat that case as
+        non-mounted so the verifier clears and downloads its remote outputs.
+        """
+        if self.rollout_paths is None:
+            return
+
+        probe_name = f".benchflow-mount-probe-{uuid.uuid4().hex}"
+        host_probe = self.rollout_paths.verifier_dir / probe_name
+        sandbox_probe = SandboxPaths.verifier_dir / probe_name
+        host_probe.parent.mkdir(parents=True, exist_ok=True)
+        host_probe.touch()
+        try:
+            result = await self.exec(
+                f"test -f {shlex.quote(str(sandbox_probe))}",
+                user="root",
+                timeout_sec=10,
+            )
+            self._logs_are_mounted = result.return_code == 0
+        finally:
+            host_probe.unlink(missing_ok=True)
+
+        if not self._logs_are_mounted:
+            self.logger.warning(
+                "Docker verifier-log bind mount is not visible inside the "
+                "container; verifier outputs will be copied back explicitly."
+            )
 
     @property
     def _dockerfile_path(self) -> Path:
@@ -486,6 +520,7 @@ class DockerSandbox(BaseSandbox):
         await self.exec(
             f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
+        await self._probe_verifier_log_mount()
 
     async def stop(self, delete: bool) -> None:
         # Bounded chown: a hung agent container will make `docker exec` block

@@ -180,7 +180,7 @@ def test_staging_enforces_shared_capture_count_and_size_limits(
         stage_trajectory_capture(trial, source_id="demo").__enter__()
 
     monkeypatch.setattr(capture_module, "MAX_ARTIFACTS", 8)
-    monkeypatch.setattr(capture_module, "MAX_CAPTURE_BYTES", 1)
+    monkeypatch.setattr(capture_module, "MAX_JSONL_CAPTURE_BYTES", 1)
     with pytest.raises(ValueError, match="capture exceeds 1 bytes"):
         stage_trajectory_capture(trial, source_id="demo").__enter__()
 
@@ -211,7 +211,7 @@ def test_staging_rechecks_capture_limit_after_redaction(
         (source_dir / name).write_text('{"password":"x"}\n', encoding="utf-8")
     source_bytes = sum(path.stat().st_size for path in source_dir.iterdir())
     monkeypatch.setattr(capture_module, "MAX_FILE_BYTES", 1024)
-    monkeypatch.setattr(capture_module, "MAX_CAPTURE_BYTES", source_bytes)
+    monkeypatch.setattr(capture_module, "MAX_JSONL_CAPTURE_BYTES", source_bytes)
 
     with pytest.raises(ValueError, match="staged trajectory capture exceeds"):
         stage_trajectory_capture(source_dir, source_id="demo").__enter__()

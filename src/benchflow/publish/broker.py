@@ -20,11 +20,19 @@ from benchflow.publish.traj_capture import StagedCapture, StagedFile
 # the first SAS grant. Retries are safe; keep this under two minutes.
 HANDSHAKE_TIMEOUT_SEC = 90.0
 PUT_TIMEOUT_SEC = 300.0
+# Workspace archives can approach 1 GiB; give every PUT at least the base
+# budget plus a floor of ~1 MiB/s of transfer time so slow uplinks finish.
+PUT_TIMEOUT_BYTES_PER_SEC = 1024**2
 # The broker's token buckets answer 429 with an honest, usually-short
 # Retry-After. Waiting it out inline turns a crowd burst into a smooth queue;
 # anything longer than this cap is surfaced to the contributor instead.
 HANDSHAKE_RETRY_LIMIT = 3
 HANDSHAKE_RETRY_MAX_WAIT_SEC = 120.0
+
+# Capture states the broker's status endpoint may report. ``unsupported`` is
+# client-synthesized for deployments that predate the endpoint (HTTP 404), and
+# ``throttled`` for a rate-limited poll; neither ever comes from the ledger.
+CAPTURE_STATES = frozenset({"pending", "validating", "ingested", "rejected", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -33,10 +41,73 @@ class BrokerPublishResult:
     prefix: str
     uploaded: tuple[str, ...]
     skipped: tuple[str, ...]
+    # True only for a handshake 409: the ledger already recorded this digest as
+    # ingested, so the capture is verified in storage without polling.
+    already_ingested: bool = False
 
     @property
     def url(self) -> str:
         return f"{self.base_url.rstrip('/')}/{self.prefix.lstrip('/')}"
+
+
+@dataclass(frozen=True)
+class CaptureStatus:
+    """One poll of the broker's capture-status endpoint."""
+
+    status: str
+    detail: str | None = None
+    retry_after: float | None = None
+
+    @property
+    def terminal(self) -> bool:
+        return self.status in {"ingested", "rejected"}
+
+
+def fetch_capture_status(
+    *,
+    broker_url: str,
+    traj_digest: str,
+    http_client: httpx.Client | None = None,
+) -> CaptureStatus:
+    """Read the validation state of one uploaded capture from the broker.
+
+    Returns a :class:`CaptureStatus` for every well-formed outcome, including
+    ``unsupported`` when the deployed broker predates the endpoint (404) and
+    ``throttled`` on HTTP 429, so a polling loop can decide without exception
+    plumbing. Raises :class:`ValueError` only for transport failures or a
+    malformed response, which callers should treat as transient.
+    """
+    digest = traj_digest.removeprefix("sha256:")
+    endpoint = f"{broker_url.rstrip('/')}/v1/uploads/{digest}"
+    manager = nullcontext(http_client) if http_client is not None else httpx.Client()
+    try:
+        with _quiet_httpx_request_logging(), manager as client:
+            response = client.get(endpoint, timeout=HANDSHAKE_TIMEOUT_SEC)
+    except httpx.HTTPError as exc:
+        raise ValueError(f"capture status request failed: {exc}") from exc
+    if response.status_code == 404:
+        return CaptureStatus(status="unsupported")
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        try:
+            seconds = float(retry_after) if retry_after else None
+        except ValueError:
+            seconds = None
+        return CaptureStatus(status="throttled", retry_after=seconds)
+    if response.status_code >= 400:
+        detail = response.text.strip().replace("\n", " ")[:300]
+        raise ValueError(
+            f"capture status request failed with HTTP {response.status_code}: {detail}"
+        )
+    payload = _response_object(response)
+    status = payload.get("status")
+    if not isinstance(status, str) or status not in CAPTURE_STATES:
+        raise ValueError("trajectory broker returned an unknown capture status")
+    detail = payload.get("detail")
+    return CaptureStatus(
+        status=status,
+        detail=detail if isinstance(detail, str) and detail else None,
+    )
 
 
 def upload_capture_via_broker(
@@ -84,7 +155,8 @@ def upload_capture_via_broker(
                         upload["put_url"],
                         headers=upload["headers"],
                         content=content,
-                        timeout=PUT_TIMEOUT_SEC,
+                        timeout=PUT_TIMEOUT_SEC
+                        + staged_file.size_bytes / PUT_TIMEOUT_BYTES_PER_SEC,
                     )
                 if _is_create_only_conflict(put_response):
                     skipped.append(object_name)
@@ -188,6 +260,7 @@ def _already_uploaded_result(
         prefix=prefix,
         uploaded=(),
         skipped=tuple(prefix + item.relname for item in staged.files),
+        already_ingested=True,
     )
 
 

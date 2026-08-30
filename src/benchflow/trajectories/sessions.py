@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 _CLAUDE_SKIP_PARTS = frozenset({"subagents", "workflows"})
+# "Recent" for the submit flow means this week's work, across every source.
+RECENT_WINDOW_DAYS = 7.0
+MAX_RECENT_SESSIONS = 50
 
 
 @dataclass(frozen=True)
@@ -28,7 +32,11 @@ def encode_claude_project_dir(absolute_path: str) -> str:
 
 
 def list_recent_sessions(
-    *, cwd: Path | None = None, home: Path | None = None, limit: int = 8
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    limit: int = MAX_RECENT_SESSIONS,
+    window_days: float | None = RECENT_WINDOW_DAYS,
 ) -> list[SessionHit]:
     cwd = (cwd or Path.cwd()).resolve()
     home = home or Path.home()
@@ -41,6 +49,13 @@ def list_recent_sessions(
         *_trial_candidates(cwd),
     ]
     candidates.sort(key=lambda item: item[2], reverse=True)
+    if window_days is not None:
+        cutoff = time.time() - window_days * 86400
+        windowed = [item for item in candidates if item[2] >= cutoff]
+        # An idle machine still deserves a picker: fall back to the newest
+        # sessions overall rather than presenting nothing.
+        if windowed:
+            candidates = windowed
     return [
         SessionHit(
             path=display_path,
