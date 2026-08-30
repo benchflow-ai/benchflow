@@ -79,6 +79,7 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
     next_runtime = SimpleNamespace(kind="litellm", name="reviewer")
     rollout._usage_runtime = previous_runtime
     rollout._retired_usage_runtimes = []
+    rollout._native_usage_checkpoint = {"total_tokens": 99}
     rollout._timing = {}
     rollout._disallow_web_tools = False
     rollout._agent_cfg = SimpleNamespace()
@@ -123,3 +124,5 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
     assert calls == ["litellm", "acp"]
     assert rollout._usage_runtime is next_runtime
     assert rollout._retired_usage_runtimes == [previous_runtime]
+    assert rollout._current_usage_is_native_subscription is False
+    assert rollout._native_usage_checkpoint is None

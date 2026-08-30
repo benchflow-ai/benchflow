@@ -77,6 +77,7 @@ from benchflow._utils.scoring import classify_error as classify_error
 from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
@@ -164,6 +165,9 @@ from benchflow.rollout._usage import (
 )
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import (
+    _merge_provider_and_native_usage_metrics as _merge_provider_and_native_usage_metrics,
+)
+from benchflow.rollout._usage import (
     _merge_provider_usage_metrics as _merge_provider_usage_metrics,
 )
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
@@ -228,7 +232,6 @@ from benchflow.trajectories.llm_capture import (
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.usage_tracking import (
     USAGE_SOURCE_AGENT_NATIVE_ACP,
-    USAGE_SOURCE_PROVIDER_RESPONSE,
     is_token_usage_available,
 )
 
@@ -684,6 +687,7 @@ class Rollout:
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
         self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
         self._native_usage_checkpoint: dict[str, int | None] | None = None
+        self._current_usage_is_native_subscription = False
         # Provider failure snapshotted during cleanup, after the usage proxy
         # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
         # on stop()). Read by _provider_failure() so ACP-error classification can
@@ -1389,6 +1393,11 @@ class Rollout:
             model=cfg.primary_model,
             credential_home=_sandbox_user_home(cfg.sandbox_user),
         )
+        self._current_usage_is_native_subscription = uses_native_subscription_auth(
+            cfg.primary_agent,
+            cfg.primary_model,
+            self._agent_env,
+        )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -1772,6 +1781,8 @@ class Rollout:
 
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
+        if getattr(self, "_current_usage_is_native_subscription", True) is False:
+            return
         session = getattr(self, "_session", None)
         latest_fn = getattr(session, "latest_usage_totals", None)
         if not callable(latest_fn):
@@ -2151,17 +2162,15 @@ class Rollout:
         self._usage_runtime = current
 
     def _finalize_usage_metrics(self) -> None:
-        """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
+        """Combine every trusted token source used by this rollout."""
         current_metrics = getattr(
             self, "_usage_metrics", {"usage_source": "unavailable"}
         )
-        if current_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE:
-            return
         native_metrics = getattr(self, "_native_usage_metrics", None)
-        if isinstance(native_metrics, dict) and is_token_usage_available(
-            native_metrics
-        ):
-            self._usage_metrics = native_metrics
+        self._usage_metrics = _merge_provider_and_native_usage_metrics(
+            current_metrics,
+            native_metrics if isinstance(native_metrics, dict) else None,
+        )
 
     def _enforce_required_usage_tracking(self) -> None:
         usage_cfg = self._config.usage_tracking.with_env_defaults()
@@ -2532,6 +2541,12 @@ class Rollout:
             credential_home=cred_home,
             role_name=role.name,
         )
+        self._current_usage_is_native_subscription = uses_native_subscription_auth(
+            role.agent,
+            role.model,
+            agent_env,
+        )
+        self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role

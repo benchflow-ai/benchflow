@@ -432,6 +432,7 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     from benchflow.usage_tracking import (
         TRUSTED_USAGE_SOURCES,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_MIXED,
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_UNAVAILABLE,
         UsageSource,
@@ -441,14 +442,17 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     assert set(get_args(UsageSource)) == {
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_MIXED,
         USAGE_SOURCE_UNAVAILABLE,
     }
     assert {
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_MIXED,
     } == TRUSTED_USAGE_SOURCES
     assert normalize_usage_source(USAGE_SOURCE_AGENT_NATIVE_ACP) == (
         USAGE_SOURCE_AGENT_NATIVE_ACP
     )
+    assert normalize_usage_source(USAGE_SOURCE_MIXED) == USAGE_SOURCE_MIXED
     with pytest.raises(ValueError, match="usage_source must be one of"):
         normalize_usage_source("new_unregistered_source")

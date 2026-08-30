@@ -12,7 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from benchflow.usage_tracking import usage_unavailable
+from benchflow.usage_tracking import (
+    USAGE_SOURCE_AGENT_NATIVE_ACP,
+    USAGE_SOURCE_MIXED,
+    USAGE_SOURCE_PROVIDER_RESPONSE,
+    usage_unavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -184,6 +189,69 @@ def _merge_provider_usage_metrics(
             else None
         )
     merged["usage_source"] = "provider_response"
+    return merged
+
+
+def _merge_provider_and_native_usage_metrics(
+    provider_metrics: dict[str, Any],
+    native_metrics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Combine trusted provider and native-ACP totals without hiding provenance.
+
+    A mixed-auth scene has two independently trusted telemetry surfaces.  Its
+    token counters are additive, but native ACP does not provide pricing, so a
+    rollout-wide cost must remain unknown.  The priced provider component and
+    both counter sets remain available in ``usage_details.source_breakdown``.
+    """
+
+    provider_available = (
+        provider_metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE
+    )
+    native_available = bool(
+        isinstance(native_metrics, dict)
+        and native_metrics.get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
+    )
+    if provider_metrics.get("usage_source") == USAGE_SOURCE_MIXED:
+        return provider_metrics
+    if not provider_available:
+        if native_available and isinstance(native_metrics, dict):
+            return dict(native_metrics)
+        return provider_metrics
+    if not native_available:
+        return provider_metrics
+
+    assert isinstance(native_metrics, dict)
+    merged = usage_unavailable()
+    for field in _PROVIDER_USAGE_COUNT_FIELDS:
+        merged[field] = _as_nonnegative_int(
+            provider_metrics.get(field)
+        ) + _as_nonnegative_int(native_metrics.get(field))
+    provider_breakdown: dict[str, Any] = {
+        field: _as_nonnegative_int(provider_metrics.get(field))
+        for field in _PROVIDER_USAGE_COUNT_FIELDS
+    }
+    provider_breakdown.update(
+        cost_usd=provider_metrics.get("cost_usd"),
+        price_source=provider_metrics.get("price_source"),
+    )
+    native_breakdown: dict[str, Any] = {
+        field: _as_nonnegative_int(native_metrics.get(field))
+        for field in _PROVIDER_USAGE_COUNT_FIELDS
+    }
+    native_details: dict[str, Any] = dict(native_metrics.get("usage_details") or {})
+    if native_details:
+        native_breakdown["usage_details"] = native_details
+    usage_details = dict(native_details)
+    usage_details["source_breakdown"] = {
+        USAGE_SOURCE_PROVIDER_RESPONSE: provider_breakdown,
+        USAGE_SOURCE_AGENT_NATIVE_ACP: native_breakdown,
+    }
+    merged.update(
+        usage_source=USAGE_SOURCE_MIXED,
+        cost_usd=None,
+        price_source=None,
+        usage_details=usage_details,
+    )
     return merged
 
 
