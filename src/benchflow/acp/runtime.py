@@ -258,7 +258,7 @@ def _format_acp_model(model: str, agent: str) -> str:
     # Gemini CLI accepts bare Google model IDs. ``google/`` is a models.dev
     # provider prefix rather than a registered BenchFlow provider, so the
     # generic normalizer intentionally leaves it alone.
-    if agent == "gemini" and model.startswith("google/"):
+    if agent == "gemini" and model.startswith(("google/gemini-", "google/gemma-")):
         bare = model.removeprefix("google/")
     agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":

@@ -276,11 +276,22 @@ def test_proxy_config_no_responses_bridge_for_non_openai_upstream():
     assert not any(n.endswith("-responses-bridge") for n in names)
 
 
-def test_google_gemini_model_uses_single_litellm_provider_prefix():
-    """Guards models.dev Google IDs from becoming gemini/google/... routes."""
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        (
+            "google/gemini-3.1-flash-lite-preview",
+            "gemini/gemini-3.1-flash-lite-preview",
+        ),
+        ("google/gemma-3-27b-it", "gemini/gemma-3-27b-it"),
+        ("google/geminix-1", "gemini/google/geminix-1"),
+    ],
+)
+def test_google_model_normalizes_only_gemini_families(model, expected):
+    """Google Gemini/Gemma IDs get one LiteLLM provider prefix."""
     route = resolve_litellm_route(
-        "google/gemini-3.1-flash-lite-preview",
+        model,
         {"GEMINI_API_KEY": "key"},
     )
-    assert route.upstream_model == "gemini/gemini-3.1-flash-lite-preview"
-    assert route.litellm_params["model"] == "gemini/gemini-3.1-flash-lite-preview"
+    assert route.upstream_model == expected
+    assert route.litellm_params["model"] == expected
