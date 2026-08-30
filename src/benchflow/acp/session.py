@@ -202,6 +202,12 @@ class ACPSession:
         self.thought_chunks: list[str] = []
         self.tool_calls: list[ToolCallRecord] = []
         self._tool_call_map: dict[str, ToolCallRecord] = {}
+        # Monotonic count of tool_call_update notifications. In-progress
+        # updates mutate a ToolCallRecord in place — no list grows and the
+        # pending set is unchanged — so this counter is the only signal the
+        # idle watchdog has that a long-running call is still streaming
+        # progress (PR #1066 review).
+        self.tool_call_update_count: int = 0
         # Distinct display titles across recorded tool calls, maintained
         # incrementally at record creation so the eval dashboard can detect
         # single-tool agents (prime-agent funnels everything through one
@@ -401,6 +407,7 @@ class ACPSession:
             self._record_tool_call(record)
 
         elif update_type == "tool_call_update":
+            self.tool_call_update_count += 1
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
             if not record:

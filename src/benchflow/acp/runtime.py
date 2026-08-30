@@ -845,9 +845,19 @@ async def _prompt_with_idle_watchdog(
     # completion update lost in transit (e.g. a half-open PTY websocket frame
     # drop) leaves the call pending forever and would otherwise disarm the
     # watchdog for the rest of the wall-clock budget (#1061).
+    # The grace clock restarts whenever the pending set changes OR a
+    # tool_call_update is observed: in-progress updates mutate ToolCallRecord
+    # in place — invisible to both the pending-set snapshot and
+    # _activity_count — and a call still streaming progress is demonstrably
+    # alive. Only a call that stays pending AND silent for the full grace
+    # stops deferring the idle path.
     pending_grace = idle_timeout * 3
     pending_snapshot: tuple[str, ...] = ()
     pending_since = last_progress
+    seen_update_count = session.tool_call_update_count
+    # Poll-granular observation times, kept for truthful expiry diagnostics.
+    pending_set_changed_at: datetime | None = None
+    last_tool_update_at: datetime | None = None
     # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
     # short overall budgets don't overshoot (e.g. timeout=30s with default
     # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
@@ -869,6 +879,14 @@ async def _prompt_with_idle_watchdog(
                 break
             now = asyncio.get_event_loop().time()
             cur_count = _activity_count()
+            # Observe tool_call_update traffic every poll: an in-progress
+            # update proves the pending call's transport is alive, so it
+            # restarts the grace clock (but not the idle clock — with no
+            # pending call, updates alone are not progress).
+            if session.tool_call_update_count != seen_update_count:
+                seen_update_count = session.tool_call_update_count
+                pending_since = now
+                last_tool_update_at = datetime.now(UTC)
             if cur_count > last_count:
                 last_progress = now
                 last_activity_at = datetime.now(UTC)
@@ -878,20 +896,23 @@ async def _prompt_with_idle_watchdog(
             # emit no ACP updates until they return, so a >idle_timeout run would
             # otherwise false-fire the watchdog and discard real work. Treat a
             # pending tool call as progress, but only within pending_grace of the
-            # pending set last changing: a call whose completion update was lost
-            # in transit stays pending forever, and an unbounded deferral would
-            # disarm the watchdog for the rest of the wall-clock budget (#1061).
-            # A genuine model-side hang has no pending tool call (the prior tool
-            # already completed via tool_call_update), so it trips the idle path.
+            # last pending-set change or observed update: a call whose completion
+            # update was lost in transit stays pending forever, and an unbounded
+            # deferral would disarm the watchdog for the rest of the wall-clock
+            # budget (#1061). A genuine model-side hang has no pending tool call
+            # (the prior tool already completed via tool_call_update), so it
+            # trips the idle path.
             elif session.pending_tool_call_ids():
                 snapshot = tuple(sorted(session.pending_tool_call_ids()))
                 if snapshot != pending_snapshot:
                     pending_snapshot = snapshot
                     pending_since = now
+                    pending_set_changed_at = datetime.now(UTC)
                 if now - pending_since < pending_grace:
                     last_progress = now
                     last_activity_at = datetime.now(UTC)
             if now - last_progress >= idle_timeout:
+                pending_ids = session.pending_tool_call_ids()
                 diag = IdleTimeoutDiagnostic(
                     idle_timeout_sec=idle_timeout,
                     idle_duration_sec=int(now - last_progress),
@@ -900,7 +921,47 @@ async def _prompt_with_idle_watchdog(
                     n_message_chunks=len(session.message_chunks),
                     n_thought_chunks=len(session.thought_chunks),
                     last_activity_at=last_activity_at.isoformat(),
+                    pending_tool_call_ids=list(pending_ids),
+                    pending_grace_sec=pending_grace,
+                    pending_set_last_changed_at=(
+                        pending_set_changed_at.isoformat()
+                        if pending_set_changed_at is not None
+                        else None
+                    ),
+                    last_tool_update_at=(
+                        last_tool_update_at.isoformat()
+                        if last_tool_update_at is not None
+                        else None
+                    ),
+                    n_tool_call_updates=session.tool_call_update_count,
                 )
+                if pending_ids:
+                    # A non-empty pending set here means the grace expired
+                    # (an in-grace pending call would have deferred
+                    # last_progress this very poll). Report that — not the
+                    # generic "no new tool call, message, or thought" line,
+                    # which is untrue when updates were flowing earlier.
+                    fired_at = datetime.now(UTC)
+                    set_age = (
+                        f"{int((fired_at - pending_set_changed_at).total_seconds())}s ago"
+                        if pending_set_changed_at is not None
+                        else "unknown"
+                    )
+                    update_age = (
+                        f"{int((fired_at - last_tool_update_at).total_seconds())}s ago"
+                        if last_tool_update_at is not None
+                        else "never"
+                    )
+                    raise IdleTimeoutError(
+                        f"Agent idle for {idle_timeout}s: "
+                        f"{len(pending_ids)} pending tool call(s) exceeded the "
+                        f"{pending_grace}s pending grace "
+                        f"({', '.join(pending_ids)}; pending set last changed "
+                        f"{set_age}, last tool-call update {update_age}, "
+                        f"{session.tool_call_update_count} updates seen, "
+                        f"{len(session.tool_calls)} tool calls so far)",
+                        diag,
+                    )
                 raise IdleTimeoutError(
                     f"Agent idle for {idle_timeout}s with no new tool call, "
                     f"message, or thought "

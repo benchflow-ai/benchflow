@@ -932,6 +932,119 @@ class TestPendingToolCallGrace:
                 timeout=20.0,
             )
 
+    @pytest.mark.asyncio
+    async def test_streaming_tool_call_updates_defer_past_grace(self):
+        """A single long tool call that streams in-progress tool_call_update
+        notifications past the grace boundary is demonstrably alive and must
+        NOT be idle-killed: updates mutate the ToolCallRecord in place, so
+        they are invisible to both the pending-set snapshot and
+        _activity_count — each observed update must reset the grace clock.
+        The wall-clock backstop (AgentPromptTimeoutError) still bounds it.
+
+        Runtime: ~7s (wall timeout 7 > grace 3 + idle 1, so an unpatched
+        grace clock false-fires the idle path first). The outer wait_for is
+        a loose hang guard, not a timing assertion.
+        """
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class StreamingToolClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stream",
+                        "title": "long training run",
+                        "kind": "bash",
+                    }
+                )
+                while True:  # stream progress until cancelled
+                    await asyncio.sleep(0.4)
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_stream",
+                            "status": "in_progress",
+                        }
+                    )
+
+        session = ACPSession("streaming-grace-session")
+        with pytest.raises(AgentPromptTimeoutError):
+            await asyncio.wait_for(
+                execute_prompts(
+                    StreamingToolClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=7,
+                    idle_timeout=1,
+                ),
+                timeout=30.0,
+            )
+        # The call outlived the watchdog: still pending, never idle-killed.
+        assert session.pending_tool_call_ids() == ["tc_stream"]
+
+    @pytest.mark.asyncio
+    async def test_grace_expiry_reports_pending_truth(self):
+        """When the grace genuinely expires (call pending, updates stopped),
+        the raised message and IdleTimeoutDiagnostic must say so — not claim
+        'no new tool call, message, or thought' as if the session were
+        silent all along.
+
+        Runtime: ~4s (2 quick updates, then silence through grace + idle).
+        """
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class StallAfterUpdatesClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stall",
+                        "title": "flaky build",
+                        "kind": "bash",
+                    }
+                )
+                for _ in range(2):
+                    await asyncio.sleep(0.2)
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_stall",
+                            "status": "in_progress",
+                        }
+                    )
+                await asyncio.Future()  # completion update lost forever
+
+        session = ACPSession("grace-expiry-session")
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await asyncio.wait_for(
+                execute_prompts(
+                    StallAfterUpdatesClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=60,
+                    idle_timeout=1,
+                ),
+                timeout=30.0,
+            )
+        msg = str(exc_info.value)
+        assert "pending grace" in msg
+        assert "tc_stall" in msg
+        info = exc_info.value.diagnostic.to_dict()
+        assert info["pending_tool_call_ids"] == ["tc_stall"]
+        assert info["pending_grace_sec"] == 3  # 3x idle_timeout
+        assert info["n_tool_call_updates"] == 2
+        assert info["pending_set_last_changed_at"] is not None
+        assert info["last_tool_update_at"] is not None
+        # Existing fields keep their meaning.
+        assert info["reason"] == "idle_timeout"
+        assert info["idle_duration_sec"] >= 1
+
 
 class TestIdleTimeoutDiagnostics:
     """Guards ENG-149: idle timeouts must carry structured diagnostics."""
