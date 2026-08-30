@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
