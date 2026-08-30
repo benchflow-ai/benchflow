@@ -153,7 +153,7 @@ _ORI_INSTALL = (
     "apk add --no-cache curl ca-certificates coreutils; "
     "else echo 'Ori bootstrap requires curl and sha256sum' >&2; exit 127; fi; "
     "fi; "
-    'BF_ORI_ARCH=$(uname -m); '
+    "BF_ORI_ARCH=$(uname -m); "
     'case "$BF_ORI_ARCH" in '
     "x86_64|amd64) BF_ORI_ARCH=x64 ;; "
     "aarch64|arm64) BF_ORI_ARCH=arm64 ;; "
@@ -170,12 +170,12 @@ _ORI_INSTALL = (
     "ori-linux-arm64-musl) BF_ORI_SHA=85a3be536da3337b630f2fa56f3b259961a334f5e7af75c3dd4a5a7873957d34 ;; "
     '*) echo "No checksum for Ori asset: $BF_ORI_ASSET" >&2; exit 1 ;; '
     "esac; "
-    'BF_ORI_TMP=$(mktemp -d /tmp/benchflow-ori-install.XXXXXX); '
+    "BF_ORI_TMP=$(mktemp -d /tmp/benchflow-ori-install.XXXXXX); "
     'curl -fsSLo "$BF_ORI_TMP/$BF_ORI_ASSET" '
     '"https://github.com/OpenRouterLabs/ori-releases/releases/download/'
     '${BF_ORI_RELEASE}/${BF_ORI_ASSET}"; '
     'BF_ORI_ACTUAL=$(sha256sum "$BF_ORI_TMP/$BF_ORI_ASSET"); '
-    'BF_ORI_ACTUAL=${BF_ORI_ACTUAL%% *}; '
+    "BF_ORI_ACTUAL=${BF_ORI_ACTUAL%% *}; "
     'if [ "$BF_ORI_ACTUAL" != "$BF_ORI_SHA" ]; then '
     'echo "Ori checksum mismatch for $BF_ORI_ASSET" >&2; exit 1; fi; '
     f"mkdir -p {_BENCHFLOW_BIN_PREFIX}; "
@@ -351,6 +351,11 @@ _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text(
 # Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
 
+# Ori's stdlib-only decoder, event translator, and ACP shim deploy together.
+_ORI_JSONL = (Path(__file__).parent / "ori_jsonl.py").read_text()
+_ORI_EVENTS = (Path(__file__).parent / "ori_events.py").read_text()
+_ORI_ACP_SHIM = (Path(__file__).parent / "ori_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -482,6 +487,18 @@ class HostAuthFile:
 
 
 @dataclass
+class NativeSubscriptionPolicy:
+    """When subscription credentials may bypass the provider proxy.
+
+    ``direct_envs`` lists agent-native login tokens that activate the same path
+    without a copied credential file. Model/provider eligibility is derived
+    from the containing :class:`SubscriptionAuth`'s ``replaces_env`` field.
+    """
+
+    direct_envs: tuple[str, ...] = ()
+
+
+@dataclass
 class SubscriptionAuth:
     """Host CLI login credentials that can substitute for an API key.
 
@@ -499,6 +516,7 @@ class SubscriptionAuth:
     detect_file: str  # Host path to check for login, e.g. "~/.claude/.credentials.json"
     files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
     detect_files: list[str] = field(default_factory=list)  # Optional alternatives
+    native_policy: NativeSubscriptionPolicy | None = None
 
 
 @dataclass
@@ -599,6 +617,13 @@ AGENTS: dict[str, AgentConfig] = {
         subscription_auth=SubscriptionAuth(
             replaces_env="ANTHROPIC_API_KEY",
             detect_file="~/.claude/.credentials.json",
+            native_policy=NativeSubscriptionPolicy(
+                direct_envs=(
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                    "CLAUDE_OAUTH_TOKEN",
+                    "ANTHROPIC_AUTH_TOKEN",
+                )
+            ),
             files=[
                 HostAuthFile(
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
@@ -790,16 +815,24 @@ AGENTS: dict[str, AgentConfig] = {
     "ori": AgentConfig(
         name="ori",
         description=(
-            "OpenRouter Ori built-in coding harness via its headless JSONL runtime"
+            "OpenRouter Ori coding harness via a BenchFlow ACP-over-JSONL shim"
         ),
-        install_cmd=_ORI_INSTALL,
-        # session_factory owns invocation; keep the launch command descriptive
-        # for `bench agent show` and registry consumers.
-        launch_cmd=(
-            f"{_ORI_BINARY} code --harness ori --approvals self-drive --output jsonl"
+        install_cmd=(
+            f"{_ORI_INSTALL} && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/ori_jsonl.py", _ORI_JSONL
+            )
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/ori_events.py", _ORI_EVENTS
+            )
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/ori-acp-shim", _ORI_ACP_SHIM
+            )
         ),
-        protocol="session-factory",
-        session_factory="benchflow.agents.ori:build_ori_agent",
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/ori-acp-shim",
+        protocol="acp",
         skill_paths=["$WORKSPACE/.agents/skills"],
         requires_env=["OPENROUTER_API_KEY"],
         default_model="openrouter/openrouter/auto",
@@ -812,14 +845,13 @@ AGENTS: dict[str, AgentConfig] = {
         subscription_auth=SubscriptionAuth(
             replaces_env="OPENROUTER_API_KEY",
             detect_file="~/.ori/credentials.json",
+            native_policy=NativeSubscriptionPolicy(),
             detect_files=[
                 "~/.ori/credentials.json",
                 "~/.openrouter/credentials.json",
             ],
             files=[
-                HostAuthFile(
-                    "~/.ori/credentials.json", "{home}/.ori/credentials.json"
-                ),
+                HostAuthFile("~/.ori/credentials.json", "{home}/.ori/credentials.json"),
                 HostAuthFile(
                     "~/.openrouter/credentials.json",
                     "{home}/.openrouter/credentials.json",
@@ -827,7 +859,7 @@ AGENTS: dict[str, AgentConfig] = {
             ],
         ),
         home_dirs=[".ori", ".openrouter"],
-        supports_acp_set_model=False,
+        acp_effort_config_id="reasoning_effort",
     ),
     "mimo": AgentConfig(
         name="mimo",
@@ -1244,11 +1276,6 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
     persistent sessions, crash recovery, and structured NDJSON output.
     The underlying agent's install, env, and credentials are preserved.
     """
-    if config.protocol != "acp":
-        raise KeyError(
-            f"Agent {config.name!r} uses protocol {config.protocol!r} and cannot "
-            "be wrapped by ACPX. Run it by its bare agent name instead."
-        )
     acpx_agent_name = config.name
     for alias, canonical in AGENT_ALIASES.items():
         if canonical == config.name:

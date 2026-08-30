@@ -221,7 +221,6 @@ from benchflow.trajectories._capture import (
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.usage_tracking import (
-    USAGE_SOURCE_AGENT_NATIVE,
     USAGE_SOURCE_AGENT_NATIVE_ACP,
     USAGE_SOURCE_PROVIDER_RESPONSE,
     is_token_usage_available,
@@ -1275,6 +1274,21 @@ class Rollout:
             return cfg.session_factory
         return None
 
+    def _bind_agent_connection(self, connection: tuple[Any, Any, Any, str]) -> None:
+        """Bind one newly-created agent session and reset session-local usage.
+
+        Both primary and role-based connects cross this boundary. Keeping the
+        native-usage checkpoint here prevents cumulative counters from a prior
+        session being subtracted from a fresh session's smaller totals.
+        """
+        (
+            self._acp_client,
+            self._session,
+            self._session_adapter,
+            self._agent_name,
+        ) = connection
+        self._native_usage_checkpoint = None
+
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
@@ -1301,12 +1315,7 @@ class Rollout:
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
-            (
-                self._acp_client,
-                self._session,
-                self._session_adapter,
-                self._agent_name,
-            ) = await self._planes.connect_session_factory(
+            connection = await self._planes.connect_session_factory(
                 env=self._env,
                 agent=cfg.primary_agent,
                 session_factory=sf_entrypoint,
@@ -1316,15 +1325,9 @@ class Rollout:
                 rollout_dir=rollout_dir,
                 timeout=self._timeout,
                 agent_cwd=self._agent_cwd,
-                reasoning_effort=cfg.primary_reasoning_effort,
             )
         else:
-            (
-                self._acp_client,
-                self._session,
-                self._session_adapter,
-                self._agent_name,
-            ) = await self._planes.connect_acp(
+            connection = await self._planes.connect_acp(
                 env=self._env,
                 agent=cfg.primary_agent,
                 agent_launch=self._agent_launch,
@@ -1341,7 +1344,7 @@ class Rollout:
                     getattr(self, "_agent_cfg", None),
                 ),
             )
-        self._native_usage_checkpoint = None
+        self._bind_agent_connection(connection)
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
 
@@ -1701,12 +1704,7 @@ class Rollout:
         self._phase = "executed"
 
     def _collect_native_acp_usage(self) -> None:
-        """Accumulate trusted session-native usage deltas.
-
-        ACP sessions use ``agent_native_acp``. Protocol-agnostic sessions such
-        as Ori may declare ``usage_source = "agent_native"`` while exposing the
-        same cumulative ``latest_usage_totals`` shape.
-        """
+        """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
         session = getattr(self, "_session", None)
         latest_fn = getattr(session, "latest_usage_totals", None)
         if not callable(latest_fn):
@@ -1740,12 +1738,7 @@ class Rollout:
             details.get("thought_tokens")
         ) + (delta.get("thought_tokens") or 0)
         metrics["usage_details"] = details
-        declared_source = getattr(session, "usage_source", None)
-        metrics["usage_source"] = (
-            USAGE_SOURCE_AGENT_NATIVE
-            if declared_source == USAGE_SOURCE_AGENT_NATIVE
-            else USAGE_SOURCE_AGENT_NATIVE_ACP
-        )
+        metrics["usage_source"] = USAGE_SOURCE_AGENT_NATIVE_ACP
         metrics["cost_usd"] = None
         metrics["price_source"] = None
         self._native_usage_metrics = metrics
@@ -2045,7 +2038,7 @@ class Rollout:
         self._phase = "cleaned"
 
     def _finalize_usage_metrics(self) -> None:
-        """Prefer LiteLLM usage, otherwise use trusted session-native usage."""
+        """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
         current_metrics = getattr(
             self, "_usage_metrics", {"usage_source": "unavailable"}
         )
@@ -2358,12 +2351,7 @@ class Rollout:
         sf_entrypoint = self._session_factory_entrypoint(role.agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
-            (
-                self._acp_client,
-                self._session,
-                self._session_adapter,
-                self._agent_name,
-            ) = await self._planes.connect_session_factory(
+            connection = await self._planes.connect_session_factory(
                 env=self._env,
                 agent=role.agent,
                 session_factory=sf_entrypoint,
@@ -2375,15 +2363,9 @@ class Rollout:
                     role.timeout_sec if role.timeout_sec is not None else self._timeout
                 ),
                 agent_cwd=self._agent_cwd,
-                reasoning_effort=role.reasoning_effort,
             )
         else:
-            (
-                self._acp_client,
-                self._session,
-                self._session_adapter,
-                self._agent_name,
-            ) = await self._planes.connect_acp(
+            connection = await self._planes.connect_acp(
                 env=self._env,
                 agent=role.agent,
                 agent_launch=agent_launch,
@@ -2398,6 +2380,7 @@ class Rollout:
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
             )
+        self._bind_agent_connection(connection)
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role
@@ -2579,10 +2562,10 @@ class Rollout:
             return
         # Native-subscription runs have no proxy evidence: LiteLLM is
         # deliberately skipped (Harbor-style split) and the CLI authenticates
-        # itself. Some agents expose trusted native usage (Ori does), while
-        # others expose neither usage nor tool telemetry (e.g. omnigent's flat
-        # session events). Conservatively skip the proxy-oriented zero-signal
-        # heuristic for both; real failures still surface via agent errors.
+        # itself. Some agents expose trusted ACP usage, while others expose
+        # neither usage nor tool telemetry. Conservatively skip the
+        # proxy-oriented zero-signal heuristic for both; real failures still
+        # surface via agent errors.
         from benchflow.agents.env import uses_native_subscription_auth
 
         config = getattr(self, "_config", None)

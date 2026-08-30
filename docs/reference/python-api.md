@@ -271,7 +271,7 @@ result = await bf.run(config)
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY, CODEX_API_KEY, CODEX_ACCESS_TOKEN, or host login | `codex` |
 | `opencode` | ACP | inferred from model/provider | — |
-| `ori` | Ori JSONL session factory | OPENROUTER_API_KEY or host login | — |
+| `ori` | ACP (BenchFlow shim over Ori JSONL) | OPENROUTER_API_KEY or host login | — |
 | `openhands` | ACP | LLM_API_KEY | `oh` |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |
@@ -283,7 +283,7 @@ as `azure-foundry-openai/gpt-5.5` or
 `azure-foundry-anthropic/claude-opus-4-5`. BenchFlow routes these providers
 through LiteLLM on both Docker and Daytona.
 
-Any ACP-speaking agent can be prefixed with `acpx/` to run via [ACPX](https://acpx.sh/) (e.g. `acpx/gemini`, `acpx/claude`). ACPX is a headless ACP client with persistent sessions and crash recovery. The underlying agent's install, env, credentials, and skill paths are preserved. Non-ACP session-factory agents such as `ori` use their own native session mechanism instead.
+Any agent can be prefixed with `acpx/` to run via [ACPX](https://acpx.sh/) (e.g. `acpx/gemini`, `acpx/claude`). ACPX is a headless ACP client with persistent sessions and crash recovery. The underlying agent's install, env, credentials, and skill paths are preserved.
 
 ## Retry and Error Handling
 

@@ -11,7 +11,7 @@
 
 ## What
 
-BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with any registered ACP agent or native harness adapter, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
+BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
 ## Quick start: 1. Submit a trajectory
 

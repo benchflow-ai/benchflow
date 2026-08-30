@@ -325,7 +325,7 @@ Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` with prefixes such
 as `azure-foundry-openai/gpt-5.5` or
 `azure-foundry-anthropic/claude-opus-4-5`.
 
-Any ACP-speaking agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
+Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
 
 ```bash
 bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
@@ -336,10 +336,11 @@ The underlying agent's install, env vars, credentials, and skill paths are all p
 
 ### OpenRouter Ori harness
 
-`--agent ori` runs Ori's built-in coding harness directly through its headless
-JSONL runtime. BenchFlow pins and verifies the Ori binary, resumes Ori's native
-session id for follow-up turns, normalizes its messages and tool calls into the
-standard trajectory, and records token usage from Ori's terminal event.
+`--agent ori` runs Ori's built-in coding harness through BenchFlow's ACP shim.
+The shim drives Ori's headless JSONL runtime, resumes Ori's native session id
+for follow-up turns, streams messages and tool calls as ACP events, and returns
+cumulative token usage in the ACP prompt response. BenchFlow pins and verifies
+the Ori binary before installing it.
 
 Use an OpenRouter API key:
 
@@ -360,9 +361,7 @@ Alternatively, install Ori on the host, run `ori login`, and unset
 `OPENROUTER_API_KEY`. BenchFlow detects either `~/.ori/credentials.json` or
 `~/.openrouter/credentials.json`, copies it into the sandbox, and uses Ori's
 native login. API-key runs go through BenchFlow's LiteLLM usage gateway; native
-login runs use the trusted token totals in Ori's JSONL terminal event.
-
-Ori is not an ACP server, so do not prefix it with `acpx/`.
+login runs use the trusted token totals returned through the ACP shim.
 
 The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent loop
 (6 tools, system prompt) inside BenchFlow's sandbox. Use it for parity testing

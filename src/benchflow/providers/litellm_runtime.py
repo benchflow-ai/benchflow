@@ -1603,7 +1603,7 @@ async def ensure_litellm_runtime(
         return await _skip_litellm_runtime(
             agent_env,
             runtime,
-            reason="native subscription auth will use agent-native usage telemetry",
+            reason="native subscription auth will use agent ACP usage telemetry",
         )
 
     if not needs_litellm_runtime(agent, model):

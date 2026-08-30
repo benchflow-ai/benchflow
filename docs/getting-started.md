@@ -213,7 +213,7 @@ Each run writes under `--jobs-dir` (default `jobs/`):
       timing.json                   # per-phase timing breakdown
       prompts.json                  # prompts sent to the agent
       trajectory/
-        acp_trajectory.jsonl        # full normalized agent trace (legacy filename)
+        acp_trajectory.jsonl        # full agent trace (ACP events)
         llm_trajectory.jsonl        # raw provider requests/responses (when the usage-tracking proxy captured exchanges)
       trainer/
         verifiers.jsonl             # trainer-ready scored trajectory (Verifiers/ORS record)

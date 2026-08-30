@@ -7,28 +7,20 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 UsageTrackingMode = Literal["auto", "required", "off"]
-UsageSource = Literal[
-    "provider_response", "agent_native_acp", "agent_native", "unavailable"
-]
+UsageSource = Literal["provider_response", "agent_native_acp", "unavailable"]
 
 USAGE_TRACKING_ENV = "BENCHFLOW_USAGE_TRACKING"
 USAGE_SOURCE_PROVIDER_RESPONSE = "provider_response"
 USAGE_SOURCE_AGENT_NATIVE_ACP = "agent_native_acp"
-USAGE_SOURCE_AGENT_NATIVE = "agent_native"
 USAGE_SOURCE_UNAVAILABLE = "unavailable"
 TRUSTED_USAGE_SOURCES: frozenset[str] = frozenset(
-    {
-        USAGE_SOURCE_PROVIDER_RESPONSE,
-        USAGE_SOURCE_AGENT_NATIVE_ACP,
-        USAGE_SOURCE_AGENT_NATIVE,
-    }
+    {USAGE_SOURCE_PROVIDER_RESPONSE, USAGE_SOURCE_AGENT_NATIVE_ACP}
 )
 
 _MODES: set[str] = {"auto", "required", "off"}
 _USAGE_SOURCES: set[str] = {
     USAGE_SOURCE_PROVIDER_RESPONSE,
     USAGE_SOURCE_AGENT_NATIVE_ACP,
-    USAGE_SOURCE_AGENT_NATIVE,
     USAGE_SOURCE_UNAVAILABLE,
 }
 _LEGACY_USAGE_PROXY_KEYS: frozenset[str] = frozenset(
