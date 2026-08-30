@@ -79,6 +79,7 @@ def setup_provider() -> None:
     provider_name = os.environ.get("BENCHFLOW_PROVIDER_NAME") or _derive_provider_name(
         model
     )
+    proxy_mode = bool(os.environ.get("BENCHFLOW_LITELLM_MODEL_ALIAS"))
 
     if protocol == "openai-completions":
         if not base_url:
@@ -117,8 +118,11 @@ def setup_provider() -> None:
         config_dir = Path.home() / ".pi" / "agent"
         config_dir.mkdir(parents=True, exist_ok=True)
         models_path = config_dir / "models.json"
-        # Merge with existing config so manually-added providers survive
-        if models_path.exists():
+        # A proxy run has exclusive custody of model traffic. Replacing the
+        # provider map removes stale direct providers (and their literal API
+        # keys) that could otherwise let Pi bypass LiteLLM. Direct-provider
+        # runs retain the historical merge behavior for user-added providers.
+        if not proxy_mode and models_path.exists():
             try:
                 existing = json.loads(models_path.read_text())
                 existing.setdefault("providers", {}).update(config["providers"])
