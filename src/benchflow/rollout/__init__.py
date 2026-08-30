@@ -983,7 +983,7 @@ class Rollout:
         ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
-                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+                cfg.primary_agent, cfg.primary_model, cfg.primary_env
             ),
             disallow=self._disallow_web_tools,
         )

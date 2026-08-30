@@ -432,3 +432,13 @@ class RolloutConfig:
         """Reasoning effort for the first role of the first scene."""
         role = self._primary_role
         return role.reasoning_effort if role else self.reasoning_effort
+
+    @property
+    def primary_env(self) -> dict[str, str]:
+        """Config env merged with the first scene role's scoped overrides."""
+
+        role = self._primary_role
+        return {
+            **(self.agent_env or {}),
+            **((role.env or {}) if role is not None else {}),
+        }

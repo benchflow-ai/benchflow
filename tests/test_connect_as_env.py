@@ -32,6 +32,20 @@ def _make_config(agent_env=None, role_env=None):
 class TestConnectAsEnvMerge:
     """Verify connect_as() merges cfg.agent_env with role.env correctly."""
 
+    def test_primary_setup_env_includes_role_scoped_credentials(self):
+        """Guards PR #1057 mixed-auth setup against requiring global secrets."""
+
+        config = _make_config(
+            agent_env={"GLOBAL": "yes", "SHARED": "config"},
+            role_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth", "SHARED": "role"},
+        )
+
+        assert config.primary_env == {
+            "GLOBAL": "yes",
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+            "SHARED": "role",
+        }
+
     @pytest.fixture()
     def _mock_trial(self, tmp_path):
         """Return a Rollout stub wired to capture the agent_env passed to connect_acp."""
