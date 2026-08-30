@@ -11,7 +11,8 @@ import pytest
 
 from benchflow.agents.credentials import (
     _PROXY_AUTH_CLEANUP_JS,
-    isolate_subscription_auth_for_proxy,
+    _proxy_process_isolation_guard,
+    isolate_agent_for_proxy_capture,
 )
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import resolve_litellm_route
@@ -101,7 +102,8 @@ async def test_api_proxy_isolates_preexisting_subscription_credential(
     )
     assert "O_NOFOLLOW" in sandbox.commands[0]
     assert "/proc/self/fd/" in sandbox.commands[0]
-    assert "SIGKILL" in sandbox.commands[0]
+    assert "pgrep -u" in sandbox.commands[0]
+    assert "SIGKILL" not in sandbox.commands[0]
     assert "rm -f" not in sandbox.commands[0]
 
 
@@ -112,7 +114,7 @@ async def test_proxy_auth_cleanup_rejects_override_outside_sandbox_home() -> Non
     sandbox = _SubscriptionIsolationSandbox()
     agent_env = {"CODEX_HOME": "/etc/custom-codex"}
 
-    trusted = await isolate_subscription_auth_for_proxy(
+    trusted = await isolate_agent_for_proxy_capture(
         sandbox,
         agent="codex-acp",
         agent_env=agent_env,
@@ -126,9 +128,105 @@ async def test_proxy_auth_cleanup_rejects_override_outside_sandbox_home() -> Non
     assert "/etc/custom-codex" not in sandbox.commands[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", ["opencode", "openhands", "pi-acp"])
+async def test_proxy_process_guard_applies_without_subscription_auth(agent) -> None:
+    """Guards PR #1057 review r3888399860 across every proxied API agent."""
+
+    sandbox = _SubscriptionIsolationSandbox()
+
+    trusted = await isolate_agent_for_proxy_capture(
+        sandbox,
+        agent=agent,
+        agent_env={},
+        cred_home="/home/agent",
+    )
+
+    assert trusted is True
+    assert len(sandbox.commands) == 1
+    assert "pgrep -u" in sandbox.commands[0]
+    assert '"$bf_agent_uid" -ne 0' in sandbox.commands[0]
+    assert '"$bf_pgrep_rc" -eq 1' in sandbox.commands[0]
+    assert _PROXY_AUTH_CLEANUP_JS not in sandbox.commands[0]
+
+
+@pytest.mark.asyncio
+async def test_proxy_process_guard_rejects_root_agent_without_subscription_auth() -> (
+    None
+):
+    """Guards PR #1057 review r3888399860 against trusted root OpenCode runs."""
+
+    sandbox = _SubscriptionIsolationSandbox()
+
+    trusted = await isolate_agent_for_proxy_capture(
+        sandbox,
+        agent="opencode",
+        agent_env={},
+        cred_home="/root",
+    )
+
+    assert trusted is False
+    assert sandbox.commands == ["false"]
+
+
+@pytest.mark.parametrize(
+    ("pgrep_return_code", "trusted"),
+    [(0, False), (1, True), (2, False)],
+)
+def test_proxy_process_guard_accepts_only_exact_no_match_exit(
+    tmp_path, pgrep_return_code: int, trusted: bool
+) -> None:
+    """Guards PR #1057 review r3888399860 against process-probe errors."""
+
+    fake_id = tmp_path / "id"
+    fake_id.write_text("#!/bin/sh\nprintf '1000\\n'\n")
+    fake_id.chmod(0o755)
+    fake_pgrep = tmp_path / "pgrep"
+    fake_pgrep.write_text(f"#!/bin/sh\nexit {pgrep_return_code}\n")
+    fake_pgrep.chmod(0o755)
+    guard, owner_safe = _proxy_process_isolation_guard("/home/agent")
+
+    result = subprocess.run(
+        ["sh", "-c", guard],
+        check=False,
+        env={"PATH": f"{tmp_path}:{os.environ['PATH']}"},
+    )
+
+    assert owner_safe is True
+    assert (result.returncode == 0) is trusted
+
+
+@pytest.mark.asyncio
+async def test_root_opencode_proxy_capture_remains_audit_only(monkeypatch) -> None:
+    """Guards PR #1057 review r3888399860 at the runtime trust boundary."""
+
+    async def fake_start(**_kwargs):
+        return SimpleNamespace(base_url="http://127.0.0.1:4000")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    sandbox = _SubscriptionIsolationSandbox()
+
+    _, provider_runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env={"OPENAI_API_KEY": "sk-provider"},
+        model="openai/gpt-5.6-luna",
+        runtime=None,
+        environment="docker",
+        session_id="run-root-opencode",
+        sandbox=sandbox,
+        sandbox_user=None,
+    )
+
+    assert provider_runtime is not None
+    assert provider_runtime.capture_trusted is False
+    assert sandbox.commands == ["false"]
+
+
 @pytest.mark.skipif(
-    sys.platform != "linux" or shutil.which("node") is None,
-    reason="the sandbox cleanup primitive requires Linux procfs and Node.js",
+    sys.platform != "linux"
+    or shutil.which("node") is None
+    or shutil.which("pgrep") is None,
+    reason="the sandbox process guard requires Linux, Node.js, and pgrep",
 )
 def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
     """Guards PR #1057 review r3888287847 against credential cleanup TOCTOU."""
@@ -150,8 +248,6 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
             "-e",
             _PROXY_AUTH_CLEANUP_JS,
             "--",
-            "2147483646",
-            json.dumps(["/opt/benchflow/js-agents/bin/codex-acp"]),
             json.dumps([str(credential_path)]),
         ],
         check=False,
@@ -171,8 +267,6 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
             "-e",
             _PROXY_AUTH_CLEANUP_JS,
             "--",
-            "2147483646",
-            json.dumps(["/opt/benchflow/js-agents/bin/codex-acp"]),
             json.dumps([str(credential_path)]),
         ],
         check=False,
@@ -187,8 +281,10 @@ def test_proxy_auth_cleanup_never_follows_credential_symlinks(tmp_path) -> None:
 
 
 @pytest.mark.skipif(
-    sys.platform != "linux" or shutil.which("node") is None,
-    reason="the sandbox cleanup primitive requires Linux procfs and Node.js",
+    sys.platform != "linux"
+    or shutil.which("node") is None
+    or shutil.which("pgrep") is None,
+    reason="the sandbox process guard requires Linux, Node.js, and pgrep",
 )
 def test_proxy_auth_cleanup_preserves_unrelated_user_processes(tmp_path) -> None:
     """Guards PR #1057 review r3888337690 against killing task processes."""
@@ -196,31 +292,20 @@ def test_proxy_auth_cleanup_preserves_unrelated_user_processes(tmp_path) -> None
     credential_path = tmp_path / ".codex" / "auth.json"
     credential_path.parent.mkdir()
     credential_path.write_text("subscription-secret")
-    absent_agent_marker = "/opt/benchflow/js-agents/bin/not-this-process"
-
     unrelated = subprocess.Popen(
-        ["node", "-e", "setInterval(() => {}, 1000)", absent_agent_marker],
+        ["node", "-e", "setInterval(() => {}, 1000)"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
         refused = subprocess.run(
-            [
-                "node",
-                "-e",
-                _PROXY_AUTH_CLEANUP_JS,
-                "--",
-                str(os.getuid()),
-                json.dumps([absent_agent_marker]),
-                json.dumps([str(credential_path)]),
-            ],
+            ["sh", "-c", '! pgrep -u "$(id -u)" >/dev/null 2>&1'],
             check=False,
             capture_output=True,
             text=True,
         )
 
         assert refused.returncode != 0
-        assert "unrelated sandbox-user process" in refused.stderr
         assert credential_path.read_text() == "subscription-secret"
         assert unrelated.poll() is None
     finally:

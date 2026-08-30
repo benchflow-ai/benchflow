@@ -5,7 +5,7 @@ Single home for "writes a file under the agent's credential dir":
     - write_credential_files  agent + provider credential files (cf. AgentConfig)
     - write_gemini_vertex_settings  ~/.gemini/settings.json for Vertex backend
     - upload_subscription_auth  host login files (e.g. ~/.claude/.credentials.json)
-    - isolate_subscription_auth_for_proxy  remove stale native login in API mode
+    - isolate_agent_for_proxy_capture  prove process/auth isolation in API mode
 
 The Gemini Vertex settings helper lives here (not in _agent_env.py) so the
 module has a single coherent role and zero horizontal imports between phase
@@ -34,70 +34,10 @@ _BENCHFLOW_NODE_BIN = f"{_BENCHFLOW_PREFIX}/node/bin/node"
 _PROXY_AUTH_CLEANUP_JS = r"""
 const fs = require("fs");
 
-const sandboxUid = Number(process.argv[1]);
-const agentProcessMarkers = JSON.parse(process.argv[2]);
-const targets = JSON.parse(process.argv[3]);
+const targets = JSON.parse(process.argv[1]);
 const constants = fs.constants;
 const directoryFlags =
   constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-
-function processesForUid(uid) {
-  const matches = [];
-  for (const entry of fs.readdirSync("/proc")) {
-    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
-    try {
-      const status = fs.readFileSync(`/proc/${entry}/status`, "utf8");
-      const owner = /^Uid:\s+(\d+)/m.exec(status);
-      const state = /^State:\s+(\S+)/m.exec(status);
-      if (owner && Number(owner[1]) === uid && (!state || state[1] !== "Z")) {
-        const argv = fs
-          .readFileSync(`/proc/${entry}/cmdline`, "utf8")
-          .split("\0")
-          .filter(Boolean);
-        matches.push({pid: Number(entry), argv});
-      }
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-  }
-  return matches;
-}
-
-function isManagedAgentProcess(processInfo, markers) {
-  return markers.some(
-    (marker) => processInfo.argv[0] === marker || processInfo.argv[1] === marker,
-  );
-}
-
-function quiescePriorAgentProcesses(uid, markers) {
-  if (!Number.isInteger(uid) || uid < 0) {
-    throw new Error("root sandbox agents cannot prove stale-process isolation");
-  }
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const agents = processesForUid(uid).filter((processInfo) =>
-      isManagedAgentProcess(processInfo, markers),
-    );
-    if (agents.length === 0) break;
-    for (const {pid} of agents) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-  }
-  const remaining = processesForUid(uid);
-  const staleAgents = remaining.filter((processInfo) =>
-    isManagedAgentProcess(processInfo, markers),
-  );
-  if (staleAgents.length !== 0) {
-    throw new Error("stale agent process survived credential isolation");
-  }
-  if (remaining.length !== 0) {
-    throw new Error("unrelated sandbox-user process prevents trusted cleanup");
-  }
-}
 
 function openDirectoryNoFollow(parts) {
   let descriptor = fs.openSync("/", directoryFlags);
@@ -146,7 +86,6 @@ function removeCredentialNoFollow(target) {
   }
 }
 
-quiescePriorAgentProcesses(sandboxUid, agentProcessMarkers);
 for (const target of targets) removeCredentialNoFollow(target);
 """.strip()
 
@@ -157,6 +96,23 @@ def _owner_from_home(cred_home: str) -> str | None:
     if len(parts) == 3 and parts[0] == "/" and parts[1] == "home":
         return parts[2]
     return None
+
+
+def _proxy_process_isolation_guard(cred_home: str) -> tuple[str, bool]:
+    """Return a root shell guard proving the agent UID has no live process."""
+
+    sandbox_owner = _owner_from_home(cred_home)
+    if sandbox_owner is None:
+        return "false", False
+    quoted_owner = shlex.quote(sandbox_owner)
+    return (
+        "command -v pgrep >/dev/null 2>&1 && "
+        f"bf_agent_uid=$(id -u -- {quoted_owner}) && "
+        '[ "$bf_agent_uid" -ne 0 ] && '
+        '{ pgrep -u "$bf_agent_uid" >/dev/null 2>&1; '
+        'bf_pgrep_rc=$?; [ "$bf_pgrep_rc" -eq 1 ]; }',
+        True,
+    )
 
 
 async def upload_credential(
@@ -303,39 +259,55 @@ async def upload_subscription_auth(
         )
 
 
-async def isolate_subscription_auth_for_proxy(
+async def isolate_agent_for_proxy_capture(
     env,
     *,
     agent: str,
     agent_env: dict[str, str],
     cred_home: str,
 ) -> bool:
-    """Remove the primary native-login credential before an API proxy run.
+    """Prove process isolation and remove native auth before an API proxy run.
 
     A reused image may already contain the CLI login detected by
     ``SubscriptionAuth.detect_file``. API-key mode must not leave that alternate
     provider route available to the agent. A safe CLI config-home override is
     scrubbed as well as removed before launch; an override outside the sandbox
-    user's home fails capture trust without allowing a root deletion there. The
-    cleanup stops only stale ACP processes for a non-root sandbox user and
-    refuses trust when unrelated user processes are alive. It then uses the
-    JavaScript runtime already required by every subscription-capable agent to
-    traverse with no-follow directory descriptors. Root-agent runs remain
-    audit-only because stale root processes cannot be safely distinguished.
-    Return false unless every eligible credential can be identified, removed,
-    and verified absent.
+    user's home fails capture trust without allowing a root deletion there.
+    Every API-proxied agent first requires a non-root sandbox user with no live
+    processes; an existing agent or task process is preserved and makes capture
+    audit-only. Subscription-capable agents then use their already-required
+    JavaScript runtime to traverse with no-follow directory descriptors.
+    Root-agent runs remain audit-only because stale root processes cannot be
+    safely distinguished. Return false unless process isolation is proven and
+    every eligible credential can be identified, removed, and verified absent.
     """
 
     agent_cfg = AGENTS.get(agent)
     subscription_auth = agent_cfg.subscription_auth if agent_cfg else None
+    if env is None:
+        logger.warning("Cannot prove proxy process isolation for %s", agent)
+        return False
+
+    process_guard, processes_safe = _proxy_process_isolation_guard(cred_home)
+
     if subscription_auth is None:
-        return True
+        try:
+            result = await env.exec(
+                process_guard,
+                user="root",
+                timeout_sec=10,
+            )
+        except Exception as exc:
+            logger.warning("Failed to isolate %s agent processes: %s", agent, exc)
+            return False
+        return bool(result.return_code == 0 and processes_safe)
+
     primary_files = [
         auth_file
         for auth_file in subscription_auth.files
         if auth_file.host_path == subscription_auth.detect_file
     ]
-    if len(primary_files) != 1 or env is None:
+    if len(primary_files) != 1:
         logger.warning(
             "Cannot prove proxy isolation for %s subscription credentials", agent
         )
@@ -375,21 +347,11 @@ async def isolate_subscription_auth_for_proxy(
                 paths.append(str(override_dir / PurePosixPath(primary_path).name))
 
     paths = list(dict.fromkeys(paths))
-    sandbox_owner = _owner_from_home(cred_home)
-    if sandbox_owner is None:
-        paths_safe = False
-    uid_command = f"$(id -u -- {shlex.quote(sandbox_owner)})" if sandbox_owner else "-1"
-    agent_process_markers = (
-        f"{_BENCHFLOW_PREFIX}/js-agents/bin/{agent}",
-        f"{_BENCHFLOW_PREFIX}/bin/{agent}",
-    )
-    cleanup_command = " ".join(
+    cleanup_command = f"{process_guard} && " + " ".join(
         (
             f"{_BENCHFLOW_NODE_BIN} -e",
             shlex.quote(_PROXY_AUTH_CLEANUP_JS),
             "--",
-            uid_command,
-            shlex.quote(json.dumps(agent_process_markers, separators=(",", ":"))),
             shlex.quote(json.dumps(paths, separators=(",", ":"))),
         )
     )
@@ -402,7 +364,7 @@ async def isolate_subscription_auth_for_proxy(
     except Exception as exc:
         logger.warning("Failed to isolate %s subscription credential: %s", agent, exc)
         return False
-    if result.return_code != 0 or not paths_safe:
+    if result.return_code != 0 or not paths_safe or not processes_safe:
         detail = (getattr(result, "stderr", "") or "").strip()[:500]
         logger.warning(
             "Subscription credential remained accessible in proxy mode for %s%s",

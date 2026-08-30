@@ -28,7 +28,7 @@ import yaml
 
 from benchflow._utils.text import describe_exception
 from benchflow.agents.codex_config import apply_codex_proxy_config
-from benchflow.agents.credentials import isolate_subscription_auth_for_proxy
+from benchflow.agents.credentials import isolate_agent_for_proxy_capture
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_bedrock_preflight import (
@@ -1844,7 +1844,7 @@ async def ensure_litellm_runtime(
         )
 
     credential_home = f"/home/{sandbox_user}" if sandbox_user else "/root"
-    subscription_credentials_isolated = await isolate_subscription_auth_for_proxy(
+    agent_capture_isolated = await isolate_agent_for_proxy_capture(
         sandbox,
         agent=agent,
         agent_env=agent_env,
@@ -1860,8 +1860,7 @@ async def ensure_litellm_runtime(
     )
     proxy_location = "sandbox" if sandbox_local else "host"
     credentials_isolated = bool(
-        _provider_credentials_have_proxy_only_custody(route)
-        and subscription_credentials_isolated
+        _provider_credentials_have_proxy_only_custody(route) and agent_capture_isolated
     )
     capture_trusted = not sandbox_local and credentials_isolated
     config_key = (

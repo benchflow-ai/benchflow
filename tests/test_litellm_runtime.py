@@ -180,6 +180,9 @@ class _CustodyProbeSandbox:
         self.probe_path = target
 
     async def exec(self, command, **kwargs):
+        if command.startswith("command -v pgrep"):
+            assert kwargs["user"] == "root"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
         if command == "id -u -- agent":
             assert kwargs["user"] == "root"
             return SimpleNamespace(return_code=0, stdout="1000\n", stderr="")
