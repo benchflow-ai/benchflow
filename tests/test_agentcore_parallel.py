@@ -768,6 +768,62 @@ class TestNetworkConfigurationReachesTheRuntime:
             "BENCHFLOW_AGENTCORE_SECURITY_GROUPS", "sg-0a1b2c3d4e5f67890"
         )
 
+    def _adopt(self, found):
+        control = MagicMock()
+        control.get_agent_runtime.return_value = {
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "repo@sha256:a"}
+            },
+            "lifecycleConfiguration": {
+                "idleRuntimeSessionTimeout": 600,
+                "maxLifetime": 7200,
+            },
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": found,
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
+        }
+        AgentCoreSandbox._verify_adopted_runtime(
+            control,
+            "rt-1",
+            "repo@sha256:a",
+            {"idleRuntimeSessionTimeout": 600, "maxLifetime": 7200},
+            "arn:aws:iam::1:role/rt",
+            _VPC_NETWORK,
+            {"serverProtocol": "HTTP"},
+        )
+
+    def test_a_service_managed_member_does_not_block_adoption(self):
+        """``VpcConfig`` carries members BenchFlow never sends.
+
+        ``requireServiceS3Endpoint`` cannot even be set on create. Adoption is
+        the path every rollout after the first takes, so comparing the whole
+        document would fail a VPC matrix on everything after its first create.
+        """
+        self._adopt(
+            {
+                "networkMode": "VPC",
+                "networkModeConfig": {
+                    **_VPC_NETWORK["networkModeConfig"],
+                    "requireServiceS3Endpoint": True,
+                },
+            }
+        )
+
+    def test_a_different_subnet_is_still_refused(self):
+        """Tolerating extra members must not tolerate the wrong network."""
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        with pytest.raises(SandboxStartupError, match="does not match"):
+            self._adopt(
+                {
+                    "networkMode": "VPC",
+                    "networkModeConfig": {
+                        "subnets": ["subnet-0987654321fedcba"],
+                        "securityGroups": ["sg-0a1b2c3d4e5f67890"],
+                    },
+                }
+            )
+
     @pytest.mark.asyncio
     async def test_registration_sends_the_configured_vpc(self, tmp_path, monkeypatch):
         self._vpc_env(monkeypatch)

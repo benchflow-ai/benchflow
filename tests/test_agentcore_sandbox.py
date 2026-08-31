@@ -562,15 +562,21 @@ class TestNetworkConfiguration:
 
         Browsers and code interpreters take the same ``VpcConfig`` under
         ``vpcConfig`` instead; sending that key here is a ValidationException.
+        The ids come back sorted and deduplicated because this list feeds the
+        runtime contract digest: "a,b" and "b,a" must not register two runtimes
+        for the same infrastructure.
         """
         monkeypatch.setenv(self._MODE, "VPC")
-        monkeypatch.setenv(self._SUBNETS, "subnet-0a1b2c3d4e5f67890, subnet-01234567")
+        monkeypatch.setenv(
+            self._SUBNETS,
+            "subnet-0a1b2c3d4e5f67890, subnet-01234567, subnet-01234567",
+        )
         monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
 
         assert sandbox._network_configuration() == {
             "networkMode": "VPC",
             "networkModeConfig": {
-                "subnets": ["subnet-0a1b2c3d4e5f67890", "subnet-01234567"],
+                "subnets": ["subnet-01234567", "subnet-0a1b2c3d4e5f67890"],
                 "securityGroups": ["sg-0a1b2c3d4e5f67890"],
             },
         }

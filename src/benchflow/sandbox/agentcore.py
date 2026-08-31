@@ -519,11 +519,6 @@ class AgentCoreSandbox(BaseSandbox):
         for label, expected, found in (
             ("roleArn", role_arn, detail.get("roleArn")),
             (
-                "networkConfiguration",
-                dict(network),
-                dict(detail.get("networkConfiguration") or {}),
-            ),
-            (
                 "protocolConfiguration",
                 dict(protocol),
                 dict(detail.get("protocolConfiguration") or {}),
@@ -531,6 +526,25 @@ class AgentCoreSandbox(BaseSandbox):
         ):
             if found != expected:
                 drifted[label] = (found, expected)
+
+        def _placement(config: dict[str, Any]) -> tuple[Any, ...]:
+            """Only the placement BenchFlow itself pins.
+
+            ``VpcConfig`` also carries service-managed members that cannot be
+            sent on create, and nothing promises the ids come back in the order
+            they were given — comparing the whole document would refuse every
+            adoption of a healthy VPC runtime.
+            """
+            vpc = config.get("networkModeConfig") or {}
+            return (
+                config.get("networkMode"),
+                tuple(sorted(vpc.get("subnets") or ())),
+                tuple(sorted(vpc.get("securityGroups") or ())),
+            )
+
+        found_network = dict(detail.get("networkConfiguration") or {})
+        if _placement(found_network) != _placement(dict(network)):
+            drifted["networkConfiguration"] = (found_network, dict(network))
         if drifted:
             raise SandboxStartupError(
                 f"AgentCore runtime {runtime_id} does not match this run's "
@@ -583,9 +597,12 @@ class AgentCoreSandbox(BaseSandbox):
 
         def _ids(name: str, pattern: re.Pattern[str], shape: str) -> list[str]:
             raw = os.environ.get(name) or ""
-            values: list[str] = [
-                item.strip() for item in raw.split(",") if item.strip()
-            ]
+            # Canonical order and no duplicates: this list feeds the runtime
+            # contract digest, so "a,b" and "b,a" must not register two
+            # runtimes for the same infrastructure.
+            values: list[str] = sorted(
+                {item.strip() for item in raw.split(",") if item.strip()}
+            )
             for item in values:
                 if not pattern.match(item):
                     raise ValueError(
