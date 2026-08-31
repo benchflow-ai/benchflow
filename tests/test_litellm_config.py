@@ -120,6 +120,58 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+@pytest.mark.parametrize(
+    ("model", "key", "derived_base", "expected_base", "expected_upstream"),
+    [
+        (
+            "zai-coding/glm-5.9",
+            "ZAI_API_KEY",
+            "https://api.z.ai/api/anthropic/",
+            "https://api.z.ai/api/coding/paas/v4",
+            "openai/glm-5.9",
+        ),
+        (
+            "openrouter/qwen/qwen3.5-397b-a17b",
+            "OPENROUTER_API_KEY",
+            "https://openrouter.ai/api/v1",
+            "https://openrouter.ai/api/v1",
+            "openai/qwen/qwen3.5-397b-a17b",
+        ),
+    ],
+)
+def test_registered_provider_route_ignores_registry_derived_generic_proxy_env(
+    model, key, derived_base, expected_base, expected_upstream
+):
+    route = resolve_litellm_route(
+        model,
+        {
+            key: "native-key",
+            "BENCHFLOW_PROVIDER_BASE_URL": derived_base,
+            "BENCHFLOW_PROVIDER_API_KEY": "native-key",
+        },
+    )
+
+    assert route.litellm_params["api_base"] == expected_base
+    assert route.litellm_params["api_key"] == f"os.environ/{key}"
+    assert route.required_env == (key,)
+    assert route.upstream_model == expected_upstream
+
+
+def test_registered_endpoint_with_generic_key_remains_explicit_override():
+    route = resolve_litellm_route(
+        "openrouter/qwen/qwen3.5-397b-a17b",
+        {
+            "OPENROUTER_API_KEY": "native-key",
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://openrouter.ai/api/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "generic-key",
+        },
+    )
+
+    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+    assert route.litellm_params["api_key"] == "os.environ/BENCHFLOW_PROVIDER_API_KEY"
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+
+
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])
 def test_gemini_native_route_honors_explicit_base_url(model):
     """Guards the fix from PR #881 for issue #672."""

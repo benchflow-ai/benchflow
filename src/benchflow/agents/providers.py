@@ -275,6 +275,30 @@ PROVIDERS: dict[str, ProviderConfig] = {
             },
         ],
     ),
+    "zai-coding": ProviderConfig(
+        name="zai-coding",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="ZAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://api.z.ai/api/coding/paas/v4",
+            "openai-responses": "https://api.z.ai/api/coding/paas/v4",
+            "anthropic-messages": "https://api.z.ai/api/anthropic",
+        },
+        models=[
+            {
+                "id": model,
+                "name": model.upper(),
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 200000,
+                "maxTokens": 131072,
+            }
+            for model in ("glm-5", "glm-5.1", "glm-5.2", "glm-5-turbo")
+        ],
+    ),
     "kimi": ProviderConfig(
         name="kimi",
         base_url="{base_url}",

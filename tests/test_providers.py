@@ -226,6 +226,17 @@ class TestResolveBaseUrl:
             == "https://api.z.ai/api/paas/v4"
         )
 
+    @pytest.mark.parametrize(
+        ("protocol", "expected"),
+        [
+            ("openai-completions", "https://api.z.ai/api/coding/paas/v4"),
+            ("openai-responses", "https://api.z.ai/api/coding/paas/v4"),
+            ("anthropic-messages", "https://api.z.ai/api/anthropic"),
+        ],
+    )
+    def test_zai_coding_protocol_selects_endpoint(self, protocol, expected):
+        assert resolve_base_url(PROVIDERS["zai-coding"], {}, protocol) == expected
+
     def test_protocol_fallback_to_base_url(self):
         """Unknown protocol falls back to primary base_url."""
         p = PROVIDERS["zai"]
