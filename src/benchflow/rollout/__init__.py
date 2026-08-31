@@ -2388,6 +2388,7 @@ class Rollout:
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
             )
+        self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role

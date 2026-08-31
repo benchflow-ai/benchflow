@@ -751,9 +751,7 @@ def _consume_task_result(task: asyncio.Task) -> None:
         task.result()
 
 
-async def _cancel_and_drain_tasks(
-    tasks: set[asyncio.Task], timeout: float
-) -> None:
+async def _cancel_and_drain_tasks(tasks: set[asyncio.Task], timeout: float) -> None:
     pending = {task for task in tasks if not task.done()}
     for task in pending:
         task.cancel()

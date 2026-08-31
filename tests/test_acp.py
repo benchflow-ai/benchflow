@@ -958,9 +958,7 @@ class TestACPTimeoutCancellation:
         assert session.latest_usage_totals() == _TIMEOUT_USAGE
         assert session.stop_reason == StopReason.CANCELLED
         tool_event = next(
-            event
-            for event in exc_info.value.trajectory
-            if event["type"] == "tool_call"
+            event for event in exc_info.value.trajectory if event["type"] == "tool_call"
         )
         assert tool_event["status"] == ToolCallStatus.CANCELLED.value
         assert exc_info.value.terminal_trajectory_complete is True
@@ -1078,9 +1076,7 @@ class TestACPIdleWatchdog:
             client.cancel_release.set()
             client.release.set()
             tasks = [
-                task
-                for task in (client.cancel_task, client.task)
-                if task is not None
+                task for task in (client.cancel_task, client.task) if task is not None
             ]
             for task in tasks:
                 if not task.done():
