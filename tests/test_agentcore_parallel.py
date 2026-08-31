@@ -798,6 +798,8 @@ class TestNetworkConfigurationReachesTheRuntime:
         ``requireServiceS3Endpoint`` cannot even be set on create. Adoption is
         the path every rollout after the first takes, so comparing the whole
         document would fail a VPC matrix on everything after its first create.
+
+        Guards PR #1082 against the whole-document comparison it replaced.
         """
         self._adopt(
             {

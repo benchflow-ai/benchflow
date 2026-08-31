@@ -598,6 +598,8 @@ class TestNetworkConfiguration:
 
         The operator who sets subnets but forgets the mode believes the agent
         is isolated. Failing open there is the whole bug this guards.
+
+        Guards PR #1082.
         """
         monkeypatch.delenv(self._MODE, raising=False)
         monkeypatch.setenv(self._SUBNETS, "subnet-0a1b2c3d4e5f67890")
