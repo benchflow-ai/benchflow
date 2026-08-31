@@ -50,6 +50,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shlex
 import tarfile
 import threading
@@ -92,7 +93,11 @@ _MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 # whatever the service currently defaults to.
 _PROTOCOL_CONFIGURATION = {"serverProtocol": "HTTP"}
 #: AgentCore offers PUBLIC or VPC only; see the registry's enforces_no_network.
-_NETWORK_CONFIGURATION = {"networkMode": "PUBLIC"}
+_NETWORK_MODES = ("PUBLIC", "VPC")
+#: ``VpcConfig`` caps both lists at 16 and pins the id shapes.
+_MAX_VPC_IDS = 16
+_SUBNET_ID = re.compile(r"^subnet-[0-9a-zA-Z]{8,17}$")
+_SECURITY_GROUP_ID = re.compile(r"^sg-[0-9a-zA-Z]{8,17}$")
 
 # Environment overrides.
 _ENV_REGION = "BENCHFLOW_AGENTCORE_REGION"
@@ -100,6 +105,9 @@ _ENV_ROLE_ARN = "BENCHFLOW_AGENTCORE_ROLE_ARN"
 _ENV_ECR_REPOSITORY = "BENCHFLOW_AGENTCORE_ECR_REPOSITORY"
 _ENV_IDLE_TIMEOUT = "BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC"
 _ENV_MAX_LIFETIME = "BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC"
+_ENV_NETWORK_MODE = "BENCHFLOW_AGENTCORE_NETWORK_MODE"
+_ENV_SUBNETS = "BENCHFLOW_AGENTCORE_SUBNETS"
+_ENV_SECURITY_GROUPS = "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"
 
 
 class AgentCoreSandbox(BaseSandbox):
@@ -314,7 +322,7 @@ class AgentCoreSandbox(BaseSandbox):
         contract = {
             "imageDigest": image_digest,
             "lifecycleConfiguration": self._lifecycle_configuration(),
-            "networkConfiguration": _NETWORK_CONFIGURATION,
+            "networkConfiguration": self._network_configuration(),
             "protocolConfiguration": _PROTOCOL_CONFIGURATION,
             "roleArn": self._require_role_arn(),
         }
@@ -341,7 +349,7 @@ class AgentCoreSandbox(BaseSandbox):
                     "containerConfiguration": {"containerUri": image_uri}
                 },
                 roleArn=self._require_role_arn(),
-                networkConfiguration=_NETWORK_CONFIGURATION,
+                networkConfiguration=self._network_configuration(),
                 protocolConfiguration=_PROTOCOL_CONFIGURATION,
                 lifecycleConfiguration=self._lifecycle_configuration(),
                 description=f"BenchFlow sandbox for {self.environment_name}",
@@ -381,7 +389,7 @@ class AgentCoreSandbox(BaseSandbox):
                         "containerConfiguration": {"containerUri": image_uri}
                     },
                     roleArn=self._require_role_arn(),
-                    networkConfiguration=_NETWORK_CONFIGURATION,
+                    networkConfiguration=self._network_configuration(),
                     protocolConfiguration=_PROTOCOL_CONFIGURATION,
                     # Omitting this resets idle/max-lifetime to the service
                     # defaults, silently discarding the caller's configured
@@ -396,7 +404,7 @@ class AgentCoreSandbox(BaseSandbox):
                 image_uri,
                 self._lifecycle_configuration(),
                 self._require_role_arn(),
-                _NETWORK_CONFIGURATION,
+                self._network_configuration(),
                 _PROTOCOL_CONFIGURATION,
             )
             self.logger.info("Adopted existing AgentCore runtime %s", arn)
@@ -562,6 +570,69 @@ class AgentCoreSandbox(BaseSandbox):
         return {
             "idleRuntimeSessionTimeout": idle,
             "maxLifetime": lifetime,
+        }
+
+    def _network_configuration(self) -> dict[str, Any]:
+        """Where the runtime's microVMs are placed on the network.
+
+        ``PUBLIC`` stays the default so existing deployments do not move, but
+        the ``VPC`` opt-in fails loudly rather than quietly: a half-configured
+        runtime that silently stays public is exactly the exposure the operator
+        set out to remove, and it is invisible once the runtime is READY.
+        """
+
+        def _ids(name: str, pattern: re.Pattern[str], shape: str) -> list[str]:
+            raw = os.environ.get(name) or ""
+            values: list[str] = [
+                item.strip() for item in raw.split(",") if item.strip()
+            ]
+            for item in values:
+                if not pattern.match(item):
+                    raise ValueError(
+                        f"{name} must be a comma-separated list of {shape} ids, "
+                        f"got {item!r}."
+                    )
+            if len(values) > _MAX_VPC_IDS:
+                raise ValueError(
+                    f"{name} accepts at most {_MAX_VPC_IDS} ids, got {len(values)}."
+                )
+            return values
+
+        subnets = _ids(_ENV_SUBNETS, _SUBNET_ID, "subnet-*")
+        security_groups = _ids(_ENV_SECURITY_GROUPS, _SECURITY_GROUP_ID, "sg-*")
+        mode = (os.environ.get(_ENV_NETWORK_MODE) or "PUBLIC").strip().upper()
+        if mode not in _NETWORK_MODES:
+            raise ValueError(
+                f"{_ENV_NETWORK_MODE} must be one of {', '.join(_NETWORK_MODES)}, "
+                f"got {mode!r}."
+            )
+        if mode == "PUBLIC":
+            if subnets or security_groups:
+                raise ValueError(
+                    f"{_ENV_SUBNETS}/{_ENV_SECURITY_GROUPS} are set but "
+                    f"{_ENV_NETWORK_MODE} is not VPC, so the runtime would still "
+                    f"be created on the public internet. Set "
+                    f"{_ENV_NETWORK_MODE}=VPC to place it in the VPC."
+                )
+            return {"networkMode": "PUBLIC"}
+        missing = [
+            name
+            for name, values in (
+                (_ENV_SUBNETS, subnets),
+                (_ENV_SECURITY_GROUPS, security_groups),
+            )
+            if not values
+        ]
+        if missing:
+            raise ValueError(
+                f"{_ENV_NETWORK_MODE}=VPC requires {' and '.join(missing)}."
+            )
+        return {
+            "networkMode": "VPC",
+            "networkModeConfig": {
+                "subnets": subnets,
+                "securityGroups": security_groups,
+            },
         }
 
     def configure_agent_timeout(self, timeout_sec: int) -> None:

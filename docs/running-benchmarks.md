@@ -407,11 +407,36 @@ entrypoint. AgentCore refuses command execution for a session whose container
 does not answer `GET /ping` on port 8080, and task images know nothing about
 AgentCore, so this shim is what makes an ordinary task image runnable.
 
+#### Running inside a VPC
+
+Runtimes are registered `PUBLIC` by default, which places the microVM on the
+public internet. To run them inside your own VPC instead, set the mode and the
+subnets and security groups to attach:
+
+```bash
+export BENCHFLOW_AGENTCORE_NETWORK_MODE="VPC"       # PUBLIC (default) or VPC
+export BENCHFLOW_AGENTCORE_SUBNETS="subnet-0a1b2c3d4e5f67890,subnet-01234567"
+export BENCHFLOW_AGENTCORE_SECURITY_GROUPS="sg-0a1b2c3d4e5f67890"
+```
+
+Both lists are required in `VPC` mode (up to 16 ids each), and setting them
+without `BENCHFLOW_AGENTCORE_NETWORK_MODE=VPC` is an error rather than a silent
+fallback to `PUBLIC` — a half-configured runtime that stays public is invisible
+once it reaches `READY`. The subnets must reach ECR, CloudWatch Logs, and
+whatever your task and model proxy need, via NAT or VPC endpoints; a runtime in
+a subnet that cannot pull from ECR fails at session startup.
+
+The network configuration is part of a runtime's identity, so VPC and `PUBLIC`
+runtimes for the same image never share one, and a run will refuse to adopt an
+existing runtime whose network contract differs from what it asked for.
+
 Constraints: `linux/arm64` only, single container (no compose/multi-service
 tasks), no snapshot support, and `network_mode = "no-network"` is **not**
 enforceable — AgentCore's network mode is either `PUBLIC` or `VPC`, so
 BenchFlow refuses no-network tasks on this backend rather than running them
-unisolated. The model proxy runs inside the sandbox, as on Daytona and Modal.
+unisolated. (A VPC with no egress is not the same guarantee: BenchFlow cannot
+verify the route table, so it still declines no-network tasks.) The model proxy
+runs inside the sandbox, as on Daytona and Modal.
 Sessions default to a 15-minute idle timeout and an 8-hour lifetime; override
 with `BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC` / `BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC`
 if agent turns are long enough to risk reclamation mid-run.
