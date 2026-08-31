@@ -172,6 +172,61 @@ def test_registered_endpoint_with_generic_key_remains_explicit_override():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+@pytest.mark.parametrize(
+    ("model", "key", "protocol", "token_param"),
+    [
+        ("zai-coding/glm-5.2", "ZAI_API_KEY", "openai-responses", "max_output_tokens"),
+        ("gemini-3.5-flash", "GEMINI_API_KEY", "openai-completions", "max_tokens"),
+    ],
+)
+def test_litellm_route_generation_overrides(model, key, protocol, token_param):
+    params = resolve_litellm_route(
+        model,
+        {
+            key: "key",
+            "BENCHFLOW_PROVIDER_PROTOCOL": protocol,
+            "BENCHFLOW_MODEL_TEMPERATURE": "1.0",
+            "BENCHFLOW_MODEL_TOP_P": "0.95",
+            "BENCHFLOW_MODEL_MAX_TOKENS": "131072",
+        },
+    ).litellm_params
+    expected = {"temperature": 1.0, "top_p": 0.95, token_param: 131072}
+    assert {name: params[name] for name in expected} == expected
+    assert ({"max_tokens", "max_output_tokens"} - {token_param}).isdisjoint(params)
+
+
+@pytest.mark.parametrize(
+    ("env_name", "param", "value"),
+    [
+        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", "nan"),
+        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", "inf"),
+        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", "-0.1"),
+        ("BENCHFLOW_MODEL_TOP_P", "top_p", "1.1"),
+        ("BENCHFLOW_MODEL_TOP_P", "top_p", "-0.1"),
+        ("BENCHFLOW_MODEL_MAX_TOKENS", "max_tokens", "0"),
+        ("BENCHFLOW_MODEL_MAX_TOKENS", "max_tokens", "-1"),
+        ("BENCHFLOW_MODEL_MAX_TOKENS", "max_tokens", "1.5"),
+    ],
+)
+def test_litellm_route_rejects_invalid_generation_overrides(env_name, param, value):
+    params = resolve_litellm_route(
+        "zai-coding/glm-5.2",
+        {
+            "ZAI_API_KEY": "key",
+            env_name: value,
+        },
+    ).litellm_params
+    assert param not in params
+
+
+def test_special_registered_provider_generation_overrides():
+    route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8",
+        {"BENCHFLOW_MODEL_MAX_TOKENS": "4096"},
+    )
+    assert route.litellm_params["max_tokens"] == 4096
+
+
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])
 def test_gemini_native_route_honors_explicit_base_url(model):
     """Guards the fix from PR #881 for issue #672."""

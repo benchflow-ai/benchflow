@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -175,6 +176,38 @@ def _registered_api_key_ref(cfg: ProviderConfig) -> str | None:
     if cfg.auth_type == "api_key" and cfg.auth_env:
         return _env_ref(cfg.auth_env)
     return None
+
+
+def _apply_model_generation_params(
+    params: dict[str, str | int | float | bool | list[str]], env: dict[str, str]
+) -> None:
+    for env_name, param, upper_bound in (
+        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", None),
+        ("BENCHFLOW_MODEL_TOP_P", "top_p", 1.0),
+    ):
+        value = (env.get(env_name) or "").strip()
+        try:
+            parsed = float(value)
+        except ValueError:
+            continue
+        if (
+            math.isfinite(parsed)
+            and parsed >= 0
+            and (upper_bound is None or parsed <= upper_bound)
+        ):
+            params[param] = parsed
+
+    try:
+        max_tokens = int((env.get("BENCHFLOW_MODEL_MAX_TOKENS") or "").strip())
+    except ValueError:
+        return
+    if max_tokens > 0:
+        token_param = (
+            "max_output_tokens"
+            if env.get("BENCHFLOW_PROVIDER_PROTOCOL") == "openai-responses"
+            else "max_tokens"
+        )
+        params[token_param] = max_tokens
 
 
 def _provider_reasoning_effort(env: dict[str, str]) -> str | None:
@@ -376,12 +409,14 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     provider = find_provider(model)
     if provider is not None:
         provider_name, provider_cfg = provider
-        return _route_registered_provider(
+        route = _route_registered_provider(
             model=model,
             provider_name=provider_name,
             provider_cfg=provider_cfg,
             env=env,
         )
+        _apply_model_generation_params(route.litellm_params, env)
+        return route
 
     lower = model.lower()
     bare = strip_provider_prefix(model)
@@ -420,6 +455,7 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     key = required[0] if required else None
     if key and "api_key" not in params:
         params["api_key"] = _env_ref(key)
+    _apply_model_generation_params(params, env)
     return LiteLLMRoute(
         requested_model=model,
         model_alias=safe_model_alias(model),
