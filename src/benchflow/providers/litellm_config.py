@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from benchflow.agents.providers import (
+    PROVIDER_ENV_SOURCE_ENV,
     ProviderConfig,
     find_provider,
     resolve_base_url,
@@ -324,24 +325,8 @@ def _route_registered_provider(
     )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-    registry_api_bases = set()
-    for endpoint_protocol in provider_cfg.all_endpoints:
-        try:
-            endpoint = resolve_base_url(
-                provider_cfg, env, protocol=endpoint_protocol
-            ).rstrip("/")
-        except KeyError:
-            continue
-        registry_api_bases.add(endpoint)
-    native_api_key = (
-        (env.get(provider_cfg.auth_env) or "").strip() if provider_cfg.auth_env else ""
-    )
-    registry_api_base = (
-        explicit_api_base.rstrip("/") in registry_api_bases
-        and bool(native_api_key)
-        and explicit_api_key == native_api_key
-    )
-    if explicit_api_base and explicit_api_key and not registry_api_base:
+    provider_env_is_registry = env.get(PROVIDER_ENV_SOURCE_ENV) == "registry"
+    if explicit_api_base and explicit_api_key and not provider_env_is_registry:
         api_base = explicit_api_base
     else:
         try:
@@ -385,7 +370,7 @@ def _route_registered_provider(
         params["api_base"] = api_base
     api_key_ref = (
         _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-        if explicit_api_base and explicit_api_key and not registry_api_base
+        if explicit_api_base and explicit_api_key and not provider_env_is_registry
         else _registered_api_key_ref(provider_cfg)
     )
     if api_key_ref:

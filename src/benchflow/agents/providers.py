@@ -61,6 +61,8 @@ credential_files, url_params), ``vllm`` (user-supplied base_url).
 
 from dataclasses import dataclass, field
 
+PROVIDER_ENV_SOURCE_ENV = "_BENCHFLOW_PROVIDER_ENV_SOURCE"
+
 
 @dataclass
 class ProviderConfig:

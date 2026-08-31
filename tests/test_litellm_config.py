@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from benchflow.agents.env import resolve_provider_env
 from benchflow.providers.litellm_config import (
     litellm_proxy_config,
     resolve_litellm_route,
@@ -121,40 +122,52 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
 
 
 @pytest.mark.parametrize(
-    ("model", "key", "derived_base", "expected_base", "expected_upstream"),
+    ("model", "key", "agent", "expected_base", "expected_upstream"),
     [
         (
             "zai-coding/glm-5.9",
             "ZAI_API_KEY",
-            "https://api.z.ai/api/anthropic/",
+            "claude-agent-acp",
             "https://api.z.ai/api/coding/paas/v4",
             "openai/glm-5.9",
         ),
         (
             "openrouter/qwen/qwen3.5-397b-a17b",
             "OPENROUTER_API_KEY",
-            "https://openrouter.ai/api/v1",
+            "pi-acp",
             "https://openrouter.ai/api/v1",
             "openai/qwen/qwen3.5-397b-a17b",
         ),
     ],
 )
 def test_registered_provider_route_ignores_registry_derived_generic_proxy_env(
-    model, key, derived_base, expected_base, expected_upstream
+    model, key, agent, expected_base, expected_upstream
 ):
-    route = resolve_litellm_route(
-        model,
-        {
-            key: "native-key",
-            "BENCHFLOW_PROVIDER_BASE_URL": derived_base,
-            "BENCHFLOW_PROVIDER_API_KEY": "native-key",
-        },
-    )
+    env = {key: "native-key"}
+    resolve_provider_env(env, model, agent)
+    route = resolve_litellm_route(model, env)
 
     assert route.litellm_params["api_base"] == expected_base
     assert route.litellm_params["api_key"] == f"os.environ/{key}"
     assert route.required_env == (key,)
     assert route.upstream_model == expected_upstream
+
+
+@pytest.mark.parametrize("resolve_first", [False, True], ids=["direct", "resolved"])
+def test_registered_provider_route_preserves_explicit_endpoint_with_native_key(
+    resolve_first,
+):
+    env = {
+        "ZAI_API_KEY": "same-key",
+        "BENCHFLOW_PROVIDER_BASE_URL": "https://api.z.ai/api/anthropic",
+        "BENCHFLOW_PROVIDER_API_KEY": "same-key",
+    }
+    if resolve_first:
+        resolve_provider_env(env, "zai-coding/glm-5.2", "claude-agent-acp")
+    route = resolve_litellm_route("zai-coding/glm-5.2", env)
+
+    assert route.litellm_params["api_base"] == "https://api.z.ai/api/anthropic"
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
 def test_registered_endpoint_with_generic_key_remains_explicit_override():
