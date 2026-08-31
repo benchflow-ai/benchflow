@@ -230,10 +230,17 @@ async def _scrape_agent_trajectory(
 
     # Gemini CLI: writes ~/.gemini/sessions/*/gemini-cli.trajectory.json
     if "gemini" in agent:
-        result = await env.exec(
-            f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
-            timeout_sec=10,
-        )
+        # A non-zero return code and unparseable JSON both degrade to "no
+        # scraped trajectory" below, so a slow container must not be the one
+        # case that propagates and aborts verification instead (#948).
+        try:
+            result = await env.exec(
+                f"cat $(find {home}/.gemini -name 'gemini-cli.trajectory.json' 2>/dev/null | head -1) 2>/dev/null",
+                timeout_sec=10,
+            )
+        except Exception as e:
+            logger.warning(f"Could not scrape gemini trajectory: {e}")
+            return []
         if result.return_code == 0 and result.stdout and result.stdout.strip():
             try:
                 return _parse_gemini_trajectory(json.loads(result.stdout))
