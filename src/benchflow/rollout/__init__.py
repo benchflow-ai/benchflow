@@ -1371,6 +1371,9 @@ class Rollout:
             self._capture_partial_session_factory_trajectory()
         else:
             self._capture_partial_acp_trajectory()
+        collect_native_usage = getattr(self, "_collect_native_acp_usage", None)
+        if callable(collect_native_usage):
+            collect_native_usage()
         if self._acp_client:
             try:
                 await self._acp_client.close()
