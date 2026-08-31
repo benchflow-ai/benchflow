@@ -80,8 +80,15 @@ async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
     mock_acp.set_config_option.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "codex_config",
+    [None, "{", "[]", "{}", '{"model":"another-model"}'],
+    ids=["missing", "malformed", "non-object", "missing-model", "mismatch"],
+)
 @pytest.mark.asyncio
-async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
+async def test_codex_litellm_alias_uses_bare_model_for_set_model(
+    tmp_path, codex_config
+):
     """Codex validates set_model against its own model catalog, not proxy aliases.
 
     This guards against a false-green CI path where BenchFlow recorded the
@@ -97,19 +104,43 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
             "currentModelId": "gpt-5.5[medium]",
         },
     )
+    agent_env = {
+        "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
+        LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
+        LITELLM_MODEL_VIA_ENV: "1",
+    }
+    if codex_config is not None:
+        agent_env["CODEX_CONFIG"] = codex_config
     await _connect(
         mock_acp,
         agent="codex-acp",
         model="openai/gpt-5.4-mini",
         tmp_path=tmp_path,
-        agent_env={
-            "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
-            LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
-            LITELLM_MODEL_VIA_ENV: "1",
-        },
+        agent_env=agent_env,
     )
 
     mock_acp.set_model.assert_awaited_once_with("gpt-5.4-mini[medium]")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_litellm_config_owns_model_selection(tmp_path):
+    alias = "benchflow-openai-gpt-5.4"
+    mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="openai/gpt-5.4",
+        tmp_path=tmp_path,
+        agent_env={
+            "BENCHFLOW_PROVIDER_MODEL": alias,
+            LITELLM_MODEL_ALIAS_ENV: alias,
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": f'{{"model":"{alias}"}}',
+        },
+    )
+
+    mock_acp.set_model.assert_not_awaited()
     mock_acp.set_config_option.assert_not_awaited()
 
 

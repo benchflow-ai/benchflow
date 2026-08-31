@@ -20,6 +20,7 @@ Does not own:
 
 import asyncio
 import contextlib
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -351,7 +352,20 @@ def _model_selection_owned_by_env(
     # fall back to their own defaults.
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
         mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
-        return bool(mapped_model_env and agent_env.get(mapped_model_env))
+        if mapped_model_env and agent_env.get(mapped_model_env):
+            return True
+        if agent == "codex-acp":
+            try:
+                codex_config = json.loads(agent_env.get("CODEX_CONFIG", ""))
+            except (json.JSONDecodeError, TypeError):
+                return False
+            provider_model = agent_env.get("BENCHFLOW_PROVIDER_MODEL")
+            return bool(
+                provider_model
+                and isinstance(codex_config, dict)
+                and codex_config.get("model") == provider_model
+            )
+        return False
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return False
     provider = find_provider(model)
