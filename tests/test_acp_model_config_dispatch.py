@@ -11,6 +11,7 @@ cases live in ``tests/test_acp_setup_failure_propagation.py``.
 """
 
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,10 +44,12 @@ def _make_mocks(config_options=None, model_state=None):
 @contextlib.contextmanager
 def _runtime_patches(mock_acp):
     with (
-        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+        patch(
+            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
+        ) as transport,
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
-        yield
+        yield transport
 
 
 async def _connect(
@@ -54,7 +57,7 @@ async def _connect(
 ):
     from benchflow.acp.runtime import connect_acp
 
-    with _runtime_patches(mock_acp):
+    with _runtime_patches(mock_acp) as transport:
         await connect_acp(
             env=AsyncMock(),
             agent=agent,
@@ -67,6 +70,7 @@ async def _connect(
             agent_cwd="/app",
             reasoning_effort=reasoning_effort,
         )
+    return transport
 
 
 @pytest.mark.asyncio
@@ -124,14 +128,16 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(
 
 
 @pytest.mark.asyncio
-async def test_codex_litellm_config_owns_model_selection(tmp_path):
+@pytest.mark.parametrize("reasoning_effort", [None, "high"])
+async def test_codex_litellm_config_owns_model_selection(tmp_path, reasoning_effort):
     alias = "benchflow-openai-gpt-5.4"
     mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
-    await _connect(
+    transport = await _connect(
         mock_acp,
         agent="codex-acp",
         model="openai/gpt-5.4",
         tmp_path=tmp_path,
+        reasoning_effort=reasoning_effort,
         agent_env={
             "BENCHFLOW_PROVIDER_MODEL": alias,
             LITELLM_MODEL_ALIAS_ENV: alias,
@@ -140,6 +146,9 @@ async def test_codex_litellm_config_owns_model_selection(tmp_path):
         },
     )
 
+    launch_env = transport.call_args.kwargs["env"]
+    config = json.loads(launch_env["CODEX_CONFIG"])
+    assert config.get("model_reasoning_effort") == reasoning_effort
     mock_acp.set_model.assert_not_awaited()
     mock_acp.set_config_option.assert_not_awaited()
 

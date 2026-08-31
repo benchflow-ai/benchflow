@@ -355,14 +355,11 @@ def _model_selection_owned_by_env(
         if mapped_model_env and agent_env.get(mapped_model_env):
             return True
         if agent == "codex-acp":
-            try:
-                codex_config = json.loads(agent_env.get("CODEX_CONFIG", ""))
-            except (json.JSONDecodeError, TypeError):
-                return False
+            codex_config = _codex_config(agent_env)
             provider_model = agent_env.get("BENCHFLOW_PROVIDER_MODEL")
             return bool(
                 provider_model
-                and isinstance(codex_config, dict)
+                and codex_config
                 and codex_config.get("model") == provider_model
             )
         return False
@@ -383,6 +380,14 @@ def _model_selection_owned_by_env(
     if not override:
         return True
     return strip_provider_prefix(model) == override
+
+
+def _codex_config(agent_env: dict[str, str]) -> dict | None:
+    try:
+        config = json.loads(agent_env.get("CODEX_CONFIG", ""))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return config if isinstance(config, dict) else None
 
 
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
@@ -512,9 +517,16 @@ async def _configure_acp_session(
     reasoning_effort: str | None,
 ) -> None:
     agent_cfg = AGENTS.get(agent)
-    effort_in_model_id = False
+    effort_configured = False
 
     if model and _model_selection_owned_by_env(agent, model, agent_env):
+        config = _codex_config(agent_env)
+        effort_configured = bool(
+            reasoning_effort
+            and agent == "codex-acp"
+            and config
+            and config.get("model_reasoning_effort") == reasoning_effort
+        )
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
@@ -523,7 +535,7 @@ async def _configure_acp_session(
         acp_model_id = _select_acp_model_id(
             acp_model_input, agent, session, reasoning_effort
         )
-        effort_in_model_id = bool(
+        effort_configured = bool(
             reasoning_effort
             and agent == "codex-acp"
             and _codex_reasoning_effort(acp_model_id) == reasoning_effort
@@ -553,12 +565,11 @@ async def _configure_acp_session(
 
     if not reasoning_effort:
         return
-    if effort_in_model_id:
+    if effort_configured:
         # The effort already rides the selected ``model[effort]`` id (codex),
-        # so there is nothing further to configure.
+        # or its launch config, so there is nothing further to configure.
         logger.info(
-            f"Reasoning effort {reasoning_effort!r} applied via the model id "
-            f"for {agent}"
+            f"Reasoning effort {reasoning_effort!r} applied with model selection for {agent}"
         )
         return
     if not agent_cfg or not agent_cfg.acp_effort_config_id:
@@ -606,6 +617,16 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
+    config = _codex_config(agent_env)
+    if (
+        agent == "codex-acp"
+        and reasoning_effort
+        and config is not None
+        and _model_selection_owned_by_env(agent, model, agent_env)
+    ):
+        agent_env = dict(agent_env)
+        config["model_reasoning_effort"] = reasoning_effort
+        agent_env["CODEX_CONFIG"] = json.dumps(config, separators=(",", ":"))
     agent_env = await _prepare_openhands_direct_execution(
         env,
         agent=agent,
