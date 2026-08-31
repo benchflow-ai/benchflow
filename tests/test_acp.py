@@ -1195,6 +1195,7 @@ class TestConnectAcpModelSelection:
                 "gemini-3.1-flash-lite-preview",
             ),
             ("gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
+            ("acpx:gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
             ("gemini", "google/text-bison", "google/text-bison"),
         ],
         ids=[
@@ -1205,6 +1206,7 @@ class TestConnectAcpModelSelection:
             "no-prefix",
             "gemini-google",
             "gemma-google",
+            "acpx-gemma-google",
             "unrelated-google",
         ],
     )
