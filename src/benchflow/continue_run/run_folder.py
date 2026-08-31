@@ -32,9 +32,103 @@ logger = logging.getLogger(__name__)
 # continuing rather than a clean pass/fail.
 _TIMEOUT_CATEGORIES = frozenset({"timeout", "idle_timeout"})
 
+# ── which agents ``benchflow continue`` can resume ────────────────────────────
+#
+# Single source of truth: a future replay ingress adds its agent here and
+# nowhere else. The membership is *protocol*-derived, not a policy about open
+# vs closed model weights — see ``_WHY_PROTOCOL`` below for the mechanism.
+CONTINUE_SUPPORTED_AGENTS: frozenset[str] = frozenset({"openhands"})
+
+_TRAJECTORY_RELPATH = "trajectory/llm_trajectory.jsonl"
+
+_WHY_PROTOCOL = (
+    "That set is derived from the replay wire protocol, not from a policy about "
+    "which models are open: the replay proxy serves POST /v1/chat/completions "
+    "only, and the continuation hands the sandbox LLM_BASE_URL / LLM_API_KEY / "
+    "LLM_MODEL, which only the OpenHands agent template consumes. An agent that "
+    "speaks a different wire (Anthropic Messages, OpenAI Responses, Google "
+    "native) would 404 at the proxy and fall back to host credentials, burning a "
+    "full live run that the artifacts would then mislabel as a replay."
+)
+
+_NO_RECORDING_VERDICT = (
+    f"This run has no {_TRAJECTORY_RELPATH}, which is what a subscription-auth "
+    "run looks like: it bypasses the recording gateway, so nothing was captured "
+    "and it can never be continued — no replay ingress, present or future, can "
+    "reconstruct it."
+)
+
+# Offered as a possibility, not a promise: snapshot capture is opt-in and most
+# runs will not have one.
+_SNAPSHOT_HINT = (
+    "If a sandbox snapshot of the original container was captured, that is the "
+    "only remaining route to its state."
+)
+
+
+def _supported_agents_phrase() -> str:
+    names = sorted(CONTINUE_SUPPORTED_AGENTS)
+    return ", ".join(repr(name) for name in names)
+
 
 class RunFolderError(ValueError):
     """Raised when a run folder is missing required artifacts or malformed."""
+
+
+class ContinueUnsupportedError(RunFolderError):
+    """Triage verdict: ``benchflow continue`` cannot resume *this* run.
+
+    Distinct from a failure — nothing went wrong, the run is simply out of
+    scope. Batch mode records these as skips and keeps going (see
+    :mod:`benchflow.continue_run.batch`); the single-run CLI still exits 1.
+    """
+
+    #: stable, machine-readable reason for batch summaries
+    reason_code: str = "continue_unsupported"
+    #: whether a *future* replay ingress could ever rescue this run
+    recoverable_in_principle: bool = False
+
+
+class UnsupportedAgentError(ContinueUnsupportedError):
+    """The run's agent has no replay ingress (see ``CONTINUE_SUPPORTED_AGENTS``)."""
+
+    reason_code = "unsupported_agent"
+
+    def __init__(self, *, agent: str, has_recording: bool) -> None:
+        self.agent = agent
+        self.has_recording = has_recording
+        self.recoverable_in_principle = has_recording
+        self.supported_agents: tuple[str, ...] = tuple(
+            sorted(CONTINUE_SUPPORTED_AGENTS)
+        )
+        used = f"used agent {agent!r}" if agent else "recorded no agent"
+        if has_recording:
+            verdict = (
+                f"This run does have {_TRAJECTORY_RELPATH}, so it becomes "
+                f"continuable as soon as a replay ingress for {agent!r} ships — "
+                "the recording is not the blocker."
+            )
+        else:
+            verdict = _NO_RECORDING_VERDICT
+        super().__init__(
+            f"benchflow continue cannot resume this run: it {used}, and the only "
+            f"supported agent(s) are {_supported_agents_phrase()}. "
+            f"{_WHY_PROTOCOL} {verdict} {_SNAPSHOT_HINT}"
+        )
+
+
+class MissingRecordingError(ContinueUnsupportedError):
+    """No LLM recording exists, so no replay can reconstruct the run."""
+
+    reason_code = "no_llm_recording"
+    recoverable_in_principle = False
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(
+            f"missing required artifact: {path} — record-replay needs the LLM "
+            f"trajectory. {_NO_RECORDING_VERDICT} {_SNAPSHOT_HINT}"
+        )
 
 
 @dataclass(frozen=True)
@@ -149,10 +243,7 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
     resume (a single bad record should not strand a recoverable run).
     """
     if not path.is_file():
-        raise RunFolderError(
-            f"missing required artifact: {path} — record-replay needs the LLM "
-            "trajectory. Was this run captured with usage tracking enabled?"
-        )
+        raise MissingRecordingError(path)
     exchanges: list[LLMExchange] = []
     for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
         if not raw.strip():
@@ -183,7 +274,19 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
     config = _read_json(path / "config.json", required=True)
     result = _read_json(path / "result.json", required=False)
     prompts = _load_prompts(path / "prompts.json")
-    exchanges = load_llm_exchanges(path / "trajectory" / "llm_trajectory.jsonl")
+
+    # Triage before parsing. The agent gate runs first so an unsupported run is
+    # told whether it is blocked on a missing ingress (recoverable later) or on
+    # a missing recording (never recoverable) — the caller should learn that now,
+    # not after a protocol ingress ships.
+    trajectory_path = path / "trajectory" / "llm_trajectory.jsonl"
+    agent = str(config.get("agent") or result.get("agent") or "")
+    if agent not in CONTINUE_SUPPORTED_AGENTS:
+        raise UnsupportedAgentError(
+            agent=agent, has_recording=trajectory_path.is_file()
+        )
+
+    exchanges = load_llm_exchanges(trajectory_path)
 
     run = RunFolder(
         path=path,
@@ -192,12 +295,6 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
         prompts=prompts,
         exchanges=exchanges,
     )
-
-    if run.agent != "openhands":
-        raise RunFolderError(
-            f"benchflow continue currently supports the 'openhands' agent only; "
-            f"this run used {run.agent!r}."
-        )
 
     if not run.is_timeout:
         msg = (
