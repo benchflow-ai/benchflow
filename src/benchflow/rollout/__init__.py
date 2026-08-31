@@ -1380,8 +1380,16 @@ class Rollout:
         self._session = None
         self._session_adapter = None
         self._is_session_factory = False
-        # Kill any lingering agent processes to prevent context bleed between scenes
-        agent_pattern = _agent_process_kill_pattern(self._agent_launch)
+        # Kill any lingering agent processes to prevent context bleed between scenes.
+        # Oracle awaits solve.sh directly and starts no persistent agent. Its launch
+        # value is only a fallback label; on shared PID namespaces, a pkill pattern
+        # derived from it can match the host's ``--agent oracle`` command.
+        # Use the current launch label because connect_as() updates it for each role.
+        agent_pattern = (
+            None
+            if self._agent_launch.strip() == "oracle"
+            else _agent_process_kill_pattern(self._agent_launch)
+        )
         if self._env and agent_pattern:
             with contextlib.suppress(Exception):
                 await self._env.exec(
