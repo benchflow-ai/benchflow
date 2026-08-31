@@ -243,6 +243,31 @@ class TestDepLocalName:
 
 
 class TestCreateEnvironment:
+    def test_apptainer_preflights_and_constructs_environment(self, tmp_path):
+        """Construct the Apptainer backend through the environment factory."""
+        env_config = MagicMock()
+        rollout_paths = MagicMock()
+        task = SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+            config=SimpleNamespace(sandbox=env_config),
+        )
+
+        with patch("benchflow.sandbox.apptainer.ApptainerSandbox") as apptainer_env:
+            result = _create_environment(
+                "apptainer", task, tmp_path, "trial", rollout_paths
+            )
+
+        apptainer_env.preflight.assert_called_once_with()
+        apptainer_env.assert_called_once_with(
+            environment_dir=tmp_path / "environment",
+            environment_name=tmp_path.name,
+            session_id="trial",
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=None,
+        )
+        assert result is apptainer_env.return_value
+
     def test_prefers_effective_task_path_environment_dir(self, tmp_path):
         original_env_dir = tmp_path / "original" / "environment"
         effective_task = tmp_path / "effective-task"
