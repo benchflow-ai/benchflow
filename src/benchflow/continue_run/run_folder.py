@@ -220,6 +220,22 @@ def _read_json(path: Path, *, required: bool) -> dict[str, Any]:
     return data
 
 
+def is_timeout_run(folder: str | Path) -> bool:
+    """Cheap ``result.json``-only check for a timeout/idle-timeout run.
+
+    Triage helper for callers that must classify a folder *after*
+    :func:`load_run_folder` raised — the full load never got far enough to
+    compute :attr:`RunFolder.is_timeout`. Never raises: an unreadable or absent
+    ``result.json`` simply means "not a timeout candidate".
+    """
+    try:
+        result = _read_json(Path(folder).expanduser() / "result.json", required=False)
+    except RunFolderError:
+        return False
+    category = result.get("error_category")
+    return bool(category) and str(category) in _TIMEOUT_CATEGORIES
+
+
 def _load_prompts(path: Path) -> list[str]:
     """Read ``prompts.json`` — a JSON list of strings (or ``{"prompts": [...]}``)."""
     if not path.is_file():
