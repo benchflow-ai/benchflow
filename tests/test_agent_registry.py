@@ -26,6 +26,7 @@ class TestEnvMappingField:
     """env_mapping exists on AgentConfig and is populated for known agents."""
 
     def test_claude_agent_has_mapping(self):
+        """Guards PR #1086's Fable-compatible adapter pin and ACP config ids."""
         cfg = AGENTS["claude-agent-acp"]
         assert "BENCHFLOW_PROVIDER_BASE_URL" in cfg.env_mapping
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"

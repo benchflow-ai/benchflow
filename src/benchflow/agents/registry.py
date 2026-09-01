@@ -119,6 +119,7 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
+_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -525,9 +526,7 @@ AGENTS: dict[str, AgentConfig] = {
         # against 0.73.0 with tests/test_acp_pinned_protocol_guard.py; the ids
         # stay coupled to this pin — re-run that guard when bumping. runtime.py
         # uses capability-first dispatch for the rest of the family.
-        install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.73.0"
-        ),
+        install_cmd=_js_agent_install("claude-agent-acp", _CLAUDE_AGENT_ACP_PACKAGE),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
