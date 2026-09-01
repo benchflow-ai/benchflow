@@ -7,7 +7,7 @@ network):
     RUN_ACP_DEP_GUARD=1 uv run --extra dev python -m pytest \
         tests/test_acp_pinned_protocol_guard.py -q
 
-It installs the pinned ``claude-agent-acp@0.40.0``, starts it over ACP stdio,
+It installs the pinned ``claude-agent-acp@0.73.0``, starts it over ACP stdio,
 runs ``initialize`` + ``session/new``, and asserts the advertised config option
 ids include ``{"model", "effort"}`` — the ids ``benchflow.agents.registry``
 hard-codes for model and reasoning-effort selection. If a future pin keeps
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
     reason="gated live ACP guard; set RUN_ACP_DEP_GUARD=1 (needs npm + node + network)",
 )
 
-PINNED_CLAUDE = "@agentclientprotocol/claude-agent-acp@0.40.0"
+PINNED_CLAUDE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 EXPECTED_OPTION_IDS = {"model", "effort"}
 
 
