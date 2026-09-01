@@ -65,6 +65,14 @@ def test_build_concurrency_zero_rejected(tmp_path: Path):
     assert "--build-concurrency must be >= 1" in result.stderr
 
 
+def test_trials_without_matrix_rejected(tmp_path: Path):
+    """Guards PR #1064: plain runs must not silently ignore --trials."""
+    result = _invoke(tmp_path, "--sandbox", "docker", "--trials", "3")
+    assert result.exit_code == 1
+    assert "--trials > 1 requires --matrix" in result.stderr
+    assert "single-entry matrix" in result.stderr
+
+
 def test_skill_mode_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--skill-mode", "bogus")
     assert result.exit_code == 1
