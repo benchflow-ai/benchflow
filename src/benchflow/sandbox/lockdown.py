@@ -609,7 +609,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         result = await env.exec(
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
             user="root",
-            timeout_sec=15,
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
         if result.stderr:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
@@ -684,7 +684,9 @@ async def _distro_pip_env(env) -> dict[str, str]:
     """
     try:
         result = await env.exec(
-            "cat /etc/os-release 2>/dev/null || true", user="root", timeout_sec=5
+            "cat /etc/os-release 2>/dev/null || true",
+            user="root",
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
     except Exception as e:
         logger.warning("distro detection failed (%s); skipping pip env tweaks", e)
@@ -1063,6 +1065,7 @@ async def _kill_sandbox_user_procs(env, sandbox_user: str) -> None:
         f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
         f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
 
 
