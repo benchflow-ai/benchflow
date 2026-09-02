@@ -52,6 +52,7 @@ import base64
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from benchflow._utils.text import describe_exception
 
@@ -439,6 +440,23 @@ class SubscriptionAuth:
     files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
 
 
+AgentEnvironmentPolicy = Literal["inherit", "explicit"]
+_EXPLICIT_ENVIRONMENT_CONTROLS = frozenset(
+    {
+        "BENCHFLOW_DISALLOW_WEB_TOOLS",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    }
+)
+
+
+def _is_explicit_environment_control(name: str) -> bool:
+    """Return whether a configured name is an approved non-secret control."""
+    return name in _EXPLICIT_ENVIRONMENT_CONTROLS
+
+
+
+
 @dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
@@ -451,6 +469,7 @@ class AgentConfig:
     # Non-ACP only. When protocol == "session-factory", this is a
     # "module:callable" entrypoint that builds an Agent Protocol object.
     requires_env: list[str] = field(default_factory=list)
+    environment_policy: AgentEnvironmentPolicy = "inherit"
     description: str = ""
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
@@ -1161,6 +1180,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         protocol="acp",
         session_factory=config.session_factory,
         requires_env=config.requires_env,
+        environment_policy=config.environment_policy,
         description=f"{config.description} (via acpx)",
         skill_paths=config.skill_paths,
         install_timeout=config.install_timeout,
@@ -1355,6 +1375,7 @@ def register_agent(
     protocol: str = "acp",
     session_factory: str = "",
     requires_env: list[str] | None = None,
+    environment_policy: AgentEnvironmentPolicy = "inherit",
     description: str = "",
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
@@ -1394,6 +1415,7 @@ def register_agent(
         protocol=protocol,
         session_factory=session_factory,
         requires_env=requires_env or [],
+        environment_policy=environment_policy,
         description=description,
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,

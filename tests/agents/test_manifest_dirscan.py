@@ -154,12 +154,14 @@ def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):
         install_cmd="CORE-INSTALL",
         launch_cmd="CORE-LAUNCH",
         acp_model_config_id="model",  # a _SHIM_ONLY field core owns
+        environment_policy="explicit",
     )
     m["aliases"]["demo-code"] = "demo"
     register_manifest_agents(load_agents_from_dir(tmp_path), **m, merge_shim_only=True)
     merged = m["agents"]["demo"]
     assert merged.install_cmd == "echo install"  # DATA field comes from the manifest
     assert merged.acp_model_config_id == "model"  # _SHIM_ONLY preserved from core
+    assert merged.environment_policy == "explicit"
     assert m["installers"]["demo"] == "echo install"
     assert m["aliases"]["demo-code"] == "demo"
 

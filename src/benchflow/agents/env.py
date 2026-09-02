@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.codex_config import apply_codex_provider_config
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, _is_explicit_environment_control
 
 logger = logging.getLogger(__name__)
 
@@ -677,8 +677,29 @@ def resolve_agent_env(
     model: str | None,
     agent_env: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Resolve agent environment from explicit overrides, then .env defaults."""
+    """Resolve the environment passed to an agent process."""
     agent_env = dict(agent_env or {})
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg and getattr(agent_cfg, "environment_policy", "inherit") == "explicit":
+        required = set(agent_cfg.requires_env)
+        agent_env = {
+            key: value
+            for key, value in agent_env.items()
+            if key in required or _is_explicit_environment_control(key)
+        }
+        missing = [key for key in agent_cfg.requires_env if not agent_env.get(key)]
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(
+                f"Explicit environment policy for agent {agent!r} requires "
+                f"runtime_credentials for: {names}"
+            )
+        # BenchFlow-owned, non-secret process controls. Explicit-policy agents
+        # bypass all ambient and provider inference below.
+        agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+        agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        return agent_env
+
     explicit_agent_env_keys = set(agent_env)
     # Inherit from .env file first, then from os.environ as fallback.
     # Both sources use setdefault so explicit agent_env keys take priority.
@@ -686,7 +707,6 @@ def resolve_agent_env(
     auto_inherit_env(agent_env)
     _normalize_codex_auth_env(agent, model, agent_env)
     pre_provider_env = dict(agent_env)
-    agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and
     # API-key validation are skipped even if a caller forwards a model.
     if model and agent != "oracle":

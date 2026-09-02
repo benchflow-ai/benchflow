@@ -55,7 +55,7 @@ import tempfile
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from benchflow._types import Role, Scene, Turn
 
@@ -77,7 +77,7 @@ from benchflow._utils.scoring import classify_error as classify_error
 from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, _is_explicit_environment_control
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -628,7 +628,12 @@ def _gateway_live_tokens(runtime: Any) -> int | None:
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
-    def __init__(self, config: RolloutConfig) -> None:
+    def __init__(
+        self,
+        config: RolloutConfig,
+        *,
+        runtime_credentials: Mapping[str, str] | None = None,
+    ) -> None:
         self._planes = config.planes or default_rollout_planes()
         # Activate Docker DinD compatibility shim on first rollout
         # construction (idempotent). Keeps `import benchflow.rollout`
@@ -636,6 +641,7 @@ class Rollout:
         _install_docker_compat(self._planes)
 
         self._config = config
+        self._runtime_credentials = dict(runtime_credentials or {})
         self._phase = "created"
 
         # Populated by setup()
@@ -767,14 +773,70 @@ class Rollout:
         self._evolved_skills: dict[str, str] | None = None
 
     @classmethod
-    async def create(cls, config: RolloutConfig) -> Rollout:
+    async def create(
+        cls,
+        config: RolloutConfig,
+        *,
+        runtime_credentials: Mapping[str, str] | None = None,
+    ) -> Rollout:
         """Create a Rollout instance. Preferred over __init__ for consistency."""
         if config.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
                 "self-gen requires the runtime orchestrator. Use bf.run(), "
                 "Evaluation.run(), or bf.run(RolloutConfig(...)) instead of Rollout.create()."
             )
-        return cls(config)
+        return cls(config, runtime_credentials=runtime_credentials)
+
+    def _resolve_agent_environment(
+        self,
+        agent: str,
+        model: str | None,
+        configured_env: Mapping[str, str] | None,
+    ) -> dict[str, str]:
+        """Resolve one agent env without exposing the runtime credential bag."""
+        agent_cfg = self._planes.agent_config(agent)
+        if (
+            not agent_cfg
+            or getattr(agent_cfg, "environment_policy", "inherit") == "inherit"
+        ):
+            return self._planes.resolve_agent_env(
+                agent, model, dict(configured_env or {})
+            )
+
+        required = set(agent_cfg.requires_env)
+        explicit_env = {
+            key: value
+            for key, value in (configured_env or {}).items()
+            if key not in required and _is_explicit_environment_control(key)
+        }
+        explicit_env.update(
+            {
+                key: self._runtime_credentials[key]
+                for key in agent_cfg.requires_env
+                if key in self._runtime_credentials
+            }
+        )
+        missing = [key for key in agent_cfg.requires_env if not explicit_env.get(key)]
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(
+                f"Explicit environment policy for agent {agent!r} requires "
+                f"runtime_credentials for: {names}"
+            )
+
+        resolved = self._planes.resolve_agent_env(agent, model, explicit_env)
+        admitted = set(explicit_env)
+        admitted.update(
+            {
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            }
+        )
+        return {key: value for key, value in resolved.items() if key in admitted}
+
+    def _agent_environment_policy(self, agent: str) -> str:
+        agent_cfg = self._planes.agent_config(agent)
+        return getattr(agent_cfg, "environment_policy", "inherit")
 
     def use_prebuilt_env(self, inner: Any) -> None:
         """Inject a caller-owned sandbox; skip creation and teardown.
@@ -953,8 +1015,10 @@ class Rollout:
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
         self._agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
-                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+            self._resolve_agent_environment(
+                cfg.primary_agent,
+                cfg.primary_model,
+                cfg.agent_env,
             ),
             disallow=self._disallow_web_tools,
         )
@@ -1066,6 +1130,7 @@ class Rollout:
             model=cfg.primary_model,
             reasoning_effort=cfg.primary_reasoning_effort,
             environment=cfg.environment,
+            environment_policy=self._agent_environment_policy(cfg.primary_agent),
             environment_manifest=cfg.environment_manifest,
             skill_policy=task_skill_policy,
             sandbox_user=cfg.sandbox_user,
@@ -1076,6 +1141,8 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            runtime_credential_names=self._runtime_credentials.keys(),
+            runtime_credential_values=self._runtime_credentials.values(),
             base_image_override=cfg.base_image_override,
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
@@ -2263,8 +2330,8 @@ class Rollout:
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
 
-        # Merge cfg.agent_env (config-level) with role.env (role-specific) so
-        # provider creds from YAML reach the agent. role.env wins on overlap.
+        # Resolve the config-level and role-specific inputs through the same
+        # admission policy used for the primary agent.
         disallow_web_tools = getattr(self, "_disallow_web_tools", None)
         if disallow_web_tools is None:
             disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
@@ -2274,7 +2341,7 @@ class Rollout:
             disallow_web_tools=disallow_web_tools,
         )
         agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
+            self._resolve_agent_environment(
                 role.agent,
                 role.model,
                 {**(cfg.agent_env or {}), **(role.env or {})},

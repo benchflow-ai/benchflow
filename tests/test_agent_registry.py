@@ -412,6 +412,7 @@ class TestRegisterAgent:
         assert cfg.session_factory == ""
         assert cfg.disallow_web_tools_setup_cmd == ""
         assert cfg.disallow_web_tools_launch_suffix == ""
+        assert cfg.environment_policy == "inherit"
 
     def test_passes_through_new_fields(self, cleanup_agent):
         cleanup_agent.append("rt-full-agent")
@@ -421,6 +422,8 @@ class TestRegisterAgent:
             launch_cmd="launch rt",
             protocol="session-factory",
             session_factory="my_agent.factory:create_agent",
+            requires_env=["DEEPSEEK_API_KEY"],
+            environment_policy="explicit",
             default_model="rt-model-1",
             api_protocol="openai-completions",
             disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
@@ -428,6 +431,8 @@ class TestRegisterAgent:
         )
         assert cfg.protocol == "session-factory"
         assert cfg.session_factory == "my_agent.factory:create_agent"
+        assert cfg.requires_env == ["DEEPSEEK_API_KEY"]
+        assert cfg.environment_policy == "explicit"
         assert cfg.default_model == "rt-model-1"
         assert cfg.api_protocol == "openai-completions"
         assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
@@ -437,6 +442,8 @@ class TestRegisterAgent:
         registered = AGENTS["rt-full-agent"]
         assert registered.protocol == "session-factory"
         assert registered.session_factory == "my_agent.factory:create_agent"
+        assert registered.requires_env == ["DEEPSEEK_API_KEY"]
+        assert registered.environment_policy == "explicit"
         assert registered.default_model == "rt-model-1"
         assert registered.api_protocol == "openai-completions"
         assert registered.disallow_web_tools_launch_suffix == " --no-web"

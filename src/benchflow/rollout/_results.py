@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from benchflow._utils.result_metadata import (
 from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow._utils.scoring import classify_error, classify_verifier_error
 from benchflow._utils.source_provenance import artifact_source_provenance
+from benchflow.agents.registry import AgentEnvironmentPolicy
 from benchflow.contracts import (
     BaseUser,
     DocumentNudgeUser,
@@ -140,6 +142,7 @@ def _write_config(
     agent: str,
     model: str | None,
     environment: str,
+    environment_policy: AgentEnvironmentPolicy = "inherit",
     skill_policy: TaskSkillPolicy,
     sandbox_user: str | None,
     context_root: str | Path | None,
@@ -148,6 +151,8 @@ def _write_config(
     skip_agent_install: bool = False,
     timeout: int,
     started_at: datetime,
+    runtime_credential_names: Collection[str] = (),
+    runtime_credential_values: Collection[str] = (),
     agent_env: dict[str, str],
     base_image_override: str | None = None,
     reasoning_effort: str | None = None,
@@ -172,8 +177,14 @@ def _write_config(
         if artifact_source and artifact_source.get("path")
         else task_path.name
     )
+    private_names = frozenset(runtime_credential_names)
+    private_values = frozenset(runtime_credential_values)
     recorded_env = {
-        k: v for k, v in agent_env.items() if _should_record_env_entry(k, v)
+        key: value
+        for key, value in agent_env.items()
+        if key not in private_names
+        and value not in private_values
+        and _should_record_env_entry(key, value)
     }
     config_data = {
         "task_path": recorded_task_path,
@@ -181,6 +192,7 @@ def _write_config(
         "model": model,
         "reasoning_effort": reasoning_effort,
         "environment": environment,
+        "environment_policy": environment_policy,
         "acp_transport": selected_acp_transport(
             agent=agent,
             environment=environment,

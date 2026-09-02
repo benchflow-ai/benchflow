@@ -82,6 +82,9 @@ _SHIM_ONLY = frozenset(
         # Non-ACP "module:callable" seam, only meaningful when
         # protocol="session-factory"; the acp-only contract can never carry it.
         "session_factory",
+        # Runtime credential admission is enforced by the BenchFlow shim, not
+        # declared by agent-authored manifest data.
+        "environment_policy",
         "credential_files",
         "subscription_auth",
         "acp_model_config_id",

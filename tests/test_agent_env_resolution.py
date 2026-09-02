@@ -15,6 +15,12 @@ from pathlib import Path
 import pytest
 
 from benchflow.agents.env import auto_inherit_env, resolve_agent_env
+from benchflow.agents.registry import (
+    AGENT_INSTALLERS,
+    AGENT_LAUNCH,
+    AGENTS,
+    register_agent,
+)
 
 
 def _patch_no_subscription(monkeypatch, tmp_path):
@@ -126,6 +132,77 @@ class TestResolveAgentEnvGemini:
             agent_env={"GEMINI_API_KEY": "explicit"},
         )
         assert result["GEMINI_API_KEY"] == "explicit"
+
+
+@pytest.fixture
+def explicit_policy_agent():
+    name = "explicit-policy-env-test"
+    config = register_agent(
+        name,
+        install_cmd="true",
+        launch_cmd="true",
+        requires_env=["DEEPSEEK_API_KEY"],
+        environment_policy="explicit",
+    )
+    yield config
+    AGENTS.pop(name, None)
+    AGENT_INSTALLERS.pop(name, None)
+    AGENT_LAUNCH.pop(name, None)
+
+
+class TestExplicitAgentEnvironmentPolicy:
+    def test_ignores_dotenv_and_process_credentials(
+        self, monkeypatch, explicit_policy_agent
+    ):
+        monkeypatch.setattr(
+            "benchflow.agents.env.load_dotenv_env",
+            lambda: {
+                "DEEPSEEK_API_KEY": "dotenv-secret",
+                "OPENAI_API_KEY": "dotenv-openai",
+            },
+        )
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "process-secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "process-openai")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "process-aws")
+
+        resolved_env = resolve_agent_env(
+            explicit_policy_agent.name,
+            None,
+            {
+                "DEEPSEEK_API_KEY": "runtime-secret",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+                "OPENAI_API_KEY": "configured-openai",
+                "AWS_ACCESS_KEY_ID": "configured-aws",
+                "DATABASE_URL": "postgresql://ambient.example/db",
+                "PATH": "/unreviewed/bin",
+                "LD_PRELOAD": "/tmp/inject.so",
+            },
+        )
+
+        assert explicit_policy_agent.environment_policy == "explicit"
+        assert "OPENAI_API_KEY" not in resolved_env
+        assert "AWS_ACCESS_KEY_ID" not in resolved_env
+        assert "DATABASE_URL" not in resolved_env
+        assert "PATH" not in resolved_env
+        assert "LD_PRELOAD" not in resolved_env
+        assert resolved_env["DEEPSEEK_API_KEY"] == "runtime-secret"
+        assert resolved_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"
+
+    def test_requires_every_declared_runtime_credential(
+        self, monkeypatch, explicit_policy_agent
+    ):
+        monkeypatch.setattr(
+            "benchflow.agents.env.load_dotenv_env",
+            lambda: {"DEEPSEEK_API_KEY": "dotenv-secret"},
+        )
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "process-secret")
+
+        with pytest.raises(ValueError, match="DEEPSEEK_API_KEY") as exc_info:
+            resolve_agent_env(explicit_policy_agent.name, None, {})
+
+        message = str(exc_info.value)
+        assert "dotenv-secret" not in message
+        assert "process-secret" not in message
 
 
 if __name__ == "__main__":
