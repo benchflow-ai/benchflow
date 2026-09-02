@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from benchflow.providers.litellm_config import safe_model_alias
+
 CODEX_CONFIG_ENV = "CODEX_CONFIG"
 CODEX_DEFAULT_AUTH_REQUEST_ENV = "DEFAULT_AUTH_REQUEST"
 CODEX_MODEL_PROVIDER_ENV = "MODEL_PROVIDER"
@@ -99,6 +101,7 @@ def apply_codex_launch_config(
         model
         and agent_env.get(_LITELLM_MODEL_VIA_ENV) in {"1", "true", "True"}
         and provider_model
+        and provider_model == safe_model_alias(model)
         and config is not None
         and config.get("model") == provider_model
     )
