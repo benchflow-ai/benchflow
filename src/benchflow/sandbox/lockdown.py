@@ -1047,17 +1047,61 @@ def _purge_pycache_cmd(workspace: str) -> str:
     return _PURGE_PYCACHE_CMD_TEMPLATE.replace("__WSQ__", shlex.quote(workspace))
 
 
+# Second pass over the sandbox user's processes, and the one that is checked.
+# It re-signals whatever the first pass left behind, then makes the final
+# quiescence observation ``harden_before_verify`` promises, printing surviving
+# pids so a failure names them.
+#
+# Ending on the probe rather than on ``sleep 1`` is the point. A trailing sleep
+# always succeeds, so the old form reported quiescence even when the ``pkill``
+# before it had failed outright — the shell takes its status from the last
+# command (#1078).
+#
+# Zombies are excluded. Killing the agent's shell can leave its ``sleep`` child
+# defunct for a moment, and ``pgrep`` lists a defunct process like a live one —
+# but a zombie holds no descriptors and cannot write, so it is not what this
+# step guards against. Excluding by state also keeps the verdict independent of
+# whether PID 1 reaps orphans: the compose images run a shell there, which does,
+# but that is a property of the image rather than something this should rest on.
+# ``__USER__`` is the sandbox user.
+_ASSERT_SANDBOX_USER_QUIESCENT_CMD_TEMPLATE = (
+    "live() { "
+    "  for p in $(pgrep -u __USER__ 2>/dev/null); do "
+    "    grep -qs '^State:[[:space:]]*Z' /proc/$p/status && continue; "
+    '    echo "$p"; '
+    "  done; "
+    "}; "
+    '[ -n "$(live)" ] || exit 0; '
+    "sleep 1; "
+    "pkill -9 -u __USER__ 2>/dev/null; "
+    "sleep 1; "
+    "survivors=$(live); "
+    '[ -n "$survivors" ] || exit 0; '
+    'echo "$survivors"; '
+    "exit 1"
+)
+
+
 async def _kill_sandbox_user_procs(env, sandbox_user: str) -> None:
-    """Kill sandbox-user processes so none write during verifier teardown."""
+    """Kill sandbox-user processes so none write during verifier teardown.
+
+    Returns only once the sandbox user owns no process, and raises otherwise.
+    The verifier starts immediately after this, so a surviving agent process
+    would be free to write while the workspace is being scored. The workspace
+    chown in ``_freeze_workspace`` is a backstop, not a substitute: POSIX checks
+    permissions at ``open()``, so a descriptor the process already holds keeps
+    writing through the ownership change (#1078).
+    """
     await env.exec(
         f"pkill -u {sandbox_user} 2>/dev/null; "
         f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
         timeout_sec=10,
     )
-    # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
-    await env.exec(
-        f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
-        f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
+    # Catch processes that slipped through (e.g. cron/at jobs) and confirm.
+    await _checked_exec(
+        env,
+        _ASSERT_SANDBOX_USER_QUIESCENT_CMD_TEMPLATE.replace("__USER__", sandbox_user),
+        "Verifier hardening failed: sandbox-user process quiescence check",
         user="root",
     )
 
