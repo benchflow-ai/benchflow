@@ -71,6 +71,16 @@ class TestResolveAgent:
         config = resolve_agent("acpx/gemini")
         assert config.disallow_web_tools_owned_paths == ["$HOME/.gemini"]
 
+    def test_resolve_acpx_preserves_native_provider(self):
+        """Guards PR #1052: acpx-wrapped fx keeps its gateway-native routing."""
+        from benchflow.agents.registry import resolve_agent_key
+        from benchflow.providers.litellm_runtime import needs_litellm_runtime
+
+        config = resolve_agent("acpx/fx")
+        assert config.native_provider == "vercel"
+        key = resolve_agent_key("acpx/fx")
+        assert not needs_litellm_runtime(key, "vercel/anthropic/claude-sonnet-4.5")
+
     def test_acpx_wrap_carries_routing_fields(self):
         """Regression for PR #322: _acpx_wrap must inherit api_protocol and
         default_model (and all other non-overridden fields) from the underlying

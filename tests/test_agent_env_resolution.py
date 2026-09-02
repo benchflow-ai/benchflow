@@ -130,7 +130,7 @@ class TestResolveAgentEnvGemini:
 
 class TestResolveAgentEnvFx:
     def test_non_vercel_model_rejected(self, monkeypatch, tmp_path):
-        """fx serves only vercel/ models; other providers must fail fast."""
+        """Guards PR #1052: fx serves only vercel/ models; others fail fast."""
         _clear_keys(monkeypatch)
         _patch_no_subscription(monkeypatch, tmp_path)
         monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(tmp_path / "no.env"))
