@@ -36,11 +36,13 @@ class _CooperativeCancellationTransport(Transport):
         *,
         emit_pending_tool: bool,
         stall_cancel_after_response: bool = False,
+        cancel_failure_response_delay: float | None = None,
     ) -> None:
         self._messages: asyncio.Queue[dict] = asyncio.Queue()
         self._prompt_request_id: int | None = None
         self._emit_pending_tool = emit_pending_tool
         self._stall_cancel_after_response = stall_cancel_after_response
+        self._cancel_failure_response_delay = cancel_failure_response_delay
         self.cancel_calls = 0
         self.cancel_send_finished = asyncio.Event()
         self.receive_calls = 0
@@ -101,6 +103,11 @@ class _CooperativeCancellationTransport(Transport):
                             "status": "cancelled",
                         }
                     )
+                if self._cancel_failure_response_delay is not None:
+                    asyncio.get_running_loop().call_later(
+                        self._cancel_failure_response_delay, self._queue_response
+                    )
+                    raise ConnectionError("cancel send failed")
                 self._queue_response()
                 if self._stall_cancel_after_response:
                     await asyncio.Future()
@@ -926,14 +933,24 @@ class TestACPInterleaving:
 
 
 class TestACPTimeoutCancellation:
+    @pytest.mark.parametrize(
+        "transport_kwargs",
+        [
+            {"stall_cancel_after_response": True},
+            {"cancel_failure_response_delay": 0.01},
+        ],
+        ids=["stalled-cancel-send", "failed-cancel-send"],
+    )
     @pytest.mark.asyncio
-    async def test_wall_timeout_requests_cooperative_acp_cancellation(self) -> None:
-        """Guards issue #933 against evidence loss demonstrated by PR #1051."""
+    async def test_wall_timeout_requests_cooperative_acp_cancellation(
+        self, transport_kwargs: dict
+    ) -> None:
+        """Guards issue #933 and PR #1080's fix for evidence loss shown by PR #1051."""
         from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
 
         transport = _CooperativeCancellationTransport(
             emit_pending_tool=True,
-            stall_cancel_after_response=True,
+            **transport_kwargs,
         )
         client = ACPClient(transport)
         session = ACPSession("timeout-session")

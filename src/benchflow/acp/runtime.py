@@ -790,27 +790,30 @@ async def _cancel_prompt_after_timeout(
         _consume_task_result(prompt_task)
         return True
 
-    async def _cancel_then_wait_for_prompt():
-        await cancel()
-        return await asyncio.shield(prompt_task)
+    async def _request_cancel() -> None:
+        try:
+            await cancel()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Failed to request ACP prompt cancellation", exc_info=True)
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _PROMPT_TIMEOUT_CLEANUP_TOTAL_SEC
-    supervisor_task = asyncio.create_task(_cancel_then_wait_for_prompt())
+    cancel_task = asyncio.create_task(_request_cancel())
     try:
         cooperative_timeout = max(
             0.0,
             deadline - loop.time() - _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
         )
         await asyncio.wait(
-            {prompt_task, supervisor_task},
+            {prompt_task},
             timeout=cooperative_timeout,
-            return_when=asyncio.FIRST_COMPLETED,
         )
     finally:
         remaining = max(0.0, deadline - loop.time())
         await _cancel_and_drain_tasks(
-            {prompt_task, supervisor_task},
+            {prompt_task, cancel_task},
             min(_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC, remaining),
         )
     return prompt_task.done()
