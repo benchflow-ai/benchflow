@@ -609,7 +609,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         result = await env.exec(
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
             user="root",
-            timeout_sec=15,
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
         if result.stderr:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
@@ -684,7 +684,9 @@ async def _distro_pip_env(env) -> dict[str, str]:
     """
     try:
         result = await env.exec(
-            "cat /etc/os-release 2>/dev/null || true", user="root", timeout_sec=5
+            "cat /etc/os-release 2>/dev/null || true",
+            user="root",
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
     except Exception as e:
         logger.warning("distro detection failed (%s); skipping pip env tweaks", e)
@@ -709,14 +711,16 @@ async def _trusted_verifier_path(
     checks prove they are root-owned directories and not group/world writable.
     Runtime locations and sandbox-user writable locations stay excluded.
     """
-    path_result = await env.exec("printenv PATH", user="root", timeout_sec=10)
+    path_result = await env.exec(
+        "printenv PATH", user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+    )
     raw_path = path_result.stdout or ""
     if not raw_path.strip():
         return _SAFE_VERIFIER_PATH
     cmd = _trusted_path_extras_cmd(
         raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
     )
-    result = await env.exec(cmd, user="root", timeout_sec=10)
+    result = await env.exec(cmd, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC)
     if _exec_return_code(result) != 0:
         logger.debug(
             "Trusted verifier PATH extras unavailable; using safe PATH.%s",
@@ -748,14 +752,16 @@ async def _trusted_verifier_pythonpath(
     is chowned to root before verification.
     """
     pp_result = await env.exec(
-        "printenv PYTHONPATH 2>/dev/null || true", user="root", timeout_sec=10
+        "printenv PYTHONPATH 2>/dev/null || true",
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     raw_pp = (pp_result.stdout or "").strip()
     if not raw_pp:
         return ""
     blocked = _blocked_verifier_pythonpath_prefixes(sandbox_user)
     cmd = _trusted_path_extras_cmd(raw_pp, blocked)
-    result = await env.exec(cmd, user="root", timeout_sec=10)
+    result = await env.exec(cmd, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC)
     try:
         extras = _json.loads(result.stdout or "[]")
     except _json.JSONDecodeError:
@@ -1052,13 +1058,14 @@ async def _kill_sandbox_user_procs(env, sandbox_user: str) -> None:
     await env.exec(
         f"pkill -u {sandbox_user} 2>/dev/null; "
         f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
-        timeout_sec=10,
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
     await env.exec(
         f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
         f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
 
 
