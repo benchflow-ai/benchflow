@@ -12,12 +12,16 @@ caller aborts before prompting.
 
 from __future__ import annotations
 
+import hashlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from benchflow.acp.client import ACPClient
+from benchflow.acp.types import StopReason
 from benchflow.diagnostics import TransportClosedError
+from benchflow.rollout import Rollout
 
 
 def _stock_acp_mock() -> AsyncMock:
@@ -272,3 +276,76 @@ async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) ->
             "LLM_BASE_URL": "http://127.0.0.1:1234",
         },
     )
+
+
+def test_acp_observation_uses_only_live_session_identity(tmp_path) -> None:
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = SimpleNamespace(primary_agent="configured-default")
+    rollout._session = SimpleNamespace(
+        agent_info=None,
+        model_state={"currentModelId": "wire-model"},
+        mode_state={"currentModeId": "wire-mode"},
+        stop_reason=StopReason.END_TURN,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._acp_session_observation = None
+
+    assert rollout.acp_session_observation is None
+
+
+def test_acp_observation_records_live_results_and_trajectory_digest(tmp_path) -> None:
+    trajectory = tmp_path / "trajectory" / "acp_trajectory.jsonl"
+    trajectory.parent.mkdir()
+    payload = b'{"type":"message"}\n'
+    trajectory.write_bytes(payload)
+    rollout = Rollout.__new__(Rollout)
+    rollout._session = SimpleNamespace(
+        agent_info=SimpleNamespace(name="wire-agent"),
+        model_state={"currentModelId": "wire-model"},
+        mode_state={"currentModeId": "wire-mode"},
+        stop_reason=StopReason.END_TURN,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._acp_session_observation = None
+
+    observation = rollout.acp_session_observation
+
+    assert observation is not None
+    assert observation.agent_name == "wire-agent"
+    assert observation.model_id == "wire-model"
+    assert observation.mode_id == "wire-mode"
+    assert observation.stop_reason == "end_turn"
+    assert observation.trajectory_path == str(trajectory)
+    assert observation.trajectory_digest == (
+        "sha256:" + hashlib.sha256(payload).hexdigest()
+    )
+
+
+def test_acp_observation_prefers_acknowledged_config_values(tmp_path) -> None:
+    rollout = Rollout.__new__(Rollout)
+    rollout._session = SimpleNamespace(
+        agent_info=SimpleNamespace(name="wire-agent"),
+        model_state={"currentModelId": "session-new-model"},
+        mode_state={"currentModeId": "session-new-mode"},
+        config_options=[
+            {
+                "id": "model",
+                "category": "model",
+                "currentValue": "acknowledged-model",
+            },
+            {
+                "id": "mode",
+                "category": "mode",
+                "currentValue": "acknowledged-mode",
+            },
+        ],
+        stop_reason=None,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._acp_session_observation = None
+
+    observation = rollout.acp_session_observation
+
+    assert observation is not None
+    assert observation.model_id == "acknowledged-model"
+    assert observation.mode_id == "acknowledged-mode"

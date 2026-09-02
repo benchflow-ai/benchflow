@@ -17,7 +17,7 @@ from benchflow.sandbox.process._base import (
     _DIAG_TRUNCATE,
     _ENV_KEY_RE,
     LiveProcess,
-    SubprocessLiveProcess,
+    _RemoteProcessGroupLiveProcess,
     _timeout_sec_from_env,
 )
 
@@ -112,7 +112,7 @@ async def _bootstrap_daytona_env_file(
         )
 
 
-class DaytonaProcess(SubprocessLiveProcess):
+class DaytonaProcess(_RemoteProcessGroupLiveProcess):
     """Live stdin/stdout via SSH to a Daytona sandbox.
 
     For DinD (compose) sandboxes, the SSH connects to the VM and then
@@ -273,6 +273,25 @@ class DaytonaProcess(SubprocessLiveProcess):
             error_label="Daytona agent env",
         )
 
+    async def _exec_remote_process_group_command(self, command: str) -> int:
+        if self._is_dind:
+            if self._compose_cmd_base:
+                parts = [*shlex.split(self._compose_cmd_base), "exec", "-T"]
+            else:
+                parts = ["docker", "compose", "exec", "-T"]
+            parts.extend(["main", "bash", "-c", command])
+            remote_command = shlex.join(parts)
+            if self._compose_cmd_prefix:
+                remote_command = f"{self._compose_cmd_prefix} {remote_command}"
+        else:
+            remote_command = command
+        response = await asyncio.wait_for(
+            self._sandbox.process.exec(remote_command, timeout=10),
+            timeout=30,
+        )
+        exit_code = getattr(response, "exit_code", None)
+        return exit_code if isinstance(exit_code, int) else 2
+
     async def start(
         self,
         command: str,
@@ -280,6 +299,7 @@ class DaytonaProcess(SubprocessLiveProcess):
         cwd: str | None = None,
     ) -> None:
         remote_env_path = None
+        self._remote_process_group_path = None
 
         if self._is_dind:
             # Build the docker compose exec command to run inside the DinD VM.
@@ -304,7 +324,10 @@ class DaytonaProcess(SubprocessLiveProcess):
                 )
                 for key in env:
                     inner_parts.extend(["--env", key])
-            inner_parts.extend(["main", "bash", "-c", command])
+            wrapped_command, process_group_path = (
+                self._build_remote_process_group_wrapper(command)
+            )
+            inner_parts.extend(["main", "bash", "-c", wrapped_command])
             inner_cmd = shlex.join(inner_parts)
 
             remote_cmd = (
@@ -339,14 +362,19 @@ class DaytonaProcess(SubprocessLiveProcess):
                 )
                 remote_env_path_q = shlex.quote(remote_env_path)
                 env_prefix = f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
+            wrapped_command, process_group_path = (
+                self._build_remote_process_group_wrapper(command)
+            )
             if cwd:
-                remote_cmd = f"cd {shlex.quote(cwd)} && {env_prefix}{command}"
+                remote_cmd = f"cd {shlex.quote(cwd)} && {env_prefix}{wrapped_command}"
             else:
-                remote_cmd = f"{env_prefix}{command}"
+                remote_cmd = f"{env_prefix}{wrapped_command}"
             if remote_env_path:
                 remote_cmd = (
                     f"trap 'rm -f {shlex.quote(remote_env_path)}' EXIT; {remote_cmd}"
                 )
+        self._remote_process_group_path = process_group_path
+        self._termination_status = None
 
         try:
             ssh_access = await self._sandbox.create_ssh_access(
@@ -368,10 +396,16 @@ class DaytonaProcess(SubprocessLiveProcess):
                 limit=_BUFFER_LIMIT,
             )
             self._set_process(process)
-        except Exception:
+        except BaseException:
             if remote_env_path:
                 await self._cleanup_remote_env_file(remote_env_path)
-            await self.close()
+            if self._process is None:
+                # The remote wrapper never started, so its identity file cannot exist.
+                self._remote_process_group_path = None
+                if self._ssh_config_path:
+                    self._unlink_ssh_config(self._ssh_config_path)
+            else:
+                await self.close()
             raise
         self._ssh_config_cleanup_task = asyncio.create_task(
             self._cleanup_ssh_config_after_exit(process, ssh_config_path)
@@ -406,8 +440,8 @@ class DaytonaPtyProcess(LiveProcess):
         self._sandbox = sandbox
         self._compose_cmd_prefix = compose_cmd_prefix
         self._compose_cmd_base = compose_cmd_base
-        self._pty = None
-        self._line_buffer = asyncio.Queue()
+        self._pty: Any = None
+        self._line_buffer: asyncio.Queue[bytes] = asyncio.Queue()
         self._partial = b""
         self._closed = False
         self._remote_env_path: str | None = None

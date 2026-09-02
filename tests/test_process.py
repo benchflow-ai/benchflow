@@ -128,9 +128,21 @@ def _make_daytona_sandbox(token="abc", exit_code=0, result=None):
     sandbox.create_ssh_access = AsyncMock(return_value=MagicMock(token=token))
     if result is None:
         result = "__BENCHFLOW_BOOTSTRAP_DONE__\n"
-    sandbox.process.exec = AsyncMock(
-        return_value=MagicMock(exit_code=exit_code, result=result)
-    )
+    process_group_alive = True
+
+    async def fake_exec(command, *args, **kwargs):
+        nonlocal process_group_alive
+        if 'kill -0 -- "-$pgid"' in command:
+            return MagicMock(exit_code=0 if process_group_alive else 1, result="")
+        if 'kill -TERM -- "-$pgid"' in command:
+            process_group_alive = False
+            return MagicMock(exit_code=0, result="")
+        if 'kill -KILL -- "-$pgid"' in command:
+            process_group_alive = False
+            return MagicMock(exit_code=0, result="")
+        return MagicMock(exit_code=exit_code, result=result)
+
+    sandbox.process.exec = AsyncMock(side_effect=fake_exec)
     return sandbox
 
 
@@ -316,7 +328,10 @@ class TestDockerProcessEnv:
             await proc.start(command="echo hello")
 
         assert len(calls) == 1
-        assert calls[0][-1] == "echo hello"
+        launch = calls[0][-1]
+        assert launch.startswith("exec setsid bash -c ")
+        assert "/tmp/.benchflow_agent_pgid_" in launch
+        assert "echo hello" in launch
 
     @pytest.mark.asyncio
     async def test_staged_env_is_removed_when_main_launch_fails(self):
@@ -458,7 +473,7 @@ class TestAppleContainerProcess:
             await proc.start("codex-acp", cwd="/root")
 
         assert len(calls) == 1
-        assert calls[0][0] == (
+        assert calls[0][0][:-1] == (
             "container",
             "exec",
             "--interactive",
@@ -467,8 +482,11 @@ class TestAppleContainerProcess:
             "bf_run",
             "bash",
             "-c",
-            "codex-acp",
         )
+        launch = calls[0][0][-1]
+        assert launch.startswith("exec setsid bash -c ")
+        assert "/tmp/.benchflow_agent_pgid_" in launch
+        assert "codex-acp" in launch
         assert calls[0][1]["stdin"] is asyncio.subprocess.PIPE
         assert calls[0][1]["stdout"] is asyncio.subprocess.PIPE
 
@@ -504,7 +522,9 @@ class TestAppleContainerProcess:
         main_command = calls[1][0][-1]
         assert ". /tmp/.benchflow_agent_env_" in main_command
         assert "rm -f /tmp/.benchflow_agent_env_" in main_command
-        assert main_command.endswith("&& codex-acp")
+        assert main_command.startswith("exec setsid bash -c ")
+        assert "/tmp/.benchflow_agent_pgid_" in main_command
+        assert "&& codex-acp" in main_command
 
     @pytest.mark.asyncio
     async def test_staged_env_is_removed_when_main_launch_fails(self):
@@ -566,10 +586,10 @@ class TestDaytonaProcessEnvFilePath:
         assert len(harness.calls) == 1
         bootstrap_cmd = sandbox.process.exec.await_args.args[0]
         live_cmd = harness.calls[0][-1]
-        assert "$$" not in live_cmd, (
-            "$$ in remote command — shlex.join() will quote it, mismatching "
-            f"the SDK bootstrap command. Got: {live_cmd[:200]!r}"
-        )
+        assert "/tmp/benchflow_env_$$" not in live_cmd
+        assert "exec setsid bash -c " in live_cmd
+        assert "/tmp/.benchflow_agent_pgid_" in live_cmd
+        assert '"$$"' in live_cmd
 
         # And: a real path was used in the SDK bootstrap (literal hex suffix,
         # no shell variable), while env values travel through Daytona's env map.
@@ -596,7 +616,10 @@ class TestDaytonaProcessEnvFilePath:
         assert len(harness.calls) == 1
         bootstrap_cmd = sandbox.process.exec.await_args.args[0]
         live_cmd = harness.calls[0][-1]
-        assert "$$" not in live_cmd
+        assert "/tmp/benchflow_env_$$" not in live_cmd
+        assert "exec setsid bash -c " in live_cmd
+        assert "/tmp/.benchflow_agent_pgid_" in live_cmd
+        assert '"$$"' in live_cmd
 
         assert "$$" not in bootstrap_cmd
         assert "/tmp/benchflow_env_" in bootstrap_cmd
@@ -819,6 +842,9 @@ class TestDaytonaProcessSecretArgv:
 
         write_config.assert_not_called()
         assert proc._ssh_config_path is None
+        assert proc._remote_process_group_path is None
+        await proc.close()
+        sandbox.process.exec.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_bootstrapped_env_file_is_removed_when_ssh_access_fails(self):

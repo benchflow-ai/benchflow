@@ -52,10 +52,11 @@ import shlex
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from benchflow._types import Role, Scene, Turn
 
@@ -75,9 +76,18 @@ from benchflow._types import Role, Scene, Turn
 from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow._utils.text import describe_exception
+from benchflow.acp.termination import (
+    AcpSessionObservation,
+    AgentTerminationReceipt,
+    _observe_acp_session,
+)
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
-from benchflow.agents.registry import AGENTS, _is_explicit_environment_control
+from benchflow.agents.registry import (
+    AGENTS,
+    AgentEnvironmentPolicy,
+    _is_explicit_environment_control,
+)
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -121,9 +131,6 @@ from benchflow.rollout._results import (
 )
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
-)
-from benchflow.rollout._setup import (
-    _agent_process_kill_pattern as _agent_process_kill_pattern,
 )
 from benchflow.rollout._setup import _apply_prompt_prefix as _apply_prompt_prefix
 from benchflow.rollout._setup import _apply_web_policy as _apply_web_policy
@@ -234,6 +241,10 @@ _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # them — the live dashboard renders the phase as a label and a backwards step
 # reads as the run having restarted (see disconnect()).
 _TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned"})
+_ACP_STOP_CANCEL_TIMEOUT_SEC = 5.0
+_ACP_STOP_CLOSE_TIMEOUT_SEC = 20.0
+_ACP_STOP_SESSION_CLOSE_TIMEOUT_SEC = 5.0
+_ACP_STOP_LIVENESS_TIMEOUT_SEC = 5.0
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -724,6 +735,9 @@ class Rollout:
         # install_agent().
         self._session_traj_count: int = 0
         self._session_tool_count: int = 0
+        self._termination_receipt: AgentTerminationReceipt | None = None
+        self._acp_session_observation: AcpSessionObservation | None = None
+        self._stop_agent_task: asyncio.Task[AgentTerminationReceipt] | None = None
 
         # Populated by execute()
         self._trajectory: list[dict] = []
@@ -787,6 +801,16 @@ class Rollout:
             )
         return cls(config, runtime_credentials=runtime_credentials)
 
+    def _plane_agent_config(self, agent: str) -> Any:
+        """Resolve typed plane metadata without trusting permissive mock attributes."""
+        resolver = getattr(self._planes, "agent_config", None)
+        if callable(resolver):
+            candidate = resolver(agent)
+            policy = getattr(candidate, "environment_policy", None)
+            if isinstance(policy, str) and policy in {"inherit", "explicit"}:
+                return candidate
+        return AGENTS.get(agent)
+
     def _resolve_agent_environment(
         self,
         agent: str,
@@ -794,16 +818,14 @@ class Rollout:
         configured_env: Mapping[str, str] | None,
     ) -> dict[str, str]:
         """Resolve one agent env without exposing the runtime credential bag."""
-        agent_cfg = self._planes.agent_config(agent)
-        if (
-            not agent_cfg
-            or getattr(agent_cfg, "environment_policy", "inherit") == "inherit"
-        ):
+        agent_cfg = self._plane_agent_config(agent)
+        if self._agent_environment_policy(agent) == "inherit":
             return self._planes.resolve_agent_env(
                 agent, model, dict(configured_env or {})
             )
 
-        required = set(agent_cfg.requires_env)
+        required_env = tuple(getattr(agent_cfg, "requires_env", ()) or ())
+        required = set(required_env)
         explicit_env = {
             key: value
             for key, value in (configured_env or {}).items()
@@ -812,11 +834,11 @@ class Rollout:
         explicit_env.update(
             {
                 key: self._runtime_credentials[key]
-                for key in agent_cfg.requires_env
+                for key in required_env
                 if key in self._runtime_credentials
             }
         )
-        missing = [key for key in agent_cfg.requires_env if not explicit_env.get(key)]
+        missing = [key for key in required_env if not explicit_env.get(key)]
         if missing:
             names = ", ".join(missing)
             raise ValueError(
@@ -834,9 +856,11 @@ class Rollout:
         )
         return {key: value for key, value in resolved.items() if key in admitted}
 
-    def _agent_environment_policy(self, agent: str) -> str:
-        agent_cfg = self._planes.agent_config(agent)
-        return getattr(agent_cfg, "environment_policy", "inherit")
+    def _agent_environment_policy(self, agent: str) -> AgentEnvironmentPolicy:
+        policy = getattr(
+            self._plane_agent_config(agent), "environment_policy", "inherit"
+        )
+        return "explicit" if policy == "explicit" else "inherit"
 
     def use_prebuilt_env(self, inner: Any) -> None:
         """Inject a caller-owned sandbox; skip creation and teardown.
@@ -911,6 +935,28 @@ class Rollout:
     @property
     def trajectory(self) -> list[dict]:
         return self._trajectory
+
+    @property
+    def acp_session_observation(self) -> AcpSessionObservation | None:
+        """Latest identity and artifact facts observed from the live ACP session."""
+        session = (
+            None
+            if getattr(self, "_is_session_factory", False)
+            else getattr(self, "_session", None)
+        )
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        trajectory_path = (
+            rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+            if isinstance(rollout_dir, Path)
+            else None
+        )
+        observed = _observe_acp_session(
+            session,
+            trajectory_path=trajectory_path,
+        )
+        if observed is not None:
+            self._acp_session_observation = observed
+        return getattr(self, "_acp_session_observation", None)
 
     def record_external_tool_call(
         self,
@@ -1343,6 +1389,9 @@ class Rollout:
 
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
+        self._termination_receipt = None
+        self._stop_agent_task = None
+        self._acp_session_observation = None
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
@@ -1432,42 +1481,132 @@ class Rollout:
             TrajectoryWriter(traj_path), prior
         )
 
-    async def disconnect(self) -> None:
-        """Close the ACP client and clean up agent process, keeping the environment alive."""
+    async def stop_agent(self, *, cancel_requested: bool) -> AgentTerminationReceipt:
+        """Share one shielded stop operation across every concurrent caller."""
+        existing = getattr(self, "_termination_receipt", None)
+        if existing is not None:
+            return existing
+
+        stop_task: asyncio.Task[AgentTerminationReceipt] | None = getattr(
+            self, "_stop_agent_task", None
+        )
+        if stop_task is None:
+            stop_task = asyncio.create_task(
+                Rollout._stop_agent_once(self, cancel_requested=cancel_requested)
+            )
+            self._stop_agent_task = stop_task
+        try:
+            return await asyncio.shield(stop_task)
+        except asyncio.CancelledError:
+            await asyncio.shield(stop_task)
+            raise
+
+    async def _stop_agent_once(
+        self, *, cancel_requested: bool
+    ) -> AgentTerminationReceipt:
+        """Stop the live ACP process tree and publish immutable evidence once."""
+
         if getattr(self, "_is_session_factory", False):
             self._capture_partial_session_factory_trajectory()
         else:
             self._capture_partial_acp_trajectory()
-        if self._acp_client:
+
+        client = getattr(self, "_acp_client", None)
+        transport = getattr(client, "_transport", None) if client is not None else None
+        cancel_acknowledged = False
+        session_closed = client is None and getattr(self, "_session", None) is None
+
+        if cancel_requested and client is not None:
             try:
-                await self._acp_client.close()
-            except Exception as e:
-                logger.warning(f"ACP client close failed: {e}")
-            self._acp_client = None
+                await asyncio.wait_for(
+                    client.cancel(), timeout=_ACP_STOP_CANCEL_TIMEOUT_SEC
+                )
+                cancel_acknowledged = True
+            except Exception:
+                logger.warning("ACP session cancellation failed", exc_info=True)
+
+        close_session: Any = getattr(client, "close_session", None)
+        terminate_process_tree: Any = getattr(transport, "terminate_process_tree", None)
+        if (
+            client is not None
+            and callable(close_session)
+            and callable(terminate_process_tree)
+        ):
+            try:
+                session_closed = (
+                    await asyncio.wait_for(
+                        close_session(),
+                        timeout=_ACP_STOP_SESSION_CLOSE_TIMEOUT_SEC,
+                    )
+                    is True
+                )
+            except Exception:
+                logger.warning("ACP session close failed", exc_info=True)
+            try:
+                await terminate_process_tree()
+            except Exception:
+                logger.warning("ACP process-tree termination failed", exc_info=True)
+            session_closed = (
+                session_closed or getattr(transport, "session_closed", False) is True
+            )
+        elif client is not None:
+            try:
+                await asyncio.wait_for(
+                    client.close(), timeout=_ACP_STOP_CLOSE_TIMEOUT_SEC
+                )
+                session_closed = True
+            except Exception:
+                logger.warning("ACP client close failed", exc_info=True)
+
+        termination_status = getattr(transport, "termination_status", None)
+        graceful_termination = (
+            getattr(termination_status, "graceful_termination", False) is True
+        )
+        force_kill_required = (
+            getattr(termination_status, "force_kill_required", False) is True
+        )
+        process_tree_stopped = False
+        liveness_check = getattr(transport, "process_tree_stopped", None)
+        if callable(liveness_check):
+            try:
+                process_tree_stopped = (
+                    await asyncio.wait_for(
+                        liveness_check(), timeout=_ACP_STOP_LIVENESS_TIMEOUT_SEC
+                    )
+                    is True
+                )
+            except Exception:
+                logger.warning(
+                    "ACP process-tree liveness verification failed", exc_info=True
+                )
+        if not process_tree_stopped:
+            graceful_termination = False
+
+        _ = Rollout.acp_session_observation.__get__(self, Rollout)
+
+        receipt = AgentTerminationReceipt(
+            cancel_requested=cancel_requested,
+            cancel_acknowledged=cancel_acknowledged,
+            session_closed=session_closed,
+            graceful_termination=graceful_termination,
+            force_kill_required=force_kill_required,
+            process_tree_stopped=process_tree_stopped,
+        )
+        self._termination_receipt = receipt
+        self._acp_client = None
         self._session = None
         self._session_adapter = None
         self._is_session_factory = False
-        # Kill any lingering agent processes to prevent context bleed between scenes
-        agent_pattern = _agent_process_kill_pattern(self._agent_launch)
-        if self._env and agent_pattern:
-            with contextlib.suppress(Exception):
-                await self._env.exec(
-                    f"pkill -f {shlex.quote(agent_pattern)} || true",
-                    timeout_sec=10,
-                )
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
-        # Rewinding the phase to "installed" is right for the between-scenes
-        # disconnect (another agent turn follows, and connect_as() will mark
-        # "connected"), but disconnect() is ALSO called from cleanup(), after
-        # verify() has already moved the rollout into its terminal phases. Left
-        # unguarded, that rewind made the live dashboard walk backwards —
-        # "verifying…" and then "running agent…" again for the whole teardown
-        # stretch — and briefly blanked ``Rollout.result``, which is gated on
-        # the same terminal phases.
         if getattr(self, "_phase", None) not in _TERMINAL_PHASES:
             self._phase = "installed"
+        return receipt
+
+    async def disconnect(self) -> None:
+        """Stop the current agent while keeping the environment alive."""
+        await Rollout.stop_agent(self, cancel_requested=False)
 
     def on_ask_user(self, handler: Any) -> None:
         """Register the agent-initiated ``session/request_permission`` handler.
@@ -2324,8 +2463,11 @@ class Rollout:
 
         Installs the role's agent binary and credentials if it differs
         from the primary agent (which was set up in install_agent()).
-        Updates _agent_launch so disconnect() kills the correct process.
+        Retains the role's launch command for the connection attempt.
         """
+        self._termination_receipt = None
+        self._stop_agent_task = None
+        self._acp_session_observation = None
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()

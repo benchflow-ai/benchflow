@@ -198,3 +198,292 @@ async def test_evaluation_path_surfaces_infra_error(tmp_path, monkeypatch):
     assert result.error is not None
     assert "hard deadline" in result.error
     assert result.error_category == INFRA_ERROR
+
+
+class _StopTransport:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        graceful: bool,
+        forced: bool,
+        stopped: bool,
+        liveness_error: Exception | None = None,
+    ) -> None:
+        self.events = events
+        self.termination_status = SimpleNamespace(
+            graceful_termination=graceful,
+            force_kill_required=forced,
+            process_tree_stopped=stopped,
+        )
+        self._stopped = stopped
+        self._liveness_error = liveness_error
+
+    async def process_tree_stopped(self) -> bool:
+        self.events.append("liveness")
+        if self._liveness_error is not None:
+            raise self._liveness_error
+        return self._stopped
+
+
+class _StopClient:
+    session = None
+
+    def __init__(
+        self,
+        transport: _StopTransport,
+        events: list[str],
+        *,
+        cancel_error: Exception | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
+        self._transport = transport
+        self._events = events
+        self._cancel_error = cancel_error
+        self._close_error = close_error
+
+    async def cancel(self) -> None:
+        self._events.append("cancel")
+        if self._cancel_error is not None:
+            raise self._cancel_error
+
+    async def close(self) -> None:
+        self._events.append("close")
+        if self._close_error is not None:
+            raise self._close_error
+
+
+def _rollout_at_stop_boundary(client: _StopClient) -> Rollout:
+    rollout = Rollout.__new__(Rollout)
+    rollout._acp_client = client
+    rollout._session = None
+    rollout._session_adapter = None
+    rollout._is_session_factory = False
+    rollout._active_role = None
+    rollout._session_tool_count = 0
+    rollout._session_traj_count = 0
+    rollout._phase = "executed"
+    rollout._termination_receipt = None
+    rollout._acp_session_observation = None
+    return rollout
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_orders_evidence_and_is_idempotent() -> None:
+    events: list[str] = []
+    transport = _StopTransport(
+        events,
+        graceful=False,
+        forced=True,
+        stopped=True,
+    )
+    rollout = _rollout_at_stop_boundary(_StopClient(transport, events))
+
+    first = await rollout.stop_agent(cancel_requested=True)
+    second = await rollout.stop_agent(cancel_requested=True)
+
+    assert events == ["cancel", "close", "liveness"]
+    assert second is first
+    assert first.cancel_requested is True
+    assert first.cancel_acknowledged is True
+    assert first.session_closed is True
+    assert first.graceful_termination is False
+    assert first.force_kill_required is True
+    assert first.process_tree_stopped is True
+    assert first.capture_safe is True
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_preserves_independent_failure_evidence() -> None:
+    events: list[str] = []
+    transport = _StopTransport(
+        events,
+        graceful=False,
+        forced=False,
+        stopped=True,
+        liveness_error=RuntimeError("cannot prove group death"),
+    )
+    rollout = _rollout_at_stop_boundary(
+        _StopClient(
+            transport,
+            events,
+            cancel_error=RuntimeError("cancel failed"),
+            close_error=RuntimeError("close failed"),
+        )
+    )
+
+    receipt = await rollout.stop_agent(cancel_requested=True)
+
+    assert events == ["cancel", "close", "liveness"]
+    assert receipt.cancel_acknowledged is False
+    assert receipt.session_closed is False
+    assert receipt.graceful_termination is False
+    assert receipt.force_kill_required is False
+    assert receipt.process_tree_stopped is False
+    assert receipt.capture_safe is False
+
+
+class _StagedStopTransport(_StopTransport):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__(
+            events,
+            graceful=False,
+            forced=False,
+            stopped=False,
+        )
+        self.session_closed = False
+
+    async def terminate_process_tree(self):
+        self.events.append("terminate")
+        await asyncio.sleep(0.02)
+        self.termination_status = SimpleNamespace(
+            graceful_termination=False,
+            force_kill_required=True,
+            process_tree_stopped=True,
+        )
+        self._stopped = True
+        return self.termination_status
+
+
+class _StagedStopClient(_StopClient):
+    async def close_session(self) -> bool:
+        self._events.append("close_session")
+        self._transport.session_closed = True
+        return True
+
+    async def close(self) -> None:
+        self._events.append("legacy_close")
+        raise AssertionError("stop_agent must use independently bounded stages")
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_does_not_preempt_transport_termination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    transport = _StagedStopTransport(events)
+    client = _StagedStopClient(transport, events)
+    rollout = _rollout_at_stop_boundary(client)
+    monkeypatch.setattr(
+        "benchflow.rollout._ACP_STOP_CLOSE_TIMEOUT_SEC",
+        0.001,
+        raising=False,
+    )
+
+    receipt = await rollout.stop_agent(cancel_requested=True)
+
+    assert events == ["cancel", "close_session", "terminate", "liveness"]
+    assert receipt.session_closed is True
+    assert receipt.force_kill_required is True
+    assert receipt.process_tree_stopped is True
+    assert receipt.capture_safe is True
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_preserves_session_close_evidence_when_termination_fails() -> (
+    None
+):
+    events: list[str] = []
+    transport = _StagedStopTransport(events)
+
+    async def fail_termination():
+        events.append("terminate")
+        raise RuntimeError("termination control failed")
+
+    transport.terminate_process_tree = fail_termination
+    rollout = _rollout_at_stop_boundary(_StagedStopClient(transport, events))
+
+    receipt = await rollout.stop_agent(cancel_requested=True)
+
+    assert events == ["cancel", "close_session", "terminate", "liveness"]
+    assert receipt.session_closed is True
+    assert receipt.process_tree_stopped is False
+    assert receipt.capture_safe is False
+
+
+class _BlockingStopTransport(_StopTransport):
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        started: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        super().__init__(
+            events,
+            graceful=False,
+            forced=False,
+            stopped=False,
+        )
+        self.session_closed = False
+        self._started = started
+        self._release = release
+        self.termination_calls = 0
+
+    async def terminate_process_tree(self):
+        self.events.append("terminate")
+        self.termination_calls += 1
+        self._started.set()
+        await self._release.wait()
+        self.termination_status = SimpleNamespace(
+            graceful_termination=False,
+            force_kill_required=True,
+            process_tree_stopped=True,
+        )
+        self._stopped = True
+        return self.termination_status
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stop_agent_callers_share_one_teardown_and_receipt() -> None:
+    events: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+    transport = _BlockingStopTransport(
+        events,
+        started=started,
+        release=release,
+    )
+    rollout = _rollout_at_stop_boundary(_StagedStopClient(transport, events))
+
+    first_call = asyncio.create_task(rollout.stop_agent(cancel_requested=True))
+    await started.wait()
+    second_call = asyncio.create_task(rollout.stop_agent(cancel_requested=True))
+    await asyncio.sleep(0)
+    release.set()
+    first, second = await asyncio.gather(first_call, second_call)
+
+    assert first is second
+    assert transport.termination_calls == 1
+    assert events.count("cancel") == 1
+    assert events.count("close_session") == 1
+    assert events.count("liveness") == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_caller_cancellation_waits_for_shared_safe_teardown() -> None:
+    events: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+    transport = _BlockingStopTransport(
+        events,
+        started=started,
+        release=release,
+    )
+    rollout = _rollout_at_stop_boundary(_StagedStopClient(transport, events))
+
+    caller = asyncio.create_task(rollout.stop_agent(cancel_requested=True))
+    await started.wait()
+    caller.cancel()
+    await asyncio.sleep(0)
+    cancellation_propagated_before_teardown = caller.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+
+    receipt = await rollout.stop_agent(cancel_requested=True)
+
+    assert cancellation_propagated_before_teardown is False
+    assert transport.termination_calls == 1
+    assert receipt.process_tree_stopped is True
+    assert receipt.capture_safe is True

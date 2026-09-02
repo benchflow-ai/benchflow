@@ -455,8 +455,6 @@ def _is_explicit_environment_control(name: str) -> bool:
     return name in _EXPLICIT_ENVIRONMENT_CONTROLS
 
 
-
-
 @dataclass
 class AgentConfig:
     """Configuration for a supported agent."""

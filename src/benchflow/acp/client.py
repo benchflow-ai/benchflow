@@ -316,6 +316,7 @@ class ACPClient:
         session_id = result.get("sessionId", "default")
         self._session = ACPSession(session_id)
         self._session.model_state = result.get("models")
+        self._session.mode_state = result.get("modes")
         self._session.config_options = result.get("configOptions") or []
         if self._initialize_result:
             self._session.agent_info = self._initialize_result.agent_info
@@ -341,6 +342,7 @@ class ACPClient:
         loaded_id = result.get("sessionId", session_id)
         self._session = ACPSession(loaded_id)
         self._session.model_state = result.get("models")
+        self._session.mode_state = result.get("modes")
         self._session.config_options = result.get("configOptions") or []
         if self._initialize_result:
             self._session.agent_info = self._initialize_result.agent_info
@@ -372,7 +374,31 @@ class ACPClient:
             "sessionId": self._session.session_id,
             "modelId": model_id,
         }
-        return await self._send_request("session/set_model", params)
+        result = await self._send_request("session/set_model", params)
+        if "models" in result:
+            self._session.model_state = result.get("models")
+        else:
+            model_state = dict(self._session.model_state or {})
+            model_state["currentModelId"] = model_id
+            self._session.model_state = model_state
+        acknowledged_model_id = model_id
+        if isinstance(self._session.model_state, dict):
+            current_model_id = self._session.model_state.get(
+                "currentModelId"
+            ) or self._session.model_state.get("current_model_id")
+            if isinstance(current_model_id, str) and current_model_id:
+                acknowledged_model_id = current_model_id
+        config_options = result.get("configOptions", self._session.config_options) or []
+        self._session.config_options = [
+            (
+                {**option, "currentValue": acknowledged_model_id}
+                if isinstance(option, dict)
+                and (option.get("id") == "model" or option.get("category") == "model")
+                else option
+            )
+            for option in config_options
+        ]
+        return result
 
     async def set_config_option(self, config_id: str, value: str) -> dict:
         """Set a session configuration option."""
@@ -386,6 +412,15 @@ class ACPClient:
         result = await self._send_request("session/set_config_option", params)
         if "configOptions" in result:
             self._session.config_options = result.get("configOptions") or []
+        else:
+            self._session.config_options = [
+                (
+                    {**option, "currentValue": value}
+                    if isinstance(option, dict) and option.get("id") == config_id
+                    else option
+                )
+                for option in self._session.config_options
+            ]
         return result
 
     async def prompt(self, text: str) -> PromptResult:
@@ -417,6 +452,13 @@ class ACPClient:
     @property
     def session(self) -> ACPSession | None:
         return self._session
+
+    async def close_session(self) -> bool:
+        """Close the ACP stream independently when the transport supports it."""
+        close_session = getattr(self._transport, "close_session", None)
+        if not callable(close_session):
+            return False
+        return await close_session()
 
     async def close(self) -> None:
         """Close the transport and clean up."""

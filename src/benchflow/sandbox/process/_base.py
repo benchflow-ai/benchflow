@@ -25,7 +25,11 @@ import contextlib
 import logging
 import os
 import re
+import shlex
+import signal
+import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,9 @@ _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
 _STDERR_TAIL_LIMIT = 64 * 1024  # bounded stderr retained for rollout diagnostics
 _STDERR_DRAIN_TIMEOUT_SEC = 2
+_PROCESS_TREE_TERM_TIMEOUT_SEC = 5.0
+_PROCESS_TREE_KILL_TIMEOUT_SEC = 5.0
+_PROCESS_TREE_POLL_INTERVAL_SEC = 0.05
 _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -91,6 +98,20 @@ async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
     return skipped
 
 
+@dataclass(frozen=True, slots=True)
+class _ProcessTreeTermination:
+    graceful_termination: bool
+    force_kill_required: bool
+    process_tree_stopped: bool
+
+
+_UNKNOWN_PROCESS_TREE_TERMINATION = _ProcessTreeTermination(
+    graceful_termination=False,
+    force_kill_required=False,
+    process_tree_stopped=False,
+)
+
+
 class LiveProcess(ABC):
     """Abstract live stdin/stdout connection to a process inside a sandbox.
 
@@ -122,6 +143,28 @@ class LiveProcess(ABC):
     async def close(self) -> None:
         """Terminate the process (idempotent — safe to call after death)."""
 
+    async def close_stdin(self) -> bool:
+        """Close the ACP input stream when the backend exposes it independently."""
+        return False
+
+    async def wait_for_session_closed(self, timeout: float) -> bool:
+        """Wait for an independently requested stream close to end the adapter."""
+        return False
+
+    async def terminate_process_tree(self) -> _ProcessTreeTermination:
+        """Close the transport without claiming unobservable descendant liveness."""
+        await self.close()
+        return _UNKNOWN_PROCESS_TREE_TERMINATION
+
+    async def process_tree_stopped(self) -> bool:
+        """Whether all descendants are proven stopped.
+
+        Non-subprocess transports cannot infer this from a closed pipe or
+        WebSocket. They remain unsafe unless a backend overrides the method
+        with a real liveness check.
+        """
+        return False
+
     @property
     @abstractmethod
     def is_running(self) -> bool:
@@ -138,9 +181,17 @@ class SubprocessLiveProcess(LiveProcess):
 
     _process: asyncio.subprocess.Process | None = None
 
-    def _set_process(self, process: asyncio.subprocess.Process) -> None:
-        """Store a subprocess and drain stderr without blocking its stdout pipe."""
+    def _set_process(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        owns_process_group: bool = False,
+    ) -> None:
+        """Store a subprocess and the process-group identity created at launch."""
         self._process = process
+        self._process_group_id = process.pid if owns_process_group else None
+        self._stdin_closed = False
+        self._termination_status: _ProcessTreeTermination | None = None
         self._stderr_tail = bytearray()
         self._stderr_task = (
             asyncio.create_task(self._drain_stderr(process.stderr))
@@ -261,22 +312,310 @@ class SubprocessLiveProcess(LiveProcess):
         self._process.stdin.write((data + "\n").encode())
         await self._process.stdin.drain()
 
-    async def close(self) -> None:
-        """Terminate the process (idempotent — safe to call after process death)."""
-        if self._process:
-            if self._process.stdin:
-                with contextlib.suppress(OSError):  # already closed
-                    self._process.stdin.close()
-            if self._process.returncode is None:
-                self._process.terminate()
-                try:
-                    await asyncio.wait_for(self._process.wait(), timeout=5)
-                except TimeoutError:
-                    self._process.kill()
-                    await self._process.wait()
+    async def close_stdin(self) -> bool:
+        """Close the ACP input stream without assuming test doubles are writers."""
+        process = self._process
+        if process is None:
+            return False
+        stdin = process.stdin
+        if stdin is None:
+            return process.returncode is not None
+        is_closing = getattr(type(stdin), "is_closing", None)
+        if getattr(self, "_stdin_closed", False) or (
+            callable(is_closing) and is_closing(stdin) is True
+        ):
+            self._stdin_closed = True
+            return True
+        try:
+            stdin.close()
+            wait_closed = getattr(type(stdin), "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed(stdin)
+        except OSError:
+            return process.returncode is not None
+        self._stdin_closed = True
+        return True
+
+    async def wait_for_session_closed(self, timeout: float) -> bool:
+        """Wait briefly for an ACP adapter to honor EOF before signaling it."""
+        process = self._process
+        if process is None:
+            return False
+        if process.returncode is not None:
+            return True
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=timeout)
+        except TimeoutError:
+            return False
+        return True
+
+    @property
+    def termination_status(self) -> _ProcessTreeTermination:
+        return (
+            getattr(self, "_termination_status", None)
+            or _UNKNOWN_PROCESS_TREE_TERMINATION
+        )
+
+    def _process_group_is_alive(self) -> bool:
+        process_group_id = getattr(self, "_process_group_id", None)
+        if process_group_id is None:
+            return False
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    async def process_tree_stopped(self) -> bool:
+        process_group_id = getattr(self, "_process_group_id", None)
+        if process_group_id is None:
+            return self.termination_status.process_tree_stopped
+        stopped = not self._process_group_is_alive()
+        if stopped:
+            self._process_group_id = None
+        return stopped
+
+    async def _wait_for_process_tree(self, timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self._process_group_is_alive():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_PROCESS_TREE_POLL_INTERVAL_SEC, remaining))
+        self._process_group_id = None
+        return True
+
+    def _signal_process_group(self, sig: signal.Signals) -> bool:
+        process_group_id = getattr(self, "_process_group_id", None)
+        if process_group_id is None:
+            return False
+        if process_group_id == os.getpgrp():
+            logger.error("Refusing to signal BenchFlow's own process group")
+            return False
+        try:
+            os.killpg(process_group_id, sig)
+        except ProcessLookupError:
+            return False
+        except (OSError, PermissionError):
+            logger.warning(
+                "Could not signal owned process group %s with %s",
+                process_group_id,
+                sig.name,
+                exc_info=True,
+            )
+            return False
+        return True
+
+    async def _close_unowned_process(self) -> None:
+        """Preserve legacy leader cleanup without claiming descendant safety."""
+        if not self._process or self._process.returncode is not None:
+            return
+        self._process.terminate()
+        try:
+            await asyncio.wait_for(self._process.wait(), timeout=5)
+        except TimeoutError:
+            self._process.kill()
+            await self._process.wait()
+
+    async def terminate_process_tree(self) -> _ProcessTreeTermination:
+        """Stop the exact process group retained when this transport launched."""
+        existing = getattr(self, "_termination_status", None)
+        if existing is not None:
+            return existing
+        await self.close_stdin()
+
+        if getattr(self, "_process_group_id", None) is None:
+            await self._close_unowned_process()
             await self._finish_stderr_drain(cancel_on_timeout=True)
-            logger.info("Process terminated")
+            self._termination_status = _UNKNOWN_PROCESS_TREE_TERMINATION
+            return self._termination_status
+
+        graceful = False
+        force_required = False
+        stopped = await self.process_tree_stopped()
+        if not stopped:
+            term_sent = self._signal_process_group(signal.SIGTERM)
+            stopped = await self._wait_for_process_tree(_PROCESS_TREE_TERM_TIMEOUT_SEC)
+            graceful = term_sent and stopped
+        if not stopped:
+            force_required = True
+            self._signal_process_group(signal.SIGKILL)
+            stopped = await self._wait_for_process_tree(_PROCESS_TREE_KILL_TIMEOUT_SEC)
+        if self._process and self._process.returncode is None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._process.wait(), timeout=0.5)
+        await self._finish_stderr_drain(cancel_on_timeout=True)
+        self._termination_status = _ProcessTreeTermination(
+            graceful_termination=graceful,
+            force_kill_required=force_required,
+            process_tree_stopped=stopped,
+        )
+        logger.info(
+            "Process tree termination: graceful=%s forced=%s stopped=%s",
+            graceful,
+            force_required,
+            stopped,
+        )
+        return self._termination_status
+
+    async def close(self) -> None:
+        """Terminate the owned process tree (idempotent after the first result)."""
+        await self.terminate_process_tree()
 
     @property
     def is_running(self) -> bool:
         return self._process is not None and self._process.returncode is None
+
+
+class _RemoteProcessGroupLiveProcess(SubprocessLiveProcess):
+    """Subprocess adapter that owns the exact process group inside its sandbox."""
+
+    _remote_process_group_path: str | None = None
+
+    def _build_remote_process_group_wrapper(self, command: str) -> tuple[str, str]:
+        """Build an isolated-group command without publishing identity yet."""
+        path = f"/tmp/.benchflow_agent_pgid_{uuid.uuid4().hex}"
+        inner = (
+            f"umask 077; printf '%s\\n' \"$$\" > {shlex.quote(path)}; "
+            f"exec bash -c {shlex.quote(command)}"
+        )
+        return f"exec setsid bash -c {shlex.quote(inner)}", path
+
+    def _wrap_remote_process_group(self, command: str) -> str:
+        """Create an isolated remote group and retain its launch identity."""
+        wrapped, path = self._build_remote_process_group_wrapper(command)
+        self._remote_process_group_path = path
+        self._termination_status = None
+        return wrapped
+
+    async def _exec_remote_process_group_command(self, command: str) -> int:
+        raise NotImplementedError
+
+    def _remote_process_group_command(self, operation: str) -> str | None:
+        path = self._remote_process_group_path
+        if path is None:
+            return None
+        prelude = (
+            f"pgid=$(cat {shlex.quote(path)} 2>/dev/null) || exit 2; "
+            "case \"$pgid\" in ''|*[!0-9]*) exit 2;; esac; "
+        )
+        if operation == "check":
+            return prelude + 'kill -0 -- "-$pgid" 2>/dev/null'
+        if operation in {"TERM", "KILL"}:
+            return prelude + f'kill -{operation} -- "-$pgid" 2>/dev/null'
+        raise ValueError(f"Unsupported process-group operation: {operation}")
+
+    async def _remote_process_group_alive(self) -> bool | None:
+        command = self._remote_process_group_command("check")
+        if command is None:
+            return None
+        try:
+            return_code = await self._exec_remote_process_group_command(command)
+        except Exception:
+            logger.warning(
+                "Remote process-group liveness command failed", exc_info=True
+            )
+            return None
+        if return_code == 0:
+            return True
+        if return_code == 1:
+            return False
+        return None
+
+    async def _signal_remote_process_group(self, operation: str) -> bool:
+        command = self._remote_process_group_command(operation)
+        if command is None:
+            return False
+        try:
+            return await self._exec_remote_process_group_command(command) == 0
+        except Exception:
+            logger.warning(
+                "Remote process-group %s command failed", operation, exc_info=True
+            )
+            return False
+
+    async def _wait_for_remote_process_tree(self, timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                alive = await asyncio.wait_for(
+                    self._remote_process_group_alive(),
+                    timeout=remaining,
+                )
+            except TimeoutError:
+                return False
+            if alive is False:
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_PROCESS_TREE_POLL_INTERVAL_SEC, remaining))
+
+    async def process_tree_stopped(self) -> bool:
+        if self._remote_process_group_path is None:
+            return self.termination_status.process_tree_stopped
+        alive = await self._remote_process_group_alive()
+        return alive is False
+
+    async def _cleanup_remote_process_group_identity(self) -> None:
+        path = self._remote_process_group_path
+        if path is None:
+            return
+        try:
+            await self._exec_remote_process_group_command(f"rm -f {shlex.quote(path)}")
+        except Exception:
+            logger.warning(
+                "Could not remove remote process-group identity %s",
+                path,
+                exc_info=True,
+            )
+        self._remote_process_group_path = None
+
+    async def terminate_process_tree(self) -> _ProcessTreeTermination:
+        existing = getattr(self, "_termination_status", None)
+        if existing is not None:
+            return existing
+
+        await self.close_stdin()
+
+        graceful = False
+        force_required = False
+        identity_known = self._remote_process_group_path is not None
+        alive = await self._remote_process_group_alive()
+        stopped = alive is False
+        if identity_known and not stopped:
+            term_sent = await self._signal_remote_process_group("TERM")
+            stopped = await self._wait_for_remote_process_tree(
+                _PROCESS_TREE_TERM_TIMEOUT_SEC
+            )
+            graceful = term_sent and stopped
+        if identity_known and not stopped:
+            force_required = True
+            await self._signal_remote_process_group("KILL")
+            stopped = await self._wait_for_remote_process_tree(
+                _PROCESS_TREE_KILL_TIMEOUT_SEC
+            )
+
+        await self._close_unowned_process()
+        await self._finish_stderr_drain(cancel_on_timeout=True)
+        if stopped:
+            await self._cleanup_remote_process_group_identity()
+        self._termination_status = _ProcessTreeTermination(
+            graceful_termination=graceful,
+            force_kill_required=force_required,
+            process_tree_stopped=stopped,
+        )
+        logger.info(
+            "Remote process tree termination: graceful=%s forced=%s stopped=%s",
+            graceful,
+            force_required,
+            stopped,
+        )
+        return self._termination_status

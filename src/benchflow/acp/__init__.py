@@ -7,12 +7,15 @@ transports. See acp/client.py for the main entry point.
 
 from .client import ACPClient, ACPError
 from .session import ACPSession
+from .termination import AcpSessionObservation, AgentTerminationReceipt
 from .transport import StdioTransport, Transport
 from .types import ContentBlock, StopReason, ToolKind
 
 __all__ = [
+    "AcpSessionObservation",
     "ACPClient",
     "ACPError",
+    "AgentTerminationReceipt",
     "ACPSession",
     "ContentBlock",
     "StdioTransport",

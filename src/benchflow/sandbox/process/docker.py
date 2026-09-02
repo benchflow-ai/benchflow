@@ -8,12 +8,15 @@ import os
 import shlex
 from typing import Any
 
-from benchflow.sandbox.process._base import _BUFFER_LIMIT, SubprocessLiveProcess
+from benchflow.sandbox.process._base import (
+    _BUFFER_LIMIT,
+    _RemoteProcessGroupLiveProcess,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class DockerProcess(SubprocessLiveProcess):
+class DockerProcess(_RemoteProcessGroupLiveProcess):
     """Live stdin/stdout via `docker compose exec -i`."""
 
     def __init__(
@@ -138,6 +141,33 @@ class DockerProcess(SubprocessLiveProcess):
                 f"(rc={proc.returncode}): {stderr.decode()[:500]}"
             )
 
+    async def _exec_remote_process_group_command(self, command: str) -> int:
+        cmd = self._compose_cmd()
+        cmd.extend(["exec", "-T", self._service, "bash", "-c", command])
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            env=await asyncio.to_thread(self._host_env),
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        except (TimeoutError, asyncio.CancelledError):
+            process.kill()
+            await process.wait()
+            raise
+        return_code = process.returncode
+        if return_code is None:
+            return 2
+        if return_code not in (0, 1, 2):
+            logger.warning(
+                "Docker process-group control failed (rc=%s): %s",
+                return_code,
+                stderr.decode(errors="replace")[:500],
+            )
+        return return_code
+
     async def start(
         self,
         command: str,
@@ -152,6 +182,7 @@ class DockerProcess(SubprocessLiveProcess):
         if env:
             await self._write_env_to_container(env, proc_env)
             command = f"source {self._ENV_PATH} && rm -f {self._ENV_PATH} && {command}"
+        command = self._wrap_remote_process_group(command)
 
         cmd = self._compose_cmd()
         cmd.extend(["exec", "-i", "-T"])
@@ -179,6 +210,7 @@ class DockerProcess(SubprocessLiveProcess):
                         "Could not remove staged Docker env after launch failure",
                         exc_info=True,
                     )
+            self._remote_process_group_path = None
             raise
         logger.info(
             f"Docker process started (pid={process.pid}, project={self._project_name})"

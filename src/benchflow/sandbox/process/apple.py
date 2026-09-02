@@ -11,13 +11,13 @@ from typing import Any
 from benchflow.sandbox.process._base import (
     _BUFFER_LIMIT,
     _ENV_KEY_RE,
-    SubprocessLiveProcess,
+    _RemoteProcessGroupLiveProcess,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class AppleContainerProcess(SubprocessLiveProcess):
+class AppleContainerProcess(_RemoteProcessGroupLiveProcess):
     """Live stdin/stdout through Apple Container's native exec transport."""
 
     def __init__(self, container_name: str):
@@ -94,6 +94,35 @@ class AppleContainerProcess(SubprocessLiveProcess):
                 f"(rc={proc.returncode}): {stderr.decode(errors='replace')[:500]}"
             )
 
+    async def _exec_remote_process_group_command(self, command: str) -> int:
+        process = await asyncio.create_subprocess_exec(
+            "container",
+            "exec",
+            self._container_name,
+            "bash",
+            "-c",
+            command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        except (TimeoutError, asyncio.CancelledError):
+            process.kill()
+            await process.wait()
+            raise
+        return_code = process.returncode
+        if return_code is None:
+            return 2
+        if return_code not in (0, 1, 2):
+            logger.warning(
+                "Apple process-group control failed (rc=%s): %s",
+                return_code,
+                stderr.decode(errors="replace")[:500],
+            )
+        return return_code
+
     async def start(
         self,
         command: str,
@@ -104,6 +133,7 @@ class AppleContainerProcess(SubprocessLiveProcess):
             await self._write_env_to_container(env)
             env_path = shlex.quote(self._env_path)
             command = f". {env_path} && rm -f {env_path} && {command}"
+        command = self._wrap_remote_process_group(command)
 
         args = ["container", "exec", "--interactive"]
         if cwd:
@@ -127,6 +157,7 @@ class AppleContainerProcess(SubprocessLiveProcess):
                         "Could not remove staged Apple container env after launch failure",
                         exc_info=True,
                     )
+            self._remote_process_group_path = None
             raise
         logger.info(
             "Apple Container process started (pid=%s, container=%s)",

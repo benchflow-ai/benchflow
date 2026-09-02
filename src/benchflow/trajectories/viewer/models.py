@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 type JsonValue = (
-    None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+    bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 )
 type JsonObject = dict[str, JsonValue]
 

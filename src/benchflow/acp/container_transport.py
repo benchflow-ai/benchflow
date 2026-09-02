@@ -6,12 +6,19 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from benchflow.sandbox.process import LiveProcess
-from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
+from benchflow.sandbox.process._base import (
+    _ANSI_CSI_RE,
+    _ANSI_OSC_RE,
+    _UNKNOWN_PROCESS_TREE_TERMINATION,
+    _ProcessTreeTermination,
+)
 from benchflow.trajectories.types import redact_trajectory_text
 
 from .transport import Transport, decode_json_rpc_message
 
 logger = logging.getLogger(__name__)
+
+_ACP_SESSION_CLOSE_GRACE_SEC = 2.0
 
 
 def _decode_pty_json_rpc_message(text: str) -> dict[str, Any] | None:
@@ -87,6 +94,9 @@ class ContainerTransport(Transport):
         # rules, so an agent echoing valid protocol envelopes into its logs
         # mid-session can never impersonate protocol traffic.
         self._saw_protocol = False
+        self._termination_status = _UNKNOWN_PROCESS_TREE_TERMINATION
+        self._session_closed = False
+        self._stderr_appended = False
 
     async def start(self) -> None:
         """Start the agent process inside the sandbox."""
@@ -133,13 +143,53 @@ class ContainerTransport(Transport):
                 self._agent_log_file.flush()
             logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
 
-    async def close(self) -> None:
-        """Terminate the agent process."""
+    @property
+    def termination_status(self) -> _ProcessTreeTermination:
+        """Last observed process-tree termination outcome."""
+        return self._termination_status
+
+    @property
+    def session_closed(self) -> bool:
+        """Whether the ACP input stream has been closed."""
+        return self._session_closed
+
+    async def process_tree_stopped(self) -> bool:
+        """Re-check descendant liveness through the owning live process."""
+        return await self._cp.process_tree_stopped()
+
+    async def close_session(self) -> bool:
+        """Close the ACP stream without signaling the owned process tree."""
         if self._agent_log_file:
             self._agent_log_file.close()
             self._agent_log_file = None
-        await self._cp.close()
-        stderr = getattr(self._cp, "stderr_tail", "")
-        if isinstance(stderr, str) and stderr and self._agent_log_path:
-            with self._agent_log_path.open("a") as agent_log:
-                agent_log.write(redact_trajectory_text(stderr))
+        if self._session_closed:
+            return True
+        self._session_closed = await self._cp.close_stdin()
+        if self._session_closed:
+            await self._cp.wait_for_session_closed(_ACP_SESSION_CLOSE_GRACE_SEC)
+        return self._session_closed
+
+    async def terminate_process_tree(self) -> _ProcessTreeTermination:
+        """Terminate descendants after the ACP stream-close stage."""
+        try:
+            status = await self._cp.terminate_process_tree()
+            if isinstance(status, _ProcessTreeTermination):
+                self._termination_status = status
+            self._session_closed = True
+            return self._termination_status
+        finally:
+            stderr = getattr(self._cp, "stderr_tail", "")
+            if (
+                not self._stderr_appended
+                and isinstance(stderr, str)
+                and stderr
+                and self._agent_log_path
+            ):
+                with self._agent_log_path.open("a") as agent_log:
+                    agent_log.write(redact_trajectory_text(stderr))
+                self._stderr_appended = True
+
+    async def close(self) -> None:
+        """Close the ACP stream, then terminate the owned process tree."""
+        await self.close_session()
+        await self.terminate_process_tree()

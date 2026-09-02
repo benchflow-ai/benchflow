@@ -2,12 +2,14 @@
 
 import asyncio
 import sys
+from dataclasses import FrozenInstanceError, asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from benchflow.acp import AcpSessionObservation, AgentTerminationReceipt
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.session import ACPSession
@@ -2230,3 +2232,145 @@ class TestVerifierTimeoutDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["verifier_error_category"] == "verifier_failure"
         assert rj["verifier_timeout_info"] is None
+
+
+class TestAgentTerminationContracts:
+    def test_receipt_is_an_immutable_exact_key_public_contract(self) -> None:
+        receipt = AgentTerminationReceipt(
+            cancel_requested=True,
+            cancel_acknowledged=True,
+            session_closed=True,
+            graceful_termination=False,
+            force_kill_required=True,
+            process_tree_stopped=True,
+        )
+
+        assert asdict(receipt) == {
+            "cancel_requested": True,
+            "cancel_acknowledged": True,
+            "session_closed": True,
+            "graceful_termination": False,
+            "force_kill_required": True,
+            "process_tree_stopped": True,
+        }
+        assert receipt.capture_safe is True
+        with pytest.raises(FrozenInstanceError):
+            receipt.session_closed = False  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"cancel_requested": False, "cancel_acknowledged": True},
+            {"graceful_termination": True, "force_kill_required": True},
+        ],
+    )
+    def test_receipt_rejects_impossible_evidence(
+        self, overrides: dict[str, bool]
+    ) -> None:
+        values = {
+            "cancel_requested": True,
+            "cancel_acknowledged": False,
+            "session_closed": True,
+            "graceful_termination": False,
+            "force_kill_required": False,
+            "process_tree_stopped": True,
+            **overrides,
+        }
+
+        with pytest.raises(ValueError):
+            AgentTerminationReceipt(**values)
+
+    def test_unproven_process_tree_is_never_capture_safe(self) -> None:
+        receipt = AgentTerminationReceipt(
+            cancel_requested=False,
+            cancel_acknowledged=False,
+            session_closed=True,
+            graceful_termination=False,
+            force_kill_required=False,
+            process_tree_stopped=False,
+        )
+
+        assert receipt.capture_safe is False
+
+    def test_session_observation_is_an_immutable_exact_key_public_contract(
+        self,
+    ) -> None:
+        observation = AcpSessionObservation(
+            agent_name="observed-agent",
+            model_id="observed-model",
+            mode_id="observed-mode",
+            stop_reason="end_turn",
+            trajectory_path="/runs/1/trajectory/acp_trajectory.jsonl",
+            trajectory_digest="sha256:" + "a" * 64,
+        )
+
+        assert asdict(observation) == {
+            "agent_name": "observed-agent",
+            "model_id": "observed-model",
+            "mode_id": "observed-mode",
+            "stop_reason": "end_turn",
+            "trajectory_path": "/runs/1/trajectory/acp_trajectory.jsonl",
+            "trajectory_digest": "sha256:" + "a" * 64,
+        }
+        with pytest.raises(FrozenInstanceError):
+            observation.model_id = "configured-default"  # type: ignore[misc]
+
+    @pytest.mark.asyncio
+    async def test_session_new_retains_live_model_and_mode_results(self) -> None:
+        client = ACPClient(MagicMock())
+        client._send_request = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "sessionId": "observed-session",
+                "models": {
+                    "availableModels": [
+                        {"modelId": "observed-model", "name": "Observed model"}
+                    ],
+                    "currentModelId": "observed-model",
+                },
+                "modes": {
+                    "availableModes": [
+                        {"id": "observed-mode", "name": "Observed mode"}
+                    ],
+                    "currentModeId": "observed-mode",
+                },
+                "configOptions": [],
+            }
+        )
+
+        session = await client.session_new()
+
+        assert session.model_state["currentModelId"] == "observed-model"
+        assert session.mode_state["currentModeId"] == "observed-mode"
+
+    @pytest.mark.asyncio
+    async def test_set_model_synchronizes_advertised_model_option_observation(
+        self,
+    ) -> None:
+        from benchflow.acp.termination import _observe_acp_session
+
+        client = ACPClient(MagicMock())
+        client._send_request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {
+                    "sessionId": "codex-session",
+                    "models": {"currentModelId": "session-new-model"},
+                    "configOptions": [
+                        {
+                            "id": "model",
+                            "category": "model",
+                            "currentValue": "session-new-model",
+                        }
+                    ],
+                },
+                {},
+            ]
+        )
+        session = await client.session_new()
+        session.agent_info = {"name": "codex-acp"}
+
+        await client.set_model("acknowledged-model")
+        observation = _observe_acp_session(session, trajectory_path=None)
+
+        assert session.config_options[0]["currentValue"] == "acknowledged-model"
+        assert observation is not None
+        assert observation.model_id == "acknowledged-model"
