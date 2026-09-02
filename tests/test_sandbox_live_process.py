@@ -347,6 +347,85 @@ class _AdapterOnlyProcess(LiveProcess):
         return self.process is not None and self.process.returncode is None
 
 
+class _WedgedCloseProcess(LiveProcess):
+    def __init__(self) -> None:
+        self.close_started = asyncio.Event()
+        self.close_cancelled = asyncio.Event()
+
+    async def start(self, command, env=None, cwd=None) -> None:
+        raise AssertionError("this fake is never launched")
+
+    async def readline(self) -> bytes:
+        raise AssertionError("this fake is never read")
+
+    async def writeline(self, data: str) -> None:
+        raise AssertionError("this fake is never written")
+
+    async def close(self) -> None:
+        self.close_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.close_cancelled.set()
+
+    @property
+    def is_running(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_default_unprovable_process_termination_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        process_base, "_DEFAULT_PROCESS_CLOSE_TIMEOUT_SEC", 0.01, raising=False
+    )
+    process = _WedgedCloseProcess()
+
+    result = await asyncio.wait_for(process.terminate_process_tree(), timeout=0.2)
+
+    assert process.close_started.is_set()
+    assert process.close_cancelled.is_set()
+    assert result.process_tree_stopped is False
+
+
+@pytest.mark.asyncio
+async def test_agentcore_shell_close_is_backend_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from benchflow.sandbox.process import agentcore as agentcore_process
+
+    class _WedgedShell:
+        def __init__(self) -> None:
+            self.close_started = asyncio.Event()
+            self.close_cancelled = asyncio.Event()
+
+        async def close(self) -> None:
+            self.close_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.close_cancelled.set()
+
+    monkeypatch.setattr(
+        agentcore_process, "_AGENTCORE_SHELL_CLOSE_TIMEOUT_SEC", 0.01, raising=False
+    )
+    shell = _WedgedShell()
+    process = process_pkg.AgentCoreProcess(
+        sandbox=object(),
+        runtime_arn="arn:aws:bedrock-agentcore:us-west-2:1:runtime/test",
+        session_id="s" * 40,
+        region="us-west-2",
+    )
+    process._shell = shell
+
+    await asyncio.wait_for(process.close(), timeout=0.2)
+
+    assert shell.close_started.is_set()
+    assert shell.close_cancelled.is_set()
+    assert process._shell is None
+
+
 @pytest.mark.asyncio
 async def test_owned_process_group_stops_adapter_and_mutating_child(
     tmp_path, monkeypatch

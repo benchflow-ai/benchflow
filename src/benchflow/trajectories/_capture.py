@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.acp.session import ACPSession
-from benchflow.trajectories.types import redact_acp_trajectory_jsonl
+from benchflow.trajectories.types import (
+    redact_acp_trajectory_jsonl,
+    redact_trajectory_obj,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +100,15 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     return out
 
 
+def _redact_session_trajectory(session: object, trajectory: list[dict]) -> list[dict]:
+    """Use real session redactors without accepting permissive mock attributes."""
+    redactor = getattr(type(session), "redact_for_persistence", None)
+    if not callable(redactor):
+        return redact_trajectory_obj(trajectory)
+    redacted = redactor(session, trajectory)
+    return redacted if isinstance(redacted, list) else []
+
+
 def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
     """Non-destructive trajectory snapshot — safe to call mid-prompt.
 
@@ -119,9 +131,10 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-    return _events_to_trajectory(session.events) + _merge_pending_text(
+    trajectory = _events_to_trajectory(session.events) + _merge_pending_text(
         session._pending_text
     )
+    return _redact_session_trajectory(session, trajectory)
 
 
 class TrajectoryWriter:
@@ -198,8 +211,9 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
     if session._events_active:
         # Flush any trailing agent text that hasn't been recorded yet.
         session._flush_agent_text()
-        return _events_to_trajectory(session.events)
-
+        return _redact_session_trajectory(
+            session, _events_to_trajectory(session.events)
+        )
     # Legacy fallback: session has no event log (e.g. older agent shims
     # that manipulate session.tool_calls directly without going through
     # handle_update). Preserves the old flat behaviour.
@@ -219,7 +233,7 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
         trajectory.append({"type": "agent_message", "text": session.full_message})
     if session.full_thought:
         trajectory.append({"type": "agent_thought", "text": session.full_thought})
-    return trajectory
+    return _redact_session_trajectory(session, trajectory)
 
 
 async def _scrape_agent_trajectory(

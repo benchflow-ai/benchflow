@@ -7,6 +7,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from benchflow.trajectories.types import redact_trajectory_obj
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,6 +101,18 @@ def _trajectory_identity(path: Path | None) -> tuple[str | None, str | None]:
     return str(path), f"sha256:{digest.hexdigest()}"
 
 
+def _redact_observation_fields(
+    session: object, fields: dict[str, str | None]
+) -> dict[str, str | None]:
+    redactor = getattr(type(session), "redact_for_persistence", None)
+    redacted = (
+        redactor(session, fields)
+        if callable(redactor)
+        else redact_trajectory_obj(fields)
+    )
+    return redacted if isinstance(redacted, dict) else fields
+
+
 def _observe_acp_session(
     session: object | None,
     *,
@@ -126,12 +140,24 @@ def _observe_acp_session(
         stop_reason = getattr(stop_reason, "value", stop_reason)
     if not isinstance(stop_reason, str):
         stop_reason = None
+    fields = _redact_observation_fields(
+        session,
+        {
+            "agent_name": agent_name,
+            "model_id": model_id,
+            "mode_id": mode_id,
+            "stop_reason": stop_reason,
+        },
+    )
+    redacted_agent_name = fields.get("agent_name")
+    if not isinstance(redacted_agent_name, str) or not redacted_agent_name:
+        return None
     observed_path, observed_digest = _trajectory_identity(trajectory_path)
     return AcpSessionObservation(
-        agent_name=agent_name,
-        model_id=model_id,
-        mode_id=mode_id,
-        stop_reason=stop_reason,
+        agent_name=redacted_agent_name,
+        model_id=fields.get("model_id"),
+        mode_id=fields.get("mode_id"),
+        stop_reason=fields.get("stop_reason"),
         trajectory_path=observed_path,
         trajectory_digest=observed_digest,
     )

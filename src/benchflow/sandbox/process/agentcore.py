@@ -43,6 +43,30 @@ _READER_ENDED = object()
 _START_MARKER_TIMEOUT_SEC = 180
 _READLINE_TIMEOUT_ENV = "BENCHFLOW_AGENTCORE_READLINE_TIMEOUT"
 _READLINE_TIMEOUT_DEFAULT_SEC = 900.0
+_AGENTCORE_READER_CLOSE_TIMEOUT_SEC = 5.0
+_AGENTCORE_SHELL_CLOSE_TIMEOUT_SEC = 15.0
+
+
+def _consume_cleanup_result(future: asyncio.Future[Any]) -> None:
+    with contextlib.suppress(BaseException):
+        future.result()
+
+
+async def _await_cleanup_bounded(awaitable: Any, timeout: float) -> bool:
+    task = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()
+        task.add_done_callback(_consume_cleanup_result)
+        raise
+    if task in done:
+        _consume_cleanup_result(task)
+        return True
+    task.cancel()
+    task.add_done_callback(_consume_cleanup_result)
+    await asyncio.sleep(0)
+    return False
 
 
 def _readline_timeout_sec() -> float:
@@ -120,7 +144,9 @@ class AgentCoreProcess(LiveProcess):
             raise
         except BaseException as exc:
             self._failure = exc
-            logger.warning("AgentCore shell reader stopped: %s", exc)
+            logger.warning(
+                "AgentCore shell reader stopped: %s", self._redact_output(str(exc))
+            )
         finally:
             # Wake any waiting readline() right now. Without this sentinel a
             # dead transport surfaces only when the read timeout expires, so an
@@ -162,7 +188,7 @@ class AgentCoreProcess(LiveProcess):
             logger.debug(
                 "AgentCore shell %s: %s",
                 getattr(frame.channel, "name", frame.channel),
-                payload.strip()[:500],
+                self._redact_output(payload.strip())[:500],
             )
 
     async def _write_env_file(self, env: dict[str, str]) -> str:
@@ -285,9 +311,14 @@ class AgentCoreProcess(LiveProcess):
                 # The shell died during startup. Without this the sentinel is
                 # consumed here (or cleared by the drain below) and the next
                 # readline waits out the full read timeout instead.
+                failure = (
+                    self._redact_output(str(self._failure))
+                    if self._failure is not None
+                    else "EOF"
+                )
                 msg = (
                     "AgentCore shell closed before the start marker "
-                    f"(session={self._session_id}): {self._failure or 'EOF'}"
+                    f"(session={self._session_id}): {failure}"
                 )
                 raise TransportClosedError(
                     msg,
@@ -351,8 +382,9 @@ class AgentCoreProcess(LiveProcess):
             # the transport is gone, and both must surface now rather than at
             # the read timeout.
             if self._failure is not None:
+                failure = self._redact_output(str(self._failure))
                 raise _closed(
-                    f"AgentCore shell transport failed: {self._failure}",
+                    f"AgentCore shell transport failed: {failure}",
                     "remote_session_killed",
                 ) from self._failure
             raise _closed(
@@ -392,15 +424,23 @@ class AgentCoreProcess(LiveProcess):
     async def close(self) -> None:
         self._closed = True
         if self._reader_task is not None:
-            self._reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._reader_task
+            reader_task = self._reader_task
             self._reader_task = None
+            reader_task.cancel()
+            if not await _await_cleanup_bounded(
+                reader_task, _AGENTCORE_READER_CLOSE_TIMEOUT_SEC
+            ):
+                logger.warning("AgentCore shell reader did not stop before deadline")
         if self._shell is not None:
-            with contextlib.suppress(Exception):
-                await self._shell.close()
+            shell = self._shell
             self._shell = None
-            logger.info("AgentCore shell terminated")
+            closed = await _await_cleanup_bounded(
+                shell.close(), _AGENTCORE_SHELL_CLOSE_TIMEOUT_SEC
+            )
+            if closed:
+                logger.info("AgentCore shell terminated")
+            else:
+                logger.warning("AgentCore shell close did not finish before deadline")
 
     @property
     def is_running(self) -> bool:

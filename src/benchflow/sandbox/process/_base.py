@@ -29,6 +29,7 @@ import shlex
 import signal
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -39,9 +40,17 @@ _STDERR_TAIL_LIMIT = 64 * 1024  # bounded stderr retained for rollout diagnostic
 _STDERR_DRAIN_TIMEOUT_SEC = 2
 _PROCESS_TREE_TERM_TIMEOUT_SEC = 5.0
 _PROCESS_TREE_KILL_TIMEOUT_SEC = 5.0
+_DEFAULT_PROCESS_CLOSE_TIMEOUT_SEC = 35.0
 _PROCESS_TREE_POLL_INTERVAL_SEC = 0.05
 _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _consume_task_result(task: asyncio.Task[None]) -> None:
+    """Retrieve a detached cleanup task result without surfacing it later."""
+    with contextlib.suppress(BaseException):
+        task.result()
+
 
 # Terminal control sequences a PTY-backed transport can interleave with
 # protocol output: ECMA-48 CSI (parameter bytes 0x30-0x3F, intermediate
@@ -143,6 +152,19 @@ class LiveProcess(ABC):
     async def close(self) -> None:
         """Terminate the process (idempotent — safe to call after death)."""
 
+    def set_output_redaction_values(self, values: Collection[str]) -> None:
+        """Privately retain exact values that must never cross output boundaries."""
+        self._output_redaction_values = tuple(value for value in values if value)
+
+    def _redact_output(self, text: str) -> str:
+        from benchflow.trajectories.types import (
+            redact_trajectory_text_with_exact_values,
+        )
+
+        return redact_trajectory_text_with_exact_values(
+            text, getattr(self, "_output_redaction_values", ())
+        )
+
     async def close_stdin(self) -> bool:
         """Close the ACP input stream when the backend exposes it independently."""
         return False
@@ -152,8 +174,27 @@ class LiveProcess(ABC):
         return False
 
     async def terminate_process_tree(self) -> _ProcessTreeTermination:
-        """Close the transport without claiming unobservable descendant liveness."""
-        await self.close()
+        """Bound unsupported close paths without claiming descendant liveness."""
+        close_task = asyncio.create_task(self.close())
+        try:
+            done, _ = await asyncio.wait(
+                {close_task}, timeout=_DEFAULT_PROCESS_CLOSE_TIMEOUT_SEC
+            )
+        except asyncio.CancelledError:
+            close_task.cancel()
+            close_task.add_done_callback(_consume_task_result)
+            raise
+        if close_task in done:
+            await close_task
+        else:
+            close_task.cancel()
+            close_task.add_done_callback(_consume_task_result)
+            await asyncio.sleep(0)
+            logger.warning(
+                "%s close exceeded %.0fs; descendant liveness remains unknown",
+                type(self).__name__,
+                _DEFAULT_PROCESS_CLOSE_TIMEOUT_SEC,
+            )
         return _UNKNOWN_PROCESS_TREE_TERMINATION
 
     async def process_tree_stopped(self) -> bool:
@@ -280,9 +321,7 @@ class SubprocessLiveProcess(LiveProcess):
             msg = f"Process closed stdout (rc={rc}): {hint}"
             stderr_snippet: str | None = None
             if stderr_text:
-                from benchflow.trajectories.types import redact_trajectory_text
-
-                stderr_snippet = redact_trajectory_text(stderr_text)[:_DIAG_TRUNCATE]
+                stderr_snippet = self._redact_output(stderr_text)[:_DIAG_TRUNCATE]
                 msg += f"\nstderr: {stderr_snippet}"
             # Raise a structured TransportClosedError at the source so
             # downstream code (rollout._build_rollout_result) doesn't have

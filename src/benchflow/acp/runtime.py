@@ -21,6 +21,7 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,6 +50,7 @@ from benchflow.sandbox.lockdown import (
 )
 from benchflow.sandbox.process._base import _timeout_sec_from_env
 from benchflow.trajectories._capture import _capture_session_trajectory
+from benchflow.trajectories.types import redact_trajectory_obj_with_exact_values
 
 # Re-exported for backwards compatibility — tests and downstream code
 # import ``IdleTimeoutError`` from this module. The canonical definition
@@ -70,6 +72,16 @@ _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
 _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+def _redact_transport_protocol_value(
+    transport: object, value: object, exact_values: Collection[str] = ()
+) -> object:
+    """Use a concrete transport redactor, including before transport creation."""
+    redactor = getattr(type(transport), "redact_protocol_value", None)
+    if callable(redactor):
+        return redactor(transport, value)
+    return redact_trajectory_obj_with_exact_values(value, exact_values)
 
 
 def _acp_handshake_timeout_sec() -> float:
@@ -574,6 +586,7 @@ async def connect_acp(
     agent_cwd: str,
     reasoning_effort: str | None = None,
     mcp_servers: list[McpServerSpec] | None = None,
+    runtime_credential_values: Collection[str] = (),
 ) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
     """Create ACP transport, connect, init session, and configure model/effort.
 
@@ -625,6 +638,7 @@ async def connect_acp(
             )
             await asyncio.sleep(delay)
 
+        transport: ContainerTransport | None = None
         try:
             # The sandbox owns its transport: it knows how to reach into
             # itself, so there is no provider-name branch here. Backends with
@@ -641,6 +655,7 @@ async def connect_acp(
                 env=agent_env,
                 cwd=agent_cwd,
                 agent_log_path=agent_log,
+                runtime_credential_values=runtime_credential_values,
             )
             acp_client = ACPClient(transport)
             await acp_client.connect()
@@ -649,16 +664,26 @@ async def connect_acp(
                 acp_client.initialize(),
                 phase="initialize",
             )
-            agent_name = (
+            observed_agent_name = (
                 init_result.agent_info.name if init_result.agent_info else agent
             )
-            logger.info(f"ACP agent: {agent_name}")
+            agent_name = str(
+                _redact_transport_protocol_value(
+                    transport, observed_agent_name, runtime_credential_values
+                )
+            )
+            logger.info("ACP agent: %s", agent_name)
 
             session = await _wait_for_acp_handshake(
                 acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
                 phase="session_new",
             )
-            logger.info(f"Session: {session.session_id}")
+            logger.info(
+                "Session: %s",
+                _redact_transport_protocol_value(
+                    transport, session.session_id, runtime_credential_values
+                ),
+            )
             break
         except ConnectionError as e:
             # Close the failed client before retrying
@@ -668,7 +693,13 @@ async def connect_acp(
                 acp_client = None
             if attempt == _ACP_CONNECT_MAX_RETRIES:
                 raise
-            logger.warning(f"ACP connect failed (attempt {attempt + 1}): {e}")
+            logger.warning(
+                "ACP connect failed (attempt %s): %s",
+                attempt + 1,
+                _redact_transport_protocol_value(
+                    transport, str(e), runtime_credential_values
+                ),
+            )
             continue
         except Exception:
             # Non-retryable error — close client to prevent leak

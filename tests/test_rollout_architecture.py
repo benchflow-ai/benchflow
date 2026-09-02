@@ -293,3 +293,72 @@ async def test_plane_owned_explicit_policy_controls_resolution_and_metadata(
         "LICENSE": "plane-runtime-secret",
     }
     assert rollout._agent_environment_policy(agent) == "explicit"
+
+
+@pytest.mark.parametrize("policy", ["ambient", 7, None])
+@pytest.mark.asyncio
+async def test_unknown_environment_policy_fails_before_environment_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: object
+) -> None:
+    agent = "invalid-policy-agent"
+    plane_config = AgentConfig(
+        name=agent,
+        install_cmd="true",
+        launch_cmd="true",
+        environment_policy="inherit",
+    )
+    plane_config.environment_policy = policy  # type: ignore[assignment]
+    config = RolloutConfig(task_path=tmp_path, agent=agent)
+    rollout = await Rollout.create(config)
+    resolve_calls: list[dict[str, str]] = []
+
+    monkeypatch.setattr(rollout._planes, "agent_config", lambda _agent: plane_config)
+    monkeypatch.setattr(
+        rollout._planes,
+        "resolve_agent_env",
+        lambda _agent, _model, env: resolve_calls.append(env) or env,
+    )
+
+    with pytest.raises(ValueError, match="environment_policy"):
+        rollout._resolve_agent_environment(agent, None, {})
+
+    assert resolve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_credentials_reach_acp_output_redaction_boundary(
+    tmp_path: Path, explicit_policy_agent
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Planes:
+        async def ensure_litellm_runtime(self, **kwargs):
+            return kwargs["agent_env"], None
+
+        async def connect_acp(self, **kwargs):
+            captured.update(kwargs)
+            return object(), None, None, explicit_policy_agent.name
+
+    config = RolloutConfig(task_path=tmp_path, agent=explicit_policy_agent.name)
+    rollout = await Rollout.create(
+        config,
+        runtime_credentials={
+            "DEEPSEEK_API_KEY": "opaque-runtime-value",
+            "EMPTY_CREDENTIAL": "",
+        },
+    )
+    rollout._planes = _Planes()
+    rollout._env = object()
+    rollout._rollout_dir = tmp_path
+    rollout._agent_env = {"DEEPSEEK_API_KEY": "opaque-runtime-value"}
+    rollout._agent_launch = "true"
+    rollout._agent_cwd = "/app"
+    rollout._phase = "installed"
+    rollout._task = None
+
+    await rollout.connect()
+
+    assert set(captured["runtime_credential_values"]) == {
+        "",
+        "opaque-runtime-value",
+    }

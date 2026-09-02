@@ -1,6 +1,7 @@
 """Trajectory types — raw LLM API request/response pairs captured from providers."""
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -478,6 +479,60 @@ def redact_trajectory_text(text: str) -> str:
     ``GITHUB_TOKEN=...`` env dump is scrubbed even without a known prefix.
     """
     return redact_trajectory_text_with_count(text)[0]
+
+
+def redact_trajectory_text_with_exact_values(
+    text: str, exact_values: Iterable[str]
+) -> str:
+    """Redact private values verbatim, then apply canonical secret patterns.
+
+    Longest-first replacement prevents an overlapping shorter credential from
+    exposing the unmatched suffix of a longer credential. Empty values are
+    ignored because every string contains an empty substring.
+    """
+    replacement = "***REDACTED***"
+    values = sorted(
+        {value for value in exact_values if value and value != replacement},
+        key=len,
+        reverse=True,
+    )
+    for value in values:
+        text = text.replace(value, replacement)
+    return redact_trajectory_text(text)
+
+
+def redact_trajectory_obj_with_exact_values(
+    obj: Any, exact_values: Iterable[str]
+) -> Any:
+    """Recursively exact-redact strings without mutating the source object."""
+    replacement = "***REDACTED***"
+    values = tuple(
+        sorted(
+            {value for value in exact_values if value and value != replacement},
+            key=len,
+            reverse=True,
+        )
+    )
+
+    def redact_text(value: str) -> str:
+        for exact in values:
+            value = value.replace(exact, replacement)
+        return redact_trajectory_text(value)
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            redacted: dict[Any, Any] = {}
+            for key, item in value.items():
+                safe_key = redact_text(key) if isinstance(key, str) else key
+                redacted[safe_key] = _redact_field(safe_key, redact(item))
+            return redacted
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, str):
+            return redact_text(value)
+        return value
+
+    return redact(obj)
 
 
 def redact_trajectory_text_with_count(text: str) -> tuple[str, int]:

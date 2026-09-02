@@ -4,6 +4,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import ValidationError
+
 from benchflow.agents.errors import AgentProtocolError
 
 from .session import ACPSession
@@ -66,6 +68,36 @@ class ACPClient:
         self._session: ACPSession | None = None
         self._initialize_result: InitializeResult | None = None
         self._ask_user_handler: AskUserHandler | None = None
+
+    def _redact_protocol_value(self, value: Any) -> Any:
+        redactor = getattr(type(self._transport), "redact_protocol_value", None)
+        if callable(redactor):
+            return redactor(self._transport, value)
+        return value
+
+    def _validate_protocol_result(self, model: Any, result: Any) -> Any:
+        try:
+            return model.model_validate(result)
+        except ValidationError as error:
+            details = self._redact_protocol_value(error.errors(include_url=False))
+            if not isinstance(details, list):
+                details = []
+            for detail in details:
+                if not isinstance(detail, dict):
+                    continue
+                context = detail.get("ctx")
+                if not isinstance(context, dict):
+                    continue
+                detail["ctx"] = {
+                    key: (
+                        ValueError(str(self._redact_protocol_value(str(value))))
+                        if isinstance(value, BaseException)
+                        else value
+                    )
+                    for key, value in context.items()
+                }
+            sanitized = ValidationError.from_exception_data(error.title, details)
+            raise sanitized.with_traceback(error.__traceback__) from None
 
     def on_ask_user(self, handler: AskUserHandler | None) -> None:
         """Register the agent-initiated ``session/request_permission`` handler.
@@ -135,46 +167,68 @@ class ACPClient:
         await self._transport.send(message)
 
     async def _read_until_response(self, request_id: int) -> dict[str, Any]:
-        """Read messages, handling notifications, until we get the response we want."""
+        """Dispatch raw wire messages while redacting every diagnostic boundary."""
         while True:
             msg = await self._transport.receive()
+            msg_id = self._redact_protocol_value(msg.get("id"))
+            method = self._redact_protocol_value(msg.get("method", ""))
             logger.debug(
-                f"ACPClient recv: id={msg.get('id')} method={msg.get('method', '')} "
-                f"has_result={'result' in msg} has_error={'error' in msg}"
+                "ACPClient recv: id=%s method=%s has_result=%s has_error=%s",
+                msg_id,
+                method,
+                "result" in msg,
+                "error" in msg,
             )
 
             # It's a response to our request (has id, no method — distinguishes
             # from echoed requests when running through a PTY)
             if "id" in msg and msg["id"] == request_id and "method" not in msg:
                 if msg.get("error"):
-                    raise ACPError(
-                        msg["error"].get("code", -1),
-                        msg["error"].get("message", "Unknown error"),
-                    )
+                    error = msg["error"]
+                    if isinstance(error, dict):
+                        raw_code = error.get("code", -1)
+                        raw_message = error.get("message", "Unknown error")
+                    else:
+                        raw_code = -1
+                        raw_message = error
+                    code = raw_code if type(raw_code) is int else -1
+                    message = self._redact_protocol_value(raw_message)
+                    raise ACPError(code, str(message))
                 return msg.get("result", {})
 
-            # It's a notification (no id)
+            # It's a notification (no id). Dispatch the untouched message.
             if "method" in msg and "id" not in msg:
                 try:
                     await self._handle_notification(msg)
                 except Exception as e:
+                    safe_method = self._redact_protocol_value(msg.get("method"))
+                    safe_error = self._redact_protocol_value(str(e))
                     logger.warning(
-                        f"Error handling notification {msg.get('method')}: {e}"
+                        "Error handling notification %s: %s",
+                        safe_method,
+                        safe_error,
                     )
                 continue
 
-            # It's a request from the agent (has id + method)
+            # It's a request from the agent (has id + method).
             if "method" in msg and "id" in msg:
-                logger.debug(f"ACPClient handling agent request: {msg.get('method')}")
+                safe_method = self._redact_protocol_value(msg.get("method"))
+                logger.debug("ACPClient handling agent request: %s", safe_method)
                 try:
                     await self._handle_agent_request(msg)
                 except Exception as e:
+                    safe_error = self._redact_protocol_value(str(e))
                     logger.warning(
-                        f"Error handling agent request {msg.get('method')}: {e}"
+                        "Error handling agent request %s: %s",
+                        safe_method,
+                        safe_error,
                     )
                 continue
 
-            logger.debug(f"ACPClient ignoring unknown message: {msg}")
+            logger.debug(
+                "ACPClient ignoring unknown message: %r",
+                self._redact_protocol_value(msg),
+            )
 
     async def _handle_notification(self, msg: dict[str, Any]) -> None:
         """Handle incoming notifications from the agent."""
@@ -183,9 +237,12 @@ class ACPClient:
 
         if method == "session/update" and self._session:
             update = params.get("update", {})
+            update_type = self._redact_protocol_value(update.get("sessionUpdate", "?"))
+            tool_call_id = self._redact_protocol_value(update.get("toolCallId", ""))
             logger.debug(
-                f"ACPClient session/update: {update.get('sessionUpdate', '?')}"
-                f" toolCallId={update.get('toolCallId', '')}"
+                "ACPClient session/update: %s toolCallId=%s",
+                update_type,
+                tool_call_id,
             )
             self._session.handle_update(update)
 
@@ -213,7 +270,7 @@ class ACPClient:
                     logger.warning(
                         "on_ask_user handler raised %s; falling back to "
                         "auto-approve for session/request_permission",
-                        e,
+                        self._redact_protocol_value(str(e)),
                     )
                     option_id = _auto_approve_option_id(options)
             else:
@@ -241,7 +298,7 @@ class ACPClient:
             # ran, corrupting trajectories.
             logger.warning(
                 "ACPClient received unsupported request %r — replying method-not-found",
-                method,
+                self._redact_protocol_value(method),
             )
             response = {
                 "jsonrpc": "2.0",
@@ -282,7 +339,9 @@ class ACPClient:
         result = await self._send_request(
             "initialize", params.model_dump(by_alias=True, exclude_none=True)
         )
-        self._initialize_result = InitializeResult.model_validate(result)
+        self._initialize_result = self._validate_protocol_result(
+            InitializeResult, result
+        )
         negotiated = self._initialize_result.protocol_version
         if negotiated != ACP_PROTOCOL_VERSION:
             logger.warning(
@@ -314,7 +373,9 @@ class ACPClient:
             "session/new", params.model_dump(by_alias=True, exclude_none=True)
         )
         session_id = result.get("sessionId", "default")
-        self._session = ACPSession(session_id)
+        self._session = ACPSession(
+            session_id, redact_protocol_value=self._redact_protocol_value
+        )
         self._session.model_state = result.get("models")
         self._session.mode_state = result.get("modes")
         self._session.config_options = result.get("configOptions") or []
@@ -340,7 +401,9 @@ class ACPClient:
         params = {"sessionId": session_id, "cwd": cwd, "mcpServers": server_params}
         result = await self._send_request("session/load", params)
         loaded_id = result.get("sessionId", session_id)
-        self._session = ACPSession(loaded_id)
+        self._session = ACPSession(
+            loaded_id, redact_protocol_value=self._redact_protocol_value
+        )
         self._session.model_state = result.get("models")
         self._session.mode_state = result.get("modes")
         self._session.config_options = result.get("configOptions") or []
@@ -434,7 +497,7 @@ class ACPClient:
         result = await self._send_request(
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
         )
-        prompt_result = PromptResult.model_validate(result)
+        prompt_result = self._validate_protocol_result(PromptResult, result)
         # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
         # comparisons working.

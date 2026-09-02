@@ -1,6 +1,7 @@
 """Tests for ACP client ↔ mock agent — Step 10."""
 
 import asyncio
+import json
 import sys
 from dataclasses import FrozenInstanceError, asdict
 from datetime import UTC, datetime
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from pydantic import ValidationError
 
 from benchflow.acp import AcpSessionObservation, AgentTerminationReceipt
 from benchflow.acp.client import ACPClient, ACPError
@@ -486,6 +488,160 @@ class TestTransportProtocolFiltering:
         log_text = agent_log.read_text()
         assert '"debug string from agent"' in log_text
         assert '["debug", "list"]' in log_text
+
+    @pytest.mark.asyncio
+    async def test_container_transport_exactly_redacts_runtime_credentials(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        shorter = "opaque-license-fragment"
+        longer = f"{shorter}-extended"
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                f"safe stdout {shorter} {longer}\n".encode(),
+                b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n',
+            ]
+        )
+        fake_process.close_stdin.return_value = True
+        fake_process.wait_for_session_closed.return_value = True
+        fake_process.stderr_tail = f"safe stderr {longer}\n"
+        agent_log = tmp_path / "agent.log"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+            runtime_credential_values=[shorter, longer, ""],
+        )
+        caplog.set_level("DEBUG", logger="benchflow.acp.container_transport")
+
+        await transport.start()
+        assert await transport.receive() == {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"ok": True},
+        }
+        await transport.close()
+
+        persisted = agent_log.read_text()
+        observed = persisted + caplog.text
+        assert shorter not in observed
+        assert longer not in observed
+        assert "extended" not in observed
+        assert "safe stdout" in persisted
+        assert "safe stderr" in persisted
+        assert "***REDACTED***" in observed
+
+    @pytest.mark.asyncio
+    async def test_decoded_acp_update_and_error_redact_exact_runtime_credential(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from benchflow.trajectories._capture import TrajectoryWriter
+
+        credential = "opaque-license-value-123"
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                (
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 100001,
+                            "result": {"sessionId": "test-session"},
+                        }
+                    )
+                    + "\n"
+                ).encode(),
+                (
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {
+                                        "type": "text",
+                                        "text": f"normal output {credential}",
+                                    },
+                                }
+                            },
+                        }
+                    )
+                    + "\n"
+                ).encode(),
+                (
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 999,
+                            "result": {"text": credential},
+                        }
+                    )
+                    + "\n"
+                ).encode(),
+                (
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 100002,
+                            "error": {
+                                "code": -32000,
+                                "message": f"agent failed with {credential}",
+                            },
+                        }
+                    )
+                    + "\n"
+                ).encode(),
+            ]
+        )
+        fake_process.close_stdin.return_value = True
+        fake_process.wait_for_session_closed.return_value = True
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            runtime_credential_values=[credential],
+        )
+        client = ACPClient(transport)
+        caplog.set_level("DEBUG", logger="benchflow.acp")
+
+        await client.connect()
+        session = await client.session_new()
+        trajectory_path = tmp_path / "acp_trajectory.jsonl"
+        session.on_change = TrajectoryWriter(trajectory_path)
+        try:
+            with pytest.raises(ACPError) as exc_info:
+                await client._send_request("test/decoded-output", {})
+        finally:
+            await client.close()
+
+        assert credential in session.full_message
+        persisted = trajectory_path.read_text()
+        assert credential not in persisted
+        assert credential not in str(exc_info.value)
+        assert credential not in caplog.text
+        assert "***REDACTED***" in persisted
+        assert "***REDACTED***" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_malformed_initialize_error_exactly_redacts_runtime_credential(
+        self,
+    ) -> None:
+        credential = "opaque-validation-license-123"
+        raw_result = {"protocolVersion": credential}
+        transport = ContainerTransport(
+            container_process=AsyncMock(),
+            command="agent acp",
+            runtime_credential_values=[credential],
+        )
+        client = ACPClient(transport)
+        client._send_request = AsyncMock(return_value=raw_result)  # type: ignore[method-assign]
+
+        with pytest.raises(ValidationError) as exc_info:
+            await client.initialize()
+
+        assert credential not in str(exc_info.value)
+        assert "***REDACTED***" in str(exc_info.value)
+        assert raw_result["protocolVersion"] == credential
 
     @pytest.mark.asyncio
     async def test_container_transport_does_not_create_empty_agent_log(

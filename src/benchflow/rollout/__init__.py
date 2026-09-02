@@ -738,6 +738,8 @@ class Rollout:
         self._termination_receipt: AgentTerminationReceipt | None = None
         self._acp_session_observation: AcpSessionObservation | None = None
         self._stop_agent_task: asyncio.Task[AgentTerminationReceipt] | None = None
+        self._stop_agent_cancel_requested = False
+        self._stop_agent_cancel_task: asyncio.Task[bool] | None = None
 
         # Populated by execute()
         self._trajectory: list[dict] = []
@@ -807,7 +809,9 @@ class Rollout:
         if callable(resolver):
             candidate = resolver(agent)
             policy = getattr(candidate, "environment_policy", None)
-            if isinstance(policy, str) and policy in {"inherit", "explicit"}:
+            if candidate is not None and (
+                isinstance(policy, str) or type(candidate).__module__ != "unittest.mock"
+            ):
                 return candidate
         return AGENTS.get(agent)
 
@@ -860,7 +864,12 @@ class Rollout:
         policy = getattr(
             self._plane_agent_config(agent), "environment_policy", "inherit"
         )
-        return "explicit" if policy == "explicit" else "inherit"
+        if policy not in {"inherit", "explicit"}:
+            raise ValueError(
+                f"Unknown environment_policy {policy!r} for agent {agent!r}; "
+                "expected 'inherit' or 'explicit'"
+            )
+        return policy
 
     def use_prebuilt_env(self, inner: Any) -> None:
         """Inject a caller-owned sandbox; skip creation and teardown.
@@ -1391,6 +1400,8 @@ class Rollout:
         """Open an ACP connection to the agent. Can be called multiple times."""
         self._termination_receipt = None
         self._stop_agent_task = None
+        self._stop_agent_cancel_requested = False
+        self._stop_agent_cancel_task = None
         self._acp_session_observation = None
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
@@ -1454,6 +1465,9 @@ class Rollout:
                     getattr(self, "_task", None),
                     getattr(self, "_agent_cfg", None),
                 ),
+                runtime_credential_values=getattr(
+                    self, "_runtime_credentials", {}
+                ).values(),
             )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
@@ -1482,18 +1496,22 @@ class Rollout:
         )
 
     async def stop_agent(self, *, cancel_requested: bool) -> AgentTerminationReceipt:
-        """Share one shielded stop operation across every concurrent caller."""
+        """Share one shielded stop operation and merge concurrent cancel intent."""
         existing = getattr(self, "_termination_receipt", None)
         if existing is not None:
             return existing
+
+        self._stop_agent_cancel_requested = bool(
+            getattr(self, "_stop_agent_cancel_requested", False) or cancel_requested
+        )
+        if self._stop_agent_cancel_requested:
+            Rollout._ensure_stop_agent_cancel_task(self)
 
         stop_task: asyncio.Task[AgentTerminationReceipt] | None = getattr(
             self, "_stop_agent_task", None
         )
         if stop_task is None:
-            stop_task = asyncio.create_task(
-                Rollout._stop_agent_once(self, cancel_requested=cancel_requested)
-            )
+            stop_task = asyncio.create_task(Rollout._stop_agent_once(self))
             self._stop_agent_task = stop_task
         try:
             return await asyncio.shield(stop_task)
@@ -1501,9 +1519,29 @@ class Rollout:
             await asyncio.shield(stop_task)
             raise
 
-    async def _stop_agent_once(
-        self, *, cancel_requested: bool
-    ) -> AgentTerminationReceipt:
+    def _ensure_stop_agent_cancel_task(self) -> asyncio.Task[bool] | None:
+        task: asyncio.Task[bool] | None = getattr(self, "_stop_agent_cancel_task", None)
+        if task is not None:
+            return task
+        client = getattr(self, "_acp_client", None)
+        cancel = getattr(client, "cancel", None)
+        if client is None or not callable(cancel):
+            return None
+        task = asyncio.create_task(Rollout._cancel_agent_once(self, client))
+        self._stop_agent_cancel_task = task
+        return task
+
+    async def _cancel_agent_once(self, client: Any) -> bool:
+        try:
+            await asyncio.wait_for(
+                client.cancel(), timeout=_ACP_STOP_CANCEL_TIMEOUT_SEC
+            )
+            return True
+        except (asyncio.CancelledError, Exception):
+            logger.warning("ACP session cancellation failed")
+            return False
+
+    async def _stop_agent_once(self) -> AgentTerminationReceipt:
         """Stop the live ACP process tree and publish immutable evidence once."""
 
         if getattr(self, "_is_session_factory", False):
@@ -1514,16 +1552,10 @@ class Rollout:
         client = getattr(self, "_acp_client", None)
         transport = getattr(client, "_transport", None) if client is not None else None
         cancel_acknowledged = False
+        cancel_task = getattr(self, "_stop_agent_cancel_task", None)
+        if cancel_task is not None:
+            cancel_acknowledged = await asyncio.shield(cancel_task)
         session_closed = client is None and getattr(self, "_session", None) is None
-
-        if cancel_requested and client is not None:
-            try:
-                await asyncio.wait_for(
-                    client.cancel(), timeout=_ACP_STOP_CANCEL_TIMEOUT_SEC
-                )
-                cancel_acknowledged = True
-            except Exception:
-                logger.warning("ACP session cancellation failed", exc_info=True)
 
         close_session: Any = getattr(client, "close_session", None)
         terminate_process_tree: Any = getattr(transport, "terminate_process_tree", None)
@@ -1581,6 +1613,13 @@ class Rollout:
                 )
         if not process_tree_stopped:
             graceful_termination = False
+
+        cancel_task = getattr(self, "_stop_agent_cancel_task", None)
+        if cancel_task is not None:
+            cancel_acknowledged = (
+                await asyncio.shield(cancel_task) or cancel_acknowledged
+            )
+        cancel_requested = bool(getattr(self, "_stop_agent_cancel_requested", False))
 
         _ = Rollout.acp_session_observation.__get__(self, Rollout)
 
@@ -2467,6 +2506,8 @@ class Rollout:
         """
         self._termination_receipt = None
         self._stop_agent_task = None
+        self._stop_agent_cancel_requested = False
+        self._stop_agent_cancel_task = None
         self._acp_session_observation = None
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
@@ -2593,6 +2634,9 @@ class Rollout:
                 mcp_servers=_task_mcp_specs_for_agent(
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
+                runtime_credential_values=getattr(
+                    self, "_runtime_credentials", {}
+                ).values(),
             )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)

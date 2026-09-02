@@ -461,6 +461,31 @@ async def test_concurrent_stop_agent_callers_share_one_teardown_and_receipt() ->
 
 
 @pytest.mark.asyncio
+async def test_concurrent_stop_agent_merges_stronger_cancellation_intent() -> None:
+    events: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+    transport = _BlockingStopTransport(
+        events,
+        started=started,
+        release=release,
+    )
+    rollout = _rollout_at_stop_boundary(_StagedStopClient(transport, events))
+
+    first_call = asyncio.create_task(rollout.stop_agent(cancel_requested=False))
+    await started.wait()
+    second_call = asyncio.create_task(rollout.stop_agent(cancel_requested=True))
+    await asyncio.sleep(0)
+    release.set()
+    first, second = await asyncio.gather(first_call, second_call)
+
+    assert first is second
+    assert events.count("cancel") == 1
+    assert first.cancel_requested is True
+    assert first.cancel_acknowledged is True
+
+
+@pytest.mark.asyncio
 async def test_stop_agent_caller_cancellation_waits_for_shared_safe_teardown() -> None:
     events: list[str] = []
     started = asyncio.Event()

@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from benchflow.sandbox.process import drain_oversized_line
+from benchflow.trajectories.types import redact_trajectory_obj
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,10 @@ class Transport(ABC):
     @abstractmethod
     async def receive(self) -> dict[str, Any]:
         """Receive a JSON-RPC message."""
+
+    def redact_protocol_value(self, value: Any) -> Any:
+        """Return a persistence-safe copy while leaving wire messages untouched."""
+        return redact_trajectory_obj(value)
 
     @abstractmethod
     async def close(self) -> None:

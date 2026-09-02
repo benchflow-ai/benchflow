@@ -19,9 +19,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow.acp.client import ACPClient
+from benchflow.acp.session import ACPSession
 from benchflow.acp.types import StopReason
 from benchflow.diagnostics import TransportClosedError
 from benchflow.rollout import Rollout
+from benchflow.trajectories.types import redact_trajectory_obj_with_exact_values
 
 
 def _stock_acp_mock() -> AsyncMock:
@@ -226,6 +228,40 @@ async def test_initialize_timeout_is_transport_failure_not_agent_timeout(
     mock_acp.close.assert_awaited()
 
 
+async def test_live_process_connection_error_retries_before_transport_exists(
+    tmp_path,
+) -> None:
+    from benchflow.acp.runtime import connect_acp
+
+    mock_acp = _stock_acp_mock()
+    mock_env = AsyncMock()
+    mock_env.live_process = AsyncMock(
+        side_effect=[ConnectionError("live process unavailable"), MagicMock()]
+    )
+
+    with (
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+        patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        patch("benchflow.acp.runtime.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        client, session, _adapter, agent_name = await connect_acp(
+            env=mock_env,
+            agent="test-agent",
+            agent_launch="test-agent",
+            agent_env={},
+            sandbox_user=None,
+            model=None,
+            rollout_dir=tmp_path,
+            environment="docker",
+            agent_cwd="/app",
+        )
+
+    assert mock_env.live_process.await_count == 2
+    assert client is mock_acp
+    assert session.session_id == "s1"
+    assert agent_name == "test-agent"
+
+
 async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) -> None:
     """Guards PR #921: bootstrap first, then fail-closed egress isolation."""
     from benchflow.acp.runtime import connect_acp
@@ -349,3 +385,38 @@ def test_acp_observation_prefers_acknowledged_config_values(tmp_path) -> None:
     assert observation is not None
     assert observation.model_id == "acknowledged-model"
     assert observation.mode_id == "acknowledged-mode"
+
+
+def test_acp_observation_exactly_redacts_protocol_metadata(tmp_path) -> None:
+    credential = "opaque-observation-license-123"
+    session = ACPSession(
+        "session",
+        redact_protocol_value=lambda value: redact_trajectory_obj_with_exact_values(
+            value, [credential]
+        ),
+    )
+    session.agent_info = SimpleNamespace(name=f"agent-{credential}")
+    session.model_state = {"currentModelId": f"model-{credential}"}
+    session.mode_state = {"currentModeId": f"mode-{credential}"}
+    session.stop_reason = f"stop-{credential}"
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._session = session
+    rollout._rollout_dir = tmp_path
+    rollout._acp_session_observation = None
+
+    observation = rollout.acp_session_observation
+
+    assert observation is not None
+    persisted_values = (
+        observation.agent_name,
+        observation.model_id,
+        observation.mode_id,
+        observation.stop_reason,
+    )
+    assert credential not in " ".join(value for value in persisted_values if value)
+    assert all("***REDACTED***" in value for value in persisted_values if value)
+    assert credential in session.agent_info.name
+    assert credential in session.model_state["currentModelId"]
+    assert credential in session.mode_state["currentModeId"]
+    assert credential in session.stop_reason

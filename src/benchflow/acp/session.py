@@ -192,7 +192,12 @@ class ACPSession:
     trajectory instead of a flat blob.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        redact_protocol_value: Callable[[Any], Any] | None = None,
+    ):
         self.session_id = session_id
         self.agent_info: AgentInfo | None = None
         self.agent_capabilities: AgentCapabilities | None = None
@@ -218,6 +223,7 @@ class ACPSession:
         # Optional sink invoked after every public state mutation so callers
         # can stream a trajectory snapshot to disk without polling.
         self.on_change: Callable[[ACPSession], None] | None = None
+        self._redact_protocol_value = redact_protocol_value
         # Console progress heartbeat. Without it a first-run user stares at
         # total silence between "Prompt 1/1: ..." and the verifier — observed
         # 18 minutes on a passing rollout (fresh-user dogfood 2026-08-09) with
@@ -226,6 +232,14 @@ class ACPSession:
         self._progress_enabled = _console_progress_enabled()
         self._prompt_started_at: float | None = None
         self._last_progress_at = 0.0
+
+    def redact_for_persistence(self, value: Any) -> Any:
+        """Return a redacted copy without mutating live ACP protocol state."""
+        if self._redact_protocol_value is not None:
+            return self._redact_protocol_value(value)
+        from benchflow.trajectories.types import redact_trajectory_obj
+
+        return redact_trajectory_obj(value)
 
     def _notify_change(self) -> None:
         self._maybe_log_progress()
@@ -237,7 +251,8 @@ class ACPSession:
             # error (not warning): a failing callback means trajectory
             # streaming is silently degraded for the rest of the run,
             # which is otherwise easy to miss in a 64-concurrency log.
-            logger.error(f"ACPSession on_change callback failed: {e}")
+            error = self.redact_for_persistence(str(e))
+            logger.error("ACPSession on_change callback failed: %s", error)
 
     def progress_snapshot(self) -> tuple[int, str]:
         """(tool-call count, last tool title) — the console heartbeat's
@@ -273,7 +288,8 @@ class ACPSession:
         calls, title = self.progress_snapshot()
         line = f"  … {elapsed_min:.1f}min, {calls} tool calls"
         if title:
-            line += f" (last: {title[:60]})"
+            safe_title = self.redact_for_persistence(title)
+            line += f" (last: {str(safe_title)[:60]})"
         logger.info(line)
 
     def record_user_prompt(self, text: str) -> None:
@@ -417,7 +433,8 @@ class ACPSession:
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:
-                logger.warning(f"Unknown tool call status: {update.get('status')}")
+                status_value = self.redact_for_persistence(update.get("status"))
+                logger.warning("Unknown tool call status: %s", status_value)
                 status = ToolCallStatus.IN_PROGRESS
             content = update.get("content")
             record.update_status(status, content)

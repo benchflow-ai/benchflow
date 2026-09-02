@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -12,7 +13,10 @@ from benchflow.sandbox.process._base import (
     _UNKNOWN_PROCESS_TREE_TERMINATION,
     _ProcessTreeTermination,
 )
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import (
+    redact_trajectory_obj_with_exact_values,
+    redact_trajectory_text_with_exact_values,
+)
 
 from .transport import Transport, decode_json_rpc_message
 
@@ -81,6 +85,7 @@ class ContainerTransport(Transport):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         agent_log_path: Path | None = None,
+        runtime_credential_values: Collection[str] = (),
     ):
         self._cp = container_process
         self._command = command
@@ -88,6 +93,16 @@ class ContainerTransport(Transport):
         self._cwd = cwd
         self._agent_log_path = agent_log_path
         self._agent_log_file: TextIO | None = None
+        self._runtime_credential_values = tuple(
+            value for value in runtime_credential_values if value
+        )
+        configure_output_redaction = getattr(
+            type(container_process), "set_output_redaction_values", None
+        )
+        if callable(configure_output_redaction):
+            configure_output_redaction(
+                container_process, self._runtime_credential_values
+            )
         # First-message latch: the lenient PTY-noise decode applies only
         # until the first successfully decoded protocol message (prompt glue
         # is a startup phenomenon). Afterwards the strict whole-line decode
@@ -135,13 +150,22 @@ class ContainerTransport(Transport):
             if message is not None:
                 self._saw_protocol = True
                 return message
+            safe_text = redact_trajectory_text_with_exact_values(
+                text, self._runtime_credential_values
+            )
             # Capture non-protocol output (agent debug logs, errors, warnings).
             if self._agent_log_path:
                 if self._agent_log_file is None:
                     self._agent_log_file = self._agent_log_path.open("w")
-                self._agent_log_file.write(text + "\n")
+                self._agent_log_file.write(safe_text + "\n")
                 self._agent_log_file.flush()
-            logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
+            logger.debug("Non-JSON-RPC from container agent: %s", safe_text[:200])
+
+    def redact_protocol_value(self, value: Any) -> Any:
+        """Exact-redact a protocol-derived value only at persistence boundaries."""
+        return redact_trajectory_obj_with_exact_values(
+            value, self._runtime_credential_values
+        )
 
     @property
     def termination_status(self) -> _ProcessTreeTermination:
@@ -186,7 +210,11 @@ class ContainerTransport(Transport):
                 and self._agent_log_path
             ):
                 with self._agent_log_path.open("a") as agent_log:
-                    agent_log.write(redact_trajectory_text(stderr))
+                    agent_log.write(
+                        redact_trajectory_text_with_exact_values(
+                            stderr, self._runtime_credential_values
+                        )
+                    )
                 self._stderr_appended = True
 
     async def close(self) -> None:
