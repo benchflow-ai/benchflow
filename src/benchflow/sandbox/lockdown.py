@@ -1057,17 +1057,28 @@ def _purge_pycache_cmd(workspace: str) -> str:
 # before it had failed outright — the shell takes its status from the last
 # command (#1078).
 #
-# Zombies are excluded. Killing the agent's shell can leave its ``sleep`` child
-# defunct for a moment, and ``pgrep`` lists a defunct process like a live one —
-# but a zombie holds no descriptors and cannot write, so it is not what this
-# step guards against. Excluding by state also keeps the verdict independent of
-# whether PID 1 reaps orphans: the compose images run a shell there, which does,
-# but that is a property of the image rather than something this should rest on.
+# A pid counts as a survivor only on evidence that it is still there to write.
+# The state comes from /proc rather than ``ps -o stat=``, which busybox does not
+# support, and the two non-survivor cases are distinguished deliberately:
+#
+#   gone   — /proc entry unreadable, so the process exited between ``pgrep``
+#            listing it and this read. Most likely right here, since the
+#            second pass runs just after a kill, while processes are dropping.
+#            Treating an absent entry as proof of survival would abort scoring
+#            over a pid that no longer exists.
+#   zombie — defunct, holding no descriptors, so it cannot do the writing this
+#            step guards against. Excluding by state also keeps the verdict
+#            independent of whether PID 1 reaps orphans: the compose images run
+#            a shell there, which does, but that is a property of the image.
+#
 # ``__USER__`` is the sandbox user.
 _ASSERT_SANDBOX_USER_QUIESCENT_CMD_TEMPLATE = (
     "live() { "
     "  for p in $(pgrep -u __USER__ 2>/dev/null); do "
-    "    grep -qs '^State:[[:space:]]*Z' /proc/$p/status && continue; "
+    "    st=$(sed -n 's/^State:[[:space:]]*\\(.\\).*/\\1/p' "
+    "         /proc/$p/status 2>/dev/null); "
+    '    [ -n "$st" ] || continue; '
+    '    [ "$st" = Z ] && continue; '
     '    echo "$p"; '
     "  done; "
     "}; "

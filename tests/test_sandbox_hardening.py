@@ -1839,13 +1839,17 @@ class TestSandboxUserQuiescenceShell:
         alive_after: bool,
         kill_rc: int,
         defunct: bool = False,
+        state: str | None = None,
     ):
         """A PATH whose pgrep answers differently on its first and last call.
 
-        ``grep`` is stubbed alongside it because the state lookup reads /proc,
+        ``sed`` is stubbed alongside it because the state lookup reads /proc,
         which does not exist on every machine that runs this suite and would
         otherwise answer for whatever real process holds the stub's pid. What a
         real /proc reports is covered against live containers instead.
+
+        ``state`` is what that lookup finds: a letter for a process that is
+        still there, or empty for one whose /proc entry has already gone.
         """
         bindir = tmp_path / "bin"
         bindir.mkdir()
@@ -1868,8 +1872,10 @@ class TestSandboxUserQuiescenceShell:
         )
         write("pkill", f"exit {kill_rc}\n")
         write("sleep", "exit 0\n")  # real sleep also always succeeds
-        # Stands in for `grep -qs '^State:...Z' /proc/<pid>/status`.
-        write("grep", f"exit {0 if defunct else 1}\n")
+        # Stands in for the `sed` that reads State: out of /proc/<pid>/status.
+        if state is None:
+            state = "Z" if defunct else "S"
+        write("sed", f"printf '%s' '{state}'\n")
         return bindir
 
     def _run(self, cmd: str, bindir) -> subprocess.CompletedProcess:
@@ -1968,6 +1974,27 @@ class TestSandboxUserQuiescenceShell:
         result = self._run(new_cmd, bindir)
 
         assert result.returncode == 0, "a zombie was counted as a live process"
+
+    def test_a_process_that_exits_mid_scan_is_not_a_survivor(self, tmp_path, new_cmd):
+        """An empty /proc read means the process is gone, not that it survived.
+
+        `pgrep` lists a pid, and by the time its state is read the process has
+        exited and the entry is gone. That happens most readily right where
+        this runs — the second scan follows a kill, with processes dropping —
+        and reading absence as survival would abort scoring over a pid that no
+        longer exists.
+        """
+        bindir = self._stub_path(
+            tmp_path,
+            alive_before=True,
+            alive_after=True,
+            kill_rc=0,
+            state="",
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert result.returncode == 0, "a departed process was counted as alive"
 
 
 class TestSandboxUserQuiescenceContract:
