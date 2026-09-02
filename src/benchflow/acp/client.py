@@ -54,6 +54,38 @@ def _auto_approve_option_id(options: list[dict[str, Any]]) -> str:
     return option_id
 
 
+# fx's ACP dialect: non-spec stop reasons and usage keys, mapped to the spec.
+_FX_STOP_REASONS = {
+    "refused": "refusal",
+    "max_output_tokens": "max_tokens",
+    "max_model_turns": "max_turn_requests",
+}
+_FX_USAGE_KEYS = {
+    "cacheReadTokens": "cachedReadTokens",
+    "cacheWriteTokens": "cachedWriteTokens",
+    "reasoningTokens": "thoughtTokens",
+}
+
+
+def _normalize_prompt_result(result: dict) -> None:
+    """Map fx's ACP dialect in-place onto the spec shapes the SDK accepts."""
+    stop = result.get("stopReason")
+    if stop in _FX_STOP_REASONS:
+        result["stopReason"] = _FX_STOP_REASONS[stop]
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        for theirs, ours in _FX_USAGE_KEYS.items():
+            if theirs in usage:
+                usage[ours] = usage.pop(theirs)
+        if "inputTokens" in usage and "outputTokens" in usage:
+            usage.setdefault(
+                "totalTokens", usage["inputTokens"] + usage["outputTokens"]
+            )
+        else:
+            # The SDK requires input/output/total; drop unusable usage.
+            result.pop("usage")
+
+
 class ACPClient:
     """Client that speaks ACP to an agent process.
 
@@ -399,9 +431,8 @@ class ACPClient:
         result = await self._send_request(
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
         )
-        # fx emits the non-spec stop reason "refused" for the spec's "refusal".
-        if isinstance(result, dict) and result.get("stopReason") == "refused":
-            result["stopReason"] = "refusal"
+        if isinstance(result, dict):
+            _normalize_prompt_result(result)
         prompt_result = PromptResult.model_validate(result)
         # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member

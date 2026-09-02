@@ -199,6 +199,11 @@ def test_agent_registry_has_supported_hard_web_disable_snippets():
     assert "webfetch" in mimo_cmd
     assert "mimocode" in mimo_cmd
 
+    fx_cmd = AGENTS["fx"].disallow_web_tools_setup_cmd
+    assert "web_fetch" in fx_cmd
+    assert "web_search" in fx_cmd
+    assert "deny" in fx_cmd
+
 
 @pytest.mark.asyncio
 async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):

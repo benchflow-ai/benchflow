@@ -124,7 +124,7 @@ _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
 # fx release pin, passed to the fx.sh installer (`bash -s -- <version>`).
-_FX_VERSION = "v0.0.5"
+_FX_VERSION = "v0.0.7"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -1019,6 +1019,12 @@ AGENTS: dict[str, AgentConfig] = {
         supports_acp_set_model=False,
         # fx speaks the AI SDK gateway wire protocol.
         native_provider="vercel",
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.fx/settings.json",
+            'perm=d.setdefault("permission",{});'
+            'perm["web_fetch"]={"*":"deny"};perm["web_search"]={"*":"deny"}',
+        ),
+        disallow_web_tools_owned_paths=["$HOME/.fx"],
     ),
 }
 
@@ -1206,6 +1212,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        native_provider=config.native_provider,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,

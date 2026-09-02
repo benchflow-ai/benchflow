@@ -173,7 +173,7 @@ async def test_agent_env_strips_raw_provider_secrets(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_native_provider_bypass_scrubs_foreign_secrets():
-    """Foreign provider secrets must not reach a native_provider agent."""
+    """Guards PR #1052: foreign secrets must not reach a native_provider agent."""
     real = {
         "AI_GATEWAY_API_KEY": "real-gateway-secret",
         "OPENAI_API_KEY": "real-openai-secret",

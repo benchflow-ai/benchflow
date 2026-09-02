@@ -81,24 +81,66 @@ async def test_disconnect_preserves_native_usage_in_final_metrics():
 
 
 @pytest.mark.asyncio
-async def test_acp_client_normalizes_refused_stop_reason():
-    """fx emits the non-spec "refused"; it must parse as the spec's "refusal"."""
+@pytest.mark.parametrize(
+    "fx_reason,spec_reason",
+    [
+        ("refused", "refusal"),
+        ("max_output_tokens", "max_tokens"),
+        ("max_model_turns", "max_turn_requests"),
+    ],
+)
+async def test_acp_client_normalizes_fx_stop_reasons(fx_reason, spec_reason):
+    """Guards PR #1052: fx's non-spec stop reasons parse as spec values."""
     from benchflow.acp.client import ACPClient
     from benchflow.acp.session import ACPSession
-    from benchflow.acp.types import StopReason
 
     client = ACPClient.__new__(ACPClient)
     client._session = ACPSession("session-1")
 
     async def fake_send_request(method, params):
-        return {"stopReason": "refused"}
+        return {"stopReason": fx_reason}
 
     client._send_request = fake_send_request
 
     result = await client.prompt("solve")
 
-    assert result.stop_reason == "refusal"
-    assert client._session.stop_reason is StopReason.REFUSAL
+    assert result.stop_reason == spec_reason
+
+
+@pytest.mark.asyncio
+async def test_acp_client_normalizes_fx_usage_keys():
+    """Guards PR #1052: fx's usage keys (cacheReadTokens, reasoningTokens, no
+    totalTokens) are captured instead of failing PromptResponse validation."""
+    from benchflow.acp.client import ACPClient
+    from benchflow.acp.session import ACPSession
+
+    client = ACPClient.__new__(ACPClient)
+    client._session = ACPSession("session-1")
+
+    async def fake_send_request(method, params):
+        return {
+            "stopReason": "end_turn",
+            "usage": {
+                "inputTokens": 10,
+                "outputTokens": 4,
+                "cacheReadTokens": 2,
+                "cacheWriteTokens": 1,
+                "reasoningTokens": 3,
+            },
+        }
+
+    client._send_request = fake_send_request
+
+    await client.prompt("solve")
+
+    assert client._session.latest_usage_totals() == {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "total_tokens": 14,
+        "cached_read_tokens": 2,
+        "cached_write_tokens": 1,
+        "thought_tokens": 3,
+    }
 
 
 def test_rollout_native_acp_usage_uses_cumulative_deltas():
