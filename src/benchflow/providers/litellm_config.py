@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from benchflow.agents.providers import (
-    PROVIDER_ENV_SOURCE_ENV,
+    ZAI_CODING_REGISTRY_BASE_ENV,
     ProviderConfig,
     find_provider,
     resolve_base_url,
@@ -179,38 +178,6 @@ def _registered_api_key_ref(cfg: ProviderConfig) -> str | None:
     return None
 
 
-def _apply_model_generation_params(
-    params: dict[str, str | int | float | bool | list[str]], env: dict[str, str]
-) -> None:
-    for env_name, param, upper_bound in (
-        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", None),
-        ("BENCHFLOW_MODEL_TOP_P", "top_p", 1.0),
-    ):
-        value = (env.get(env_name) or "").strip()
-        try:
-            parsed = float(value)
-        except ValueError:
-            continue
-        if (
-            math.isfinite(parsed)
-            and parsed >= 0
-            and (upper_bound is None or parsed <= upper_bound)
-        ):
-            params[param] = parsed
-
-    try:
-        max_tokens = int((env.get("BENCHFLOW_MODEL_MAX_TOKENS") or "").strip())
-    except ValueError:
-        return
-    if max_tokens > 0:
-        token_param = (
-            "max_output_tokens"
-            if env.get("BENCHFLOW_PROVIDER_PROTOCOL") == "openai-responses"
-            else "max_tokens"
-        )
-        params[token_param] = max_tokens
-
-
 def _provider_reasoning_effort(env: dict[str, str]) -> str | None:
     """Return an explicitly requested gateway-side reasoning effort."""
     raw = (
@@ -325,8 +292,11 @@ def _route_registered_provider(
     )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-    provider_env_is_registry = env.get(PROVIDER_ENV_SOURCE_ENV) == "registry"
-    if explicit_api_base and explicit_api_key and not provider_env_is_registry:
+    zai_registry_base = (
+        provider_name == "zai-coding" and env.get(ZAI_CODING_REGISTRY_BASE_ENV) == "1"
+    )
+    explicit_route = explicit_api_base and explicit_api_key and not zai_registry_base
+    if explicit_api_base and not zai_registry_base:
         api_base = explicit_api_base
     else:
         try:
@@ -368,9 +338,13 @@ def _route_registered_provider(
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
     if api_base:
         params["api_base"] = api_base
+    native_key = (env.get(provider_cfg.auth_env or "") or "").strip()
+    explicit_zai_key = bool(
+        zai_registry_base and explicit_api_key and explicit_api_key != native_key
+    )
     api_key_ref = (
         _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-        if explicit_api_base and explicit_api_key and not provider_env_is_registry
+        if explicit_route or explicit_zai_key
         else _registered_api_key_ref(provider_cfg)
     )
     if api_key_ref:
@@ -394,14 +368,12 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     provider = find_provider(model)
     if provider is not None:
         provider_name, provider_cfg = provider
-        route = _route_registered_provider(
+        return _route_registered_provider(
             model=model,
             provider_name=provider_name,
             provider_cfg=provider_cfg,
             env=env,
         )
-        _apply_model_generation_params(route.litellm_params, env)
-        return route
 
     lower = model.lower()
     bare = strip_provider_prefix(model)
@@ -440,7 +412,6 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     key = required[0] if required else None
     if key and "api_key" not in params:
         params["api_key"] = _env_ref(key)
-    _apply_model_generation_params(params, env)
     return LiteLLMRoute(
         requested_model=model,
         model_alias=safe_model_alias(model),

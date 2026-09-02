@@ -1596,6 +1596,19 @@ async def ensure_litellm_runtime(
     routed through it: ``oracle`` (no model) and native-subscription auth (no
     API key to proxy). Gemini uses LiteLLM's native GenerateContent endpoints.
     """
+    # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
+    # upstream routing or credentials. Restore controller-held source config.
+    if (
+        runtime is not None
+        and getattr(runtime, "kind", None) == "litellm"
+        and getattr(runtime, "source_agent", None) == agent
+        and getattr(runtime, "source_model", None) == model
+        and agent_env.get(LITELLM_MASTER_KEY_ENV)
+        == getattr(runtime, "master_key", None)
+        and getattr(runtime, "source_env", None) is not None
+    ):
+        agent_env = dict(runtime.source_env)
+
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
 
     if uses_native_subscription_auth(agent, model, agent_env):
@@ -1719,6 +1732,9 @@ async def ensure_litellm_runtime(
         server=server,
         config_key=config_key,
         master_key=master_key,
+        source_agent=agent,
+        source_model=model,
+        source_env=dict(agent_env),
     )
     if live_trajectory_path is not None:
         server.start_live_capture(live_trajectory_path)

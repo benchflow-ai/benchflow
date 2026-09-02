@@ -61,7 +61,7 @@ credential_files, url_params), ``vllm`` (user-supplied base_url).
 
 from dataclasses import dataclass, field
 
-PROVIDER_ENV_SOURCE_ENV = "_BENCHFLOW_PROVIDER_ENV_SOURCE"
+ZAI_CODING_REGISTRY_BASE_ENV = "_BENCHFLOW_ZAI_CODING_REGISTRY_BASE"
 
 
 @dataclass
@@ -298,7 +298,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "contextWindow": 200000,
                 "maxTokens": 131072,
             }
-            for model in ("glm-5", "glm-5.1", "glm-5.2", "glm-5-turbo")
+            for model in ("glm-5.3", "glm-5.3-flash")
         ],
     ),
     "kimi": ProviderConfig(

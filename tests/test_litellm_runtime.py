@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
+from benchflow.agents.env import resolve_agent_env
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_bedrock_preflight import BedrockPatchPreflightError
 from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
@@ -308,6 +309,63 @@ async def test_runtime_reuse_and_stop(monkeypatch):
     assert len(created) == 1
     await stop_provider_runtime(second)
     assert created[0].stopped is True
+
+
+@pytest.mark.parametrize("agent", ["claude-agent-acp", "openclaw"])
+@pytest.mark.asyncio
+async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch, agent):
+    """Guards PR #1074: reconnects retain Z.AI upstream routing and auth."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    env = resolve_agent_env(agent, "zai-coding/glm-5.3", {"ZAI_API_KEY": "native-key"})
+    updated, first = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=env,
+        model="zai-coding/glm-5.3",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+    _updated, second = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=updated,
+        model="zai-coding/glm-5.3",
+        runtime=first,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert first is not None
+    assert second is first
+    assert len(starts) == 1
+    expected_params = {
+        "model": "openai/glm-5.3",
+        "api_base": "https://api.z.ai/api/coding/paas/v4",
+        "api_key": "os.environ/ZAI_API_KEY",
+    }
+    assert starts[0]["agent_env"]["ZAI_API_KEY"] == "native-key"
+    assert starts[0]["route"].litellm_params == expected_params
+
+    assert first.server is not None
+    await first.server.stop()
+    _updated, third = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env=updated,
+        model="zai-coding/glm-5.3",
+        runtime=first,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert third is not first
+    assert len(starts) == 2
+    assert starts[1]["agent_env"]["ZAI_API_KEY"] == "native-key"
+    assert starts[1]["route"].litellm_params == expected_params
 
 
 @pytest.mark.asyncio

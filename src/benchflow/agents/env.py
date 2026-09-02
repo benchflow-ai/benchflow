@@ -469,17 +469,13 @@ def resolve_provider_env(
 ) -> None:
     """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
     from benchflow.agents.providers import (
-        PROVIDER_ENV_SOURCE_ENV,
+        ZAI_CODING_REGISTRY_BASE_ENV,
         find_provider,
         find_provider_for_bare_model,
         resolve_base_url,
         strip_provider_prefix,
     )
 
-    provider_route_missing = not any(
-        key in agent_env
-        for key in ("BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY")
-    )
     agent_env.setdefault("BENCHFLOW_PROVIDER_MODEL", strip_provider_prefix(model))
     agent_cfg = AGENTS.get(agent)
     # Agent-declared protocol takes precedence over provider's primary so
@@ -520,6 +516,8 @@ def resolve_provider_env(
                 "BENCHFLOW_PROVIDER_BASE_URL",
                 base_url,
             )
+            if _prov_name == "zai-coding" and base_url:
+                agent_env[ZAI_CODING_REGISTRY_BASE_ENV] = "1"
         agent_env.setdefault(
             "BENCHFLOW_PROVIDER_PROTOCOL",
             agent_protocol or _prov_cfg.api_protocol,
@@ -537,11 +535,6 @@ def resolve_provider_env(
                 "BENCHFLOW_PROVIDER_API_KEY",
                 _BEDROCK_PROVIDER_PLACEHOLDER_API_KEY,
             )
-        if provider_route_missing and all(
-            agent_env.get(key)
-            for key in ("BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY")
-        ):
-            agent_env[PROVIDER_ENV_SOURCE_ENV] = "registry"
     else:
         # No registered provider prefix — bridge the model's well-known API key
         # to BENCHFLOW_PROVIDER_API_KEY so env_mapping can translate it to

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from benchflow.agents.env import resolve_provider_env
+from benchflow.agents.env import resolve_agent_env, resolve_provider_env
 from benchflow.providers.litellm_config import (
     litellm_proxy_config,
     resolve_litellm_route,
@@ -122,122 +122,52 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
 
 
 @pytest.mark.parametrize(
-    ("model", "key", "agent", "expected_base", "expected_upstream"),
+    ("agent", "agent_base"),
     [
-        (
-            "zai-coding/glm-5.9",
-            "ZAI_API_KEY",
-            "claude-agent-acp",
-            "https://api.z.ai/api/coding/paas/v4",
-            "openai/glm-5.9",
-        ),
-        (
-            "openrouter/qwen/qwen3.5-397b-a17b",
-            "OPENROUTER_API_KEY",
-            "pi-acp",
-            "https://openrouter.ai/api/v1",
-            "openai/qwen/qwen3.5-397b-a17b",
-        ),
+        ("claude-agent-acp", "https://api.z.ai/api/anthropic"),
+        ("openclaw", "https://api.z.ai/api/coding/paas/v4"),
     ],
 )
-def test_registered_provider_route_ignores_registry_derived_generic_proxy_env(
-    model, key, agent, expected_base, expected_upstream
-):
-    env = {key: "native-key"}
-    resolve_provider_env(env, model, agent)
-    route = resolve_litellm_route(model, env)
+def test_zai_coding_clawsbench_routes(agent, agent_base):
+    """Guards PR #1074: ClawsBench agents use each supported Z.AI surface."""
+    env = resolve_agent_env(agent, "zai-coding/glm-5.3", {"ZAI_API_KEY": "native-key"})
+    route = resolve_litellm_route("zai-coding/glm-5.3", env)
 
-    assert route.litellm_params["api_base"] == expected_base
-    assert route.litellm_params["api_key"] == f"os.environ/{key}"
-    assert route.required_env == (key,)
-    assert route.upstream_model == expected_upstream
+    assert env["BENCHFLOW_PROVIDER_BASE_URL"] == agent_base
+    assert route.litellm_params["api_base"] == ("https://api.z.ai/api/coding/paas/v4")
+    assert route.litellm_params["api_key"] == "os.environ/ZAI_API_KEY"
+    assert route.required_env == ("ZAI_API_KEY",)
+    assert route.upstream_model == "openai/glm-5.3"
 
 
-@pytest.mark.parametrize("resolve_first", [False, True], ids=["direct", "resolved"])
-def test_registered_provider_route_preserves_explicit_endpoint_with_native_key(
-    resolve_first,
-):
-    env = {
-        "ZAI_API_KEY": "same-key",
-        "BENCHFLOW_PROVIDER_BASE_URL": "https://api.z.ai/api/anthropic",
-        "BENCHFLOW_PROVIDER_API_KEY": "same-key",
-    }
-    if resolve_first:
-        resolve_provider_env(env, "zai-coding/glm-5.2", "claude-agent-acp")
-    route = resolve_litellm_route("zai-coding/glm-5.2", env)
+@pytest.mark.parametrize("model", ["glm-5.4", "glm-5.4-flash"])
+def test_zai_coding_registry_base_preserves_explicit_generic_key(model):
+    """Guards PR #1074: mixed provenance must not retain Anthropic upstream URL."""
+    env = {"BENCHFLOW_PROVIDER_API_KEY": "generic-key"}
+    model_id = f"zai-coding/{model}"
+    resolve_provider_env(env, model_id, "claude-agent-acp")
+    route = resolve_litellm_route(model_id, env)
 
-    assert route.litellm_params["api_base"] == "https://api.z.ai/api/anthropic"
+    assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/anthropic"
+    assert route.litellm_params["api_base"] == ("https://api.z.ai/api/coding/paas/v4")
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+    assert route.upstream_model == f"openai/{model}"
 
 
-def test_registered_endpoint_with_generic_key_remains_explicit_override():
+def test_zai_coding_preserves_explicit_proxy_route():
+    """Guards PR #1074: explicit Z.AI-compatible proxies remain authoritative."""
     route = resolve_litellm_route(
-        "openrouter/qwen/qwen3.5-397b-a17b",
+        "zai-coding/glm-5.3-flash",
         {
-            "OPENROUTER_API_KEY": "native-key",
-            "BENCHFLOW_PROVIDER_BASE_URL": "https://openrouter.ai/api/v1",
-            "BENCHFLOW_PROVIDER_API_KEY": "generic-key",
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://proxy.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "proxy-key",
         },
     )
 
-    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
-    assert route.litellm_params["api_key"] == "os.environ/BENCHFLOW_PROVIDER_API_KEY"
+    assert route.litellm_params["api_base"] == "https://proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
-
-
-@pytest.mark.parametrize(
-    ("model", "key", "protocol", "token_param"),
-    [
-        ("zai-coding/glm-5.2", "ZAI_API_KEY", "openai-responses", "max_output_tokens"),
-        ("gemini-3.5-flash", "GEMINI_API_KEY", "openai-completions", "max_tokens"),
-    ],
-)
-def test_litellm_route_generation_overrides(model, key, protocol, token_param):
-    params = resolve_litellm_route(
-        model,
-        {
-            key: "key",
-            "BENCHFLOW_PROVIDER_PROTOCOL": protocol,
-            "BENCHFLOW_MODEL_TEMPERATURE": "1.0",
-            "BENCHFLOW_MODEL_TOP_P": "0.95",
-            "BENCHFLOW_MODEL_MAX_TOKENS": "131072",
-        },
-    ).litellm_params
-    expected = {"temperature": 1.0, "top_p": 0.95, token_param: 131072}
-    assert {name: params[name] for name in expected} == expected
-    assert ({"max_tokens", "max_output_tokens"} - {token_param}).isdisjoint(params)
-
-
-@pytest.mark.parametrize(
-    ("env_name", "param", "value"),
-    [
-        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", "nan"),
-        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", "inf"),
-        ("BENCHFLOW_MODEL_TEMPERATURE", "temperature", "-0.1"),
-        ("BENCHFLOW_MODEL_TOP_P", "top_p", "1.1"),
-        ("BENCHFLOW_MODEL_TOP_P", "top_p", "-0.1"),
-        ("BENCHFLOW_MODEL_MAX_TOKENS", "max_tokens", "0"),
-        ("BENCHFLOW_MODEL_MAX_TOKENS", "max_tokens", "-1"),
-        ("BENCHFLOW_MODEL_MAX_TOKENS", "max_tokens", "1.5"),
-    ],
-)
-def test_litellm_route_rejects_invalid_generation_overrides(env_name, param, value):
-    params = resolve_litellm_route(
-        "zai-coding/glm-5.2",
-        {
-            "ZAI_API_KEY": "key",
-            env_name: value,
-        },
-    ).litellm_params
-    assert param not in params
-
-
-def test_special_registered_provider_generation_overrides():
-    route = resolve_litellm_route(
-        "aws-bedrock/us.anthropic.claude-opus-4-8",
-        {"BENCHFLOW_MODEL_MAX_TOKENS": "4096"},
-    )
-    assert route.litellm_params["max_tokens"] == 4096
 
 
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])

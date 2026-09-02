@@ -235,7 +235,15 @@ class TestResolveBaseUrl:
         ],
     )
     def test_zai_coding_protocol_selects_endpoint(self, protocol, expected):
+        """Guards PR #1074: Coding Plan supports agent-specific API surfaces."""
         assert resolve_base_url(PROVIDERS["zai-coding"], {}, protocol) == expected
+
+    def test_zai_coding_advertises_current_glm5_models(self):
+        """Guards PR #1074: advertise current Coding Plan models, not GLM-4.x."""
+        assert [model["id"] for model in PROVIDERS["zai-coding"].models] == [
+            "glm-5.3",
+            "glm-5.3-flash",
+        ]
 
     def test_protocol_fallback_to_base_url(self):
         """Unknown protocol falls back to primary base_url."""

@@ -7,7 +7,7 @@ from the concrete host/sandbox process launcher.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +31,10 @@ class ProviderRuntime:
     server: LiteLLMProcess | None = None
     config_key: str | None = None
     master_key: str | None = None
+    source_agent: str | None = None
+    source_model: str | None = None
+    # Controller-only upstream config for re-entrant connects and proxy restarts.
+    source_env: dict[str, str] | None = field(default=None, repr=False)
 
     @property
     def base_url(self) -> str:
