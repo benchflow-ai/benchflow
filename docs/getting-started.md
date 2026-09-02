@@ -49,19 +49,22 @@ uv sync --extra dev --locked
 
 ## Auth: OAuth, long-lived token, or API key
 
-You don't need an API key if you're a Claude / Codex / Gemini subscriber. Three options, pick one per agent:
+You don't need an API key if you're using a Claude / Codex / Gemini
+subscription or an OpenRouter login. Three options, pick one per agent:
 
 ### Option 1 — Subscription OAuth from host CLI login
 
 If you've logged into the agent's CLI on your host (`claude auth login`,
-`codex login`, or the `gemini` interactive flow), benchflow picks up the
-credential file and copies it into the sandbox. No API key billing.
+`codex login`, `ori login`, or the `gemini` interactive flow), benchflow picks up the
+credential file and copies it into the sandbox. No API key needs to be
+exported; billing and entitlements still follow the account used by that CLI.
 
 | Agent | How to log in on the host | What benchflow detects | Replaces env var |
 |-------|---------------------------|------------------------|------------------|
 | `claude-agent-acp` | `claude auth login` (Claude Code CLI) | `~/.claude/.credentials.json` | `ANTHROPIC_API_KEY` |
 | `codex-acp` | `codex login` (Codex CLI) | `~/.codex/auth.json` | `OPENAI_API_KEY` |
 | `gemini` | `gemini` (interactive login) | `~/.gemini/oauth_creds.json` | `GEMINI_API_KEY` |
+| `ori` | [`ori login`](https://openrouter.ai/docs/guides/ori/harness) | `~/.ori/credentials.json` or `~/.openrouter/credentials.json` | `OPENROUTER_API_KEY` |
 
 When benchflow finds the detect file, you'll see:
 
@@ -91,6 +94,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 export CODEX_API_KEY=sk-...       # Codex alias for OPENAI_API_KEY
 export GEMINI_API_KEY=...
+export OPENROUTER_API_KEY=sk-or-... # OpenRouter / Ori
 export LLM_API_KEY=...           # OpenHands / LiteLLM-compatible providers
 export AZURE_API_KEY=...
 export AZURE_API_ENDPOINT='https://<resource>.openai.azure.com/'
@@ -163,6 +167,14 @@ GEMINI_API_KEY=... bench eval run \
 
 # List the registered agents
 bench agent list
+
+# Run OpenRouter's native Ori coding harness
+OPENROUTER_API_KEY=... bench eval run \
+  --source-repo benchflow-ai/skillsbench --source-path tasks \
+  --include citation-check \
+  --agent ori \
+  --model openrouter/anthropic/claude-sonnet-4.6 \
+  --sandbox docker
 ```
 
 `bench eval run` is the primary command for running evaluations — it works for

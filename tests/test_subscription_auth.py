@@ -316,7 +316,12 @@ class TestResolveAgentEnvSubscription:
         in their registration. Agents without it must never skip the proxy.
         """
         from benchflow.agents.env import uses_native_subscription_auth
-        from benchflow.agents.registry import AGENTS, AgentConfig, SubscriptionAuth
+        from benchflow.agents.registry import (
+            AGENTS,
+            AgentConfig,
+            NativeSubscriptionPolicy,
+            SubscriptionAuth,
+        )
 
         cfg = AgentConfig(
             name="fake-claude-cli",
@@ -325,6 +330,9 @@ class TestResolveAgentEnvSubscription:
             subscription_auth=SubscriptionAuth(
                 replaces_env="ANTHROPIC_API_KEY",
                 detect_file="~/.claude/.credentials.json",
+                native_policy=NativeSubscriptionPolicy(
+                    direct_envs=("CLAUDE_CODE_OAUTH_TOKEN",)
+                ),
             ),
         )
         monkeypatch.setitem(AGENTS, "fake-claude-cli", cfg)

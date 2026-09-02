@@ -271,6 +271,7 @@ result = await bf.run(config)
 | `claude-agent-acp` | ACP | ANTHROPIC_API_KEY | `claude` |
 | `codex-acp` | ACP | OPENAI_API_KEY, CODEX_API_KEY, CODEX_ACCESS_TOKEN, or host login | `codex` |
 | `opencode` | ACP | inferred from model/provider | — |
+| `ori` | ACP (BenchFlow shim over Ori JSONL) | OPENROUTER_API_KEY or host login | — |
 | `openhands` | ACP | LLM_API_KEY | `oh` |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
 | `openclaw` | ACP | inferred from model | — |

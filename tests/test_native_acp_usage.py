@@ -93,6 +93,39 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
     }
 
 
+def test_binding_fresh_session_resets_native_usage_checkpoint():
+    """Guards review feedback on PR #1067: connect_as cannot undercount a new session."""
+    from benchflow.acp.session import ACPSession
+    from benchflow.rollout import Rollout
+
+    rollout = Rollout.__new__(Rollout)
+    first = ACPSession("session-1")
+    first.record_prompt_usage(
+        {
+            "inputTokens": 80,
+            "outputTokens": 20,
+            "totalTokens": 100,
+        }
+    )
+    rollout._bind_agent_connection((None, first, None, "agent"))
+    rollout._collect_native_acp_usage()
+
+    second = ACPSession("session-2")
+    second.record_prompt_usage(
+        {
+            "inputTokens": 7,
+            "outputTokens": 3,
+            "totalTokens": 10,
+        }
+    )
+    rollout._bind_agent_connection((None, second, None, "agent"))
+    rollout._collect_native_acp_usage()
+
+    assert rollout._native_usage_metrics["n_input_tokens"] == 87
+    assert rollout._native_usage_metrics["n_output_tokens"] == 23
+    assert rollout._native_usage_metrics["total_tokens"] == 110
+
+
 def test_rollout_provider_usage_wins_over_native_acp_usage():
     """Guards PR #613 follow-up: LiteLLM provider telemetry remains authoritative."""
     from benchflow.rollout import Rollout

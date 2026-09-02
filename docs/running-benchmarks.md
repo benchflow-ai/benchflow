@@ -315,6 +315,7 @@ Common choices:
 | Gemini | `gemini` | `GEMINI_API_KEY` or host login |
 | Claude Code | `claude-agent-acp` (alias: `claude`) | `ANTHROPIC_API_KEY` or host login |
 | Codex | `codex-acp` (alias: `codex`) | `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or host login |
+| OpenRouter Ori | `ori` | `OPENROUTER_API_KEY` or `ori login` |
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
 
@@ -332,6 +333,35 @@ bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1
 
 ACPX is a headless ACP client that adds persistent sessions and crash recovery.
 The underlying agent's install, env vars, credentials, and skill paths are all preserved.
+
+### OpenRouter Ori harness
+
+`--agent ori` runs Ori's built-in coding harness through BenchFlow's ACP shim.
+The shim drives Ori's headless JSONL runtime, resumes Ori's native session id
+for follow-up turns, streams messages and tool calls as ACP events, and returns
+cumulative token usage in the ACP prompt response. BenchFlow pins and verifies
+the Ori binary before installing it.
+
+Use an OpenRouter API key:
+
+```bash
+export OPENROUTER_API_KEY=...
+bench eval run \
+  --tasks-dir tasks/citation-check \
+  --agent ori \
+  --model openrouter/anthropic/claude-sonnet-4.6 \
+  --sandbox docker
+```
+
+The first `openrouter/` selects BenchFlow's provider; the remainder is the
+OpenRouter model slug sent to Ori. For OpenRouter Auto, use
+`--model openrouter/openrouter/auto` (also Ori's registry default).
+
+Alternatively, install Ori on the host, run `ori login`, and unset
+`OPENROUTER_API_KEY`. BenchFlow detects either `~/.ori/credentials.json` or
+`~/.openrouter/credentials.json`, copies it into the sandbox, and uses Ori's
+native login. API-key runs go through BenchFlow's LiteLLM usage gateway; native
+login runs use the trusted token totals returned through the ACP shim.
 
 The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent loop
 (6 tools, system prompt) inside BenchFlow's sandbox. Use it for parity testing

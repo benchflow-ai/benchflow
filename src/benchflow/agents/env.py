@@ -388,8 +388,8 @@ def uses_native_subscription_auth(
     """Return True when an agent should use CLI/subscription auth directly.
 
     This is the Harbor-style split point: API-key runs can be routed through
-    LiteLLM, while subscription-auth runs stay on the native Codex/Claude ACP
-    path and report usage from the agent protocol response.
+    LiteLLM, while subscription-auth runs stay on the agent's native auth path
+    and report usage from the ACP response.
     """
     if agent_env.get("BENCHFLOW_PROVIDER_NAME") == "litellm" or any(
         agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS
@@ -414,28 +414,26 @@ def uses_native_subscription_auth(
             or check_subscription_auth(agent, required_key)
         )
 
-    # Registry-driven Claude-CLI gate: any agent whose subscription_auth
-    # substitutes ANTHROPIC_API_KEY runs the Claude Code CLI and can take
-    # OAuth/subscription auth natively (claude-agent-acp, omnigent claude-*).
-    claude_cfg = AGENTS.get(agent)
-    if (
-        claude_cfg is not None
-        and claude_cfg.subscription_auth is not None
-        and claude_cfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
-    ):
-        if agent_env.get("ANTHROPIC_API_KEY"):
+    # Registry-owned policy for native-login ACP agents. The containing
+    # SubscriptionAuth declares both the provider auth context (replaces_env)
+    # and any direct token aliases; no provider or agent name is hard-coded in
+    # this routing layer.
+    config = AGENTS.get(agent)
+    subscription = config.subscription_auth if config is not None else None
+    policy = subscription.native_policy if subscription is not None else None
+    if subscription is not None and policy is not None:
+        required_key = subscription.replaces_env
+        if agent_env.get(required_key):
             return False
         if model is not None:
             from benchflow.agents.registry import infer_env_key_for_model
 
-            if infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
+            if infer_env_key_for_model(model) != required_key:
                 return False
         return (
-            bool(agent_env.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV))
-            or bool(agent_env.get(_CLAUDE_OAUTH_TOKEN_ENV))
-            or bool(agent_env.get("ANTHROPIC_AUTH_TOKEN"))
+            any(bool(agent_env.get(key)) for key in policy.direct_envs)
             or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
-            or check_subscription_auth(agent, "ANTHROPIC_API_KEY")
+            or check_subscription_auth(agent, required_key)
         )
 
     return False
@@ -558,7 +556,8 @@ def check_subscription_auth(agent: str, required_key: str) -> bool:
     sa = agent_cfg.subscription_auth
     if sa.replaces_env != required_key:
         return False
-    return Path(sa.detect_file).expanduser().is_file()
+    detect_files = sa.detect_files or [sa.detect_file]
+    return any(Path(path).expanduser().is_file() for path in detect_files)
 
 
 def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:
