@@ -37,7 +37,10 @@ def _cache_root() -> Path:
 
 
 def _context_digest(config: ImageConfig) -> str:
-    """Hash the staged build context without following symlinks."""
+    """Hash the staged build context without following symlinks.
+
+    Symlinks contribute their link text, not the contents of their targets.
+    """
 
     digest = hashlib.sha256()
     dockerfile = config.dockerfile.resolve()
@@ -45,11 +48,11 @@ def _context_digest(config: ImageConfig) -> str:
     digest.update(dockerfile.relative_to(context).as_posix().encode())
     digest.update(json.dumps(config.build_args or {}, sort_keys=True).encode())
     for path in sorted(context.rglob("*")):
-        if path.is_symlink():
-            continue
         relative = path.relative_to(context).as_posix()
         mode = path.stat(follow_symlinks=False).st_mode
-        if stat.S_ISDIR(mode):
+        if stat.S_ISLNK(mode):
+            digest.update(f"l:{relative}:{os.readlink(path)}\0".encode())
+        elif stat.S_ISDIR(mode):
             digest.update(f"d:{relative}\0".encode())
         elif stat.S_ISREG(mode):
             digest.update(f"f:{relative}:{stat.S_IMODE(mode):o}\0".encode())
@@ -95,8 +98,10 @@ def dockerfile_workdir(
             )
             if expanded.startswith("/"):
                 workdir = expanded
-            elif workdir:
-                workdir = str(Path(workdir) / expanded)
+            else:
+                # SIF does not retain a base image's WORKDIR. Root is the only
+                # deterministic fallback for a leading relative instruction.
+                workdir = str(Path(workdir or "/") / expanded)
     return workdir
 
 
@@ -191,12 +196,7 @@ class ApptainerImageBuilder:
                 )
             metadata = path.stat()
             digest = f"{metadata.st_size:x}-{metadata.st_mtime_ns:x}"
-            workdir = (
-                dockerfile_workdir(dockerfile, build_args)
-                if dockerfile.is_file()
-                else None
-            )
-            return ApptainerImage(path, digest, workdir)
+            return ApptainerImage(path, digest)
 
         config = ImageConfig(
             dockerfile=dockerfile,

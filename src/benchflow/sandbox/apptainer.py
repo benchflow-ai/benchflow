@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import json
 import os
 import re
 import shlex
@@ -143,59 +143,59 @@ class ApptainerSandbox(BaseSandbox):
         runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-apptainer-"))
         staging_dir = runtime_dir / "staging"
         overlay_path = runtime_dir / "overlay.img"
-        staging_dir.mkdir()
-        self.rollout_paths.mkdir()
-        os.chmod(self.rollout_paths.rollout_dir, 0o777)
-        for directory in (
-            self.rollout_paths.agent_dir,
-            self.rollout_paths.verifier_dir,
-            self.rollout_paths.artifacts_dir,
-        ):
-            os.chmod(directory, 0o777)
-
+        # Register partial state before fallible setup so cleanup can reclaim it.
         self._runtime_dir = runtime_dir
         self._staging_dir = staging_dir
         self._overlay_path = overlay_path
-        self._instance_name = _safe_instance_name(
-            self.environment_name, self.session_id
-        )
-        self._default_cwd = self.task_env_config.workdir or image.workdir
-
-        overlay = await _run_apptainer(
-            "overlay",
-            "create",
-            "--fakeroot",
-            "--size",
-            str(self.task_env_config.storage_mb),
-            "--sparse",
-            str(overlay_path),
-            timeout_sec=self.task_env_config.build_timeout_sec,
-        )
-        if overlay.return_code != 0:
-            await self._force_cleanup()
-            raise RuntimeError(
-                f"Could not create Apptainer overlay: {_failure(overlay)}"
-            )
-
-        args = [
-            "instance",
-            "start",
-            "--fakeroot",
-            "--overlay",
-            str(overlay_path),
-            "--containall",
-            "--no-home",
-            "--cleanenv",
-            "--bind",
-            f"{staging_dir}:{_STAGING_DIR}",
-            "--bind",
-            f"{self.rollout_paths.rollout_dir}:{SandboxPaths().logs_dir}",
-        ]
-        if self.task_env_config.network_mode is NetworkMode.NO_NETWORK:
-            args.extend(["--net", "--network", "none"])
-        args.extend([str(image.path), self._instance_name])
-
         try:
+            staging_dir.mkdir()
+            self.rollout_paths.mkdir()
+            os.chmod(self.rollout_paths.rollout_dir, 0o777)
+            for directory in (
+                self.rollout_paths.agent_dir,
+                self.rollout_paths.verifier_dir,
+                self.rollout_paths.artifacts_dir,
+            ):
+                os.chmod(directory, 0o777)
+
+            instance_name = _safe_instance_name(self.environment_name, self.session_id)
+            self._default_cwd = self.task_env_config.workdir or image.workdir
+
+            overlay = await _run_apptainer(
+                "overlay",
+                "create",
+                "--fakeroot",
+                "--size",
+                str(self.task_env_config.storage_mb),
+                "--sparse",
+                str(overlay_path),
+                timeout_sec=self.task_env_config.build_timeout_sec,
+            )
+            if overlay.return_code != 0:
+                raise RuntimeError(
+                    f"Could not create Apptainer overlay: {_failure(overlay)}"
+                )
+
+            args = [
+                "instance",
+                "start",
+                "--fakeroot",
+                "--overlay",
+                str(overlay_path),
+                "--containall",
+                "--no-home",
+                "--cleanenv",
+                "--bind",
+                f"{staging_dir}:{_STAGING_DIR}",
+                "--bind",
+                f"{self.rollout_paths.rollout_dir}:{SandboxPaths().logs_dir}",
+            ]
+            if self.task_env_config.network_mode is NetworkMode.NO_NETWORK:
+                args.extend(["--net", "--network", "none"])
+            args.extend([str(image.path), instance_name])
+
+            # A timed-out start may still leave an instance under this name.
+            self._instance_name = instance_name
             started = await _run_apptainer(*args, timeout_sec=_STARTUP_TIMEOUT)
             if started.return_code != 0:
                 raise RuntimeError(
@@ -210,13 +210,46 @@ class ApptainerSandbox(BaseSandbox):
             await self._force_cleanup()
             raise
 
+    async def _forced_stop(self, name: str) -> str | None:
+        """Force-stop *name*, returning a failure detail if it remains live."""
+        try:
+            forced = await _run_apptainer(
+                "instance", "stop", "--force", name, timeout_sec=_STOP_TIMEOUT
+            )
+        except TimeoutError:
+            detail = f"forced stop timed out after {_STOP_TIMEOUT}s"
+        except Exception as error:
+            detail = str(error)[:200]
+        else:
+            if forced.return_code == 0:
+                return None
+            detail = _failure(forced)
+
+        try:
+            listed = await _run_apptainer(
+                "instance", "list", "--json", name, timeout_sec=_STOP_TIMEOUT
+            )
+            instances = json.loads(listed.stdout or "").get("instances")
+            if listed.return_code == 0 and instances == []:
+                return None
+        except (AttributeError, TypeError, ValueError, OSError, TimeoutError):
+            pass
+        return detail
+
     async def _force_cleanup(self) -> None:
+        """Tear down after a failed start or timed-out command."""
         name = self._instance_name
         if name:
-            with contextlib.suppress(Exception):
-                await _run_apptainer(
-                    "instance", "stop", "--force", name, timeout_sec=_STOP_TIMEOUT
+            detail = await self._forced_stop(name)
+            if detail is not None:
+                self.logger.warning(
+                    "Could not force-stop Apptainer instance %s (%s); keeping "
+                    "%s for retry during teardown.",
+                    name,
+                    detail,
+                    self._runtime_dir,
                 )
+                return
         if self._runtime_dir:
             shutil.rmtree(self._runtime_dir, ignore_errors=True)
         self._instance_name = None
@@ -227,16 +260,19 @@ class ApptainerSandbox(BaseSandbox):
     async def stop(self, delete: bool) -> None:
         name = self._instance_name
         if name:
-            result = await _run_apptainer(
-                "instance", "stop", name, timeout_sec=_STOP_TIMEOUT
-            )
-            if result.return_code != 0:
-                forced = await _run_apptainer(
-                    "instance", "stop", "--force", name, timeout_sec=_STOP_TIMEOUT
+            try:
+                result = await _run_apptainer(
+                    "instance", "stop", name, timeout_sec=_STOP_TIMEOUT
                 )
-                if forced.return_code != 0:
+                detail = None if result.return_code == 0 else _failure(result)
+            except TimeoutError:
+                detail = f"graceful stop timed out after {_STOP_TIMEOUT}s"
+            if detail is not None:
+                forced = await self._forced_stop(name)
+                if forced is not None:
                     raise RuntimeError(
-                        f"Could not stop Apptainer instance: {_failure(forced)}"
+                        f"Could not stop Apptainer instance {name}: {forced} "
+                        f"(graceful stop: {detail})"
                     )
         self._instance_name = None
         if delete and self._runtime_dir:

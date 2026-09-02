@@ -1,5 +1,7 @@
 """Contract tests for the local Apptainer sandbox provider."""
 
+import asyncio
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -169,3 +171,122 @@ async def test_live_process_stages_env_without_exposing_values_in_argv() -> None
     assert exec_args[5] == "instance://bf-task"
     assert ". /tmp/.benchflow_agent_env_" in exec_args[-1]
     assert "rm -f /tmp/.benchflow_agent_env_" in exec_args[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_type", [TimeoutError, asyncio.CancelledError], ids=["timeout", "cancelled"]
+)
+async def test_overlay_creation_interruption_removes_the_runtime_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[BaseException],
+) -> None:
+    """Guard PR #1073: reclaim storage when overlay creation is interrupted."""
+    sandbox, _, _ = _sandbox(tmp_path)
+    runtime_root = tmp_path / "runtime-root"
+    runtime_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(runtime_root))
+
+    with (
+        patch(
+            "benchflow.sandbox.apptainer._run_apptainer",
+            new=AsyncMock(side_effect=error_type()),
+        ),
+        pytest.raises(error_type),
+    ):
+        await sandbox.start(force_build=False)
+
+    assert sandbox._runtime_dir is None
+    assert sandbox._instance_name is None
+    assert list(runtime_root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_start_without_an_instance_removes_runtime_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guard PR #1073: a failed start without an instance is fully cleaned."""
+    sandbox, _, _ = _sandbox(tmp_path)
+    runtime_root = tmp_path / "runtime-root"
+    runtime_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(runtime_root))
+    success = ExecResult(stdout="", stderr="", return_code=0)
+    failure = ExecResult(stdout="", stderr="start failed", return_code=1)
+    absent = ExecResult(stdout='{"instances": []}', stderr="", return_code=0)
+
+    with (
+        patch(
+            "benchflow.sandbox.apptainer._run_apptainer",
+            new=AsyncMock(side_effect=[success, failure, failure, absent]),
+        ),
+        pytest.raises(RuntimeError, match="Could not start Apptainer instance"),
+    ):
+        await sandbox.start(force_build=False)
+
+    assert sandbox._instance_name is None
+    assert sandbox._runtime_dir is None
+    assert list(runtime_root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_graceful_stop_timeout_still_forces_the_instance_down(
+    tmp_path: Path,
+) -> None:
+    """Guard PR #1073: force-stop an instance after graceful-stop timeout."""
+    sandbox, _, _ = _sandbox(tmp_path)
+    sandbox._instance_name = "bf-task"
+    sandbox._runtime_dir = tmp_path / "runtime"
+    sandbox._runtime_dir.mkdir()
+    success = ExecResult(stdout="", stderr="", return_code=0)
+
+    with patch(
+        "benchflow.sandbox.apptainer._run_apptainer",
+        new=AsyncMock(side_effect=[TimeoutError(), success]),
+    ) as run:
+        await sandbox.stop(delete=True)
+
+    assert run.await_args_list[-1].args == (
+        "instance",
+        "stop",
+        "--force",
+        "bf-task",
+    )
+    assert sandbox._instance_name is None
+    assert sandbox._runtime_dir is None
+
+
+@pytest.mark.asyncio
+async def test_unstoppable_instance_keeps_its_overlay_for_retry(
+    tmp_path: Path,
+) -> None:
+    """Guard PR #1073: retain storage while an instance remains live."""
+    sandbox, _, _ = _sandbox(tmp_path)
+    sandbox._instance_name = "bf-task"
+    sandbox._runtime_dir = tmp_path / "runtime"
+    sandbox._runtime_dir.mkdir()
+    failure = ExecResult(stdout="", stderr="still running", return_code=1)
+    running = ExecResult(
+        stdout='{"instances": [{"instance": "bf-task"}]}',
+        stderr="",
+        return_code=0,
+    )
+
+    with patch(
+        "benchflow.sandbox.apptainer._run_apptainer",
+        new=AsyncMock(side_effect=[failure, running]),
+    ):
+        await sandbox._force_cleanup()
+
+    assert sandbox._instance_name == "bf-task"
+    assert sandbox._runtime_dir is not None
+    assert sandbox._runtime_dir.is_dir()
+
+    with (
+        patch(
+            "benchflow.sandbox.apptainer._run_apptainer",
+            new=AsyncMock(side_effect=[failure, failure, running]),
+        ),
+        pytest.raises(RuntimeError, match="Could not stop Apptainer instance"),
+    ):
+        await sandbox.stop(delete=True)
