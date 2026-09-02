@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import version
 from types import SimpleNamespace
 
 import pytest
+from packaging.requirements import Requirement
 
 from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
 from benchflow.agents.env import resolve_agent_env
@@ -33,6 +35,12 @@ class FakeLiteLLMServer:
 
     async def stop(self) -> None:
         self.stopped = True
+
+
+def test_sandbox_litellm_version_matches_host_requirement():
+    """Guards PR #985 sandbox/host LiteLLM pin parity."""
+    requirement = Requirement(runtime_mod.LITELLM_VERSION_SPEC)
+    assert requirement.specifier.contains(version("litellm"), prereleases=True)
 
 
 @pytest.mark.asyncio
