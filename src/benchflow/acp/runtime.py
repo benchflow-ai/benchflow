@@ -28,6 +28,7 @@ from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
 from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -340,6 +341,8 @@ def _model_selection_owned_by_env(
     agent: str,
     model: str | None,
     agent_env: dict[str, str],
+    *,
+    launch_config_owns_model: bool = False,
 ) -> bool:
     """Return True when launch/env config should own model selection.
 
@@ -361,7 +364,9 @@ def _model_selection_owned_by_env(
     # fall back to their own defaults.
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
         mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
-        return bool(mapped_model_env and agent_env.get(mapped_model_env))
+        if mapped_model_env and agent_env.get(mapped_model_env):
+            return True
+        return launch_config_owns_model
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return False
     provider = find_provider(model)
@@ -506,11 +511,18 @@ async def _configure_acp_session(
     model: str | None,
     agent_env: dict[str, str],
     reasoning_effort: str | None,
+    launch_config_owns_model: bool = False,
 ) -> None:
     agent_cfg = AGENTS.get(agent)
-    effort_in_model_id = False
+    effort_configured = False
 
-    if model and _model_selection_owned_by_env(agent, model, agent_env):
+    if model and _model_selection_owned_by_env(
+        agent,
+        model,
+        agent_env,
+        launch_config_owns_model=launch_config_owns_model,
+    ):
+        effort_configured = bool(reasoning_effort and launch_config_owns_model)
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
@@ -519,7 +531,7 @@ async def _configure_acp_session(
         acp_model_id = _select_acp_model_id(
             acp_model_input, agent, session, reasoning_effort
         )
-        effort_in_model_id = bool(
+        effort_configured = bool(
             reasoning_effort
             and agent == "codex-acp"
             and _codex_reasoning_effort(acp_model_id) == reasoning_effort
@@ -549,12 +561,11 @@ async def _configure_acp_session(
 
     if not reasoning_effort:
         return
-    if effort_in_model_id:
+    if effort_configured:
         # The effort already rides the selected ``model[effort]`` id (codex),
-        # so there is nothing further to configure.
+        # or its launch config, so there is nothing further to configure.
         logger.info(
-            f"Reasoning effort {reasoning_effort!r} applied via the model id "
-            f"for {agent}"
+            f"Reasoning effort {reasoning_effort!r} applied with model selection for {agent}"
         )
         return
     if not agent_cfg or not agent_cfg.acp_effort_config_id:
@@ -602,6 +613,12 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
+    agent_env, launch_config_owns_model = apply_codex_launch_config(
+        agent,
+        agent_env,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
     agent_env = await _prepare_openhands_direct_execution(
         env,
         agent=agent,
@@ -698,6 +715,7 @@ async def connect_acp(
             model=model,
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
+            launch_config_owns_model=launch_config_owns_model,
         )
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
     except Exception:
