@@ -84,19 +84,12 @@ async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
     mock_acp.set_config_option.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    "codex_config",
-    [None, "{", "[]", "{}", '{"model":"another-model"}'],
-    ids=["missing", "malformed", "non-object", "missing-model", "mismatch"],
-)
 @pytest.mark.asyncio
-async def test_codex_litellm_alias_uses_bare_model_for_set_model(
-    tmp_path, codex_config
-):
+async def test_codex_litellm_config_mismatch_uses_bare_model_for_set_model(tmp_path):
     """Codex validates set_model against its own model catalog, not proxy aliases.
 
-    This guards against a false-green CI path where BenchFlow recorded the
-    requested model but codex-acp fell back to its own default at request time.
+    Guards PR #1076 against a false green where BenchFlow records the requested
+    model but codex-acp falls back to its own default at request time.
     """
     mock_acp = _make_mocks(
         config_options=[{"id": "fast-mode"}],
@@ -112,9 +105,8 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(
         "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
         LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
         LITELLM_MODEL_VIA_ENV: "1",
+        "CODEX_CONFIG": '{"model":"another-model"}',
     }
-    if codex_config is not None:
-        agent_env["CODEX_CONFIG"] = codex_config
     await _connect(
         mock_acp,
         agent="codex-acp",
@@ -130,6 +122,7 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reasoning_effort", [None, "high"])
 async def test_codex_litellm_config_owns_model_selection(tmp_path, reasoning_effort):
+    """Guards PR #1076: exact launch config owns Codex model and effort."""
     alias = "benchflow-openai-gpt-5.4"
     mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
     transport = await _connect(

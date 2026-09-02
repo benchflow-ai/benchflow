@@ -20,7 +20,6 @@ Does not own:
 
 import asyncio
 import contextlib
-import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +28,7 @@ from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
+from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -331,6 +331,8 @@ def _model_selection_owned_by_env(
     agent: str,
     model: str | None,
     agent_env: dict[str, str],
+    *,
+    launch_config_owns_model: bool = False,
 ) -> bool:
     """Return True when launch/env config should own model selection.
 
@@ -354,15 +356,7 @@ def _model_selection_owned_by_env(
         mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
         if mapped_model_env and agent_env.get(mapped_model_env):
             return True
-        if agent == "codex-acp":
-            codex_config = _codex_config(agent_env)
-            provider_model = agent_env.get("BENCHFLOW_PROVIDER_MODEL")
-            return bool(
-                provider_model
-                and codex_config
-                and codex_config.get("model") == provider_model
-            )
-        return False
+        return launch_config_owns_model
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return False
     provider = find_provider(model)
@@ -380,14 +374,6 @@ def _model_selection_owned_by_env(
     if not override:
         return True
     return strip_provider_prefix(model) == override
-
-
-def _codex_config(agent_env: dict[str, str]) -> dict | None:
-    try:
-        config = json.loads(agent_env.get("CODEX_CONFIG", ""))
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return config if isinstance(config, dict) else None
 
 
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
@@ -515,18 +501,18 @@ async def _configure_acp_session(
     model: str | None,
     agent_env: dict[str, str],
     reasoning_effort: str | None,
+    launch_config_owns_model: bool = False,
 ) -> None:
     agent_cfg = AGENTS.get(agent)
     effort_configured = False
 
-    if model and _model_selection_owned_by_env(agent, model, agent_env):
-        config = _codex_config(agent_env)
-        effort_configured = bool(
-            reasoning_effort
-            and agent == "codex-acp"
-            and config
-            and config.get("model_reasoning_effort") == reasoning_effort
-        )
+    if model and _model_selection_owned_by_env(
+        agent,
+        model,
+        agent_env,
+        launch_config_owns_model=launch_config_owns_model,
+    ):
+        effort_configured = bool(reasoning_effort and launch_config_owns_model)
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
@@ -617,16 +603,12 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
-    config = _codex_config(agent_env)
-    if (
-        agent == "codex-acp"
-        and reasoning_effort
-        and config is not None
-        and _model_selection_owned_by_env(agent, model, agent_env)
-    ):
-        agent_env = dict(agent_env)
-        config["model_reasoning_effort"] = reasoning_effort
-        agent_env["CODEX_CONFIG"] = json.dumps(config, separators=(",", ":"))
+    agent_env, launch_config_owns_model = apply_codex_launch_config(
+        agent,
+        agent_env,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
     agent_env = await _prepare_openhands_direct_execution(
         env,
         agent=agent,
@@ -723,6 +705,7 @@ async def connect_acp(
             model=model,
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
+            launch_config_owns_model=launch_config_owns_model,
         )
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
     except Exception:
