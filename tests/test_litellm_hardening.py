@@ -583,6 +583,15 @@ def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_pat
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_runtime_files_load_gemini_passthrough_patch(tmp_path):
+    """Guards PR #1030: host proxies load the Gemma usage-capture backport."""
+    runtime_mod._write_runtime_files(tmp_path, config={"model_list": []})
+
+    sitecustomize = (tmp_path / "sitecustomize.py").read_text()
+    assert "import benchflow_litellm_gemini_passthrough_patch" in sitecustomize
+    assert (tmp_path / "benchflow_litellm_gemini_passthrough_patch.py").is_file()
+
+
 def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):
     """THE regression test for issue #602's fail-open (fixed in PR #668): when the patch never
     loads (sitecustomize missing from PYTHONPATH — the exact silent-failure

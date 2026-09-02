@@ -375,6 +375,9 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     elif lower.startswith("gemini/"):
         upstream = model
         required = ("GEMINI_API_KEY",)
+    elif lower.startswith(("google/gemini-", "google/gemma-")):
+        upstream = f"gemini/{model.split('/', 1)[1]}"
+        required = ("GEMINI_API_KEY",)
     elif "gemini" in lower:
         upstream = f"gemini/{bare}"
         required = ("GEMINI_API_KEY",)

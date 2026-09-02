@@ -64,6 +64,7 @@ LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
+_GEMINI_PATCH_MODULE = "benchflow_litellm_gemini_passthrough_patch"
 
 # The proxy is an internal single-route gateway — it must never register the
 # FastAPI Swagger docs route. litellm's `_get_docs_url()` honours an inherited
@@ -768,12 +769,18 @@ def _write_runtime_files(
     runtime_dir.mkdir(parents=True, exist_ok=True)
     callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
     patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
+    gemini_patch_path = runtime_dir / f"{_GEMINI_PATCH_MODULE}.py"
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
     patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
-    sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
+    gemini_patch_path.write_text(
+        Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text()
+    )
+    sitecustomize_path.write_text(
+        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n"
+    )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path, callback_path, patch_path
 
@@ -987,6 +994,7 @@ async def _upload_runtime_files_to_sandbox(
         "config": f"{runtime_dir}/config.yaml",
         "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
         "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
+        "gemini_patch": f"{runtime_dir}/{_GEMINI_PATCH_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
         "stdout": f"{runtime_dir}/stdout.log",
@@ -1012,7 +1020,16 @@ async def _upload_runtime_files_to_sandbox(
         ".py",
     )
     await _upload_text(
-        sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
+        sandbox,
+        Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text(),
+        paths["gemini_patch"],
+        ".py",
+    )
+    await _upload_text(
+        sandbox,
+        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n",
+        paths["sitecustomize"],
+        ".py",
     )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
@@ -1503,7 +1520,16 @@ def _wire_litellm_agent_env(
         # in the upstream Gemini key server-side.
         updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
         updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
-        updated["GEMINI_API_KEY"] = master_key
+        # Gemini CLI recognizes several equivalent credential names, with the
+        # selected alias varying by model family and CLI release. Point every
+        # accepted alias at the gateway so Gemma cannot inherit a real Google
+        # key from the sandbox and silently bypass usage/evidence capture.
+        for key in (
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+        ):
+            updated[key] = master_key
         return updated
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
