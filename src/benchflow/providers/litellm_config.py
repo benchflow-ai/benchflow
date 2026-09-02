@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from benchflow.agents.providers import (
+    ZAI_CODING_REGISTRY_BASE_ENV,
     ProviderConfig,
     find_provider,
     resolve_base_url,
@@ -291,7 +292,11 @@ def _route_registered_provider(
     )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-    if explicit_api_base and explicit_api_key:
+    zai_registry_base = (
+        provider_name == "zai-coding" and env.get(ZAI_CODING_REGISTRY_BASE_ENV) == "1"
+    )
+    explicit_route = explicit_api_base and explicit_api_key and not zai_registry_base
+    if explicit_api_base and not zai_registry_base:
         api_base = explicit_api_base
     else:
         try:
@@ -333,9 +338,13 @@ def _route_registered_provider(
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
     if api_base:
         params["api_base"] = api_base
+    native_key = (env.get(provider_cfg.auth_env or "") or "").strip()
+    explicit_zai_key = bool(
+        zai_registry_base and explicit_api_key and explicit_api_key != native_key
+    )
     api_key_ref = (
         _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-        if explicit_api_base and explicit_api_key
+        if explicit_route or explicit_zai_key
         else _registered_api_key_ref(provider_cfg)
     )
     if api_key_ref:
@@ -344,7 +353,6 @@ def _route_registered_provider(
             required_env.append("BENCHFLOW_PROVIDER_API_KEY")
         elif provider_cfg.auth_env:
             required_env.append(provider_cfg.auth_env)
-
     return LiteLLMRoute(
         requested_model=model,
         model_alias=safe_model_alias(model),
