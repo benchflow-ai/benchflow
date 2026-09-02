@@ -726,14 +726,35 @@ Today the first model-linear slice accepts `claude-*`, `gpt-*`, and
 ACP permission handler unless the caller supplies an explicit `on_ask_user`
 handler, and the ACP `ask_user` bridge preserves both option IDs and option
 kinds so reject/allow choices are explicit branchable evidence. Authors may
-spell the current executable branch slice as
-`branch_execution: option-kinds-preserved`; `branch_execution: forked-snapshot`
-fails closed until the user loop is integrated with the Environment snapshot
-branch engine. The first sequential shared-workspace team handoff slice records
-`scene`, `role`, `handoff_from`, and `handoff_to` metadata per user round.
-`branchable` is still not automatic branch execution; interactive approval UI,
-parallel teams, handoff artifacts, full trajectory sharing, and
-branch/message-routing policy remain fail-closed target work.
+spell that executable branch slice as
+`branch_execution: option-kinds-preserved`. `branch_execution:
+forked-snapshot` declares the Environment/sandbox snapshot slice (the
+rollout-branching engine): it compiles to a stage-capture request the launch
+policy honors — the rollout snapshots the auto-capturable stage boundaries
+(`env-ready`/`pre-verify`/`post-verify`; narrow or extend the set with
+`branch_stages: [...]`, validated against the branch-stage taxonomy —
+declaring `post-research` says the harness will `mark_stage()` it) and
+records each boundary's completed-LLM-exchange index in
+`stage_snapshots.json`, so `bench eval ablate`, `Rollout.branch_at_stage()`,
+or `bench eval continue --cut-stage` can fork the recorded boundaries later.
+"Later" is scoped by each ref's recorded lifetime: within the run the
+snapshot images are live, but a plain `bench eval run` destroys them at
+cleanup and marks every ref `ephemeral: true` in `stage_snapshots.json` —
+branching *after* the run completes therefore needs `bench eval run
+--keep-snapshots` (which exports each captured image to
+`snapshots/<ref>.tar` in the run directory) followed by `bench eval
+import-snapshots <run-dir>` to load and identity-check the image before
+forking it. `--cut-stage` replay needs only the recorded exchange indices,
+no image. Both values require `branchable: true`. Forked-snapshot stays fail-closed
+where the engine genuinely cannot honor it: a backend whose sandboxes cannot
+take container snapshots (modal, apple-container, agentcore — and Daytona's
+DinD strategy at run time) is rejected by task validation / the capture
+gate rather than run without the requested captures. The first sequential
+shared-workspace team handoff slice records `scene`, `role`, `handoff_from`,
+and `handoff_to` metadata per user round. `branchable` is still not automatic
+branch execution; interactive approval UI, parallel teams, handoff artifacts,
+full trajectory sharing, and branch/message-routing policy remain fail-closed
+target work.
 
 ## Compatibility
 
@@ -834,7 +855,7 @@ Current implementation status:
 | verifier `ors-episode` strategy | yes | partial | runtime helper writes ORS tool-output rewards to `trajectory/ors-rewards.jsonl`; declared reward responses/event streams normalize into `reward.json` and `reward-details.json`; fuller OpenReward environment import/export remains target work |
 | `agents.roles` | yes | partial | `TaskRuntimeView` carries parsed scenes; explicit sequential shared-workspace handoff can switch roles through the user loop |
 | `scenes` | yes | partial | prompt composition compiles; multi-role document-user scenes execute only with explicit turns and supported team handoff |
-| `user` / `## user-persona` | yes | partial | `model: scripted` + string `private_facts` compiles to `DocumentNudgeUser`; bounded model-linear users compile to `ModelDocumentNudgeUser`; linear single- and multi-scene user loops execute when every scene is single-role, or when explicit multi-role turns opt into sequential shared-workspace team handoff; `confirmation_policy: human` gates ACP permissions fail-closed without an explicit handler; `branch_execution: option-kinds-preserved` preserves option IDs and kinds; forked branch execution, interactive approval UI, parallel teams, and rich handoff artifacts fail closed |
+| `user` / `## user-persona` | yes | partial | `model: scripted` + string `private_facts` compiles to `DocumentNudgeUser`; bounded model-linear users compile to `ModelDocumentNudgeUser`; linear single- and multi-scene user loops execute when every scene is single-role, or when explicit multi-role turns opt into sequential shared-workspace team handoff; `confirmation_policy: human` gates ACP permissions fail-closed without an explicit handler; `branch_execution: option-kinds-preserved` preserves option IDs and kinds; `branch_execution: forked-snapshot` compiles to a stage-capture request (snapshot-capable sandboxes only; optional `branch_stages`); interactive approval UI, parallel teams, and rich handoff artifacts fail closed |
 | `benchflow.teams` | yes | partial | supports exactly one `handoff` with `mode: sequential`, `workspace_visibility: shared`, and `trajectory_visibility: none|metadata`; richer team keys fail closed |
 | `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
 | imported `steps` | yes | no/partial | fail closed per sandbox until implemented |

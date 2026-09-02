@@ -24,6 +24,7 @@ from benchflow._utils.config import (
     normalize_reasoning_effort,
     normalize_sandbox_user,
 )
+from benchflow.branch_stage import normalize_stages
 from benchflow.contracts import BaseUser, RolloutPlanes
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.loop_strategies import (
@@ -69,8 +70,15 @@ def _task_document_user_runtime(
     *,
     prompts: list[str | None] | None,
     skill_mode: str,
-) -> tuple[BaseUser, int | None] | None:
-    """Compile a supported document-declared user into runtime configuration."""
+) -> Any | None:
+    """Compile a supported document-declared user into runtime configuration.
+
+    Returns the full :class:`~benchflow.task.prompts.CompiledUserRuntime`
+    (``None`` when the task declares no adoptable user): beside the user loop
+    itself it carries the task's stage-capture request — a
+    ``branch_execution: forked-snapshot`` declaration compiles to the
+    ``snapshot_stages`` the launch policy should honor (RFC §3.2).
+    """
 
     if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
         return None
@@ -84,7 +92,7 @@ def _task_document_user_runtime(
     runtime = compile_document_user_runtime(TaskDocument.from_path(document_path))
     if runtime.user is None:
         return None
-    return runtime.user, runtime.max_rounds
+    return runtime
 
 
 @dataclass
@@ -117,6 +125,29 @@ class RolloutConfig:
     # C-axis overlay (parsed dict) deep-merged into the task's resolved config
     # at rollout setup. None => no overlay (default).
     config_override: dict | None = None
+    # Stage-boundary snapshot policy (rollout-branching RFC §3.2). The
+    # lifecycle boundaries named here get a composed checkpoint as the rollout
+    # passes them, registered on the Rollout for a later branch_at_stage().
+    # Empty (default) => today's behavior exactly: no stage is captured and no
+    # snapshot call is made anywhere in the lifecycle. Unknown names fail
+    # closed here, at construction, not at the boundary. ``post-research`` is
+    # not auto-detectable — declaring it says the harness will call
+    # ``Rollout.mark_stage()`` when planning ends.
+    snapshot_stages: frozenset[str] = frozenset()
+    # The checkpoint layers each stage snapshot composes (RFC §3.1), the same
+    # notion Rollout.branch() takes. Layer names are validated by the branch
+    # engine's capability gate, the single source of truth for which layers
+    # exist and which the active planes can actually take.
+    snapshot_layers: frozenset[str] = frozenset({"environment"})
+    # Durable stage-snapshot retention (RFC §3.6, `bench eval run
+    # --keep-snapshots`): before cleanup destroys the committed ``bf-snap-*``
+    # images, export each captured stage's sandbox image (``docker save``) to
+    # ``<run_dir>/snapshots/<ref>.tar`` and record the tar's path, sha256 and
+    # image id in ``stage_snapshots.json``. False (default) keeps today's
+    # lifecycle — the images die with the run — and cleanup marks each
+    # recorded ref ``ephemeral: true`` so the artifact never shows a bare ref
+    # that no longer resolves.
+    keep_snapshots: bool = False
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.
@@ -194,6 +225,8 @@ class RolloutConfig:
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
+        self.snapshot_stages = normalize_stages(self.snapshot_stages)
+        self.snapshot_layers = frozenset(self.snapshot_layers)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
         explicit_scenes = bool(self.scenes)
@@ -302,9 +335,41 @@ class RolloutConfig:
                 )
             return
         if document_user is not None:
-            self.user, max_rounds = document_user
-            if max_rounds is not None:
-                self.max_user_rounds = max_rounds
+            self.user = document_user.user
+            if document_user.max_rounds is not None:
+                self.max_user_rounds = document_user.max_rounds
+            self._adopt_document_snapshot_request(document_user)
+
+    def _adopt_document_snapshot_request(self, runtime: Any) -> None:
+        """Honor a task-declared forked-snapshot stage-capture request.
+
+        ``branch_execution: forked-snapshot`` compiles to the stages the task
+        asks the rollout to snapshot (RFC §3.2 — snapshot policy is opt-in
+        per run *or per task*); adopting them here is what makes the
+        declaration real: a plain evaluation of the task leaves
+        ``stage_snapshots.json`` (with exchange indices) behind, so an
+        ablation/branch — or ``bench eval continue --cut-stage`` — can fork
+        the recorded boundaries later. The run-level request wins outright: a
+        caller that set ``snapshot_stages`` keeps exactly what it asked for.
+        When the task's request is adopted and the layers are still the
+        config default, they resolve to the container layer (plus the
+        environment layer iff an Environment plane is bound): the sandbox
+        snapshot is what a forked-snapshot branch restores, and the
+        environment layer without a plane would fail every capture closed. A
+        sandbox that cannot snapshot still fails the first capture closed at
+        run time — the capability gate is the branch engine's, not this
+        adoption's — and ``bench tasks check`` flags that combination before
+        launch.
+        """
+        stages = getattr(runtime, "snapshot_stages", frozenset())
+        if not stages or self.snapshot_stages:
+            return
+        self.snapshot_stages = normalize_stages(stages)
+        if self.snapshot_layers == frozenset({"environment"}):
+            layers = {"sandbox"}
+            if self.environment_manifest is not None:
+                layers.add("environment")
+            self.snapshot_layers = frozenset(layers)
 
     @classmethod
     def from_legacy(

@@ -13,10 +13,13 @@ environment and continues its own loop with **no injected prompt**.
 
 ## The problem it solves
 
-A finished run keeps nothing of the container — cleanup tears the sandbox down.
-What survives on disk is the run folder: `config.json`, `result.json`,
-`prompts.json`, and `trajectory/llm_trajectory.jsonl`. So a historical timeout
-has only its *trajectory* + the *task*; there is no saved container to restore.
+A finished run keeps nothing of the container unless it opted into snapshot
+retention (`bench eval run --keep-snapshots`, rollout-branching RFC §3.6) —
+cleanup tears the sandbox down and marks any recorded stage refs `ephemeral`
+in `stage_snapshots.json`. What survives on disk otherwise is the run folder:
+`config.json`, `result.json`, `prompts.json`, and
+`trajectory/llm_trajectory.jsonl`. So a historical timeout has only its
+*trajectory* + the *task*; there is no saved container to restore.
 
 `bench eval continue` reconstructs the missing state from the trajectory.
 
@@ -64,6 +67,8 @@ optional.
 | `--require-timeout` | off | Refuse runs whose recorded status isn't a timeout. |
 | `--strict-divergence` | off | Abort if replay leaves the original rails. |
 | `--replay-only` | off | Rebuild via replay and stop at the cut-point (no live model needed). |
+| `--max-exchanges K` | all recorded | Replay only the first K recorded exchanges, then go live ([Cut-points](#cut-points)). |
+| `--cut-stage STAGE` | — | Cut at a recorded stage boundary by name, resolving K from the run's `stage_snapshots.json` ([Cut-points](#cut-points)). |
 
 ### Models and credentials
 
@@ -75,14 +80,76 @@ optional.
   host needs that provider's credentials (e.g. `GEMINI_API_KEY`) in its
   environment. `--replay-only` skips the live leg entirely.
 
+## Cut-points
+
+By default the proxy replays the **entire** recorded prefix before going live.
+`--max-exchanges K` cuts the replay short: the first K recorded exchanges are
+replayed, then the proxy switches to the live model exactly as if the recording
+had ended there. This is the replay cut-point API from the
+[rollout-branching RFC §3.5](./rollout-branching-rfc.md) — replay a trajectory
+verbatim up to a stage boundary, then go live, to localize which stage a run
+went wrong in.
+
+- `K` must satisfy `1 <= K <= n_recorded`; anything else fails closed before a
+  sandbox boots.
+- The continued run's `source_provenance` gains a `cut_point` block:
+  `n_replayed_exchanges` plus two request digests named by what they hash —
+  `served_request_digest` (the request the agent *actually* sent at the cut)
+  and `recorded_request_digest` (the recorded request it answered for), both
+  sha256 over the canonical JSON of the comparable projection
+  `{messages, tools}` (`request_digest_basis` states this in the artifact).
+  Divergence is checked per replayed exchange on the same basis — a
+  same-message-count prompt/content/tool change is detected, not only a count
+  mismatch — and every event (exchange index + both digests) is recorded in
+  the block's `divergences` list. A divergence annotates rather than aborts
+  (fidelity caveats are recorded, not hidden — RFC §3.5); `--strict-divergence`
+  remains the opt-in abort. The block also carries `workspace_digest`: a
+  deterministic digest of the continuation workspace (`/app` — file contents,
+  tree and modes) taken as the run crosses the cut into the live leg; when no
+  live sandbox is reachable at that moment (sandbox proxy mode, a run that
+  never crossed the cut, a digest failure) the field is `null` and
+  `workspace_digest_reason` says why — it is never fabricated. The block's
+  `accounting` field names its basis: in **host** proxy mode the orchestrator
+  reconciles the block after the run with what the live replay proxy
+  *actually served* (`accounting: "served"`, plus `configured_max_exchanges`
+  when a cut was requested — so a run that went live before reaching the
+  requested cut is visible in artifacts); in **sandbox** proxy mode the
+  uploaded recording is truncated to the configured prefix and the block
+  records that basis (`accounting: "configured"`, with the live-only fields
+  null). A natural-end continuation records the same block, documenting the
+  end of the recording.
+- The stitched `llm_trajectory.jsonl` contains only the replayed prefix (the
+  first K *parsed* recorded exchanges — a malformed recorded line is never
+  replayed and never stitched) plus the live suffix.
+- Cut-points can be named by **stage** instead of by number:
+  `--cut-stage <stage>` (e.g. `--cut-stage post-research`) resolves the
+  exchange index the original run recorded when that stage boundary closed.
+  A run that captures stage boundaries (`RolloutConfig.snapshot_stages`, or
+  `Rollout.mark_stage()` for `post-research`) records
+  `exchanges_completed` per stage in its `stage_snapshots.json`; a cut at
+  that stage replays exactly that many exchanges. The resolved stage is
+  recorded as `branch_stage` in the `cut_point` block. Every miss fails
+  closed with a typed `ReplayCutPointError`: a run with no recorded stages,
+  an unrecorded stage (the error lists the stages the run *did* record), a
+  stage recorded without an index (`exchanges_completed: null` — the usage
+  gateway could not count at capture time), or a stage that closed before
+  the first exchange. `--cut-stage` and `--max-exchanges` are mutually
+  exclusive. Through the Python API
+  (`benchflow.continue_run.orchestrator.continue_run`), an explicit
+  `stage_tags` mapping (`stage -> 1-based completed-exchange count`)
+  overrides the recorded registry.
+
 ## Limitations and caveats
 
 - **`openhands` only** for now (the proxy seam relies on `LLM_BASE_URL`).
 - **Replay fidelity is best-effort.** Replay re-runs the original shell
   commands for real; if a command's output diverges from the original
   (network, timestamps, nondeterminism), the agent may see a different
-  observation than recorded. A message-count check warns on divergence
-  (`--strict-divergence` aborts instead).
+  observation than recorded. Divergence warns rather than aborts
+  (`--strict-divergence` aborts instead): through the host replay proxy the
+  per-exchange check compares content digests of the comparable
+  `{messages, tools}` projection ([Cut-points](#cut-points)); the in-sandbox
+  proxy checks message counts only.
 - **"Identical output" means a faithful continuation**, not a bit-identical
   result — the model samples, and no "original full run" exists past the
   timeout. The bar is: the stitched trajectory reads as one continuous run, as

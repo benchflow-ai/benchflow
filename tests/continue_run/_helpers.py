@@ -61,6 +61,7 @@ def write_run_folder(
     task_name: str = "demo-task",
     prompts: list[str] | None = None,
     timeout_sec: int = 3600,
+    stage_snapshots: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     """Materialize a synthetic run folder benchflow continue can load."""
     root.mkdir(parents=True, exist_ok=True)
@@ -97,4 +98,12 @@ def write_run_folder(
         )
         + "\n"
     )
+    if stage_snapshots is not None:
+        # The recorded stage registry a stage-named cut (--cut-stage) resolves
+        # against — the shape benchflow.branch_lineage.write_stage_snapshots
+        # leaves in a real run folder.
+        (root / "stage_snapshots.json").write_text(
+            json.dumps({"schema_version": 1, "stages": stage_snapshots}, indent=2)
+            + "\n"
+        )
     return root

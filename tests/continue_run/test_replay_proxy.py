@@ -13,6 +13,7 @@ from benchflow.continue_run.replay_proxy import (
     ReplayRouter,
     completion_to_sse,
 )
+from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
 from ._helpers import completion, exchange
 
@@ -70,6 +71,82 @@ def test_divergence_strict_raises():
     router = ReplayRouter(recorded, strict_divergence=True)
     with pytest.raises(ReplayDivergenceError):
         router.next_response({"messages": [{}, {}]})
+
+
+def test_same_count_content_change_is_detected_and_recorded():
+    """Guards "fix(continue): replay divergence detection compares actual
+    content and records workspace digests": a prompt/content/tool change that
+    keeps the message count was invisible to the count-only heuristic. The
+    router now compares comparable-projection digests per replayed exchange
+    and records a divergence event carrying the exchange index and both
+    digests."""
+    recorded = [exchange(completion(content="a"), n_request_messages=1)]
+    router = ReplayRouter(recorded)
+
+    # same count (1 message), different content
+    router.next_response({"messages": [{"role": "user", "content": "DIFFERENT"}]})
+
+    assert router.divergences == 1
+    (event,) = router.divergence_events
+    assert event["exchange_index"] == 0
+    assert event["n_messages_served"] == event["n_messages_recorded"] == 1
+    assert event["served_request_digest"] != event["recorded_request_digest"]
+    assert event["served_request_digest"].startswith("sha256:")
+
+
+def test_same_count_tool_definition_change_is_detected():
+    """The tools half of the same fix: a changed tool schema at an unchanged
+    message count is a real divergence."""
+    recorded = [
+        LLMExchange(
+            request=LLMRequest(
+                body={
+                    "messages": [{"role": "user"}],
+                    "tools": [{"function": {"name": "bash"}}],
+                }
+            ),
+            response=LLMResponse(status_code=200, body=completion(content="a")),
+        )
+    ]
+    router = ReplayRouter(recorded)
+    router.next_response(
+        {"messages": [{"role": "user"}], "tools": [{"function": {"name": "python"}}]}
+    )
+    assert router.divergences == 1
+
+
+def test_same_count_content_divergence_strict_raises():
+    recorded = [exchange(completion(content="a"), n_request_messages=1)]
+    router = ReplayRouter(recorded, strict_divergence=True)
+    with pytest.raises(ReplayDivergenceError):
+        router.next_response({"messages": [{"role": "user", "content": "changed"}]})
+
+
+def test_transport_fields_do_not_false_positive_divergence():
+    """The recorded request is a normalized projection: the live request's
+    placeholder model, stream flag and sampling params are transport, not
+    content, and must not flag every exchange as divergent."""
+    recorded = [exchange(completion(content="a"), n_request_messages=2)]
+    router = ReplayRouter(recorded)
+    router.next_response(
+        {
+            "messages": [{"role": "user"}] * 2,
+            "model": "openai/replay",
+            "stream": True,
+            "temperature": 0.0,
+        }
+    )
+    assert router.divergences == 0
+    assert router.divergence_events == []
+
+
+def test_count_mismatch_records_a_divergence_event_too():
+    recorded = [exchange(completion(content="a"), n_request_messages=3)]
+    router = ReplayRouter(recorded)
+    router.next_response({"messages": [{}, {}]})
+    (event,) = router.divergence_events
+    assert event["n_messages_served"] == 2
+    assert event["n_messages_recorded"] == 3
 
 
 def test_recorded_failure_passed_through():

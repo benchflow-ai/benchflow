@@ -114,6 +114,154 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_codex_off_catalog_model_owned_by_launch_config_skips_set_model(
+    tmp_path,
+):
+    """Guards the fix for codex-acp@1.6.0 catalog-validated set_model.
+
+    1.6.0 rejects ``session/set_model`` for any model absent from its built-in
+    catalog ("Unknown model gpt-5.4-mini[medium]", verified live 2026-08-21) —
+    even when that model is already the session's current model via the
+    ``CODEX_CONFIG`` injection ``apply_codex_provider_config`` writes for the
+    LiteLLM gateway route. When the requested model maps to no advertised
+    ``model[effort]`` variant and the session already runs BenchFlow's own
+    injected route, the runtime must skip the doomed call instead of failing
+    the whole rollout."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.6-sol[medium]"},
+                {"modelId": "gpt-5.5[medium]"},
+            ],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="us-openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            LITELLM_MODEL_ALIAS_ENV: "benchflow-us-openai-gpt-5.4-mini",
+            "CODEX_CONFIG": json.dumps(
+                {
+                    "model": "benchflow-us-openai-gpt-5.4-mini",
+                    "model_provider": "benchflow-litellm",
+                }
+            ),
+        },
+    )
+
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_off_catalog_skip_satisfies_effort_carried_by_launch_config(
+    tmp_path,
+):
+    """A requested effort that the CODEX_CONFIG-injected current model already
+    carries is satisfied by the skip — the effort step must not fail closed
+    for an effort that is in place."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [{"modelId": "gpt-5.6-sol[medium]"}],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[xhigh]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="us-openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        reasoning_effort="xhigh",
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": json.dumps({"model": "benchflow-us-openai-gpt-5.4-mini"}),
+        },
+    )
+
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_off_catalog_skip_with_unsatisfied_effort_fails_closed(
+    tmp_path,
+):
+    """When the launch config owns an off-catalog model but does NOT carry the
+    requested effort, there is no channel left to deliver it — the existing
+    effort step must still fail closed rather than silently drop it."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [{"modelId": "gpt-5.6-sol[medium]"}],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[medium]",
+        },
+    )
+    with pytest.raises(RuntimeError, match="does not declare an ACP effort"):
+        await _connect(
+            mock_acp,
+            agent="codex-acp",
+            model="us-openai/gpt-5.4-mini",
+            tmp_path=tmp_path,
+            reasoning_effort="xhigh",
+            agent_env={
+                LITELLM_MODEL_VIA_ENV: "1",
+                "CODEX_CONFIG": json.dumps(
+                    {"model": "benchflow-us-openai-gpt-5.4-mini"}
+                ),
+            },
+        )
+
+    mock_acp.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_in_catalog_model_still_uses_set_model_despite_launch_config(
+    tmp_path,
+):
+    """An in-catalog model keeps the set_model path even when CODEX_CONFIG
+    injected a gateway route: the skip is only for models set_model cannot
+    express (no advertised variant), so the 62cc7e41 bare→``model[effort]``
+    mapping must not regress."""
+    import json
+
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.4-mini[low]"},
+                {"modelId": "gpt-5.4-mini[medium]"},
+            ],
+            "currentModelId": "benchflow-us-openai-gpt-5.4-mini[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="us-openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        agent_env={
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": json.dumps({"model": "benchflow-us-openai-gpt-5.4-mini"}),
+        },
+    )
+
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.4-mini[medium]")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_codex_with_model_option_still_uses_set_model(tmp_path):
     """codex-acp@1.6.0 advertises a 'model' config option whose values reject
     the ``model[effort]`` ids its own session/set_model requires (-32602
@@ -196,6 +344,109 @@ async def test_effort_without_effort_config_id_fails_closed(tmp_path):
         )
 
     mock_acp.close.assert_awaited()
+
+
+# Request-global classification (PR #1046 second review, P2-A): with Gemini
+# and --reasoning-effort high the run built the environment, snapshotted,
+# installed and connected the agent, and only then hit the effort rejection —
+# which ablation then retried in a branch child. These pin the two halves of
+# the fix's classification layer: a deterministic rejection of a global
+# request setting (effort/model) surfaces as ACPRequestGlobalError and
+# classifies as REQUEST_GLOBAL (non-retryable, never task-attributable),
+# while a mere timeout on the same call proves nothing about compatibility
+# and must NOT be branded request-global.
+
+
+@pytest.mark.asyncio
+async def test_unsupported_effort_is_a_request_global_rejection(tmp_path):
+    """The reviewer's exact shape: gemini declares no ACP effort config option,
+    so a requested effort is rejected — and the rejection must classify as
+    request-global, not as a retryable/task-attributable agent error."""
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+    from benchflow._utils.text import describe_exception
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    mock_acp = _make_mocks(config_options=[])
+    with pytest.raises(
+        ACPRequestGlobalError, match="does not declare an ACP effort"
+    ) as excinfo:
+        await _connect(
+            mock_acp,
+            agent="gemini",
+            model=None,
+            tmp_path=tmp_path,
+            reasoning_effort="high",
+        )
+
+    assert classify_error(describe_exception(excinfo.value)) == REQUEST_GLOBAL
+
+
+@pytest.mark.asyncio
+async def test_agent_rejected_effort_option_is_request_global(tmp_path):
+    """An agent *answering* set_config_option with a protocol error is a
+    deterministic rejection of the requested value — request-global."""
+    from unittest.mock import AsyncMock
+
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+    from benchflow._utils.text import describe_exception
+    from benchflow.acp.client import ACPError
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    mock_acp = _make_mocks(config_options=[{"id": "effort"}])
+    mock_acp.set_config_option = AsyncMock(
+        side_effect=ACPError(-32602, "unsupported effort: xhigh")
+    )
+    with pytest.raises(ACPRequestGlobalError) as excinfo:
+        await _connect(
+            mock_acp,
+            agent="claude-agent-acp",
+            model=None,
+            tmp_path=tmp_path,
+            reasoning_effort="xhigh",
+        )
+
+    assert classify_error(describe_exception(excinfo.value)) == REQUEST_GLOBAL
+
+
+@pytest.mark.asyncio
+async def test_timed_out_effort_option_is_not_request_global(tmp_path):
+    """A timeout on set_config_option is transport trouble, not evidence the
+    setting is unsupported — it must keep its ordinary (retryable) class."""
+    from unittest.mock import AsyncMock
+
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+    from benchflow._utils.text import describe_exception
+    from benchflow.acp.runtime import ACPRequestGlobalError
+
+    mock_acp = _make_mocks(config_options=[{"id": "effort"}])
+    mock_acp.set_config_option = AsyncMock(side_effect=TimeoutError())
+    with pytest.raises(RuntimeError) as excinfo:
+        await _connect(
+            mock_acp,
+            agent="claude-agent-acp",
+            model=None,
+            tmp_path=tmp_path,
+            reasoning_effort="high",
+        )
+
+    assert not isinstance(excinfo.value, ACPRequestGlobalError)
+    assert classify_error(describe_exception(excinfo.value)) != REQUEST_GLOBAL
+
+
+def test_reasoning_effort_preflight_matches_the_runtime_dispatch():
+    """The static pre-flight must reject exactly what the runtime would reject
+    from registry facts alone: no acp_effort_config_id and no codex-style
+    effort-in-model-id. Agents the registry cannot vouch for are left to the
+    runtime's own fail-closed check."""
+    from benchflow.acp.runtime import reasoning_effort_preflight_error
+
+    assert reasoning_effort_preflight_error("gemini", None) is None
+    assert reasoning_effort_preflight_error("claude-agent-acp", "high") is None
+    assert reasoning_effort_preflight_error("codex-acp", "high") is None
+    assert reasoning_effort_preflight_error("no-such-agent", "high") is None
+    error = reasoning_effort_preflight_error("gemini", "high")
+    assert error is not None
+    assert "not supported by agent 'gemini'" in error
 
 
 @pytest.mark.asyncio

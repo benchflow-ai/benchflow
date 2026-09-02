@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from benchflow.contracts import RoundResult
@@ -392,7 +394,12 @@ class TestRolloutConfigLoopStrategy:
         monkeypatch.setattr(
             rollout_config,
             "_task_document_user_runtime",
-            lambda *a, **kw: (PassthroughUser(), 4),
+            # The compiled-runtime shape _task_document_user_runtime returns
+            # since the forked-snapshot stage-request wiring (user, round
+            # budget, and the task's snapshot_stages request).
+            lambda *a, **kw: SimpleNamespace(
+                user=PassthroughUser(), max_rounds=4, snapshot_stages=frozenset()
+            ),
         )
         with caplog.at_level("WARNING"):
             config = RolloutConfig.from_legacy(
@@ -416,7 +423,12 @@ class TestRolloutConfigLoopStrategy:
         monkeypatch.setattr(
             rollout_config,
             "_task_document_user_runtime",
-            lambda *a, **kw: (PassthroughUser(), 4),
+            # The compiled-runtime shape _task_document_user_runtime returns
+            # since the forked-snapshot stage-request wiring (user, round
+            # budget, and the task's snapshot_stages request).
+            lambda *a, **kw: SimpleNamespace(
+                user=PassthroughUser(), max_rounds=4, snapshot_stages=frozenset()
+            ),
         )
         with caplog.at_level("WARNING"):
             direct = RolloutConfig(task_path=tmp_path, loop_strategy="single-shot")
@@ -443,7 +455,9 @@ class TestRolloutConfigLoopStrategy:
         monkeypatch.setattr(
             rollout_config,
             "_task_document_user_runtime",
-            lambda *a, **kw: (doc_user, 4),
+            lambda *a, **kw: SimpleNamespace(
+                user=doc_user, max_rounds=4, snapshot_stages=frozenset()
+            ),
         )
         direct = RolloutConfig(task_path=tmp_path)
         legacy = RolloutConfig.from_legacy(task_path=tmp_path)

@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
@@ -53,6 +53,7 @@ from benchflow._utils.scoring import (
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
     PROVIDER_REJECTED,
+    REQUEST_GLOBAL,
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
@@ -71,7 +72,10 @@ from benchflow._utils.scoring import (
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
-from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.environment.manifest import (
+    EnvironmentManifest,
+    manifest_from_task_document,
+)
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -94,6 +98,9 @@ from benchflow.task.discovery import (
 from benchflow.trajectories.tree import RolloutNode
 from benchflow.usage_tracking import UsageTrackingConfig
 
+if TYPE_CHECKING:
+    from benchflow.rollout import RolloutConfig
+
 # Backward-compat alias
 RunResult = RolloutResult
 
@@ -110,35 +117,6 @@ BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 # false install_failure errors. Non-blocking acquire: if a prune is already in
 # flight, skip — there's nothing new to clean since the in-flight one started.
 _PRUNE_LOCK = threading.Lock()
-
-
-def _environment_manifest_from_task_document(
-    task_dir: Path,
-) -> EnvironmentManifest | None:
-    task_md = task_dir / "task.md"
-    if not task_md.is_file():
-        return None
-
-    from benchflow.environment.manifest import load_manifest
-    from benchflow.task.document import TaskDocument
-
-    document = TaskDocument.from_path(task_md)
-    environment = document.benchflow.get("environment")
-    if environment is None:
-        return None
-    if not isinstance(environment, dict):
-        raise ValueError("task.md benchflow.environment must be a mapping")
-    manifest = environment.get("manifest")
-    if manifest is None:
-        return None
-    if not isinstance(manifest, str) or not manifest.strip():
-        raise ValueError("task.md benchflow.environment.manifest must be a path")
-
-    manifest_path = Path(manifest)
-    if not manifest_path.is_absolute():
-        manifest_path = task_dir / manifest_path
-    return load_manifest(manifest_path)
-
 
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
@@ -210,6 +188,11 @@ class RetryConfig:
             PROVIDER_AUTH,
             PROVIDER_RATE_LIMIT,
             PROVIDER_REJECTED,
+            # A rejected request-global setting (unsupported reasoning
+            # effort / model for the agent) re-fails identically on every
+            # attempt (PR #1046 second review, P2-A) — same family as the
+            # #917 provider_auth exclusion.
+            REQUEST_GLOBAL,
         }
     )
 
@@ -526,6 +509,10 @@ class EvaluationConfig:
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
     # shape) is also accepted at runtime — __post_init__ materializes it.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Durable stage-snapshot retention (`bench eval run --keep-snapshots`,
+    # RFC §3.6): threaded to RolloutConfig.keep_snapshots so each rollout
+    # exports its captured stage images before cleanup destroys them.
+    keep_snapshots: bool = False
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -574,6 +561,93 @@ class EvaluationConfig:
                 f"Unknown agent {self.agent!r} — not in registry. "
                 f"Available: {available}. Will attempt to use as raw command."
             )
+
+
+def task_rollout_config(
+    cfg: EvaluationConfig,
+    task_dir: Path,
+    *,
+    job_name: str | None,
+    jobs_dir: str | Path,
+    **overrides: Any,
+) -> RolloutConfig:
+    """The canonical per-task :class:`RolloutConfig` an evaluation executes.
+
+    This is the one place the evaluation's controls and provenance become a
+    rollout's config: the dataset identity and per-task content digest (registry
+    digest for a pinned ``--dataset`` run, live-computed for a dev run — every
+    trajectory stays attributable to the exact task content it ran), the
+    task-declared environment manifest fallback, the task-level source
+    provenance, and every normalized control the plan resolved (reasoning
+    effort, prompts, agent env, usage tracking, idle timeout, sandbox settings).
+
+    ``overrides`` are the *caller-owned* fields layered on top after the
+    canonical assembly: the continual-learning path's per-generation
+    ``skills_dir`` / ``skill_mode`` / ``export_generated_skills_to``, and
+    ``bench eval ablate``'s stage-capture request plus its pinned ``no-skill``
+    parent. Callers overlay only the axis they own — everything else must flow
+    from here, so an ablation's parent/child ``config.json`` carries the same
+    ``task_digest`` / ``reasoning_effort`` / provenance a plain ``bench eval
+    run`` of the task would (the PR #1046 review finding: a hand-rolled reduced
+    config published ``task_digest: null`` from a real E2E run).
+    """
+    from benchflow._utils.benchmark_repos import task_source_provenance
+    from benchflow.rollout import RolloutConfig
+
+    dataset = None
+    if cfg.dataset_name:
+        dataset = {"name": cfg.dataset_name, "version": cfg.dataset_version}
+    task_digest_value = (
+        cfg.dataset_task_digests.get(task_dir.name) if cfg.dataset_name else None
+    )
+    if task_digest_value is None:
+        # Dev runs (--tasks-dir / --source-repo) stamp a live-computed
+        # digest so every trajectory stays attributable to the exact
+        # task content it ran, not just a directory name.
+        from benchflow._utils.task_authoring import task_digest
+
+        try:
+            task_digest_value = task_digest(task_dir)
+        except (OSError, ValueError, UnicodeError) as e:
+            logger.debug("Could not compute task digest for %s: %s", task_dir, e)
+    environment_manifest = overrides.pop("environment_manifest", None)
+    if environment_manifest is None:
+        environment_manifest = cfg.environment_manifest
+    if environment_manifest is None:
+        environment_manifest = manifest_from_task_document(task_dir)
+    kwargs: dict[str, Any] = dict(
+        task_path=task_dir,
+        agent=cfg.agent,
+        model=cfg.model,
+        reasoning_effort=cfg.reasoning_effort,
+        prompts=cfg.prompts,
+        agent_env=cfg.agent_env,
+        job_name=job_name,
+        jobs_dir=str(jobs_dir),
+        concurrency=cfg.concurrency,
+        environment=cfg.environment,
+        environment_manifest=environment_manifest,
+        config_override=cfg.config_override,
+        skills_dir=cfg.skills_dir,
+        sandbox_user=cfg.sandbox_user,
+        sandbox_locked_paths=cfg.sandbox_locked_paths,
+        sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+        skip_agent_install=cfg.skip_agent_install,
+        agent_idle_timeout=cfg.agent_idle_timeout,
+        context_root=cfg.context_root,
+        base_image_override=cfg.base_image_override,
+        skill_mode=cfg.skill_mode,
+        skill_creator_dir=cfg.skill_creator_dir,
+        self_gen_no_internet=cfg.self_gen_no_internet,
+        source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
+        dataset=dataset,
+        task_digest=task_digest_value,
+        usage_tracking=cfg.usage_tracking,
+        loop_strategy=cfg.loop_strategy,
+        keep_snapshots=cfg.keep_snapshots,
+    )
+    kwargs.update(overrides)
+    return RolloutConfig.from_legacy(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -920,6 +994,7 @@ class Evaluation:
             environment_manifest=env_manifest,
             config_override=raw.get("config_override"),
             loop_strategy=raw.get("loop_strategy"),
+            keep_snapshots=bool(raw.get("keep_snapshots", False)),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -1232,25 +1307,8 @@ class Evaluation:
         skill set (``_learner_skills_dir``) and its agent-evolved skills are
         captured back through ``export_generated_skills_to``.
         """
-        from benchflow._utils.benchmark_repos import task_source_provenance
-        from benchflow.rollout import Rollout, RolloutConfig
+        from benchflow.rollout import Rollout
 
-        dataset = None
-        if cfg.dataset_name:
-            dataset = {"name": cfg.dataset_name, "version": cfg.dataset_version}
-        task_digest_value = (
-            cfg.dataset_task_digests.get(task_dir.name) if cfg.dataset_name else None
-        )
-        if task_digest_value is None:
-            # Dev runs (--tasks-dir / --source-repo) stamp a live-computed
-            # digest so every trajectory stays attributable to the exact
-            # task content it ran, not just a directory name.
-            from benchflow._utils.task_authoring import task_digest
-
-            try:
-                task_digest_value = task_digest(task_dir)
-            except (OSError, ValueError, UnicodeError) as e:
-                logger.debug("Could not compute task digest for %s: %s", task_dir, e)
         skills_dir = (
             str(self._learner_skills_dir)
             if self._learner_skills_dir is not None
@@ -1266,39 +1324,14 @@ class Evaluation:
             if self._learner_export_dir is not None
             else None
         )
-        environment_manifest = cfg.environment_manifest
-        if environment_manifest is None:
-            environment_manifest = _environment_manifest_from_task_document(task_dir)
-        rollout_config = RolloutConfig.from_legacy(
-            task_path=task_dir,
-            agent=cfg.agent,
-            model=cfg.model,
-            reasoning_effort=cfg.reasoning_effort,
-            prompts=cfg.prompts,
-            agent_env=cfg.agent_env,
+        rollout_config = task_rollout_config(
+            cfg,
+            task_dir,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
-            concurrency=cfg.concurrency,
-            environment=cfg.environment,
-            environment_manifest=environment_manifest,
-            config_override=cfg.config_override,
             skills_dir=skills_dir,
-            sandbox_user=cfg.sandbox_user,
-            sandbox_locked_paths=cfg.sandbox_locked_paths,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-            skip_agent_install=cfg.skip_agent_install,
-            agent_idle_timeout=cfg.agent_idle_timeout,
-            context_root=cfg.context_root,
-            base_image_override=cfg.base_image_override,
             skill_mode=skill_mode,
-            skill_creator_dir=cfg.skill_creator_dir,
-            self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
-            source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
-            dataset=dataset,
-            task_digest=task_digest_value,
-            usage_tracking=cfg.usage_tracking,
-            loop_strategy=cfg.loop_strategy,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen

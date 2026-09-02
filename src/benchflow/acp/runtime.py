@@ -23,11 +23,13 @@ import contextlib
 import logging
 from pathlib import Path
 
+from benchflow._utils.scoring import REQUEST_GLOBAL_MARKER
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
 from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.agents.errors import AgentProtocolError
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -57,14 +59,75 @@ from benchflow.trajectories._capture import _capture_session_trajectory
 # import ``IdleTimeoutError`` from this module. The canonical definition
 # lives in :mod:`benchflow.diagnostics` (issue #503).
 __all__ = [
+    "ACPRequestGlobalError",
     "AgentPromptTimeoutError",
     "IdleTimeoutError",
     "connect_acp",
     "execute_prompts",
+    "reasoning_effort_preflight_error",
     "selected_acp_transport",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class ACPRequestGlobalError(RuntimeError):
+    """The agent rejected a *request-global* setting (model or effort).
+
+    PR #1046 second review, P2-A: with Gemini and ``--reasoning-effort high``
+    the run provisioned the environment, snapshotted, installed and connected
+    the agent, and only then hit this rejection — which retries and branch
+    children then re-provoked identically. The rejection is a property of the
+    request/agent pairing, not of the task, so it is non-task-attributable
+    and non-retryable.
+
+    Every message carries :data:`~benchflow._utils.scoring.REQUEST_GLOBAL_MARKER`
+    so :func:`~benchflow._utils.scoring.classify_error` maps it to the
+    ``request_global`` category however the exception is re-stringified — the
+    provider_auth (#917) marker pattern. ``RuntimeError`` base keeps the
+    existing fail-closed callers and tests intact.
+    """
+
+
+def reasoning_effort_preflight_error(
+    agent: str, reasoning_effort: str | None
+) -> str | None:
+    """Why ``reasoning_effort`` can never be applied for ``agent`` — or None.
+
+    The static half of the P2-A fix: :func:`_configure_acp_session` decides
+    effort support from facts knowable before any provisioning — the
+    registry's ``acp_effort_config_id`` and the codex-acp effort-via-model-id
+    convention — so planning can fail the same way *before* a sandbox is
+    built and an agent installed. Kept next to the dispatch it mirrors: if
+    the runtime learns a new way to deliver effort, this predicate must learn
+    it in the same change.
+
+    Returns ``None`` for agents the registry cannot vouch for (existence is
+    validated elsewhere; manifest-registered agents land in ``AGENTS`` with
+    their declared option ids) and for non-ACP agents, whose runs never reach
+    the ACP effort dispatch.
+    """
+    if not reasoning_effort:
+        return None
+    agent_cfg = AGENTS.get(agent)
+    if agent_cfg is None:
+        return None
+    if agent_cfg.protocol != "acp":
+        return None
+    if agent == "codex-acp":
+        # Effort rides the ``model[effort]`` id, resolved against the live
+        # session's advertised catalog — not statically decidable.
+        return None
+    if agent_cfg.acp_effort_config_id:
+        return None
+    return (
+        f"--reasoning-effort {reasoning_effort!r} is not supported by agent "
+        f"{agent!r}: it declares no ACP effort config option and does not "
+        "encode effort in its model ids, so the run would only be rejected "
+        "after the sandbox was built and the agent installed. Drop "
+        "--reasoning-effort or choose an agent that supports it (e.g. "
+        "claude-agent-acp, codex-acp)."
+    )
 
 
 _ACP_CONNECT_MAX_RETRIES = 3
@@ -401,6 +464,67 @@ def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) 
     return agent_env.get(mapped_model_env, model)
 
 
+def _codex_launch_config_model(agent_env: dict[str, str]) -> str | None:
+    """The model BenchFlow's own launch config injected into codex, if any.
+
+    ``apply_codex_provider_config`` writes the gateway route into the
+    ``CODEX_CONFIG`` env var (``{"model": <alias>, "model_providers": ...}``),
+    and ``@agentclientprotocol/codex-acp`` applies it at startup — the session
+    then advertises that model as ``currentModelId``.
+    """
+    import json
+
+    from benchflow.agents.codex_config import CODEX_CONFIG_ENV
+
+    raw = agent_env.get(CODEX_CONFIG_ENV)
+    if not raw:
+        return None
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(config, dict):
+        return None
+    model = config.get("model")
+    return model if isinstance(model, str) and model else None
+
+
+def _codex_current_model_id(session: object | None) -> str | None:
+    state = getattr(session, "model_state", None)
+    if not isinstance(state, dict):
+        return None
+    current = state.get("currentModelId")
+    return current if isinstance(current, str) and current else None
+
+
+def _codex_model_owned_by_launch_config(
+    agent: str,
+    acp_model_id: str,
+    session: object | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """True when set_model is doomed AND the launch config already routed it.
+
+    codex-acp@1.6.0 validates ``session/set_model`` strictly against its
+    built-in catalog: a model with no advertised ``model[effort]`` variant is
+    rejected outright — bare ids with "Unsupported format of modelId",
+    suffixed ids with "Unknown model", even when that exact id is already the
+    session's *current* model (verified live 2026-08-21 against
+    ``gpt-5.4-mini``, which 1.6.0 dropped from the catalog). When
+    ``_codex_session_model_id`` found no variant (the id stayed bare) the call
+    can only fail; when BenchFlow's own ``CODEX_CONFIG`` injection is what the
+    session already runs as current, the call is also *unnecessary* — the
+    gateway route is in place, so skip it instead of failing the rollout.
+    """
+    if agent != "codex-acp" or "[" in acp_model_id:
+        return False
+    launch_model = _codex_launch_config_model(agent_env)
+    if launch_model is None:
+        return False
+    current = _codex_current_model_id(session)
+    return current is not None and _codex_model_name(current) == launch_model
+
+
 def _session_config_option_ids(session: object | None) -> set[str]:
     options = getattr(session, "config_options", None)
     if not isinstance(options, (list, tuple)):
@@ -459,6 +583,13 @@ async def _set_acp_model(
             model_id,
             e,
         )
+        if isinstance(e, AgentProtocolError):
+            # The agent answered and refused the model — deterministic,
+            # request-global (same split as _set_acp_config_option).
+            raise ACPRequestGlobalError(
+                f"{REQUEST_GLOBAL_MARKER}: model {model_id!r} via ACP for "
+                f"agent {agent!r}: {e}"
+            ) from e
         raise RuntimeError(
             f"Failed to set model {model_id!r} via ACP for agent {agent!r}: {e}"
         ) from e
@@ -475,9 +606,12 @@ async def _set_acp_config_option(
 ) -> None:
     option_ids = _session_config_option_ids(session)
     if option_ids and config_id not in option_ids:
-        raise RuntimeError(
-            f"ACP agent {agent!r} does not expose {label} config option "
-            f"{config_id!r}; available options: {sorted(option_ids)!r}"
+        # The live session enumerates its config options and the wanted one
+        # is not among them — deterministic, request-global.
+        raise ACPRequestGlobalError(
+            f"{REQUEST_GLOBAL_MARKER}: ACP agent {agent!r} does not expose "
+            f"{label} config option {config_id!r}; available options: "
+            f"{sorted(option_ids)!r}"
         )
     try:
         await asyncio.wait_for(
@@ -492,6 +626,15 @@ async def _set_acp_config_option(
             value,
             e,
         )
+        if isinstance(e, AgentProtocolError):
+            # The agent *answered* and refused the value — a deterministic
+            # rejection of a global setting. A timeout or transport failure
+            # proves nothing about compatibility and keeps the plain
+            # (retryable) RuntimeError below.
+            raise ACPRequestGlobalError(
+                f"{REQUEST_GLOBAL_MARKER}: ACP {label} config option "
+                f"{config_id!r}={value!r} for agent {agent!r}: {e}"
+            ) from e
         raise RuntimeError(
             f"Failed to set ACP {label} config option {config_id!r}="
             f"{value!r} for agent {agent!r}: {e}"
@@ -538,6 +681,26 @@ async def _configure_acp_session(
                 value=acp_model_id,
                 label="model",
             )
+        elif _codex_model_owned_by_launch_config(
+            agent, acp_model_id, session, agent_env
+        ):
+            # codex-acp@1.6.0 rejects session/set_model for any model outside
+            # its built-in catalog, and BenchFlow's CODEX_CONFIG injection has
+            # already made the gateway route the session's current model — the
+            # call would fail the rollout to request a state that is already
+            # in place. A requested effort is satisfied only if the injected
+            # current id carries it; otherwise the effort step below fails
+            # closed exactly as before.
+            current_model_id = _codex_current_model_id(session)
+            logger.info(
+                f"Skipping ACP session/set_model for {agent} — launch config "
+                f"already owns the session model ({current_model_id!r})"
+            )
+            effort_in_model_id = bool(
+                reasoning_effort
+                and current_model_id is not None
+                and _codex_reasoning_effort(current_model_id) == reasoning_effort
+            )
         elif not agent_cfg or agent_cfg.supports_acp_set_model:
             # No model config option advertised/declared — use the legacy
             # session/set_model path. Fails closed if the agent rejects it.
@@ -558,9 +721,10 @@ async def _configure_acp_session(
         )
         return
     if not agent_cfg or not agent_cfg.acp_effort_config_id:
-        raise RuntimeError(
-            f"reasoning_effort={reasoning_effort!r} was requested for agent "
-            f"{agent!r}, but that agent does not declare an ACP effort config option"
+        raise ACPRequestGlobalError(
+            f"{REQUEST_GLOBAL_MARKER}: reasoning_effort={reasoning_effort!r} "
+            f"was requested for agent {agent!r}, but that agent does not "
+            "declare an ACP effort config option"
         )
     await _set_acp_config_option(
         acp_client,

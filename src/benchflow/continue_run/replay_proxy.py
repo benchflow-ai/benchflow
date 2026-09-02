@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
+from benchflow._utils.config_override import overlay_hash
 from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,74 @@ def _n_messages(body: dict[str, Any]) -> int:
     return len(msgs) if isinstance(msgs, list) else 0
 
 
+class ReplayCutPointError(ValueError):
+    """Raised when a requested replay cut-point lies outside the recording."""
+
+
+def validate_max_exchanges(max_exchanges: int | None, n_recorded: int) -> int:
+    """Resolve the replay prefix length; fail closed on an out-of-range cut.
+
+    ``None`` means the full recorded prefix (today's behavior). An explicit cut
+    must satisfy ``0 < K <= n_recorded`` — validated here, at configuration
+    time, never mid-flight.
+    """
+    if max_exchanges is None:
+        return n_recorded
+    if not 0 < max_exchanges <= n_recorded:
+        raise ReplayCutPointError(
+            f"max_exchanges must be in 1..{n_recorded} (the recorded exchange "
+            f"count), got {max_exchanges}"
+        )
+    return max_exchanges
+
+
+def request_body_digest(body: dict[str, Any]) -> str:
+    """Content address of a request body — canonical JSON, ``sha256:`` form.
+
+    A thin wrapper over the config-overlay hash
+    (:func:`benchflow._utils.config_override.overlay_hash`, #790) so the two
+    canonicalizations can never drift: sorted keys, compact separators,
+    ``sha256:``-prefixed digest.
+    """
+    return overlay_hash(body)
+
+
+#: The basis every request digest in cut-point accounting is computed on —
+#: recorded next to the digests so a reader knows what "equal" means.
+REQUEST_DIGEST_BASIS = (
+    "sha256 over canonical JSON of the comparable projection {messages, tools}"
+)
+
+
+def comparable_request_projection(body: dict[str, Any]) -> dict[str, Any]:
+    """The content-bearing fields a recorded and a live request share.
+
+    The recorded request is a *normalized projection* written by the LiteLLM
+    logger (model/messages/tools/stream…), not the verbatim HTTP body — and
+    the live replay request carries the proxy's placeholder model
+    (``openai/replay``) plus transport fields (``stream``, ``temperature``,
+    …) the recording may lack. Digesting either side whole would therefore
+    flag every exchange as divergent. ``messages`` and ``tools`` are the
+    fields that exist on both sides and actually carry the conversation, so
+    they are the honest comparison basis (:data:`REQUEST_DIGEST_BASIS`).
+    """
+    return {
+        key: body[key] for key in ("messages", "tools") if body.get(key) is not None
+    }
+
+
+def comparable_request_digest(body: dict[str, Any]) -> str:
+    """Digest of :func:`comparable_request_projection` — the comparison unit."""
+    return request_body_digest(comparable_request_projection(body))
+
+
 class ReplayRouter:
     """Serve recorded responses in order, then live — the core replay logic.
+
+    ``max_exchanges`` cuts the replay short (rollout-branching RFC §3.5): at
+    most the first K recorded exchanges are served, then the router switches to
+    live passthrough exactly as if the recording had ended there. ``None``
+    replays the full recorded prefix.
 
     Thread-safe: a single agent is typically serial, but ``ThreadingHTTPServer``
     may overlap requests, so the cursor is advanced under a lock.
@@ -66,47 +133,161 @@ class ReplayRouter:
         *,
         live_forwarder: LiveForwarder | None = None,
         strict_divergence: bool = False,
+        max_exchanges: int | None = None,
+        workspace_digest_fn: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._recorded = recorded
+        self._n_replay = validate_max_exchanges(max_exchanges, len(recorded))
         self._live_forwarder = live_forwarder
         self._strict = strict_divergence
         self._lock = threading.Lock()
         self._cursor = 0
         self.divergences = 0
+        #: One event per detected divergence: the exchange index and both
+        #: sides' comparable digests, so the artifact can say *where* the
+        #: replay left the rails, not only that it did.
+        self.divergence_events: list[dict[str, Any]] = []
+        # Comparable digests of the last replayed exchange — the actually
+        # served request and the recorded one it answered for.
+        self._last_served_digest: str | None = None
+        self._last_recorded_digest: str | None = None
+        # RFC §3.5 workspace accounting: called exactly once, at the first
+        # request past the cut, while the continuation's sandbox still holds
+        # the workspace the replay rebuilt. ``None`` = no sandbox reachable
+        # in this mode; the provenance then records null with a reason.
+        self.workspace_digest_fn = workspace_digest_fn
+        self.workspace_digest: dict[str, Any] | None = None
+        self._workspace_digest_error: str | None = None
+        self._cut_crossed = False
         # Live-leg exchanges, in order, for stitching onto the recorded prefix.
         self.live_exchanges: list[LLMExchange] = []
 
     @property
     def exhausted(self) -> bool:
-        return self._cursor >= len(self._recorded)
+        return self._cursor >= self._n_replay
+
+    @property
+    def n_replayed_exchanges(self) -> int:
+        """Recorded exchanges actually served so far (== the cut once live)."""
+        return min(self._cursor, self._n_replay)
+
+    @property
+    def served_request_digest(self) -> str | None:
+        """Comparable digest of the ACTUAL incoming request last replayed.
+
+        Cut-point accounting (RFC §3.5): this is the request the agent really
+        sent at the cut, digested on :data:`REQUEST_DIGEST_BASIS` — compare it
+        to :attr:`recorded_request_digest` to see whether the replayed
+        conversation was still the recorded one. ``None`` while nothing has
+        been replayed.
+        """
+        return self._last_served_digest
+
+    @property
+    def recorded_request_digest(self) -> str | None:
+        """Comparable digest of the recorded request at the same position."""
+        return self._last_recorded_digest
+
+    @property
+    def cut_crossed(self) -> bool:
+        """Whether any request arrived past the replay prefix."""
+        return self._cut_crossed
+
+    @property
+    def workspace_digest_reason(self) -> str | None:
+        """Why :attr:`workspace_digest` is ``None`` — never fabricated."""
+        if self.workspace_digest is not None:
+            return None
+        if self._workspace_digest_error is not None:
+            return self._workspace_digest_error
+        if not self._cut_crossed:
+            return (
+                "the run never crossed the cut point into the live leg, so "
+                "there was no moment to digest the workspace at"
+            )
+        return (
+            "no live sandbox was reachable at the cut point in this mode; "
+            "no workspace digest hook was configured"
+        )
 
     def _check_divergence(
-        self, incoming: dict[str, Any], recorded_req: dict[str, Any]
+        self,
+        incoming: dict[str, Any],
+        recorded_req: dict[str, Any],
+        *,
+        index: int,
+        served_digest: str,
+        recorded_digest: str,
     ) -> None:
-        """Soft-validate that replay is still on the original rails.
+        """Validate that replay is still on the original rails — by content.
 
-        The recorded request is a *normalized projection* (model/messages/tools),
-        not the verbatim HTTP body, so we only compare message counts — a cheap
-        signal that the agent's conversation has the expected shape at this turn.
+        Compares the comparable projections' canonical-JSON digests, so a
+        same-message-count change to prompt content, tool definitions or tool
+        arguments is detected — the case the old message-count heuristic was
+        blind to. A recorded request with no ``messages`` (a differently
+        shaped recording) offers nothing to compare against and is skipped,
+        exactly as the count heuristic skipped it.
+
+        A divergence *annotates* rather than aborts by default: replay
+        fidelity is best-effort by design (RFC §3.5 — "recorded, not
+        hidden"), and legitimately shifting content (timestamps in prompts,
+        nondeterministic tool output) would otherwise kill continuations the
+        user asked for. Every event is recorded in
+        :attr:`divergence_events`, so the artifact is truthful either way;
+        ``strict_divergence`` remains the opt-in abort.
         """
-        want = _n_messages(recorded_req)
-        got = _n_messages(incoming)
-        if want and got and got != want:
-            self.divergences += 1
-            msg = (
-                f"replay divergence at turn {self._cursor}: agent sent {got} "
-                f"messages, recorded turn had {want}"
+        if not comparable_request_projection(recorded_req).get("messages"):
+            return
+        if served_digest == recorded_digest:
+            return
+        event = {
+            "exchange_index": index,
+            "served_request_digest": served_digest,
+            "recorded_request_digest": recorded_digest,
+            "n_messages_served": _n_messages(incoming),
+            "n_messages_recorded": _n_messages(recorded_req),
+        }
+        self.divergences += 1
+        self.divergence_events.append(event)
+        msg = (
+            f"replay divergence at exchange {index}: the agent's request "
+            f"({event['n_messages_served']} messages, {served_digest}) does "
+            f"not match the recorded one ({event['n_messages_recorded']} "
+            f"messages, {recorded_digest})"
+        )
+        if self._strict:
+            raise ReplayDivergenceError(msg)
+        logger.warning(msg)
+
+    def _capture_workspace_digest(self) -> None:
+        """Run the cut-point workspace hook once; record failure, never raise."""
+        if self.workspace_digest_fn is None:
+            return
+        try:
+            self.workspace_digest = self.workspace_digest_fn()
+        except Exception as exc:
+            self._workspace_digest_error = (
+                f"workspace digest failed at the cut point: {exc}"
             )
-            if self._strict:
-                raise ReplayDivergenceError(msg)
-            logger.warning(msg)
+            logger.warning(self._workspace_digest_error, exc_info=True)
 
     def next_response(self, request_body: dict[str, Any]) -> ReplayResult:
         """Route one request to its recorded response, or to the live model."""
         with self._lock:
-            if self._cursor < len(self._recorded):
+            if self._cursor < self._n_replay:
                 exchange = self._recorded[self._cursor]
-                self._check_divergence(request_body, exchange.request.body)
+                index = self._cursor
+                served_digest = comparable_request_digest(request_body)
+                recorded_digest = comparable_request_digest(exchange.request.body)
+                self._last_served_digest = served_digest
+                self._last_recorded_digest = recorded_digest
+                self._check_divergence(
+                    request_body,
+                    exchange.request.body,
+                    index=index,
+                    served_digest=served_digest,
+                    recorded_digest=recorded_digest,
+                )
                 self._cursor += 1
                 return ReplayResult(
                     source="replay",
@@ -115,7 +296,15 @@ class ReplayRouter:
                 )
             # Past the cut-point: live continuation.
             self._cursor += 1
+            crossing = not self._cut_crossed
+            self._cut_crossed = True
             forwarder = self._live_forwarder
+
+        if crossing:
+            # Outside the lock: the hook may exec into the sandbox. The
+            # workspace it digests is the one the replay just rebuilt —
+            # this request is the first the recording no longer covers.
+            self._capture_workspace_digest()
 
         if forwarder is None:
             logger.error(

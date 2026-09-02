@@ -99,13 +99,13 @@ Every lifecycle the framework owns, as ordered phases.
 
 **Rollout lifecycle.** `setup` (resolve config, build the environment object) → `start` (sandbox up) → `provision environment` (Environment plane starts services) → `readiness gate` (framework-guaranteed; the agent never runs before the world is healthy) → `connect agent` (ACP) → `execute` (the tree grows: Steps and Branches) → `verify` (Reward plane scores) → `teardown`.
 
-**Branch lifecycle.** `quiesce` (disconnect the active agent) → `checkpoint` (snapshot Environment state) → `fork` (N children) → for each child, `restore` the Environment and start a fresh agent session → `score / aggregate` (per-child return → `V(parent)`) → restore the parent's linear rollout state. Agent-session snapshotting is not implemented. Callers that set `require_sandbox_snapshot=True` also require a sandbox with snapshot capability, but the current branch engine still uses the Environment snapshot as its restore point.
+**Branch lifecycle.** `quiesce` (disconnect the active agent) → `checkpoint` (snapshot the requested layers — Environment state by default; adding `"sandbox"` to `snapshot_layers` composes a container snapshot with it, environment first) → `fork` (N children) → for each child, `restore` the composed checkpoint (container first, then environment state) and start a fresh agent session (an `env-ready` child runs as a fresh rollout that re-installs the agent for itself) → `score / aggregate` (per-child return → `V(parent)`) → restore the parent's linear rollout state. Agent-session snapshotting is not implemented. `require_sandbox_snapshot=True` keeps its original check-only semantics — it gates on sandbox snapshot capability without composing the layer; requesting the layer through `snapshot_layers` gates the same way and then actually composes the container snapshot into the checkpoint.
 
 **Environment lifecycle** (Han's roll-out / roll-back). `provision` → `readiness` → `query` (expose state to the verifier) → `snapshot` → `restore` → `reset` → `teardown`. `snapshot`/`restore` are definitional — the substrate every `Branch` runs on.
 
 **Sandbox lifecycle.** configure `expose_ports` → `start` → `exec` / `upload_file` / `upload_dir` / `download_file` / `download_dir` → optional `snapshot` / `restore` → `stop`.
 
-A Rollout branch currently rolls back Environment state and starts a fresh agent session for every child. Container and agent-session checkpoint composition remain future work. The one store that deliberately does **not** roll back with a `Branch` is the continual-learning learner store (capability 5).
+A Rollout branch rolls back the composed checkpoint — Environment state plus, when the fork requested it (`snapshot_layers`), the container layer — and starts a fresh agent session for every child. Container + environment checkpoint composition is implemented; agent-session checkpoint composition remains future work. The one store that deliberately does **not** roll back with a `Branch` is the continual-learning learner store (capability 5).
 
 ## The four planes
 

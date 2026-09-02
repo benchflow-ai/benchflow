@@ -38,6 +38,16 @@ PROVIDER_RATE_LIMIT = "provider_rate_limit"
 # tokens) is classified by ``_maybe_classify_api_error`` as
 # ``api_error[rejected_request/permanent]`` and is already non-retryable.
 PROVIDER_REJECTED = "provider_rejected"
+# The agent rejected a *request-global* setting — the model or the reasoning
+# effort — that every retry and every branch child would re-request
+# identically (PR #1046 second review, P2-A: Gemini + --reasoning-effort high
+# provisioned, snapshotted, installed, and only then hit the ACP effort
+# rejection, which ablation then retried in a child). Deterministic and
+# non-task-attributable, so non-retryable, following the provider_auth (#917)
+# pattern: a category plus membership in ``RetryConfig.exclude_categories``.
+# ``bench eval ablate`` additionally skips the branch children outright when
+# the parent failed with this category (see ``benchflow.ablate``).
+REQUEST_GLOBAL = "request_global"
 TIMED_OUT = "timeout"
 # Provider API failures detected post-rollout (rate limit, quota, rejected
 # request, 5xx). "api_error" is proxy-proven (every captured provider request
@@ -83,6 +93,13 @@ _PROVIDER_REJECTED_MARKERS = (
     "provider rejected request",
     "http 400",
 )
+# Stamped by the ACP runtime (``ACPRequestGlobalError`` in
+# ``benchflow.acp.runtime``) on every deterministic rejection of a global
+# request setting. Checked before the "acp error" branch of
+# ``classify_error``: these messages often embed the agent's raw
+# ``ACP error -326xx`` text, which would otherwise classify as retryable
+# ``acp_error``.
+REQUEST_GLOBAL_MARKER = "request-global setting rejected"
 
 # Verifier error category constants
 VERIFIER_FAILED = "verifier_failure"
@@ -121,6 +138,11 @@ def classify_error(error: str | None) -> str | None:
     if not error:
         return None
     lower = error.lower()
+    # First: the marker is stamped only by ACPRequestGlobalError, and the
+    # message usually embeds agent text ("ACP error -326xx…") that the later
+    # branches would misread as a retryable acp_error.
+    if REQUEST_GLOBAL_MARKER in lower:
+        return REQUEST_GLOBAL
     if "agent idle for" in lower:
         return IDLE_TIMEOUT
     if "install failed" in lower:

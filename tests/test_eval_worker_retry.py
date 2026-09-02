@@ -74,3 +74,21 @@ def test_evaluation_config_retry_excludes_provider_auth_by_default():
     eval_cfg = _evaluation_config({"tasks_dir": "/tmp/tasks", "agent": "oracle"})
     assert not eval_cfg.retry.should_retry(_PROVIDER_AUTH_ERROR)
     assert not eval_cfg.retry.should_retry(_PROVIDER_RATE_LIMIT_ERROR)
+
+
+def test_request_global_rejections_are_never_retried():
+    """Guards P2-A of the PR #1046 second review: a request-global setting
+    rejection (unsupported --reasoning-effort/model for the agent) is
+    deterministic — retrying re-runs the identical doomed configuration. The
+    category is excluded by default, the #917/provider_auth pattern."""
+    from benchflow._utils.scoring import REQUEST_GLOBAL, classify_error
+
+    error = (
+        "ACPRequestGlobalError: request-global setting rejected: "
+        "reasoning_effort='high' was requested for agent 'gemini', but that "
+        "agent does not declare an ACP effort config option"
+    )
+    assert classify_error(error) == REQUEST_GLOBAL
+    cfg = RetryConfig.from_mapping(None)
+    assert REQUEST_GLOBAL in cfg.exclude_categories
+    assert not cfg.should_retry(error)

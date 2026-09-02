@@ -52,6 +52,7 @@ import shlex
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -78,6 +79,12 @@ from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
 from benchflow.agents.registry import AGENTS
+from benchflow.branch import StageSnapshot
+from benchflow.branch_delta import BranchDelta
+from benchflow.branch_stage import STAGE_ENV_READY as STAGE_ENV_READY
+from benchflow.branch_stage import STAGE_POST_RESEARCH as STAGE_POST_RESEARCH
+from benchflow.branch_stage import STAGE_POST_VERIFY as STAGE_POST_VERIFY
+from benchflow.branch_stage import STAGE_PRE_VERIFY as STAGE_PRE_VERIFY
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -197,6 +204,10 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.rollout_branch import capture_stage as _capture_stage_engine
+from benchflow.rollout_branch import (
+    finalize_stage_snapshots as _finalize_stage_snapshots_engine,
+)
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -229,11 +240,12 @@ from benchflow.usage_tracking import (
 logger = logging.getLogger(__name__)
 _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-# Lifecycle phases from verify() onward. The agent will not run again in this
-# rollout once one of these is set, so nothing may rewind ``_phase`` out of
-# them — the live dashboard renders the phase as a label and a backwards step
-# reads as the run having restarted (see disconnect()).
-_TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned"})
+# Lifecycle phases from verify() onward, plus the branch-first terminal
+# ("branched"). The agent will not run again in this rollout once one of these
+# is set, so nothing may rewind ``_phase`` out of them — the live dashboard
+# renders the phase as a label and a backwards step reads as the run having
+# restarted (see disconnect()).
+_TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned", "branched"})
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -746,6 +758,15 @@ class Rollout:
         self._tree: RolloutTree = RolloutTree()
         self._cursor: RolloutNode = self._tree.root
 
+        # Stage-boundary snapshot registry (rollout-branching RFC §3.2):
+        # stage name -> the composed StageSnapshot taken at that boundary,
+        # plus the tree node it was taken on (the node a branch_at_stage()
+        # forks, since that node's checkpoint *is* the stage snapshot). Both
+        # stay empty unless config.snapshot_stages requests a stage or a
+        # caller calls mark_stage() — the default rollout takes no snapshot.
+        self._stage_snapshots: dict[str, StageSnapshot] = {}
+        self._stage_nodes: dict[str, RolloutNode] = {}
+
         # Populated by verify()
         self._rewards: dict | None = None
         # Canonical plan-review status/provenance, populated after verify().
@@ -895,7 +916,25 @@ class Rollout:
 
     @property
     def result(self) -> RolloutResult | None:
-        if self._phase not in ("verified", "cleaned"):
+        """The terminal :class:`RolloutResult`, or ``None`` before one exists.
+
+        "branched" is terminal for a branch-first workflow (rollout-branching
+        RFC §3.4) — the children carried the verification, so the result is
+        reachable without the linear verify()/cleanup() path. Two branch
+        specifics: a branch-first rollout that never ran setup() has no run
+        directory to build artifacts in, so ``result`` stays ``None``
+        (the pre-branch contract — never a RuntimeError); and because
+        branch() restores the parent's linear state (``_rewards`` rolls back
+        to its pre-branch value), a built branched result surfaces the branch
+        aggregate V(cursor) recorded by the engine as
+        ``rewards={"reward": <value>, "source": "branch_aggregate"}`` when no
+        linear rewards exist (see :meth:`_build_result`).
+        """
+        if self._phase not in ("verified", "cleaned", "branched"):
+            return None
+        if self._phase == "branched" and self._rollout_dir is None:
+            # Branch-first rollout without setup(): no run directory to build
+            # result artifacts in — stay graceful instead of raising.
             return None
         return self._build_result()
 
@@ -1006,8 +1045,17 @@ class Rollout:
             and effective_task_path != cfg.task_path
         ):
             effective_skills_dir = task_bundled_skills_dir(effective_task_path)
-        if effective_skills_dir is not None and not _environment_uses_prebuilt_image(
-            env_config, cfg.environment_manifest
+        # A caller-owned sandbox (use_prebuilt_env — a branch child forking a
+        # stage snapshot) is never built from this Dockerfile, so injecting the
+        # COPY line there deploys nothing and makes deploy_skills believe the
+        # pack is already baked in, skipping the runtime upload the child
+        # actually needs. Leave the staged Dockerfile alone so the upload runs.
+        if (
+            effective_skills_dir is not None
+            and not self._env_externally_owned
+            and not _environment_uses_prebuilt_image(
+                env_config, cfg.environment_manifest
+            )
         ):
             self._planes.inject_skills_into_dockerfile(
                 effective_task_path,
@@ -1142,6 +1190,12 @@ class Rollout:
         await _run_environment_setup_commands(self._env, self._task)
 
         self._phase = "started"
+
+        # env-ready (RFC §3.2): the sandbox is up, the environment plane is
+        # provisioned and past its readiness gate, and install_agent() has NOT
+        # run — so a child forked here re-runs agent/skill installation from a
+        # skill-free world, which is what makes the skills ablation honest.
+        await self._capture_stage(STAGE_ENV_READY)
 
     # Phase 3: INSTALL AGENT
 
@@ -1789,7 +1843,9 @@ class Rollout:
         run_child: ChildRunner | None = None,
         *,
         require_sandbox_snapshot: bool = False,
-    ) -> float:
+        snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
+        deltas: Sequence[BranchDelta | None] | None = None,
+    ) -> float | None:
         """Branch the rollout at the cursor into ``n`` child continuations.
 
         Thin entry point — the Branch engine lives in
@@ -1809,9 +1865,146 @@ class Rollout:
         without that capability (Modal, Daytona DinD) fail closed with a clear
         diagnostic rather than running with a half-consistent checkpoint
         (#384, Branch lifecycle in docs/architecture.md).
+
+        ``snapshot_layers`` selects which checkpoint layers compose the
+        roll-back point (rollout-branching RFC §3.1). The default
+        ``{"environment"}`` is the legacy environment-state-only checkpoint;
+        adding ``"sandbox"`` composes a container-level snapshot with it, and
+        ``{"sandbox"}`` alone branches a stateless environment on the
+        container layer only. Missing capability on a requested layer fails
+        closed before anything is snapshotted.
+
+        ``deltas`` — one :class:`~benchflow.branch_delta.BranchDelta` (or
+        ``None``) per child, the recorded exactly-one-controlled-change each
+        child runs under (RFC §3.3). At the cursor only ``injected_prompt``
+        executes (the child's user-visible first message, hash-recorded in
+        provenance); ``skill_mode`` needs the ``env-ready`` boundary and so
+        runs through :meth:`branch_at_stage`, and every remaining field fails
+        closed with ``BranchDeltaNotSupported`` before any child runs.
         """
         return await _branch_engine(
-            self, n, run_child, require_sandbox_snapshot=require_sandbox_snapshot
+            self,
+            n,
+            run_child,
+            require_sandbox_snapshot=require_sandbox_snapshot,
+            snapshot_layers=snapshot_layers,
+            deltas=deltas,
+        )
+
+    # Phase 3e: STAGE-BOUNDARY SNAPSHOTS (rollout-branching RFC §3.2)
+
+    @property
+    def stage_snapshots(self) -> dict[str, StageSnapshot]:
+        """The lifecycle boundaries this rollout has snapshotted, by stage name.
+
+        Empty unless ``RolloutConfig.snapshot_stages`` requested a stage or a
+        caller marked one — a default rollout takes no stage snapshot at all.
+        Each value is the composed :class:`~benchflow.branch.StageSnapshot`
+        recorded at that boundary, with ``.stage`` set; pass the stage name to
+        :meth:`branch_at_stage` to fork from it.
+        """
+        return dict(self._stage_snapshots)
+
+    async def _capture_stage(self, stage: str) -> None:
+        """Snapshot ``stage`` iff this run's config asked for it.
+
+        The lifecycle's own boundaries call this; a stage nobody requested
+        costs one set membership test and no snapshot call anywhere. A
+        capability gap (no Environment plane, a sandbox without
+        ``supports_snapshot``, a stateless environment) fails closed here with
+        a diagnostic naming the stage — the run does not continue past a
+        boundary it was told to checkpoint and could not.
+        """
+        if stage not in self._config.snapshot_stages:
+            return
+        await _capture_stage_engine(
+            self, stage, snapshot_layers=self._config.snapshot_layers
+        )
+
+    async def mark_stage(
+        self,
+        name: str,
+        *,
+        snapshot_layers: frozenset[str] | set[str] | None = None,
+    ) -> StageSnapshot:
+        """Snapshot the current point and register it under stage ``name``.
+
+        The explicit half of the stage policy: ``post-research`` is a
+        mid-``execute()`` boundary no lifecycle transition can detect, so the
+        caller/harness that knows when planning ended marks it. ``name`` must
+        be a taxonomy stage (``ValueError`` otherwise) but need not appear in
+        ``RolloutConfig.snapshot_stages`` — marking *is* the request. Quiescing
+        the agent first is the caller's job, exactly as it is for
+        :meth:`branch`.
+
+        Marking also records which LLM exchange had completed at that moment
+        (read from the usage gateway's drained live capture; ``None`` when
+        unavailable) into the snapshot's meta and ``stage_snapshots.json`` —
+        the stage→exchange-index data ``bench eval continue --cut-stage``
+        resolves (RFC §3.5).
+
+        ``snapshot_layers`` defaults to the run's configured layers.
+        """
+        return await _capture_stage_engine(
+            self,
+            name,
+            snapshot_layers=(
+                self._config.snapshot_layers
+                if snapshot_layers is None
+                else snapshot_layers
+            ),
+        )
+
+    async def branch_at_stage(
+        self,
+        stage: str,
+        n: int,
+        *,
+        deltas: Sequence[BranchDelta | None] | None = None,
+        run_child: ChildRunner | None = None,
+        snapshot_layers: frozenset[str] | set[str] | None = None,
+    ) -> float | None:
+        """Branch from a recorded stage boundary instead of from the cursor.
+
+        The counterfactual entry point (RFC §3.2): the children restore the
+        world ``stage`` was snapshotted in — not the world the cursor is in —
+        and fork at the node that stage was captured on, so V aggregates the
+        value of *that* state. Everything else is the ordinary branch path:
+        the same delta validation, the same lineage artifacts, and
+        ``branch_stage`` recorded in each child's provenance as the stage name
+        rather than the ``cursor:<node>`` fallback.
+
+        A stage that was never captured raises
+        :class:`~benchflow.branch_stage.BranchStageNotCaptured` listing the
+        stages that were. ``snapshot_layers`` defaults to the layers the stage
+        actually captured; passing a different set is rejected rather than
+        silently re-snapshotting.
+
+        This is also the entry point for the skills ablation (RFC §3.3): at
+        ``env-ready`` — captured before ``install_agent()``, with the
+        ``sandbox`` layer so the container rolls back too — a
+        ``BranchDelta(skill_mode=...)`` child runs as a fresh rollout over the
+        restored sandbox and re-runs skill deployment under the switched mode.
+        **The rollout being branched must itself be a ``no-skill`` run.** A
+        ``with-skill`` parent bakes its pack into the image its ``setup()``
+        builds, and the ``env-ready`` snapshot is a commit of that image — so
+        a ``no-skill`` child would restore the pack, deploy nothing on top of
+        it, and be reported as ``no-skill`` while running with the parent's
+        skills. The engine refuses that fork
+        (:class:`~benchflow.rollout_branch.BranchParentSkillModeConflict`);
+        run the parent ``no-skill`` and let each arm's delta deploy its own
+        skills. Every engine-run child of ``env-ready`` is a fresh rollout
+        whatever its delta, so a ``None`` delta is a genuine control arm — it
+        re-installs the parent's own recorded mode rather than running in
+        place.
+        """
+        return await _branch_engine(
+            self,
+            n,
+            run_child,
+            snapshot_layers=snapshot_layers,
+            deltas=deltas,
+            at_stage=stage,
         )
 
     # Phase 4: VERIFY
@@ -1841,6 +2034,12 @@ class Rollout:
             self._env, self._trajectory, self._rollout_paths.agent_dir
         )
 
+        # pre-verify (RFC §3.2): the agent is quiesced and the workspace is
+        # still exactly as it left it — this is the last point before
+        # planes.harden_before_verify (inside _verify_rollout) kills processes
+        # and restores the verifier-owned workspace.
+        await self._capture_stage(STAGE_PRE_VERIFY)
+
         (
             self._rewards,
             self._verifier_error,
@@ -1858,6 +2057,11 @@ class Rollout:
             self._diagnostics.set(verifier_timeout_diag)
 
         self._phase = "verified"
+
+        # post-verify (RFC §3.2): the self-judgment stage of the cascade —
+        # the verifier has run, so a child forked here re-judges the same
+        # scored world.
+        await self._capture_stage(STAGE_POST_VERIFY)
         return self._rewards
 
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
@@ -2022,6 +2226,14 @@ class Rollout:
             # caller — leave it running so they can reuse it or stop it
             # themselves. #388. getattr() keeps tests that bypass __init__
             # via Rollout.__new__() working.
+            #
+            # The stop below destroys every committed ``bf-snap-*`` stage
+            # image (``compose down --rmi all``), so first make
+            # ``stage_snapshots.json`` truthful about each ref's lifetime —
+            # exporting the images to <run_dir>/snapshots/ when
+            # ``RolloutConfig.keep_snapshots`` asks for it, marking them
+            # ephemeral otherwise (never raises; PR #1046 second review).
+            await _finalize_stage_snapshots_engine(self)
             try:
                 await self._env.stop(delete=True)
             except Exception as e:
@@ -2656,6 +2868,19 @@ class Rollout:
         # to the resolved base prompts when no execute() ran (e.g. setup
         # failure paths).
         prompts = self._executed_prompts or self._resolved_prompts
+        rewards = self._rewards
+        # getattr() keeps tests that bypass __init__ via Rollout.__new__()
+        # working (the established pattern in this module).
+        if rewards is None and getattr(self, "_phase", None) == "branched":
+            # branch() restores the parent's linear state, so ``_rewards``
+            # rolls back to its pre-branch value even though the children
+            # verified. The honest terminal signal for a branched rollout is
+            # the branch aggregate V(cursor) the engine recorded on the
+            # branch-point node (rollout_branch.branch -> aggregate()).
+            cursor = getattr(self, "_cursor", None)
+            value = cursor.state.get("value") if cursor is not None else None
+            if value is not None:
+                rewards = {"reward": float(value), "source": "branch_aggregate"}
         return _build_rollout_result(
             rollout_dir,
             task_name=self._config.task_path.name,
@@ -2671,7 +2896,7 @@ class Rollout:
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
-            rewards=self._rewards,
+            rewards=rewards,
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,

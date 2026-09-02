@@ -24,9 +24,20 @@ class LiveUsageGateway(Protocol):
     ``benchflow.providers.litellm_runtime``; renaming the accessor on either
     side fails the type checker there instead of silently blanking the
     dashboard signal.
+
+    ``live_exchange_count`` is the stage-marker seam (rollout-branching RFC
+    §3.5), read the same duck-typed way by
+    ``benchflow.branch_policy.capture_stage``: the count of provider LLM
+    exchanges that had *completed* when a stage boundary was recorded,
+    drained to the gateway log's end so a stage-named replay cut cannot
+    silently undercount. ``None`` means the count is genuinely unknown
+    (capture never started, or the tail could not catch up) — never a stale
+    lower bound.
     """
 
     def live_usage_tokens(self) -> int | None: ...
+
+    async def live_exchange_count(self) -> int | None: ...
 
 
 @runtime_checkable
