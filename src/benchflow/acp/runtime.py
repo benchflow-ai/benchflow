@@ -21,13 +21,13 @@ Does not own:
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
+from benchflow.acp.watchdog import IdleWatchdog
 from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
@@ -39,7 +39,6 @@ from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
-    IdleTimeoutDiagnostic,
     IdleTimeoutError,
     TransportClosedDiagnostic,
     TransportClosedError,
@@ -838,81 +837,29 @@ async def _prompt_with_idle_watchdog(
     timeout: int,
     idle_timeout: int,
 ):
-    """Run acp_client.prompt() with both a wall-clock and an idle watchdog.
-
-    The watchdog polls session.tool_calls every few seconds and aborts if no
-    progress was made in idle_timeout. This catches agents that hung silently
-    while the local process is still alive (no output to stdout, no tool calls
-    appended).
-    """
-
-    def _activity_count() -> int:
-        # Match the docstring contract: idle = no tool call AND no message
-        # AND no thought. Sum all three so streamed text resets the timer.
-        return (
-            len(session.tool_calls)
-            + len(session.message_chunks)
-            + len(session.thought_chunks)
-        )
-
+    """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
-    last_progress = asyncio.get_event_loop().time()
-    last_activity_at = datetime.now(UTC)
-    last_count = _activity_count()
-    # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
-    # short overall budgets don't overshoot (e.g. timeout=30s with default
-    # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
-    poll_interval = max(1, min(30, idle_timeout // 4, max(1, timeout // 4)))
-    # deadline is loop-INVARIANT (fixed at loop start), NOT re-derived from
-    # last_progress inside the loop. This is load-bearing: the idle branch below
-    # resets last_progress while a tool call is in-flight, so re-deriving the
-    # deadline from it would let an agent that emits a tool_call and then hangs
-    # forever push the wall-clock backstop out indefinitely. Keep this fixed.
-    deadline = last_progress + timeout
+    loop = asyncio.get_running_loop()
+    watchdog = IdleWatchdog.start(
+        session,
+        idle_timeout_sec=idle_timeout,
+        wall_timeout_sec=timeout,
+        now=loop.time(),
+    )
 
     try:
         while not prompt_task.done():
-            await asyncio.sleep(poll_interval)
+            await asyncio.sleep(watchdog.poll_interval_sec)
             # Re-check done() after the sleep — the prompt may have completed
             # during the poll interval. Without this, we'd cancel an already-
             # completed task and discard a successful result.
             if prompt_task.done():
                 break
-            now = asyncio.get_event_loop().time()
-            cur_count = _activity_count()
-            if cur_count > last_count:
-                last_progress = now
-                last_activity_at = datetime.now(UTC)
-                last_count = cur_count
-            # An in-flight tool call means the agent is actively executing a tool
-            # (e.g. a long build/test/solver shell command), not hung. Those tools
-            # emit no ACP updates until they return, so a >idle_timeout run would
-            # otherwise false-fire the watchdog and discard real work. Treat a
-            # pending tool call as progress and defer to the wall-clock `timeout`
-            # backstop below for a tool that never returns. A genuine model-side
-            # hang has no pending tool call (the prior tool already completed via
-            # tool_call_update), so it still trips the idle path.
-            elif session.pending_tool_call_ids():
-                last_progress = now
-                last_activity_at = datetime.now(UTC)
-            if now - last_progress >= idle_timeout:
-                diag = IdleTimeoutDiagnostic(
-                    idle_timeout_sec=idle_timeout,
-                    idle_duration_sec=int(now - last_progress),
-                    wall_clock_elapsed_sec=int(now - (deadline - timeout)),
-                    n_tool_calls=len(session.tool_calls),
-                    n_message_chunks=len(session.message_chunks),
-                    n_thought_chunks=len(session.thought_chunks),
-                    last_activity_at=last_activity_at.isoformat(),
-                )
-                raise IdleTimeoutError(
-                    f"Agent idle for {idle_timeout}s with no new tool call, "
-                    f"message, or thought "
-                    f"(last activity {int(now - last_progress)}s ago, "
-                    f"{len(session.tool_calls)} tool calls so far)",
-                    diag,
-                )
-            if now > deadline:
+            now = loop.time()
+            watchdog.observe(session, now=now)
+            if watchdog.idle_expired(now):
+                raise watchdog.timeout_error(session, now=now)
+            if watchdog.wall_clock_expired(now):
                 if await _cancel_and_drain_prompt_task(prompt_task):
                     raise _agent_prompt_timeout_error(session, timeout)
                 raise TimeoutError(
