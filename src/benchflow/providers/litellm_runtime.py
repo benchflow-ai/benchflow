@@ -1503,7 +1503,16 @@ def _wire_litellm_agent_env(
         # in the upstream Gemini key server-side.
         updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
         updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
-        updated["GEMINI_API_KEY"] = master_key
+        # Gemini CLI recognizes several equivalent credential names, with the
+        # selected alias varying by model family and CLI release. Point every
+        # accepted alias at the gateway so Gemma cannot inherit a real Google
+        # key from the sandbox and silently bypass usage/evidence capture.
+        for key in (
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+        ):
+            updated[key] = master_key
         return updated
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")

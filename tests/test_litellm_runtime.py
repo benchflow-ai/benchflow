@@ -693,7 +693,7 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeypatch):
-    """Guards PR #942 remediation: Gemini review keeps no-web isolation."""
+    """Guards PR #942 and PR #1030: every Google key alias stays proxied."""
 
     starts = []
 
@@ -710,7 +710,11 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
 
     updated, provider_runtime = await ensure_litellm_runtime(
         agent="gemini",
-        agent_env={"GEMINI_API_KEY": "upstream-gemini-key"},
+        agent_env={
+            "GEMINI_API_KEY": "upstream-gemini-key",
+            "GOOGLE_API_KEY": "upstream-google-key",
+            "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
+        },
         model="gemini-2.5-flash",
         runtime=None,
         environment="docker",
@@ -722,8 +726,12 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
     assert starts[0]["sandbox"] is sandbox
     assert provider_runtime is not None
     assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
-    assert updated["GEMINI_API_KEY"] == provider_runtime.master_key
-    assert updated["GEMINI_API_KEY"] != "upstream-gemini-key"
+    for key in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+    ):
+        assert updated[key] == provider_runtime.master_key
     assert LITELLM_MODEL_ALIAS_ENV not in updated
 
 
