@@ -138,10 +138,13 @@ class IdleTimeoutDiagnostic(Diagnostic):
     # result.json dicts round-trip through format_issue_from_dict with the
     # defaults below.
     pending_tool_call_ids: list[str] = field(default_factory=list)
+    expired_pending_tool_call_ids: list[str] = field(default_factory=list)
     pending_grace_sec: int | None = None
     pending_set_last_changed_at: str | None = None
     last_tool_update_at: str | None = None
     n_tool_call_updates: int = 0
+    n_pending_tool_call_updates: int = 0
+    n_expired_pending_tool_call_updates: int = 0
 
     field: ClassVar[str] = "idle_timeout_info"
     category: ClassVar[str | None] = "idle_timeout"

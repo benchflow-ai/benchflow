@@ -901,13 +901,15 @@ class TestACPIdleWatchdog:
 class TestPendingToolCallGrace:
     @pytest.mark.asyncio
     async def test_lost_tool_call_completion_trips_idle_after_grace(self):
-        """Guards the #1061 fix: a tool call whose completion update never
-        arrives must stop deferring the idle watchdog once the pending grace
+        """Guards PR #1066's #1061 fix: a completion lost in transit.
+
+        A terminal update that never arrives must stop deferring the watchdog
+        once the pending grace
         (3x idle_timeout) elapses with no other session activity, instead of
         disarming it for the rest of the wall-clock budget.
 
-        Runtime: ~5s (3s grace + 1s idle + polls); the outer wait_for is a
-        loose hang guard, not a timing assertion.
+        Runtime: ~3s plus polling; the outer wait_for is a loose hang guard,
+        not a timing assertion.
         """
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
         from benchflow.acp.session import ToolCallRecord
@@ -934,7 +936,9 @@ class TestPendingToolCallGrace:
 
     @pytest.mark.asyncio
     async def test_streaming_tool_call_updates_defer_past_grace(self):
-        """A single long tool call that streams in-progress tool_call_update
+        """Guards PR #1066: relevant streaming updates restart the grace.
+
+        A single long tool call that streams in-progress tool_call_update
         notifications past the grace boundary is demonstrably alive and must
         NOT be idle-killed: updates mutate the ToolCallRecord in place, so
         they are invisible to both the pending-set snapshot and
@@ -986,13 +990,84 @@ class TestPendingToolCallGrace:
         assert session.pending_tool_call_ids() == ["tc_stream"]
 
     @pytest.mark.asyncio
+    async def test_unrelated_updates_do_not_extend_pending_grace(self):
+        """Guards PR #1066: other calls cannot hide a lost completion."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class TerminalNoiseClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "lost_completion",
+                        "title": "silent long call",
+                        "kind": "bash",
+                    }
+                )
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "already_done",
+                        "title": "finished call",
+                        "kind": "bash",
+                    }
+                )
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "still_streaming",
+                        "title": "healthy streaming call",
+                        "kind": "bash",
+                    }
+                )
+                while True:
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "already_done",
+                            "status": "completed",
+                        }
+                    )
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "still_streaming",
+                            "status": "in_progress",
+                        }
+                    )
+                    await asyncio.sleep(0.4)
+
+        session = ACPSession("unrelated-terminal-noise")
+        with pytest.raises(IdleTimeoutError, match="lost_completion"):
+            await asyncio.wait_for(
+                execute_prompts(
+                    TerminalNoiseClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=7,
+                    idle_timeout=1,
+                ),
+                timeout=20.0,
+            )
+        assert session.pending_tool_call_ids() == [
+            "lost_completion",
+            "still_streaming",
+        ]
+        assert session.tool_call_update_count > 2
+
+    @pytest.mark.asyncio
     async def test_grace_expiry_reports_pending_truth(self):
-        """When the grace genuinely expires (call pending, updates stopped),
+        """Guards PR #1066: pending-grace expiry reports the real cause.
+
+        When the grace genuinely expires (call pending, updates stopped),
         the raised message and IdleTimeoutDiagnostic must say so — not claim
         'no new tool call, message, or thought' as if the session were
         silent all along.
 
-        Runtime: ~4s (2 quick updates, then silence through grace + idle).
+        Runtime: ~3s plus polling after the last relevant update.
         """
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
@@ -1037,8 +1112,11 @@ class TestPendingToolCallGrace:
         assert "tc_stall" in msg
         info = exc_info.value.diagnostic.to_dict()
         assert info["pending_tool_call_ids"] == ["tc_stall"]
+        assert info["expired_pending_tool_call_ids"] == ["tc_stall"]
         assert info["pending_grace_sec"] == 3  # 3x idle_timeout
         assert info["n_tool_call_updates"] == 2
+        assert info["n_pending_tool_call_updates"] == 2
+        assert info["n_expired_pending_tool_call_updates"] == 2
         assert info["pending_set_last_changed_at"] is not None
         assert info["last_tool_update_at"] is not None
         # Existing fields keep their meaning.

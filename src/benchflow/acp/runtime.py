@@ -21,13 +21,13 @@ Does not own:
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
+from benchflow.acp.watchdog import IdleWatchdog
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -38,7 +38,6 @@ from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
-    IdleTimeoutDiagnostic,
     IdleTimeoutError,
     TransportClosedDiagnostic,
     TransportClosedError,
@@ -813,13 +812,6 @@ async def _prompt_with_wall_clock_budget(
             await _cancel_and_drain_prompt_task(prompt_task)
 
 
-# A pending tool call defers the idle watchdog for at most this many idle
-# budgets while staying silent (no update traffic). Sized so legitimate silent
-# tools several times the idle budget survive, while a lost completion stops
-# disarming hang detection within the same order of magnitude (#1061).
-PENDING_GRACE_MULTIPLIER = 3
-
-
 async def _prompt_with_idle_watchdog(
     acp_client: ACPClient,
     session,
@@ -827,160 +819,29 @@ async def _prompt_with_idle_watchdog(
     timeout: int,
     idle_timeout: int,
 ):
-    """Run acp_client.prompt() with both a wall-clock and an idle watchdog.
-
-    The watchdog polls session.tool_calls every few seconds and aborts if no
-    progress was made in idle_timeout. This catches agents that hung silently
-    while the local process is still alive (no output to stdout, no tool calls
-    appended).
-    """
-
-    def _activity_count() -> int:
-        # Match the docstring contract: idle = no tool call AND no message
-        # AND no thought. Sum all three so streamed text resets the timer.
-        return (
-            len(session.tool_calls)
-            + len(session.message_chunks)
-            + len(session.thought_chunks)
-        )
-
+    """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
-    last_progress = asyncio.get_event_loop().time()
-    last_activity_at = datetime.now(UTC)
-    last_count = _activity_count()
-    # A pending tool call defers the idle watchdog only within this grace: a
-    # completion update lost in transit (e.g. a half-open PTY websocket frame
-    # drop) leaves the call pending forever and would otherwise disarm the
-    # watchdog for the rest of the wall-clock budget (#1061).
-    # The grace clock restarts whenever the pending set changes OR a
-    # tool_call_update is observed: in-progress updates mutate ToolCallRecord
-    # in place — invisible to both the pending-set snapshot and
-    # _activity_count — and a call still streaming progress is demonstrably
-    # alive. Only a call that stays pending AND silent for the full grace
-    # stops deferring the idle path.
-    pending_grace = idle_timeout * PENDING_GRACE_MULTIPLIER
-    pending_snapshot: tuple[str, ...] = ()
-    pending_since = last_progress
-    seen_update_count = session.tool_call_update_count
-    # Poll-granular observation times, kept for truthful expiry diagnostics.
-    pending_set_changed_at: datetime | None = None
-    last_tool_update_at: datetime | None = None
-    # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
-    # short overall budgets don't overshoot (e.g. timeout=30s with default
-    # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
-    poll_interval = max(1, min(30, idle_timeout // 4, max(1, timeout // 4)))
-    # deadline is loop-INVARIANT (fixed at loop start), NOT re-derived from
-    # last_progress inside the loop. This is load-bearing: the idle branch below
-    # resets last_progress while a tool call is in-flight, so re-deriving the
-    # deadline from it would let an agent that emits a tool_call and then hangs
-    # forever push the wall-clock backstop out indefinitely. Keep this fixed.
-    deadline = last_progress + timeout
+    loop = asyncio.get_running_loop()
+    watchdog = IdleWatchdog.start(
+        session,
+        idle_timeout_sec=idle_timeout,
+        wall_timeout_sec=timeout,
+        now=loop.time(),
+    )
 
     try:
         while not prompt_task.done():
-            await asyncio.sleep(poll_interval)
+            await asyncio.sleep(watchdog.poll_interval_sec)
             # Re-check done() after the sleep — the prompt may have completed
             # during the poll interval. Without this, we'd cancel an already-
             # completed task and discard a successful result.
             if prompt_task.done():
                 break
-            now = asyncio.get_event_loop().time()
-            cur_count = _activity_count()
-            # Observe tool_call_update traffic every poll: an in-progress
-            # update proves the pending call's transport is alive, so it
-            # restarts the grace clock (but not the idle clock — with no
-            # pending call, updates alone are not progress).
-            if session.tool_call_update_count != seen_update_count:
-                seen_update_count = session.tool_call_update_count
-                pending_since = now
-                last_tool_update_at = datetime.now(UTC)
-            # Observe the pending set every poll as well: a new tool call also
-            # grows the activity count, and tracking the snapshot only in the
-            # elif below would start its grace clock one poll late.
-            current_pending = tuple(sorted(session.pending_tool_call_ids()))
-            if current_pending != pending_snapshot:
-                pending_snapshot = current_pending
-                if current_pending:
-                    pending_since = now
-                    pending_set_changed_at = datetime.now(UTC)
-            if cur_count > last_count:
-                last_progress = now
-                last_activity_at = datetime.now(UTC)
-                last_count = cur_count
-            # An in-flight tool call means the agent is actively executing a tool
-            # (e.g. a long build/test/solver shell command), not hung. Those tools
-            # emit no ACP updates until they return, so a >idle_timeout run would
-            # otherwise false-fire the watchdog and discard real work. Treat a
-            # pending tool call as progress, but only within pending_grace of the
-            # last pending-set change or observed update: a call whose completion
-            # update was lost in transit stays pending forever, and an unbounded
-            # deferral would disarm the watchdog for the rest of the wall-clock
-            # budget (#1061). A genuine model-side hang has no pending tool call
-            # (the prior tool already completed via tool_call_update), so it
-            # trips the idle path.
-            elif current_pending:
-                if now - pending_since < pending_grace:
-                    last_progress = now
-                    last_activity_at = datetime.now(UTC)
-            if now - last_progress >= idle_timeout:
-                pending_ids = session.pending_tool_call_ids()
-                diag = IdleTimeoutDiagnostic(
-                    idle_timeout_sec=idle_timeout,
-                    idle_duration_sec=int(now - last_progress),
-                    wall_clock_elapsed_sec=int(now - (deadline - timeout)),
-                    n_tool_calls=len(session.tool_calls),
-                    n_message_chunks=len(session.message_chunks),
-                    n_thought_chunks=len(session.thought_chunks),
-                    last_activity_at=last_activity_at.isoformat(),
-                    pending_tool_call_ids=list(pending_ids),
-                    pending_grace_sec=pending_grace,
-                    pending_set_last_changed_at=(
-                        pending_set_changed_at.isoformat()
-                        if pending_set_changed_at is not None
-                        else None
-                    ),
-                    last_tool_update_at=(
-                        last_tool_update_at.isoformat()
-                        if last_tool_update_at is not None
-                        else None
-                    ),
-                    n_tool_call_updates=session.tool_call_update_count,
-                )
-                if pending_ids:
-                    # A non-empty pending set here means the grace expired
-                    # (an in-grace pending call would have deferred
-                    # last_progress this very poll). Report that — not the
-                    # generic "no new tool call, message, or thought" line,
-                    # which is untrue when updates were flowing earlier.
-                    fired_at = datetime.now(UTC)
-                    set_age = (
-                        f"{int((fired_at - pending_set_changed_at).total_seconds())}s ago"
-                        if pending_set_changed_at is not None
-                        else "unknown"
-                    )
-                    update_age = (
-                        f"{int((fired_at - last_tool_update_at).total_seconds())}s ago"
-                        if last_tool_update_at is not None
-                        else "never"
-                    )
-                    raise IdleTimeoutError(
-                        f"Agent idle for {idle_timeout}s: "
-                        f"{len(pending_ids)} pending tool call(s) exceeded the "
-                        f"{pending_grace}s pending grace "
-                        f"({', '.join(pending_ids)}; pending set last changed "
-                        f"{set_age}, last tool-call update {update_age}, "
-                        f"{session.tool_call_update_count} updates seen, "
-                        f"{len(session.tool_calls)} tool calls so far)",
-                        diag,
-                    )
-                raise IdleTimeoutError(
-                    f"Agent idle for {idle_timeout}s with no new tool call, "
-                    f"message, or thought "
-                    f"(last activity {int(now - last_progress)}s ago, "
-                    f"{len(session.tool_calls)} tool calls so far)",
-                    diag,
-                )
-            if now > deadline:
+            now = loop.time()
+            watchdog.observe(session, now=now)
+            if watchdog.idle_expired(now):
+                raise watchdog.timeout_error(session, now=now)
+            if watchdog.wall_clock_expired(now):
                 if await _cancel_and_drain_prompt_task(prompt_task):
                     raise _agent_prompt_timeout_error(session, timeout)
                 raise TimeoutError(
