@@ -119,6 +119,7 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
+_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -517,14 +518,15 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
-        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
-        # 0.24, which dropped session/set_model). The option ids are coupled to
-        # this pin — re-verify them when bumping. runtime.py uses
-        # capability-first dispatch for the rest of the family.
-        install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
-        ),
+        # Pinned to 0.73.0 (bundles @anthropic-ai/claude-agent-sdk 0.3.257):
+        # claude-fable-5-1 rejects Claude Code < 2.1.251 with
+        # `claude_code_version_too_old` (HTTP 400), so the previous 0.40.0 pin
+        # (sdk 0.3.160) cannot run that model at all. The config-option wiring
+        # below (set_config_option + the "model"/"effort" ids) was re-verified
+        # against 0.73.0 with tests/test_acp_pinned_protocol_guard.py; the ids
+        # stay coupled to this pin — re-run that guard when bumping. runtime.py
+        # uses capability-first dispatch for the rest of the family.
+        install_cmd=_js_agent_install("claude-agent-acp", _CLAUDE_AGENT_ACP_PACKAGE),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
