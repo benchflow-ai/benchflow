@@ -656,7 +656,11 @@ AGENTS: dict[str, AgentConfig] = {
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
-        launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
+        # BenchFlow already isolates the agent inside the task sandbox and
+        # deliberately grants tool approval with --yolo. Gemini CLI 0.42 also
+        # requires the workspace to be trusted before it will honor that mode;
+        # headless ACP runs cannot answer the interactive trust prompt.
+        launch_cmd=_js_agent_launch("gemini", "--acp --yolo --skip-trust"),
         protocol="acp",
         # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
         # accepted as an alias: auto_inherit_env mirrors it both ways so users
