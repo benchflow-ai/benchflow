@@ -27,6 +27,7 @@ import pytest
 from benchflow.agents.openclaw_acp_shim import (
     _default_max_tokens,
     _infer_provider_prefix,
+    _max_tokens_value,
     _resolve_bare_model_prefix,
     _setup_bare_custom_provider,
 )
@@ -37,9 +38,96 @@ from benchflow.agents.providers import (
 from benchflow.providers.litellm_config import safe_model_alias
 
 
-@pytest.mark.parametrize("model", ["gpt-5.4", "openai/gpt-5.4"])
-def test_gpt54_proxy_alias_has_supported_token_cap(model):
-    assert _default_max_tokens(safe_model_alias(model)) == 128000
+@pytest.mark.parametrize(
+    ("model", "cap"),
+    [
+        ("gpt-5.4", 128000),
+        ("openai/gpt-5.4", 128000),
+        ("us-openai/gpt-5.4", 128000),
+        ("azure-foundry-openai/gpt-5.4", 128000),
+        ("claude-sonnet-4-6", 128000),
+        ("claude-opus-4-6", 128000),
+        ("claude-opus-4-7", 128000),
+        ("claude-opus-4-8", 128000),
+        ("claude-sonnet-5", 128000),
+        ("claude-opus-5-1", 128000),
+        ("anthropic/claude-opus-5", 128000),
+        ("anthropic-vertex/claude-sonnet-5-2", 128000),
+        ("azure-foundry-anthropic/claude-sonnet-4-6", 128000),
+        ("claude-sonnet-4-60", None),
+        ("claude-sonnet-5-beta", None),
+        ("claude-opus-5-1-2", None),
+        ("claude-opus-50", None),
+        ("not-claude-sonnet-5", None),
+        ("evil/claude-opus-5", None),
+        ("evil/gpt-5.4", None),
+    ],
+)
+def test_model_token_cap(model, cap):
+    assert _default_max_tokens(model) == cap
+    assert _default_max_tokens(safe_model_alias(model)) == cap
+
+
+@pytest.mark.parametrize(
+    ("configured", "value"),
+    [
+        (None, "128000"),
+        ("invalid", "128000"),
+        ("-1", "128000"),
+        ("127999", "127999"),
+        ("128000", "128000"),
+        ("128001", "128000"),
+        ("9" * 5000, "128000"),
+    ],
+)
+def test_max_tokens_value(configured, value):
+    assert _max_tokens_value("claude-sonnet-5", configured) == value
+
+
+def test_uncapped_model_preserves_configured_max_tokens():
+    assert _max_tokens_value("other-model", "invalid") == "invalid"
+
+
+def test_set_model_writes_max_tokens_before_optional_params(monkeypatch):
+    import benchflow.agents.openclaw_acp_shim as shim
+
+    monkeypatch.setattr(shim, "setup_openai_auth", lambda: None)
+    monkeypatch.setattr(shim, "setup_gcloud_adc", lambda: None)
+    monkeypatch.setenv("BENCHFLOW_MODEL_MAX_TOKENS", "128001")
+    monkeypatch.setenv("BENCHFLOW_MODEL_TEMPERATURE", "0.5")
+
+    calls = []
+
+    def run(args, **_):
+        calls.append(args)
+        if args[-2] == "agents.defaults.params.temperature":
+            raise RuntimeError("temperature config failed")
+
+    monkeypatch.setattr(shim.subprocess, "run", run)
+    messages = [
+        {
+            "id": 1,
+            "method": "session/set_model",
+            "params": {"modelId": "anthropic/claude-sonnet-5"},
+        }
+    ]
+
+    def recv():
+        if messages:
+            return messages.pop()
+        raise EOFError
+
+    monkeypatch.setattr(shim, "recv", recv)
+    monkeypatch.setattr(shim, "send", lambda _: None)
+
+    shim.main()
+
+    writes = [(call[-2], call[-1]) for call in calls]
+    assert writes == [
+        ("agents.defaults.model", "anthropic/claude-sonnet-5"),
+        ("agents.defaults.params.maxTokens", "128000"),
+        ("agents.defaults.params.temperature", "0.5"),
+    ]
 
 
 class TestFindProviderForBareModel:
