@@ -186,6 +186,8 @@ def _looks_like_infra_error(error: str) -> bool:
             # Predates the marker above and is kept for strings rebuilt
             # outside that boundary (e.g. a verifier error re-raised as text).
             "failed to get session command",
+            "failed to execute session command",
+            "command timed out after",
             "sandbox not found",
             "workspace not found",
             "api connection",

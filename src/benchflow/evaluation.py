@@ -1084,31 +1084,60 @@ class Evaluation:
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.
 
+        Scoreless results whose verifier error is infra-retryable (per
+        ``RetryConfig.should_retry_verifier_error``) are not reused: the
+        verifier never scored the frozen workspace, so the task re-runs.
+
         Scoped to the current job directory (``_jobs_dir / _job_name``) to
-        prevent cross-job contamination.  When multiple result.json files
-        exist for the same task (retry artifacts), the newest by mtime wins.
+        prevent cross-job contamination. When multiple result.json files exist
+        for the same task (retry artifacts), a scored result always wins over
+        a scoreless verifier error; otherwise the newest artifact wins.
 
         Guards ENG-160: orphan retry artifacts no longer pollute resume.
         """
         job_dir = self._jobs_dir / self._job_name
         if not job_dir.exists():
             return {}
-        # Collect every result keyed by (task_name) → keep newest by mtime.
-        best: dict[str, tuple[float, dict]] = {}
+        # A completed score is durable evidence and must not be displaced by a
+        # newer scoreless retry artifact. Within the same scored/unscored tier,
+        # prefer recency and use the path as a deterministic tie-breaker.
+        best: dict[str, tuple[tuple[bool, float, str], dict]] = {}
         for rfile in job_dir.rglob("result.json"):
             try:
                 r = json.loads(rfile.read_text())
                 task = r["task_name"]
                 if r.get("rewards") is not None or r.get("verifier_error"):
-                    mtime = rfile.stat().st_mtime
+                    rank = (
+                        r.get("rewards") is not None,
+                        rfile.stat().st_mtime,
+                        str(rfile),
+                    )
                     prev = best.get(task)
-                    if prev is None or (mtime, str(rfile)) >= (prev[0], ""):
-                        best[task] = (mtime, r)
+                    if prev is None or rank >= prev[0]:
+                        best[task] = (rank, r)
             except Exception as e:
                 logger.debug(f"Skipping corrupt result file {rfile}: {e}")
         completed: dict[str, dict] = {}
-        for task, (_mt, r) in best.items():
+        # Re-running an errored task is only safe when rollouts are
+        # independent. A sequential-shared job advances one persisted learner
+        # state in task order, so replaying an earlier task after later tasks
+        # committed their skills would corrupt the learning curve; there the
+        # errored result stays reused, matching the pre-existing behavior.
+        rerun_ok = self._config.job_mode != "sequential-shared"
+        for task, (_rank, r) in best.items():
             if r.get("verifier_error"):
+                # A scoreless result whose verifier error is infra-retryable
+                # (same taxonomy as the within-run retry) records no signal
+                # about the task; reusing it pins a lost score forever.
+                retryable = self._config.retry.should_retry_verifier_error(
+                    r["verifier_error"]
+                )
+                if rerun_ok and r.get("rewards") is None and retryable:
+                    logger.info(
+                        f"Re-running verifier-errored task on resume: {task} "
+                        f"({truncate_end(r['verifier_error'], 80)})"
+                    )
+                    continue
                 logger.info(
                     f"Reusing completed verifier-errored task on resume: {task} "
                     f"({truncate_end(r['verifier_error'], 80)})"
