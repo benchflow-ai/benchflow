@@ -269,6 +269,43 @@ class TestVerifierDirWipe:
             )
 
     @pytest.mark.asyncio
+    async def test_pr_1062_all_verifier_setup_probes_share_budget(self):
+        """Guards PR #1062 against short or unbounded Daytona setup execs."""
+        from benchflow.sandbox.lockdown import (
+            VERIFIER_SETUP_TIMEOUT_SEC,
+            build_reclaim_caches_cmd,
+            harden_before_verify,
+        )
+
+        def side_effect(command, **kwargs):
+            if command == "printenv PATH":
+                stdout = "/usr/local/bin:/usr/bin"
+            elif command.startswith("printenv PYTHONPATH"):
+                stdout = "/usr/local/lib/python3.12/site-packages"
+            elif command.startswith("python3 -c"):
+                stdout = "[]"
+            elif command.startswith("cat /etc/os-release"):
+                stdout = "ID=ubuntu\n"
+            else:
+                stdout = ""
+            return MagicMock(stdout=stdout, stderr="", exit_code=0)
+
+        env = _make_env(side_effect)
+        await harden_before_verify(
+            env, _make_task(), sandbox_user="agent", workspace="/app"
+        )
+
+        reclaim_command = build_reclaim_caches_cmd("/app")
+        setup_calls = [
+            call for call in env.exec.call_args_list if call.args[0] != reclaim_command
+        ]
+        assert len(setup_calls) >= 12
+        assert all(
+            call.kwargs.get("timeout_sec") == VERIFIER_SETUP_TIMEOUT_SEC
+            for call in setup_calls
+        )
+
+    @pytest.mark.asyncio
     async def test_pr_942_workspace_chown_failure_is_fatal(self):
         """Guards PR #942: failed ownership freezing cannot reach verification."""
 

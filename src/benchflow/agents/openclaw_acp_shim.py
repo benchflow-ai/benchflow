@@ -21,6 +21,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -49,15 +50,30 @@ _PARAM_MAP = {
 }
 
 
+_TOKEN_CAP_MODEL = (
+    r"(?:(?:(?:openai|us-openai|azure-foundry-openai)/|"
+    r"benchflow-(?:(?:openai|us-openai|azure-foundry-openai)-)?)?gpt-5\.4|"
+    r"(?:(?:anthropic|anthropic-vertex|azure-foundry-anthropic)/|"
+    r"benchflow-(?:(?:anthropic|anthropic-vertex|azure-foundry-anthropic)-)?)?"
+    r"claude-(?:sonnet-4-6|opus-4-[6-8]|(?:sonnet|opus)-5(?:-\d+)?))"
+)
+
+
 def _default_max_tokens(model: str) -> int | None:
-    # OpenClaw derives an invalid ~172k default for GPT-5.4; ACP sends a
-    # BenchFlow-generated LiteLLM alias in normal runs.
-    model = model.removeprefix("openai/")
-    if model == "gpt-5.4" or (
-        model.startswith("benchflow-") and model.endswith("-gpt-5.4")
-    ):
-        return 128000
-    return None
+    # Assume future numeric Sonnet/Opus 5.x releases retain the documented
+    # 128k max output; narrow/update the pattern if that limit changes.
+    return 128000 if re.fullmatch(_TOKEN_CAP_MODEL, model) else None
+
+
+def _max_tokens_value(model: str, configured: str | None) -> str | None:
+    cap = _default_max_tokens(model)
+    if cap is None:
+        return configured
+    try:
+        value = int(configured or "")
+    except ValueError:
+        return str(cap)
+    return configured if 0 < value <= cap else str(cap)
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -728,35 +744,41 @@ def main():
                         timeout=10,
                     )
 
-                # Apply model generation parameters from env vars
-                for env_key, config_path in _PARAM_MAP.items():
-                    val = os.environ.get(env_key)
-                    if val:
-                        subprocess.run(
-                            [_OPENCLAW_BIN, "config", "set", config_path, val],
-                            capture_output=True,
-                            check=True,
-                            timeout=10,
-                        )
-                max_tokens = _default_max_tokens(requested_model)
-                configured_max_tokens = os.environ.get("BENCHFLOW_MODEL_MAX_TOKENS")
-                if max_tokens is not None and (
-                    not configured_max_tokens
-                    or not configured_max_tokens.isdigit()
-                    or int(configured_max_tokens) > max_tokens
-                ):
+                max_tokens = _max_tokens_value(
+                    requested_model, os.environ.get("BENCHFLOW_MODEL_MAX_TOKENS")
+                )
+                if max_tokens:
                     subprocess.run(
                         [
                             _OPENCLAW_BIN,
                             "config",
                             "set",
                             _PARAM_MAP["BENCHFLOW_MODEL_MAX_TOKENS"],
-                            str(max_tokens),
+                            max_tokens,
                         ],
                         capture_output=True,
                         check=True,
                         timeout=10,
                     )
+                # Apply model generation parameters from env vars
+                for env_key in (
+                    "BENCHFLOW_MODEL_TEMPERATURE",
+                    "BENCHFLOW_MODEL_TOP_P",
+                ):
+                    val = os.environ.get(env_key)
+                    if val:
+                        subprocess.run(
+                            [
+                                _OPENCLAW_BIN,
+                                "config",
+                                "set",
+                                _PARAM_MAP[env_key],
+                                val,
+                            ],
+                            capture_output=True,
+                            check=True,
+                            timeout=10,
+                        )
             except Exception as exc:
                 diag = (
                     f"[openclaw-acp-shim] set_model setup failed, continuing: {exc!r}"
