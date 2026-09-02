@@ -264,6 +264,14 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--matrix currently requires --tasks-dir")
     if request.trials < 1:
         raise EvalPlanError("--trials must be >= 1")
+    if request.trials > 1 and request.matrix is None:
+        # Only the matrix expansion consumes trials; a plain run would silently
+        # do one trial per task while the caller believes it ran N. Per-trial
+        # requests created by run_matrix_eval bypass this planner by design.
+        raise EvalPlanError(
+            "--trials > 1 requires --matrix; to repeat one model, use a "
+            'single-entry matrix such as "models: {default: <model>}"'
+        )
     if request.expected_tasks is not None and request.expected_tasks < 1:
         raise EvalPlanError("--expected-tasks must be >= 1")
     if request.canonicalize not in {"none", "one-healthy-per-task"}:
