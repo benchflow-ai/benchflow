@@ -26,6 +26,10 @@ from pathlib import Path
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
+from benchflow.acp.timeout_cleanup import (
+    cancel_and_drain_prompt_task,
+    cancel_prompt_after_timeout,
+)
 from benchflow.acp.types import McpServerSpec
 from benchflow.acp.watchdog import IdleWatchdog
 from benchflow.agents.codex_config import apply_codex_launch_config
@@ -70,7 +74,6 @@ logger = logging.getLogger(__name__)
 
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
-_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
 _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
@@ -773,31 +776,6 @@ async def execute_prompts(
     return trajectory, len(session.tool_calls)
 
 
-async def _cancel_and_drain_prompt_task(prompt_task: asyncio.Task) -> bool:
-    if prompt_task.done():
-        return True
-    prompt_task.cancel()
-    done, _pending = await asyncio.wait(
-        {prompt_task}, timeout=_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC
-    )
-    if done:
-        with contextlib.suppress(BaseException):
-            prompt_task.result()
-        return True
-
-    logger.warning(
-        "ACP prompt task did not finish within %.2fs after cancellation",
-        _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
-    )
-
-    def _consume_prompt_result(task: asyncio.Task) -> None:
-        with contextlib.suppress(BaseException):
-            task.result()
-
-    prompt_task.add_done_callback(_consume_prompt_result)
-    return False
-
-
 def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutError:
     session.mark_prompt_end()
     pending_tool_call_ids = session.pending_tool_call_ids()
@@ -829,16 +807,19 @@ async def _prompt_with_wall_clock_budget(
 ):
     """Run a prompt until either it finishes or BenchFlow's budget expires."""
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    cleanup_attempted = False
     try:
         done, _pending = await asyncio.wait({prompt_task}, timeout=timeout)
         if done:
             return prompt_task.result()
-        if await _cancel_and_drain_prompt_task(prompt_task):
+        cleanup_attempted = True
+        if await cancel_prompt_after_timeout(acp_client, prompt_task):
             raise _agent_prompt_timeout_error(session, timeout)
         raise TimeoutError(f"Agent prompt exceeded wall-clock budget {timeout}s")
     finally:
-        if not prompt_task.done():
-            await _cancel_and_drain_prompt_task(prompt_task)
+        if not prompt_task.done() and not cleanup_attempted:
+            cleanup_attempted = True
+            await cancel_and_drain_prompt_task(prompt_task)
 
 
 async def _prompt_with_idle_watchdog(
@@ -850,6 +831,7 @@ async def _prompt_with_idle_watchdog(
 ):
     """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    cleanup_attempted = False
     loop = asyncio.get_running_loop()
     watchdog = IdleWatchdog.start(
         session,
@@ -869,9 +851,13 @@ async def _prompt_with_idle_watchdog(
             now = loop.time()
             watchdog.observe(session, now=now)
             if watchdog.idle_expired(now):
-                raise watchdog.timeout_error(session, now=now)
+                error = watchdog.timeout_error(session, now=now)
+                cleanup_attempted = True
+                await cancel_prompt_after_timeout(acp_client, prompt_task)
+                raise error
             if watchdog.wall_clock_expired(now):
-                if await _cancel_and_drain_prompt_task(prompt_task):
+                cleanup_attempted = True
+                if await cancel_prompt_after_timeout(acp_client, prompt_task):
                     raise _agent_prompt_timeout_error(session, timeout)
                 raise TimeoutError(
                     f"Agent prompt exceeded wall-clock budget {timeout}s"
@@ -883,5 +869,6 @@ async def _prompt_with_idle_watchdog(
         # external-cancellation path (CancelledError from sleep). Bound the
         # drain so a non-cooperative Daytona/ACP read cannot hide the watchdog
         # timeout forever; cleanup will tear down the live process.
-        if not prompt_task.done():
-            await _cancel_and_drain_prompt_task(prompt_task)
+        if not prompt_task.done() and not cleanup_attempted:
+            cleanup_attempted = True
+            await cancel_and_drain_prompt_task(prompt_task)

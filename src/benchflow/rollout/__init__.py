@@ -1371,6 +1371,9 @@ class Rollout:
             self._capture_partial_session_factory_trajectory()
         else:
             self._capture_partial_acp_trajectory()
+        collect_native_usage = getattr(self, "_collect_native_acp_usage", None)
+        if callable(collect_native_usage):
+            collect_native_usage()
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -2385,6 +2388,7 @@ class Rollout:
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
             )
+        self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role
