@@ -411,6 +411,7 @@ async def test_sandbox_litellm_install_uses_configured_setup_timeout():
 
 @pytest.mark.asyncio
 async def test_vertex_sandbox_litellm_has_google_runtime_and_local_adc():
+    """Guards PR #985 Vertex sandbox dependency and ADC staging."""
     route = resolve_litellm_route(
         "anthropic-vertex/claude-sonnet-4-6",
         {"GOOGLE_CLOUD_PROJECT": "project", "GOOGLE_CLOUD_LOCATION": "region"},

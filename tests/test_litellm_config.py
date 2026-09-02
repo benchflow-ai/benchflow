@@ -38,6 +38,7 @@ def test_bedrock_model_honors_max_thinking_effort_env():
 
 
 def test_vertex_route_passes_project_and_location_to_litellm():
+    """Guards PR #985 Vertex project/location forwarding to LiteLLM."""
     route = resolve_litellm_route(
         "anthropic-vertex/claude-sonnet-4-6",
         {"GOOGLE_CLOUD_PROJECT": "skillsbench", "GOOGLE_CLOUD_LOCATION": "global"},
