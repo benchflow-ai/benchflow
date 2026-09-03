@@ -1113,6 +1113,15 @@ run folders (`config.json` + `trajectory/llm_trajectory.jsonl`) recursively,
 continues each, and prints a JSON batch summary (exits 1 if any continuation
 failed).
 
+Timeout runs that `continue` cannot resume — an agent with no replay ingress,
+or a run with no LLM recording at all — are reported under `skipped`/`skips`
+rather than aborting the batch or counting as failures, so the rest of the
+sweep still runs and the exit status stays 0. Each skip carries a `reason`
+(`unsupported_agent` or `no_llm_recording`) and `recoverable_in_principle`,
+which is `false` when nothing was recorded and no future ingress could help.
+Naming a single unsupported run explicitly (`bench eval continue <folder>`)
+still fails loudly with exit 1.
+
 ```bash
 bench eval continue-batch path/to/jobs-root --tasks-dir path/to/tasks
 ```
