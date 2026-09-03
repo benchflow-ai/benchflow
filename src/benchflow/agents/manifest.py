@@ -24,11 +24,12 @@ Authoring vs. consuming, on purpose:
 
 from __future__ import annotations
 
-import os
 import re
 import tomllib
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 
 from benchflow.agents.registry import AgentConfig
@@ -44,11 +45,21 @@ SUPPORTED_CONTRACT_MAJOR = 1
 # skipping registry.VALID_PROTOCOLS — so this loader is the last protocol gate.
 _SUPPORTED_PROTOCOLS = frozenset({"acp"})
 
-# Directory env override for opt-in filesystem discovery (decision #7).
-MANIFEST_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
-
 _REQUIRED = ("contract_version", "name", "install_cmd", "launch_cmd")
 _VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$")
+
+
+class ManifestIssueKind(StrEnum):
+    """Stable categories for manifest loading and resolution failures."""
+
+    DISABLED = "disabled"
+    UNREACHABLE = "unreachable"
+    MALFORMED = "malformed"
+    INCOMPATIBLE = "incompatible"
+    MISSING = "missing"
+    DUPLICATE = "duplicate"
+    COLLISION = "collision"
+
 
 # manifest key -> AgentConfig field: the contract's data fields (the PR #14 schema
 # minus the meta keys contract_version/aliases). The consumer must cover EVERY
@@ -112,6 +123,18 @@ class AgentManifestError(ValueError):
     """A manifest.toml is unreadable, missing a required field, declares an
     unsupported contract major version, or collides with an existing agent."""
 
+    def __init__(
+        self,
+        detail: str,
+        *,
+        kind: ManifestIssueKind = ManifestIssueKind.MALFORMED,
+        path: str = "",
+    ) -> None:
+        self.kind = kind
+        self.path = path
+        self.detail = detail
+        super().__init__(detail)
+
 
 @dataclass(frozen=True)
 class LoadedManifest:
@@ -132,7 +155,8 @@ def _check_contract_version(raw: object) -> None:
     if major != SUPPORTED_CONTRACT_MAJOR:
         raise AgentManifestError(
             f"contract_version {raw!r} declares major {major}; this loader speaks "
-            f"contract {SUPPORTED_CONTRACT_MAJOR}.x"
+            f"contract {SUPPORTED_CONTRACT_MAJOR}.x",
+            kind=ManifestIssueKind.INCOMPATIBLE,
         )
 
 
@@ -146,11 +170,22 @@ def load_agent_manifest(path: str | Path) -> LoadedManifest:
     try:
         data = tomllib.loads(path.read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise AgentManifestError(f"cannot read manifest {path}: {exc}") from exc
+        raise AgentManifestError(
+            f"cannot read manifest {path}: {exc}", path=str(path)
+        ) from exc
 
     for key in _REQUIRED:
         if key not in data:
             raise AgentManifestError(f"manifest {path} is missing required {key!r}")
+    if not isinstance(data["name"], str):
+        raise AgentManifestError(f"manifest {path}: name must be a string")
+    raw_aliases = data.get("aliases", [])
+    if not isinstance(raw_aliases, list) or not all(
+        isinstance(alias, str) for alias in raw_aliases
+    ):
+        raise AgentManifestError(
+            f"manifest {path}: aliases must be an array of strings"
+        )
     _check_contract_version(data["contract_version"])
 
     protocol = data.get("protocol", "acp")
@@ -167,7 +202,7 @@ def load_agent_manifest(path: str | Path) -> LoadedManifest:
         # wants seconds as an int.
         kwargs["install_timeout"] = int(kwargs["install_timeout"])
 
-    aliases = tuple(data.get("aliases", ()))
+    aliases = tuple(raw_aliases)
     return LoadedManifest(config=AgentConfig(**kwargs), aliases=aliases)
 
 
@@ -227,6 +262,63 @@ def load_agents_from_dir(root: str | Path) -> dict[str, LoadedManifest]:
     return out
 
 
+def select_manifest_agents(
+    loaded: Mapping[str, LoadedManifest],
+    *,
+    agents: Mapping[str, AgentConfig],
+    aliases: Mapping[str, str],
+) -> tuple[dict[str, LoadedManifest], list[tuple[str, ManifestIssueKind, str]]]:
+    """Select gap-filling manifests and describe rejected names or aliases."""
+    name_counts = Counter(manifest.config.name for manifest in loaded.values())
+    conflicts: list[tuple[str, ManifestIssueKind, str]] = []
+    eligible: list[tuple[str, LoadedManifest]] = []
+    for path, manifest in sorted(loaded.items()):
+        name = manifest.config.name
+        if name_counts[name] > 1:
+            conflicts.append(
+                (path, ManifestIssueKind.DUPLICATE, f"duplicate agent name {name!r}")
+            )
+        elif name in agents or (name in aliases and aliases[name] != name):
+            conflicts.append(
+                (
+                    path,
+                    ManifestIssueKind.COLLISION,
+                    f"agent name {name!r} collides with local registry",
+                )
+            )
+        else:
+            eligible.append((path, manifest))
+
+    incoming_names = {manifest.config.name for _, manifest in eligible}
+    alias_owners: dict[str, set[str]] = {}
+    for path, manifest in eligible:
+        for alias in manifest.aliases:
+            alias_owners.setdefault(alias, set()).add(path)
+
+    selected: dict[str, LoadedManifest] = {}
+    for path, manifest in eligible:
+        name = manifest.config.name
+        kept_aliases: list[str] = []
+        for alias in dict.fromkeys(manifest.aliases):
+            if alias != name and (
+                alias in agents
+                or aliases.get(alias, name) != name
+                or alias in incoming_names
+                or len(alias_owners[alias]) > 1
+            ):
+                conflicts.append(
+                    (
+                        path,
+                        ManifestIssueKind.COLLISION,
+                        f"alias {alias!r} collides with catalog or registry",
+                    )
+                )
+            else:
+                kept_aliases.append(alias)
+        selected[name] = LoadedManifest(manifest.config, tuple(kept_aliases))
+    return selected, conflicts
+
+
 def register_manifest_agents(
     loaded: Mapping[str, LoadedManifest],
     *,
@@ -257,49 +349,21 @@ def register_manifest_agents(
     merged config equals the original. Alias collisions still fail loud because
     remapping another agent's alias is not part of the compatibility shim."""
     if not override:
-        incoming_names = set(loaded)
-        seen_aliases: dict[str, str] = {}
-        for name, lm in loaded.items():
-            if name in agents and not merge_shim_only:
-                raise AgentManifestError(
-                    f"agent {name!r} already in the registry; ship its manifest as "
-                    "the sole source or pass override=True"
-                )
-            # Precedence: the name-vs-existing-name check above is exempted by
-            # merge_shim_only (a deliberate shim reproducing a core agent's own
-            # name). The name-vs-alias checks below are NOT — alias collisions
-            # always fail loud (see docstring). registry.py resolves alias-first
-            # (name = AGENT_ALIASES.get(name, name)), so a manifest NAME equal to
-            # an existing alias for a *different* agent is silently shadowed
-            # (unreachable); reject it even in shim mode.
-            shadow = aliases.get(name)
-            if shadow is not None and shadow != name:
-                raise AgentManifestError(
-                    f"agent {name!r} collides with an existing alias mapping to "
-                    f"{shadow!r}; it would be silently shadowed by alias resolution"
-                )
-            for alias in lm.aliases:
-                existing = aliases.get(alias)
-                if existing is None:
-                    existing = seen_aliases.get(alias)
-                if existing is not None and existing != name:
-                    raise AgentManifestError(
-                        f"alias {alias!r} (for {name!r}) already maps to {existing!r}"
-                    )
-                if alias in agents and alias != name:
-                    raise AgentManifestError(
-                        f"alias {alias!r} (for {name!r}) collides with an existing "
-                        "agent name"
-                    )
-                # Same-batch cross-collision: an alias equal to *another* incoming
-                # agent's name would shadow that agent once both register. Checked
-                # against the whole incoming name set so it is order-independent.
-                if alias in incoming_names and alias != name:
-                    raise AgentManifestError(
-                        f"alias {alias!r} (for {name!r}) collides with another "
-                        "agent name in the same batch"
-                    )
-                seen_aliases[alias] = name
+        existing_agents = agents
+        if merge_shim_only:
+            incoming_names = {manifest.config.name for manifest in loaded.values()}
+            existing_agents = {
+                name: config
+                for name, config in agents.items()
+                if name not in incoming_names
+            }
+        selected, conflicts = select_manifest_agents(
+            loaded, agents=existing_agents, aliases=aliases
+        )
+        if conflicts:
+            path, kind, detail = conflicts[0]
+            raise AgentManifestError(detail, kind=kind, path=path)
+        loaded = selected
     for name, lm in loaded.items():
         config = lm.config
         if merge_shim_only and name in agents:
@@ -309,49 +373,3 @@ def register_manifest_agents(
         launch[name] = config.launch_cmd
         for alias in lm.aliases:
             aliases[alias] = name
-
-
-def register_env_manifest_agents(
-    *,
-    agents: dict[str, AgentConfig] | None = None,
-    aliases: dict[str, str] | None = None,
-    installers: dict[str, str] | None = None,
-    launch: dict[str, str] | None = None,
-) -> list[str]:
-    """Register agents from the directory named by ``$BENCHFLOW_AGENTS_DIR`` into
-    the registry; return the sorted names registered.
-
-    A no-op returning ``[]`` when the env var is unset — so a default import of
-    core is unchanged and the dual-source registry only activates on explicit
-    opt-in. The four maps default to the live ``registry`` globals (resolved
-    lazily to avoid an import cycle); tests pass throwaway dicts to stay
-    hermetic."""
-    root = os.environ.get(MANIFEST_DIR_ENV)
-    if not root:
-        return []
-    # Resolve each map to the live registry globals when not supplied (lazy
-    # import to avoid the registry↔manifest cycle). Per-variable ``is None``
-    # narrowing — not a tuple-membership check — so each is a concrete dict here.
-    from benchflow.agents.registry import (
-        AGENT_ALIASES,
-        AGENT_INSTALLERS,
-        AGENT_LAUNCH,
-        AGENTS,
-    )
-
-    resolved_agents = AGENTS if agents is None else agents
-    resolved_aliases = AGENT_ALIASES if aliases is None else aliases
-    resolved_installers = AGENT_INSTALLERS if installers is None else installers
-    resolved_launch = AGENT_LAUNCH if launch is None else launch
-    loaded = load_agents_from_dir(root)
-    register_manifest_agents(
-        loaded,
-        agents=resolved_agents,
-        aliases=resolved_aliases,
-        installers=resolved_installers,
-        launch=resolved_launch,
-        # Additive/compatible: a manifest reproducing a core agent overrides it but
-        # keeps the core entry's host-side _SHIM_ONLY fields (subscription_auth, ...).
-        merge_shim_only=True,
-    )
-    return sorted(loaded)

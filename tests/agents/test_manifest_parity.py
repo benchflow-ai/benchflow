@@ -9,14 +9,9 @@ silently change behaviour. This test is that gate.
 
 Why a child interpreter for "pure core"
 ---------------------------------------
-``registry.py`` calls ``register_env_manifest_agents()`` at import time, so when
-``$BENCHFLOW_AGENTS_DIR`` is set (as the dedicated CI job sets it) the in-process
-``AGENTS`` is *already* merged with those manifests. Comparing a manifest against
-that merged ``AGENTS`` would compare it against *itself* — a silent false pass
-that no drift could ever fail. So we recover the un-merged, hand-authored core
-configs by re-importing ``registry`` in a child interpreter with
-``$BENCHFLOW_AGENTS_DIR`` *unset* (the proven parity recipe), and compare the
-live manifests against that.
+The parity gate isolates core configs from process-local plugin and catalog
+state. It re-imports ``registry`` with ``$BENCHFLOW_AGENTS_DIR`` unset, then
+compares live manifests against that clean snapshot.
 
 What "byte-identical" means here
 --------------------------------
@@ -55,9 +50,9 @@ import pytest
 
 import benchflow
 from benchflow.agents.manifest import (
-    MANIFEST_DIR_ENV,
     LoadedManifest,
     _merge_core_shim_only,
+    load_agent_manifest,
     load_agents_from_dir,
 )
 from benchflow.agents.registry import AgentConfig
@@ -72,6 +67,8 @@ _CORE_ONLY_EXCEPTION = "omnigent-pi"
 # test_manifest_wiring.py.
 _SRC = Path(benchflow.__file__).resolve().parents[1]
 _ROOT = _SRC.parent
+MANIFEST_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
+MANIFEST_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
 
 _DUMP_PURE_CORE = (
     "import json, dataclasses;"
@@ -85,13 +82,31 @@ _SKIP_REASON = (
 )
 
 
+def test_active_openclaw_manifest_matches_hermetic_identity():
+    """Guards PR #1090 against active agents-repo identity drift."""
+    raw_source = os.environ.get(MANIFEST_DIR_ENV, "").strip() or os.environ.get(
+        MANIFEST_SOURCE_ENV, ""
+    ).strip()
+    if not raw_source:
+        pytest.skip("effective agents manifest source is unset or blank")
+    source = Path(raw_source)
+    if not source.is_dir():
+        pytest.skip("effective agents manifest source is not a local checkout")
+    active_path = source / "acp" / "openclaw" / "manifest.toml"
+    assert active_path.is_file(), f"paired checkout missing {active_path}"
+    active = load_agent_manifest(active_path)
+    fixture = load_agents_from_dir(_ROOT / "tests" / "fixtures" / "agents")["openclaw"]
+    assert active.config.name == fixture.config.name == "openclaw"
+    assert active.aliases == fixture.aliases == ("openclaw",)
+
+
 @functools.cache
 def _pure_core_agents() -> dict[str, AgentConfig]:
     """``registry.AGENTS`` as authored in core, with the manifest plane gated off.
 
     Re-imports ``registry`` in a child interpreter with ``$BENCHFLOW_AGENTS_DIR``
-    unset so the import-time manifest merge is a no-op, then ships the configs
-    back as JSON (``dataclasses.asdict``) and rebuilds them. The ``_SHIM_ONLY``
+    unset, then ships configs back as JSON (``dataclasses.asdict``) and rebuilds
+    them. The ``_SHIM_ONLY``
     fields (credential_files / subscription_auth) round-trip as plain dicts, but
     they are taken from this same core entry during the merge, so they compare
     equal by construction — only the data fields are meaningfully compared.

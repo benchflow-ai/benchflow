@@ -50,6 +50,7 @@ Look at the existing entries below for worked examples:
 
 import base64
 import shlex
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -280,9 +281,6 @@ _MIMO_MANIFEST_LAUNCH_CMD = (
     + "' | base64 -d > /tmp/mimo-acp-launch.sh && sh /tmp/mimo-acp-launch.sh"
 )
 
-
-# Path to the openclaw ACP shim script
-_OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 # Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
 _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
@@ -579,26 +577,6 @@ AGENTS: dict[str, AgentConfig] = {
         # env_mapping intentionally empty — the launch wrapper handles
         # protocol-dependent translation (env vars for Anthropic,
         # models.json for OpenAI-compatible providers like vLLM).
-    ),
-    "openclaw": AgentConfig(
-        name="openclaw",
-        description="OpenClaw agent via ACP shim — model set at runtime via --model",
-        skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
-        install_cmd=(
-            f"{_js_agent_install('openclaw', 'openclaw@2026.6.9')} && "
-            # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
-            "mkdir -p ~/.openclaw && "
-            'echo \'{"version":1,"defaults":{"allow_all":true}}\''
-            " > ~/.openclaw/exec-approvals.json && "
-            # Deploy ACP shim
-            + _install_python_script(
-                f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim", _OPENCLAW_SHIM
-            )
-        ),
-        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim",
-        protocol="acp",
-        requires_env=[],  # inferred from --model at runtime
-        home_dirs=[".openclaw"],
     ),
     "codex-acp": AgentConfig(
         name="codex-acp",
@@ -1070,7 +1048,6 @@ AGENT_ALIASES: dict[str, str] = {
     "codex": "codex-acp",
     "gemini": "gemini",
     "pi": "pi-acp",
-    "openclaw": "openclaw",
     "openhands": "openhands",
     "oh": "openhands",
     "harvey-lab": "harvey-lab-harness",
@@ -1078,6 +1055,34 @@ AGENT_ALIASES: dict[str, str] = {
 }
 
 VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
+
+
+MIGRATED_MANIFESTS = {"openclaw": "acp/openclaw/manifest.toml"}
+_CORE_AGENT_CONFIGS = dict(AGENTS)
+_REGISTRY_LOCK = threading.RLock()
+
+
+class AgentManifestResolutionError(RuntimeError):
+    """A reserved first-party manifest could not be resolved safely."""
+
+    def __init__(self, *, source: str, ref: str, category: str, detail: str):
+        self.source = source
+        self.ref = ref
+        self.category = category
+        self.detail = detail
+        ref_text = f" ref={ref!r}" if ref else ""
+        super().__init__(
+            f"agent manifest resolution failed: source={source!r}{ref_text} "
+            f"category={category}: {detail}"
+        )
+
+
+@dataclass(frozen=True)
+class AgentRequest:
+    protocol: str
+    name: str
+    reserved_first_party: bool
+
 
 # ---------------------------------------------------------------------------
 # The ``acpx:`` runtime-key namespace
@@ -1114,20 +1119,24 @@ def acpx_runtime_key(canonical_name: str) -> str:
     return f"{ACPX_KEY_PREFIX}{canonical_name}"
 
 
-def parse_agent_spec(spec: str) -> tuple[str, str]:
-    """Parse an agent spec like 'acp/claude-agent-acp', 'acpx/claude', or 'claude'.
-
-    Returns (protocol, agent_name) with alias resolution.
-    Bare names default to 'acp' protocol.
-    The 'acpx' protocol routes through the acpx CLI (https://acpx.sh/).
-    """
+def classify_agent_spec(spec: str) -> AgentRequest:
+    """Parse once and identify normalized reserved manifest requests."""
     if "/" in spec:
         protocol, name = spec.split("/", 1)
     else:
         protocol, name = "acp", spec
+    normalized_name = name.strip().lower()
+    if normalized_name.startswith("acp:") and normalized_name[4:] in MIGRATED_MANIFESTS:
+        normalized_name = normalized_name[4:]
+    reserved = normalized_name in MIGRATED_MANIFESTS
+    name = normalized_name if reserved else AGENT_ALIASES.get(name, name)
+    return AgentRequest(protocol, name, reserved)
 
-    name = AGENT_ALIASES.get(name, name)
-    return protocol, name
+
+def parse_agent_spec(spec: str) -> tuple[str, str]:
+    """Parse protocol/name and resolve aliases through shared classification."""
+    request = classify_agent_spec(spec)
+    return request.protocol, request.name
 
 
 _ACPX_INSTALL = (
@@ -1230,18 +1239,33 @@ def resolve_agent(spec: str) -> AgentConfig:
     "omnigent:pi" → omnigent-pi, "acp:pi" → pi-acp (see #876).
     Raises KeyError with suggestions for unknown agents.
     """
-    protocol, name = parse_agent_spec(spec)
+    request = classify_agent_spec(spec)
+    protocol, name = request.protocol, request.name
 
     if protocol not in VALID_PROTOCOLS:
         raise KeyError(
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
+    if request.reserved_first_party:
+        from benchflow.agents import remote_manifests
+
+        catalog = remote_manifests.ensure_manifest_catalog()
+        issue = catalog.issue_for(name)
+        if issue is not None:
+            raise AgentManifestResolutionError(
+                source=catalog.source,
+                ref=catalog.ref,
+                category=issue.kind.value,
+                detail=issue.detail,
+            )
+
     # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
     # round-trips: parse_agent_spec leaves it whole under the default "acp"
     # protocol and it lives in AGENTS. See the ACPX_KEY_PREFIX contract.
-    if protocol == "acp" and name in AGENTS:
-        return AGENTS[name]
+    direct = AGENTS.get(name) if protocol == "acp" else None
+    if direct is not None:
+        return direct
 
     if name not in AGENTS:
         shorthand = _resolve_namespace_shorthand(name)
@@ -1254,14 +1278,12 @@ def resolve_agent(spec: str) -> AgentConfig:
         # sources) and retry. One-shot per process; local names always win.
         from benchflow.agents import remote_manifests
 
-        if remote_manifests.autoload_remote_manifest_agents():
-            name = AGENT_ALIASES.get(name, name)
-            if name in AGENTS:
-                config = AGENTS[name]
-                return _acpx_wrap(config) if protocol == "acpx" else config
-            shorthand = _resolve_namespace_shorthand(name)
-            if shorthand is not None:
-                return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+        remote_manifests.autoload_remote_manifest_agents()
+        registered_name = AGENT_ALIASES.get(name, name)
+        config = AGENTS.get(registered_name)
+        if config is not None:
+            name = registered_name
+            return _acpx_wrap(config) if protocol == "acpx" else config
 
         from difflib import get_close_matches
 
@@ -1278,14 +1300,15 @@ def resolve_agent(spec: str) -> AgentConfig:
             )
         if remote_manifests.last_source_description:
             plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
-        close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
+        available_agents = list(AGENTS)
+        close = get_close_matches(name, available_agents, n=1, cutoff=0.6)
         if close:
             raise KeyError(
                 f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?{plugin_hint}"
             )
         raise KeyError(
             f"Unknown agent: {name!r}. Available: "
-            f"{', '.join(sorted(AGENTS.keys()))}{plugin_hint}"
+            f"{', '.join(sorted(available_agents))}{plugin_hint}"
         )
 
     config = AGENTS[name]
@@ -1312,6 +1335,8 @@ def resolve_agent_key(spec: str) -> str:
     """
     try:
         config = resolve_agent(spec)
+    except AgentManifestResolutionError:
+        raise
     except KeyError:
         # The raw-command fallback bypasses resolve_agent's error entirely (the
         # spec is later exec'd verbatim in the sandbox), so surface the failed-
@@ -1417,25 +1442,18 @@ def register_agent(
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
     )
-    AGENTS[name] = config
-    AGENT_INSTALLERS[name] = install_cmd
-    AGENT_LAUNCH[name] = launch_cmd
+    with _REGISTRY_LOCK:
+        if name in MIGRATED_MANIFESTS and name in AGENTS:
+            from benchflow.agents.manifest import AgentManifestError, ManifestIssueKind
+
+            raise AgentManifestError(
+                f"reserved agent {name!r} is already registered",
+                kind=ManifestIssueKind.COLLISION,
+            )
+        AGENTS[name] = config
+        AGENT_INSTALLERS[name] = install_cmd
+        AGENT_LAUNCH[name] = launch_cmd
     return config
-
-
-# --- Opt-in dual-source registry (agent-decoupling decision #7) ---------------
-# Merge agents declared as <dir>/manifest.toml files under $BENCHFLOW_AGENTS_DIR
-# into the registry. A NO-OP when the env var is unset, so a default import of
-# core is byte-for-byte unchanged; the manifest path only activates on explicit
-# opt-in. The import is deferred to here (end of module) on purpose: manifest.py
-# imports AgentConfig from this module, so a top-level import would be circular,
-# and the merge must run after AGENTS / AGENT_ALIASES / AGENT_INSTALLERS /
-# AGENT_LAUNCH are fully built above.
-from benchflow.agents.manifest import (  # noqa: E402
-    register_env_manifest_agents as _register_env_manifest_agents,
-)
-
-_register_env_manifest_agents()
 
 
 # --- Agent plugin packages (entry-point autoload) ------------------------------

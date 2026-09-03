@@ -38,12 +38,24 @@ def register_agent(app: typer.Typer) -> None:
     def agent_list() -> None:
         """List all registered agents."""
         from benchflow.agents.registry import AGENT_ALIASES, list_agents
+        from benchflow.agents.remote_manifests import (
+            manifest_catalog_for_listing,
+        )
+
+        catalog = manifest_catalog_for_listing()
 
         # Build reverse map: canonical name -> list of aliases
-        reverse_aliases: dict[str, list[str]] = {}
+        reverse_aliases: dict[str, set[str]] = {}
         for alias, canonical in AGENT_ALIASES.items():
             if alias != canonical:
-                reverse_aliases.setdefault(canonical, []).append(alias)
+                reverse_aliases.setdefault(canonical, set()).add(alias)
+        if not catalog.applied:
+            for manifest in catalog.manifests:
+                for alias in manifest.aliases:
+                    if alias != manifest.config.name:
+                        reverse_aliases.setdefault(
+                            manifest.config.name, set()
+                        ).add(alias)
 
         table = Table(title="Registered Agents")
         table.add_column("Name", style="cyan")
@@ -52,7 +64,10 @@ def register_agent(app: typer.Typer) -> None:
         table.add_column("Protocol", style="green")
         table.add_column("Requires", style="yellow")
 
-        for a in list_agents():
+        agents = list_agents()
+        if not catalog.applied:
+            agents.extend(manifest.config for manifest in catalog.manifests)
+        for a in sorted({a.name: a for a in agents}.values(), key=lambda a: a.name):
             aliases = ", ".join(sorted(reverse_aliases.get(a.name, [])))
             table.add_row(
                 a.name, aliases, a.description, a.protocol, _format_requires(a)
@@ -60,19 +75,28 @@ def register_agent(app: typer.Typer) -> None:
 
         console.print(table)
         console.print(f"[dim]{_REQUIRES_AUTH_NOTE}[/dim]")
+        if catalog.warnings:
+            print_error(
+                f"Agent catalog incomplete ({catalog.source}):\n  "
+                + "\n  ".join(catalog.warnings)
+            )
 
     @agent_app.command("show")
     def agent_show(
         name: Annotated[str, typer.Argument(help="Agent name")],
     ) -> None:
         """Show details for a registered agent."""
-        from benchflow.agents.registry import AGENT_ALIASES, AGENTS
+        from benchflow.agents.registry import (
+            AGENT_ALIASES,
+            AgentManifestResolutionError,
+            resolve_agent,
+        )
 
-        resolved = AGENT_ALIASES.get(name, name)
-        cfg = AGENTS.get(resolved)
-        if not cfg:
-            print_error(f"Unknown agent: {name}")
-            raise typer.Exit(1)
+        try:
+            cfg = resolve_agent(name)
+        except (KeyError, AgentManifestResolutionError) as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
 
         # Collect aliases that point to this agent
         aliases = sorted(

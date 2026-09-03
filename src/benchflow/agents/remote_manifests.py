@@ -1,171 +1,320 @@
-"""Miss-driven auto-load of DECLARATIVE agent manifests from a remote source.
-
-Design: #876 (Phase 2a). When ``--agent <name>`` does not resolve locally,
-benchflow fetches the pinned agents source (default: the first-party
-``benchflow-ai/agents`` repo, cloned+cached through the same
-``benchmark_repos`` machinery task sources use) and registers every
-``manifest.toml`` agent found there that does not collide with anything already
-registered — then resolution is retried.
-
-Why this is safe to do automatically, unlike installing agent packages: a
-manifest is **pure data**. Its ``install_cmd``/``launch_cmd`` strings execute
-inside the task sandbox — exactly the trust level of a task fetched with
-``--source-repo`` (and of harbor's ``acp:<id>`` registry auto-fetch, which also
-fetches data and executes it sandboxed). No remote code ever runs in the host
-process. Host-side *python* agent adapters (e.g. omnigent's session-factory)
-are deliberately NOT auto-loaded — those remain explicit installs.
-
-Semantics:
-
-* **Gap-fill only** — an agent name or alias that already exists locally
-  always wins; the remote manifest for it is skipped (never overwritten).
-* **One-shot per process** — the first resolution miss triggers at most one
-  fetch; later misses fail fast as before.
-* **Guarded** — a broken manifest (or an unreachable source) logs a warning
-  and never breaks agent resolution.
-* **Opt-out / re-point** — ``BENCHFLOW_AGENTS_SOURCE=off`` disables;
-  ``BENCHFLOW_AGENTS_SOURCE=owner/repo[@ref]`` re-pins; a local directory path
-  is also accepted (dev/tests).
-"""
+"""One-shot loading of declarative agent manifests."""
 
 from __future__ import annotations
 
-import logging
 import os
+import re
+import threading
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from benchflow.agents.manifest import (
+    AgentManifestError,
     LoadedManifest,
+    ManifestIssueKind,
+    _merge_core_shim_only,
     discover_manifests,
     load_agent_manifest,
     register_manifest_agents,
+    select_manifest_agents,
 )
 
-logger = logging.getLogger(__name__)
-
+AGENTS_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
 AGENTS_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
 DEFAULT_AGENTS_SOURCE = "benchflow-ai/agents@main"
 _OFF_VALUES = frozenset({"off", "0", "none", "disabled", "false"})
 
-# One-shot latch: the first resolution miss triggers at most one fetch per
-# process. A human-readable description of what was consulted is kept for the
-# unknown-agent error path.
-_attempted = False
-last_source_description: str = ""
+
+@dataclass(frozen=True)
+class ManifestIssue:
+    kind: ManifestIssueKind
+    detail: str
+    path: str = ""
+    cause: str = ""
+
+    def warning(self) -> str:
+        prefix = f"{self.path}: " if self.path else ""
+        return f"{prefix}{self.kind.value}: {self.detail}"
 
 
-def _source_root(spec: str) -> Path:
-    """Resolve the source spec to a local directory of manifests.
+@dataclass(frozen=True)
+class ManifestCatalog:
+    manifests: tuple[LoadedManifest, ...]
+    issues: tuple[ManifestIssue, ...]
+    source: str
+    ref: str
+    applied: bool = False
 
-    A local directory path is used verbatim (dev/tests); otherwise the spec is
-    ``owner/repo[@ref]`` and is cloned+cached via the task-source machinery
-    (data-only shallow clone, same cache as ``--source-repo``).
-    """
-    local = Path(spec).expanduser()
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        return tuple(issue.warning() for issue in self.issues)
+
+    def issue_for(self, name: str) -> ManifestIssue | None:
+        from benchflow.agents.registry import MIGRATED_MANIFESTS
+
+        if any(manifest.config.name == name for manifest in self.manifests):
+            return None
+        path = MIGRATED_MANIFESTS[name]
+        return next(
+            (issue for issue in self.issues if not issue.path or issue.path == path),
+            None,
+        )
+
+
+@dataclass(frozen=True)
+class _RequestedSource:
+    source: str
+    ref: str
+    raw_source: str
+    raw_ref: str
+    local_root: Path | None = None
+
+
+_lock = threading.Lock()
+_snapshot: ManifestCatalog | None = None
+last_source_description = ""
+
+
+def _effective_source() -> tuple[str, bool]:
+    directory = os.environ.get(AGENTS_DIR_ENV, "").strip()
+    if directory:
+        return directory, True
+    return os.environ.get(AGENTS_SOURCE_ENV, DEFAULT_AGENTS_SOURCE).strip(), False
+
+
+def _parse_source(spec: str) -> _RequestedSource:
+    """Parse source/ref once; strip URL secrets from diagnostics."""
+    clean = spec.split("?", 1)[0].split("#", 1)[0]
+    local = Path(clean).expanduser()
     if local.is_dir():
-        return local
-    repo, _, ref = spec.partition("@")
+        return _RequestedSource(clean, "", clean, "", local)
+    source, separator, ref = clean.rpartition("@")
+    userinfo_only = bool(
+        separator and re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*$", source)
+    )
+    if not separator or not ref or userinfo_only:
+        source, ref = clean, ""
+    safe_source = re.sub(r"(://)[^/@]+@", r"\1***@", source)
+    return _RequestedSource(safe_source, ref, source, ref)
+
+
+def _source_root(request: _RequestedSource) -> Path:
+    if request.local_root is not None:
+        return request.local_root
     from benchflow._utils.benchmark_repos import resolve_source
 
-    return resolve_source(repo, ref=ref or None)
+    return resolve_source(request.raw_source, ref=request.raw_ref or None)
 
 
-def _gap_fill(
-    manifests: list[LoadedManifest],
-    *,
-    agents: dict,
-    aliases: dict,
-) -> dict[str, LoadedManifest]:
-    """Keep only manifests (and aliases) that collide with nothing local.
-
-    Local always wins: an existing agent name, an existing alias, or a name
-    shadowed by an alias disqualifies the remote manifest; colliding aliases on
-    an otherwise-fresh manifest are stripped rather than fatal.
-    """
-    kept: dict[str, LoadedManifest] = {}
-    for lm in manifests:
-        name = lm.config.name
-        if name in agents or name in aliases or name in kept:
-            continue
-        fresh_aliases = tuple(
-            a
-            for a in lm.aliases
-            if a != name and a not in agents and a not in aliases and a not in kept
-        )
-        kept[name] = LoadedManifest(config=lm.config, aliases=fresh_aliases)
-    return kept
-
-
-def autoload_remote_manifest_agents() -> int:
-    """Fetch + register remote manifest agents once; return how many were added.
-
-    Called from ``resolve_agent``'s miss path. Never raises: any failure logs a
-    warning and returns 0 so the normal unknown-agent error still surfaces.
-    """
-    global _attempted, last_source_description
-    if _attempted:
-        return 0
-    _attempted = True
-
-    spec = os.environ.get(AGENTS_SOURCE_ENV, DEFAULT_AGENTS_SOURCE).strip()
+def _read_catalog(spec: str) -> tuple[ManifestCatalog, dict[str, LoadedManifest]]:
+    requested = _parse_source(spec)
     if not spec or spec.lower() in _OFF_VALUES:
-        last_source_description = "agents source disabled"
-        return 0
-    last_source_description = f"agents source {spec!r}"
-
+        issue = ManifestIssue(ManifestIssueKind.DISABLED, "agents source disabled")
+        return ManifestCatalog((), (issue,), requested.source or "off", ""), {}
     try:
-        root = _source_root(spec)
+        root = _source_root(requested)
     except Exception as exc:
-        logger.warning(
-            "Agent manifest auto-load: could not fetch %s (%s); remote agents "
-            "unavailable this run.",
-            spec,
-            exc,
+        issue = ManifestIssue(
+            ManifestIssueKind.UNREACHABLE,
+            f"catalog unavailable ({type(exc).__name__})",
+            cause=type(exc).__name__,
         )
-        return 0
+        return ManifestCatalog((), (issue,), requested.source, requested.ref), {}
 
-    manifests: list[LoadedManifest] = []
+    loaded: dict[str, LoadedManifest] = {}
+    issues: list[ManifestIssue] = []
     for path in discover_manifests(root):
+        rel = path.relative_to(root).as_posix()
         try:
-            manifests.append(load_agent_manifest(path))
-        except Exception as exc:
-            logger.warning(
-                "Agent manifest auto-load: skipping unreadable manifest %s: %s",
-                path,
-                exc,
+            manifest = load_agent_manifest(path)
+            loaded[rel] = manifest
+        except AgentManifestError as exc:
+            issues.append(
+                ManifestIssue(
+                    exc.kind,
+                    f"cannot load manifest ({type(exc).__name__})",
+                    rel,
+                    type(exc).__name__,
+                )
             )
+        except Exception as exc:
+            issues.append(
+                ManifestIssue(
+                    ManifestIssueKind.MALFORMED,
+                    f"cannot load manifest ({type(exc).__name__})",
+                    rel,
+                    type(exc).__name__,
+                )
+            )
+    catalog = ManifestCatalog((), tuple(issues), requested.source, requested.ref)
+    return _validate_migrated(catalog, loaded), loaded
 
+
+def _identity(value: str) -> str:
+    value = value.strip().lower()
+    for prefix in ("acp/", "acpx/", "acp:"):
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return value
+
+
+def _validate_migrated(
+    catalog: ManifestCatalog, loaded: dict[str, LoadedManifest]
+) -> ManifestCatalog:
+    from benchflow.agents.registry import MIGRATED_MANIFESTS
+
+    issues = list(catalog.issues)
+    invalid: set[str] = set()
+    for name, path in MIGRATED_MANIFESTS.items():
+        expected = loaded.get(path)
+        existing = next((issue for issue in issues if issue.path == path), None)
+        claimants = [
+            candidate_path
+            for candidate_path, manifest in loaded.items()
+            if _identity(manifest.config.name) == name
+            or any(_identity(alias) == name for alias in manifest.aliases)
+        ]
+        issue = existing
+        if issue is None and expected is None:
+            issue = ManifestIssue(
+                ManifestIssueKind.MISSING,
+                f"reserved manifest {name!r} is absent",
+                path,
+            )
+        elif issue is None and expected is not None and expected.config.name != name:
+            issue = ManifestIssue(
+                ManifestIssueKind.MALFORMED,
+                f"reserved manifest must declare exact name {name!r}",
+                path,
+            )
+        elif issue is None and len(claimants) != 1:
+            issue = ManifestIssue(
+                ManifestIssueKind.DUPLICATE,
+                f"expected one claimant for reserved identity {name!r}",
+                path,
+            )
+        if issue is not None:
+            if existing is None:
+                issues.append(issue)
+            invalid.update(claimants)
+            invalid.add(path)
+    for path in invalid:
+        loaded.pop(path, None)
+    return replace(catalog, issues=tuple(issues))
+
+
+def _select(
+    catalog: ManifestCatalog,
+    loaded: dict[str, LoadedManifest],
+    *,
+    local_override: bool,
+) -> tuple[ManifestCatalog, dict[str, LoadedManifest]]:
     from benchflow.agents.registry import (
+        _CORE_AGENT_CONFIGS,
+        AGENT_ALIASES,
+        AGENTS,
+    )
+
+    eligible = {
+        manifest.config.name
+        for manifest in loaded.values()
+        if local_override
+        and manifest.config.name in AGENTS
+        and _CORE_AGENT_CONFIGS.get(manifest.config.name)
+        == AGENTS[manifest.config.name]
+    }
+    agents = {name: config for name, config in AGENTS.items() if name not in eligible}
+    selected, conflicts = select_manifest_agents(
+        loaded, agents=agents, aliases=AGENT_ALIASES
+    )
+    collision_issues = tuple(
+        ManifestIssue(kind, detail, path) for path, kind, detail in conflicts
+    )
+    for name in eligible & selected.keys():
+        manifest = selected[name]
+        selected[name] = LoadedManifest(
+            _merge_core_shim_only(manifest.config, AGENTS[name]), manifest.aliases
+        )
+
+    issues = [*catalog.issues, *collision_issues]
+    result = replace(
+        catalog,
+        manifests=tuple(selected.values()),
+        issues=tuple(
+            sorted(
+                set(issues),
+                key=lambda issue: (issue.path, issue.kind.value, issue.detail),
+            )
+        ),
+    )
+    return result, selected
+
+
+def _register_catalog(
+    catalog: ManifestCatalog,
+    loaded: dict[str, LoadedManifest],
+    *,
+    local_override: bool,
+) -> ManifestCatalog:
+    from benchflow.agents.registry import (
+        _REGISTRY_LOCK,
         AGENT_ALIASES,
         AGENT_INSTALLERS,
         AGENT_LAUNCH,
         AGENTS,
     )
 
-    fresh = _gap_fill(manifests, agents=AGENTS, aliases=AGENT_ALIASES)
-    if not fresh:
-        logger.info(
-            "Agent manifest auto-load: %s had no agents beyond the local registry.",
-            spec,
+    with _REGISTRY_LOCK:
+        result, selected = _select(catalog, loaded, local_override=local_override)
+        register_manifest_agents(
+            selected,
+            agents=AGENTS,
+            aliases=AGENT_ALIASES,
+            installers=AGENT_INSTALLERS,
+            launch=AGENT_LAUNCH,
+            override=True,
+            merge_shim_only=local_override,
         )
-        return 0
-    register_manifest_agents(
-        fresh,
-        agents=AGENTS,
-        aliases=AGENT_ALIASES,
-        installers=AGENT_INSTALLERS,
-        launch=AGENT_LAUNCH,
-    )
-    logger.info(
-        "Agent manifest auto-load: registered %d agent(s) from %s: %s",
-        len(fresh),
-        spec,
-        ", ".join(sorted(fresh)),
-    )
-    return len(fresh)
+    return replace(result, applied=True)
+
+
+def ensure_manifest_catalog() -> ManifestCatalog:
+    """Read, register, then publish one runtime catalog result."""
+    global _snapshot, last_source_description
+    with _lock:
+        if _snapshot is None:
+            spec, local_override = _effective_source()
+            catalog, loaded = _read_catalog(spec)
+            result = _register_catalog(catalog, loaded, local_override=local_override)
+            _snapshot = result
+            last_source_description = (
+                "agents source disabled"
+                if any(
+                    issue.kind is ManifestIssueKind.DISABLED for issue in result.issues
+                )
+                else f"agents source {result.source!r}"
+            )
+        return _snapshot
+
+
+def manifest_catalog_for_listing() -> ManifestCatalog:
+    """Return applied result, or uncached/non-mutating preview."""
+    with _lock:
+        if _snapshot is not None:
+            return _snapshot
+        spec, local_override = _effective_source()
+        catalog, loaded = _read_catalog(spec)
+        return _select(catalog, loaded, local_override=local_override)[0]
+
+
+def autoload_remote_manifest_agents() -> int:
+    """Compatibility wrapper for miss-driven callers."""
+    return len(ensure_manifest_catalog().manifests)
 
 
 def _reset_for_tests() -> None:
-    global _attempted, last_source_description
-    _attempted = False
-    last_source_description = ""
+    """Clear catalog cache only; fixtures own registry restoration."""
+    global _snapshot, last_source_description
+    with _lock:
+        _snapshot = None
+        last_source_description = ""

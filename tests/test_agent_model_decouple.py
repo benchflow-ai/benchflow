@@ -6,6 +6,7 @@ from benchflow.agents.registry import (
     get_agent,
     infer_env_key_for_model,
     is_vertex_model,
+    resolve_agent,
 )
 
 
@@ -13,12 +14,12 @@ class TestGetAgent:
     """get_agent resolves agents correctly."""
 
     def test_openclaw_direct(self):
-        config, model = get_agent("openclaw")
+        config = resolve_agent("openclaw")
         assert config.name == "openclaw"
-        assert model == ""
+        assert config.default_model == ""
 
     def test_openclaw_no_hardcoded_requires_env(self):
-        config, _ = get_agent("openclaw")
+        config = resolve_agent("openclaw")
         assert config.requires_env == []
 
     def test_unknown_agent_raises(self):

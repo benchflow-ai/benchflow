@@ -3,7 +3,7 @@
 BenchFlow's built-in registry covers a handful of agents (`bench agent list`).
 Everything else — goose, qwen-code, prime-agent, the omnigent harnesses, … —
 lives in the public **[benchflow-ai/agents](https://github.com/benchflow-ai/agents)**
-repo and loads into BenchFlow through one of four paths. For most users the
+repo and loads into BenchFlow through one of three paths. For most users the
 first one is all there is to know.
 
 ## 1. Zero-config remote autoload (the default)
@@ -65,6 +65,7 @@ directory, or off entirely:
 
 ```bash
 export BENCHFLOW_AGENTS_SOURCE="benchflow-ai/agents@my-branch"   # owner/repo[@ref]
+export BENCHFLOW_AGENTS_SOURCE="benchflow-ai/agents@0123456789abcdef0123456789abcdef01234567" # reproducible
 export BENCHFLOW_AGENTS_SOURCE="/path/to/agents-checkout"        # local dir
 export BENCHFLOW_AGENTS_SOURCE="off"                             # disable autoload
 ```
@@ -74,21 +75,29 @@ the standard way to try an agent from an open PR — e.g. verified live on
 BenchFlow 0.6.6: `BENCHFLOW_AGENTS_SOURCE="benchflow-ai/agents@add-prime-agent"`
 resolved and ran the `prime-agent` manifest with zero local setup.
 
-## 3. Local checkout at import: `BENCHFLOW_AGENTS_DIR`
+`bench agent list` reads this catalog best-effort and reports one consolidated
+warning when it is incomplete. `bench agent show NAME` uses runtime resolution.
+OpenClaw is owned by the agents catalog and is fail-closed: `openclaw`,
+`acp/openclaw`, `acpx/openclaw`, and `acp:openclaw` never fall through to an
+unrelated executable on `PATH` when its manifest is disabled, unavailable, or
+invalid. Other unknown names retain raw-command fallback. Remote refs are
+fetched/refreshed by the normal source resolver; there is no offline fallback.
 
-For agents-repo development: point at a checkout and every
-`<dir>/manifest.toml` under it merges into the registry when `benchflow`
-imports (not lazily on miss):
+## 3. Local checkout override: `BENCHFLOW_AGENTS_DIR`
+
+For agents-repo development, point at a checkout. This selects the same lazy
+catalog path used by `BENCHFLOW_AGENTS_SOURCE`:
 
 ```bash
 export BENCHFLOW_AGENTS_DIR=/path/to/agents-checkout
 ```
 
-Unlike the miss-driven autoload, this path loads even for names that would
-never miss, and it is the loop used while editing a manifest. It is additive
-and compatible-merge only: colliding with an existing agent's aliases is a
-hard error rather than a silent shadow. Unset, the import is byte-for-byte
-identical to core — the mechanism is strictly opt-in.
+When both variables are set, a nonblank `BENCHFLOW_AGENTS_DIR` wins. Its local
+override mode may update an unchanged built-in's manifest-owned fields, but
+never replaces a plugin/runtime-modified entry. Loading remains one-shot after
+first runtime resolution. `bench agent list` may preview the selected catalog
+without activating or caching it; after activation, listing reuses the applied
+result.
 
 ## 4. Plugin packages (entry points)
 
@@ -109,17 +118,12 @@ error message if its name is later requested.
 ## Precedence
 
 1. Built-in registry (core `AGENTS`).
-2. `BENCHFLOW_AGENTS_DIR` manifests — merged at import; a collision with an
-   existing agent name or alias is a hard error, so manifests never shadow
-   built-ins.
-3. Entry-point plugin packages — loaded at import, after the manifest merge.
-   These register through plain `register_agent`, which overwrites by name:
-   a plugin **can** replace a built-in (or manifest-registered) agent that
-   shares its name. Well-behaved plugins skip names the registry already owns
-   (as the acp-registry package does).
-4. Remote autoload (`BENCHFLOW_AGENTS_SOURCE`, default `benchflow-ai/agents@main`)
-   — consulted last, once, only for names still unknown at resolution time;
-   it fills gaps and never overwrites.
+2. Entry-point plugin packages, loaded at import. Plugins may replace built-ins.
+3. One lazily selected manifest catalog. Nonblank `BENCHFLOW_AGENTS_DIR` wins
+   over `BENCHFLOW_AGENTS_SOURCE` and uses local-override policy; otherwise
+   remote/default loading uses gap-fill policy and never replaces existing
+   entries. Reserved first-party manifest ids such as OpenClaw require a valid
+   catalog record rather than raw-command fallback.
 
 Manifest capabilities are deliberately bounded: a `manifest.toml` is data-only
 (install/launch commands, env mapping, model-routing hints — the

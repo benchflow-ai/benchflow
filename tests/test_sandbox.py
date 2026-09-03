@@ -30,6 +30,9 @@ class TestSandboxDirs:
 
     def test_home_dirs_included(self):
         """Explicit home_dirs from AgentConfig are included."""
+        from benchflow.agents.registry import resolve_agent
+
+        resolve_agent("openclaw")
         dirs = get_sandbox_home_dirs()
         # openclaw has home_dirs=[".openclaw"]
         assert ".openclaw" in dirs
@@ -46,6 +49,9 @@ class TestSandboxDirs:
 
     def test_dirs_represent_registry_backed_home_config_or_auth(self):
         """Returned dirs are registry-derived user home config/auth roots."""
+        from benchflow.agents.registry import resolve_agent
+
+        resolve_agent("openclaw")
         dirs = get_sandbox_home_dirs()
         assert {".claude", ".codex", ".gemini", ".openclaw"}.issubset(dirs)
         assert ".agents" not in dirs

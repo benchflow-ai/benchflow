@@ -186,11 +186,6 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         )
 
 
-def test_openclaw_is_pinned_to_node_22_20_compatibility():
-    """Guards PR #704's Node 22.20.0 pin against floating OpenClaw releases."""
-    assert "openclaw@2026.6.9" in AGENTS["openclaw"].install_cmd
-
-
 # Bash-isms not supported by dash (Ubuntu/Debian's /bin/sh). The sandbox
 # Docker/Daytona exec paths invoke ``sh -c install_cmd``; if /bin/sh is dash
 # (ubuntu:24.04 base), any of these aborts the install on line 1. See #341.
@@ -335,9 +330,9 @@ def test_agent_negative_config_invariants():
     per-agent assertions live in test_agent_registry.py /
     test_subscription_auth.py; this is the dedicated negative side.
     """
-    no_credential_files = {"claude-agent-acp", "openclaw"}
-    no_subscription_auth = {"openclaw", "pi-acp"}
-    no_env_mapping = {"openclaw", "pi-acp"}
+    no_credential_files = {"claude-agent-acp"}
+    no_subscription_auth = {"pi-acp"}
+    no_env_mapping = {"pi-acp"}
 
     for name in no_credential_files:
         assert AGENTS[name].credential_files == [], (

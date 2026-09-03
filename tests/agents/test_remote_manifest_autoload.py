@@ -35,16 +35,19 @@ def _write_manifest(root, dirname, name, extra=""):
 def source_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path))
     remote_manifests._reset_for_tests()
+    maps = (
+        registry.AGENTS,
+        registry.AGENT_ALIASES,
+        registry.AGENT_INSTALLERS,
+        registry.AGENT_LAUNCH,
+    )
+    snapshots = tuple(mapping.copy() for mapping in maps)
     registered: list[str] = []
     yield tmp_path, registered
     remote_manifests._reset_for_tests()
-    for name in registered:
-        registry.AGENTS.pop(name, None)
-        registry.AGENT_INSTALLERS.pop(name, None)
-        registry.AGENT_LAUNCH.pop(name, None)
-    for alias, target in list(registry.AGENT_ALIASES.items()):
-        if target in registered:
-            registry.AGENT_ALIASES.pop(alias, None)
+    for mapping, snapshot in zip(maps, snapshots, strict=True):
+        mapping.clear()
+        mapping.update(snapshot)
 
 
 def test_unknown_agent_triggers_autoload_and_resolves(source_dir):
@@ -74,6 +77,28 @@ def test_colliding_alias_is_stripped_not_fatal(source_dir):
     registered.append("probe-remote3")
     assert resolve_agent("probe-remote3").name == "probe-remote3"
     assert registry.AGENT_ALIASES["claude"] == "claude-agent-acp"
+
+
+@pytest.mark.parametrize(
+    ("first_alias", "second_alias"),
+    [("shared-batch-alias", "shared-batch-alias"), ("probe-b", "")],
+)
+def test_batch_alias_collisions_are_typed_not_raw(
+    source_dir, first_alias, second_alias
+):
+    """Guards PR #1090 against raw alias collisions during catalog commit."""
+    root, registered = source_dir
+    _write_manifest(root, "a", "probe-a", f'aliases = ["{first_alias}"]\n')
+    extra = f'aliases = ["{second_alias}"]\n' if second_alias else ""
+    _write_manifest(root, "b", "probe-b", extra)
+    registered.extend(("probe-a", "probe-b"))
+
+    assert resolve_agent("probe-a").name == "probe-a"
+    assert resolve_agent("probe-b").name == "probe-b"
+    assert any(
+        issue.kind.value == "collision"
+        for issue in remote_manifests.ensure_manifest_catalog().issues
+    )
 
 
 def test_broken_manifest_skipped_others_load(source_dir, caplog):
