@@ -163,7 +163,11 @@ def _select(
         loaded, agents=agents, aliases=AGENT_ALIASES
     )
     collision_issues = tuple(
-        ManifestIssue(kind, detail, path) for path, kind, detail in conflicts
+        ManifestIssue(kind, detail, path)
+        for path, kind, detail in conflicts
+        if local_override
+        or kind is not ManifestIssueKind.COLLISION
+        or loaded[path].config.name not in AGENTS
     )
     for name in eligible & selected.keys():
         manifest = selected[name]
@@ -245,6 +249,12 @@ def manifest_catalog_for_listing() -> ManifestCatalog:
 def autoload_remote_manifest_agents() -> int:
     """Compatibility wrapper for miss-driven callers."""
     return len(ensure_manifest_catalog().manifests)
+
+
+def autoload_local_manifest_agents() -> None:
+    """Apply an explicitly configured local catalog before registry lookup."""
+    if os.environ.get(AGENTS_DIR_ENV, "").strip():
+        ensure_manifest_catalog()
 
 
 def _reset_for_tests() -> None:

@@ -1219,6 +1219,11 @@ def resolve_agent(spec: str) -> AgentConfig:
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
+    from benchflow.agents import remote_manifests
+
+    remote_manifests.autoload_local_manifest_agents()
+    protocol, name = parse_agent_spec(spec)
+
     # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
     # round-trips: parse_agent_spec leaves it whole under the default "acp"
     # protocol and it lives in AGENTS. See the ACPX_KEY_PREFIX contract.
@@ -1235,8 +1240,6 @@ def resolve_agent(spec: str) -> AgentConfig:
         # manifest agents from the pinned agents source (data only — their
         # install/launch strings run in the sandbox, same trust as task
         # sources) and retry. One-shot per process; local names always win.
-        from benchflow.agents import remote_manifests
-
         remote_manifests.autoload_remote_manifest_agents()
         registered_name = AGENT_ALIASES.get(name, name)
         config = AGENTS.get(registered_name)

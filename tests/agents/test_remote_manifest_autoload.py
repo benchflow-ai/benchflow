@@ -63,6 +63,7 @@ def test_unknown_agent_triggers_autoload_and_resolves(source_dir):
 
 
 def test_gap_fill_never_overwrites_local(source_dir):
+    """Guards PR #1090 against warnings for expected remote core overlap."""
     root, registered = source_dir
     # remote manifest reuses an existing core name with different commands.
     _write_manifest(root, "mimo", "mimo")
@@ -71,6 +72,7 @@ def test_gap_fill_never_overwrites_local(source_dir):
     before = registry.AGENTS["mimo"]
     resolve_agent("probe-remote2")  # triggers the load
     assert registry.AGENTS["mimo"] is before  # untouched
+    assert not remote_manifests.ensure_manifest_catalog().warnings
 
 
 def test_colliding_alias_is_stripped_not_fatal(source_dir):
@@ -162,6 +164,16 @@ def test_directory_override_wins_over_source(source_dir, monkeypatch, tmp_path):
     assert remote_manifests.ensure_manifest_catalog().source == str(local)
     assert "probe-source" not in registry.AGENTS
     assert source != local
+
+
+def test_directory_override_activates_before_builtin_lookup(source_dir, monkeypatch):
+    """Guards PR #1090 local overrides of directly resolvable built-ins."""
+    root, _registered = source_dir
+    monkeypatch.setenv(remote_manifests.AGENTS_DIR_ENV, str(root))
+    _write_manifest(root, "mimo", "mimo")
+
+    config = resolve_agent("mimo")
+    assert (config.install_cmd, config.launch_cmd) == ("true", "true")
 
 
 def test_resolve_then_listing_reuses_applied_catalog(source_dir, monkeypatch):
