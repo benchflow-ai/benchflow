@@ -949,9 +949,10 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
-        self._disallow_web_tools = (
+        has_agent_launch = cfg.primary_agent not in {"oracle", "task-runtime"}
+        self._disallow_web_tools = has_agent_launch and (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
-        ) and cfg.primary_agent != "oracle"
+        )
         self._agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
                 cfg.primary_agent, cfg.primary_model, cfg.agent_env
@@ -970,7 +971,7 @@ class Rollout:
             _resolve_prompts(cfg.task_path, cfg.prompts),
             self._task.config.agent.prompt_prefix,
         )
-        if cfg.primary_agent != "oracle":
+        if has_agent_launch:
             self._agent_launch = self._planes.agent_launch(
                 cfg.primary_agent,
                 disallow_web_tools=self._disallow_web_tools,
