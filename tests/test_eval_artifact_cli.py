@@ -10,7 +10,11 @@ from typing import Any
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
-from benchflow.eval_artifacts import build_canonical_selection, build_health_summary
+from benchflow.eval_artifacts import (
+    build_canonical_selection,
+    build_health_summary,
+    render_run_summary_markdown,
+)
 from benchflow.evaluation import Evaluation
 
 runner = CliRunner()
@@ -203,6 +207,37 @@ def test_eval_run_publish_bucket_writes_readme_summary(
     assert "task-a" in text
     assert "Mean reward: 1.000" in text
     assert "`oracle`" in text
+
+
+def test_health_and_publish_summary_include_integrated_rubric_score(
+    tmp_path: Path,
+) -> None:
+    """Guards the rubric final-score PR's health and publish projections."""
+
+    job_dir = tmp_path / "jobs" / "reviewed"
+    rollout_dir = job_dir / "task-a__abc"
+    _write_rollout(rollout_dir, "task-a")
+    (rollout_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "rewards": {"reward": 1.0, "pass_at_1": 1.0, "score": 0.75},
+                "final_score": {"pass": True, "pass_at_1": 1, "score": 0.75},
+                "rubric_review": {"status": "complete"},
+                "n_tool_calls": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = build_health_summary(job_dir)
+    assert health["rows"][0]["pass_at_1"] == 1
+    assert health["rows"][0]["final_score"] == 0.75
+    assert health["rows"][0]["rubric_review_status"] == "complete"
+
+    rendered = render_run_summary_markdown(job_dir)
+    assert "- Mean rubric score: 0.750" in rendered
+    assert "| task-a | 1 | 0.750 | 1.000 |" in rendered
 
 
 def test_eval_run_publish_bucket_readme_dedupes_retry_attempts(

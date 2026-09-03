@@ -116,6 +116,33 @@ def test_collect_metrics_basic(results_dir):
     assert "task-c" in s["errored_tasks"]
 
 
+def test_collect_metrics_surfaces_automatic_rubric_score(tmp_path):
+    """Guards the rubric final-score PR's metrics projection."""
+
+    rollout = tmp_path / "job" / "task-a__reviewed"
+    rollout.mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "rewards": {"reward": 1.0, "score": 0.75, "pass_at_1": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "final_score": {"status": "complete", "pass": True, "score": 0.75},
+                "rubric_review": {"status": "complete"},
+            }
+        )
+    )
+
+    summary = collect_metrics(tmp_path).summary()
+
+    assert summary["pass_at_1_ratio"] == 1.0
+    assert summary["mean_final_score"] == 0.75
+    assert summary["rubric_reviews_required"] == 1
+    assert summary["rubric_reviews_completed"] == 1
+    assert summary["rubric_score_coverage"] == 1.0
+
+
 def test_collect_metrics_tool_calls(results_dir):
     """Test average tool call calculation (excludes errored tasks)."""
     metrics = collect_metrics(str(results_dir))
@@ -210,6 +237,31 @@ def test_collect_metrics_best_result_picking(results_dir_with_retries):
     assert s["error_breakdown"] == {"install_failure": 1}
     assert s["failed"] == 1
     assert "task-c" in s["failed_tasks"]
+
+
+def test_collect_metrics_breaks_pass_ties_with_rubric_score(tmp_path):
+    """Guards the rubric final-score PR's retry ranking across passed attempts."""
+    for attempt, score in (("attempt1", 0.25), ("attempt2", 0.75)):
+        trial = tmp_path / attempt / "task-a__trial"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task-a",
+                    "rewards": {"reward": 1.0, "score": score},
+                    "final_score": {"pass": True, "score": score},
+                    "error": None,
+                    "n_tool_calls": 0,
+                    "started_at": "2026-03-24 10:00:00.000000",
+                    "finished_at": "2026-03-24 10:01:00.000000",
+                }
+            )
+        )
+
+    summary = collect_metrics(tmp_path).summary()
+
+    assert summary["passed"] == 1
+    assert summary["mean_final_score"] == 0.75
 
 
 def test_collect_metrics_empty_dir(tmp_path):

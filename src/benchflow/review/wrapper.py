@@ -36,6 +36,7 @@ from benchflow.review.config import (
     Rubric,
     build_review_response_model,
 )
+from benchflow.review.policy import DEFAULT_REVIEWER_TIMEOUT_SEC
 from benchflow.review.prompts import (
     TASK_MOUNT,
     TRIAL_MOUNT,
@@ -48,7 +49,7 @@ from benchflow.review.prompts import (
 REVIEWER_IMAGE = (
     "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
 )
-REVIEWER_AGENT_TIMEOUT_SEC = 1800
+REVIEWER_AGENT_TIMEOUT_SEC = DEFAULT_REVIEWER_TIMEOUT_SEC
 REVIEWER_VERIFIER_TIMEOUT_SEC = 120
 
 #: Rollout-side entries never copied into the evidence snapshot.  Excluding
@@ -59,6 +60,7 @@ _EVIDENCE_EXCLUDES = (
     "review",
     REVIEW_RESULT_FILENAME,
     "review_report.json",
+    "workspace-baseline.json",
 )
 
 #: Task-side material the reviewer must not see: skills would break no-skill

@@ -175,6 +175,7 @@ class SDK:
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
+        rubric_review: Any = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`.
 
@@ -225,5 +226,6 @@ class SDK:
             self_gen_no_internet=self_gen_no_internet,
             source_provenance=source_provenance,
             usage_tracking=usage_tracking,
+            rubric_review=rubric_review,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

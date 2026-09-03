@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.registry import AgentConfig, resolve_agent
+from benchflow.review.policy import RubricReviewConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 if TYPE_CHECKING:
@@ -220,6 +221,10 @@ class RuntimeConfig:
     pre_agent_hooks: list | None = None
     sandbox_locked_paths: list[str] | None = None
     usage_tracking: Any = None
+    rubric_review: RubricReviewConfig = field(default_factory=RubricReviewConfig)
+
+    def __post_init__(self) -> None:
+        self.rubric_review = RubricReviewConfig.coerce(self.rubric_review)
 
 
 @dataclass
@@ -348,6 +353,7 @@ class Runtime:
             skills_dir=config.skills_dir,
             skill_mode=config.skill_mode,
             usage_tracking=config.usage_tracking,
+            rubric_review=config.rubric_review,
         )
 
         rollout = await Rollout.create(trial_config)
@@ -447,6 +453,7 @@ async def run(
             agent=subject,
             model=model,
             usage_tracking=rc.usage_tracking,
+            rubric_review=rc.rubric_review,
         )
         rollout = await Rollout.create(rollout_config)
         return await rollout.run()

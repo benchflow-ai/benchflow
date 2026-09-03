@@ -37,6 +37,7 @@ from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.loop_strategies import LoopStrategySpec, loop_block
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.review.policy import RubricReviewConfig
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     TaskSkillPolicy,
@@ -67,9 +68,11 @@ def _write_rewards_jsonl(
     uses the same helper so the two paths can't drift.
     """
     events = build_rewards_jsonl_events(rewards, finished_at)
+    path = rollout_dir / "rewards.jsonl"
     if events:
-        path = rollout_dir / "rewards.jsonl"
         path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
+    elif path.exists():
+        path.unlink()
 
 
 # Substrings that flag an env var name as secret-bearing for ``config.json``
@@ -161,6 +164,7 @@ def _write_config(
     environment_manifest: EnvironmentManifest | None = None,
     config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
+    rubric_review: RubricReviewConfig | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.acp.selection import selected_acp_transport
@@ -203,6 +207,9 @@ def _write_config(
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop_block(loop_strategy),
+        "rubric_review": (
+            rubric_review.to_config_artifact() if rubric_review is not None else None
+        ),
     }
     if usage_tracking is not None:
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
@@ -558,6 +565,119 @@ def _write_trainer_artifact(
         )
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("ADP artifact write failed: %s", e)
+
+
+def finalize_rubric_review_artifacts(
+    rollout_dir: Path,
+    result: RolloutResult,
+    *,
+    rewards: dict[str, Any] | None,
+    final_score: dict[str, Any],
+    rubric_review: dict[str, Any],
+    verifier_error: str | None = None,
+    review_elapsed_sec: float | None = None,
+) -> RolloutResult:
+    """Consistently refresh every score-bearing artifact after rubric review.
+
+    Job-level aggregators consume these per-rollout files later, so rewriting
+    the canonical rollout surfaces here prevents ``result.json``, reward
+    events, and trainer exports from reporting different verdicts.
+    """
+
+    result_path = rollout_dir / "result.json"
+    try:
+        result_data = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot refresh rubric-reviewed result: {exc}") from exc
+    if not isinstance(result_data, dict):
+        raise RuntimeError(
+            "cannot refresh rubric-reviewed result: root is not an object"
+        )
+
+    result.rewards = rewards
+    result.final_score = final_score
+    result.rubric_review = rubric_review
+    result.verifier_error = verifier_error
+    result.verifier_error_category = classify_verifier_error(verifier_error)
+    result.finished_at = datetime.now()
+
+    timing = result_data.get("timing")
+    if not isinstance(timing, dict):
+        timing = {}
+    if review_elapsed_sec is not None:
+        timing["rubric_review"] = round(review_elapsed_sec, 1)
+    if result.started_at is not None:
+        timing["total"] = round(
+            (result.finished_at - result.started_at).total_seconds(), 1
+        )
+
+    result_data.update(
+        {
+            "rewards": rewards,
+            "final_score": final_score,
+            "rubric_review": rubric_review,
+            "verifier_error": verifier_error,
+            "verifier_error_category": result.verifier_error_category,
+            "finished_at": str(result.finished_at),
+            "timing": timing,
+        }
+    )
+    # Refresh projections first and write result.json last. Its final_score is
+    # the durable commit marker used by evaluation resume; a process death
+    # before that last write safely retries review instead of accepting a
+    # half-refreshed rollout as complete.
+    (rollout_dir / "timing.json").write_text(
+        json.dumps(timing, indent=2), encoding="utf-8"
+    )
+    _write_rewards_jsonl(rollout_dir, rewards, result.finished_at)
+
+    prompts_path = rollout_dir / "prompts.json"
+    try:
+        prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        prompts = []
+    if not isinstance(prompts, list) or not all(
+        isinstance(prompt, str) for prompt in prompts
+    ):
+        prompts = []
+    agent_result = result_data.get("agent_result")
+    if not isinstance(agent_result, dict):
+        agent_result = {}
+    _write_trainer_artifact(
+        rollout_dir,
+        task_name=result.task_name,
+        rollout_name=result.rollout_name,
+        agent_name=result.agent_name or result.agent,
+        prompts=prompts,
+        trajectory=result.trajectory,
+        rewards=rewards,
+        model=result.model,
+        verifier_error=verifier_error,
+        total_prompt_tokens=result.n_input_tokens,
+        total_completion_tokens=result.n_output_tokens,
+        total_cached_tokens=result.n_cache_read_tokens,
+        total_cost_usd=result.cost_usd,
+    )
+    _write_results_jsonl(
+        rollout_dir,
+        task_name=result.task_name,
+        rollout_name=result.rollout_name,
+        agent=result.agent,
+        agent_name=result.agent_name,
+        model=result.model,
+        n_tool_calls=result.n_tool_calls,
+        prompts=prompts,
+        trajectory=result.trajectory,
+        partial_trajectory=result.partial_trajectory,
+        rewards=rewards,
+        error=result.error,
+        verifier_error=verifier_error,
+        export_error=result.export_error,
+        timing=timing,
+        agent_result=agent_result,
+    )
+    result_path.write_text(json.dumps(result_data, indent=2), encoding="utf-8")
+    return result
 
 
 def _is_document_user(user: BaseUser) -> bool:

@@ -373,6 +373,7 @@ Batch orchestration with concurrency and retries.
 
 ```python
 from benchflow import Evaluation, EvaluationConfig, EvaluationResult, RetryConfig
+from benchflow.review import RubricReviewConfig
 
 # EvaluationConfig holds the per-job settings (agent/model/environment/...)
 # applied to every task discovered under tasks_dir.
@@ -381,6 +382,11 @@ config = EvaluationConfig(
     environment="daytona",
     concurrency=8,
     retry=RetryConfig(max_retries=2),
+    # This is already the default for tasks that ship a review rubric.
+    rubric_review=RubricReviewConfig(
+        model="openai/gpt-5.6-sol",
+        reasoning_effort="xhigh",
+    ),
 )
 evaluation = Evaluation(tasks_dir="tasks", jobs_dir="jobs/my-run", config=config)
 eval_result: EvaluationResult = await evaluation.run()

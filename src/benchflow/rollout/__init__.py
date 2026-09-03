@@ -99,6 +99,7 @@ from benchflow.loop_strategies import (
     loop_block,
 )
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.review.lifecycle import AutomaticRubricReview
 from benchflow.rollout import _deadline as _deadline
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
@@ -666,6 +667,7 @@ class Rollout:
         self._effective_task_path: Path = config.task_path
         self._task_tmp: Path | None = None
         self._task_skill_policy: TaskSkillPolicy | None = None
+        self._automatic_review: AutomaticRubricReview | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
         self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
@@ -1059,6 +1061,21 @@ class Rollout:
         if callable(configure_timeout):
             configure_timeout(self._env, self._timeout)
 
+        self._automatic_review = AutomaticRubricReview.discover(
+            cfg.task_path, cfg.rubric_review
+        )
+        if self._automatic_review is not None and cfg.task_digest is None:
+            try:
+                from benchflow._utils.task_authoring import task_digest
+
+                cfg.task_digest = task_digest(cfg.task_path)
+            except Exception as exc:
+                logger.warning(
+                    "Could not compute rubric-review task digest for %s: %s",
+                    cfg.task_path,
+                    exc,
+                )
+
         _write_config(
             self._rollout_dir,
             task_path=cfg.task_path,
@@ -1086,6 +1103,7 @@ class Rollout:
             task_digest=cfg.task_digest,
             config_override=cfg.config_override,
             loop_strategy=cfg.loop_strategy_spec,
+            rubric_review=cfg.rubric_review,
         )
 
         self._phase = "setup"
@@ -1185,6 +1203,7 @@ class Rollout:
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
+            await self._record_review_workspace_baseline()
             self._phase = "installed"
             return
 
@@ -1251,8 +1270,19 @@ class Rollout:
                 self._env, cfg.generated_skills_root, cfg.sandbox_user
             )
         await self._planes.lockdown_paths(self._env, self._effective_locked)
+        await self._record_review_workspace_baseline()
 
         self._phase = "installed"
+
+    async def _record_review_workspace_baseline(self) -> None:
+        """Prepare output-only workspace evidence for automatic review."""
+
+        automatic_review = getattr(self, "_automatic_review", None)
+        if automatic_review is None:
+            return
+        self._timing["rubric_workspace_baseline"] = await automatic_review.record_baseline(
+            self._env, self._agent_cwd
+        )
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 
@@ -1843,6 +1873,11 @@ class Rollout:
         await _publish_trajectory_for_verifier(
             self._env, self._trajectory, self._rollout_paths.agent_dir
         )
+        # Snapshot solver outputs before verifier hardening recursively changes
+        # workspace ownership/mode metadata. The verifier still runs first from
+        # the scoring perspective; this only freezes the evidence that the
+        # subsequent isolated reviewer receives.
+        await self._export_review_workspace()
 
         (
             self._rewards,
@@ -1947,6 +1982,20 @@ class Rollout:
 
     # Phase 5: CLEANUP
 
+    async def _export_review_workspace(self) -> None:
+        """Capture final solver outputs once, retrying during cleanup on failure."""
+
+        automatic_review = getattr(self, "_automatic_review", None)
+        if not self._env or automatic_review is None:
+            return
+        elapsed = await automatic_review.export_workspace(
+            self._env,
+            self._agent_cwd,
+            artifacts_dir=self._rollout_paths.artifacts_dir,
+        )
+        if elapsed is not None:
+            self._timing["rubric_workspace_export"] = elapsed
+
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment."""
         self._capture_partial_acp_trajectory()
@@ -1968,6 +2017,8 @@ class Rollout:
                 if self._export_error is None:
                     self._export_error = export_error
                 self._evolved_skills = None
+
+        await self._export_review_workspace()
 
         usage_runtime = getattr(self, "_usage_runtime", None)
         if usage_runtime is not None:
@@ -2096,8 +2147,16 @@ class Rollout:
         A trip becomes a normal infra-retryable error result and the
         abandoned attempt's cleanup is bounded too.
         """
-        return await _deadline.enforce_hard_deadline(
+        result = await _deadline.enforce_hard_deadline(
             self._run_lifecycle(), config=self._config
+        )
+        automatic_review = getattr(self, "_automatic_review", None)
+        if automatic_review is None or self._rollout_dir is None:
+            return result
+        return await automatic_review.integrate(
+            result,
+            rollout_dir=self._rollout_dir,
+            source_environment=self._config.environment,
         )
 
     async def _run_lifecycle(self) -> RolloutResult:

@@ -156,6 +156,7 @@ def _config_payload(
         "loop_strategy": (
             config.loop_strategy.to_mapping() if config.loop_strategy else None
         ),
+        "rubric_review": config.rubric_review.to_mapping(),
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload
@@ -171,6 +172,16 @@ def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
             if _should_record_env_entry(str(key), str(value))
         }
         artifact_payload["agent_env_keys"] = sorted(str(key) for key in agent_env)
+    rubric_review = artifact_payload.get("rubric_review")
+    if isinstance(rubric_review, dict):
+        review_artifact = dict(rubric_review)
+        review_env = review_artifact.pop("agent_env", {})
+        review_artifact["agent_env_keys"] = (
+            sorted(str(key) for key in review_env)
+            if isinstance(review_env, dict)
+            else []
+        )
+        artifact_payload["rubric_review"] = review_artifact
     return artifact_payload
 
 
@@ -295,6 +306,75 @@ def _aggregate_result(
     shard_results: list[dict[str, Any]],
     elapsed_sec: float,
 ) -> EvaluationResult:
+    rubric_reviews_required = sum(
+        int(result.get("rubric_reviews_required", 0)) for result in shard_results
+    )
+    rubric_reviews_completed = sum(
+        int(result.get("rubric_reviews_completed", 0)) for result in shard_results
+    )
+    weighted_score_sum = sum(
+        float(mean_score) * int(result.get("rubric_reviews_completed", 0))
+        for result in shard_results
+        if isinstance((mean_score := result.get("mean_final_score")), (int, float))
+        and not isinstance(mean_score, bool)
+    )
+    review_parts = [
+        review
+        for shard in shard_results
+        if isinstance((review := shard.get("rubric_review")), dict)
+    ]
+
+    def review_sum(field: str) -> float:
+        return sum(
+            float(value)
+            for review in review_parts
+            if isinstance((value := review.get(field)), (int, float))
+            and not isinstance(value, bool)
+        )
+
+    reviewer_usage_count = sum(
+        round(
+            float(review.get("reviewer_usage_coverage", 0.0))
+            * int(review.get("required", 0))
+        )
+        for review in review_parts
+    )
+    rubric_review = (
+        {
+            "required": rubric_reviews_required,
+            "completed": rubric_reviews_completed,
+            "passed": int(review_sum("passed")),
+            "failed": int(review_sum("failed")),
+            "errored": int(review_sum("errored")),
+            "unweighted": int(review_sum("unweighted")),
+            "pass_at_1": (
+                review_sum("passed") / rubric_reviews_required
+                if rubric_reviews_required
+                else None
+            ),
+            "mean_score": (
+                weighted_score_sum / rubric_reviews_completed
+                if rubric_reviews_completed
+                else None
+            ),
+            "score_coverage": (
+                rubric_reviews_completed / rubric_reviews_required
+                if rubric_reviews_required
+                else 0.0
+            ),
+            "reviewer_total_tokens": int(review_sum("reviewer_total_tokens")),
+            "reviewer_total_cost_usd": round(
+                review_sum("reviewer_total_cost_usd"), 10
+            ),
+            "reviewer_usage_coverage": (
+                reviewer_usage_count / rubric_reviews_required
+                if rubric_reviews_required
+                else 0.0
+            ),
+        }
+        if rubric_reviews_required
+        else {}
+    )
     result = EvaluationResult(
         job_name="worker-sharded",
         config=config,
@@ -304,6 +384,14 @@ def _aggregate_result(
         errored=sum(int(r.get("errored", 0)) for r in shard_results),
         verifier_errored=sum(int(r.get("verifier_errored", 0)) for r in shard_results),
         elapsed_sec=elapsed_sec,
+        mean_final_score=(
+            weighted_score_sum / rubric_reviews_completed
+            if rubric_reviews_completed
+            else None
+        ),
+        rubric_reviews_required=rubric_reviews_required,
+        rubric_reviews_completed=rubric_reviews_completed,
+        rubric_review_details=rubric_review,
     )
     summary = {
         "job_name": result.job_name,
@@ -314,6 +402,12 @@ def _aggregate_result(
         "verifier_errored": result.verifier_errored,
         "score": result.score,
         "score_ratio": pass_rate(passed=result.passed, total=result.total),
+        "pass_at_1": f"{result.score:.1%}",
+        "pass_at_1_ratio": result.score,
+        "mean_final_score": result.mean_final_score,
+        "rubric_reviews_required": result.rubric_reviews_required,
+        "rubric_reviews_completed": result.rubric_reviews_completed,
+        **({"rubric_review": rubric_review} if rubric_review else {}),
         "score_excl_errors": result.score_excl_errors,
         "score_excl_errors_ratio": pass_rate_excl_errors(
             passed=result.passed,

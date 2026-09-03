@@ -1223,6 +1223,13 @@ def eval_metrics(
     table.add_row("Failed", f"[red]{summary['failed']}[/red]")
     table.add_row("Errored", f"[yellow]{summary['errored']}[/yellow]")
     table.add_row("Score", f"[bold]{summary['score']}[/bold]")
+    if summary.get("mean_final_score") is not None:
+        table.add_row(
+            "Rubric score",
+            f"{summary['mean_final_score']:.1%} "
+            f"({summary['rubric_reviews_completed']}/"
+            f"{summary['rubric_reviews_required']})",
+        )
     if summary.get("memory_score") is not None:
         scored = (summary.get("memory") or {}).get("scored", 0)
         table.add_row(

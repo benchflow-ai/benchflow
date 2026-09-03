@@ -9,8 +9,9 @@ while non-blockers receive 0/1/2 scores that Benchflow aggregates host-side.
 Reviews run *after* rollouts, from their host-side directories, as ordinary
 rollouts of throwaway wrapper tasks (:mod:`benchflow.review.wrapper`), so
 every sandbox backend works unchanged.  Review results live in
-``review_report.json``; they are never merged into a reviewed rollout's
-rewards or ``result.json``.
+``review_report.json``. The detached ``bench review`` command remains
+read-only; the rollout lifecycle separately integrates weighted task rubrics
+into the source rollout's canonical final score.
 
 Public surface:
 
@@ -41,6 +42,14 @@ from benchflow.review.config import (
     find_task_rubric,
     load_rubric,
 )
+from benchflow.review.policy import (
+    DEFAULT_REVIEWER_AGENT,
+    DEFAULT_REVIEWER_MAX_RETRIES,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_REVIEWER_REASONING_EFFORT,
+    DEFAULT_REVIEWER_TIMEOUT_SEC,
+    RubricReviewConfig,
+)
 from benchflow.review.runner import (
     REVIEW_REPORT_FILENAME,
     ReviewReport,
@@ -60,6 +69,11 @@ from benchflow.review.wrapper import assemble_review_task
 
 __all__ = [
     "DEFAULT_RUBRIC_PATH",
+    "DEFAULT_REVIEWER_AGENT",
+    "DEFAULT_REVIEWER_MAX_RETRIES",
+    "DEFAULT_REVIEWER_MODEL",
+    "DEFAULT_REVIEWER_REASONING_EFFORT",
+    "DEFAULT_REVIEWER_TIMEOUT_SEC",
     "LEGACY_REVIEW_RUBRIC_CONTRACT",
     "PUBLISHABLE_QUALITY",
     "REVIEW_RUBRIC_CONTRACT",
@@ -79,6 +93,7 @@ __all__ = [
     "ReviewScoring",
     "Rubric",
     "RubricCriterion",
+    "RubricReviewConfig",
     "ScoredCriterionCheck",
     "TrialReview",
     "assemble_review_task",

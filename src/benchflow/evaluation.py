@@ -30,6 +30,7 @@ from benchflow._utils.evaluation_results import (
     loop_summary,
     phase_timing_summary,
     rollout_result_payload,
+    rubric_review_summary,
     skill_invocation_summary,
     tool_call_summary,
     trajectory_step_summary,
@@ -79,6 +80,8 @@ from benchflow.loop_strategies import (
     parse_loop_strategy_spec,
 )
 from benchflow.models import RolloutResult
+from benchflow.review.policy import RubricReviewConfig
+from benchflow.review.resume import resume_incomplete_rubric_reviews
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -395,12 +398,14 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
     )
     prev_agent = ""
     prev_loop: dict | None = None
+    prev_review: dict | None = None
     if sample_dir:
         for cfg_file in sample_dir.rglob("config.json"):
             try:
                 cfg = json.loads(cfg_file.read_text())
                 prev_agent = cfg.get("agent", "")
                 prev_loop = cfg.get("loop") or loop_block(None)
+                prev_review = cfg.get("rubric_review")
                 break
             except (json.JSONDecodeError, OSError):
                 logger.debug("Could not read %s", cfg_file)
@@ -417,6 +422,13 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
             f"Resuming with loop_strategy={current_loop} but "
             f"completed tasks used loop_strategy={prev_loop}. "
             f"Use a different jobs_dir to avoid mixing results."
+        )
+    current_review = config.rubric_review.to_config_artifact()
+    if prev_review is not None and prev_review != current_review:
+        raise ResumeMismatchError(
+            "refusing to resume: completed tasks used a different "
+            "rubric_review policy. Mixing reviewer models or reasoning levels "
+            "would publish incomparable final scores. Use a fresh --jobs-dir."
         )
 
 
@@ -513,6 +525,7 @@ class EvaluationConfig:
     dataset_version: str | None = None
     dataset_task_digests: dict[str, str] = field(default_factory=dict)
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
+    rubric_review: RubricReviewConfig = field(default_factory=RubricReviewConfig)
     # Environment-plane manifest applied to every rollout in the batch.
     # When set, each task's RolloutConfig.environment_manifest is populated
     # so the Environment plane (manifest-declared stateful environment,
@@ -541,6 +554,7 @@ class EvaluationConfig:
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.rubric_review = RubricReviewConfig.coerce(self.rubric_review)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if isinstance(self.loop_strategy, str):
             self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
@@ -614,6 +628,10 @@ class EvaluationResult:
     # pass/fail counts binarize at reward==1, which erases partial credit —
     # a 0.3 rubric score and a flat 0 both print as FAIL without this.
     mean_reward: float | None = None
+    mean_final_score: float | None = None
+    rubric_reviews_required: int = 0
+    rubric_reviews_completed: int = 0
+    rubric_review_details: dict[str, Any] = field(default_factory=dict)
 
     @property
     def score(self) -> float:
@@ -920,6 +938,7 @@ class Evaluation:
             environment_manifest=env_manifest,
             config_override=raw.get("config_override"),
             loop_strategy=raw.get("loop_strategy"),
+            rubric_review=RubricReviewConfig.coerce(raw.get("rubric_review")),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -1011,6 +1030,7 @@ class Evaluation:
             ),
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
+            rubric_review=RubricReviewConfig.coerce(raw.get("rubric_review")),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -1298,6 +1318,7 @@ class Evaluation:
             dataset=dataset,
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
+            rubric_review=cfg.rubric_review,
             loop_strategy=cfg.loop_strategy,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
@@ -1355,6 +1376,7 @@ class Evaluation:
             self_gen_no_internet=cfg.self_gen_no_internet,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
             usage_tracking=cfg.usage_tracking,
+            rubric_review=cfg.rubric_review,
         )
 
     async def _run_task(self, task_dir: Path) -> RunResult:
@@ -1742,6 +1764,15 @@ class Evaluation:
                 "empty 0/0 summary."
             )
         completed = self._get_completed_tasks()
+        if completed:
+            _check_resume_mismatch(self._jobs_dir / self._job_name, self._config)
+            completed = await resume_incomplete_rubric_reviews(
+                completed,
+                tasks_dir=self._tasks_dir,
+                job_dir=self._jobs_dir / self._job_name,
+                source_environment=self._config.environment,
+                policy=self._config.rubric_review,
+            )
         remaining = [d for d in task_dirs if d.name not in completed]
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
@@ -1768,10 +1799,6 @@ class Evaluation:
                 f"({len(completed)} completed task(s), "
                 f"{len(remaining)} remaining)"
             )
-
-        # Warn if resuming with different config than completed tasks
-        if completed:
-            _check_resume_mismatch(self._jobs_dir / self._job_name, self._config)
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._prune_docker()
@@ -1840,6 +1867,7 @@ class Evaluation:
         score_counts = count_score_outcomes(all_results.values())
         audit_counts = count_audit_outcomes(all_results.values())
         memory, memory_scores = memory_summary(all_results)
+        review_summary = rubric_review_summary(all_results).get("rubric_review", {})
         # Per-task failure evidence for the CLI's final block — FAILED (scored,
         # reward != 1) tasks only, from data already in memory. Sorted by name
         # so the printed lines are deterministic across resume/concurrency.
@@ -1872,6 +1900,10 @@ class Evaluation:
             memory_scores=memory_scores,
             task_failures=task_failures,
             mean_reward=mean_scored_reward(all_results.values()),
+            mean_final_score=review_summary.get("mean_score"),
+            rubric_reviews_required=int(review_summary.get("required", 0)),
+            rubric_reviews_completed=int(review_summary.get("completed", 0)),
+            rubric_review_details=dict(review_summary),
         )
 
         assert (
@@ -1909,6 +1941,7 @@ class Evaluation:
             "concurrency": cfg.concurrency,
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "usage_tracking": cfg.usage_tracking.with_env_defaults().to_config_artifact(),
+            "rubric_review_policy": cfg.rubric_review.to_config_artifact(),
             "loop": loop_block(cfg.loop_strategy),
             "total": job_result.total,
             "passed": audit_counts["passed"],
@@ -1925,6 +1958,11 @@ class Evaluation:
             "score_ratio": pass_rate(
                 passed=audit_counts["passed"], total=job_result.total
             ),
+            "pass_at_1": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
+            "pass_at_1_ratio": pass_rate(
+                passed=audit_counts["passed"], total=job_result.total
+            ),
+            "mean_final_score": job_result.mean_final_score,
             "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
             "score_excl_errors_ratio": pass_rate_excl_errors(
                 passed=audit_counts["passed"], failed=audit_counts["failed"]
@@ -1939,6 +1977,7 @@ class Evaluation:
             "memory_scores": memory_scores,
             **skill_invocation_summary(all_results),
             **usage_summary(all_results),
+            **rubric_review_summary(all_results),
             **loop_summary(all_results),
             **tool_call_summary(all_results),
             **trajectory_step_summary(all_results),
