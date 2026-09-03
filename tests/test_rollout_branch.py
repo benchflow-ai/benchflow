@@ -245,6 +245,7 @@ async def test_post_branch_execute_grows_off_the_parent_cursor(
     rollout._acp_client = object()
     await rollout.execute(["p1"])
     parent = rollout._cursor
+    rollout._acp_client = None
 
     async def run_child(child):
         return 1.0

@@ -512,3 +512,196 @@ async def test_stop_agent_caller_cancellation_waits_for_shared_safe_teardown() -
     assert transport.termination_calls == 1
     assert receipt.process_tree_stopped is True
     assert receipt.capture_safe is True
+
+
+@pytest.mark.asyncio
+async def test_disconnect_is_idempotent_after_capture_safe_stop() -> None:
+    events: list[str] = []
+    transport = _StopTransport(
+        events,
+        graceful=True,
+        forced=False,
+        stopped=True,
+    )
+    rollout = _rollout_at_stop_boundary(_StopClient(transport, events))
+
+    await rollout.disconnect()
+    await rollout.disconnect()
+
+    assert events == ["close", "liveness"]
+
+
+@pytest.mark.asyncio
+async def test_unsafe_stop_blocks_final_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    rollout = _rollout_at_stop_boundary(
+        _StopClient(
+            _StopTransport(
+                events,
+                graceful=False,
+                forced=False,
+                stopped=False,
+            ),
+            events,
+        )
+    )
+    rollout._config = SimpleNamespace(primary_agent="agent", sandbox_user=None)
+    rollout._trajectory = [{"type": "agent_message", "text": "done"}]
+    rollout._env = object()
+    rollout._task = object()
+    rollout._rollout_paths = SimpleNamespace(agent_dir=tmp_path / "agent")
+    rollout._timing = {}
+    rollout._planes = object()
+    rollout._agent_cwd = "/app"
+    publish = AsyncMock()
+    verify = AsyncMock(return_value=({"reward": 1.0}, None, None))
+    monkeypatch.setattr("benchflow.rollout._publish_trajectory_for_verifier", publish)
+    monkeypatch.setattr("benchflow.rollout._verify_rollout", verify)
+
+    with pytest.raises(RuntimeError, match="not capture-safe"):
+        await rollout.verify()
+
+    publish.assert_not_awaited()
+    verify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unsafe_stop_blocks_soft_verification(tmp_path: Path) -> None:
+    events: list[str] = []
+    rollout = _rollout_at_stop_boundary(
+        _StopClient(
+            _StopTransport(
+                events,
+                graceful=False,
+                forced=False,
+                stopped=False,
+            ),
+            events,
+        )
+    )
+    rollout._rollout_paths = SimpleNamespace(verifier_dir=tmp_path / "verifier")
+    rollout._task = SimpleNamespace(
+        task_dir=tmp_path / "task",
+        config=SimpleNamespace(verifier=SimpleNamespace(timeout_sec=1)),
+    )
+    rollout._env = SimpleNamespace(exec=AsyncMock())
+    rollout._planes = SimpleNamespace(
+        clear_verifier_output_dir=AsyncMock(),
+        ensure_legacy_app_dir=AsyncMock(),
+        cleanup_verifier_python_hooks=AsyncMock(),
+        verifier=lambda **kwargs: SimpleNamespace(
+            verify=AsyncMock(return_value=SimpleNamespace(rewards={"reward": 1.0}))
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="not capture-safe"):
+        await rollout.soft_verify()
+
+    rollout._planes.clear_verifier_output_dir.assert_not_awaited()
+    rollout._planes.ensure_legacy_app_dir.assert_not_awaited()
+    rollout._planes.cleanup_verifier_python_hooks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unsafe_stop_blocks_branch_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    rollout = _rollout_at_stop_boundary(
+        _StopClient(
+            _StopTransport(
+                events,
+                graceful=False,
+                forced=False,
+                stopped=False,
+            ),
+            events,
+        )
+    )
+    rollout._environment = object()
+    rollout._cursor = object()
+    checkpoint = AsyncMock(
+        side_effect=AssertionError("checkpointed an unsafe workspace")
+    )
+    monkeypatch.setattr("benchflow.rollout_branch._checkpoint_branch", checkpoint)
+
+    with pytest.raises(RuntimeError, match="not capture-safe"):
+        await rollout.branch(2)
+
+    checkpoint.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("externally_owned", [False, True])
+async def test_unsafe_stop_skips_export_and_respects_sandbox_ownership(
+    tmp_path: Path,
+    externally_owned: bool,
+) -> None:
+    config = RolloutConfig(
+        task_path=tmp_path / "task",
+        export_generated_skills_to=tmp_path / "export",
+    )
+    rollout = Rollout(config)
+    events: list[str] = []
+    rollout._acp_client = _StopClient(
+        _StopTransport(
+            events,
+            graceful=False,
+            forced=False,
+            stopped=False,
+        ),
+        events,
+    )
+    env_stop = AsyncMock()
+    rollout._env = SimpleNamespace(stop=env_stop)
+    rollout._env_externally_owned = externally_owned
+    rollout._rollout_dir = tmp_path
+    export = AsyncMock()
+    rollout._export_generated_skills = export
+
+    await rollout.cleanup()
+
+    export.assert_not_awaited()
+    assert env_stop.await_count == (0 if externally_owned else 1)
+    assert rollout._error is not None
+    assert "not capture-safe" in rollout._error
+
+
+@pytest.mark.asyncio
+async def test_unsafe_stop_bounds_rollout_owned_sandbox_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+
+    class WedgedOwnedEnv:
+        async def stop(self, *, delete: bool) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    rollout = Rollout(RolloutConfig(task_path=tmp_path / "task"))
+    events: list[str] = []
+    rollout._acp_client = _StopClient(
+        _StopTransport(
+            events,
+            graceful=False,
+            forced=False,
+            stopped=False,
+        ),
+        events,
+    )
+    rollout._env = WedgedOwnedEnv()
+    monkeypatch.setattr(
+        "benchflow.rollout._ACP_UNSAFE_OWNER_STOP_TIMEOUT_SEC",
+        0.01,
+    )
+
+    await asyncio.wait_for(rollout.cleanup(), timeout=0.5)
+    await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+
+    assert rollout._error is not None
+    assert "not capture-safe" in rollout._error

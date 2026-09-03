@@ -13,6 +13,7 @@ caller aborts before prompting.
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,7 +24,12 @@ from benchflow.acp.session import ACPSession
 from benchflow.acp.types import StopReason
 from benchflow.diagnostics import TransportClosedError
 from benchflow.rollout import Rollout
-from benchflow.trajectories.types import redact_trajectory_obj_with_exact_values
+from benchflow.trajectories.types import (
+    LLMExchange,
+    LLMRequest,
+    LLMResponse,
+    redact_trajectory_obj_with_exact_values,
+)
 
 
 def _stock_acp_mock() -> AsyncMock:
@@ -420,3 +426,86 @@ def test_acp_observation_exactly_redacts_protocol_metadata(tmp_path) -> None:
     assert credential in session.model_state["currentModelId"]
     assert credential in session.mode_state["currentModeId"]
     assert credential in session.stop_reason
+
+
+def test_reconciled_trajectory_refreshes_cached_observation_digest(tmp_path) -> None:
+    trajectory = tmp_path / "trajectory" / "acp_trajectory.jsonl"
+    trajectory.parent.mkdir()
+    acp_event = {
+        "type": "tool_call",
+        "tool_call_id": "call-1",
+        "title": "cat input.txt",
+        "status": "completed",
+        "content": [],
+    }
+    trajectory.write_text(json.dumps(acp_event) + "\n")
+    rollout = Rollout.__new__(Rollout)
+    rollout._session = SimpleNamespace(
+        agent_info=SimpleNamespace(name="wire-agent"),
+        model_state={"currentModelId": "wire-model"},
+        mode_state={"currentModeId": "wire-mode"},
+        stop_reason=StopReason.END_TURN,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._trajectory = [acp_event]
+    rollout._acp_session_observation = None
+    before = rollout.acp_session_observation
+    assert before is not None
+    rollout._session = None
+
+    provider_payload = json.dumps(
+        {
+            "contents": [
+                {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "id": "call-1",
+                                "name": "run_shell_command",
+                                "args": {"command": "cat input.txt"},
+                            }
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "id": "call-1",
+                                "name": "run_shell_command",
+                                "response": {"output": "returned input"},
+                            }
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+    exchange = LLMExchange(
+        request=LLMRequest(
+            body={"messages": [{"role": "user", "content": provider_payload}]}
+        ),
+        response=LLMResponse(body={}),
+    )
+    usage_runtime = SimpleNamespace(
+        server=SimpleNamespace(
+            trajectory=SimpleNamespace(exchanges=[exchange]),
+        )
+    )
+
+    rollout._reconcile_acp_tool_evidence(usage_runtime)
+
+    final_bytes = trajectory.read_bytes()
+    observation = rollout.acp_session_observation
+    assert observation is not None
+    assert observation.agent_name == before.agent_name
+    assert observation.model_id == before.model_id
+    assert observation.mode_id == before.mode_id
+    assert observation.stop_reason == before.stop_reason
+    assert observation.trajectory_path == str(trajectory)
+    assert observation.trajectory_digest == (
+        "sha256:" + hashlib.sha256(final_bytes).hexdigest()
+    )
+    assert observation.trajectory_digest != before.trajectory_digest

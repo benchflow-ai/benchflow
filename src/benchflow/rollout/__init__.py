@@ -80,6 +80,7 @@ from benchflow.acp.termination import (
     AcpSessionObservation,
     AgentTerminationReceipt,
     _observe_acp_session,
+    _trajectory_identity,
 )
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
@@ -245,6 +246,7 @@ _ACP_STOP_CANCEL_TIMEOUT_SEC = 5.0
 _ACP_STOP_CLOSE_TIMEOUT_SEC = 20.0
 _ACP_STOP_SESSION_CLOSE_TIMEOUT_SEC = 5.0
 _ACP_STOP_LIVENESS_TIMEOUT_SEC = 5.0
+_ACP_UNSAFE_OWNER_STOP_TIMEOUT_SEC = 30.0
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -1544,7 +1546,8 @@ class Rollout:
     async def _stop_agent_once(self) -> AgentTerminationReceipt:
         """Stop the live ACP process tree and publish immutable evidence once."""
 
-        if getattr(self, "_is_session_factory", False):
+        is_session_factory = getattr(self, "_is_session_factory", False)
+        if is_session_factory:
             self._capture_partial_session_factory_trajectory()
         else:
             self._capture_partial_acp_trajectory()
@@ -1555,7 +1558,9 @@ class Rollout:
         cancel_task = getattr(self, "_stop_agent_cancel_task", None)
         if cancel_task is not None:
             cancel_acknowledged = await asyncio.shield(cancel_task)
-        session_closed = client is None and getattr(self, "_session", None) is None
+        session = getattr(self, "_session", None)
+        no_owned_process = client is None and (session is None or is_session_factory)
+        session_closed = no_owned_process
 
         close_session: Any = getattr(client, "close_session", None)
         terminate_process_tree: Any = getattr(transport, "terminate_process_tree", None)
@@ -1597,7 +1602,7 @@ class Rollout:
         force_kill_required = (
             getattr(termination_status, "force_kill_required", False) is True
         )
-        process_tree_stopped = False
+        process_tree_stopped = no_owned_process
         liveness_check = getattr(transport, "process_tree_stopped", None)
         if callable(liveness_check):
             try:
@@ -1643,9 +1648,24 @@ class Rollout:
             self._phase = "installed"
         return receipt
 
+    @staticmethod
+    def _unsafe_capture_error(
+        receipt: AgentTerminationReceipt, *, action: str
+    ) -> RuntimeError:
+        return RuntimeError(
+            "Agent teardown was not capture-safe; "
+            f"{action} is blocked "
+            f"(session_closed={receipt.session_closed}, "
+            f"process_tree_stopped={receipt.process_tree_stopped})"
+        )
+
     async def disconnect(self) -> None:
-        """Stop the current agent while keeping the environment alive."""
-        await Rollout.stop_agent(self, cancel_requested=False)
+        """Stop the agent, failing closed when process-tree death is unproven."""
+        receipt = await Rollout.stop_agent(self, cancel_requested=False)
+        if not receipt.capture_safe:
+            raise Rollout._unsafe_capture_error(
+                receipt, action="downstream workspace access"
+            )
 
     def on_ask_user(self, handler: Any) -> None:
         """Register the agent-initiated ``session/request_permission`` handler.
@@ -2063,6 +2083,7 @@ class Rollout:
 
     async def verify(self) -> dict | None:
         """Run the verifier and return rewards."""
+        await self.disconnect()
         cfg = self._config
 
         # Mark the phase at entry (the other transitions mark completion):
@@ -2108,14 +2129,15 @@ class Rollout:
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
         """Run the verifier without full hardening — for intermediate feedback.
 
-        Skips process kill and workspace restore/chown (so the sandbox
-        stays usable for the next round), but DOES purge agent-injected
-        conftest.py / sitecustomize.py / .pth files to prevent the agent
-        from gaming intermediate test results.
+        Requires capture-safe agent teardown, then skips the verifier's broader
+        process sweep and workspace restore/chown so the sandbox stays usable
+        for the next round. It still purges agent-injected conftest.py,
+        sitecustomize.py, and .pth files before running the verifier.
 
         Returns (rewards, verifier_output, verifier_error). The final
         verify() still does full hardening.
         """
+        await self.disconnect()
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
@@ -2189,12 +2211,43 @@ class Rollout:
 
     # Phase 5: CLEANUP
 
-    async def cleanup(self) -> None:
-        """Close ACP client and stop the environment."""
-        self._capture_partial_acp_trajectory()
-        await self.disconnect()
+    async def _stop_owned_sandbox_after_unsafe_receipt(self) -> None:
+        stop_task = asyncio.create_task(self._env.stop(delete=True))
+        try:
+            done, _ = await asyncio.wait(
+                {stop_task}, timeout=_ACP_UNSAFE_OWNER_STOP_TIMEOUT_SEC
+            )
+        except asyncio.CancelledError:
+            stop_task.cancel()
+            stop_task.add_done_callback(_deadline._swallow_abandoned_outcome)
+            raise
+        if stop_task not in done:
+            stop_task.cancel()
+            stop_task.add_done_callback(_deadline._swallow_abandoned_outcome)
+            logger.warning(
+                "Cleanup timed out stopping the rollout-owned sandbox after "
+                "unsafe agent termination"
+            )
+            return
+        try:
+            stop_task.result()
+        except Exception as e:
+            logger.warning(f"Cleanup failed: {e}")
 
-        if self._env and self._config.export_generated_skills_to:
+    async def cleanup(self) -> None:
+        """Stop the agent and environment without capturing a mutable workspace."""
+        self._capture_partial_acp_trajectory()
+        receipt = await Rollout.stop_agent(self, cancel_requested=False)
+        capture_safe = receipt.capture_safe
+        if not capture_safe:
+            safety_error = Rollout._unsafe_capture_error(
+                receipt, action="workspace verification, capture, and export"
+            )
+            if getattr(self, "_error", None) is None:
+                self._error = str(safety_error)
+            logger.error(str(safety_error))
+
+        if capture_safe and self._env and self._config.export_generated_skills_to:
             try:
                 await self._export_generated_skills()
             except Exception as e:
@@ -2267,10 +2320,13 @@ class Rollout:
             # caller — leave it running so they can reuse it or stop it
             # themselves. #388. getattr() keeps tests that bypass __init__
             # via Rollout.__new__() working.
-            try:
-                await self._env.stop(delete=True)
-            except Exception as e:
-                logger.warning(f"Cleanup failed: {e}")
+            if capture_safe:
+                try:
+                    await self._env.stop(delete=True)
+                except Exception as e:
+                    logger.warning(f"Cleanup failed: {e}")
+            else:
+                await self._stop_owned_sandbox_after_unsafe_receipt()
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
             shutil.rmtree(self._task_tmp, ignore_errors=True)
@@ -2478,6 +2534,7 @@ class Rollout:
 
         Retries transient download failures up to 3 times (guards ENG-147).
         """
+        await self.disconnect()
         await _export_generated_skills_engine(self)
 
     async def _activate_step_skills(self, step: Step) -> None:
@@ -2747,6 +2804,19 @@ class Rollout:
             self._rollout_dir / "trajectory" / "llm_trajectory.jsonl"
         ).reconcile(trajectory)
 
+    def _refresh_acp_trajectory_observation(self) -> None:
+        observation = getattr(self, "_acp_session_observation", None)
+        if not isinstance(observation, AcpSessionObservation):
+            return
+        trajectory_path, trajectory_digest = _trajectory_identity(
+            self._rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+        )
+        self._acp_session_observation = replace(
+            observation,
+            trajectory_path=trajectory_path,
+            trajectory_digest=trajectory_digest,
+        )
+
     def _reconcile_acp_tool_evidence(self, usage_runtime: Any) -> None:
         """Repair lossy ACP tool details from trusted provider capture."""
 
@@ -2765,6 +2835,7 @@ class Rollout:
         TrajectoryWriter(
             self._rollout_dir / "trajectory" / "acp_trajectory.jsonl"
         ).write_final(self._trajectory)
+        self._refresh_acp_trajectory_observation()
         # info, not warning: trajectory repair is evidence-mutation an auditor
         # should find at default (non-TTY/CI) verbosity, but as a warning it
         # survived the live dashboard's WARNING+ replay and printed between

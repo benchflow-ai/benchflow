@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.providers.litellm_logging import trajectory_from_litellm_callback_log
+from benchflow.providers.runtime import ProviderRuntime
 from benchflow.rollout import (
+    Rollout,
+    RolloutConfig,
     _provider_auth_status_from_runtime,
     _provider_failure_from_runtime,
 )
@@ -410,3 +413,97 @@ def test_enforcement_still_fires_when_no_error_and_usage_missing(tmp_path):
     assert rollout._error == (
         "Token usage tracking is required, but no provider token usage was captured."
     )
+
+
+@pytest.mark.asyncio
+async def test_unsafe_owned_cleanup_imports_sandbox_provider_evidence_before_delete(
+    tmp_path,
+) -> None:
+    events: list[str] = []
+
+    class OwnedSandbox:
+        def __init__(self) -> None:
+            self.alive = True
+
+        async def stop(self, *, delete: bool) -> None:
+            events.append("sandbox_stop")
+            self.alive = False
+
+    class UnsafeTransport:
+        termination_status = SimpleNamespace(
+            graceful_termination=False,
+            force_kill_required=False,
+            process_tree_stopped=False,
+        )
+
+        async def process_tree_stopped(self) -> bool:
+            events.append("liveness")
+            return False
+
+    class UnsafeClient:
+        session = None
+
+        def __init__(self) -> None:
+            self._transport = UnsafeTransport()
+
+        async def close(self) -> None:
+            events.append("agent_close")
+
+    sandbox = OwnedSandbox()
+
+    class SandboxLocalServer:
+        def __init__(self) -> None:
+            self.trajectory = SimpleNamespace(exchanges=[])
+
+        async def stop(self) -> None:
+            events.append("provider_stop")
+            if not sandbox.alive:
+                raise RuntimeError("sandbox callback log was deleted")
+            self.trajectory.exchanges = [
+                SimpleNamespace(response=SimpleNamespace(status_code=503))
+            ]
+
+    server = SandboxLocalServer()
+    runtime = ProviderRuntime(
+        kind="usage-proxy",
+        agent_base_url="http://127.0.0.1:4000",
+        server=server,
+    )
+
+    async def stop_provider_runtime(provider_runtime) -> None:
+        await provider_runtime.server.stop()
+
+    def extract_usage(provider_runtime):
+        events.append(
+            "extract_runtime" if provider_runtime is runtime else "extract_none"
+        )
+        return {"usage_source": "unavailable"}
+
+    rollout = Rollout(RolloutConfig(task_path=tmp_path / "task"))
+    rollout._acp_client = UnsafeClient()
+    rollout._env = sandbox
+    rollout._usage_runtime = runtime
+    rollout._rollout_dir = tmp_path
+    rollout._error = "ACP error -32603: Internal error"
+    rollout._planes = SimpleNamespace(
+        stop_provider_runtime=stop_provider_runtime,
+        extract_usage=extract_usage,
+    )
+    rollout._write_llm_trajectory = lambda _runtime: None
+    rollout._reconcile_acp_tool_evidence = lambda _runtime: None
+
+    await rollout.cleanup()
+
+    assert events == [
+        "agent_close",
+        "liveness",
+        "provider_stop",
+        "extract_runtime",
+        "sandbox_stop",
+    ]
+    assert rollout._provider_failure_cached is not None
+    assert (
+        rollout._provider_failure_cached.error_suffix
+        == "provider unavailable (HTTP 503)"
+    )
+    assert rollout._error == "ACP error -32603: Internal error"
