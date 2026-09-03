@@ -295,16 +295,39 @@ _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text(
 
 
 def _json_settings_merge(path: str, mutator: str) -> str:
-    """Idempotent JSON-settings merge as a one-line bash snippet."""
-    py = (
-        "import json,os,pathlib;"
-        f"p=pathlib.Path(os.path.expandvars(os.path.expanduser({path!r})));"
-        "p.parent.mkdir(parents=True, exist_ok=True);"
-        "d=json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {};"
+    """Idempotent JSON-settings merge as a one-line bash snippet.
+
+    Runs on the Node runtime ``_NODE_INSTALL`` provisions, not on ``python3``:
+    policy setup executes inside the *task* image, which owes BenchFlow no
+    interpreter, so a Python-free image used to abort a rollout with exit 127
+    before ACP launch (#1047). Callers must therefore be agents whose install
+    guarantees ``_BENCHFLOW_NODE_PREFIX`` — every JS agent does, via
+    ``_js_agent_install`` or the mimo manifest.
+
+    ``mutator`` is a JavaScript statement operating on ``d``. The escape pass
+    reproduces ``json.dumps``' ``ensure_ascii`` so upgrading BenchFlow leaves
+    an existing settings file byte-identical: agent homes can arrive
+    pre-populated from the host (gemini copies ``~/.gemini/settings.json`` in
+    via ``subscription_auth``), and rewriting a user's non-ASCII values on
+    first run would break the idempotence this merge promises. It starts at
+    U+007F because ``JSON.stringify`` has already escaped in-string control
+    characters, while the newlines and indent it emits must stay literal.
+    """
+    js = (
+        "const fs=require('fs'),pa=require('path');"
+        "const p=process.argv[1];"
+        "fs.mkdirSync(pa.dirname(p),{recursive:true});"
+        "let d={};"
+        "try{const t=fs.readFileSync(p,'utf8');if(t.trim())d=JSON.parse(t);}"
+        "catch(e){if(e.code!=='ENOENT')throw e;}"
         f"{mutator};"
-        "p.write_text(json.dumps(d, indent=2) + '\\n')"
+        "fs.writeFileSync(p,JSON.stringify(d,null,2)"
+        ".replace(/[\\u007f-\\uffff]/g,"
+        "c=>'\\\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'))+'\\n');"
     )
-    return f"python3 -c {shlex.quote(py)}"
+    # The path stays a shell word so the surrounding bash expands
+    # $BENCHFLOW_AGENT_HOME, matching what os.path.expandvars did before.
+    return f'{_BENCHFLOW_NODE_PREFIX}/bin/node -e {shlex.quote(js)} "{path}"'
 
 
 # OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
@@ -547,9 +570,10 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
-            'd.setdefault("permissions",{}).setdefault("deny",[]);'
-            '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
-            'if t not in d["permissions"]["deny"]]',
+            "if(!('permissions' in d))d.permissions={};"
+            "if(!('deny' in d.permissions))d.permissions.deny=[];"
+            'for(const t of ["WebSearch","WebFetch"])'
+            "if(!d.permissions.deny.includes(t))d.permissions.deny.push(t)",
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
         supports_acp_set_model=False,
@@ -696,10 +720,10 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
-            'd.setdefault("tools",{}).setdefault("exclude",[]);'
-            '[d["tools"]["exclude"].append(t) for t in '
-            '["google_web_search","web_fetch"] '
-            'if t not in d["tools"]["exclude"]]',
+            "if(!('tools' in d))d.tools={};"
+            "if(!('exclude' in d.tools))d.tools.exclude=[];"
+            'for(const t of ["google_web_search","web_fetch"])'
+            "if(!d.tools.exclude.includes(t))d.tools.exclude.push(t)",
         ),
         disallow_web_tools_owned_paths=["$HOME/.gemini"],
     ),
@@ -727,7 +751,7 @@ AGENTS: dict[str, AgentConfig] = {
         },
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
-            'd.setdefault("tools",{})["webfetch"]=False',
+            "if(!('tools' in d))d.tools={};d.tools.webfetch=false",
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
     ),
@@ -776,7 +800,7 @@ AGENTS: dict[str, AgentConfig] = {
         },
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
-            'd.setdefault("tools",{})["webfetch"]=False',
+            "if(!('tools' in d))d.tools={};d.tools.webfetch=false",
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/mimocode"],
     ),
