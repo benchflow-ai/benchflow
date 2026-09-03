@@ -363,9 +363,7 @@ def _aggregate_result(
                 else 0.0
             ),
             "reviewer_total_tokens": int(review_sum("reviewer_total_tokens")),
-            "reviewer_total_cost_usd": round(
-                review_sum("reviewer_total_cost_usd"), 10
-            ),
+            "reviewer_total_cost_usd": round(review_sum("reviewer_total_cost_usd"), 10),
             "reviewer_usage_coverage": (
                 reviewer_usage_count / rubric_reviews_required
                 if rubric_reviews_required

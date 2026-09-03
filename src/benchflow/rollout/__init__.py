@@ -1280,9 +1280,9 @@ class Rollout:
         automatic_review = getattr(self, "_automatic_review", None)
         if automatic_review is None:
             return
-        self._timing["rubric_workspace_baseline"] = await automatic_review.record_baseline(
-            self._env, self._agent_cwd
-        )
+        self._timing[
+            "rubric_workspace_baseline"
+        ] = await automatic_review.record_baseline(self._env, self._agent_cwd)
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 

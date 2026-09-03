@@ -45,9 +45,7 @@ def _rollout_directory(job_dir: Path, payload: dict[str, Any]) -> Path | None:
 
 def _read_result(rollout_dir: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(
-            (rollout_dir / "result.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads((rollout_dir / "result.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"rubric review resume did not produce a result in {rollout_dir}"
@@ -140,7 +138,9 @@ async def resume_incomplete_rubric_reviews(
                 workspace_error=None,
             )
         except Exception as exc:
-            logger.exception("Interrupted rubric review resume failed for %s", task_name)
+            logger.exception(
+                "Interrupted rubric review resume failed for %s", task_name
+            )
             mark_task_rubric_review_error(
                 result,
                 rollout_dir=rollout_dir,

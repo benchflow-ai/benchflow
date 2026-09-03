@@ -117,9 +117,7 @@ def load_persisted_rollout_result(rollout_dir: Path) -> RolloutResult:
         partial_trajectory=bool(payload.get("partial_trajectory", False)),
         trajectory_source=payload.get("trajectory_source"),
         source_provenance=(
-            dict(payload["source"])
-            if isinstance(payload.get("source"), dict)
-            else None
+            dict(payload["source"]) if isinstance(payload.get("source"), dict) else None
         ),
         final_score=(
             dict(payload["final_score"])
@@ -270,9 +268,7 @@ async def _run_reviewer_with_retries(
                 if trial.review_valid:
                     break
             except Exception as exc:
-                attempts.append(
-                    {"attempt": attempt, "valid": False, "error": str(exc)}
-                )
+                attempts.append({"attempt": attempt, "valid": False, "error": str(exc)})
 
         if selected is None:
             return _ReviewerOutcome(trial=None, attempts=attempts)
@@ -538,9 +534,7 @@ async def integrate_task_rubric_review(
         environment=environment,
         policy=policy,
     )
-    _attach_reviewer_evidence(
-        payload, outcome, policy=policy, environment=environment
-    )
+    _attach_reviewer_evidence(payload, outcome, policy=policy, environment=environment)
     trial = outcome.trial
     if trial is None or not trial.review_valid or outcome.artifact_error is not None:
         last_error = outcome.attempts[-1].get("error") if outcome.attempts else None

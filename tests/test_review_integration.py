@@ -179,6 +179,7 @@ async def test_weighted_review_updates_every_score_artifact(tmp_path, monkeypatc
     task = tmp_path / "tasks" / "task"
     rubric_path = _rubric(task)
     rollout, result = _source_rollout(tmp_path)
+
     async def fake_run_reviews(_path, **kwargs):
         report, _trial = _fake_review(
             kwargs["out_dir"], rubric_path=kwargs["rubric_path"]
@@ -345,9 +346,9 @@ async def test_resume_finishes_review_without_rerunning_source(tmp_path, monkeyp
     (rollout / "result.json").write_text(json.dumps(persisted))
 
     async def fake_run_reviews(_path, **kwargs):
-        return _fake_review(
-            kwargs["out_dir"], rubric_path=kwargs["rubric_path"]
-        )[0], kwargs["out_dir"] / "review_report.json"
+        return _fake_review(kwargs["out_dir"], rubric_path=kwargs["rubric_path"])[
+            0
+        ], kwargs["out_dir"] / "review_report.json"
 
     monkeypatch.setattr("benchflow.review.integration.run_reviews", fake_run_reviews)
     evaluation = Evaluation(
