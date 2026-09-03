@@ -74,7 +74,7 @@ def test_worker_payload_without_loop_strategy_stays_none() -> None:
 
 
 def test_worker_payload_round_trips_and_redacts_rubric_reviewer_policy() -> None:
-    """Guards the rubric final-score PR's private shard policy transport."""
+    """Guards PR #1092's private shard policy transport."""
 
     config = EvaluationConfig(
         rubric_review={
@@ -240,7 +240,7 @@ def test_worker_sharded_summary_includes_numeric_score_ratios(tmp_path) -> None:
 
 
 def test_worker_sharded_summary_aggregates_full_rubric_review(tmp_path) -> None:
-    """Guards the rubric final-score PR's cross-worker review summary."""
+    """Guards PR #1092's cross-worker review summary."""
 
     plan = EvalShardPlan(
         total_concurrency=2,

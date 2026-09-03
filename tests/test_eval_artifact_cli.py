@@ -212,7 +212,7 @@ def test_eval_run_publish_bucket_writes_readme_summary(
 def test_health_and_publish_summary_include_integrated_rubric_score(
     tmp_path: Path,
 ) -> None:
-    """Guards the rubric final-score PR's health and publish projections."""
+    """Guards PR #1092's health and publish projections."""
 
     job_dir = tmp_path / "jobs" / "reviewed"
     rollout_dir = job_dir / "task-a__abc"

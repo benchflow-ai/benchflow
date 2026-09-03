@@ -55,7 +55,7 @@ def _rubric(task: Path) -> Path:
 
 
 def test_automatic_review_is_default_only_for_tasks_with_rubrics(tmp_path):
-    """Guards the rubric final-score PR's zero-configuration activation policy."""
+    """Guards PR #1092's zero-configuration activation policy."""
 
     plain_task = tmp_path / "plain"
     plain_task.mkdir()
@@ -174,7 +174,7 @@ def _fake_review(
 
 @pytest.mark.asyncio
 async def test_weighted_review_updates_every_score_artifact(tmp_path, monkeypatch):
-    """Guards the rubric final-score PR's canonical artifact synchronization."""
+    """Guards PR #1092's canonical artifact synchronization."""
 
     task = tmp_path / "tasks" / "task"
     rubric_path = _rubric(task)
@@ -227,7 +227,7 @@ async def test_weighted_review_updates_every_score_artifact(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_blocker_failure_zeros_reward_pass_and_score(tmp_path, monkeypatch):
-    """Guards the rubric final-score PR's blocker gate."""
+    """Guards PR #1092's blocker gate."""
 
     task = tmp_path / "tasks" / "task"
     rubric_path = _rubric(task)
@@ -263,7 +263,7 @@ async def test_blocker_failure_zeros_reward_pass_and_score(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_review_failure_removes_stale_reward_and_fails_closed(tmp_path):
-    """Guards the rubric final-score PR's unscored failure contract."""
+    """Guards PR #1092's unscored failure contract."""
 
     task = tmp_path / "tasks" / "task"
     rubric_path = _rubric(task)
@@ -301,7 +301,7 @@ async def test_review_failure_removes_stale_reward_and_fails_closed(tmp_path):
 async def test_invalid_review_retains_last_attempt_for_diagnostics(
     tmp_path, monkeypatch
 ):
-    """Guards the rubric final-score PR's invalid-review diagnostics."""
+    """Guards PR #1092's invalid-review diagnostics."""
 
     task = tmp_path / "tasks" / "task"
     rubric_path = _rubric(task)
@@ -335,7 +335,7 @@ async def test_invalid_review_retains_last_attempt_for_diagnostics(
 
 @pytest.mark.asyncio
 async def test_resume_finishes_review_without_rerunning_source(tmp_path, monkeypatch):
-    """Guards the rubric final-score PR's process-crash recovery path."""
+    """Guards PR #1092's process-crash recovery path."""
 
     task = tmp_path / "tasks" / "task"
     _rubric(task)
@@ -373,7 +373,7 @@ async def test_resume_finishes_review_without_rerunning_source(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_resume_rejects_changed_task_bytes(tmp_path):
-    """Guards the rubric final-score PR's crash-resume provenance gate."""
+    """Guards PR #1092's crash-resume provenance gate."""
 
     task = tmp_path / "tasks" / "task"
     _rubric(task)
@@ -400,7 +400,7 @@ async def test_resume_rejects_changed_task_bytes(tmp_path):
 
 
 def test_workspace_capture_exports_delta_and_excludes_credentials(tmp_path):
-    """Guards the rubric final-score PR's output-only evidence boundary."""
+    """Guards PR #1092's output-only evidence boundary."""
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -459,7 +459,7 @@ def test_workspace_capture_exports_delta_and_excludes_credentials(tmp_path):
 
 
 def test_job_summary_separates_pass_at_one_quality_and_reviewer_usage():
-    """Guards the rubric final-score PR's job-level score and usage split."""
+    """Guards PR #1092's job-level score and usage split."""
 
     summary = rubric_review_summary(
         {

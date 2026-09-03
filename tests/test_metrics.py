@@ -117,7 +117,7 @@ def test_collect_metrics_basic(results_dir):
 
 
 def test_collect_metrics_surfaces_automatic_rubric_score(tmp_path):
-    """Guards the rubric final-score PR's metrics projection."""
+    """Guards PR #1092's metrics projection."""
 
     rollout = tmp_path / "job" / "task-a__reviewed"
     rollout.mkdir(parents=True)
@@ -240,7 +240,7 @@ def test_collect_metrics_best_result_picking(results_dir_with_retries):
 
 
 def test_collect_metrics_breaks_pass_ties_with_rubric_score(tmp_path):
-    """Guards the rubric final-score PR's retry ranking across passed attempts."""
+    """Guards PR #1092's retry ranking across passed attempts."""
     for attempt, score in (("attempt1", 0.25), ("attempt2", 0.75)):
         trial = tmp_path / attempt / "task-a__trial"
         trial.mkdir(parents=True)
