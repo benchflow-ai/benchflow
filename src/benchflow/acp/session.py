@@ -469,14 +469,14 @@ class ACPSession:
                 self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "text_update":
-            # Used by openclaw shim — full text (not chunked)
+            # Some ACP agents send full text rather than chunks.
             text = update.get("text", "")
             if text:
                 self.message_chunks.append(text)
                 self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "agent_thought":
-            # Used by openclaw shim — full thought (not chunked)
+            # Some ACP agents send full thoughts rather than chunks.
             text = update.get("text", "")
             if text:
                 self.thought_chunks.append(text)

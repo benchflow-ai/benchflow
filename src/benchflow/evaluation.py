@@ -536,9 +536,8 @@ class EvaluationConfig:
         )
         from benchflow.agents.registry import AGENTS
 
-        # normalize_agent_name delegates to registry.resolve_agent_key. Reserved
-        # first-party manifest failures propagate here before any sandbox work;
-        # only genuinely unknown specs reach the raw-command warning below.
+        # normalize_agent_name delegates to registry.resolve_agent_key. Unknown
+        # bare IDs fail before sandbox work; explicit commands remain supported.
         self.agent = normalize_agent_name(self.agent)
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)

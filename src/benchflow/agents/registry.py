@@ -37,15 +37,14 @@ Common optional fields
                          container before launch (e.g. ``~/.codex/auth.json``).
 - ``home_dirs``          Extra dot-dirs under ``$HOME`` to copy to the sandbox
                          user (for dirs not derivable from ``skill_paths`` /
-                         ``credential_files``, e.g. ``.openclaw``).
+                         ``credential_files``).
 - ``subscription_auth``  ``SubscriptionAuth`` describing host CLI login files
                          (e.g. ``claude login`` credentials) that can stand in
                          for an API key. API keys still take precedence.
 
 Look at the existing entries below for worked examples:
 ``claude-agent-acp`` (subscription auth + env_mapping), ``codex-acp``
-(credential_files), ``openclaw`` (home_dirs + custom shim), ``gemini``
-(multi-file subscription auth).
+(credential_files), and ``gemini`` (multi-file subscription auth).
 """
 
 import base64
@@ -64,10 +63,9 @@ def _install_python_script(container_path: str, source: str) -> str:
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
 
-    Used by pi-acp, openclaw, and harvey-lab-harness — all three ship a Python
-    launcher/shim baked into install_cmd. Semantics differ intentionally:
-    pi and openclaw bridge BENCHFLOW_PROVIDER_* env vars to agent-native
-    config; harvey-lab delegates to Harvey LAB's own model adapters which
+    Used by bundled Python launchers/shims baked into install_cmd. Semantics
+    differ intentionally: pi bridges BENCHFLOW_PROVIDER_* env vars to
+    agent-native config; harvey-lab delegates to its own model adapters which
     read provider env vars directly. A shared base is not yet justified —
     divergence is cheap, premature abstraction isn't.
     """
@@ -128,7 +126,7 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
-# Node 22.20.0 supports OpenClaw 2026.6.9. Keep their pin pair in sync.
+# Shared JavaScript-agent runtime pin.
 _NODE_INSTALL = (
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
@@ -468,7 +466,7 @@ class AgentConfig:
     # Files to write into container before agent launch (e.g. auth.json).
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
-    # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    # derivable from skill_paths or credential_files).
     acp_model_format: str = "bare"
     # How the agent expects ACP model IDs in session/set_model or config options:
     # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
@@ -985,7 +983,7 @@ def get_sandbox_home_dirs() -> set[str]:
     Derives from three sources across all registered agents:
     - credential_files: {home}/.foo/... → ".foo"
     - subscription_auth.files: {home}/.foo/... → ".foo"
-    - home_dirs: explicit extras (e.g. ".openclaw")
+    - home_dirs: explicit extra home directories
 
     Skill paths are excluded: deploy_skills() now links those paths directly to a
     shared skills tree instead of relying on sandbox-home copies.
@@ -1057,31 +1055,8 @@ AGENT_ALIASES: dict[str, str] = {
 VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
 
 
-MIGRATED_MANIFESTS = {"openclaw": "acp/openclaw/manifest.toml"}
 _CORE_AGENT_CONFIGS = dict(AGENTS)
 _REGISTRY_LOCK = threading.RLock()
-
-
-class AgentManifestResolutionError(RuntimeError):
-    """A reserved first-party manifest could not be resolved safely."""
-
-    def __init__(self, *, source: str, ref: str, category: str, detail: str):
-        self.source = source
-        self.ref = ref
-        self.category = category
-        self.detail = detail
-        ref_text = f" ref={ref!r}" if ref else ""
-        super().__init__(
-            f"agent manifest resolution failed: source={source!r}{ref_text} "
-            f"category={category}: {detail}"
-        )
-
-
-@dataclass(frozen=True)
-class AgentRequest:
-    protocol: str
-    name: str
-    reserved_first_party: bool
 
 
 # ---------------------------------------------------------------------------
@@ -1119,24 +1094,22 @@ def acpx_runtime_key(canonical_name: str) -> str:
     return f"{ACPX_KEY_PREFIX}{canonical_name}"
 
 
-def classify_agent_spec(spec: str) -> AgentRequest:
-    """Parse once and identify normalized reserved manifest requests."""
+def parse_agent_spec(spec: str) -> tuple[str, str]:
+    """Parse protocol/name and resolve aliases."""
     if "/" in spec:
         protocol, name = spec.split("/", 1)
     else:
         protocol, name = "acp", spec
-    normalized_name = name.strip().lower()
-    if normalized_name.startswith("acp:") and normalized_name[4:] in MIGRATED_MANIFESTS:
-        normalized_name = normalized_name[4:]
-    reserved = normalized_name in MIGRATED_MANIFESTS
-    name = normalized_name if reserved else AGENT_ALIASES.get(name, name)
-    return AgentRequest(protocol, name, reserved)
+    return protocol, AGENT_ALIASES.get(name, name)
 
 
-def parse_agent_spec(spec: str) -> tuple[str, str]:
-    """Parse protocol/name and resolve aliases through shared classification."""
-    request = classify_agent_spec(spec)
-    return request.protocol, request.name
+def is_explicit_raw_agent_command(spec: str) -> bool:
+    """Return whether *spec* explicitly uses supported raw-command syntax."""
+    value = spec.strip()
+    return bool(value) and (
+        any(char.isspace() for char in value)
+        or value.startswith(("/", "./", "../", "~/"))
+    )
 
 
 _ACPX_INSTALL = (
@@ -1239,26 +1212,12 @@ def resolve_agent(spec: str) -> AgentConfig:
     "omnigent:pi" → omnigent-pi, "acp:pi" → pi-acp (see #876).
     Raises KeyError with suggestions for unknown agents.
     """
-    request = classify_agent_spec(spec)
-    protocol, name = request.protocol, request.name
+    protocol, name = parse_agent_spec(spec)
 
     if protocol not in VALID_PROTOCOLS:
         raise KeyError(
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
-
-    if request.reserved_first_party:
-        from benchflow.agents import remote_manifests
-
-        catalog = remote_manifests.ensure_manifest_catalog()
-        issue = catalog.issue_for(name)
-        if issue is not None:
-            raise AgentManifestResolutionError(
-                source=catalog.source,
-                ref=catalog.ref,
-                category=issue.kind.value,
-                detail=issue.detail,
-            )
 
     # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
     # round-trips: parse_agent_spec leaves it whole under the default "acp"
@@ -1284,6 +1243,9 @@ def resolve_agent(spec: str) -> AgentConfig:
         if config is not None:
             name = registered_name
             return _acpx_wrap(config) if protocol == "acpx" else config
+        shorthand = _resolve_namespace_shorthand(name)
+        if shorthand is not None:
+            return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
 
         from difflib import get_close_matches
 
@@ -1330,14 +1292,22 @@ def resolve_agent_key(spec: str) -> str:
     spec string. ``resolve_agent`` then round-trips that key back to the
     wrapped config.
 
-    Unknown agents are returned unchanged so callers can still surface their
-    own diagnostics (raw-command fallback).
+    Unknown bare IDs fail closed. Explicit raw commands are returned unchanged.
+    Built-in non-agent modes and unsupported protocols pass through for their
+    existing downstream validators.
     """
+    if spec in {"oracle", "acp/oracle"}:
+        return "oracle"
+    if spec == "task-runtime":
+        return spec
+    protocol, _ = parse_agent_spec(spec)
+    if protocol not in VALID_PROTOCOLS:
+        return spec
     try:
         config = resolve_agent(spec)
-    except AgentManifestResolutionError:
-        raise
     except KeyError:
+        if not is_explicit_raw_agent_command(spec):
+            raise
         # The raw-command fallback bypasses resolve_agent's error entirely (the
         # spec is later exec'd verbatim in the sandbox), so surface the failed-
         # plugin breadcrumb HERE too — otherwise a plugin load failure manifests
@@ -1443,13 +1413,6 @@ def register_agent(
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
     )
     with _REGISTRY_LOCK:
-        if name in MIGRATED_MANIFESTS and name in AGENTS:
-            from benchflow.agents.manifest import AgentManifestError, ManifestIssueKind
-
-            raise AgentManifestError(
-                f"reserved agent {name!r} is already registered",
-                kind=ManifestIssueKind.COLLISION,
-            )
         AGENTS[name] = config
         AGENT_INSTALLERS[name] = install_cmd
         AGENT_LAUNCH[name] = launch_cmd

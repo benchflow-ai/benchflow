@@ -23,7 +23,7 @@ The shim:
    BenchFlow can capture the trajectory, then returns stopReason and waits for
    the next prompt.
 
-Self-contained: like the other shims (openclaw, harvey-lab), this file is read
+Self-contained: like other bundled shims, this file is read
 and uploaded into the sandbox with NO benchflow installed, so it must NOT
 `import benchflow`. It depends only on the stdlib plus the deepagents /
 langchain packages installed into the shim's venv.

@@ -88,13 +88,12 @@ def register_agent(app: typer.Typer) -> None:
         """Show details for a registered agent."""
         from benchflow.agents.registry import (
             AGENT_ALIASES,
-            AgentManifestResolutionError,
             resolve_agent,
         )
 
         try:
             cfg = resolve_agent(name)
-        except (KeyError, AgentManifestResolutionError) as exc:
+        except KeyError as exc:
             print_error(str(exc))
             raise typer.Exit(1) from None
 

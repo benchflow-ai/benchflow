@@ -41,7 +41,9 @@ class FakeEnvironment:
 
 def _rollout(tmp_path: Path) -> Rollout:
     return Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
 
 

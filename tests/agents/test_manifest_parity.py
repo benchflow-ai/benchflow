@@ -52,7 +52,6 @@ import benchflow
 from benchflow.agents.manifest import (
     LoadedManifest,
     _merge_core_shim_only,
-    load_agent_manifest,
     load_agents_from_dir,
 )
 from benchflow.agents.registry import AgentConfig
@@ -80,24 +79,6 @@ _SKIP_REASON = (
     f"${MANIFEST_DIR_ENV} unset; the dedicated parity-gate CI job sets it to a "
     "shallow clone of benchflow-ai/agents@main to run the live parity checks"
 )
-
-
-def test_active_openclaw_manifest_matches_hermetic_identity():
-    """Guards PR #1090 against active agents-repo identity drift."""
-    raw_source = os.environ.get(MANIFEST_DIR_ENV, "").strip() or os.environ.get(
-        MANIFEST_SOURCE_ENV, ""
-    ).strip()
-    if not raw_source:
-        pytest.skip("effective agents manifest source is unset or blank")
-    source = Path(raw_source)
-    if not source.is_dir():
-        pytest.skip("effective agents manifest source is not a local checkout")
-    active_path = source / "acp" / "openclaw" / "manifest.toml"
-    assert active_path.is_file(), f"paired checkout missing {active_path}"
-    active = load_agent_manifest(active_path)
-    fixture = load_agents_from_dir(_ROOT / "tests" / "fixtures" / "agents")["openclaw"]
-    assert active.config.name == fixture.config.name == "openclaw"
-    assert active.aliases == fixture.aliases == ("openclaw",)
 
 
 @functools.cache
@@ -134,12 +115,41 @@ def _live_manifests() -> dict[str, LoadedManifest]:
     return load_agents_from_dir(root)
 
 
+def _paired_catalog_root() -> str:
+    """Return configured local catalog, preferring the directory override."""
+    raw_dir = os.environ.get(MANIFEST_DIR_ENV, "")
+    raw_source = os.environ.get(MANIFEST_SOURCE_ENV, "")
+    source = raw_dir.strip() or raw_source.strip()
+    if not source:
+        pytest.skip("paired agents catalog is not configured")
+    expanded = os.path.expanduser(source)
+    if not os.path.isdir(expanded):
+        pytest.skip("paired agents catalog source is not a local directory")
+    return expanded
+
+
+def test_paired_catalog_has_generic_manifest_shape() -> None:
+    """Guards PR #1090's local paired-catalog ingestion contract."""
+    loaded = load_agents_from_dir(_paired_catalog_root())
+    assert loaded
+
+    for name, manifest in loaded.items():
+        assert name == manifest.config.name
+        assert name.strip()
+        assert manifest.config.install_cmd.strip()
+        assert manifest.config.launch_cmd.strip()
+        assert isinstance(manifest.aliases, tuple)
+        assert len(manifest.aliases) == len(set(manifest.aliases))
+        for alias in manifest.aliases:
+            assert alias.strip()
+
+
 def _parity_param_names() -> list[str]:
     """Core agents that also have a manifest — the set to check for parity.
 
     Evaluated at collection time. Empty when ``$BENCHFLOW_AGENTS_DIR`` is unset
     (no child interpreter is spawned in that case)."""
-    if not os.environ.get(MANIFEST_DIR_ENV):
+    if not os.environ.get(MANIFEST_DIR_ENV, "").strip():
         return []
     core = _pure_core_agents()
     loaded = _live_manifests()
@@ -182,7 +192,9 @@ def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
     )
 
 
-@pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
+@pytest.mark.skipif(
+    not os.environ.get(MANIFEST_DIR_ENV, "").strip(), reason=_SKIP_REASON
+)
 def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
     """omnigent-pi is the ONLY core agent without a manifest.
 

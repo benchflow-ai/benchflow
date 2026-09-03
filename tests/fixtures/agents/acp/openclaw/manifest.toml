@@ -1,7 +1,0 @@
-contract_version = "1.0"
-name = "openclaw"
-aliases = ["openclaw"]
-description = "Hermetic OpenClaw resolver fixture"
-protocol = "acp"
-install_cmd = "install-openclaw"
-launch_cmd = "openclaw-acp-shim"

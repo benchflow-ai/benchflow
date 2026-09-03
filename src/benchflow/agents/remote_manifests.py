@@ -49,18 +49,6 @@ class ManifestCatalog:
     def warnings(self) -> tuple[str, ...]:
         return tuple(issue.warning() for issue in self.issues)
 
-    def issue_for(self, name: str) -> ManifestIssue | None:
-        from benchflow.agents.registry import MIGRATED_MANIFESTS
-
-        if any(manifest.config.name == name for manifest in self.manifests):
-            return None
-        path = MIGRATED_MANIFESTS[name]
-        return next(
-            (issue for issue in self.issues if not issue.path or issue.path == path),
-            None,
-        )
-
-
 @dataclass(frozen=True)
 class _RequestedSource:
     source: str
@@ -146,61 +134,7 @@ def _read_catalog(spec: str) -> tuple[ManifestCatalog, dict[str, LoadedManifest]
                     type(exc).__name__,
                 )
             )
-    catalog = ManifestCatalog((), tuple(issues), requested.source, requested.ref)
-    return _validate_migrated(catalog, loaded), loaded
-
-
-def _identity(value: str) -> str:
-    value = value.strip().lower()
-    for prefix in ("acp/", "acpx/", "acp:"):
-        if value.startswith(prefix):
-            return value[len(prefix) :]
-    return value
-
-
-def _validate_migrated(
-    catalog: ManifestCatalog, loaded: dict[str, LoadedManifest]
-) -> ManifestCatalog:
-    from benchflow.agents.registry import MIGRATED_MANIFESTS
-
-    issues = list(catalog.issues)
-    invalid: set[str] = set()
-    for name, path in MIGRATED_MANIFESTS.items():
-        expected = loaded.get(path)
-        existing = next((issue for issue in issues if issue.path == path), None)
-        claimants = [
-            candidate_path
-            for candidate_path, manifest in loaded.items()
-            if _identity(manifest.config.name) == name
-            or any(_identity(alias) == name for alias in manifest.aliases)
-        ]
-        issue = existing
-        if issue is None and expected is None:
-            issue = ManifestIssue(
-                ManifestIssueKind.MISSING,
-                f"reserved manifest {name!r} is absent",
-                path,
-            )
-        elif issue is None and expected is not None and expected.config.name != name:
-            issue = ManifestIssue(
-                ManifestIssueKind.MALFORMED,
-                f"reserved manifest must declare exact name {name!r}",
-                path,
-            )
-        elif issue is None and len(claimants) != 1:
-            issue = ManifestIssue(
-                ManifestIssueKind.DUPLICATE,
-                f"expected one claimant for reserved identity {name!r}",
-                path,
-            )
-        if issue is not None:
-            if existing is None:
-                issues.append(issue)
-            invalid.update(claimants)
-            invalid.add(path)
-    for path in invalid:
-        loaded.pop(path, None)
-    return replace(catalog, issues=tuple(issues))
+    return ManifestCatalog((), tuple(issues), requested.source, requested.ref), loaded
 
 
 def _select(

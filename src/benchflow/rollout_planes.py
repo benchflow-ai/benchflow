@@ -23,7 +23,11 @@ from benchflow.agents.install import (
     deploy_skills,
     install_agent,
 )
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.agents.registry import (
+    AGENT_LAUNCH,
+    AGENTS,
+    is_explicit_raw_agent_command,
+)
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.providers.runtime import (
@@ -54,7 +58,11 @@ class DefaultRolloutPlanes:
     """Default bindings for the four concrete planes."""
 
     def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str:
-        launch = AGENT_LAUNCH.get(agent, agent)
+        launch = AGENT_LAUNCH.get(agent)
+        if launch is None:
+            if not is_explicit_raw_agent_command(agent):
+                raise KeyError(f"Unknown agent: {agent!r}")
+            launch = agent
         if not disallow_web_tools:
             return launch
         agent_cfg = AGENTS.get(agent)

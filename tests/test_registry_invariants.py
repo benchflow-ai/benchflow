@@ -130,13 +130,12 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     launch_cmd = AGENTS[name].launch_cmd
 
     assert "/opt/benchflow/node" in install_cmd
-    # Node >=22.19 is required by current openclaw (JS agents install @latest);
-    # assert the floor, not a brittle exact pin (BF-10).
+    # Assert shared runtime floor, not a brittle exact pin (BF-10).
     pin = re.search(r"BF_NODE_VERSION=(\d+)\.(\d+)\.\d+", install_cmd)
     assert pin, "BF_NODE_VERSION pin missing from JS agent bootstrap"
     major, minor = int(pin.group(1)), int(pin.group(2))
     assert (major, minor) >= (22, 19), (
-        f"pinned node {pin.group(0)} is below openclaw's >=22.19 floor"
+        f"pinned node {pin.group(0)} is below supported >=22.19 floor"
     )
     assert "/opt/benchflow/js-agents" in install_cmd
     if name in DIRECT_JS_ACP_AGENTS:
@@ -177,7 +176,6 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         "/usr/local/bin/npm",
         "/usr/local/bin/npx",
         "/usr/local/bin/pi-acp-launcher",
-        "/usr/local/bin/openclaw-acp-shim",
         "command -v node",
     ]
     for fragment in forbidden_fragments:
@@ -325,8 +323,7 @@ def test_agent_derived_dicts_in_sync():
 def test_agent_negative_config_invariants():
     """Specific agents must NOT have certain features configured.
 
-    Tripwire for accidental config bleed (e.g. openclaw silently gaining
-    credential_files because someone copy-pasted from codex). Positive
+    Tripwire for accidental config bleed from copy-pasted fields. Positive
     per-agent assertions live in test_agent_registry.py /
     test_subscription_auth.py; this is the dedicated negative side.
     """

@@ -1147,12 +1147,12 @@ class TestScrapedTrajectoryTrust:
                 mock_acp,
                 mock_session,
                 MagicMock(),
-                "test-agent",
+                "test-agent --run",
             )
             planes.execute_prompts.return_value = ([], 5)
             result = await sdk.run(
                 task_dir,
-                agent="test-agent",
+                agent="test-agent --run",
                 agent_env={"TEST": "1"},
                 sandbox_user=None,
                 jobs_dir=task_dir.parent / "jobs",
@@ -1206,12 +1206,12 @@ class TestScrapedTrajectoryTrust:
                 mock_acp,
                 mock_session,
                 MagicMock(),
-                "test-agent",
+                "test-agent --run",
             )
             planes.execute_prompts.side_effect = ConnectionError("lost")
             result = await sdk.run(
                 task_dir,
-                agent="test-agent",
+                agent="test-agent --run",
                 agent_env={"TEST": "1"},
                 sandbox_user=None,
                 jobs_dir=task_dir.parent / "jobs",

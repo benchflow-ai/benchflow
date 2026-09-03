@@ -319,10 +319,10 @@ async def test_runtime_reuse_and_stop(monkeypatch):
     assert created[0].stopped is True
 
 
-@pytest.mark.parametrize("agent", ["claude-agent-acp", "openclaw"])
 @pytest.mark.asyncio
-async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch, agent):
+async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch):
     """Guards PR #1074: reconnects retain Z.AI upstream routing and auth."""
+    agent = "claude-agent-acp"
     starts = []
 
     async def fake_start(**kwargs):

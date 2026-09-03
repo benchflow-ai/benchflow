@@ -337,7 +337,7 @@ class TestRegistryIntegration:
         assert is_vertex_model("zai/glm-5") is False
 
 
-# Provider model metadata (for openclaw.json generation)
+# Provider model metadata for agent configuration
 
 
 class TestProviderModels:
@@ -392,7 +392,7 @@ class TestStripProviderPrefix:
 
 
 class TestShimProviderFallback:
-    """The openclaw shim must resolve providers from env vars when model is stripped.
+    """Agent shims must resolve providers from env vars when model is stripped.
 
     SDK strips provider prefix before ACP set_model (e.g. "anthropic-vertex/claude-sonnet-4-6"
     → "claude-sonnet-4-6"). The shim's _find_and_setup_provider() must fall through from

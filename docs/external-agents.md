@@ -77,10 +77,8 @@ resolved and ran the `prime-agent` manifest with zero local setup.
 
 `bench agent list` reads this catalog best-effort and reports one consolidated
 warning when it is incomplete. `bench agent show NAME` uses runtime resolution.
-OpenClaw is owned by the agents catalog and is fail-closed: `openclaw`,
-`acp/openclaw`, `acpx/openclaw`, and `acp:openclaw` never fall through to an
-unrelated executable on `PATH` when its manifest is disabled, unavailable, or
-invalid. Other unknown names retain raw-command fallback. Remote refs are
+Unknown bare IDs fail closed. Raw commands require explicit syntax: whitespace
+(`agent --flag`) or a path prefix (`/`, `./`, `../`, or `~/`). Remote refs are
 fetched/refreshed by the normal source resolver; there is no offline fallback.
 
 ## 3. Local checkout override: `BENCHFLOW_AGENTS_DIR`
@@ -122,8 +120,7 @@ error message if its name is later requested.
 3. One lazily selected manifest catalog. Nonblank `BENCHFLOW_AGENTS_DIR` wins
    over `BENCHFLOW_AGENTS_SOURCE` and uses local-override policy; otherwise
    remote/default loading uses gap-fill policy and never replaces existing
-   entries. Reserved first-party manifest ids such as OpenClaw require a valid
-   catalog record rather than raw-command fallback.
+   entries.
 
 Manifest capabilities are deliberately bounded: a `manifest.toml` is data-only
 (install/launch commands, env mapping, model-routing hints — the
