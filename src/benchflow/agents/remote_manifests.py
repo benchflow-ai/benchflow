@@ -49,6 +49,7 @@ class ManifestCatalog:
     def warnings(self) -> tuple[str, ...]:
         return tuple(issue.warning() for issue in self.issues)
 
+
 @dataclass(frozen=True)
 class _RequestedSource:
     source: str

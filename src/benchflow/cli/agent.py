@@ -53,9 +53,9 @@ def register_agent(app: typer.Typer) -> None:
             for manifest in catalog.manifests:
                 for alias in manifest.aliases:
                     if alias != manifest.config.name:
-                        reverse_aliases.setdefault(
-                            manifest.config.name, set()
-                        ).add(alias)
+                        reverse_aliases.setdefault(manifest.config.name, set()).add(
+                            alias
+                        )
 
         table = Table(title="Registered Agents")
         table.add_column("Name", style="cyan")

@@ -225,12 +225,17 @@ def test_source_diagnostics_are_sanitized(source_dir, monkeypatch):
     assert catalog.issues[0].kind.value == "unreachable"
     assert catalog.issues[0].cause == "OSError"
     diagnostic = " ".join((catalog.source, *catalog.warnings))
-    assert not any(secret in diagnostic for secret in ("user", "password", "token", "secret", "fragment"))
+    assert not any(
+        secret in diagnostic
+        for secret in ("user", "password", "token", "secret", "fragment")
+    )
 
 
 def test_cli_listing_keeps_valid_sibling_and_reports_broken_once(tmp_path):
     """Guards PR #1090 generic partial-catalog listing."""
-    _write_manifest(tmp_path, "probe-visible", "probe-visible", 'aliases = ["probe-alias"]\n')
+    _write_manifest(
+        tmp_path, "probe-visible", "probe-visible", 'aliases = ["probe-alias"]\n'
+    )
     broken = tmp_path / "broken"
     broken.mkdir()
     (broken / "manifest.toml").write_text("not toml [[[\n")

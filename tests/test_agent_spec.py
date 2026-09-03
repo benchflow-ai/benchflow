@@ -215,7 +215,14 @@ class TestResolveAgentKey:
 
     @pytest.mark.parametrize(
         "command",
-        ["python agent.py", "agent --flag", "/opt/bin/agent", "./agent", "../agent", "~/bin/agent"],
+        [
+            "python agent.py",
+            "agent --flag",
+            "/opt/bin/agent",
+            "./agent",
+            "../agent",
+            "~/bin/agent",
+        ],
     )
     def test_explicit_raw_commands_pass_through(self, command):
         """Guards PR #1090 explicit raw-command compatibility."""

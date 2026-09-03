@@ -970,10 +970,11 @@ class Rollout:
             _resolve_prompts(cfg.task_path, cfg.prompts),
             self._task.config.agent.prompt_prefix,
         )
-        self._agent_launch = self._planes.agent_launch(
-            cfg.primary_agent,
-            disallow_web_tools=self._disallow_web_tools,
-        )
+        if cfg.primary_agent != "oracle":
+            self._agent_launch = self._planes.agent_launch(
+                cfg.primary_agent,
+                disallow_web_tools=self._disallow_web_tools,
+            )
 
         # Copy task dir to temp when Dockerfile mutations are needed
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
