@@ -464,9 +464,15 @@ class ACPSession:
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
+                # A content block opens with an empty chunk before its deltas
+                # arrive; recording it would put a contentless event in the
+                # trajectory and inflate the step counts in
+                # trajectory_summary. The text_update/agent_thought branches
+                # below have always guarded this way.
                 text = content.get("text", "")
-                self.message_chunks.append(text)
-                self._pending_text.append({"type": "agent_message", "text": text})
+                if text:
+                    self.message_chunks.append(text)
+                    self._pending_text.append({"type": "agent_message", "text": text})
 
         elif update_type == "text_update":
             # Used by openclaw shim — full text (not chunked)
@@ -486,8 +492,9 @@ class ACPSession:
             content = update.get("content", {})
             if content.get("type") == "text":
                 text = content.get("text", "")
-                self.thought_chunks.append(text)
-                self._pending_text.append({"type": "agent_thought", "text": text})
+                if text:
+                    self.thought_chunks.append(text)
+                    self._pending_text.append({"type": "agent_thought", "text": text})
 
         self._notify_change()
 
