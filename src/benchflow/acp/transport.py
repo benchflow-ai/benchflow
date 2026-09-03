@@ -1,6 +1,7 @@
 """ACP transports — stdio and SSE."""
 
 import asyncio
+import contextlib
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -133,13 +134,28 @@ class StdioTransport(Transport):
             logger.debug(f"Non-JSON-RPC line from agent: {text[:200]}")
 
     async def close(self) -> None:
+        """Stop the agent process. Safe to call after it has already exited.
+
+        Teardown usually runs while another exception is in flight, so this
+        must not raise one of its own. An agent that already exited — crashed,
+        or finished on its own — has been reaped by asyncio, and signalling a
+        reaped child raises ``ProcessLookupError`` with no args, which would
+        both mask the real failure and print as an empty message (#1065). The
+        equivalent ``SubprocessLiveProcess.close()`` makes the same promise.
+        """
         if self._process:
             if self._process.stdin:
-                self._process.stdin.close()
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5)
-            except TimeoutError:
-                self._process.kill()
-                await self._process.wait()
+                with contextlib.suppress(OSError):
+                    self._process.stdin.close()
+            if self._process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    self._process.terminate()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5)
+                except TimeoutError:
+                    # The grace period is an await, so the child may exit
+                    # between the terminate above and this escalation.
+                    with contextlib.suppress(ProcessLookupError):
+                        self._process.kill()
+                    await self._process.wait()
             logger.info("Agent process terminated")

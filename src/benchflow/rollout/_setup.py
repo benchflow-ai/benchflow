@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchflow._utils.text import describe_exception
 from benchflow.contracts import RolloutPlanes, default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
@@ -516,7 +517,13 @@ async def _verify_rollout(
         logger.error(verifier_error)
     except Exception as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        verifier_error = f"verifier crashed: {e}"
+        # describe_exception, not str(e), for the reason the agent-side funnel
+        # already documents: an exception raised with no args stringifies to
+        # nothing, so the recorded error names neither the failure nor the fact
+        # that it had no detail. A teardown ProcessLookupError landing here is
+        # exactly that shape, and it arrives in place of the timeout it
+        # displaced (#1065).
+        verifier_error = f"verifier crashed: {describe_exception(e)}"
         rewards = None
         logger.error(verifier_error)
     return rewards, verifier_error, verifier_timeout

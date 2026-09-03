@@ -85,6 +85,35 @@ def _is_compose_up_network_race_error(message: str) -> bool:
     return is_compose_up_network_race_error(message)
 
 
+_TIMEOUT_TEARDOWN_GRACE_SEC = 5
+
+
+async def _drain_timed_out_process(
+    process: asyncio.subprocess.Process,
+) -> tuple[bytes | None, bytes | None]:
+    """Stop a child that overran its timeout and return whatever it emitted.
+
+    Signalling races the child's own exit: ``asyncio`` reaps as soon as the
+    process ends, and ``terminate``/``kill`` on a reaped child raise
+    ``ProcessLookupError`` — unlike ``subprocess.Popen``, which polls first and
+    swallows the same race (CPython bpo-38630, bpo-40550). Callers here are in
+    ``except TimeoutError`` blocks about to raise a description of the timeout,
+    so an escaping ``ProcessLookupError`` would replace that description with an
+    exception carrying no args at all, and ``_verify_rollout`` would record the
+    rollout as ``verifier crashed:`` with nothing after the colon (#1065).
+    """
+    with contextlib.suppress(ProcessLookupError):
+        process.terminate()
+    try:
+        return await asyncio.wait_for(
+            process.communicate(), timeout=_TIMEOUT_TEARDOWN_GRACE_SEC
+        )
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        return await process.communicate()
+
+
 class DockerSandboxEnvVars(BaseModel):
     main_image_name: str
     context_dir: str
@@ -365,14 +394,7 @@ class DockerSandbox(BaseSandbox):
             else:
                 stdout_bytes, stderr_bytes = await process.communicate()
         except TimeoutError:
-            process.terminate()
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(), timeout=5
-                )
-            except TimeoutError:
-                process.kill()
-                stdout_bytes, stderr_bytes = await process.communicate()
+            await _drain_timed_out_process(process)
             raise RuntimeError(
                 f"Command timed out after {timeout_sec} seconds"
             ) from None
@@ -417,14 +439,7 @@ class DockerSandbox(BaseSandbox):
                 process.communicate(), timeout=timeout_sec
             )
         except TimeoutError:
-            process.terminate()
-            try:
-                stdout_bytes, _ = await asyncio.wait_for(
-                    process.communicate(), timeout=5
-                )
-            except TimeoutError:
-                process.kill()
-                stdout_bytes, _ = await process.communicate()
+            stdout_bytes, _ = await _drain_timed_out_process(process)
             output = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
             raise RuntimeError(
                 f"Pre-compose hook timed out after {timeout_sec} seconds for "

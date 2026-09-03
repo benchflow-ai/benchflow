@@ -8,6 +8,7 @@ reimplementing those primitives with host subprocess state or shell pipelines.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import platform
@@ -144,7 +145,11 @@ async def _run_cli(
             proc.communicate(input=stdin_data), timeout=timeout
         )
     except TimeoutError:
-        proc.kill()
+        # A child that finished inside the timeout window is already reaped,
+        # and killing it would raise an empty ProcessLookupError in place of
+        # the TimeoutError this re-raises (#1065).
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
         await proc.wait()
         raise
     return ExecResult(

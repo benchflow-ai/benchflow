@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shlex
 import uuid
@@ -63,7 +64,10 @@ class AppleContainerProcess(SubprocessLiveProcess):
                 proc.communicate(lines.encode()), timeout=30
             )
         except TimeoutError:
-            proc.kill()
+            # Killing a child that finished inside the timeout window raises an
+            # empty ProcessLookupError over the TimeoutError below (#1065).
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
             await proc.wait()
             raise
         if proc.returncode != 0:
