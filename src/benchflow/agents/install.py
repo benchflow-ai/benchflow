@@ -365,3 +365,49 @@ async def deploy_skills(
         label = agent_cfg.name if agent_cfg else "oracle"
         if count:
             logger.info(f"Skills distributed to {count} paths for {label}")
+
+
+async def assert_no_skill_isolation(env, agent_cfg, sandbox_user: str | None) -> None:
+    """Fail a no-skill rollout that can still reach skills.
+
+    The no-skill condition is the primary capability signal for skill
+    benchmarks, and until now nothing verified it: benchflow could resolve a
+    rollout as no-skill, correctly skip every deployment path, and still start
+    the agent in an image another rollout had baked skills into. The run then
+    reported a normal pass and no counter disagreed — ``total_skill_invocations``
+    stays at 0 whether or not the agent read a SKILL.md off disk.
+
+    Check the agent's own discovery paths plus the canonical mount point, and
+    raise rather than let a contaminated run be recorded as a result.
+    """
+    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    candidates = ["/skills"]
+    if agent_cfg is not None:
+        for skill_path in agent_cfg.skill_paths:
+            candidates.append(skill_path.replace("$HOME", home))
+
+    quoted = " ".join(shlex.quote(path) for path in dict.fromkeys(candidates))
+    # -L so a symlinked discovery path is followed to the real tree.
+    probe = (
+        f"for p in {quoted}; do "
+        'if [ -e "$p" ]; then find -L "$p" -name SKILL.md 2>/dev/null; fi; '
+        "done"
+    )
+    result = await env.exec(probe, timeout_sec=20)
+    # Only absolute paths to a SKILL.md count. The probe's stdout can also carry
+    # shell noise, and a substring match would turn that into a false positive.
+    found = [
+        line.strip()
+        for line in (result.stdout or "").splitlines()
+        if line.strip().startswith("/") and line.strip().endswith("/SKILL.md")
+    ]
+    if not found:
+        return
+
+    raise RuntimeError(
+        "no-skill rollout is contaminated: skills are reachable inside the "
+        f"sandbox at {', '.join(found[:5])}"
+        + (f" (+{len(found) - 5} more)" if len(found) > 5 else "")
+        + ". The agent can read mentor guidance the condition is meant to "
+        "withhold, so the result would not measure no-skill capability."
+    )

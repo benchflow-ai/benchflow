@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -67,6 +68,36 @@ def _sanitize_docker_image_name(name: str) -> str:
         name = "0" + name
     name = re.sub(r"[^a-z0-9._-]", "-", name)
     return name
+
+
+def _build_context_fingerprint(environment_dir: Path) -> str:
+    """Short digest of the inputs that decide what the built image contains.
+
+    The image tag must distinguish builds whose contents differ. The Dockerfile
+    is rewritten in place when skills are baked in (``--skills-dir`` appends
+    ``COPY _deps/skills`` plus symlinks into every agent skill path), so a tag
+    derived from the task name alone is shared by a with-skill and a no-skill
+    build of the same task. Whichever built last wins, and the other rollout
+    starts from it — a no-skill rollout then runs in an image that already
+    contains ``/skills`` and the agent-side symlinks, silently invalidating the
+    no-skill condition.
+
+    Hashing the Dockerfile, and the presence of the staged skills payload,
+    gives the two builds different tags.
+    """
+    hasher = hashlib.sha256()
+    dockerfile = environment_dir / "Dockerfile"
+    if dockerfile.is_file():
+        hasher.update(dockerfile.read_bytes())
+    # The staged payload is what COPY pulls in; include its layout so a change
+    # of skills — not just of the Dockerfile line — yields a different tag.
+    skills_root = environment_dir / "_deps" / "skills"
+    if skills_root.is_dir():
+        for path in sorted(skills_root.rglob("*")):
+            hasher.update(str(path.relative_to(skills_root)).encode())
+            if path.is_file():
+                hasher.update(str(path.stat().st_size).encode())
+    return hasher.hexdigest()[:12]
 
 
 def _sanitize_docker_compose_project_name(name: str) -> str:
@@ -192,7 +223,10 @@ class DockerSandbox(BaseSandbox):
         )
 
         self._env_vars = DockerSandboxEnvVars(
-            main_image_name=_sanitize_docker_image_name(f"bf__{environment_name}"),
+            main_image_name=_sanitize_docker_image_name(
+                f"bf__{environment_name}__"
+                f"{_build_context_fingerprint(self.environment_dir)}"
+            ),
             context_dir=str(self.environment_dir.resolve().absolute()),
             host_verifier_logs_path=verifier_dir,
             host_agent_logs_path=agent_dir,
