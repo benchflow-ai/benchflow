@@ -9,14 +9,9 @@ silently change behaviour. This test is that gate.
 
 Why a child interpreter for "pure core"
 ---------------------------------------
-``registry.py`` calls ``register_env_manifest_agents()`` at import time, so when
-``$BENCHFLOW_AGENTS_DIR`` is set (as the dedicated CI job sets it) the in-process
-``AGENTS`` is *already* merged with those manifests. Comparing a manifest against
-that merged ``AGENTS`` would compare it against *itself* — a silent false pass
-that no drift could ever fail. So we recover the un-merged, hand-authored core
-configs by re-importing ``registry`` in a child interpreter with
-``$BENCHFLOW_AGENTS_DIR`` *unset* (the proven parity recipe), and compare the
-live manifests against that.
+The parity gate isolates core configs from process-local plugin and catalog
+state. It re-imports ``registry`` with ``$BENCHFLOW_AGENTS_DIR`` unset, then
+compares live manifests against that clean snapshot.
 
 What "byte-identical" means here
 --------------------------------
@@ -55,7 +50,6 @@ import pytest
 
 import benchflow
 from benchflow.agents.manifest import (
-    MANIFEST_DIR_ENV,
     LoadedManifest,
     _merge_core_shim_only,
     load_agents_from_dir,
@@ -72,6 +66,8 @@ _CORE_ONLY_EXCEPTION = "omnigent-pi"
 # test_manifest_wiring.py.
 _SRC = Path(benchflow.__file__).resolve().parents[1]
 _ROOT = _SRC.parent
+MANIFEST_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
+MANIFEST_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
 
 _DUMP_PURE_CORE = (
     "import json, dataclasses;"
@@ -90,8 +86,8 @@ def _pure_core_agents() -> dict[str, AgentConfig]:
     """``registry.AGENTS`` as authored in core, with the manifest plane gated off.
 
     Re-imports ``registry`` in a child interpreter with ``$BENCHFLOW_AGENTS_DIR``
-    unset so the import-time manifest merge is a no-op, then ships the configs
-    back as JSON (``dataclasses.asdict``) and rebuilds them. The ``_SHIM_ONLY``
+    unset, then ships configs back as JSON (``dataclasses.asdict``) and rebuilds
+    them. The ``_SHIM_ONLY``
     fields (credential_files / subscription_auth) round-trip as plain dicts, but
     they are taken from this same core entry during the merge, so they compare
     equal by construction — only the data fields are meaningfully compared.
@@ -119,12 +115,41 @@ def _live_manifests() -> dict[str, LoadedManifest]:
     return load_agents_from_dir(root)
 
 
+def _paired_catalog_root() -> str:
+    """Return configured local catalog, preferring the directory override."""
+    raw_dir = os.environ.get(MANIFEST_DIR_ENV, "")
+    raw_source = os.environ.get(MANIFEST_SOURCE_ENV, "")
+    source = raw_dir.strip() or raw_source.strip()
+    if not source:
+        pytest.skip("paired agents catalog is not configured")
+    expanded = os.path.expanduser(source)
+    if not os.path.isdir(expanded):
+        pytest.skip("paired agents catalog source is not a local directory")
+    return expanded
+
+
+def test_paired_catalog_has_generic_manifest_shape() -> None:
+    """Guards PR #1090's local paired-catalog ingestion contract."""
+    loaded = load_agents_from_dir(_paired_catalog_root())
+    assert loaded
+
+    for name, manifest in loaded.items():
+        assert name == manifest.config.name
+        assert name.strip()
+        assert manifest.config.install_cmd.strip()
+        assert manifest.config.launch_cmd.strip()
+        assert isinstance(manifest.aliases, tuple)
+        assert len(manifest.aliases) == len(set(manifest.aliases))
+        for alias in manifest.aliases:
+            assert alias.strip()
+
+
 def _parity_param_names() -> list[str]:
     """Core agents that also have a manifest — the set to check for parity.
 
     Evaluated at collection time. Empty when ``$BENCHFLOW_AGENTS_DIR`` is unset
     (no child interpreter is spawned in that case)."""
-    if not os.environ.get(MANIFEST_DIR_ENV):
+    if not os.environ.get(MANIFEST_DIR_ENV, "").strip():
         return []
     core = _pure_core_agents()
     loaded = _live_manifests()
@@ -167,7 +192,9 @@ def test_manifest_byte_identical_to_core(agent_name: str | None) -> None:
     )
 
 
-@pytest.mark.skipif(not os.environ.get(MANIFEST_DIR_ENV), reason=_SKIP_REASON)
+@pytest.mark.skipif(
+    not os.environ.get(MANIFEST_DIR_ENV, "").strip(), reason=_SKIP_REASON
+)
 def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
     """omnigent-pi is the ONLY core agent without a manifest.
 

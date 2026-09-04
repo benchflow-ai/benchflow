@@ -330,7 +330,7 @@ class ACPClient:
         cwd: str = "/app",
         mcp_servers: list[McpServerSpec] | None = None,
     ) -> ACPSession:  # ACP spec; unused until session resume is wired
-        """Load an existing session (used by agents like openclaw that need pre-created sessions).
+        """Load an existing pre-created session.
 
         ``mcp_servers`` mirrors :meth:`session_new` — the same task-configured
         servers are attached to the resumed session.

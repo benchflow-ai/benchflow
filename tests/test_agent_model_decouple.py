@@ -12,15 +12,6 @@ from benchflow.agents.registry import (
 class TestGetAgent:
     """get_agent resolves agents correctly."""
 
-    def test_openclaw_direct(self):
-        config, model = get_agent("openclaw")
-        assert config.name == "openclaw"
-        assert model == ""
-
-    def test_openclaw_no_hardcoded_requires_env(self):
-        config, _ = get_agent("openclaw")
-        assert config.requires_env == []
-
     def test_unknown_agent_raises(self):
         with pytest.raises(KeyError, match="Unknown agent"):
             get_agent("nonexistent-agent")

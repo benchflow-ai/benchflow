@@ -337,7 +337,7 @@ class TestRegistryIntegration:
         assert is_vertex_model("zai/glm-5") is False
 
 
-# Provider model metadata (for openclaw.json generation)
+# Provider model metadata for agent configuration
 
 
 class TestProviderModels:
@@ -392,7 +392,7 @@ class TestStripProviderPrefix:
 
 
 class TestShimProviderFallback:
-    """The openclaw shim must resolve providers from env vars when model is stripped.
+    """Agent shims must resolve providers from env vars when model is stripped.
 
     SDK strips provider prefix before ACP set_model (e.g. "anthropic-vertex/claude-sonnet-4-6"
     → "claude-sonnet-4-6"). The shim's _find_and_setup_provider() must fall through from
@@ -429,126 +429,3 @@ class TestShimProviderFallback:
         cfg = PROVIDERS["vllm"]
         assert cfg.auth_type == "api_key"
         assert cfg.auth_env == "OPENAI_API_KEY"
-
-
-# Shim helper functions
-
-
-class TestInferProviderPrefix:
-    """Tests for _infer_provider_prefix() in the openclaw ACP shim."""
-
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        from benchflow.agents.openclaw_acp_shim import _infer_provider_prefix
-
-        self.infer = _infer_provider_prefix
-
-    @pytest.mark.parametrize(
-        "model,expected",
-        [
-            ("gpt-4o", "openai"),
-            ("gpt-4o-mini", "openai"),
-            ("o1-preview", "openai"),
-            ("o3-mini", "openai"),
-            ("gemini-3-flash", "google"),
-            ("gemini-2.5-pro", "google"),
-            ("claude-sonnet-4-6", "anthropic"),
-            ("claude-haiku-4-5-20251001", "anthropic"),
-            ("some-unknown-model", "anthropic"),  # default
-        ],
-    )
-    def test_infer(self, model, expected):
-        assert self.infer(model) == expected
-
-
-class TestSetupOpenaiAuth:
-    """Tests for setup_openai_auth() writing to openclaw's auth-profiles.json."""
-
-    @pytest.fixture()
-    def home_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        return tmp_path
-
-    def _auth_path(self, home_dir):
-        return (
-            home_dir / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
-        )
-
-    def test_writes_key(self, home_dir, monkeypatch):
-        import json
-
-        from benchflow.agents.openclaw_acp_shim import setup_openai_auth
-
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123")
-        setup_openai_auth()
-
-        auth = json.loads(self._auth_path(home_dir).read_text())
-        assert auth["openai"]["apiKey"] == "sk-test-123"
-
-    def test_no_key_is_noop(self, home_dir, monkeypatch):
-        from benchflow.agents.openclaw_acp_shim import setup_openai_auth
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        setup_openai_auth()
-
-        assert not self._auth_path(home_dir).exists()
-
-    def test_preserves_existing_providers(self, home_dir, monkeypatch):
-        import json
-
-        from benchflow.agents.openclaw_acp_shim import setup_openai_auth
-
-        path = self._auth_path(home_dir)
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"anthropic": {"apiKey": "ant-key"}}))
-
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-456")
-        setup_openai_auth()
-
-        auth = json.loads(path.read_text())
-        assert auth["anthropic"]["apiKey"] == "ant-key"
-        assert auth["openai"]["apiKey"] == "sk-test-456"
-
-
-# Shim model generation parameters
-
-
-class TestShimModelParams:
-    """The shim should read BENCHFLOW_MODEL_* env vars and call
-    openclaw config set agents.defaults.params.<key> for each."""
-
-    def test_param_map_covers_all_generation_params(self):
-        """session/set_model handler should map all three env vars.
-
-        Parses the AST of openclaw_acp_shim.py to find the _PARAM_MAP dict
-        literal and assert its contents directly (not via source-text grep).
-        """
-        import ast
-        from pathlib import Path
-
-        shim_path = (
-            Path(__file__).parent.parent / "src/benchflow/agents/openclaw_acp_shim.py"
-        )
-        tree = ast.parse(shim_path.read_text())
-
-        param_map: dict[str, str] | None = None
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "_PARAM_MAP"
-                and isinstance(node.value, ast.Dict)
-            ):
-                param_map = {
-                    ast.literal_eval(k): ast.literal_eval(v)
-                    for k, v in zip(node.value.keys, node.value.values, strict=True)
-                }
-                break
-
-        assert param_map is not None, "_PARAM_MAP not found in openclaw_acp_shim.py"
-        assert param_map == {
-            "BENCHFLOW_MODEL_TEMPERATURE": "agents.defaults.params.temperature",
-            "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
-            "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
-        }

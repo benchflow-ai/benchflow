@@ -219,6 +219,23 @@ class _FakePlanes:
 
 
 @pytest.mark.asyncio
+async def test_task_runtime_default_setup_does_not_resolve_an_agent_launch(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1093 from making the non-agent task runtime fail closed."""
+    rollout = Rollout(
+        TaskRuntimeConfig(
+            task_path=TASK_PATH,
+            jobs_dir=tmp_path / "jobs",
+        ).to_rollout_config()
+    )
+
+    await rollout.setup()
+
+    assert rollout._agent_launch == ""
+
+
+@pytest.mark.asyncio
 async def test_task_runtime_bash_verify_writes_rollout_artifacts(
     tmp_path: Path,
 ) -> None:
