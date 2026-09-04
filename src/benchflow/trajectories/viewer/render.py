@@ -9,7 +9,9 @@ from .payload import _build_acp_payload, _safe_json
 
 _PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
 _TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
-_SCRIPT_ASSETS = ("viewer.js", "detail.js", "catalog.js", "boot.js")
+_SCRIPT_ASSETS = ("viewer.js", "theme.js", "detail.js", "catalog.js", "boot.js")
+# Third-party scripts packaged under assets/vendor (see the LICENSE files there).
+_VENDOR_ASSETS = ("vendor/highlight.min.js",)
 
 
 def _theme_css() -> str:
@@ -31,6 +33,13 @@ def _load_template() -> str:
     page = page.replace(
         "/*__BENCHFLOW_VIEWER_CSS__*/",
         (assets / "viewer.css").read_text(encoding="utf-8"),
+        1,
+    )
+    page = page.replace(
+        "//__BENCHFLOW_VENDOR_JS__",
+        "\n\n".join(
+            (assets / name).read_text(encoding="utf-8") for name in _VENDOR_ASSETS
+        ),
         1,
     )
     page = page.replace(

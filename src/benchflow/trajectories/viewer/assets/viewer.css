@@ -26,6 +26,11 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .wordmark { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .wordmark svg { width: 18px; height: 18px; flex: none; color: var(--foreground); }
 .wordmark .brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; color: var(--foreground); }
+#theme-toggle {
+  margin-left: auto; font: 12px var(--font-sans); padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground); cursor: pointer;
+}
+#theme-toggle:hover { color: var(--foreground); }
 .wordmark .app { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); border-radius: 9999px; padding: 3px 10px; }
 
 #content { flex: 1; min-width: 0; padding-bottom: 90px; }
@@ -196,6 +201,23 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 /* dark treatment reserved for terminal (execute) output, matching the
    site-styled renderer's .step.output.term rule */
 .tout.term { background: var(--code-bg); border-color: var(--code-bg); color: var(--code-ink); }
+.tout.term {
+  --hl-fg: #e6edf3; --hl-kw: #ff7b72; --hl-str: #a5d6ff; --hl-num: #79c0ff; --hl-cmt: #8b949e;
+  --hl-fn: #d2a8ff; --hl-var: #ffa657; --hl-add: #7ee787; --hl-add-bg: #12261e;
+  --hl-del: #ffa198; --hl-del-bg: #3a1618;
+}
+/* highlight.js token classes, colored from the theme tokens */
+.hljs { color: var(--hl-fg); }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link, .hljs-doctag { color: var(--hl-kw); }
+.hljs-string, .hljs-regexp, .hljs-template-tag { color: var(--hl-str); }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-attr, .hljs-attribute { color: var(--hl-num); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: var(--hl-cmt); font-style: italic; }
+.hljs-title, .hljs-built_in, .hljs-type { color: var(--hl-fn); }
+.hljs-variable, .hljs-template-variable, .hljs-params, .hljs-name, .hljs-subst { color: var(--hl-var); }
+.hljs-addition { color: var(--hl-add); background: var(--hl-add-bg); }
+.hljs-deletion { color: var(--hl-del); background: var(--hl-del-bg); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
 .redacted {
   background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-line);
   border-radius: 4px; padding: 0 5px; font-family: var(--font-mono); font-size: 10px; font-weight: 600;

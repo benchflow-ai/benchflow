@@ -126,4 +126,34 @@
   --warn-bg: color-mix(in srgb, var(--warning) 12%, var(--card));
   --warn-line: color-mix(in srgb, var(--warning) 28%, var(--card));
   --warn-strip: color-mix(in srgb, var(--warning) 60%, var(--card));
+
+  /* syntax highlighting palette (GitHub light); terminal blocks and the dark
+     theme swap in the dark palette below */
+  --hl-fg: #24292e; --hl-kw: #d73a49; --hl-str: #032f62; --hl-num: #005cc5; --hl-cmt: #6a737d;
+  --hl-fn: #6f42c1; --hl-var: #e36209; --hl-add: #22863a; --hl-add-bg: #e6ffed;
+  --hl-del: #b31d28; --hl-del-bg: #ffeef0;
+}
+
+/* dark theme: an override of the same tokens, applied by data-theme="dark" on
+   <html> (chosen from prefers-color-scheme by default, toggled from the
+   wordmark). Pages without the attribute render exactly as before. */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #0f1216; --foreground: #e6e6e6;
+  --card: #171b21; --card-foreground: #e6e6e6;
+  --primary: #e6e6e6; --primary-foreground: #111111;
+  --secondary: #222831; --secondary-foreground: #e6e6e6;
+  --muted: #222831; --muted-foreground: #9aa4b2;
+  --accent: #222831; --accent-foreground: #e6e6e6;
+  --border: #2b323c;
+  --ink-secondary: #c3c9d1; --faint: #6b7480; --rule-strong: #3a424d;
+  --code-bg: #0b0e12; --code-ink: #e6e6e6;
+  --kind-execute-bg: #2a2410; --kind-execute-line: #4a3c14; --kind-execute-ink: #e2b84f; --kind-execute-strip: #b58a2c;
+  --kind-edit-bg: #14213a;    --kind-edit-line: #1f3a63;    --kind-edit-ink: #8fbcf0;    --kind-edit-strip: #4f83c4;
+  --kind-read-bg: #10281f;    --kind-read-line: #1c4a37;    --kind-read-ink: #7ed3ae;    --kind-read-strip: #3e9c74;
+  --kind-agent-bg: #241c3a;   --kind-agent-line: #3b2d61;   --kind-agent-ink: #c6b0ee;   --kind-agent-strip: #8a6bd0;
+  --kind-web-bg: #0f2a33;     --kind-web-line: #1c4a58;     --kind-web-ink: #7ecbe0;     --kind-web-strip: #3f9fb8;
+  --hl-fg: #e6edf3; --hl-kw: #ff7b72; --hl-str: #a5d6ff; --hl-num: #79c0ff; --hl-cmt: #8b949e;
+  --hl-fn: #d2a8ff; --hl-var: #ffa657; --hl-add: #7ee787; --hl-add-bg: #12261e;
+  --hl-del: #ffa198; --hl-del-bg: #3a1618;
 }
