@@ -37,7 +37,8 @@ def test_page_applies_stored_theme_before_paint_and_ships_a_toggle() -> None:
     assert head_script < page.index("--background:")
     assert "prefers-color-scheme: dark" in page
     assert 'id="theme-toggle"' in page
-    assert "BF.theme = " in page
+    # theme.js extends the namespace viewer.js declares, so it must load after it.
+    assert page.index("const BF = {}") < page.index("BF.theme = ")
 
 
 def test_page_inlines_the_vendored_highlighter_before_the_app_scripts() -> None:

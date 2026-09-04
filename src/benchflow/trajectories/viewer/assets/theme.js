@@ -5,7 +5,7 @@
 // Highlighting is deliberately conservative: a block is colored only when its
 // language is known from a markdown fence, a diff signature, or the tool kind,
 // never from auto-detection, so plain logs stay plain.
-window.BF = window.BF || {};
+// Extends the BF namespace declared in viewer.js, like detail.js and catalog.js.
 
 BF.theme = (() => {
   const KEY = "bf-theme";
