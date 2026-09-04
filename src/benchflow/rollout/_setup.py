@@ -468,6 +468,7 @@ async def _verify_rollout(
     verifier_error = None
     verifier_timeout: VerifierTimeoutDiagnostic | None = None
     timeout_budget = task.config.verifier.timeout_sec
+    verifier_service = task.config.verifier.service
     try:
         await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
@@ -491,12 +492,14 @@ async def _verify_rollout(
                 # retry is safe and turns a lost rollout into a real score. A
                 # timeout WITH output is a genuinely slow/hung verifier and is
                 # never retried.
-                if attempt == 1 and await _verifier_wedged_without_output(env):
+                if attempt == 1 and await _verifier_wedged_without_output(
+                    env, service=verifier_service
+                ):
                     logger.warning(
                         "Verifier timed out with no output — exec-layer wedge "
                         "suspected; retrying verifier once"
                     )
-                    await _kill_orphan_verifier(env)
+                    await _kill_orphan_verifier(env, service=verifier_service)
                     continue
                 raise
         assert verifier_result is not None
@@ -522,7 +525,7 @@ async def _verify_rollout(
     return rewards, verifier_error, verifier_timeout
 
 
-async def _verifier_wedged_without_output(env: Any) -> bool:
+async def _verifier_wedged_without_output(env: Any, *, service: str) -> bool:
     """True when the timed-out verifier attempt left no test output behind.
 
     Zero bytes in ``/logs/verifier/test-stdout.txt`` (or no file at all) means
@@ -535,6 +538,7 @@ async def _verifier_wedged_without_output(env: Any) -> bool:
             env.exec(
                 "wc -c < /logs/verifier/test-stdout.txt 2>/dev/null || echo 0",
                 timeout_sec=10,
+                service=service,
             ),
             timeout=30,
         )
@@ -543,7 +547,7 @@ async def _verifier_wedged_without_output(env: Any) -> bool:
         return True
 
 
-async def _kill_orphan_verifier(env: Any) -> None:
+async def _kill_orphan_verifier(env: Any, *, service: str) -> None:
     """Best-effort kill of a possibly-orphaned first verifier attempt.
 
     The host-side timeout cancels only our await; if the in-sandbox test.sh
@@ -555,6 +559,7 @@ async def _kill_orphan_verifier(env: Any) -> None:
                 "pkill -f '/verifier/test.sh' 2>/dev/null || true",
                 user="root",
                 timeout_sec=10,
+                service=service,
             ),
             timeout=30,
         )
