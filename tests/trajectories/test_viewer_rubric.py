@@ -150,3 +150,78 @@ def test_rubric_tab_renders_in_the_browser(tmp_path: Path) -> None:
         assert "no_fabrication" in pane.inner_text()
         assert "presentable_with_revisions" in pane.inner_text()
         browser.close()
+
+
+def test_legacy_v01_criteria_keep_their_outcomes(tmp_path: Path) -> None:
+    """Guards the #1101 review finding: a v0.1 report (no blocker or weight,
+    outcome-only checks, no scoring) renders outcomes instead of "? / 2"."""
+    jobs = tmp_path / "jobs"
+    rollout = _rollout(jobs, "task__abcd1234")
+    out = jobs / "review-legacy"
+    out.mkdir()
+    (out / "review_report.json").write_text(
+        json.dumps(
+            {
+                "reviewer": {"model": "gateway/reviewer-x"},
+                "trials": [
+                    {
+                        "trial_name": "task__abcd1234",
+                        "review_valid": True,
+                        "summary": "ok",
+                        "criterion_metadata": [
+                            {"name": "cites_sources", "blocker": None, "weight": None}
+                        ],
+                        "checks": {
+                            "cites_sources": {"outcome": "fail", "explanation": "none"}
+                        },
+                        "scoring": None,
+                    }
+                ],
+            }
+        )
+    )
+    rubric = _load_rubric(rollout)
+    assert rubric is not None
+    criterion = rubric.criteria[0].to_payload()
+    assert criterion["blocker"] is None
+    assert criterion["outcome"] == "fail"
+    assert criterion["score"] is None
+    assert rubric.scoring == {}
+
+
+def test_malformed_trials_never_break_the_payload(tmp_path: Path) -> None:
+    """Guards the #1101 review finding: a report whose trials is not a list is
+    ignored instead of raising while the trajectory loads."""
+    jobs = tmp_path / "jobs"
+    rollout = _rollout(jobs, "task__abcd1234")
+    out = jobs / "review-bad"
+    out.mkdir()
+    (out / "review_report.json").write_text(json.dumps({"trials": {"oops": 1}}))
+    assert _load_rubric(rollout) is None
+    assert _build_acp_payload(rollout, None).to_payload()["rubric"] is None
+
+
+def test_hf_sources_fetch_sibling_review_reports(tmp_path: Path, monkeypatch) -> None:
+    """Guards the #1101 review finding: an hf:// source scoped to one run also
+    downloads the parent's review-* reports, and _load_rubric finds them."""
+    import huggingface_hub
+
+    from benchflow.trajectories.viewer.sources import (
+        HfDatasetSource,
+        resolve_hf_dataset,
+    )
+
+    calls: dict = {}
+
+    def fake_snapshot_download(*, repo_id, repo_type, revision, allow_patterns):
+        calls["allow_patterns"] = allow_patterns
+        _rollout(tmp_path / "jobs" / "run-1", "task__abcd1234")
+        _report(tmp_path / "jobs" / "review-x", "task__abcd1234", valid=True, gated=0.6)
+        return str(tmp_path)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    root = resolve_hf_dataset(HfDatasetSource("org/name", None, "jobs/run-1"))
+    assert "jobs/review*/**/review_report.json" in calls["allow_patterns"]
+    assert "jobs/run-1/**/review_report.json" in calls["allow_patterns"]
+    rubric = _load_rubric(root / "2026-01-01__00-00-00" / "task__abcd1234")
+    assert rubric is not None and rubric.scoring["gated_quality"] == 0.6

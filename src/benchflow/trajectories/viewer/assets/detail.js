@@ -633,10 +633,14 @@ BF.detail = (() => {
         const record = criterion && typeof criterion === "object" ? criterion : {};
         const row = el("tr");
         row.appendChild(el("td", null, record.name));
-        row.appendChild(el("td", null, record.blocker ? "blocker" : "weight " + (record.weight ?? "?")));
-        const verdict = el("td", null, record.blocker ? (record.outcome || "") : ((record.score ?? "?") + " / 2"));
-        if (record.blocker) {
-          verdict.style.color = record.outcome === "pass" ? "var(--ok-ink)" : "var(--bad-ink)";
+        // blocker true: v0.2 blocker; false: v0.2 scored; null: legacy v0.1 (outcome only)
+        const scored = record.blocker === false;
+        const kind = record.blocker === true ? "blocker" : (scored ? "weight " + (record.weight ?? "?") : "criterion");
+        row.appendChild(el("td", null, kind));
+        const verdict = el("td", null, scored ? ((record.score ?? "?") + " / 2") : (record.outcome || ""));
+        if (!scored && record.outcome) {
+          verdict.style.color = record.outcome === "pass" ? "var(--ok-ink)"
+            : (record.outcome === "fail" ? "var(--bad-ink)" : "var(--muted-foreground)");
         }
         row.appendChild(verdict);
         row.appendChild(el("td", null, record.explanation || ""));

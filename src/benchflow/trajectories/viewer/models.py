@@ -356,7 +356,9 @@ class RubricCriterion:
     """One rubric criterion as the reviewer judged it."""
 
     name: str
-    blocker: bool
+    # True for a v0.2 blocker, False for a v0.2 scored criterion, None for a
+    # legacy v0.1 criterion, which only carries an outcome.
+    blocker: bool | None
     weight: int | None
     outcome: str | None
     score: int | None

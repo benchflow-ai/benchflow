@@ -578,10 +578,11 @@ def _criteria(trial: dict[str, Any]) -> list[RubricCriterion]:
         check = check if isinstance(check, dict) else {}
         score = check.get("score")
         weight = meta.get("weight")
+        blocker = meta.get("blocker")
         rows.append(
             RubricCriterion(
                 name=name,
-                blocker=bool(meta.get("blocker")),
+                blocker=None if blocker is None else bool(blocker),
                 weight=weight
                 if isinstance(weight, int) and not isinstance(weight, bool)
                 else None,
@@ -604,7 +605,8 @@ def _rubric_from_report(path: Path, rollout_name: str) -> RubricReview | None:
         _optional_text(reviewer.get("model")) if isinstance(reviewer, dict) else None
     )
     found: RubricReview | None = None
-    for trial in report.get("trials") or []:
+    trials = report.get("trials")
+    for trial in trials if isinstance(trials, list) else []:
         if not isinstance(trial, dict) or trial.get("trial_name") != rollout_name:
             continue
         scoring = trial.get("scoring")

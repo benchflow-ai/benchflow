@@ -26,6 +26,10 @@ _HF_VIEWER_FILES = (
     *(f"verifier/{name}" for name in VERIFIER_SIDECARS),
 )
 
+# bench review reports live beside the runs (``jobs/review-<stamp>/``), so a
+# scoped source also fetches its parent's review directories. Small JSON only.
+_HF_REVIEW_FILES = ("review_report.json",)
+
 _REPO_PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _GLOB_METACHARACTERS = frozenset("*?[]")
 
@@ -147,6 +151,11 @@ def resolve_hf_dataset(source: HfDatasetSource) -> Path:
     for name in _HF_VIEWER_FILES:
         patterns.append(f"{scope}{name}")
         patterns.append(f"{scope}**/{name}")
+    parent = f"{'/'.join(subpath_parts[:-1])}/" if len(subpath_parts) > 1 else ""
+    for name in _HF_REVIEW_FILES:
+        patterns.append(f"{scope}**/{name}")
+        patterns.append(f"{parent}review*/{name}")
+        patterns.append(f"{parent}review*/**/{name}")
     print(
         f"Fetching {source.repo_id}"
         + (f" @ {source.revision}" if source.revision else "")
