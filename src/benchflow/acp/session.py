@@ -434,6 +434,14 @@ class ACPSession:
             if isinstance(initial_content, list) and initial_content:
                 record.content.extend(initial_content)
             record.absorb_raw_io(update)
+            # An opening call may already be terminal (codex-acp file edits
+            # arrive completed with no later update); honor its status so it
+            # never lingers in pending_tool_call_ids().
+            if update.get("status") is not None:
+                try:
+                    record.update_status(ToolCallStatus(update["status"]))
+                except ValueError:
+                    logger.warning(f"Unknown tool call status: {update.get('status')}")
             self._record_tool_call(record)
 
         elif update_type == "tool_call_update":

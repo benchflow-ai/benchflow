@@ -65,6 +65,45 @@ def test_session_keeps_content_sent_on_the_opening_tool_call() -> None:
     assert session.tool_calls[0].content == [diff]
 
 
+def test_opening_call_status_is_honored() -> None:
+    """Guards the follow-up on #1099 review: a file edit that codex-acp reports
+    completed in its opening tool_call (no later update) is terminal, so it
+    never lingers in pending_tool_call_ids(); an opening call without a status
+    stays pending as before."""
+    session = ACPSession("s")
+    session.handle_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "done",
+            "title": "Editing files",
+            "kind": "edit",
+            "status": "completed",
+            "content": [
+                {"type": "diff", "path": "/a", "oldText": None, "newText": "x"}
+            ],
+        }
+    )
+    session.handle_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "open",
+            "title": "ls",
+            "kind": "execute",
+        }
+    )
+    session.handle_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "odd",
+            "title": "t",
+            "kind": "other",
+            "status": "not-a-status",
+        }
+    )
+    assert session.pending_tool_call_ids() == ["open", "odd"]
+    assert session.tool_calls[0].finished_at is not None
+
+
 def test_trajectory_emits_raw_fields_only_when_present() -> None:
     """Guards the fix for issue #1099 without changing the shape agents that
     send no raw I/O produce: the keys appear only when set."""
