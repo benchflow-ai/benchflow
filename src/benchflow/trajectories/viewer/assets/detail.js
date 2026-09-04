@@ -14,6 +14,7 @@ BF.detail = (() => {
     ["trace", "view-trace"],
     ["verifier", "view-verifier"],
     ["metrics", "view-metrics"],
+    ["rubric", "view-rubric"],
   ]);
   const STEP_KINDS = new Set(["prompt", "message", "thought", "tool", "timeout", "unknown"]);
   const TOOL_HUES = new Set(["read", "edit", "execute", "fetch", "search", "think", "skill", "other"]);
@@ -177,6 +178,9 @@ BF.detail = (() => {
       || meta.usage && typeof meta.usage === "object" && Object.keys(meta.usage).length
     ) {
       available.push(["metrics", "Metrics"]);
+    }
+    if (payload.rubric && typeof payload.rubric === "object") {
+      available.push(["rubric", "Rubric"]);
     }
 
     const tabs = document.getElementById("tabs");
@@ -581,6 +585,72 @@ BF.detail = (() => {
     if (!main.children.length) main.appendChild(el("div", "panelblock", "No verifier artifacts in this rollout."));
   }
 
+  function renderRubric(payload) {
+    const rubric = payload.rubric && typeof payload.rubric === "object" ? payload.rubric : null;
+    const main = document.getElementById("view-rubric");
+    main.textContent = "";
+    if (!rubric) {
+      main.appendChild(el("div", "panelblock", "No review report found for this rollout."));
+      return;
+    }
+    const scoring = rubric.scoring && typeof rubric.scoring === "object" ? rubric.scoring : {};
+    const head = el("div", "panelblock");
+    head.appendChild(el("h2", null, "Review"));
+    const facts = el("table", "plain");
+    const rows = [
+      ["Reviewer", rubric.reviewer_model || ""],
+      ["Valid", rubric.review_valid ? "yes" : "no"],
+      ["Verifier pass", scoring.deterministic_pass === undefined ? "" : (scoring.deterministic_pass ? "yes" : "no")],
+      ["Blockers", scoring.all_blockers_pass === undefined ? ""
+        : (scoring.all_blockers_pass ? "all pass" : "failed: " + (scoring.failed_blockers || []).join(", "))],
+      ["Raw quality", scoring.raw_quality === undefined ? "" : String(scoring.raw_quality)],
+      ["Gated quality", scoring.gated_quality === undefined ? "" : String(scoring.gated_quality)],
+      ["Decision", scoring.decision || ""],
+    ];
+    rows.forEach(([label, value]) => {
+      const row = el("tr");
+      row.appendChild(el("th", null, label));
+      const cell = el("td", null, value);
+      if (label === "Blockers" || label === "Verifier pass") {
+        cell.style.color = /fail|^no$/.test(value) ? "var(--bad-ink)" : (value ? "var(--ok-ink)" : "");
+      }
+      row.appendChild(cell);
+      facts.appendChild(row);
+    });
+    head.appendChild(facts);
+    if (rubric.summary) collapsibleText(head, rubric.summary, "body");
+    main.appendChild(head);
+
+    const criteria = Array.isArray(rubric.criteria) ? rubric.criteria : [];
+    if (criteria.length) {
+      const block = el("div", "panelblock");
+      block.appendChild(el("h2", null, "Criteria"));
+      const table = el("table", "plain");
+      const heading = el("tr");
+      ["Criterion", "Kind", "Verdict", "Reviewer note"].forEach((label) => heading.appendChild(el("th", null, label)));
+      table.appendChild(heading);
+      criteria.forEach((criterion) => {
+        const record = criterion && typeof criterion === "object" ? criterion : {};
+        const row = el("tr");
+        row.appendChild(el("td", null, record.name));
+        // blocker true: v0.2 blocker; false: v0.2 scored; null: legacy v0.1 (outcome only)
+        const scored = record.blocker === false;
+        const kind = record.blocker === true ? "blocker" : (scored ? "weight " + (record.weight ?? "?") : "criterion");
+        row.appendChild(el("td", null, kind));
+        const verdict = el("td", null, scored ? ((record.score ?? "?") + " / 2") : (record.outcome || ""));
+        if (!scored && record.outcome) {
+          verdict.style.color = record.outcome === "pass" ? "var(--ok-ink)"
+            : (record.outcome === "fail" ? "var(--bad-ink)" : "var(--muted-foreground)");
+        }
+        row.appendChild(verdict);
+        row.appendChild(el("td", null, record.explanation || ""));
+        table.appendChild(row);
+      });
+      block.appendChild(table);
+      main.appendChild(block);
+    }
+  }
+
   function renderMetrics(payload) {
     const meta = payload.meta || {};
     const main = document.getElementById("view-metrics");
@@ -662,7 +732,7 @@ BF.detail = (() => {
   }
 
   function clearDetail() {
-    ["hdr", "tabs", "view-trace", "view-verifier", "view-metrics"].forEach((id) => {
+    ["hdr", "tabs", "view-trace", "view-verifier", "view-metrics", "view-rubric"].forEach((id) => {
       document.getElementById(id).textContent = "";
     });
     document.getElementById("toolbar").textContent = "";
@@ -702,6 +772,7 @@ BF.detail = (() => {
     renderTrace(payload);
     renderVerifier(payload);
     renderMetrics(payload);
+    renderRubric(payload);
     document.title = (payload.meta && payload.meta.task_name) || payload.rollout_name || "benchflow trajectory";
     if (options.focusHeading) requestAnimationFrame(() => heading.focus());
   }
