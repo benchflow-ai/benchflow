@@ -352,11 +352,56 @@ class VerifierArtifacts:
 
 
 @dataclass(frozen=True)
+class RubricCriterion:
+    """One rubric criterion as the reviewer judged it."""
+
+    name: str
+    blocker: bool
+    weight: int | None
+    outcome: str | None
+    score: int | None
+    explanation: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "blocker": self.blocker,
+            "weight": self.weight,
+            "outcome": self.outcome,
+            "score": self.score,
+            "explanation": self.explanation,
+        }
+
+
+@dataclass(frozen=True)
+class RubricReview:
+    """The ``bench review`` verdict for one rollout, from ``review_report.json``."""
+
+    reviewer_model: str | None
+    review_valid: bool
+    scoring: JsonObject
+    summary: str
+    criteria: list[RubricCriterion]
+    source: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "reviewer_model": self.reviewer_model,
+            "review_valid": self.review_valid,
+            "scoring": dict(self.scoring),
+            "summary": self.summary,
+            "criteria": [criterion.to_payload() for criterion in self.criteria],
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
 class ViewerPayload:
     rollout_name: str
     meta: Meta
     steps: list[Step]
     verifier: VerifierArtifacts
+    rubric: RubricReview | None = None
     schema_version: int = 1
 
     def to_payload(self) -> dict[str, Any]:
@@ -366,6 +411,7 @@ class ViewerPayload:
             "meta": self.meta.to_payload(),
             "steps": [step.to_payload() for step in self.steps],
             "verifier": self.verifier.to_payload(),
+            "rubric": self.rubric.to_payload() if self.rubric is not None else None,
         }
 
 

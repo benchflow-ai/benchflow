@@ -888,6 +888,7 @@ class TestTypedContract:
             "meta",
             "steps",
             "verifier",
+            "rubric",
         }
         assert wire["steps"][0] == {
             "i": 1,
