@@ -743,6 +743,161 @@ class TestAdoptionContract:
             self._verify(self._detail(**{field: value}))
 
 
+_VPC_NETWORK = {
+    "networkMode": "VPC",
+    "networkModeConfig": {
+        "subnets": ["subnet-0a1b2c3d4e5f67890"],
+        "securityGroups": ["sg-0a1b2c3d4e5f67890"],
+    },
+}
+
+
+class TestNetworkConfigurationReachesTheRuntime:
+    """The configured network placement has to survive to the control plane.
+
+    ``_network_configuration`` deciding VPC is worth nothing if registration
+    still sends the old constant, and the mistake is invisible: the runtime
+    reaches READY either way, just reachable from the internet.
+    """
+
+    def _vpc_env(self, monkeypatch):
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_NETWORK_MODE", "VPC")
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_SUBNETS", "subnet-0a1b2c3d4e5f67890")
+        monkeypatch.setenv(
+            "BENCHFLOW_AGENTCORE_SECURITY_GROUPS", "sg-0a1b2c3d4e5f67890"
+        )
+
+    def _adopt(self, found):
+        control = MagicMock()
+        control.get_agent_runtime.return_value = {
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "repo@sha256:a"}
+            },
+            "lifecycleConfiguration": {
+                "idleRuntimeSessionTimeout": 600,
+                "maxLifetime": 7200,
+            },
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": found,
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
+        }
+        AgentCoreSandbox._verify_adopted_runtime(
+            control,
+            "rt-1",
+            "repo@sha256:a",
+            {"idleRuntimeSessionTimeout": 600, "maxLifetime": 7200},
+            "arn:aws:iam::1:role/rt",
+            _VPC_NETWORK,
+            {"serverProtocol": "HTTP"},
+        )
+
+    def test_a_service_managed_member_does_not_block_adoption(self):
+        """``VpcConfig`` carries members BenchFlow never sends.
+
+        ``requireServiceS3Endpoint`` cannot even be set on create. Adoption is
+        the path every rollout after the first takes, so comparing the whole
+        document would fail a VPC matrix on everything after its first create.
+
+        Guards PR #1082 against the whole-document comparison it replaced.
+        """
+        self._adopt(
+            {
+                "networkMode": "VPC",
+                "networkModeConfig": {
+                    **_VPC_NETWORK["networkModeConfig"],
+                    "requireServiceS3Endpoint": True,
+                },
+            }
+        )
+
+    def test_a_different_subnet_is_still_refused(self):
+        """Tolerating extra members must not tolerate the wrong network."""
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        with pytest.raises(SandboxStartupError, match="does not match"):
+            self._adopt(
+                {
+                    "networkMode": "VPC",
+                    "networkModeConfig": {
+                        "subnets": ["subnet-0987654321fedcba"],
+                        "securityGroups": ["sg-0a1b2c3d4e5f67890"],
+                    },
+                }
+            )
+
+    @pytest.mark.asyncio
+    async def test_registration_sends_the_configured_vpc(self, tmp_path, monkeypatch):
+        self._vpc_env(monkeypatch)
+        env = _sandbox(_make_task(tmp_path))
+        control = MagicMock()
+        control.create_agent_runtime.return_value = {
+            "agentRuntimeId": "rt-1",
+            "agentRuntimeArn": "arn:rt",
+        }
+        control.get_agent_runtime.return_value = {"status": "READY"}
+
+        with patch.object(env, "_client", return_value=control):
+            await env._create_or_adopt_runtime("bf_x", "repo@sha256:a")
+
+        sent = control.create_agent_runtime.call_args.kwargs
+        assert sent["networkConfiguration"] == _VPC_NETWORK
+
+    @pytest.mark.asyncio
+    async def test_repointing_a_stale_runtime_keeps_the_vpc(
+        self, tmp_path, monkeypatch
+    ):
+        """``update_agent_runtime`` replaces the whole config it is given.
+
+        Omitting the network here is how a VPC runtime silently reverts to
+        PUBLIC on the next image change.
+        """
+        from botocore.exceptions import ClientError
+
+        self._vpc_env(monkeypatch)
+        env = _sandbox(_make_task(tmp_path))
+        control = MagicMock()
+        control.create_agent_runtime.side_effect = ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "exists"}},
+            "CreateAgentRuntime",
+        )
+        control.get_agent_runtime.return_value = {
+            "status": "READY",
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "repo@sha256:b"}
+            },
+            "lifecycleConfiguration": env._lifecycle_configuration(),
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": _VPC_NETWORK,
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
+        }
+
+        with (
+            patch.object(env, "_client", return_value=control),
+            patch.object(
+                provisioning,
+                "find_runtime_by_name",
+                return_value=("arn:rt", "rt-1", "repo@sha256:a"),
+            ),
+        ):
+            await env._create_or_adopt_runtime("bf_x", "repo@sha256:b")
+
+        sent = control.update_agent_runtime.call_args.kwargs
+        assert sent["networkConfiguration"] == _VPC_NETWORK
+
+    def test_a_vpc_runtime_does_not_share_an_identity_with_a_public_one(
+        self, tmp_path, monkeypatch
+    ):
+        """Same name means the VPC run adopts the existing PUBLIC runtime."""
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        public = env._runtime_contract_digest("sha256:a")
+
+        self._vpc_env(monkeypatch)
+
+        assert env._runtime_contract_digest("sha256:a") != public
+
+
 class TestDeprecatedCleanupAliasIsSafe:
     """`bench environment cleanup` reaches the same destructive code.
 

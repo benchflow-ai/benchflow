@@ -530,6 +530,107 @@ class TestCapabilityGating:
         )
 
 
+class TestNetworkConfiguration:
+    """Opting a runtime out of the public internet.
+
+    ``networkMode`` accepts ``PUBLIC`` or ``VPC``. Every runtime was
+    registered ``PUBLIC``, so an agent under test was reachable from the
+    internet with no way to opt out. These pin the opt-in and, more
+    importantly, the ways it can fail open.
+    """
+
+    _MODE = "BENCHFLOW_AGENTCORE_NETWORK_MODE"
+    _SUBNETS = "BENCHFLOW_AGENTCORE_SUBNETS"
+    _SECURITY_GROUPS = "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"
+
+    def _vpc_env(self, monkeypatch):
+        monkeypatch.setenv(self._MODE, "VPC")
+        monkeypatch.setenv(self._SUBNETS, "subnet-0a1b2c3d4e5f67890")
+        monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
+
+    def test_the_default_is_public(self, sandbox, monkeypatch):
+        """Unset must stay unchanged, or every existing deployment moves."""
+        for name in (self._MODE, self._SUBNETS, self._SECURITY_GROUPS):
+            monkeypatch.delenv(name, raising=False)
+
+        assert sandbox._network_configuration() == {"networkMode": "PUBLIC"}
+
+    def test_vpc_mode_carries_the_subnets_and_security_groups(
+        self, sandbox, monkeypatch
+    ):
+        """The runtime shape nests these under ``networkModeConfig``.
+
+        Browsers and code interpreters take the same ``VpcConfig`` under
+        ``vpcConfig`` instead; sending that key here is a ValidationException.
+        The ids come back sorted and deduplicated because this list feeds the
+        runtime contract digest: "a,b" and "b,a" must not register two runtimes
+        for the same infrastructure.
+        """
+        monkeypatch.setenv(self._MODE, "VPC")
+        monkeypatch.setenv(
+            self._SUBNETS,
+            "subnet-0a1b2c3d4e5f67890, subnet-01234567, subnet-01234567",
+        )
+        monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
+
+        assert sandbox._network_configuration() == {
+            "networkMode": "VPC",
+            "networkModeConfig": {
+                "subnets": ["subnet-01234567", "subnet-0a1b2c3d4e5f67890"],
+                "securityGroups": ["sg-0a1b2c3d4e5f67890"],
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "missing",
+        ["BENCHFLOW_AGENTCORE_SUBNETS", "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"],
+    )
+    def test_vpc_mode_requires_both_lists(self, sandbox, monkeypatch, missing):
+        """VPC with only half the config is rejected by the service."""
+        self._vpc_env(monkeypatch)
+        monkeypatch.delenv(missing)
+
+        with pytest.raises(ValueError, match=missing):
+            sandbox._network_configuration()
+
+    def test_vpc_resources_without_vpc_mode_are_refused(self, sandbox, monkeypatch):
+        """Ignoring them would leave the runtime on the public internet.
+
+        The operator who sets subnets but forgets the mode believes the agent
+        is isolated. Failing open there is the whole bug this guards.
+
+        Guards PR #1082.
+        """
+        monkeypatch.delenv(self._MODE, raising=False)
+        monkeypatch.setenv(self._SUBNETS, "subnet-0a1b2c3d4e5f67890")
+        monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
+
+        with pytest.raises(ValueError, match=self._MODE):
+            sandbox._network_configuration()
+
+    def test_an_unknown_mode_is_refused(self, sandbox, monkeypatch):
+        """``no-network`` reads as isolation but is not a mode the service has."""
+        monkeypatch.setenv(self._MODE, "ISOLATED")
+
+        with pytest.raises(ValueError, match="PUBLIC"):
+            sandbox._network_configuration()
+
+    def test_a_malformed_subnet_id_is_refused(self, sandbox, monkeypatch):
+        """Otherwise a pasted VPC id surfaces as an opaque ValidationException."""
+        self._vpc_env(monkeypatch)
+        monkeypatch.setenv(self._SUBNETS, "vpc-0a1b2c3d4e5f67890")
+
+        with pytest.raises(ValueError, match="subnet-"):
+            sandbox._network_configuration()
+
+    def test_a_malformed_security_group_id_is_refused(self, sandbox, monkeypatch):
+        self._vpc_env(monkeypatch)
+        monkeypatch.setenv(self._SECURITY_GROUPS, "0a1b2c3d4e5f67890")
+
+        with pytest.raises(ValueError, match="sg-"):
+            sandbox._network_configuration()
+
+
 @pytest.mark.skipif(
     os.environ.get("BENCHFLOW_AGENTCORE_LIVE_TEST") != "1",
     reason="live AWS test; set BENCHFLOW_AGENTCORE_LIVE_TEST=1 to run",
