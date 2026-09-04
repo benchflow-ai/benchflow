@@ -64,6 +64,7 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     count_audit_outcomes,
     count_score_outcomes,
+    extract_reward,
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
@@ -431,8 +432,7 @@ def _classify_completed_outcomes(
     """
     passed = failed = errored = 0
     for r in completed.values():
-        rewards = r.get("rewards") if isinstance(r, dict) else None
-        reward = rewards.get("reward") if rewards else None
+        reward = extract_reward(r) if isinstance(r, dict) else None
         if reward == 1:
             passed += 1
         elif reward is not None:
@@ -1107,6 +1107,17 @@ class Evaluation:
                 r = json.loads(rfile.read_text())
                 task = r["task_name"]
                 if r.get("rewards") is not None or r.get("verifier_error"):
+                    rewards = r.get("rewards")
+                    if rewards is not None and not isinstance(rewards, dict):
+                        logger.warning(
+                            "Malformed rewards field in %s for task %r: "
+                            "expected dict or null, got %s %r — "
+                            "treating as no reward (task will count as errored)",
+                            rfile,
+                            task,
+                            type(rewards).__name__,
+                            rewards,
+                        )
                     rank = (
                         r.get("rewards") is not None,
                         rfile.stat().st_mtime,
