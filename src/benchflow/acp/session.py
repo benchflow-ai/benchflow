@@ -162,6 +162,10 @@ class ToolCallRecord:
         self.kind = kind
         self.status = ToolCallStatus.PENDING
         self.content: list[dict] = []
+        # ACP ``rawInput`` / ``rawOutput``: the agent's own view of the call.
+        # codex-acp puts the command and its output here and nowhere else.
+        self.raw_input: object | None = None
+        self.raw_output: object | None = None
         self.started_at = datetime.now()
         self.finished_at: datetime | None = None
 
@@ -177,6 +181,13 @@ class ToolCallRecord:
             ToolCallStatus.CANCELLED,
         ):
             self.finished_at = datetime.now()
+
+    def absorb_raw_io(self, update: dict) -> None:
+        """Keep the latest ``rawInput`` / ``rawOutput`` an update carries."""
+        if update.get("rawInput") is not None:
+            self.raw_input = update["rawInput"]
+        if update.get("rawOutput") is not None:
+            self.raw_output = update["rawOutput"]
 
 
 class ACPSession:
@@ -417,6 +428,12 @@ class ACPSession:
                     update.get("kind", "other"), update.get("title", "")
                 ),
             )
+            # The opening notification may already carry content (codex-acp
+            # sends file-change diffs this way) and raw I/O.
+            initial_content = update.get("content")
+            if isinstance(initial_content, list) and initial_content:
+                record.content.extend(initial_content)
+            record.absorb_raw_io(update)
             self._record_tool_call(record)
 
         elif update_type == "tool_call_update":
@@ -440,6 +457,7 @@ class ACPSession:
                 status = ToolCallStatus.IN_PROGRESS
             content = update.get("content")
             record.update_status(status, content)
+            record.absorb_raw_io(update)
             if status in (ToolCallStatus.PENDING, ToolCallStatus.IN_PROGRESS):
                 self._pending_tool_call_update_counts[tc_id] = (
                     self._pending_tool_call_update_counts.get(tc_id, 0) + 1
