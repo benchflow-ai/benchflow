@@ -593,6 +593,52 @@ class TestSkillEvaluatorResultCollection:
         assert collected["case-1"].reward == 0.0
         assert collected["case-10"].reward == 1.0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rewards", [1.0, 1, True, [1.0], "1.0"])
+    async def test_non_dict_rewards_does_not_crash_collection(
+        self, skill_dir, tmp_path, monkeypatch, rewards
+    ):
+        """A persisted non-dict `rewards` must not abort `bench skills eval`.
+
+        Same failure mode as collect_metrics: the rollout's result.json is a
+        raw json.loads payload, and reading `rewards` as a mapping raised
+        AttributeError — which the enclosing
+        `except (json.JSONDecodeError, KeyError)` does not catch.
+        """
+        from benchflow.evaluation import EvaluationResult
+
+        async def fake_run(self):
+            rollout_dir = self._jobs_dir / "2026-09-04__10-00-00" / "calc-001__abc123"
+            rollout_dir.mkdir(parents=True)
+            (rollout_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "task_name": "calc-001",
+                        "rewards": rewards,
+                        "n_tool_calls": 4,
+                    }
+                )
+            )
+            return EvaluationResult(job_name="fake", config=self._config, total=1)
+
+        monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
+
+        evaluator = SkillEvaluator(skill_dir)
+        results = await evaluator._run_job(
+            tasks_dir=tmp_path / "tasks",
+            agent="gemini",
+            model="",
+            environment="docker",
+            jobs_dir=str(tmp_path / "jobs"),
+            concurrency=1,
+            with_skill=True,
+        )
+
+        collected = {result.case_id: result for result in results}
+        assert collected["calc-001"].reward is None
+        assert collected["calc-001"].error is None
+        assert collected["calc-001"].n_tool_calls == 4
+
 
 class TestGepaExport:
     def test_exports_structure(self, skill_dir, tmp_path):
