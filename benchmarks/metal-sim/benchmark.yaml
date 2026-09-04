@@ -1,0 +1,38 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow (see benchmarks/harvey-lab).
+name: metal-sim
+description: "Metal Sim — robot-arm control tasks on a kinematic simulator of the MakerMods Metal arm (code as policy, simulator-verified)"
+url: https://github.com/makermods-robotics/metal-hardware
+author: BenchFlow
+converted_by: BenchFlow
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  count: 2
+  categories: 1             # robotics / manipulation
+  tags: [robotics, simulation, inspect-robots, code-as-policy, metal-arm]
+  splits:
+    main: 2                 # metal-sim-reach, metal-sim-pick
+
+# ── Conversion ───────────────────────────────────────────────────────
+# Hand-authored task packages (task.md schema 1.3); no upstream benchmark to convert.
+conversion:
+  script: none
+  source_format: task.md
+  has_oracle_solutions: true      # oracle/policy.py = damped-least-squares IK controller, reward 1.0
+  docker_image_pinned: false      # python:3.12-slim + inspect-robots==0.58.0 + the vendored plugin
+
+# ── Verification ─────────────────────────────────────────────────────
+verification:
+  method: simulator-oracle        # inspect-robots eval on held-out seeds, privileged success signal
+  reward: proportional            # scenes succeeded / 6 held-out scenes
+  aggregation: per-scene
+  notes: "verifier/test.sh runs metal-sim-eval --seed 4242 on 6 scenes; reward.txt = success rate"
+
+# ── Parity ───────────────────────────────────────────────────────────
+parity:
+  end_to_end:
+    agent: oracle
+    tasks_tested: 2
+    trials: 1
+    benchflow_mean: 1.0
+    notes: "Verifier dry run outside a sandbox (APP_DIR/LOG_ROOT overrides): oracle 1.0 on both tasks, starter policy 0.0. Kinematics verified against the vendor's recorded end poses (0 mm) — see assets/README.md."

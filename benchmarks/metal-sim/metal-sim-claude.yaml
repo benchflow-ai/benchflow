@@ -1,0 +1,8 @@
+# bench eval run --config benchmarks/metal-sim/metal-sim-claude.yaml
+# Code-as-policy: a coding agent writes /app/policy.py, the simulator verifies it on held-out seeds.
+tasks_dir: benchmarks/metal-sim/tasks
+jobs_dir: jobs/metal-sim-claude
+agent: claude
+model: claude-sonnet-4-6
+environment: docker
+concurrency: 2

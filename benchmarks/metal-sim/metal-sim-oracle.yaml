@@ -1,0 +1,7 @@
+# bench eval run --config benchmarks/metal-sim/metal-sim-oracle.yaml
+# Sanity job: the bundled IK oracle must score 1.0 on both tasks.
+tasks_dir: benchmarks/metal-sim/tasks
+jobs_dir: jobs/metal-sim-oracle
+agent: oracle
+environment: docker
+concurrency: 2

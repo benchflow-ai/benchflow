@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inspect-robots-metal-sim"
+version = "0.1.0"
+description = "Kinematic simulator of the MakerMods Metal arm as an Inspect Robots embodiment, with reach/pick tasks and an IK oracle policy"
+requires-python = ">=3.12"
+dependencies = ["inspect-robots>=0.58", "numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+metal-sim-eval = "inspect_robots_metal_sim.cli:main"
+
+[project.entry-points."inspect_robots.embodiments"]
+metal_sim = "inspect_robots_metal_sim.embodiment:MetalSimEmbodiment"
+
+[project.entry-points."inspect_robots.policies"]
+metal_ik = "inspect_robots_metal_sim.policies:ik_policy"
+metal_pyfile = "inspect_robots_metal_sim.policies:pyfile_policy"
+
+[project.entry-points."inspect_robots.tasks"]
+metal-sim-reach = "inspect_robots_metal_sim.tasks:metal_sim_reach"
+metal-sim-pick = "inspect_robots_metal_sim.tasks:metal_sim_pick"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+inspect_robots_metal_sim = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
