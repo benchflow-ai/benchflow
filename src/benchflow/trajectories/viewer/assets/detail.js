@@ -331,12 +331,13 @@ BF.detail = (() => {
     });
   }
 
-  function collapsibleText(container, text, className) {
+  function collapsibleText(container, text, className, language = null) {
     const value = String(text);
     const lines = value.split("\n");
     const body = el("div", className);
     if (value.length <= COLLAPSE_CHARS && lines.length <= COLLAPSE_LINES) {
       textWithRedaction(body, value);
+      BF.highlight.paint(body, value, language);
       container.appendChild(body);
       return;
     }
@@ -354,6 +355,7 @@ BF.detail = (() => {
       const open = button.getAttribute("aria-expanded") === "true";
       body.textContent = "";
       textWithRedaction(body, open ? preview + " ..." : value);
+      if (!open) BF.highlight.paint(body, value, language);
       button.setAttribute("aria-expanded", open ? "false" : "true");
       button.textContent = open
         ? "\u25b8 expand (" + value.length.toLocaleString() + " chars)"
@@ -413,9 +415,10 @@ BF.detail = (() => {
       const tool = record.tool && typeof record.tool === "object" ? record.tool : {};
       const outputClass = "tout" + (toolHue === "execute" ? " term" : "");
       const content = Array.isArray(tool.content) ? tool.content : [];
-      content.forEach((item) => {
+      content.forEach((item, position) => {
         const wrapper = el("div");
-        collapsibleText(wrapper, item, outputClass);
+        const language = BF.highlight.languageFor(String(item), toolHue, tool.title, position);
+        collapsibleText(wrapper, item, outputClass, language);
         card.appendChild(wrapper);
       });
     } else if (kind === "timeout") {

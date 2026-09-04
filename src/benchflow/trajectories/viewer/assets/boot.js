@@ -114,6 +114,7 @@ BF.navigation = (() => {
     bootError("The embedded viewer data must be a JSON object.");
     return;
   }
+  BF.theme.init();
   if (boot.mode === "single") {
     BF.navigation.startSingle(boot.payload);
     return;
