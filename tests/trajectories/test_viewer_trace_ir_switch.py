@@ -131,16 +131,24 @@ def test_the_switch_routes_an_acp_rollout_through_the_canonical_ir(
     assert "Rendered from the canonical Trace IR" in page
     assert page == render_rollout_page(root, None).html
 
-    # What the legacy page of the same rollout does not have. Of the four ACP
-    # events it renders two — the prompt and the tool call — for three cards
+    # What the legacy *card* renderer makes of the same events. Since #1034 an
+    # ACP rollout directory goes to the interactive renderer, so this has to
+    # name `_render_acp_events` to still be a claim about the cards. Of the four
+    # ACP events it renders two — the prompt and the tool call — for three cards
     # with RESULT; the canonical page renders all four, for five.
-    assert "timeout" not in legacy.lower()
+    cards = viewer._render_acp_events(
+        root.name,
+        ACP_EVENTS,
+        viewer._load_result_json(root),
+        viewer._load_prompts(root),
+    )
+    assert "timeout" not in cards.split("<body>", 1)[-1].lower()
     assert "agent timeout" in page
-    assert legacy.count('<div class="step ') == 3
+    assert cards.count('<div class="step ') == 3
     assert page.count('<div class="step ') == 5
-    assert DIAGNOSTIC_LABEL not in legacy
+    assert DIAGNOSTIC_LABEL not in cards
     assert DIAGNOSTIC_LABEL in page
-    assert "OUT-1" not in legacy
+    assert "OUT-1" not in cards
     assert "OUT-1" in page
 
 
@@ -200,14 +208,15 @@ def test_the_page_is_not_built_from_forged_acp_events(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("_render_acp_events was called on the canonical path")
 
-    monkeypatch.setattr(viewer, "_render_acp_events", forbidden)
+    monkeypatch.setattr(viewer.legacy, "_render_acp_events", forbidden)
     page = viewer.render_rollout(root)
     assert "Rendered from the canonical Trace IR" in page
 
-    # The patch bites: the legacy path goes straight through it.
-    monkeypatch.delenv(TRACE_IR_ENV)
+    # The patch bites, so the assertion above is not vacuous. It is named
+    # directly because since #1034 the default path for an ACP rollout is the
+    # interactive renderer, not the card renderer the switch displaces.
     with pytest.raises(AssertionError):
-        viewer.render_rollout(root)
+        viewer.legacy._render_acp_events("t", ACP_EVENTS, None, None)
 
 
 def test_prompts_reach_the_canonical_page_through_the_caller(tmp_path, monkeypatch):

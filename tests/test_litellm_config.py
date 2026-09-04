@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from benchflow.agents.env import resolve_agent_env, resolve_provider_env
 from benchflow.providers.litellm_config import (
     litellm_proxy_config,
     resolve_litellm_route,
@@ -35,6 +36,17 @@ def test_bedrock_model_honors_max_thinking_effort_env():
     # rejects `max`/`xhigh` for opus-4-8, so BenchFlow clamps to the accepted
     # ceiling `high` rather than erroring at request time (#737).
     assert route.litellm_params["reasoning_effort"] == "high"
+
+
+def test_vertex_route_passes_project_and_location_to_litellm():
+    """Guards PR #985 Vertex project/location forwarding to LiteLLM."""
+    route = resolve_litellm_route(
+        "anthropic-vertex/claude-sonnet-4-6",
+        {"GOOGLE_CLOUD_PROJECT": "skillsbench", "GOOGLE_CLOUD_LOCATION": "global"},
+    )
+
+    assert route.litellm_params["vertex_project"] == "skillsbench"
+    assert route.litellm_params["vertex_location"] == "global"
 
 
 def test_azure_openai_route_uses_resource_and_preview_version():
@@ -116,6 +128,55 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     # honored through api_base, which is what PR #780 actually guards.
     assert route.upstream_model == "deepseek/deepseek-v4-flash"
     assert route.litellm_params["api_base"] == "https://llm-proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+
+
+@pytest.mark.parametrize(
+    ("agent", "agent_base"),
+    [
+        ("claude-agent-acp", "https://api.z.ai/api/anthropic"),
+        ("openclaw", "https://api.z.ai/api/coding/paas/v4"),
+    ],
+)
+def test_zai_coding_clawsbench_routes(agent, agent_base):
+    """Guards PR #1074: ClawsBench agents use each supported Z.AI surface."""
+    env = resolve_agent_env(agent, "zai-coding/glm-5.3", {"ZAI_API_KEY": "native-key"})
+    route = resolve_litellm_route("zai-coding/glm-5.3", env)
+
+    assert env["BENCHFLOW_PROVIDER_BASE_URL"] == agent_base
+    assert route.litellm_params["api_base"] == ("https://api.z.ai/api/coding/paas/v4")
+    assert route.litellm_params["api_key"] == "os.environ/ZAI_API_KEY"
+    assert route.required_env == ("ZAI_API_KEY",)
+    assert route.upstream_model == "openai/glm-5.3"
+
+
+@pytest.mark.parametrize("model", ["glm-5.4", "glm-5.4-flash"])
+def test_zai_coding_registry_base_preserves_explicit_generic_key(model):
+    """Guards PR #1074: mixed provenance must not retain Anthropic upstream URL."""
+    env = {"BENCHFLOW_PROVIDER_API_KEY": "generic-key"}
+    model_id = f"zai-coding/{model}"
+    resolve_provider_env(env, model_id, "claude-agent-acp")
+    route = resolve_litellm_route(model_id, env)
+
+    assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/anthropic"
+    assert route.litellm_params["api_base"] == ("https://api.z.ai/api/coding/paas/v4")
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+    assert route.upstream_model == f"openai/{model}"
+
+
+def test_zai_coding_preserves_explicit_proxy_route():
+    """Guards PR #1074: explicit Z.AI-compatible proxies remain authoritative."""
+    route = resolve_litellm_route(
+        "zai-coding/glm-5.3-flash",
+        {
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://proxy.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "proxy-key",
+        },
+    )
+
+    assert route.litellm_params["api_base"] == "https://proxy.example.test/v1"
     assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
@@ -274,3 +335,24 @@ def test_proxy_config_no_responses_bridge_for_non_openai_upstream():
     config = litellm_proxy_config(route, master_key="sk-local")
     names = [entry["model_name"] for entry in config["model_list"]]
     assert not any(n.endswith("-responses-bridge") for n in names)
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        (
+            "google/gemini-3.1-flash-lite-preview",
+            "gemini/gemini-3.1-flash-lite-preview",
+        ),
+        ("google/gemma-3-27b-it", "gemini/gemma-3-27b-it"),
+        ("google/geminix-1", "gemini/google/geminix-1"),
+    ],
+)
+def test_google_model_normalizes_only_gemini_families(model, expected):
+    """Google Gemini/Gemma IDs get one LiteLLM provider prefix."""
+    route = resolve_litellm_route(
+        model,
+        {"GEMINI_API_KEY": "key"},
+    )
+    assert route.upstream_model == expected
+    assert route.litellm_params["model"] == expected

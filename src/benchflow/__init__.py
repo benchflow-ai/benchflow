@@ -61,9 +61,12 @@ from benchflow.monitor import (
     MonitorResult,
 )
 from benchflow.review import (
+    PublicationDecision,
     ReviewReport,
     ReviewRubricError,
+    ReviewScoring,
     run_reviews,
+    score_weighted_review,
 )
 from benchflow.review import Rubric as ReviewRubric
 from benchflow.review import RubricCriterion as ReviewRubricCriterion
@@ -169,11 +172,14 @@ __all__ = [
     "load_rubric_json",
     "load_rubric_toml",
     "ReviewReport",
+    "PublicationDecision",
     "ReviewRubric",
     "ReviewRubricCriterion",
     "ReviewRubricError",
+    "ReviewScoring",
     "load_review_rubric",
     "run_reviews",
+    "score_weighted_review",
     "Sandbox",
     "SandboxExecResult",
     "SandboxImage",

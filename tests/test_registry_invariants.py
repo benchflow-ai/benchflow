@@ -486,6 +486,7 @@ def test_provider_model_prefixes_unique_and_resolvable():
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
         ("github-models/openai/gpt-4.1-mini", "github-models"),
         ("zai/glm-5", "zai"),
+        ("zai-coding/glm-5.4-flash", "zai-coding"),
         ("vllm/local-model", "vllm"),
         ("kimi/kimi-k2.6", "kimi"),
         ("qwen-dashscope/qwen3.6-max-preview", "qwen-dashscope"),

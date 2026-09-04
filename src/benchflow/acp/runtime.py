@@ -21,24 +21,32 @@ Does not own:
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.selection import selected_acp_transport
+from benchflow.acp.timeout_cleanup import (
+    cancel_and_drain_prompt_task,
+    cancel_prompt_after_timeout,
+)
 from benchflow.acp.types import McpServerSpec
+from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
     find_provider_for_bare_model,
     strip_provider_prefix,
 )
-from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
+from benchflow.agents.registry import (
+    ACPX_KEY_PREFIX,
+    AGENTS,
+    OPENCODE_PROXY_PROVIDER_ID,
+)
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
-    IdleTimeoutDiagnostic,
     IdleTimeoutError,
     TransportClosedDiagnostic,
     TransportClosedError,
@@ -66,7 +74,6 @@ logger = logging.getLogger(__name__)
 
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
-_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
 _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
@@ -193,7 +200,11 @@ def _codex_reasoning_effort(model_id: str) -> str:
     return model_id.rsplit("[", 1)[1][:-1]
 
 
-def _codex_session_model_id(model: str, session: object | None) -> str:
+def _codex_session_model_id(
+    model: str,
+    session: object | None,
+    reasoning_effort: str | None = None,
+) -> str:
     """Map a bare Codex model to the exact ACP modelId returned by session/new.
 
     ``@agentclientprotocol/codex-acp`` validates ``session/set_model`` against
@@ -210,6 +221,10 @@ def _codex_session_model_id(model: str, session: object | None) -> str:
     if (
         isinstance(current_model, str)
         and _codex_model_name(current_model) == requested_name
+        and (
+            not reasoning_effort
+            or _codex_reasoning_effort(current_model) == reasoning_effort
+        )
     ):
         return current_model
 
@@ -226,7 +241,13 @@ def _codex_session_model_id(model: str, session: object | None) -> str:
     if not candidates:
         return model
 
-    preferred_efforts = ("medium", "high", "low", "minimal", "none")
+    # A requested reasoning effort rides the codex model id: codex-acp
+    # declares no ACP effort config option, and its session/set_model
+    # validates ``model[effort]`` ids, so picking the matching advertised
+    # variant is the only way the run's effort actually reaches the agent.
+    preferred_efforts: tuple[str, ...] = ("medium", "high", "low", "minimal", "none")
+    if reasoning_effort:
+        preferred_efforts = (reasoning_effort, *preferred_efforts)
     for effort in preferred_efforts:
         for candidate in candidates:
             if _codex_reasoning_effort(candidate) == effort:
@@ -255,6 +276,13 @@ def _format_acp_model(model: str, agent: str) -> str:
     models.dev provider prefix when the agent requires it.
     """
     bare = strip_provider_prefix(model)
+    # Gemini CLI accepts bare Google model IDs. ``google/`` is a models.dev
+    # provider prefix rather than a registered BenchFlow provider, so the
+    # generic normalizer intentionally leaves it alone.
+    if agent.removeprefix(ACPX_KEY_PREFIX) == "gemini" and model.startswith(
+        ("google/gemini-", "google/gemma-")
+    ):
+        bare = model.removeprefix("google/")
     agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
         # Proxy mode: BenchFlow's LiteLLM proxy serves the model under the alias
@@ -303,11 +331,12 @@ def _select_acp_model_id(
     model: str,
     agent: str,
     session: object | None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Return the concrete modelId to send through ACP session/set_model."""
     formatted = _format_acp_model(model, agent)
     if agent == "codex-acp":
-        return _codex_session_model_id(formatted, session)
+        return _codex_session_model_id(formatted, session, reasoning_effort)
     return formatted
 
 
@@ -315,6 +344,8 @@ def _model_selection_owned_by_env(
     agent: str,
     model: str | None,
     agent_env: dict[str, str],
+    *,
+    launch_config_owns_model: bool = False,
 ) -> bool:
     """Return True when launch/env config should own model selection.
 
@@ -336,7 +367,9 @@ def _model_selection_owned_by_env(
     # fall back to their own defaults.
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
         mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
-        return bool(mapped_model_env and agent_env.get(mapped_model_env))
+        if mapped_model_env and agent_env.get(mapped_model_env):
+            return True
+        return launch_config_owns_model
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return False
     provider = find_provider(model)
@@ -400,12 +433,19 @@ def _resolve_acp_model_option_id(
     This is what lets the ``@agentclientprotocol`` family migrate from
     ``session/set_model`` to a ``"model"`` config option with no registry
     change: a member that advertises a model option is configured through it
-    automatically, while a member that does not (e.g. current ``codex-acp``,
-    which advertises only ``fast-mode``) keeps using ``session/set_model``.
+    automatically, while a member that does not keeps using
+    ``session/set_model``.
+
+    codex-acp is the documented exception: 1.6.0 advertises a "model" config
+    option whose values reject the ``model[effort]`` ids its own
+    ``session/set_model`` requires (-32602 Invalid params, verified live
+    2026-08-19), so codex stays on the set_model path.
     """
     declared = getattr(agent_cfg, "acp_model_config_id", "") or ""
     if declared:
         return declared
+    if getattr(agent_cfg, "name", "") == "codex-acp":
+        return None
     if "model" in _session_config_option_ids(session):
         return "model"
     return None
@@ -474,16 +514,31 @@ async def _configure_acp_session(
     model: str | None,
     agent_env: dict[str, str],
     reasoning_effort: str | None,
+    launch_config_owns_model: bool = False,
 ) -> None:
     agent_cfg = AGENTS.get(agent)
+    effort_configured = False
 
-    if model and _model_selection_owned_by_env(agent, model, agent_env):
+    if model and _model_selection_owned_by_env(
+        agent,
+        model,
+        agent_env,
+        launch_config_owns_model=launch_config_owns_model,
+    ):
+        effort_configured = bool(reasoning_effort and launch_config_owns_model)
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
     elif model:
         acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
-        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
+        acp_model_id = _select_acp_model_id(
+            acp_model_input, agent, session, reasoning_effort
+        )
+        effort_configured = bool(
+            reasoning_effort
+            and agent == "codex-acp"
+            and _codex_reasoning_effort(acp_model_id) == reasoning_effort
+        )
         model_option_id = _resolve_acp_model_option_id(agent_cfg, session)
         if model_option_id:
             # Capability-first: the agent advertises a model config option (or
@@ -508,6 +563,13 @@ async def _configure_acp_session(
             )
 
     if not reasoning_effort:
+        return
+    if effort_configured:
+        # The effort already rides the selected ``model[effort]`` id (codex),
+        # or its launch config, so there is nothing further to configure.
+        logger.info(
+            f"Reasoning effort {reasoning_effort!r} applied with model selection for {agent}"
+        )
         return
     if not agent_cfg or not agent_cfg.acp_effort_config_id:
         raise RuntimeError(
@@ -554,6 +616,12 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
+    agent_env, launch_config_owns_model = apply_codex_launch_config(
+        agent,
+        agent_env,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
     agent_env = await _prepare_openhands_direct_execution(
         env,
         agent=agent,
@@ -650,6 +718,7 @@ async def connect_acp(
             model=model,
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
+            launch_config_owns_model=launch_config_owns_model,
         )
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
     except Exception:
@@ -707,31 +776,6 @@ async def execute_prompts(
     return trajectory, len(session.tool_calls)
 
 
-async def _cancel_and_drain_prompt_task(prompt_task: asyncio.Task) -> bool:
-    if prompt_task.done():
-        return True
-    prompt_task.cancel()
-    done, _pending = await asyncio.wait(
-        {prompt_task}, timeout=_PROMPT_CANCEL_DRAIN_TIMEOUT_SEC
-    )
-    if done:
-        with contextlib.suppress(BaseException):
-            prompt_task.result()
-        return True
-
-    logger.warning(
-        "ACP prompt task did not finish within %.2fs after cancellation",
-        _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC,
-    )
-
-    def _consume_prompt_result(task: asyncio.Task) -> None:
-        with contextlib.suppress(BaseException):
-            task.result()
-
-    prompt_task.add_done_callback(_consume_prompt_result)
-    return False
-
-
 def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutError:
     session.mark_prompt_end()
     pending_tool_call_ids = session.pending_tool_call_ids()
@@ -763,16 +807,19 @@ async def _prompt_with_wall_clock_budget(
 ):
     """Run a prompt until either it finishes or BenchFlow's budget expires."""
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    cleanup_attempted = False
     try:
         done, _pending = await asyncio.wait({prompt_task}, timeout=timeout)
         if done:
             return prompt_task.result()
-        if await _cancel_and_drain_prompt_task(prompt_task):
+        cleanup_attempted = True
+        if await cancel_prompt_after_timeout(acp_client, prompt_task):
             raise _agent_prompt_timeout_error(session, timeout)
         raise TimeoutError(f"Agent prompt exceeded wall-clock budget {timeout}s")
     finally:
-        if not prompt_task.done():
-            await _cancel_and_drain_prompt_task(prompt_task)
+        if not prompt_task.done() and not cleanup_attempted:
+            cleanup_attempted = True
+            await cancel_and_drain_prompt_task(prompt_task)
 
 
 async def _prompt_with_idle_watchdog(
@@ -782,82 +829,35 @@ async def _prompt_with_idle_watchdog(
     timeout: int,
     idle_timeout: int,
 ):
-    """Run acp_client.prompt() with both a wall-clock and an idle watchdog.
-
-    The watchdog polls session.tool_calls every few seconds and aborts if no
-    progress was made in idle_timeout. This catches agents that hung silently
-    while the local process is still alive (no output to stdout, no tool calls
-    appended).
-    """
-
-    def _activity_count() -> int:
-        # Match the docstring contract: idle = no tool call AND no message
-        # AND no thought. Sum all three so streamed text resets the timer.
-        return (
-            len(session.tool_calls)
-            + len(session.message_chunks)
-            + len(session.thought_chunks)
-        )
-
+    """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
-    last_progress = asyncio.get_event_loop().time()
-    last_activity_at = datetime.now(UTC)
-    last_count = _activity_count()
-    # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
-    # short overall budgets don't overshoot (e.g. timeout=30s with default
-    # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
-    poll_interval = max(1, min(30, idle_timeout // 4, max(1, timeout // 4)))
-    # deadline is loop-INVARIANT (fixed at loop start), NOT re-derived from
-    # last_progress inside the loop. This is load-bearing: the idle branch below
-    # resets last_progress while a tool call is in-flight, so re-deriving the
-    # deadline from it would let an agent that emits a tool_call and then hangs
-    # forever push the wall-clock backstop out indefinitely. Keep this fixed.
-    deadline = last_progress + timeout
+    cleanup_attempted = False
+    loop = asyncio.get_running_loop()
+    watchdog = IdleWatchdog.start(
+        session,
+        idle_timeout_sec=idle_timeout,
+        wall_timeout_sec=timeout,
+        now=loop.time(),
+    )
 
     try:
         while not prompt_task.done():
-            await asyncio.sleep(poll_interval)
+            await asyncio.sleep(watchdog.poll_interval_sec)
             # Re-check done() after the sleep — the prompt may have completed
             # during the poll interval. Without this, we'd cancel an already-
             # completed task and discard a successful result.
             if prompt_task.done():
                 break
-            now = asyncio.get_event_loop().time()
-            cur_count = _activity_count()
-            if cur_count > last_count:
-                last_progress = now
-                last_activity_at = datetime.now(UTC)
-                last_count = cur_count
-            # An in-flight tool call means the agent is actively executing a tool
-            # (e.g. a long build/test/solver shell command), not hung. Those tools
-            # emit no ACP updates until they return, so a >idle_timeout run would
-            # otherwise false-fire the watchdog and discard real work. Treat a
-            # pending tool call as progress and defer to the wall-clock `timeout`
-            # backstop below for a tool that never returns. A genuine model-side
-            # hang has no pending tool call (the prior tool already completed via
-            # tool_call_update), so it still trips the idle path.
-            elif session.pending_tool_call_ids():
-                last_progress = now
-                last_activity_at = datetime.now(UTC)
-            if now - last_progress >= idle_timeout:
-                diag = IdleTimeoutDiagnostic(
-                    idle_timeout_sec=idle_timeout,
-                    idle_duration_sec=int(now - last_progress),
-                    wall_clock_elapsed_sec=int(now - (deadline - timeout)),
-                    n_tool_calls=len(session.tool_calls),
-                    n_message_chunks=len(session.message_chunks),
-                    n_thought_chunks=len(session.thought_chunks),
-                    last_activity_at=last_activity_at.isoformat(),
-                )
-                raise IdleTimeoutError(
-                    f"Agent idle for {idle_timeout}s with no new tool call, "
-                    f"message, or thought "
-                    f"(last activity {int(now - last_progress)}s ago, "
-                    f"{len(session.tool_calls)} tool calls so far)",
-                    diag,
-                )
-            if now > deadline:
-                if await _cancel_and_drain_prompt_task(prompt_task):
+            now = loop.time()
+            watchdog.observe(session, now=now)
+            if watchdog.idle_expired(now):
+                error = watchdog.timeout_error(session, now=now)
+                cleanup_attempted = True
+                await cancel_prompt_after_timeout(acp_client, prompt_task)
+                raise error
+            if watchdog.wall_clock_expired(now):
+                cleanup_attempted = True
+                if await cancel_prompt_after_timeout(acp_client, prompt_task):
                     raise _agent_prompt_timeout_error(session, timeout)
                 raise TimeoutError(
                     f"Agent prompt exceeded wall-clock budget {timeout}s"
@@ -869,5 +869,6 @@ async def _prompt_with_idle_watchdog(
         # external-cancellation path (CancelledError from sleep). Bound the
         # drain so a non-cooperative Daytona/ACP read cannot hide the watchdog
         # timeout forever; cleanup will tear down the live process.
-        if not prompt_task.done():
-            await _cancel_and_drain_prompt_task(prompt_task)
+        if not prompt_task.done() and not cleanup_attempted:
+            cleanup_attempted = True
+            await cancel_and_drain_prompt_task(prompt_task)

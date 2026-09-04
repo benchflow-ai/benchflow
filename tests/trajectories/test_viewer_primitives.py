@@ -62,7 +62,7 @@ FROZEN_BODY = (
     '<div class="step agent"><div class="msg">the answer is 1</div></div>'
     '<div class="step result">'
     '<div class="step-header"><span class="label result">RESULT</span></div>'
-    "<div class=\"msg\">Agent: gemini-cli | Rewards: {'reward': 1.0} | "
+    '<div class="msg">Agent: gemini-cli | Rewards: {&#x27;reward&#x27;: 1.0} | '
     "Tool calls: 1 | Prompts: 1</div>"
     "</div>"
 )
@@ -123,24 +123,31 @@ def test_the_block_builders_emit_what_they_are_given():
     assert raw in _prompt_block("L", raw)
 
 
-def test_the_two_prompt_sites_still_truncate_in_opposite_orders():
-    """Documented, not repaired, by the extraction.
+def test_the_two_prompt_sites_now_truncate_in_the_same_order():
+    """The asymmetry the extraction documented was repaired upstream.
 
-    ``prompts.json`` entries are sliced then escaped; inline ``user_message``
-    text is escaped then sliced, so a long prompt can lose its last entity to
-    the 500-char cut. Changing either is a behaviour change and needs its own
-    commit.
+    Before #1034 ``prompts.json`` entries were sliced then escaped while inline
+    ``user_message`` text was escaped then sliced, so the same long prompt came
+    out differently depending on where it entered. Both sites now go through
+    one normalization and escape before the 500-char cut, so both can end on a
+    half-written entity. Pinned so a future renderer cannot quietly split them
+    apart again.
     """
     long_amp = "a" * 498 + "&&&"
 
-    from_prompts_json = _render_acp_events("t", [], None, [long_amp])
-    assert "&amp;" in from_prompts_json
-
-    inline = _render_acp_events(
-        "t", [{"type": "user_message", "text": long_amp}], None, None
+    from_prompts_json = _body(_render_acp_events("t", [], None, [long_amp]))
+    inline = _body(
+        _render_acp_events(
+            "t", [{"type": "user_message", "text": long_amp}], None, None
+        )
     )
-    body = _body(inline)
-    assert "&am</div>" in body or "&a</div>" in body or "&</div>" in body, body[-80:]
+
+    assert from_prompts_json == inline
+    assert "&amp;" not in from_prompts_json
+    for body in (from_prompts_json, inline):
+        assert "&am</div>" in body or "&a</div>" in body or "&</div>" in body, body[
+            -80:
+        ]
 
 
 def test_unknown_event_types_and_timeouts_are_absent_from_the_legacy_page():

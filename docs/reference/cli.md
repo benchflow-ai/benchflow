@@ -278,10 +278,19 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--retry-attempts` | — | Override retry attempts for the eval run |
 | `--retry-concurrency` | — | Reserved retry concurrency setting recorded in run config |
 | `--publish-hf` | — | Upload final eval artifacts to this Hugging Face dataset repo |
-| `--hf-prefix` | — | Path prefix inside the Hugging Face repo; requires `--publish-hf` |
+| `--hf-prefix` | — | Path prefix inside the Hugging Face repo or bucket; requires `--publish-hf` or `--publish-bucket` |
 | `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+| `--publish-bucket` | — | Upload final eval artifacts to this Hugging Face storage bucket |
+| `--eval-results-model` | — | Hugging Face model repo to open a community eval-results PR on |
+| `--eval-results-dataset` | — | Hugging Face benchmark dataset id for the eval-results entry, e.g. `org/benchmark` |
+| `--eval-results-task` | — | Benchmark `task_id`, as defined in the dataset's `eval.yaml` |
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
+
+`--publish-hf`/`--publish-bucket` also write a `README.md` run summary
+(agent, model, per-task reward and any error/verifier issue, deduplicated
+across retries) into the job dir before upload — buckets render it on the
+directory page automatically.
 
 See [Architecture: skill loading](../architecture.md#skill-loading) for how
 `with-skill` mode is registered with each agent.
@@ -386,12 +395,24 @@ required with it (a run without one exits with an actionable error).
 | `--allow-open-network` | `false` | Run reviewers without the no-internet declaration (required on backends that cannot enforce isolation, e.g. agentcore; recorded in the report) |
 | `--out-dir`, `-o` | `jobs/review-<ts>` | Review output directory |
 
-A rubric is a JSON object with one `criteria` list; each criterion is three
-strings —
-`name` (identifier; becomes a structured-output field), `description`
-(author-facing documentation, never shown to the reviewer), and `guidance`
-(the grading contract the reviewer follows). The reviewer answers each
-criterion with `pass` / `fail` / `not_applicable` plus an explanation.
+A rubric is a versionless JSON object with one `criteria` list. BenchFlow
+supports two backward-compatible shapes:
+
+- Legacy v0.1 criteria contain exactly `name`, `description`, and `guidance`;
+  the reviewer returns `pass`, `fail`, or `not_applicable` plus an explanation.
+- Weighted v0.2 criteria all add strict integer `blocker` (`0` or `1`) and
+  `weight` (`1` through `10`) fields. Blockers return `pass` or `fail`; scored
+  criteria return `0`, `1`, or `2`. Blocker weights do not enter the quality
+  calculation.
+
+For v0.2, `raw_quality` is the weighted scored points divided by twice the
+sum of non-blocker weights. The deterministic reward and all blocker verdicts
+gate that quality: if either gate fails, `gated_quality` is zero and the result
+is `not_publishable`. Otherwise, quality `>= 0.80` is `publishable`, quality
+`>= 0.65` is `presentable_with_revisions`, and lower quality is
+`not_publishable`. The wrapper reward still means only that the review is
+structurally valid; it is not a quality or publication score. See
+[Rubric review](../rubric-review.md) for the full contract and report shape.
 
 ### bench eval list
 
@@ -414,9 +435,42 @@ bench eval metrics jobs/ --json
 ### bench eval view
 
 Serve a trial trajectory viewer in the browser for a rollout directory, a job
-directory, or a Claude Code / Codex / ACP session JSONL file. Contributors
+directory, a Claude Code / Codex / ACP session JSONL file, or a HuggingFace
+trajectory dataset. Contributors
 reach this through the [trajectory upload skill](../../.agents/skills/benchflow-traj-upload/SKILL.md),
 not by running the command themselves.
+
+ACP rollout directories render as an interactive review page: full-fidelity
+event stream (long content collapses instead of truncating), a header with
+harness/model/skills, reward badge, token/cost/duration tiles and
+`result.json` failure diagnostics, Verifier and Metrics tabs, Focus/Full
+modes, per-kind filters, text search, and per-event `#e42` anchors. When a
+capture carries per-event timestamps the stream shows a `+m:ss` timeline and
+per-tool durations; today's captures carry none, so nothing renders until the
+capture side starts writing them.
+
+Pointing the command at a directory **of** rollouts (a job directory, a whole
+`jobs/` tree) serves **browse mode** instead: a run catalog with corpus
+counts, grouping (by task, by model + harness, or none) with per-group
+pass/fail aggregates, sorting (name/reward/duration/cost), text filtering,
+collapsible groups with incremental "show more" pagination, and URL-preserved
+state — selecting a run opens the detail page and the back control restores
+the exact catalog view. Traces load dynamically via `/api/rollout?id=…` —
+ids resolve only by exact membership in a fresh
+directory scan — and `?run=<id>` deep-links a run.
+Discovery is capped at 500 runs by default (`BENCHFLOW_VIEWER_MAX_RUNS`
+overrides); truncation is never silent — the sidebar heading, the server
+startup line, and the catalog payload all signal it, and a `?run=` id outside
+the discovered set shows an explicit error instead of another run.
+
+`hf://<org>/<dataset>[@revision][/subpath]` browses a HuggingFace trajectory
+dataset (e.g. the community ground-truth uploads). The download allowlist is
+exact — `result.json`, `timing.json`, `prompts.json`,
+`trajectory/acp_trajectory.jsonl`, and the four verifier sidecars the viewer
+renders (`reward.txt`, `test-stdout.txt`, `test-stderr.txt`, `ctrf.json`) —
+never wildcards, so large run artifacts and `llm_trajectory`/`trainer`
+exports are not fetched. Files land in the shared `huggingface_hub` cache,
+so repeat views are incremental.
 
 `--confirm` adds a sticky approve/reject bar to the page. When the reviewer
 clicks **Approve & submit** or **Not this one**, the server prints one
@@ -424,7 +478,10 @@ machine-readable line to stdout — `DECISION: approved` or
 `DECISION: rejected` — and exits. Exit codes: `0` approved (also the normal
 Ctrl+C stop), `3` rejected — deliberately not `1`/`2`, which stay reserved
 for errors and usage mistakes. Without `--confirm` the server has no
-`/decision` endpoint and runs until Ctrl+C, as before.
+`/decision` endpoint and runs until Ctrl+C, as before. Confirmation requests
+are accepted only from the viewer page served by that process: each server
+uses a one-time random token and validates the request's localhost host and
+origin.
 
 `--redaction-summary "2 API keys, 1 bearer token"` adds a display-only note to
 the `--confirm` bar — "Before upload, BenchFlow masks: … Originals never leave
@@ -437,6 +494,7 @@ effect; without the flag the bar is unchanged.
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
+bench eval view hf://benchflow/skillsbench-trajectories-apr2026/jobs/opus47-with-skills-t1
 bench eval view ~/.claude/projects/<project>/<session>.jsonl
 bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
 bench eval view session.jsonl --confirm --redaction-summary "2 API keys, 1 bearer token"

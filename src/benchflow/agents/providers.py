@@ -61,6 +61,8 @@ credential_files, url_params), ``vllm`` (user-supplied base_url).
 
 from dataclasses import dataclass, field
 
+ZAI_CODING_REGISTRY_BASE_ENV = "_BENCHFLOW_ZAI_CODING_REGISTRY_BASE"
+
 
 @dataclass
 class ProviderConfig:
@@ -273,6 +275,30 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "contextWindow": 200000,
                 "maxTokens": 131072,
             },
+        ],
+    ),
+    "zai-coding": ProviderConfig(
+        name="zai-coding",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="ZAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://api.z.ai/api/coding/paas/v4",
+            "openai-responses": "https://api.z.ai/api/coding/paas/v4",
+            "anthropic-messages": "https://api.z.ai/api/anthropic",
+        },
+        models=[
+            {
+                "id": model,
+                "name": model.upper(),
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 200000,
+                "maxTokens": 131072,
+            }
+            for model in ("glm-5.3", "glm-5.3-flash")
         ],
     ),
     "kimi": ProviderConfig(

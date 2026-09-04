@@ -36,6 +36,25 @@ JUDGE_RUBRIC = {
     ]
 }
 
+WEIGHTED_RUBRIC = {
+    "criteria": [
+        {
+            "name": "publication_gate",
+            "blocker": 1,
+            "weight": 10,
+            "description": "d",
+            "guidance": "PASS when publication requirements hold.",
+        },
+        {
+            "name": "research_quality",
+            "blocker": 0,
+            "weight": 7,
+            "description": "d",
+            "guidance": "Score 2, 1, or 0.",
+        },
+    ]
+}
+
 
 def make_rollout(root: Path, name: str = "rollout-a") -> Path:
     rollout = root / name
@@ -269,6 +288,14 @@ class TestRubricDialectDiscrimination:
         )
         assert find_task_rubric(task) == target
 
+    def test_weighted_review_rubric_is_claimed(self, tmp_path):
+        task = tmp_path / "weighted-task"
+        (task / "verifier").mkdir(parents=True)
+        target = task / "verifier" / "rubric.json"
+        target.write_text(json.dumps(WEIGHTED_RUBRIC), encoding="utf-8")
+        assert find_task_rubric(task) == target
+        assert load_rubric(target).contract == "v0.2"
+
     def test_judge_rubric_passes_task_authoring_check(self, tmp_path):
         from benchflow._utils.task_authoring import _check_review_rubric
 
@@ -278,6 +305,28 @@ class TestRubricDialectDiscrimination:
             json.dumps(JUDGE_RUBRIC), encoding="utf-8"
         )
         assert _check_review_rubric(verifier, verifier_label="verifier") == []
+
+    def test_weighted_review_rubric_passes_task_authoring_check(self, tmp_path):
+        from benchflow._utils.task_authoring import _check_review_rubric
+
+        verifier = tmp_path / "verifier"
+        verifier.mkdir()
+        (verifier / "rubric.json").write_text(
+            json.dumps(WEIGHTED_RUBRIC), encoding="utf-8"
+        )
+        assert _check_review_rubric(verifier, verifier_label="verifier") == []
+
+    def test_invalid_weighted_review_rubric_fails_task_authoring_check(self, tmp_path):
+        from benchflow._utils.task_authoring import _check_review_rubric
+
+        verifier = tmp_path / "verifier"
+        verifier.mkdir()
+        invalid = json.loads(json.dumps(WEIGHTED_RUBRIC))
+        invalid["criteria"][1].pop("weight")
+        (verifier / "rubric.json").write_text(json.dumps(invalid), encoding="utf-8")
+        problems = _check_review_rubric(verifier, verifier_label="verifier")
+        assert len(problems) == 1
+        assert "both blocker and weight" in problems[0]
 
     def test_all_misspelled_review_rubric_is_claimed(self, tmp_path):
         """Round-3 fix: only the judge dialect is disclaimed; a rubric with

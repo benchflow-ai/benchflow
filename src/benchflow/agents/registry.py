@@ -119,6 +119,7 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
+_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -517,14 +518,15 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
-        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
-        # 0.24, which dropped session/set_model). The option ids are coupled to
-        # this pin — re-verify them when bumping. runtime.py uses
-        # capability-first dispatch for the rest of the family.
-        install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
-        ),
+        # Pinned to 0.73.0 (bundles @anthropic-ai/claude-agent-sdk 0.3.257):
+        # claude-fable-5-1 rejects Claude Code < 2.1.251 with
+        # `claude_code_version_too_old` (HTTP 400), so the previous 0.40.0 pin
+        # (sdk 0.3.160) cannot run that model at all. The config-option wiring
+        # below (set_config_option + the "model"/"effort" ids) was re-verified
+        # against 0.73.0 with tests/test_acp_pinned_protocol_guard.py; the ids
+        # stay coupled to this pin — re-run that guard when bumping. runtime.py
+        # uses capability-first dispatch for the rest of the family.
+        install_cmd=_js_agent_install("claude-agent-acp", _CLAUDE_AGENT_ACP_PACKAGE),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
@@ -605,13 +607,16 @@ AGENTS: dict[str, AgentConfig] = {
         # Pinned for reproducibility: an unpinned @agentclientprotocol install
         # floats to latest and can silently break agent activation when the ACP
         # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
-        # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
-        # implements session/set_model. If a future bump advertises a model
-        # config option instead, runtime.py's capability-first dispatch routes
-        # the model through that option — but re-verify model selection when
-        # bumping this pin.
+        # dropped session/set_model). 1.6.0 still implements session/set_model,
+        # but validates its modelId argument as ``model[effort]`` (0.0.45
+        # accepted bare names); _codex_session_model_id maps bare ids onto the
+        # session's advertised ``model[effort]`` variants, so model selection
+        # keeps working across the bump. 1.6.0 also advertises a "model"
+        # config option, but that option rejects ``model[effort]`` ids
+        # (-32602), so runtime.py keeps codex on session/set_model — verified
+        # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
         install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
+            "codex-acp", "@agentclientprotocol/codex-acp@1.6.0"
         ),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
@@ -651,7 +656,11 @@ AGENTS: dict[str, AgentConfig] = {
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
-        launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
+        # BenchFlow already isolates the agent inside the task sandbox and
+        # deliberately grants tool approval with --yolo. Gemini CLI 0.42 also
+        # requires the workspace to be trusted before it will honor that mode;
+        # headless ACP runs cannot answer the interactive trust prompt.
+        launch_cmd=_js_agent_launch("gemini", "--acp --yolo --skip-trust"),
         protocol="acp",
         # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
         # accepted as an alias: auto_inherit_env mirrors it both ways so users

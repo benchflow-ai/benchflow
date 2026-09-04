@@ -830,72 +830,230 @@ class TestACPInterleaving:
             await client.close()
 
 
-class TestACPIdleWatchdog:
+class TestPendingToolCallGrace:
     @pytest.mark.asyncio
-    async def test_idle_watchdog_returns_even_when_prompt_cancel_drain_stalls(
-        self,
-    ) -> None:
-        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain.
+    async def test_lost_tool_call_completion_trips_idle_after_grace(self):
+        """Guards PR #1066's #1061 fix: a completion lost in transit.
 
-        When the idle watchdog fires it cancels the prompt task and drains it.
-        A non-cooperative agent — here one that swallows the cancellation and
-        blocks on an event that never arrives — must not be able to wedge the
-        watchdog: it bounds the drain and raises ``IdleTimeoutError`` anyway.
+        A terminal update that never arrives must stop deferring the watchdog
+        once the pending grace
+        (3x idle_timeout) elapses with no other session activity, instead of
+        disarming it for the rest of the wall-clock budget.
 
-        Determinism: this asserts the *behaviour* (idle error raised; the stuck
-        prompt task abandoned while still pending) rather than a wall-clock upper
-        bound, so it cannot be squeezed into a spurious failure when the full
-        suite loads the event loop. The outer ``wait_for`` is only a hang guard;
-        its timeout is deliberately loose (far above the real ~1.25s runtime), so
-        load can never trip it, while a regression to an unbounded drain hangs
-        past it and fails.
+        Runtime: ~3s plus polling; the outer wait_for is a loose hang guard,
+        not a timing assertion.
+        """
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+        from benchflow.acp.session import ToolCallRecord
+
+        class HangingPromptClient:
+            async def prompt(self, _prompt: str):
+                await asyncio.Future()
+
+        session = ACPSession("pending-grace-session")
+        # A tool call stuck in PENDING with no terminal update, ever.
+        session.tool_calls.append(ToolCallRecord("t1", "sleep 180", "execute"))
+
+        with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
+            await asyncio.wait_for(
+                execute_prompts(
+                    HangingPromptClient(),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=60,
+                    idle_timeout=1,
+                ),
+                timeout=20.0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_streaming_tool_call_updates_defer_past_grace(self):
+        """Guards PR #1066: relevant streaming updates restart the grace.
+
+        A single long tool call that streams in-progress tool_call_update
+        notifications past the grace boundary is demonstrably alive and must
+        NOT be idle-killed: updates mutate the ToolCallRecord in place, so
+        they are invisible to both the pending-set snapshot and
+        _activity_count — each observed update must reset the grace clock.
+        The wall-clock backstop (AgentPromptTimeoutError) still bounds it.
+
+        Runtime: ~7s (wall timeout 7 > grace 3 + idle 1, so an unpatched
+        grace clock false-fires the idle path first). The outer wait_for is
+        a loose hang guard, not a timing assertion.
+        """
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class StreamingToolClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stream",
+                        "title": "long training run",
+                        "kind": "bash",
+                    }
+                )
+                while True:  # stream progress until cancelled
+                    await asyncio.sleep(0.4)
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_stream",
+                            "status": "in_progress",
+                        }
+                    )
+
+        session = ACPSession("streaming-grace-session")
+        with pytest.raises(AgentPromptTimeoutError):
+            await asyncio.wait_for(
+                execute_prompts(
+                    StreamingToolClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=7,
+                    idle_timeout=1,
+                ),
+                timeout=30.0,
+            )
+        # The call outlived the watchdog: still pending, never idle-killed.
+        assert session.pending_tool_call_ids() == ["tc_stream"]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_updates_do_not_extend_pending_grace(self):
+        """Guards PR #1066: other calls cannot hide a lost completion."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class TerminalNoiseClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "lost_completion",
+                        "title": "silent long call",
+                        "kind": "bash",
+                    }
+                )
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "already_done",
+                        "title": "finished call",
+                        "kind": "bash",
+                    }
+                )
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "still_streaming",
+                        "title": "healthy streaming call",
+                        "kind": "bash",
+                    }
+                )
+                while True:
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "already_done",
+                            "status": "completed",
+                        }
+                    )
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "still_streaming",
+                            "status": "in_progress",
+                        }
+                    )
+                    await asyncio.sleep(0.4)
+
+        session = ACPSession("unrelated-terminal-noise")
+        with pytest.raises(IdleTimeoutError, match="lost_completion"):
+            await asyncio.wait_for(
+                execute_prompts(
+                    TerminalNoiseClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=7,
+                    idle_timeout=1,
+                ),
+                timeout=20.0,
+            )
+        assert session.pending_tool_call_ids() == [
+            "lost_completion",
+            "still_streaming",
+        ]
+        assert session.tool_call_update_count > 2
+
+    @pytest.mark.asyncio
+    async def test_grace_expiry_reports_pending_truth(self):
+        """Guards PR #1066: pending-grace expiry reports the real cause.
+
+        When the grace genuinely expires (call pending, updates stopped),
+        the raised message and IdleTimeoutDiagnostic must say so — not claim
+        'no new tool call, message, or thought' as if the session were
+        silent all along.
+
+        Runtime: ~3s plus polling after the last relevant update.
         """
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
-        # release is never set while the watchdog runs, so the prompt task stays
-        # wedged in its cancellation handler — exactly the stuck-drain scenario.
-        class StubbornPromptClient:
-            def __init__(self) -> None:
-                self.release = asyncio.Event()
-                self.task: asyncio.Task | None = None
+        class StallAfterUpdatesClient:
+            def __init__(self, session: ACPSession):
+                self._session = session
 
             async def prompt(self, _prompt: str):
-                self.task = asyncio.current_task()
-                try:
-                    await asyncio.Future()
-                except asyncio.CancelledError:
-                    await self.release.wait()
-                    raise
-
-        client = StubbornPromptClient()
-        session = ACPSession("idle-session")
-
-        # Loose hang guard: ~4x the real runtime (1s idle detect + 0.25s bounded
-        # drain). Not a tight assertion — it only catches a true hang/regression.
-        hang_guard_sec = 5.0
-
-        try:
-            with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
-                await asyncio.wait_for(
-                    execute_prompts(
-                        client,  # type: ignore[arg-type]
-                        session,
-                        ["solve"],
-                        timeout=30,
-                        idle_timeout=1,
-                    ),
-                    timeout=hang_guard_sec,
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_stall",
+                        "title": "flaky build",
+                        "kind": "bash",
+                    }
                 )
-            # The watchdog returned while the stuck prompt task is still wedged on
-            # release.wait(): proves it bounded the drain instead of waiting for a
-            # cancellation that never completes. Load-independent — no clock math.
-            assert client.task is not None
-            assert not client.task.done()
-        finally:
-            client.release.set()
-            if client.task is not None:
-                with pytest.raises(asyncio.CancelledError):
-                    await client.task
+                for _ in range(2):
+                    await asyncio.sleep(0.2)
+                    self._session.handle_update(
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tc_stall",
+                            "status": "in_progress",
+                        }
+                    )
+                await asyncio.Future()  # completion update lost forever
+
+        session = ACPSession("grace-expiry-session")
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await asyncio.wait_for(
+                execute_prompts(
+                    StallAfterUpdatesClient(session),  # type: ignore[arg-type]
+                    session,
+                    ["solve"],
+                    timeout=60,
+                    idle_timeout=1,
+                ),
+                timeout=30.0,
+            )
+        msg = str(exc_info.value)
+        assert "pending grace" in msg
+        assert "tc_stall" in msg
+        info = exc_info.value.diagnostic.to_dict()
+        assert info["pending_tool_call_ids"] == ["tc_stall"]
+        assert info["expired_pending_tool_call_ids"] == ["tc_stall"]
+        assert info["pending_grace_sec"] == 3  # 3x idle_timeout
+        assert info["n_tool_call_updates"] == 2
+        assert info["n_pending_tool_call_updates"] == 2
+        assert info["n_expired_pending_tool_call_updates"] == 2
+        assert info["pending_set_last_changed_at"] is not None
+        assert info["last_tool_update_at"] is not None
+        # Existing fields keep their meaning.
+        assert info["reason"] == "idle_timeout"
+        assert info["idle_duration_sec"] >= 1
 
 
 class TestIdleTimeoutDiagnostics:
@@ -1176,22 +1334,41 @@ class TestConnectAcpModelSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "model_in, expected_model",
+        "agent, model_in, expected_model",
         [
             # Registered vllm/ prefix stripped; HF org/model intact — this is
             # what pi-acp and other ACP agents need for downstream routing.
-            ("vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
-            ("zai/glm-5", "glm-5"),
+            ("test-agent", "vllm/Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B"),
+            ("test-agent", "zai/glm-5", "glm-5"),
             # Bare HF ID (no registered prefix) passes through unchanged.
-            ("Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
+            ("test-agent", "Qwen/Qwen3-Coder", "Qwen/Qwen3-Coder"),
             # Vertex ADC provider — prefix stripped like any other registered one.
-            ("anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("test-agent", "anthropic-vertex/claude-sonnet-4-6", "claude-sonnet-4-6"),
             # No prefix at all — unchanged.
-            ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("test-agent", "claude-sonnet-4-6", "claude-sonnet-4-6"),
+            # Gemini CLI expects bare Google Gemini and Gemma model IDs.
+            (
+                "gemini",
+                "google/gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite-preview",
+            ),
+            ("gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
+            ("acpx:gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
+            ("gemini", "google/text-bison", "google/text-bison"),
         ],
-        ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix"],
+        ids=[
+            "vllm-hf",
+            "zai",
+            "bare-hf",
+            "vertex",
+            "no-prefix",
+            "gemini-google",
+            "gemma-google",
+            "acpx-gemma-google",
+            "unrelated-google",
+        ],
     )
-    async def test_model_id_selection(self, model_in, expected_model, tmp_path):
+    async def test_model_id_selection(self, agent, model_in, expected_model, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
@@ -1203,7 +1380,7 @@ class TestConnectAcpModelSelection:
         ):
             await connect_acp(
                 env=mock_env,
-                agent="test-agent",
+                agent=agent,
                 agent_launch="test-agent",
                 agent_env={},
                 sandbox_user=None,

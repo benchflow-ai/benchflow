@@ -566,7 +566,7 @@ converter joins the family; it is not a way to let a run path in.
 
 IR_FAMILY_PATHS = {f"src/benchflow/trajectories/{name}.py" for name in IR_FAMILY}
 
-WIRING_SITES = frozenset({"src/benchflow/trajectories/viewer.py"})
+WIRING_SITES = frozenset({"src/benchflow/trajectories/viewer/legacy.py"})
 """The modules outside the family that are allowed to reach into it.
 
 Slice I wires the IR into one run path — the trajectory viewer — through a
@@ -659,7 +659,7 @@ def test_the_wiring_is_opt_in_and_lazy():
     the viewer never imports the IR, and an unset environment leaves the ACP
     path untouched.
     """
-    viewer_path = REPO_ROOT / "src/benchflow/trajectories/viewer.py"
+    viewer_path = REPO_ROOT / "src/benchflow/trajectories/viewer/legacy.py"
     tree = ast.parse(viewer_path.read_text(encoding="utf-8"))
     module_level = {
         node

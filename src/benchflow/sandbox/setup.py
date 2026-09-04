@@ -568,6 +568,37 @@ def _inject_skills_into_dockerfile(
     )
 
 
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode the octal escapes used by ``/proc/self/mountinfo``."""
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _mountinfo_path_mapping(cwd: str, mountinfo: str) -> tuple[str, str] | None:
+    """Return host-source/container-destination for a containing bind mount."""
+    current = Path(cwd)
+    best: tuple[str, str] | None = None
+    for line in mountinfo.splitlines():
+        fields = line.split(" - ", 1)[0].split()
+        if len(fields) < 5:
+            continue
+        root = _decode_mountinfo_path(fields[3])
+        dest = _decode_mountinfo_path(fields[4])
+        try:
+            current.relative_to(dest)
+        except ValueError:
+            continue
+        if root == "/" or dest == "/":
+            continue
+        if best is None or len(dest) > len(best[1]):
+            best = (root, dest)
+    return best
+
+
 def _detect_dind_mount() -> tuple[str, str] | None:
     """Detect Docker-in-Docker host path translation.
 
@@ -576,30 +607,33 @@ def _detect_dind_mount() -> tuple[str, str] | None:
 
     Returns (host_source, container_dest) tuple, or None if not in DinD.
     """
-    if not Path("/.dockerenv").exists():
-        return None
     import subprocess as _sp
 
     try:
-        hostname = _sp.check_output(["hostname"], text=True).strip()
-        result = _sp.run(
-            ["docker", "inspect", hostname],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
         cwd = str(Path.cwd())
-        best = None
-        for mount in data[0].get("Mounts", []):
-            if mount.get("Type") != "bind":
-                continue
-            dest = mount.get("Destination", "")
-            if cwd.startswith(dest) and (best is None or len(dest) > len(best[1])):
-                best = (mount["Source"], dest)
-        return best
+        if Path("/.dockerenv").exists():
+            hostname = _sp.check_output(["hostname"], text=True).strip()
+            result = _sp.run(
+                ["docker", "inspect", hostname],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                best = None
+                for mount in data[0].get("Mounts", []):
+                    if mount.get("Type") != "bind":
+                        continue
+                    dest = mount.get("Destination", "")
+                    if cwd.startswith(dest) and (
+                        best is None or len(dest) > len(best[1])
+                    ):
+                        best = (mount["Source"], dest)
+                if best is not None:
+                    return best
+        mountinfo = Path("/proc/self/mountinfo").read_text(errors="replace")
+        return _mountinfo_path_mapping(cwd, mountinfo)
     except Exception:
         logger.debug("DinD mount detection failed", exc_info=True)
         return None

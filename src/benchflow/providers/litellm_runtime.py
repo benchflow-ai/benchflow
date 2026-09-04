@@ -60,10 +60,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
+_GEMINI_PATCH_MODULE = "benchflow_litellm_gemini_passthrough_patch"
 
 # The proxy is an internal single-route gateway — it must never register the
 # FastAPI Swagger docs route. litellm's `_get_docs_url()` honours an inherited
@@ -768,12 +769,18 @@ def _write_runtime_files(
     runtime_dir.mkdir(parents=True, exist_ok=True)
     callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
     patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
+    gemini_patch_path = runtime_dir / f"{_GEMINI_PATCH_MODULE}.py"
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
     patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
-    sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
+    gemini_patch_path.write_text(
+        Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text()
+    )
+    sitecustomize_path.write_text(
+        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n"
+    )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path, callback_path, patch_path
 
@@ -987,6 +994,7 @@ async def _upload_runtime_files_to_sandbox(
         "config": f"{runtime_dir}/config.yaml",
         "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
         "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
+        "gemini_patch": f"{runtime_dir}/{_GEMINI_PATCH_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
         "stdout": f"{runtime_dir}/stdout.log",
@@ -1012,7 +1020,16 @@ async def _upload_runtime_files_to_sandbox(
         ".py",
     )
     await _upload_text(
-        sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
+        sandbox,
+        Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text(),
+        paths["gemini_patch"],
+        ".py",
+    )
+    await _upload_text(
+        sandbox,
+        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n",
+        paths["sitecustomize"],
+        ".py",
     )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
@@ -1022,7 +1039,11 @@ async def _upload_runtime_files_to_sandbox(
 
 
 async def _ensure_sandbox_litellm(
-    sandbox: Any, *, venv_dir: str, install_timeout_sec: int = 600
+    sandbox: Any,
+    *,
+    venv_dir: str,
+    extra_requirements: tuple[str, ...] = (),
+    install_timeout_sec: int = 600,
 ) -> str:
     vq = shlex.quote(venv_dir)
     # Prefer uv to bootstrap the venv: many sandbox base images ship a python3
@@ -1030,6 +1051,10 @@ async def _ensure_sandbox_litellm(
     # `python -m venv` and `pip install` fail. uv needs neither (it is the same
     # mechanism the openhands agent install already uses in-sandbox), with a
     # stdlib-venv fallback for images that have a working venv and lack uv.
+    requirements = " ".join(
+        shlex.quote(requirement)
+        for requirement in (LITELLM_VERSION_SPEC, "boto3>=1.40", *extra_requirements)
+    )
     command = f"""
 set -eu
 export PATH="$HOME/.local/bin:$PATH"
@@ -1041,7 +1066,7 @@ if [ -z "$UV" ]; then
 fi
 if [ -n "$UV" ]; then
   [ -x {vq}/bin/python ] || "$UV" venv {vq} >/dev/null 2>&1
-  "$UV" pip install --python {vq}/bin/python -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+  "$UV" pip install --python {vq}/bin/python -q {requirements}
 else
   PY="$(command -v python3 || command -v python)"
   if [ ! -x {vq}/bin/python ]; then
@@ -1051,7 +1076,7 @@ else
     )
   fi
   {vq}/bin/python -m pip install -q --upgrade pip
-  {vq}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+  {vq}/bin/python -m pip install -q {requirements}
 fi
 {vq}/bin/python - <<'PY'
 import litellm
@@ -1161,48 +1186,62 @@ async def _start_sandbox_litellm(
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
     runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
+    pid_path = f"{runtime_dir}/litellm.pid"
     config = litellm_proxy_config(route, master_key=master_key)
-    paths = await _upload_runtime_files_to_sandbox(
-        sandbox,
-        runtime_dir=runtime_dir,
-        config=config,
-    )
-    python = await _ensure_sandbox_litellm(
-        sandbox, venv_dir=paths["venv"], install_timeout_sec=install_timeout_sec
-    )
-    env = dict(agent_env)
-    env.update(
-        {
-            "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
-            "LITELLM_MASTER_KEY": master_key,
-            "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
-            **_PROXY_DOCS_DISABLE_ENV,
-        }
-    )
-    launch_config = {
-        "python": python,
-        "litellm": f"{paths['venv']}/bin/litellm",
-        "config": paths["config"],
-        "stdout": paths["stdout"],
-        "stderr": paths["stderr"],
-        "pid": paths["pid"],
-        "state": paths["state"],
-        "env": env,
-    }
-    await _upload_text(
-        sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
-    )
-    # The launcher reads launch_config.json (provider env + master key) at
-    # startup; unlink it immediately afterwards so the secret does not sit in
-    # the sandbox filesystem for the life of the run.
-    command = (
-        f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
-        f"{shlex.quote(paths['log'])} && "
-        f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
-        f"{shlex.quote(paths['launch_config'])}; "
-        f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
-    )
+    proxy_agent_env = dict(agent_env)
+    extra_requirements: tuple[str, ...] = ()
+    adc_json = None
+    if route.provider_name in {"google-vertex", "anthropic-vertex"}:
+        extra_requirements = ("google-cloud-aiplatform>=1.133.0,<2.0",)
+        adc_json = proxy_agent_env.pop("GOOGLE_APPLICATION_CREDENTIALS_JSON", None)
     try:
+        paths = await _upload_runtime_files_to_sandbox(
+            sandbox,
+            runtime_dir=runtime_dir,
+            config=config,
+        )
+        python = await _ensure_sandbox_litellm(
+            sandbox,
+            venv_dir=paths["venv"],
+            extra_requirements=extra_requirements,
+            install_timeout_sec=install_timeout_sec,
+        )
+        if adc_json:
+            adc_path = f"{runtime_dir}/application_default_credentials.json"
+            await _upload_text(sandbox, adc_json, adc_path, ".json")
+            proxy_agent_env["GOOGLE_APPLICATION_CREDENTIALS"] = adc_path
+        env = proxy_agent_env
+        env.update(
+            {
+                "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
+                "LITELLM_MASTER_KEY": master_key,
+                "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+                **_PROXY_DOCS_DISABLE_ENV,
+            }
+        )
+        launch_config = {
+            "python": python,
+            "litellm": f"{paths['venv']}/bin/litellm",
+            "config": paths["config"],
+            "stdout": paths["stdout"],
+            "stderr": paths["stderr"],
+            "pid": paths["pid"],
+            "state": paths["state"],
+            "env": env,
+        }
+        await _upload_text(
+            sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
+        )
+        # The launcher reads launch_config.json (provider env + master key) at
+        # startup; unlink it immediately afterwards so the secret does not sit in
+        # the sandbox filesystem for the life of the run.
+        command = (
+            f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
+            f"{shlex.quote(paths['log'])} && "
+            f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
+            f"{shlex.quote(paths['launch_config'])}; "
+            f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
+        )
         result = await sandbox.exec(command, timeout_sec=20)
         if result.return_code != 0:
             raise RuntimeError(_exec_details("start sandbox LiteLLM", result))
@@ -1231,7 +1270,7 @@ async def _start_sandbox_litellm(
     except BaseException:
         # Never leak a half-started proxy (provider keys + master_key on disk).
         await _terminate_sandbox_litellm(
-            sandbox, pid_path=paths["pid"], runtime_dir=runtime_dir
+            sandbox, pid_path=pid_path, runtime_dir=runtime_dir
         )
         raise
     endpoint = LiteLLMEndpoint(
@@ -1503,7 +1542,16 @@ def _wire_litellm_agent_env(
         # in the upstream Gemini key server-side.
         updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
         updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
-        updated["GEMINI_API_KEY"] = master_key
+        # Gemini CLI recognizes several equivalent credential names, with the
+        # selected alias varying by model family and CLI release. Point every
+        # accepted alias at the gateway so Gemma cannot inherit a real Google
+        # key from the sandbox and silently bypass usage/evidence capture.
+        for key in (
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+        ):
+            updated[key] = master_key
         return updated
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
@@ -1596,6 +1644,19 @@ async def ensure_litellm_runtime(
     routed through it: ``oracle`` (no model) and native-subscription auth (no
     API key to proxy). Gemini uses LiteLLM's native GenerateContent endpoints.
     """
+    # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
+    # upstream routing or credentials. Restore controller-held source config.
+    if (
+        runtime is not None
+        and getattr(runtime, "kind", None) == "litellm"
+        and getattr(runtime, "source_agent", None) == agent
+        and getattr(runtime, "source_model", None) == model
+        and agent_env.get(LITELLM_MASTER_KEY_ENV)
+        == getattr(runtime, "master_key", None)
+        and getattr(runtime, "source_env", None) is not None
+    ):
+        agent_env = dict(runtime.source_env)
+
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
 
     if uses_native_subscription_auth(agent, model, agent_env):
@@ -1719,6 +1780,9 @@ async def ensure_litellm_runtime(
         server=server,
         config_key=config_key,
         master_key=master_key,
+        source_agent=agent,
+        source_model=model,
+        source_env=dict(agent_env),
     )
     if live_trajectory_path is not None:
         server.start_live_capture(live_trajectory_path)

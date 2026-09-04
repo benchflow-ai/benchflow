@@ -11,6 +11,7 @@ cases live in ``tests/test_acp_setup_failure_propagation.py``.
 """
 
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,10 +44,12 @@ def _make_mocks(config_options=None, model_state=None):
 @contextlib.contextmanager
 def _runtime_patches(mock_acp):
     with (
-        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+        patch(
+            "benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()
+        ) as transport,
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
-        yield
+        yield transport
 
 
 async def _connect(
@@ -54,7 +57,7 @@ async def _connect(
 ):
     from benchflow.acp.runtime import connect_acp
 
-    with _runtime_patches(mock_acp):
+    with _runtime_patches(mock_acp) as transport:
         await connect_acp(
             env=AsyncMock(),
             agent=agent,
@@ -67,12 +70,13 @@ async def _connect(
             agent_cwd="/app",
             reasoning_effort=reasoning_effort,
         )
+    return transport
 
 
 @pytest.mark.asyncio
 async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
-    """codex-acp@0.0.45 advertises only 'fast-mode' (no 'model'), so dispatch
-    must use session/set_model — capability-first must NOT regress it."""
+    """A codex-acp advertising only 'fast-mode' (no 'model') dispatches via
+    session/set_model — capability-first must NOT regress it."""
     mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
     await _connect(mock_acp, agent="codex-acp", model="gpt-5.5", tmp_path=tmp_path)
 
@@ -81,11 +85,11 @@ async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
+async def test_codex_litellm_config_mismatch_uses_bare_model_for_set_model(tmp_path):
     """Codex validates set_model against its own model catalog, not proxy aliases.
 
-    This guards against a false-green CI path where BenchFlow recorded the
-    requested model but codex-acp fell back to its own default at request time.
+    Guards PR #1076 against a false green where BenchFlow records the requested
+    model but codex-acp falls back to its own default at request time.
     """
     mock_acp = _make_mocks(
         config_options=[{"id": "fast-mode"}],
@@ -97,16 +101,18 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
             "currentModelId": "gpt-5.5[medium]",
         },
     )
+    agent_env = {
+        "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
+        LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
+        LITELLM_MODEL_VIA_ENV: "1",
+        "CODEX_CONFIG": '{"model":"another-model"}',
+    }
     await _connect(
         mock_acp,
         agent="codex-acp",
         model="openai/gpt-5.4-mini",
         tmp_path=tmp_path,
-        agent_env={
-            "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
-            LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
-            LITELLM_MODEL_VIA_ENV: "1",
-        },
+        agent_env=agent_env,
     )
 
     mock_acp.set_model.assert_awaited_once_with("gpt-5.4-mini[medium]")
@@ -114,14 +120,70 @@ async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_with_model_option_uses_config_option(tmp_path):
-    """When a future codex-acp advertises a 'model' config option (as Claude
-    already does), capability-first routes through it — no registry change."""
+@pytest.mark.parametrize("reasoning_effort", [None, "high"])
+async def test_codex_litellm_config_owns_model_selection(tmp_path, reasoning_effort):
+    """Guards PR #1076: exact launch config owns Codex model and effort."""
+    alias = "benchflow-openai-gpt-5.4"
+    mock_acp = _make_mocks(config_options=[{"id": "fast-mode"}])
+    transport = await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="openai/gpt-5.4",
+        tmp_path=tmp_path,
+        reasoning_effort=reasoning_effort,
+        agent_env={
+            "BENCHFLOW_PROVIDER_MODEL": alias,
+            LITELLM_MODEL_ALIAS_ENV: alias,
+            LITELLM_MODEL_VIA_ENV: "1",
+            "CODEX_CONFIG": f'{{"model":"{alias}"}}',
+        },
+    )
+
+    launch_env = transport.call_args.kwargs["env"]
+    config = json.loads(launch_env["CODEX_CONFIG"])
+    assert config.get("model_reasoning_effort") == reasoning_effort
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_with_model_option_still_uses_set_model(tmp_path):
+    """codex-acp@1.6.0 advertises a 'model' config option whose values reject
+    the ``model[effort]`` ids its own session/set_model requires (-32602
+    Invalid params, verified live 2026-08-19), so codex is the documented
+    exception to capability-first and stays on session/set_model."""
     mock_acp = _make_mocks(config_options=[{"id": "model"}])
     await _connect(mock_acp, agent="codex-acp", model="gpt-5.5", tmp_path=tmp_path)
 
-    mock_acp.set_config_option.assert_awaited_once_with("model", "gpt-5.5")
-    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.5")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_reasoning_effort_rides_the_model_id(tmp_path):
+    """codex-acp declares no ACP effort config option; a requested effort must
+    select the matching advertised ``model[effort]`` variant instead of
+    failing closed, and the effort step must treat it as satisfied."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "fast-mode"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.5[medium]"},
+                {"modelId": "gpt-5.5[xhigh]"},
+            ],
+            "currentModelId": "gpt-5.4-mini[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="gpt-5.5",
+        tmp_path=tmp_path,
+        reasoning_effort="xhigh",
+    )
+
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.5[xhigh]")
+    mock_acp.set_config_option.assert_not_awaited()
 
 
 @pytest.mark.asyncio

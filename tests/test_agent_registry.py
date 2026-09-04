@@ -26,6 +26,7 @@ class TestEnvMappingField:
     """env_mapping exists on AgentConfig and is populated for known agents."""
 
     def test_claude_agent_has_mapping(self):
+        """Guards PR #1086's Fable-compatible adapter pin and ACP config ids."""
         cfg = AGENTS["claude-agent-acp"]
         assert "BENCHFLOW_PROVIDER_BASE_URL" in cfg.env_mapping
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"
@@ -33,7 +34,7 @@ class TestEnvMappingField:
         assert cfg.supports_acp_set_model is False
         assert cfg.acp_model_config_id == "model"
         assert cfg.acp_effort_config_id == "effort"
-        assert "@agentclientprotocol/claude-agent-acp@0.40.0" in cfg.install_cmd
+        assert "@agentclientprotocol/claude-agent-acp@0.73.0" in cfg.install_cmd
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
@@ -52,7 +53,7 @@ class TestEnvMappingField:
         """Same @agentclientprotocol family as claude — pin so a floating latest
         can't silently break activation when upstream drops session/set_model."""
         cfg = AGENTS["codex-acp"]
-        assert "@agentclientprotocol/codex-acp@0.0.45" in cfg.install_cmd
+        assert "@agentclientprotocol/codex-acp@1.6.0" in cfg.install_cmd
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]

@@ -581,6 +581,31 @@ def eval_run(
             "--hf-public-read-check", help="Verify public HF reads after upload"
         ),
     ] = False,
+    publish_bucket: Annotated[
+        str | None,
+        typer.Option(
+            "--publish-bucket", help="Upload final eval artifacts to a HF bucket"
+        ),
+    ] = None,
+    eval_results_model: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-model",
+            help="HF model repo to open a community eval-results PR on",
+        ),
+    ] = None,
+    eval_results_dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-dataset", help="HF benchmark dataset id, e.g. org/benchmark"
+        ),
+    ] = None,
+    eval_results_task: Annotated[
+        str | None,
+        typer.Option(
+            "--eval-results-task", help="Benchmark task_id from the dataset's eval.yaml"
+        ),
+    ] = None,
     matrix: Annotated[
         Path | None,
         typer.Option("--matrix", help="YAML model matrix for repeated evals"),
@@ -653,6 +678,10 @@ def eval_run(
         publish_hf=publish_hf,
         hf_prefix=hf_prefix,
         hf_public_read_check=hf_public_read_check,
+        publish_bucket=publish_bucket,
+        eval_results_model=eval_results_model,
+        eval_results_dataset=eval_results_dataset,
+        eval_results_task=eval_results_task,
         matrix=matrix,
         trials=trials,
     )
@@ -1222,9 +1251,15 @@ def eval_metrics(
 @eval_app.command("view")
 def eval_view(
     rollout_dir: Annotated[
-        Path,
+        # A str, not a Path: hf:// specs must arrive verbatim — Path
+        # normalization would collapse the double slash into hf:/.
+        str,
         typer.Argument(
-            help="Rollout directory, job directory, or trajectory JSONL file"
+            help=(
+                "Rollout directory, job directory, trajectory JSONL file, or "
+                "an hf://<org>/<dataset> trajectory dataset "
+                "(optionally with /subpath)"
+            )
         ),
     ],
     port: Annotated[int, typer.Option(help="Server port")] = 8888,
@@ -1256,7 +1291,7 @@ def eval_view(
     from benchflow.trajectories import viewer
 
     decision = viewer.serve(
-        str(rollout_dir), port, confirm=confirm, redaction_summary=redaction_summary
+        rollout_dir, port, confirm=confirm, redaction_summary=redaction_summary
     )
     # Exit-code contract for --confirm: 0 approved, 3 rejected. 3 is chosen
     # so a rejection never collides with the CLI's existing error exits

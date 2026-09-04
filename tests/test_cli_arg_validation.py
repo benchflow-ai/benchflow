@@ -65,6 +65,14 @@ def test_build_concurrency_zero_rejected(tmp_path: Path):
     assert "--build-concurrency must be >= 1" in result.stderr
 
 
+def test_trials_without_matrix_rejected(tmp_path: Path):
+    """Guards PR #1064: plain runs must not silently ignore --trials."""
+    result = _invoke(tmp_path, "--sandbox", "docker", "--trials", "3")
+    assert result.exit_code == 1
+    assert "--trials > 1 requires --matrix" in result.stderr
+    assert "single-entry matrix" in result.stderr
+
+
 def test_skill_mode_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--skill-mode", "bogus")
     assert result.exit_code == 1
@@ -391,6 +399,29 @@ def test_agent_timeout_sec_accepts_positive_or_none(ok):
 
 
 # --- v0.6 CLI-dogfood guards: clean fail-fast instead of raw tracebacks -------
+
+
+def test_hf_prefix_accepted_with_publish_bucket(tmp_path: Path):
+    # Guards against --hf-prefix rejecting --publish-bucket: the bucket
+    # postprocess path reads req.hf_prefix, so it must be a valid pairing.
+    plan = build_eval_plan(
+        EvalCreateRequest(
+            tasks_dir=_task_dir(tmp_path),
+            agent="oracle",
+            publish_bucket="org/bucket",
+            hf_prefix="runs/x",
+        )
+    )
+    assert plan.request.hf_prefix == "runs/x"
+
+
+def test_hf_prefix_without_publish_hf_or_bucket_rejected(tmp_path: Path):
+    with pytest.raises(EvalPlanError, match="--publish-hf or --publish-bucket"):
+        build_eval_plan(
+            EvalCreateRequest(
+                tasks_dir=_task_dir(tmp_path), agent="oracle", hf_prefix="runs/x"
+            )
+        )
 
 
 def test_config_missing_path_rejected_cleanly(tmp_path: Path):
