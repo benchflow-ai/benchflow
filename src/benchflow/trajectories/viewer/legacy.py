@@ -7,6 +7,8 @@ pinned by the jsonl-session and confirm-flow tests.
 import html
 import json
 import math
+import os
+import sys
 from pathlib import Path
 
 from .models import MessageStep, PromptStep, ThoughtStep, ToolStep, tool_hue
@@ -396,6 +398,43 @@ def _user_prompt_html(text: str) -> str:
     )
 
 
+TRACE_IR_ENV = "BENCHFLOW_VIEWER_TRACE_IR"
+"""Opt-in: render a rollout through the canonical Trace IR instead of the
+ACP branch below. Unset — the default — leaves every page exactly as it was."""
+
+_TRACE_IR_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _trace_ir_page(rollout_dir: Path, prompts: list[str] | None) -> str | None:
+    """The canonical-IR page for this rollout, or None to keep the ACP path.
+
+    This is the whole wiring surface: one function, returning None whenever the
+    switch is off, so the branch order in `render_rollout` is unchanged without
+    it. The import is lazy and inside the branch — this module has no
+    module-level dependency on `benchflow.trajectories.ir_to_view_html`, and
+    deleting that family cannot stop this file from importing.
+
+    A conversion that raises falls back to the ACP path with a line on stderr.
+    A viewer that stops showing a run because a converter broke is worse than
+    one that says so and shows it the old way.
+    """
+    if os.environ.get(TRACE_IR_ENV, "").strip().lower() not in _TRACE_IR_TRUTHY:
+        return None
+    try:
+        from benchflow.trajectories.ir_to_view_html import render_rollout_page
+
+        rendered = render_rollout_page(rollout_dir, prompts)
+    except Exception as exc:
+        print(
+            f"{TRACE_IR_ENV} is set but the canonical IR path failed for "
+            f"{rollout_dir.name} ({type(exc).__name__}: {exc}); "
+            f"falling back to the ACP renderer",
+            file=sys.stderr,
+        )
+        return None
+    return None if rendered is None else rendered.html
+
+
 def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     """Render a full trial (multiple turns) as HTML.
 
@@ -410,6 +449,13 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     # Auto-detect format
     turn_files = sorted(rollout_dir.glob("turn*.txt"))
     acp_traj = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+
+    # Opt-in (see TRACE_IR_ENV): source -> canonical Trace IR -> viewer step
+    # list -> the cards below. None with the switch off, which is the default.
+    if not turn_files:
+        page = _trace_ir_page(rollout_dir, prompts)
+        if page is not None:
+            return page
 
     if not turn_files and acp_traj.exists():
         return _render_acp_trajectory(rollout_dir, acp_traj, prompts)
@@ -491,6 +537,65 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 # pinned server-side by the jsonl-session tests).
 
 
+# ── Page primitives ───────────────────────────────────────────────────
+#
+# The markup below was inline inside _render_acp_events. It is factored out
+# unchanged so a second producer of blocks can emit the same page without
+# copying the markup — and so that changing a card means changing one place.
+#
+# Each block builder takes text that the caller has already escaped and
+# truncated. That is deliberate: the two prompt sites differ in the order they
+# do those two things (one slices then escapes, the other escapes then slices),
+# and a helper that picked one would change the other's output. Escaping stays
+# the caller's responsibility, at the site that knows what the value is.
+
+
+def _page(title: str, blocks: list[str]) -> str:
+    """The shared page shell: one stylesheet, a wordmark header, the blocks."""
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>benchflow — {html.escape(title)}</title>
+<style>
+{_VIEWER_CSS}</style></head><body>
+<div class="header">{_WORDMARK_HTML}<h1>{html.escape(title)}</h1></div>
+{"".join(blocks)}
+</body></html>"""
+
+
+def _prompt_block(label: str, escaped_text: str) -> str:
+    """A prompt card. *label* and *escaped_text* are emitted as given."""
+    return (
+        f'<div class="step prompt">'
+        f'<div class="step-header"><span class="label prompt">{label}</span></div>'
+        f'<div class="msg">{escaped_text}</div>'
+        f"</div>"
+    )
+
+
+def _message_block(escaped_text: str) -> str:
+    """An agent message card."""
+    return f'<div class="step agent"><div class="msg">{escaped_text}</div></div>'
+
+
+def _thought_block(escaped_text: str) -> str:
+    """An agent reasoning card."""
+    return f'<div class="step agent"><div class="thinking">{escaped_text}</div></div>'
+
+
+def _result_block(result_data: dict) -> str:
+    """The run summary card, read from result.json rather than from a trace."""
+    agent = html.escape(result_data.get("agent_name", "?"))
+    rewards = result_data.get("rewards", {})
+    n_tools = result_data.get("n_tool_calls", 0)
+    n_prompts = result_data.get("n_prompts", 0)
+    return (
+        f'<div class="step result">'
+        f'<div class="step-header"><span class="label result">RESULT</span></div>'
+        f'<div class="msg">Agent: {agent} | Rewards: {rewards} | '
+        f"Tool calls: {n_tools} | Prompts: {n_prompts}</div>"
+        f"</div>"
+    )
+
+
 def _render_acp_events(
     title: str,
     events: list[dict],
@@ -547,13 +652,7 @@ def _render_acp_events(
             f"</div>"
         )
 
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>benchflow — {html.escape(title)}</title>
-<style>
-{_VIEWER_CSS}</style></head><body>
-<div class="header">{_WORDMARK_HTML}<h1>{html.escape(title)}</h1></div>
-{"".join(blocks)}
-</body></html>"""
+    return _page(title, blocks)
 
 
 def _join_with_divider(blocks: list[str]) -> str:
