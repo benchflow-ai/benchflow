@@ -480,6 +480,7 @@ def test_rollout_disconnect_does_not_rewind_a_terminal_phase():
 
     def _rollout(phase: str) -> SimpleNamespace:
         return SimpleNamespace(
+            _config=SimpleNamespace(primary_agent="opencode"),
             _phase=phase,
             _is_session_factory=False,
             _capture_partial_acp_trajectory=lambda: None,
@@ -501,6 +502,40 @@ def test_rollout_disconnect_does_not_rewind_a_terminal_phase():
         done = _rollout(terminal)
         asyncio.run(Rollout.disconnect(done))
         assert done._phase == terminal
+
+
+def test_rollout_disconnect_does_not_pkill_oracle_label():
+    import asyncio
+
+    from benchflow.rollout import Rollout
+
+    class RecordingEnv:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        async def exec(self, command: str, **_kwargs) -> None:
+            self.commands.append(command)
+
+    env = RecordingEnv()
+    rollout = SimpleNamespace(
+        _config=SimpleNamespace(primary_agent="oracle"),
+        _phase="verified",
+        _is_session_factory=False,
+        _capture_partial_acp_trajectory=lambda: None,
+        _acp_client=None,
+        _session=None,
+        _session_adapter=None,
+        _agent_launch="oracle",
+        _env=env,
+        _active_role=None,
+        _session_tool_count=0,
+        _session_traj_count=0,
+    )
+
+    asyncio.run(Rollout.disconnect(rollout))
+
+    assert env.commands == []
+    assert rollout._phase == "verified"
 
 
 def test_progress_enabled_respects_tty_and_optout(monkeypatch):

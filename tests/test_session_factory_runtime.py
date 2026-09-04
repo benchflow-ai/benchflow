@@ -8,6 +8,7 @@ kernel path is exercised without omnigent/sandbox deps.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -243,6 +244,7 @@ async def test_session_factory_partial_trajectory_captured_on_disconnect():
     ]
 
     r = Rollout.__new__(Rollout)
+    r._config = SimpleNamespace(primary_agent="session-factory")
     r._acp_client = None
     r._session = session
     r._session_adapter = None
@@ -317,6 +319,7 @@ async def test_disconnect_clears_session_factory_state():
     from benchflow.rollout import Rollout
 
     rollout = Rollout.__new__(Rollout)
+    rollout._config = SimpleNamespace(primary_agent="session-factory")
     rollout._acp_client = None
     rollout._session = _FakeSession()
     rollout._session_adapter = object()
