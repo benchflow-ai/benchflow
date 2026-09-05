@@ -22,12 +22,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
-from benchflow.trajectories.export_prime_sft import (
-    PrimeSftTrajectoryJsonlError,
+from benchflow.trajectories.message_contract import (
+    TrajectoryJsonlError,
+    last_user_training_window,
     load_llm_trajectory_jsonl,
-    normalize_prime_sft_exchange,
-    prime_sft_last_user_training_window,
-    validate_prime_sft_row,
+    normalize_exchange,
+    normalize_provider_exchange,
+    validate_message_record,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
@@ -162,10 +163,17 @@ def _llm_steps_from_trajectory(
     if not path.exists():
         return steps, tool_defs, None
     try:
-        exchanges = load_llm_trajectory_jsonl(path, strict=True)
-    except PrimeSftTrajectoryJsonlError as exc:
+        raw_exchanges = load_llm_trajectory_jsonl(path, strict=True)
+        exchanges = [
+            normalize_provider_exchange(exchange) for exchange in raw_exchanges
+        ]
+    except TrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
-    training_success_indices = _training_success_exchange_indices(exchanges)
+    except ValueError as exc:
+        return [], [], str(exc)
+    training_success_indices = _training_success_exchange_indices(
+        exchanges, request_identity_exchanges=raw_exchanges
+    )
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
@@ -176,7 +184,7 @@ def _llm_steps_from_trajectory(
                 f"exchange {exchange_idx}: selected response is not an object"
             )
             continue
-        normalized, skip_reason = normalize_prime_sft_exchange(exchange)
+        normalized, skip_reason = normalize_exchange(exchange)
         if normalized is None:
             skipped_successful.append(
                 f"exchange {exchange_idx}: {skip_reason or 'normalization failed'}"
@@ -262,26 +270,36 @@ def _response_is_training_success(response: Any) -> bool:
 
 def _training_success_exchange_indices(
     exchanges: list[dict[str, Any]],
+    *,
+    request_identity_exchanges: list[dict[str, Any]] | None = None,
 ) -> set[int]:
-    request_bodies = [
-        json.dumps(
-            (
-                request.get("body")
-                if isinstance(request := exchange.get("request"), dict)
-                and isinstance(request.get("body"), dict)
-                else {}
-            ),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        for exchange in exchanges
-    ]
+    def request_bodies(rows: list[dict[str, Any]]) -> list[str]:
+        return [
+            json.dumps(
+                (
+                    request.get("body")
+                    if isinstance(request := exchange.get("request"), dict)
+                    and isinstance(request.get("body"), dict)
+                    else {}
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            for exchange in rows
+        ]
+
+    normalized_request_bodies = request_bodies(exchanges)
+    request_identities = (
+        request_bodies(request_identity_exchanges)
+        if request_identity_exchanges is not None
+        else normalized_request_bodies
+    )
     candidates_by_request: dict[str, list[int]] = {}
     for exchange_idx, exchange in enumerate(exchanges):
         if not _response_is_training_success(exchange.get("response")):
             continue
-        candidates_by_request.setdefault(request_bodies[exchange_idx], []).append(
+        candidates_by_request.setdefault(request_identities[exchange_idx], []).append(
             exchange_idx
         )
     selected: set[int] = set()
@@ -290,7 +308,7 @@ def _training_success_exchange_indices(
             exchange_idx
             for exchange_idx in candidates
             if _response_consumed_by_later_request(
-                exchanges, request_bodies, exchange_idx
+                exchanges, normalized_request_bodies, exchange_idx
             )
         ]
         if consumed:
@@ -314,17 +332,96 @@ def _response_consumed_by_later_request(
     response = exchanges[exchange_idx].get("response")
     body = response.get("body") if isinstance(response, dict) else {}
     call_ids = _response_call_ids(body if isinstance(body, dict) else {})
+    call_fingerprints = _response_tool_call_fingerprints(
+        body if isinstance(body, dict) else {}
+    )
     return bool(
-        call_ids
+        (call_ids or call_fingerprints)
         and any(
             any(call_id in request_body for call_id in call_ids)
-            for request_body in request_bodies[exchange_idx + 1 :]
+            or bool(
+                call_fingerprints
+                & _gemini_history_tool_call_fingerprints(exchanges[later_idx])
+            )
+            for later_idx, request_body in enumerate(
+                request_bodies[exchange_idx + 1 :], start=exchange_idx + 1
+            )
         )
     )
 
 
 def _response_call_ids(body: dict[str, Any]) -> set[str]:
     return {call_id for call_id, _ in _response_tool_calls(body)}
+
+
+def _canonical_tool_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        with suppress(json.JSONDecodeError):
+            arguments = json.loads(arguments)
+    return json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _thought_signature(call_id: Any) -> str | None:
+    if not isinstance(call_id, str) or "__thought__" not in call_id:
+        return None
+    return call_id.split("__thought__", 1)[1]
+
+
+def _tool_call_fingerprint(call: dict[str, Any]) -> tuple[str, str, str | None] | None:
+    function = call.get("function")
+    name = function.get("name") if isinstance(function, dict) else call.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = (
+        function.get("arguments", {})
+        if isinstance(function, dict)
+        else call.get("arguments", call.get("args", {}))
+    )
+    return (
+        name,
+        _canonical_tool_arguments(arguments),
+        _thought_signature(call.get("id") or call.get("tool_call_id")),
+    )
+
+
+def _response_tool_call_fingerprints(
+    body: dict[str, Any],
+) -> set[tuple[str, str, str | None]]:
+    return {
+        fingerprint
+        for call in _response_tool_call_objects(body)
+        if (fingerprint := _tool_call_fingerprint(call)) is not None
+    }
+
+
+def _gemini_history_tool_call_fingerprints(
+    exchange: dict[str, Any],
+) -> set[tuple[str, str, str | None]]:
+    metadata = exchange.get("metadata")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("training_input_format") != "gemini"
+    ):
+        return set()
+    request = exchange.get("request")
+    body = request.get("body") if isinstance(request, dict) else None
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if not isinstance(messages, list):
+        return set()
+    calls = [
+        call
+        for message in messages
+        if isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and isinstance(message.get("tool_calls"), list)
+        for call in message["tool_calls"]
+        if isinstance(call, dict)
+    ]
+    return {
+        fingerprint
+        for call in calls
+        if (fingerprint := _tool_call_fingerprint(call)) is not None
+    }
 
 
 def _response_safe_without_later_consumption(
@@ -344,55 +441,39 @@ def _response_safe_without_later_consumption(
 
 
 def _response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = []
+    for call in _response_tool_call_objects(body):
+        call_id = call.get("call_id") or call.get("id")
+        if not call_id:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else call.get("name")
+        calls.append((str(call_id), str(name) if name else None))
+    return calls
+
+
+def _response_tool_call_objects(body: dict[str, Any]) -> list[dict[str, Any]]:
     calls = [
-        (
-            str(item.get("call_id") or item.get("id")),
-            str(item.get("name")) if item.get("name") else None,
-        )
+        item
         for item in body.get("output") or []
-        if isinstance(item, dict)
-        and item.get("type") in {"function_call", "tool_call"}
-        and (item.get("call_id") or item.get("id"))
+        if isinstance(item, dict) and item.get("type") in {"function_call", "tool_call"}
     ]
+    messages = []
     choices = body.get("choices")
     if isinstance(choices, list):
-        for choice in choices:
-            message = choice.get("message") if isinstance(choice, dict) else None
-            if not isinstance(message, dict):
-                continue
-            calls.extend(
-                (
-                    str(call.get("id") or call.get("tool_call_id")),
-                    (
-                        str(function.get("name"))
-                        if isinstance(function := call.get("function"), dict)
-                        and function.get("name")
-                        else str(call.get("name"))
-                        if call.get("name")
-                        else None
-                    ),
-                )
-                for call in message.get("tool_calls") or []
-                if isinstance(call, dict)
-                and (call.get("id") or call.get("tool_call_id"))
-            )
+        messages.extend(
+            message
+            for choice in choices
+            if isinstance(choice, dict)
+            and isinstance(message := choice.get("message"), dict)
+        )
     message = body.get("message")
     if isinstance(message, dict):
-        calls.extend(
-            (
-                str(call.get("id") or call.get("tool_call_id")),
-                (
-                    str(function.get("name"))
-                    if isinstance(function := call.get("function"), dict)
-                    and function.get("name")
-                    else str(call.get("name"))
-                    if call.get("name")
-                    else None
-                ),
-            )
-            for call in message.get("tool_calls") or []
-            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
-        )
+        messages.append(message)
+    for message in messages:
+        raw_calls = message.get("tool_calls")
+        if isinstance(raw_calls, list):
+            calls.extend(call for call in raw_calls if isinstance(call, dict))
     return calls
 
 
@@ -411,7 +492,7 @@ def _top_level_prompt_completion(
     typed_full_messages = [
         message for message in full_messages if isinstance(message, dict)
     ]
-    window = prime_sft_last_user_training_window(typed_full_messages)
+    window = last_user_training_window(typed_full_messages)
     if window is not None:
         return window
     if prompt and len(full_messages) >= len(prompt):
@@ -578,7 +659,7 @@ def _prime_sft_validation_error(
     if not completion:
         return None
     try:
-        validate_prime_sft_row(
+        validate_message_record(
             {
                 "prompt": prompt,
                 "completion": completion,

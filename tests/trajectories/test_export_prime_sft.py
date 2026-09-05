@@ -3,18 +3,257 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from benchflow.trajectories.export_prime_sft import (
+    PrimeSftExchangeData,
     PrimeSftTrajectoryJsonlError,
     convert_benchflow_rollouts_to_prime_sft_rows,
     export_prime_sft_jsonl,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
+    prime_sft_last_user_training_window,
     validate_prime_sft_jsonl,
+    validate_prime_sft_row,
 )
+from benchflow.trajectories.message_contract import (
+    NormalizedExchange,
+    TrajectoryJsonlError,
+    last_user_training_window,
+    normalize_exchange,
+    normalize_provider_exchange,
+    validate_message_record,
+)
+
+
+def test_message_contract_preserves_prime_compatibility_aliases():
+    assert PrimeSftExchangeData is NormalizedExchange
+    assert PrimeSftTrajectoryJsonlError is TrajectoryJsonlError
+    assert normalize_prime_sft_exchange is normalize_exchange
+    assert prime_sft_last_user_training_window is last_user_training_window
+    assert validate_prime_sft_row is validate_message_record
+    assert repr(NormalizedExchange(messages=[], tool_defs=[])).startswith(
+        "NormalizedExchange("
+    )
+
+
+@pytest.mark.parametrize("second_signature", ["", "other-signature"])
+def test_gemini_passthrough_export_preserves_tools_and_signatures(
+    tmp_path, second_signature
+):
+    """Guards Gemini export on a0b16985: nested schemas and thought-decorated IDs."""
+    from benchflow.trajectories.results import _llm_steps_from_trajectory
+
+    first = _exchange(final=False)
+    function = first["request"]["body"]["tools"][0]["function"]
+    declaration = {
+        "name": function["name"],
+        "parametersJsonSchema": function["parameters"],
+    }
+    native = {
+        "systemInstruction": {"parts": [{"text": "Use tools."}]},
+        "contents": [{"role": "user", "parts": [{"text": "List twice."}]}],
+        "tools": [{"functionDeclarations": [declaration]}],
+    }
+    first["metadata"] = {"call_type": "pass_through_endpoint"}
+    first["request"]["body"] = {
+        "messages": [{"role": "user", "content": json.dumps(native)}]
+    }
+    calls, parts, outputs = [], [], []
+    for index, signature in enumerate(("signature", second_signature)):
+        call_id = f"call_{index}"
+        decorated_id = call_id + (f"__thought__{signature}" if signature else "")
+        calls.append(
+            {
+                "id": decorated_id,
+                "function": {"name": "bash", "arguments": '{"command":"ls"}'},
+            }
+        )
+        part = {
+            "functionCall": {"id": call_id, "name": "bash", "args": {"command": "ls"}}
+        }
+        if signature:
+            part["thoughtSignature"] = signature
+        parts.append(part)
+        outputs.append(
+            {
+                "functionResponse": {
+                    "id": call_id,
+                    "name": "bash",
+                    "response": {"output": "README.md"},
+                }
+            }
+        )
+    first["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "tool_calls": calls,
+    }
+    final = deepcopy(first)
+    native["contents"].extend(
+        [{"role": "model", "parts": parts}, {"role": "user", "parts": outputs}]
+    )
+    final["request"]["body"]["messages"][0]["content"] = json.dumps(native)
+    final["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "Done.",
+    }
+    original = deepcopy(final)
+    normalized, reason = normalize_prime_sft_exchange(final, redact=False)
+    assert reason is None
+    assert normalized.tool_defs[0]["function"]["parameters"] == function["parameters"]
+    assert normalized.messages[0] == {"role": "system", "content": "Use tools."}
+    results = [m for m in normalized.messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in results] == [c["id"] for c in calls]
+    assert all("README.md" in m["content"] for m in results)
+    assert final == original
+    orphan = deepcopy(final)
+    orphan_native = deepcopy(native)
+    orphan_native["contents"][-1]["parts"][0]["functionResponse"]["id"] = "unknown"
+    orphan["request"]["body"]["messages"][0]["content"] = json.dumps(orphan_native)
+    rejected, error = normalize_prime_sft_exchange(orphan)
+    assert rejected is None
+    assert "unknown call id" in error
+    rollout = tmp_path / "rollout"
+    _write_rollout(rollout, exchanges=[first, final])
+    steps, tools, error = _llm_steps_from_trajectory(
+        rollout, reward=1, is_truncated=False, trajectory_id_prefix="test"
+    )
+    assert error is None
+    assert len(steps) == 2
+    assert tools[0]["function"]["parameters"] == function["parameters"]
+
+
+def test_gemini_passthrough_pairs_sequential_idless_calls_by_name():
+    exchange = _exchange(final=False)
+    function = exchange["request"]["body"]["tools"][0]["function"]
+    exchange["metadata"] = {"call_type": "pass_through_endpoint"}
+    native = {
+        "contents": [{"role": "user", "parts": [{"text": "Run twice."}]}],
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": function["name"],
+                        "parametersJsonSchema": function["parameters"],
+                    }
+                ]
+            }
+        ],
+    }
+    for command in ("pwd", "ls"):
+        native["contents"].extend(
+            [
+                {
+                    "role": "model",
+                    "parts": [
+                        {"functionCall": {"name": "bash", "args": {"command": command}}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "name": "bash",
+                                "response": {"output": command},
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+    exchange["request"]["body"] = {
+        "messages": [{"role": "user", "content": json.dumps(native)}]
+    }
+
+    normalized, reason = normalize_exchange(exchange, redact=False)
+
+    assert reason is None
+    calls = [m for m in normalized.messages if m.get("tool_calls")]
+    results = [m for m in normalized.messages if m["role"] == "tool"]
+    assert [m["tool_calls"][0]["id"] for m in calls] == [
+        "gemini_call_0",
+        "gemini_call_1",
+    ]
+    assert [m["tool_call_id"] for m in results] == [
+        "gemini_call_0",
+        "gemini_call_1",
+    ]
+
+    native["contents"][1:] = [
+        {
+            "role": "model",
+            "parts": [
+                {"functionCall": {"name": "bash"}},
+                {"functionCall": {"name": "bash"}},
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {"functionResponse": {"name": "bash", "response": {"output": "x"}}}
+            ],
+        },
+    ]
+    exchange["request"]["body"]["messages"][0]["content"] = json.dumps(native)
+    rejected, reason = normalize_exchange(exchange)
+    assert rejected is None
+    assert "ambiguous" in reason
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        {"contents": None},
+        {"contents": [{"role": "user", "parts": [{"inlineData": {}}]}]},
+        {"contents": [], "tools": None},
+        {"contents": [], "tools": [{"functionDeclarations": "invalid"}]},
+        {
+            "contents": [],
+            "tools": [{"functionDeclarations": [{"name": "bad", "parameters": None}]}],
+        },
+        "{malformed",
+    ],
+)
+def test_gemini_unrepresentable_history_blocks_training(native):
+    """Guards a0b16985 against silently accepting malformed native history."""
+    exchange = _exchange(final=False)
+    exchange["metadata"] = {"call_type": "pass_through_endpoint"}
+    if isinstance(native, str):
+        exchange["request"]["body"]["model"] = "gemini-test"
+    exchange["request"]["body"]["messages"] = [
+        {
+            "role": "user",
+            "content": native if isinstance(native, str) else json.dumps(native),
+        }
+    ]
+    normalized, reason = normalize_prime_sft_exchange(exchange)
+    assert normalized is None
+    assert reason.startswith("Unsupported Gemini passthrough:")
+
+
+def test_gemini_envelope_guard_preserves_ordinary_json_and_no_arg_schema():
+    """Guards a0b16985: JSON user text is not native provider history."""
+    exchange = _exchange(final=False)
+    native = {
+        "contents": [{"role": "user", "parts": [{"text": '{"contents": []}'}]}],
+        "tools": [{"functionDeclarations": [{"name": "no_args"}]}],
+    }
+    exchange["request"]["body"]["messages"] = [
+        {"role": "user", "content": json.dumps(native)}
+    ]
+    assert normalize_provider_exchange(exchange) is exchange
+    exchange["metadata"] = {"call_type": "pass_through_endpoint"}
+    normalized = normalize_provider_exchange(exchange)
+    assert normalize_provider_exchange(normalized) == normalized
+    assert normalized["request"]["body"]["messages"][0]["content"] == '{"contents": []}'
+    assert normalized["request"]["body"]["tools"][0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+    }
 
 
 def _write_rollout(

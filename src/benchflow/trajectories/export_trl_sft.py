@@ -20,9 +20,11 @@ from benchflow.trajectories.export_prime_sft import (
     _result_training_skip_reason,
     _reward_from_result,
     _row_reward,
+)
+from benchflow.trajectories.message_contract import (
     load_llm_trajectory_jsonl,
-    normalize_prime_sft_exchange,
-    validate_prime_sft_row,
+    normalize_exchange,
+    validate_message_record,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 
@@ -224,7 +226,7 @@ def validate_trl_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
         )
     if "tool_defs" in row:
         raise ValueError(f"row {row_num}: TRL rows must use tools, not tool_defs")
-    validate_prime_sft_row(
+    validate_message_record(
         {"prompt": prompt, "completion": completion, "tools": tools},
         row_num,
     )
@@ -254,7 +256,7 @@ def _row_from_exchange(
     exchange_idx: int,
     redact: bool,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    normalized, skip_reason = normalize_prime_sft_exchange(
+    normalized, skip_reason = normalize_exchange(
         exchange,
         redact=redact,
     )

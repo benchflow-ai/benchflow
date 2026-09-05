@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -373,13 +374,148 @@ def response_consumed_by_later_request(
     response = rows[exchange_idx].get("response")
     body = response.get("body") if isinstance(response, dict) else {}
     call_ids = response_call_ids(body if isinstance(body, dict) else {})
+    call_fingerprints = response_tool_call_fingerprints(
+        body if isinstance(body, dict) else {}
+    )
     return bool(
-        call_ids
+        (call_ids or call_fingerprints)
         and any(
-            any(call_id in request_body for call_id in call_ids)
-            for request_body in request_bodies[exchange_idx + 1 :]
+            any(call_id in request_bodies[index] for call_id in call_ids)
+            or bool(call_ids & gemini_history_call_ids(rows[index]))
+            or bool(
+                call_fingerprints & gemini_history_tool_call_fingerprints(rows[index])
+            )
+            for index in range(exchange_idx + 1, len(rows))
         )
     )
+
+
+def gemini_history_call_ids(row: dict[str, Any]) -> set[str]:
+    """Match native IDs plus recorded signatures, never strip or guess call IDs."""
+    metadata = row.get("metadata")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("call_type") != "pass_through_endpoint"
+    ):
+        return set()
+    request = row.get("request")
+    body = request.get("body") if isinstance(request, dict) else None
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 1
+        or not isinstance(messages[0], dict)
+    ):
+        return set()
+    try:
+        native = json.loads(messages[0].get("content", ""))
+    except (ValueError, TypeError):
+        return set()
+    contents = native.get("contents") if isinstance(native, dict) else None
+    if not isinstance(contents, list):
+        return set()
+    ids = set()
+    for content in contents:
+        parts = content.get("parts") if isinstance(content, dict) else None
+        for part in parts if isinstance(parts, list) else []:
+            call = part.get("functionCall") if isinstance(part, dict) else None
+            if isinstance(call, dict) and isinstance(call.get("id"), str):
+                signature = part.get("thoughtSignature")
+                if signature is None or isinstance(signature, str):
+                    ids.add(
+                        call["id"] + (f"__thought__{signature}" if signature else "")
+                    )
+    return ids
+
+
+def canonical_tool_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        with suppress(json.JSONDecodeError):
+            arguments = json.loads(arguments)
+    return json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def thought_signature(call_id: Any) -> str | None:
+    if not isinstance(call_id, str) or "__thought__" not in call_id:
+        return None
+    return call_id.split("__thought__", 1)[1]
+
+
+def tool_call_fingerprint(call: dict[str, Any]) -> tuple[str, str, str | None] | None:
+    function = call.get("function")
+    name = function.get("name") if isinstance(function, dict) else call.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = (
+        function.get("arguments", {})
+        if isinstance(function, dict)
+        else call.get("arguments", call.get("args", {}))
+    )
+    return (
+        name,
+        canonical_tool_arguments(arguments),
+        thought_signature(call.get("id") or call.get("tool_call_id")),
+    )
+
+
+def response_tool_call_fingerprints(
+    body: dict[str, Any],
+) -> set[tuple[str, str, str | None]]:
+    return {
+        fingerprint
+        for call in response_tool_call_objects(body)
+        if (fingerprint := tool_call_fingerprint(call)) is not None
+    }
+
+
+def gemini_history_tool_call_fingerprints(
+    row: dict[str, Any],
+) -> set[tuple[str, str, str | None]]:
+    metadata = row.get("metadata")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("call_type") != "pass_through_endpoint"
+    ):
+        return set()
+    request = row.get("request")
+    body = request.get("body") if isinstance(request, dict) else None
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 1
+        or not isinstance(messages[0], dict)
+    ):
+        return set()
+    try:
+        native = json.loads(messages[0].get("content", ""))
+    except (ValueError, TypeError):
+        return set()
+    contents = native.get("contents") if isinstance(native, dict) else None
+    if not isinstance(contents, list):
+        return set()
+    fingerprints: set[tuple[str, str, str | None]] = set()
+    for content in contents:
+        parts = content.get("parts") if isinstance(content, dict) else None
+        for part in parts if isinstance(parts, list) else []:
+            call = part.get("functionCall") if isinstance(part, dict) else None
+            if not isinstance(call, dict):
+                continue
+            fingerprint = tool_call_fingerprint(
+                {
+                    **call,
+                    "id": (
+                        str(call.get("id") or "")
+                        + (
+                            f"__thought__{part['thoughtSignature']}"
+                            if isinstance(part.get("thoughtSignature"), str)
+                            else ""
+                        )
+                    ),
+                }
+            )
+            if fingerprint is not None:
+                fingerprints.add(fingerprint)
+    return fingerprints
 
 
 def response_call_ids(body: dict[str, Any]) -> set[str]:
@@ -403,55 +539,39 @@ def response_safe_without_later_consumption(
 
 
 def response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = []
+    for call in response_tool_call_objects(body):
+        call_id = call.get("call_id") or call.get("id")
+        if not call_id:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else call.get("name")
+        calls.append((str(call_id), str(name) if name else None))
+    return calls
+
+
+def response_tool_call_objects(body: dict[str, Any]) -> list[dict[str, Any]]:
     calls = [
-        (
-            str(item.get("call_id") or item.get("id")),
-            str(item.get("name")) if item.get("name") else None,
-        )
+        item
         for item in body.get("output") or []
-        if isinstance(item, dict)
-        and item.get("type") in {"function_call", "tool_call"}
-        and (item.get("call_id") or item.get("id"))
+        if isinstance(item, dict) and item.get("type") in {"function_call", "tool_call"}
     ]
+    messages = []
     choices = body.get("choices")
     if isinstance(choices, list):
-        for choice in choices:
-            message = choice.get("message") if isinstance(choice, dict) else None
-            if not isinstance(message, dict):
-                continue
-            calls.extend(
-                (
-                    str(call.get("id") or call.get("tool_call_id")),
-                    (
-                        str(function.get("name"))
-                        if isinstance(function := call.get("function"), dict)
-                        and function.get("name")
-                        else str(call.get("name"))
-                        if call.get("name")
-                        else None
-                    ),
-                )
-                for call in message.get("tool_calls") or []
-                if isinstance(call, dict)
-                and (call.get("id") or call.get("tool_call_id"))
-            )
+        messages.extend(
+            message
+            for choice in choices
+            if isinstance(choice, dict)
+            and isinstance(message := choice.get("message"), dict)
+        )
     message = body.get("message")
     if isinstance(message, dict):
-        calls.extend(
-            (
-                str(call.get("id") or call.get("tool_call_id")),
-                (
-                    str(function.get("name"))
-                    if isinstance(function := call.get("function"), dict)
-                    and function.get("name")
-                    else str(call.get("name"))
-                    if call.get("name")
-                    else None
-                ),
-            )
-            for call in message.get("tool_calls") or []
-            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
-        )
+        messages.append(message)
+    for message in messages:
+        raw_calls = message.get("tool_calls")
+        if isinstance(raw_calls, list):
+            calls.extend(call for call in raw_calls if isinstance(call, dict))
     return calls
 
 
@@ -607,7 +727,9 @@ def validate_results_row(
     if native_subscription_without_llm:
         expected_reason = "missing_healthy_structured_llm_trajectory"
         if training_ready is not False:
-            issues.append(f"{row_path}: native subscription row must not be training-ready")
+            issues.append(
+                f"{row_path}: native subscription row must not be training-ready"
+            )
         if info.get("training_ready_reason") != expected_reason:
             issues.append(
                 f"{row_path}: native subscription row has unexpected training_ready_reason"
