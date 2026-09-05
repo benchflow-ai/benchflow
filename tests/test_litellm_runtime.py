@@ -762,7 +762,7 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
     "vertex,upstream_keys", [(False, True), (True, False), (True, True)]
 )
 @pytest.mark.parametrize(
-    "model", ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
+    "model", ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.8-flash"]
 )
 async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
     monkeypatch, vertex, upstream_keys, model
