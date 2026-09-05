@@ -762,7 +762,7 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
     "vertex,upstream_keys", [(False, True), (True, False), (True, True)]
 )
 @pytest.mark.parametrize(
-    "model", ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.8-flash"]
+    "model", ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
 )
 async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
     monkeypatch, vertex, upstream_keys, model
@@ -787,7 +787,7 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
         "GOOGLE_CLOUD_LOCATION": "global",
         "GOOGLE_GEMINI_BASE_URL": "https://stale-gemini.example.test",
         "GOOGLE_VERTEX_BASE_URL": "https://stale-vertex.example.test",
-        "GEMINI_API_KEY_AUTH_MECHANISM": "x-goog-api-key",
+        "GEMINI_API_KEY_AUTH_MECHANISM": "x-goog-api-key" if vertex else "bearer",
     }
     if upstream_keys or not vertex:
         agent_env.update(
@@ -817,6 +817,7 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
     else:
         assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
         assert "GOOGLE_VERTEX_BASE_URL" not in updated
+        assert "GEMINI_API_KEY_AUTH_MECHANISM" not in updated
     for key in (
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",

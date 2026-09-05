@@ -11,7 +11,7 @@ from benchflow.providers.litellm_config import (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "model", ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.8-flash"]
+    "model", ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
 )
 async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(monkeypatch, model):
     """Guards Vertex proxy auth against the regression in commit 28b82e33."""

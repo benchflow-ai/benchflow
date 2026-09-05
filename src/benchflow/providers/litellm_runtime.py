@@ -1546,6 +1546,7 @@ def _wire_litellm_agent_env(
             updated["GOOGLE_VERTEX_BASE_URL"] = f"{base_url.rstrip('/')}/vertex_ai"
             updated["GEMINI_API_KEY_AUTH_MECHANISM"] = "bearer"
         else:
+            updated.pop("GEMINI_API_KEY_AUTH_MECHANISM", None)
             updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
         # Gemini CLI recognizes several equivalent credential names, with the
         # selected alias varying by model family and CLI release. Point every
