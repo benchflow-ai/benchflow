@@ -970,6 +970,89 @@ def test_results_retry_grouping_preserves_raw_request_identity(tmp_path):
     assert [step["completion"][0]["content"] for step in steps] == ["first", "second"]
 
 
+def test_results_preserve_consumed_gemini_call_without_provider_id(tmp_path):
+    """Guards PR #1106: idless Gemini history must retain the consumed tool step."""
+    first = _llm_exchange(
+        assistant={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_callback_123",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": '{"command":"pwd"}',
+                    },
+                }
+            ],
+        }
+    )
+    native = {
+        "contents": [{"role": "user", "parts": [{"text": "Run pwd."}]}],
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "bash",
+                        "parametersJsonSchema": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+    first["metadata"] = {
+        "call_type": "pass_through_endpoint",
+        "provider_model": "gemini-test",
+    }
+    first["request"]["body"] = {
+        "model": "gemini-test",
+        "messages": [{"role": "user", "content": json.dumps(native)}],
+    }
+    final = json.loads(json.dumps(first))
+    native["contents"].extend(
+        [
+            {
+                "role": "model",
+                "parts": [
+                    {"functionCall": {"name": "bash", "args": {"command": "pwd"}}}
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "bash",
+                            "response": {"output": "/workspace"},
+                        }
+                    }
+                ],
+            },
+        ]
+    )
+    final["request"]["body"]["messages"][0]["content"] = json.dumps(native)
+    final["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "Done.",
+    }
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(first) + "\n" + json.dumps(final) + "\n"
+    )
+
+    steps, _, error = _llm_steps_from_trajectory(
+        tmp_path, reward=1, is_truncated=False, trajectory_id_prefix="test"
+    )
+
+    assert error is None
+    assert [step["extras"]["exchange_index"] for step in steps] == [0, 1]
+
+
 def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):
     """Guards PR #925: trainer conversion retains LLM call purpose metadata."""
     rollout_dir = tmp_path / "rollout-call-purpose"

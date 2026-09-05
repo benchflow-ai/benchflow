@@ -563,6 +563,72 @@ def test_validator_prefers_duplicate_consumed_by_later_request(
         assert validator.validate_rollout(rollout)["healthy"] is False
 
 
+def test_validator_counts_consumed_gemini_call_without_provider_id(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1106: validator must match idless native Gemini history."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    first = json.loads(llm_path.read_text())
+    first["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_callback_123",
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": '{"command":"pwd"}',
+                },
+            }
+        ],
+    }
+    final = json.loads(json.dumps(first))
+    final["metadata"] = {"call_type": "pass_through_endpoint"}
+    native = {
+        "contents": [
+            {"role": "user", "parts": [{"text": "Run pwd."}]},
+            {
+                "role": "model",
+                "parts": [
+                    {"functionCall": {"name": "bash", "args": {"command": "pwd"}}}
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "bash",
+                            "response": {"output": "/workspace"},
+                        }
+                    }
+                ],
+            },
+        ]
+    }
+    final["request"]["body"] = {
+        "messages": [{"role": "user", "content": json.dumps(native)}]
+    }
+    final["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "Done.",
+    }
+    _write_jsonl(llm_path, [first, final])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"] = [
+        {**row["trajectory"][0], "extras": {"exchange_index": 0}},
+        {**row["trajectory"][0], "extras": {"exchange_index": 1}},
+    ]
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 1]
+
+
 def test_validator_excludes_unique_late_unconsumed_nonterminal_retry(
     tmp_path: Path,
 ) -> None:
