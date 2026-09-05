@@ -137,14 +137,20 @@ def test_gemini_passthrough_export_preserves_tools_and_signatures(
             "contents": [],
             "tools": [{"functionDeclarations": [{"name": "bad", "parameters": None}]}],
         },
+        "{malformed",
     ],
 )
 def test_gemini_unrepresentable_history_blocks_training(native):
     """Guards a0b16985 against silently accepting malformed native history."""
     exchange = _exchange(final=False)
     exchange["metadata"] = {"call_type": "pass_through_endpoint"}
+    if isinstance(native, str):
+        exchange["request"]["body"]["model"] = "gemini-test"
     exchange["request"]["body"]["messages"] = [
-        {"role": "user", "content": json.dumps(native)}
+        {
+            "role": "user",
+            "content": native if isinstance(native, str) else json.dumps(native),
+        }
     ]
     normalized, reason = normalize_prime_sft_exchange(exchange)
     assert normalized is None

@@ -163,15 +163,17 @@ def _llm_steps_from_trajectory(
     if not path.exists():
         return steps, tool_defs, None
     try:
+        raw_exchanges = load_llm_trajectory_jsonl(path, strict=True)
         exchanges = [
-            normalize_provider_exchange(exchange)
-            for exchange in load_llm_trajectory_jsonl(path, strict=True)
+            normalize_provider_exchange(exchange) for exchange in raw_exchanges
         ]
     except TrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
     except ValueError as exc:
         return [], [], str(exc)
-    training_success_indices = _training_success_exchange_indices(exchanges)
+    training_success_indices = _training_success_exchange_indices(
+        exchanges, request_identity_exchanges=raw_exchanges
+    )
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
@@ -268,26 +270,36 @@ def _response_is_training_success(response: Any) -> bool:
 
 def _training_success_exchange_indices(
     exchanges: list[dict[str, Any]],
+    *,
+    request_identity_exchanges: list[dict[str, Any]] | None = None,
 ) -> set[int]:
-    request_bodies = [
-        json.dumps(
-            (
-                request.get("body")
-                if isinstance(request := exchange.get("request"), dict)
-                and isinstance(request.get("body"), dict)
-                else {}
-            ),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        for exchange in exchanges
-    ]
+    def request_bodies(rows: list[dict[str, Any]]) -> list[str]:
+        return [
+            json.dumps(
+                (
+                    request.get("body")
+                    if isinstance(request := exchange.get("request"), dict)
+                    and isinstance(request.get("body"), dict)
+                    else {}
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            for exchange in rows
+        ]
+
+    normalized_request_bodies = request_bodies(exchanges)
+    request_identities = (
+        request_bodies(request_identity_exchanges)
+        if request_identity_exchanges is not None
+        else normalized_request_bodies
+    )
     candidates_by_request: dict[str, list[int]] = {}
     for exchange_idx, exchange in enumerate(exchanges):
         if not _response_is_training_success(exchange.get("response")):
             continue
-        candidates_by_request.setdefault(request_bodies[exchange_idx], []).append(
+        candidates_by_request.setdefault(request_identities[exchange_idx], []).append(
             exchange_idx
         )
     selected: set[int] = set()
@@ -296,7 +308,7 @@ def _training_success_exchange_indices(
             exchange_idx
             for exchange_idx in candidates
             if _response_consumed_by_later_request(
-                exchanges, request_bodies, exchange_idx
+                exchanges, normalized_request_bodies, exchange_idx
             )
         ]
         if consumed:

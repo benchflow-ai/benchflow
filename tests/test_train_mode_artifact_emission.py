@@ -28,6 +28,7 @@ from benchflow.trajectories.export import (
 from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
 from benchflow.trajectories.results import (
     JOB_RESULTS_ERRORS_FILENAME,
+    _llm_steps_from_trajectory,
     _training_success_exchange_indices,
     write_job_results_jsonl,
 )
@@ -937,6 +938,36 @@ def test_results_drop_unique_late_unconsumed_nonterminal_retry():
         1,
         3,
     }
+
+
+def test_results_retry_grouping_preserves_raw_request_identity(tmp_path):
+    exchanges = []
+    for content, temperature in (("first", 0.1), ("second", 0.9)):
+        exchange = _llm_exchange(assistant={"role": "assistant", "content": content})
+        native = {
+            "contents": [{"role": "user", "parts": [{"text": "same prompt"}]}],
+            "generationConfig": {"temperature": temperature},
+        }
+        exchange["metadata"] = {
+            "call_type": "pass_through_endpoint",
+            "provider_model": "gemini-test",
+        }
+        exchange["request"]["body"] = {
+            "model": "gemini-test",
+            "messages": [{"role": "user", "content": json.dumps(native)}],
+        }
+        exchanges.append(exchange)
+    trajectory_dir = tmp_path / "trajectory"
+    trajectory_dir.mkdir()
+    (trajectory_dir / "llm_trajectory.jsonl").write_text(
+        "".join(json.dumps(exchange) + "\n" for exchange in exchanges)
+    )
+
+    steps, _, error = _llm_steps_from_trajectory(
+        tmp_path, reward=1, is_truncated=False, trajectory_id_prefix="test"
+    )
+    assert error is None
+    assert [step["completion"][0]["content"] for step in steps] == ["first", "second"]
 
 
 def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):
