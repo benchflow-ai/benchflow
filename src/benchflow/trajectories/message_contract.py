@@ -431,7 +431,19 @@ def normalize_provider_exchange(exchange: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(contents, list):
         invalid("contents must be a list")
     messages: list[dict[str, Any]] = []
-    call_ids: dict[str, str] = {}
+    pending_calls: list[tuple[str | None, str, str]] = []
+    explicit_ids: set[str] = set()
+    for turn in contents:
+        parts = turn.get("parts") if isinstance(turn, dict) else None
+        for part in parts if isinstance(parts, list) else []:
+            call = part.get("functionCall") if isinstance(part, dict) else None
+            if isinstance(call, dict) and isinstance(call.get("id"), str):
+                signature = part.get("thoughtSignature")
+                explicit_ids.add(
+                    call["id"]
+                    + (f"__thought__{signature}" if isinstance(signature, str) else "")
+                )
+    generated_id = 0
     system = native.get("systemInstruction")
     if system is not None:
         if not isinstance(system, dict):
@@ -470,21 +482,38 @@ def normalize_provider_exchange(exchange: dict[str, Any]) -> dict[str, Any]:
                 if (
                     role != "assistant"
                     or not isinstance(call, dict)
-                    or not isinstance(call.get("id"), str)
-                    or not call["id"]
                     or not isinstance(call.get("name"), str)
                     or not call["name"]
                     or not isinstance(call.get("args", {}), dict)
                 ):
-                    invalid("function call requires model role, id and name")
-                call_id = call["id"]
+                    invalid("function call requires model role and name")
+                call_id = call.get("id")
+                if call_id is not None and (
+                    not isinstance(call_id, str) or not call_id
+                ):
+                    invalid("function call id must be a non-empty string")
                 signature = part.get("thoughtSignature")
                 if signature is not None and not isinstance(signature, str):
                     invalid("thought signature must be a string")
-                decorated = call_id + (f"__thought__{signature}" if signature else "")
-                if call_id in call_ids and call_ids[call_id] != decorated:
-                    invalid("conflicting signatures for function call id")
-                call_ids[call_id] = decorated
+                if call_id is None:
+                    while True:
+                        candidate = f"gemini_call_{generated_id}"
+                        generated_id += 1
+                        decorated = candidate + (
+                            f"__thought__{signature}" if signature else ""
+                        )
+                        if (
+                            candidate not in explicit_ids
+                            and decorated not in explicit_ids
+                        ):
+                            break
+                    normalized_id = candidate
+                else:
+                    normalized_id = call_id
+                decorated = normalized_id + (
+                    f"__thought__{signature}" if signature else ""
+                )
+                pending_calls.append((call_id, call["name"], decorated))
                 message.setdefault("tool_calls", []).append(
                     {
                         "id": decorated,
@@ -497,21 +526,43 @@ def normalize_provider_exchange(exchange: dict[str, Any]) -> dict[str, Any]:
                 if (
                     role != "user"
                     or not isinstance(response, dict)
-                    or not isinstance(response.get("id"), str)
-                    or not response["id"]
+                    or not isinstance(response.get("name"), str)
+                    or not response["name"]
                     or not isinstance(response.get("response"), dict)
                 ):
-                    invalid("function response requires user role and id")
+                    invalid("function response requires user role and name")
+                response_id = response.get("id")
+                if response_id is not None and (
+                    not isinstance(response_id, str) or not response_id
+                ):
+                    invalid("function response id must be a non-empty string")
                 if message["content"]:
                     messages.append(message)
                     message = {"role": role, "content": ""}
-                response_id = response["id"]
-                if response_id not in call_ids:
-                    invalid("function response references unknown call id")
+                matches = [
+                    index
+                    for index, (source_id, name, _) in enumerate(pending_calls)
+                    if (
+                        source_id == response_id
+                        if response_id is not None
+                        else name == response["name"]
+                    )
+                ]
+                if not matches:
+                    invalid(
+                        "function response references unknown call id"
+                        if response_id is not None
+                        else "function response references unknown call name"
+                    )
+                if len(matches) > 1:
+                    invalid("function response is ambiguous")
+                _, name, normalized_id = pending_calls.pop(matches[0])
+                if response_id is not None and name != response["name"]:
+                    invalid("function response name does not match call")
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": call_ids[response_id],
+                        "tool_call_id": normalized_id,
                         "content": json.dumps(response.get("response")),
                     }
                 )

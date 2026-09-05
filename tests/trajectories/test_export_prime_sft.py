@@ -126,6 +126,84 @@ def test_gemini_passthrough_export_preserves_tools_and_signatures(
     assert tools[0]["function"]["parameters"] == function["parameters"]
 
 
+def test_gemini_passthrough_pairs_sequential_idless_calls_by_name():
+    exchange = _exchange(final=False)
+    function = exchange["request"]["body"]["tools"][0]["function"]
+    exchange["metadata"] = {"call_type": "pass_through_endpoint"}
+    native = {
+        "contents": [{"role": "user", "parts": [{"text": "Run twice."}]}],
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": function["name"],
+                        "parametersJsonSchema": function["parameters"],
+                    }
+                ]
+            }
+        ],
+    }
+    for command in ("pwd", "ls"):
+        native["contents"].extend(
+            [
+                {
+                    "role": "model",
+                    "parts": [
+                        {"functionCall": {"name": "bash", "args": {"command": command}}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "name": "bash",
+                                "response": {"output": command},
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+    exchange["request"]["body"] = {
+        "messages": [{"role": "user", "content": json.dumps(native)}]
+    }
+
+    normalized, reason = normalize_exchange(exchange, redact=False)
+
+    assert reason is None
+    calls = [m for m in normalized.messages if m.get("tool_calls")]
+    results = [m for m in normalized.messages if m["role"] == "tool"]
+    assert [m["tool_calls"][0]["id"] for m in calls] == [
+        "gemini_call_0",
+        "gemini_call_1",
+    ]
+    assert [m["tool_call_id"] for m in results] == [
+        "gemini_call_0",
+        "gemini_call_1",
+    ]
+
+    native["contents"][1:] = [
+        {
+            "role": "model",
+            "parts": [
+                {"functionCall": {"name": "bash"}},
+                {"functionCall": {"name": "bash"}},
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {"functionResponse": {"name": "bash", "response": {"output": "x"}}}
+            ],
+        },
+    ]
+    exchange["request"]["body"]["messages"][0]["content"] = json.dumps(native)
+    rejected, reason = normalize_exchange(exchange)
+    assert rejected is None
+    assert "ambiguous" in reason
+
+
 @pytest.mark.parametrize(
     "native",
     [
