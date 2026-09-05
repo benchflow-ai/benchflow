@@ -2069,6 +2069,92 @@ class TestDiagnosticRegistry:
         for diag_cls in DIAGNOSTIC_REGISTRY:
             assert empty[diag_cls.field] is None
 
+    def test_results_jsonl_export_policy_omits_untrusted_fields(self) -> None:
+        """Guards PR #1038 (issue #1037): use a strict safe export policy."""
+        from benchflow.diagnostics import (
+            AgentPromptTimeoutDiagnostic,
+            IdleTimeoutDiagnostic,
+            ProviderApiErrorDiagnostic,
+            RolloutDiagnostics,
+            SandboxStartupDiagnostic,
+            TransportClosedDiagnostic,
+        )
+
+        pending = AgentPromptTimeoutDiagnostic(
+            pending_tool_call_ids=["call-secret-1", "call-secret-2"]
+        ).to_results_jsonl_details()
+        assert pending["pending_tool_call_count"] == 2
+        assert "pending_tool_call_ids" not in pending
+
+        sandbox = SandboxStartupDiagnostic(
+            sandbox_id="private-sandbox-id",
+            sandbox_state="provider-specific-state",
+            raw_message="api_key=secret",
+            attempts=2,
+        ).to_results_jsonl_details()
+        assert sandbox == {"attempts": 2}
+
+        transport = TransportClosedDiagnostic(
+            raw_message="api_key=secret",
+            process_pid=1234,
+            transport_diagnosis="provider-secret-state",
+            stderr_snippet="password=secret",
+            sandbox_probe_stdout="token=secret",
+        ).to_results_jsonl_details()
+        assert transport == {"transport_diagnosis": "unknown"}
+
+        provider = ProviderApiErrorDiagnostic(
+            subcategory="provider-secret-state",
+            status_counts={"429": 2, "bad": 1, "700": 3, "503": -1},
+            fingerprint="secret-fingerprint",
+        ).to_results_jsonl_details()
+        assert provider["subcategory"] == "provider_error"
+        assert provider["status_counts"] == {"429": 2}
+        assert "fingerprint" not in provider
+
+        invalid_numbers = IdleTimeoutDiagnostic(
+            idle_timeout_sec=True,
+            idle_duration_sec=-1,
+            wall_clock_elapsed_sec=float("nan"),
+            n_tool_calls=-2,
+        ).to_results_jsonl_details()
+        assert "idle_timeout_sec" not in invalid_numbers
+        assert "idle_duration_sec" not in invalid_numbers
+        assert "wall_clock_elapsed_sec" not in invalid_numbers
+        assert "n_tool_calls" not in invalid_numbers
+
+        class CollidingIdleDiagnostic(IdleTimeoutDiagnostic):
+            def to_results_jsonl_details(self) -> dict:
+                return {"raw_pii": "private@example.com"}
+
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(CollidingIdleDiagnostic())
+        assert (
+            diagnostics.to_results_jsonl_block(
+                error_category=None,
+                verifier_error_category=None,
+            )
+            is None
+        )
+
+    def test_results_jsonl_export_policy_covers_the_registry(self) -> None:
+        """Guards PR #1038 (issue #1037): registry export stays fail-closed."""
+        from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, RolloutDiagnostics
+
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            assert diagnostic_cls.results_jsonl_fields is not None
+            diagnostics = RolloutDiagnostics()
+            diagnostics.set(diagnostic_cls())
+            block = diagnostics.to_results_jsonl_block(
+                error_category=None,
+                verifier_error_category=None,
+            )
+            assert block is not None
+            event = block["events"][diagnostic_cls.field]
+            assert event["channel"] == diagnostic_cls.channel
+            if diagnostic_cls.category is not None:
+                assert event["category"] == diagnostic_cls.category
+
     def test_diagnostic_reason_constants_share_scoring_source(self) -> None:
         """Guards the fix from PR #858 against diagnostic reasons drifting off the shared scoring source."""
         from typing import get_args, get_type_hints
