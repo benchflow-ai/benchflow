@@ -46,6 +46,8 @@ class TaskMetrics:
     cost_usd: float | None = None
     usage_source: UsageSource = "unavailable"
     memory_score: float | None = None
+    rubric_score: float | None = None
+    rubric_review_status: str | None = None
 
     @property
     def outcome(self) -> str:
@@ -264,6 +266,26 @@ class BenchmarkMetrics:
         }
 
     @property
+    def rubric_review_tasks(self) -> list[TaskMetrics]:
+        return [task for task in self.tasks if task.rubric_review_status is not None]
+
+    @property
+    def rubric_scored_tasks(self) -> list[TaskMetrics]:
+        return [task for task in self.tasks if task.rubric_score is not None]
+
+    @property
+    def mean_final_score(self) -> float | None:
+        scored = self.rubric_scored_tasks
+        if not scored:
+            return None
+        return sum(task.rubric_score or 0.0 for task in scored) / len(scored)
+
+    @property
+    def rubric_score_coverage(self) -> float:
+        required = self.rubric_review_tasks
+        return len(self.rubric_scored_tasks) / len(required) if required else 0.0
+
+    @property
     def verifier_error_breakdown(self) -> dict[str, int]:
         """Categorize verifier errors."""
         breakdown: dict[str, int] = {}
@@ -288,6 +310,12 @@ class BenchmarkMetrics:
             "verifier_errored": self.verifier_errored,
             "score": f"{self.score:.1%}",
             "score_ratio": self.score,
+            "pass_at_1": f"{self.score:.1%}",
+            "pass_at_1_ratio": self.score,
+            "mean_final_score": self.mean_final_score,
+            "rubric_score_coverage": self.rubric_score_coverage,
+            "rubric_reviews_required": len(self.rubric_review_tasks),
+            "rubric_reviews_completed": len(self.rubric_scored_tasks),
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
             "score_excl_errors_ratio": self.score_excl_errors,
             "avg_tool_calls": round(self.avg_tool_calls, 1),
@@ -328,6 +356,21 @@ def _safe_reward(rewards: dict) -> float:
     return val if isinstance(val, (int, float)) else 0.0
 
 
+def _result_rank(result: dict) -> tuple[int, float, float]:
+    """Rank attempts by availability, binary reward, then rubric quality."""
+    rewards = result.get("rewards")
+    has_rewards = int(isinstance(rewards, dict))
+    reward = _safe_reward(rewards) if isinstance(rewards, dict) else 0.0
+    final_score = result.get("final_score")
+    raw_score = final_score.get("score") if isinstance(final_score, dict) else None
+    rubric_score = (
+        float(raw_score)
+        if isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool)
+        else float("-inf")
+    )
+    return has_rewards, reward, rubric_score
+
+
 def collect_metrics(
     results_dir: str | Path,
     benchmark: str = "",
@@ -337,7 +380,7 @@ def collect_metrics(
     """Collect metrics from a results directory.
 
     Reads all result.json files, picks the best result per task
-    (rewards > no rewards, higher reward preferred).
+    (rewards > no rewards, higher reward, then higher rubric score).
     """
     results_dir = Path(results_dir)
     best: dict[str, dict] = {}
@@ -346,15 +389,7 @@ def collect_metrics(
         try:
             r = json.loads(rfile.read_text())
             task = r["task_name"]
-            if (
-                task not in best
-                or (r.get("rewards") is not None and best[task].get("rewards") is None)
-                or (
-                    r.get("rewards")
-                    and best[task].get("rewards")
-                    and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
-                )
-            ):
+            if task not in best or _result_rank(r) > _result_rank(best[task]):
                 best[task] = r
         except Exception as e:
             logger.debug(f"Skipping corrupt result file {rfile}: {e}")
@@ -362,6 +397,23 @@ def collect_metrics(
     tasks = []
     for task_name, r in sorted(best.items()):
         reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+        final_score = r.get("final_score")
+        raw_rubric_score = (
+            final_score.get("score") if isinstance(final_score, dict) else None
+        )
+        rubric_score = (
+            float(raw_rubric_score)
+            if isinstance(raw_rubric_score, (int, float))
+            and not isinstance(raw_rubric_score, bool)
+            else None
+        )
+        rubric_review = r.get("rubric_review")
+        raw_review_status = (
+            rubric_review.get("status") if isinstance(rubric_review, dict) else None
+        )
+        review_status = (
+            raw_review_status if isinstance(raw_review_status, str) else None
+        )
         # Calculate duration
         duration = 0.0
         try:
@@ -404,6 +456,8 @@ def collect_metrics(
                     "usage_source", r.get("usage_source", "unavailable")
                 ),
                 memory_score=memory_score_from_result(r),
+                rubric_score=rubric_score,
+                rubric_review_status=review_status,
             )
         )
 

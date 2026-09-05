@@ -177,6 +177,19 @@ def _reward(result: dict[str, Any]) -> float | None:
     return None
 
 
+def _final_score(result: dict[str, Any]) -> tuple[bool | None, float | None]:
+    final = result.get("final_score")
+    if not isinstance(final, dict):
+        return None, None
+    passed = final.get("pass")
+    if type(passed) is not bool:
+        passed = None
+    score = final.get("score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        score = None
+    return passed, float(score) if score is not None else None
+
+
 def _tool_call_count(result: dict[str, Any]) -> int:
     value = result.get("n_tool_calls")
     if isinstance(value, int) and value >= 0:
@@ -229,6 +242,7 @@ def build_health_summary(
             continue
         counts["total_rows"] += 1
         reward = _reward(result)
+        passed, final_score = _final_score(result)
         scored = reward is not None
         if scored:
             counts["scored_rows"] += 1
@@ -249,6 +263,13 @@ def build_health_summary(
                 "task_id": result.get("task_name") or rollout_dir.name,
                 "rollout_dir": str(rollout_dir),
                 "reward": reward,
+                "pass_at_1": int(passed) if passed is not None else None,
+                "final_score": final_score,
+                "rubric_review_status": (
+                    (result.get("rubric_review") or {}).get("status")
+                    if isinstance(result.get("rubric_review"), dict)
+                    else None
+                ),
                 "scored": scored,
                 "tool_calls": tool_calls,
                 "has_llm_trajectory": has_llm,
@@ -293,6 +314,10 @@ def render_run_summary_markdown(
     rows = canonical_task_rows(job_dir)
     rewards = [row["reward"] for row in rows if row["scored"]]
     mean_reward = sum(rewards) / len(rewards) if rewards else None
+    final_scores = [
+        row["final_score"] for row in rows if isinstance(row.get("final_score"), float)
+    ]
+    mean_final_score = sum(final_scores) / len(final_scores) if final_scores else None
     scored_count = sum(1 for row in rows if row["scored"])
     tool_call_count = sum(1 for row in rows if row["tool_calls"] > 0)
 
@@ -307,29 +332,43 @@ def render_run_summary_markdown(
         f"- Mean reward: {mean_reward:.3f}"
         if mean_reward is not None
         else "- Mean reward: n/a",
+        f"- Mean rubric score: {mean_final_score:.3f}"
+        if mean_final_score is not None
+        else "- Mean rubric score: n/a",
         f"- Tasks with tool calls: {tool_call_count}",
         "",
         "## Tasks",
         "",
-        "| Task | Reward | Tool calls | Issue |",
-        "| --- | --- | --- | --- |",
+        "| Task | Pass@1 | Score | Reward | Tool calls | Issue |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         reward = f"{row['reward']:.3f}" if isinstance(row["reward"], float) else "—"
         issue = row.get("error") or row.get("verifier_error") or ""
         issue = truncate_end(_escape_md_cell(str(issue)), _ISSUE_CELL_LIMIT)
+        pass_at_1 = str(row["pass_at_1"]) if row.get("pass_at_1") is not None else "—"
+        final_score = (
+            f"{row['final_score']:.3f}"
+            if isinstance(row.get("final_score"), float)
+            else "—"
+        )
         lines.append(
-            f"| {_escape_md_cell(str(row['task_id']))} | {reward} | "
-            f"{row['tool_calls']} | {issue} |"
+            f"| {_escape_md_cell(str(row['task_id']))} | {pass_at_1} | "
+            f"{final_score} | {reward} | {row['tool_calls']} | {issue} |"
         )
     return "\n".join(lines) + "\n"
 
 
-def _canonical_score(row: dict[str, Any]) -> tuple[int, float, int]:
+def _canonical_score(row: dict[str, Any]) -> tuple[int, float, float, int]:
     scored = 1 if row["scored"] else 0
     reward = row["reward"] if isinstance(row["reward"], float) else float("-inf")
+    final_score = (
+        row["final_score"]
+        if isinstance(row.get("final_score"), float)
+        else float("-inf")
+    )
     tool_calls = int(row.get("tool_calls") or 0)
-    return scored, reward, tool_calls
+    return scored, reward, final_score, tool_calls
 
 
 def build_canonical_selection(

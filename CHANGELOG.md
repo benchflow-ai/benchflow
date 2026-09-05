@@ -5,6 +5,15 @@
 ## 0.7.6 — 2026-09-04
 
 ### Added
+- **Task-local weighted rubrics now participate in normal rollout scoring.**
+  `bench eval run` and the SDK automatically launch an isolated
+  `codex-acp` / `openai/gpt-5.6-sol` (`xhigh`) reviewer when a task ships a
+  review-shaped `verifier/rubric.json` or `tests/rubric.json`. Final reward and
+  pass@1 require both a clean deterministic-verifier pass and every blocker;
+  non-blockers produce a gated weighted score. Solver workspace deltas and
+  reviewer evidence are retained, every score-bearing rollout/trainer/job
+  artifact is refreshed, reviewer telemetry is kept separate, and review
+  failures are retried then fail closed as unscored.
 - **ACP rollout directories render as an interactive reviewer page.**
   `bench eval view <rollout>` now assembles a JSON payload (normalized
   events + result/timing/verifier metadata) and renders it client-side in a

@@ -137,6 +137,10 @@ def _failure_reason(failure: TaskFailure, job_dir: Path | None = None) -> Failur
         return FailureLine(" ".join(failure.verifier_error.split()))
     rewards = failure.rewards or {}
     reward = rewards.get("reward")
+    failed_blockers = rewards.get("failed_blockers")
+    if isinstance(failed_blockers, list) and failed_blockers:
+        names = ", ".join(str(name) for name in failed_blockers)
+        return FailureLine(f"blocker rubric failed: {names}")
     shown = metric_breakdown(rewards)
     if shown is not None:
         return FailureLine(f"reward {reward} — {shown}")
@@ -189,9 +193,16 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     # flat 0. getattr(): sharded aggregation and older callers don't carry it.
     mean_reward = getattr(result, "mean_reward", None)
     mean_part = f", mean reward {mean_reward:.2f}" if mean_reward is not None else ""
+    mean_final_score = getattr(result, "mean_final_score", None)
+    review_required = int(getattr(result, "rubric_reviews_required", 0) or 0)
+    rubric_part = (
+        f", rubric score {mean_final_score:.2f} ({review_required} reviewed)"
+        if mean_final_score is not None
+        else ""
+    )
     console.print(
         f"\n[{style}]{mark} Score: {result.passed}/{result.total} "
-        f"({result.score:.1%})[/{style}]{mean_part}{err_part}"
+        f"({result.score:.1%})[/{style}]{mean_part}{rubric_part}{err_part}"
     )
     # One dim reason line per FAILED task, so "0/1" doesn't force a dig into
     # summary.json to learn why. getattr(): sharded aggregation and older

@@ -34,6 +34,24 @@ class ReviewScoring:
     gated_quality: float
     decision: PublicationDecision
 
+    @property
+    def passed(self) -> bool:
+        """Whether deterministic verification and every blocker passed."""
+
+        return self.deterministic_pass and self.all_blockers_pass
+
+    @property
+    def reward(self) -> float:
+        """Binary benchmark reward after deterministic and blocker gates."""
+
+        return 1.0 if self.passed else 0.0
+
+    @property
+    def score(self) -> float:
+        """Weighted non-blocker quality, zeroed whenever a gate fails."""
+
+        return self.gated_quality
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "deterministic_pass": self.deterministic_pass,

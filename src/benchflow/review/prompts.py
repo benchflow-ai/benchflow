@@ -36,6 +36,8 @@ Run records:
 - {trial_path}/result.json — outcome, rewards, and error details
 - {trial_path}/trajectory/ — the agent's recorded actions
 - {trial_path}/verifier/ — test output, when present
+- {trial_path}/artifacts/workspace/ — every workspace file created or modified by the agent
+- {trial_path}/artifacts/workspace-manifest.json — captured, deleted, and excluded workspace paths
 - {trial_path}/config.json — how the run was configured
 
 Work through the criteria one at a time. For each criterion, weigh the evidence before deciding, and cite the specific files or recorded steps that support your judgment in its explanation.

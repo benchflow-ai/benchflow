@@ -17,6 +17,12 @@ from benchflow.cli._shared import (
     _parse_agent_env,
     console,
 )
+from benchflow.review.policy import (
+    DEFAULT_REVIEWER_AGENT,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_REVIEWER_REASONING_EFFORT,
+    DEFAULT_REVIEWER_TIMEOUT_SEC,
+)
 from benchflow.sandbox.providers import providers_phrase
 
 _REVIEW_OUTCOME_STYLES = {
@@ -147,11 +153,15 @@ def _review_command(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Reviewer agent harness"),
-    ] = "opencode",
+    ] = DEFAULT_REVIEWER_AGENT,
     model: Annotated[
         str | None,
-        typer.Option("--model", "-m", help="Reviewer model (default: agent registry)"),
-    ] = None,
+        typer.Option("--model", "-m", help="Reviewer model"),
+    ] = DEFAULT_REVIEWER_MODEL,
+    reasoning_effort: Annotated[
+        str,
+        typer.Option("--reasoning-effort", help="Reviewer reasoning effort"),
+    ] = DEFAULT_REVIEWER_REASONING_EFFORT,
     environment: Annotated[
         str,
         typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}"),
@@ -171,7 +181,7 @@ def _review_command(
     timeout_sec: Annotated[
         int,
         typer.Option("--timeout-sec", help="Reviewer agent timeout per rollout"),
-    ] = 1800,
+    ] = DEFAULT_REVIEWER_TIMEOUT_SEC,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="KEY=VALUE for the reviewer (repeatable)"),
@@ -241,6 +251,7 @@ def _review_command(
                 path,
                 agent=agent,
                 model=model,
+                reasoning_effort=reasoning_effort,
                 environment=environment,
                 rubric_path=rubric,
                 prompt_path=prompt,

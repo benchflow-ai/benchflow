@@ -796,7 +796,10 @@ model: gemini/gemini-3.1-flash-lite-preview
 
 All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 `source`, `tasks_dir`, `agent`, `model`, `environment`, `concurrency`,
-`sandbox_setup_timeout`, `skills_dir`, `agent_env`, `max_retries`.
+`sandbox_setup_timeout`, `skills_dir`, `agent_env`, `max_retries`, and
+`rubric_review`. A task-local `verifier/rubric.json` or `tests/rubric.json`
+enables isolated automatic review by default; the reviewer policy and final
+score contract are documented in [Rubric review](./rubric-review.md).
 
 ---
 

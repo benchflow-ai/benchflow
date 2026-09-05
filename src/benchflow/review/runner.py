@@ -36,6 +36,12 @@ from benchflow.review.config import (
     find_task_rubric,
     load_rubric,
 )
+from benchflow.review.policy import (
+    DEFAULT_REVIEWER_AGENT,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_REVIEWER_REASONING_EFFORT,
+    RubricReviewConfig,
+)
 from benchflow.review.scoring import ReviewScoring, score_weighted_review
 from benchflow.review.wrapper import (
     REVIEWER_AGENT_TIMEOUT_SEC,
@@ -94,6 +100,7 @@ class ReviewReport:
     agent: str
     model: str | None
     environment: str
+    reasoning_effort: str | None = None
     network: str = "no-internet"
     job_summary: str | None = None
     trials: list[TrialReview] = field(default_factory=list)
@@ -115,6 +122,7 @@ class ReviewReport:
             "reviewer": {
                 "agent": self.agent,
                 "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
                 "environment": self.environment,
                 "network": self.network,
             },
@@ -172,6 +180,7 @@ def _is_passing(rollout_dir: Path) -> bool:
         and not isinstance(reward, bool)
         and reward == 1.0
         and result.get("error") is None
+        and result.get("verifier_error") is None
     )
 
 
@@ -251,7 +260,7 @@ def _source_task_dir(
     return candidate, None
 
 
-def _task_digest_issue(rollout_dir: Path, task_dir: Path) -> str | None:
+def task_digest_issue(rollout_dir: Path, task_dir: Path) -> str | None:
     """Compare the rollout's recorded task digest against the task on disk.
 
     Task evidence is admitted only when result/config provenance identifies
@@ -417,6 +426,7 @@ async def _review_one(
     template: str | None,
     agent: str,
     model: str | None,
+    reasoning_effort: str | None,
     environment: str,
     agent_env: dict[str, str],
     timeout_sec: int,
@@ -439,7 +449,7 @@ async def _review_one(
         logger.info("%s: %s", rollout_dir.name, skip_reason)
     if task_dir is not None:
         digest_issue = await asyncio.to_thread(
-            _task_digest_issue,
+            task_digest_issue,
             rollout_dir,
             task_dir,
         )
@@ -485,12 +495,14 @@ async def _review_one(
             task_path=wrapper_dir,
             agent=agent,
             model=model,
+            reasoning_effort=reasoning_effort,
             agent_env=dict(agent_env),
             environment=environment,
             jobs_dir=runtime_dir,
             timeout=timeout_sec,
             uploads=uploads,
             pre_agent_hooks=[_lock_review_evidence],
+            rubric_review=RubricReviewConfig(enabled=False),
         )
         result = await run_rollout(config)
         leaf = _reviewer_rollout_leaf(runtime_dir)
@@ -633,8 +645,9 @@ def _summarize_job(trials: list[TrialReview]) -> str | None:
 async def run_reviews(
     path: Path,
     *,
-    agent: str,
-    model: str | None = None,
+    agent: str = DEFAULT_REVIEWER_AGENT,
+    model: str | None = DEFAULT_REVIEWER_MODEL,
+    reasoning_effort: str | None = DEFAULT_REVIEWER_REASONING_EFFORT,
     environment: str = "docker",
     rubric_path: Path | None = None,
     prompt_path: Path | None = None,
@@ -688,6 +701,7 @@ async def run_reviews(
                 template=template,
                 agent=agent,
                 model=model,
+                reasoning_effort=reasoning_effort,
                 environment=environment,
                 agent_env=agent_env or {},
                 timeout_sec=timeout_sec,
@@ -720,6 +734,7 @@ async def run_reviews(
         criteria=criteria_names,
         agent=agent,
         model=model,
+        reasoning_effort=reasoning_effort,
         environment=environment,
         network="open (explicit --allow-open-network)"
         if open_network
