@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
 from benchflow.trajectories.types import redact_trajectory_obj
@@ -537,11 +537,180 @@ def _assistant_from_responses_response(
     return message
 
 
+def normalize_provider_exchange(exchange: dict[str, Any]) -> dict[str, Any]:
+    """Decode LiteLLM's Gemini passthrough envelope without changing raw evidence."""
+    metadata = exchange.get("metadata") or {}
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("call_type") != "pass_through_endpoint"
+        or metadata.get("training_input_format") == "gemini"
+    ):
+        return exchange
+    request = exchange.get("request") or {}
+    if not isinstance(request, dict):
+        return exchange
+    body = request.get("body") or {}
+    if not isinstance(body, dict):
+        return exchange
+
+    def invalid(detail: str) -> NoReturn:
+        raise ValueError(f"Unsupported Gemini passthrough: {detail}")
+
+    try:
+        envelope = body["messages"]
+        if not isinstance(envelope, list) or len(envelope) != 1:
+            raise ValueError("expected singleton envelope")
+        content = envelope[0]["content"]
+        if not isinstance(content, str):
+            raise ValueError("expected JSON text")
+        native = json.loads(content)
+        if not isinstance(native, dict) or "contents" not in native:
+            raise ValueError("expected native contents")
+    except (KeyError, TypeError, ValueError):
+        model = (
+            metadata.get("provider_model")
+            or metadata.get("request_model")
+            or body.get("model")
+            or ""
+        )
+        if str(model).rsplit("/", 1)[-1].startswith(("gemini-", "gemma-")):
+            invalid("malformed native request envelope")
+        return exchange
+
+    contents = native["contents"]
+    if not isinstance(contents, list):
+        invalid("contents must be a list")
+    messages: list[dict[str, Any]] = []
+    call_ids: dict[str, str] = {}
+    system = native.get("systemInstruction")
+    if system is not None:
+        if not isinstance(system, dict):
+            invalid("systemInstruction must be an object")
+        contents = [{**system, "role": "system"}, *contents]
+    for turn in contents:
+        if not isinstance(turn, dict) or turn.get("role") not in {
+            "system",
+            "user",
+            "model",
+        }:
+            invalid("unknown content role")
+        parts = turn.get("parts")
+        if not isinstance(parts, list):
+            invalid("parts must be a list")
+        role = "assistant" if turn["role"] == "model" else turn["role"]
+        message: dict[str, Any] = {"role": role, "content": ""}
+        for part in parts:
+            if not isinstance(part, dict) or set(part) - {
+                "text",
+                "thought",
+                "thoughtSignature",
+                "functionCall",
+                "functionResponse",
+            }:
+                invalid("unsupported content part")
+            if len(set(part) & {"text", "functionCall", "functionResponse"}) != 1:
+                invalid("content part must have exactly one payload")
+            if "text" in part:
+                if not isinstance(part["text"], str):
+                    invalid("text must be a string")
+                if not part.get("thought"):
+                    message["content"] += part["text"]
+            elif "functionCall" in part:
+                call = part["functionCall"]
+                if (
+                    role != "assistant"
+                    or not isinstance(call, dict)
+                    or not isinstance(call.get("id"), str)
+                    or not call["id"]
+                    or not isinstance(call.get("name"), str)
+                    or not call["name"]
+                    or not isinstance(call.get("args", {}), dict)
+                ):
+                    invalid("function call requires model role, id and name")
+                call_id = call["id"]
+                signature = part.get("thoughtSignature")
+                if signature is not None and not isinstance(signature, str):
+                    invalid("thought signature must be a string")
+                decorated = call_id + (f"__thought__{signature}" if signature else "")
+                if call_id in call_ids and call_ids[call_id] != decorated:
+                    invalid("conflicting signatures for function call id")
+                call_ids[call_id] = decorated
+                message.setdefault("tool_calls", []).append(
+                    {
+                        "id": decorated,
+                        "name": call["name"],
+                        "arguments": call.get("args", {}),
+                    }
+                )
+            elif "functionResponse" in part:
+                response = part["functionResponse"]
+                if (
+                    role != "user"
+                    or not isinstance(response, dict)
+                    or not isinstance(response.get("id"), str)
+                    or not response["id"]
+                    or not isinstance(response.get("response"), dict)
+                ):
+                    invalid("function response requires user role and id")
+                if message["content"]:
+                    messages.append(message)
+                    message = {"role": role, "content": ""}
+                response_id = response["id"]
+                if response_id not in call_ids:
+                    invalid("function response references unknown call id")
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_ids[response_id],
+                        "content": json.dumps(response.get("response")),
+                    }
+                )
+        if message["content"] or message.get("tool_calls"):
+            messages.append(message)
+    tools = []
+    declarations = native.get("tools", [])
+    if not isinstance(declarations, list):
+        invalid("tools must be a list")
+    for tool in declarations:
+        if (
+            not isinstance(tool, dict)
+            or set(tool) != {"functionDeclarations"}
+            or not isinstance(tool["functionDeclarations"], list)
+        ):
+            invalid("unsupported tool declaration")
+        for declaration in tool["functionDeclarations"]:
+            if not isinstance(declaration, dict) or not declaration.get("name"):
+                invalid("function declaration requires a name")
+            parameters = declaration.get(
+                "parametersJsonSchema",
+                declaration.get("parameters", {"type": "object", "properties": {}}),
+            )
+            if not isinstance(parameters, dict):
+                invalid("function declaration requires an object schema")
+            tools.append({**declaration, "parameters": parameters})
+    return {
+        **exchange,
+        "metadata": {**metadata, "training_input_format": "gemini"},
+        "request": {
+            **request,
+            "body": {
+                **body,
+                "messages": messages,
+                "tools": _tool_defs_from_body({"tools": tools}),
+            },
+        },
+    }
+
+
 def _exchange_to_messages_and_tools(
     exchange: dict[str, Any],
     *,
     redact: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    try:
+        exchange = normalize_provider_exchange(exchange)
+    except ValueError as exc:
+        return [], [], str(exc)
     request = (
         cast(dict[str, Any], exchange.get("request"))
         if isinstance(exchange.get("request"), dict)

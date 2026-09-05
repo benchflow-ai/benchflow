@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 SCRIPT = (
     Path(__file__).resolve().parents[1]
     / ".agents"
@@ -476,10 +478,12 @@ def test_validator_deduplicates_completed_retry_race(tmp_path: Path) -> None:
     assert report["artifacts"]["llm"]["deduplicated_completed_responses"] == 1
 
 
+@pytest.mark.parametrize("native_gemini", [False, True])
 def test_validator_prefers_duplicate_consumed_by_later_request(
     tmp_path: Path,
+    native_gemini: bool,
 ) -> None:
-    """Guards PR #921 against keeping a late abandoned response."""
+    """Guards PR #921 and a0b16985's native Gemini signature-consumption gap."""
     validator = _load_validator()
     rollout = _rollout(tmp_path)
     llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
@@ -489,7 +493,9 @@ def test_validator_prefers_duplicate_consumed_by_later_request(
         "content": "",
         "tool_calls": [
             {
-                "id": "call_consumed",
+                "id": "call_consumed__thought__signature"
+                if native_gemini
+                else "call_consumed",
                 "type": "function",
                 "function": {"name": "finish", "arguments": "{}"},
             }
@@ -500,16 +506,39 @@ def test_validator_prefers_duplicate_consumed_by_later_request(
         "call_abandoned"
     )
     followup = json.loads(llm_path.read_text())
-    followup["request"]["body"]["messages"].extend(
-        [
-            consumed["response"]["body"]["choices"][0]["message"],
-            {
-                "role": "tool",
-                "tool_call_id": "call_consumed",
-                "content": "done",
-            },
+    if native_gemini:
+        call = {
+            "functionCall": {"id": "call_consumed", "name": "finish", "args": {}},
+            "thoughtSignature": "signature",
+        }
+        output = {
+            "functionResponse": {
+                "id": "call_consumed",
+                "name": "finish",
+                "response": {},
+            }
+        }
+        native = {
+            "contents": [
+                {"role": "model", "parts": [call]},
+                {"role": "user", "parts": [output]},
+            ]
+        }
+        followup["metadata"] = {"call_type": "pass_through_endpoint"}
+        followup["request"]["body"]["messages"] = [
+            {"role": "user", "content": json.dumps(native)}
         ]
-    )
+    else:
+        followup["request"]["body"]["messages"].extend(
+            [
+                consumed["response"]["body"]["choices"][0]["message"],
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_consumed",
+                    "content": "done",
+                },
+            ]
+        )
     _write_jsonl(llm_path, [consumed, abandoned, followup])
     row = json.loads((rollout / "results.jsonl").read_text())
     row["trajectory"] = [
@@ -528,6 +557,10 @@ def test_validator_prefers_duplicate_consumed_by_later_request(
 
     assert report["healthy"] is True
     assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 2]
+    if native_gemini:
+        row["trajectory"] = row["trajectory"][1:]
+        _write_jsonl(rollout / "results.jsonl", [row])
+        assert validator.validate_rollout(rollout)["healthy"] is False
 
 
 def test_validator_excludes_unique_late_unconsumed_nonterminal_retry(

@@ -376,10 +376,49 @@ def response_consumed_by_later_request(
     return bool(
         call_ids
         and any(
-            any(call_id in request_body for call_id in call_ids)
-            for request_body in request_bodies[exchange_idx + 1 :]
+            any(call_id in request_bodies[index] for call_id in call_ids)
+            or bool(call_ids & gemini_history_call_ids(rows[index]))
+            for index in range(exchange_idx + 1, len(rows))
         )
     )
+
+
+def gemini_history_call_ids(row: dict[str, Any]) -> set[str]:
+    """Match native IDs plus recorded signatures, never strip or guess call IDs."""
+    metadata = row.get("metadata")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("call_type") != "pass_through_endpoint"
+    ):
+        return set()
+    request = row.get("request")
+    body = request.get("body") if isinstance(request, dict) else None
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 1
+        or not isinstance(messages[0], dict)
+    ):
+        return set()
+    try:
+        native = json.loads(messages[0].get("content", ""))
+    except (ValueError, TypeError):
+        return set()
+    contents = native.get("contents") if isinstance(native, dict) else None
+    if not isinstance(contents, list):
+        return set()
+    ids = set()
+    for content in contents:
+        parts = content.get("parts") if isinstance(content, dict) else None
+        for part in parts if isinstance(parts, list) else []:
+            call = part.get("functionCall") if isinstance(part, dict) else None
+            if isinstance(call, dict) and isinstance(call.get("id"), str):
+                signature = part.get("thoughtSignature")
+                if signature is None or isinstance(signature, str):
+                    ids.add(
+                        call["id"] + (f"__thought__{signature}" if signature else "")
+                    )
+    return ids
 
 
 def response_call_ids(body: dict[str, Any]) -> set[str]:

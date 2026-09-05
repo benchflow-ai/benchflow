@@ -26,6 +26,7 @@ from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
+    normalize_provider_exchange,
     prime_sft_last_user_training_window,
     validate_prime_sft_row,
 )
@@ -162,9 +163,14 @@ def _llm_steps_from_trajectory(
     if not path.exists():
         return steps, tool_defs, None
     try:
-        exchanges = load_llm_trajectory_jsonl(path, strict=True)
+        exchanges = [
+            normalize_provider_exchange(exchange)
+            for exchange in load_llm_trajectory_jsonl(path, strict=True)
+        ]
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+    except ValueError as exc:
+        return [], [], str(exc)
     training_success_indices = _training_success_exchange_indices(exchanges)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
