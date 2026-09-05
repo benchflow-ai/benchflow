@@ -232,6 +232,68 @@ def test_collect_metrics_corrupt_file(tmp_path):
     assert s["total"] == 0
 
 
+@pytest.mark.parametrize("rewards", [1.0, 1, True, [1.0], "1.0"])
+def test_collect_metrics_non_dict_rewards_counts_as_errored(tmp_path, rewards):
+    """A persisted non-dict `rewards` must not crash the aggregation.
+
+    Results are raw json.loads payloads with no shape validation, so `rewards`
+    can be any JSON value. Reading it as a mapping raised AttributeError and
+    killed `bench eval metrics` on the whole results dir. `extract_reward`
+    treats a non-mapping as no reward, which lands the task in the errored
+    bucket — the same reading `_classify_completed_outcomes` applies to the
+    identical payload.
+    """
+    trial = tmp_path / "job" / "task-a__abc"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"task_name": "task-a", "rewards": rewards})
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+
+    assert metrics.tasks[0].reward is None
+    assert s["total"] == 1
+    assert s["errored"] == 1
+    assert s["errored_tasks"] == ["task-a"]
+
+
+def test_collect_metrics_non_dict_rewards_does_not_shadow_a_scored_retry(tmp_path):
+    """A malformed artifact must not win the best-result pick.
+
+    The selection step compares both artifacts' rewards; reading a non-dict
+    `rewards` raised inside the enclosing `except Exception`, which dropped the
+    *well-formed* retry for the same task and reported it as errored. Mirrors
+    test_scoring.py::test_malformed_rewards_shape_tolerated, which pins the
+    same invariant for mean_scored_reward.
+    """
+    job = tmp_path / "job"
+    for name, rewards, n_tool_calls in (
+        ("task-a__aaa", 1.0, 99),  # malformed, sorts first
+        ("task-a__zzz", {"reward": 1.0}, 7),
+    ):
+        trial = job / name
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task-a",
+                    "rewards": rewards,
+                    "n_tool_calls": n_tool_calls,
+                }
+            )
+        )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+
+    assert s["total"] == 1
+    assert s["passed"] == 1
+    assert metrics.tasks[0].reward == 1.0
+    # The well-formed artifact is the one kept, not just its reward.
+    assert metrics.tasks[0].n_tool_calls == 7
+
+
 def test_collect_metrics_metadata(results_dir):
     """Test that benchmark/agent/model metadata is passed through."""
     metrics = collect_metrics(
