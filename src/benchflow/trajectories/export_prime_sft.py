@@ -18,32 +18,27 @@ from typing import Any, Literal, cast
 
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
 from benchflow.trajectories.message_contract import (
-    PrimeSftExchangeData as PrimeSftExchangeData,
-)
-from benchflow.trajectories.message_contract import (
-    PrimeSftTrajectoryJsonlError as PrimeSftTrajectoryJsonlError,
-)
-from benchflow.trajectories.message_contract import (
+    NormalizedExchange,
+    TrajectoryJsonlError,
     _align_legacy_tool_call_ids,
     _has_tool_calls,
     _normalize_tool_call,
     _row_messages,
+    last_user_training_window,
+    normalize_exchange,
+    validate_message_record,
 )
 from benchflow.trajectories.message_contract import (
     load_llm_trajectory_jsonl as load_llm_trajectory_jsonl,
 )
-from benchflow.trajectories.message_contract import (
-    normalize_prime_sft_exchange as normalize_prime_sft_exchange,
-)
-from benchflow.trajectories.message_contract import (
-    prime_sft_last_user_training_window as prime_sft_last_user_training_window,
-)
-from benchflow.trajectories.message_contract import (
-    validate_prime_sft_row as validate_prime_sft_row,
-)
 from benchflow.trajectories.types import redact_trajectory_obj
 
 PrimeSftRowMode = Literal["rollout", "exchange"]
+PrimeSftExchangeData = NormalizedExchange
+PrimeSftTrajectoryJsonlError = TrajectoryJsonlError
+normalize_prime_sft_exchange = normalize_exchange
+prime_sft_last_user_training_window = last_user_training_window
+validate_prime_sft_row = validate_message_record
 
 
 @dataclass

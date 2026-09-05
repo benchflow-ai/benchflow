@@ -12,7 +12,7 @@ from benchflow._utils.task_authoring import task_digest
 from benchflow._utils.text import truncate_end
 from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
 from benchflow.trajectories.message_contract import (
-    PrimeSftTrajectoryJsonlError,
+    TrajectoryJsonlError,
     load_llm_trajectory_jsonl,
 )
 
@@ -200,7 +200,7 @@ def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
         return False, False, 0
     try:
         rows = load_llm_trajectory_jsonl(path, strict=True)
-    except PrimeSftTrajectoryJsonlError:
+    except TrajectoryJsonlError:
         return True, False, 0
     return True, True, len(rows)
 

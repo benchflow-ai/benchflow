@@ -23,12 +23,12 @@ from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.trajectories.message_contract import (
-    PrimeSftTrajectoryJsonlError,
+    TrajectoryJsonlError,
+    last_user_training_window,
     load_llm_trajectory_jsonl,
-    normalize_prime_sft_exchange,
+    normalize_exchange,
     normalize_provider_exchange,
-    prime_sft_last_user_training_window,
-    validate_prime_sft_row,
+    validate_message_record,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
@@ -167,7 +167,7 @@ def _llm_steps_from_trajectory(
             normalize_provider_exchange(exchange)
             for exchange in load_llm_trajectory_jsonl(path, strict=True)
         ]
-    except PrimeSftTrajectoryJsonlError as exc:
+    except TrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
     except ValueError as exc:
         return [], [], str(exc)
@@ -182,7 +182,7 @@ def _llm_steps_from_trajectory(
                 f"exchange {exchange_idx}: selected response is not an object"
             )
             continue
-        normalized, skip_reason = normalize_prime_sft_exchange(exchange)
+        normalized, skip_reason = normalize_exchange(exchange)
         if normalized is None:
             skipped_successful.append(
                 f"exchange {exchange_idx}: {skip_reason or 'normalization failed'}"
@@ -417,7 +417,7 @@ def _top_level_prompt_completion(
     typed_full_messages = [
         message for message in full_messages if isinstance(message, dict)
     ]
-    window = prime_sft_last_user_training_window(typed_full_messages)
+    window = last_user_training_window(typed_full_messages)
     if window is not None:
         return window
     if prompt and len(full_messages) >= len(prompt):
@@ -584,7 +584,7 @@ def _prime_sft_validation_error(
     if not completion:
         return None
     try:
-        validate_prime_sft_row(
+        validate_message_record(
             {
                 "prompt": prompt,
                 "completion": completion,

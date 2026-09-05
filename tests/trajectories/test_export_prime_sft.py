@@ -9,14 +9,35 @@ from pathlib import Path
 import pytest
 
 from benchflow.trajectories.export_prime_sft import (
+    PrimeSftExchangeData,
     PrimeSftTrajectoryJsonlError,
     convert_benchflow_rollouts_to_prime_sft_rows,
     export_prime_sft_jsonl,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
+    prime_sft_last_user_training_window,
     validate_prime_sft_jsonl,
+    validate_prime_sft_row,
 )
-from benchflow.trajectories.message_contract import normalize_provider_exchange
+from benchflow.trajectories.message_contract import (
+    NormalizedExchange,
+    TrajectoryJsonlError,
+    last_user_training_window,
+    normalize_exchange,
+    normalize_provider_exchange,
+    validate_message_record,
+)
+
+
+def test_message_contract_preserves_prime_compatibility_aliases():
+    assert PrimeSftExchangeData is NormalizedExchange
+    assert PrimeSftTrajectoryJsonlError is TrajectoryJsonlError
+    assert normalize_prime_sft_exchange is normalize_exchange
+    assert prime_sft_last_user_training_window is last_user_training_window
+    assert validate_prime_sft_row is validate_message_record
+    assert repr(NormalizedExchange(messages=[], tool_defs=[])).startswith(
+        "NormalizedExchange("
+    )
 
 
 @pytest.mark.parametrize("second_signature", ["", "other-signature"])

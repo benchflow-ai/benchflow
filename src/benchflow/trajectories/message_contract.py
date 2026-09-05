@@ -38,12 +38,12 @@ BANNED_MESSAGE_KEYS = {
 
 
 @dataclass(frozen=True)
-class PrimeSftExchangeData:
+class NormalizedExchange:
     messages: list[dict[str, Any]]
     tool_defs: list[dict[str, Any]]
 
 
-class PrimeSftTrajectoryJsonlError(ValueError):
+class TrajectoryJsonlError(ValueError):
     """Raised when an LLM trajectory JSONL file is not parseable."""
 
 
@@ -57,7 +57,7 @@ def load_llm_trajectory_jsonl(
         lines = path.read_text().splitlines()
     except OSError as exc:
         if strict:
-            raise PrimeSftTrajectoryJsonlError(
+            raise TrajectoryJsonlError(
                 f"{path}: cannot read LLM trajectory JSONL: {exc}"
             ) from exc
         return records
@@ -68,14 +68,14 @@ def load_llm_trajectory_jsonl(
             record = json.loads(line)
         except json.JSONDecodeError as exc:
             if strict:
-                raise PrimeSftTrajectoryJsonlError(
+                raise TrajectoryJsonlError(
                     f"{path}: line {line_num}: invalid JSON: {exc}"
                 ) from exc
             continue
         if isinstance(record, dict):
             records.append(record)
         elif strict:
-            raise PrimeSftTrajectoryJsonlError(
+            raise TrajectoryJsonlError(
                 f"{path}: line {line_num}: top-level record must be an object"
             )
     return records
@@ -163,11 +163,8 @@ def _normalize_message(
                 _normalize_tool_call(
                     {
                         "id": message.get("call_id") or message.get("id"),
-                        "type": "function",
-                        "function": {
-                            "name": message.get("name"),
-                            "arguments": message.get("arguments", {}),
-                        },
+                        "name": message.get("name"),
+                        "arguments": message.get("arguments", {}),
                     },
                     index,
                     redact=redact,
@@ -201,8 +198,8 @@ def _normalize_message(
 
 
 def _normalize_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # Prime-RL SFT allows a system message only at index 0 (see
-    # validate_prime_sft_row). Any system message after the first position —
+    # The message contract allows a system message only at index 0 (see
+    # validate_message_record). Any system message after the first position —
     # including a *second consecutive* leading system message — is remapped to
     # "user" so the whole row isn't silently dropped into skipped_invalid.
     normalized: list[dict[str, Any]] = []
@@ -214,7 +211,7 @@ def _normalize_system_messages(messages: list[dict[str, Any]]) -> list[dict[str,
     return normalized
 
 
-def prime_sft_last_user_training_window(
+def last_user_training_window(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
     """Return a compact prompt/completion window anchored at the last user turn.
@@ -264,12 +261,9 @@ def _messages_from_responses_request(
     if isinstance(raw_input, str):
         messages.append({"role": "user", "content": raw_input})
     elif isinstance(raw_input, list):
-        for idx, item in enumerate(raw_input):
-            if not isinstance(item, dict):
-                continue
-            item = cast(dict[str, Any], item)
-            if item.get("type") != "reasoning":
-                messages.append(_normalize_message(item, idx, redact=redact))
+        messages.extend(
+            _messages_from_chat_request({"messages": raw_input}, redact=redact)
+        )
     return messages
 
 
@@ -316,11 +310,8 @@ def _assistant_from_anthropic_content(
     raw_tool_calls = [
         {
             "id": item.get("id"),
-            "type": "function",
-            "function": {
-                "name": item.get("name"),
-                "arguments": item.get("input", {}),
-            },
+            "name": item.get("name"),
+            "arguments": item.get("input", {}),
         }
         for item in content
         if isinstance(item, dict) and item.get("type") == "tool_use"
@@ -378,11 +369,8 @@ def _assistant_from_responses_response(
             tool_calls.append(
                 {
                     "id": item.get("call_id") or item.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": item.get("name"),
-                        "arguments": item.get("arguments", {}),
-                    },
+                    "name": item.get("name"),
+                    "arguments": item.get("arguments", {}),
                 }
             )
     if not texts and not tool_calls:
@@ -731,7 +719,7 @@ def _align_legacy_tool_call_ids(
     return out, stats
 
 
-def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
+def validate_message_record(row: dict[str, Any], row_num: int = 1) -> None:
     leaked = sorted(BANNED_ROW_KEYS.intersection(row))
     if leaked:
         raise ValueError(
@@ -843,12 +831,12 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
                 )
 
 
-def normalize_prime_sft_exchange(
+def normalize_exchange(
     exchange: dict[str, Any],
     *,
     redact: bool = True,
-) -> tuple[PrimeSftExchangeData | None, str | None]:
-    """Normalize one raw LLM exchange through the Prime-SFT validator path."""
+) -> tuple[NormalizedExchange | None, str | None]:
+    """Normalize one raw LLM exchange through the shared message contract."""
     messages, tool_defs, skip_reason = _exchange_to_messages_and_tools(
         exchange, redact=redact
     )
@@ -861,7 +849,7 @@ def normalize_prime_sft_exchange(
     if _has_tool_calls(messages) and not tool_defs:
         return None, "missing_tool_defs"
     try:
-        validate_prime_sft_row({"messages": messages, "tool_defs": tool_defs}, 1)
+        validate_message_record({"messages": messages, "tool_defs": tool_defs}, 1)
     except ValueError as exc:
         return None, f"invalid_prime_sft_row: {exc}"
-    return PrimeSftExchangeData(messages=messages, tool_defs=tool_defs), None
+    return NormalizedExchange(messages=messages, tool_defs=tool_defs), None
