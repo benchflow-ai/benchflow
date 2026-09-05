@@ -128,5 +128,17 @@ class TestResolveAgentEnvGemini:
         assert result["GEMINI_API_KEY"] == "explicit"
 
 
+class TestResolveAgentEnvFx:
+    def test_non_vercel_model_rejected(self, monkeypatch, tmp_path):
+        """Guards PR #1052: fx serves only vercel/ models; others fail fast."""
+        _clear_keys(monkeypatch)
+        _patch_no_subscription(monkeypatch, tmp_path)
+        monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(tmp_path / "no.env"))
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "dk-test")
+
+        with pytest.raises(ValueError, match="vercel/"):
+            resolve_agent_env(agent="fx", model="deepseek/deepseek-v4", agent_env=None)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])

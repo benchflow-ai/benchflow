@@ -485,6 +485,7 @@ def test_provider_model_prefixes_unique_and_resolvable():
         ("azure-foundry-anthropic/claude-opus-4-5", "azure-foundry-anthropic"),
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
         ("github-models/openai/gpt-4.1-mini", "github-models"),
+        ("vercel/anthropic/claude-sonnet-4.5", "vercel"),
         ("zai/glm-5", "zai"),
         ("zai-coding/glm-5.4-flash", "zai-coding"),
         ("vllm/local-model", "vllm"),

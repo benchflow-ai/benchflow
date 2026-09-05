@@ -218,6 +218,21 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENROUTER_API_KEY",
     ),
+    # Vercel AI Gateway: OpenAI-compatible endpoints under /v1; the Anthropic
+    # Messages surface sits at the root (clients append /v1/messages). Model ids
+    # keep the gateway's creator/model form: vercel/anthropic/claude-sonnet-4.5.
+    "vercel": ProviderConfig(
+        name="vercel",
+        base_url="https://ai-gateway.vercel.sh/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="AI_GATEWAY_API_KEY",
+        endpoints={
+            "openai-completions": "https://ai-gateway.vercel.sh/v1",
+            "openai-responses": "https://ai-gateway.vercel.sh/v1",
+            "anthropic-messages": "https://ai-gateway.vercel.sh",
+        },
+    ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(

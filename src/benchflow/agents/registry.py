@@ -123,6 +123,8 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
+# fx release pin, passed to the fx.sh installer (`bash -s -- <version>`).
+_FX_VERSION = "v0.0.7"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -487,6 +489,9 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    native_provider: str = ""
+    # Provider whose models this agent serves natively; its traffic cannot be
+    # proxied, so runs bypass the proxy for those models and reject others.
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
     acp_model_config_id: str = ""
@@ -992,6 +997,35 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_owned_paths=["$HOME/.openhands"],
     ),
+    "fx": AgentConfig(
+        name="fx",
+        description="Vercel fx agent via ACP (native binary; models served "
+        "through the Vercel AI Gateway)",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            # Shared prefix so the sandbox user inherits the binary.
+            "export FX_INSTALL_DIR=/usr/local/bin && "
+            f"curl -fsSL https://fx.sh/setup.sh | bash -s -- {_FX_VERSION} && "
+            "command -v fx >/dev/null 2>&1"
+        ),
+        launch_cmd="fx acp",
+        protocol="acp",
+        requires_env=["AI_GATEWAY_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_MODEL": "FX_MODEL",
+        },
+        supports_acp_set_model=False,
+        # fx speaks the AI SDK gateway wire protocol.
+        native_provider="vercel",
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.fx/settings.json",
+            'perm=d.setdefault("permission",{});'
+            'perm["web_fetch"]={"*":"deny"};perm["web_search"]={"*":"deny"}',
+        ),
+        disallow_web_tools_owned_paths=["$HOME/.fx"],
+    ),
 }
 
 
@@ -1178,6 +1212,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        native_provider=config.native_provider,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
