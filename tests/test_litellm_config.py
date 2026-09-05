@@ -10,7 +10,10 @@ from benchflow.providers.litellm_config import (
 
 
 @pytest.mark.asyncio
-async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(monkeypatch):
+@pytest.mark.parametrize(
+    "model", ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
+)
+async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(monkeypatch, model):
     """Guards Vertex proxy auth against the regression in commit 28b82e33."""
     from unittest.mock import AsyncMock, Mock
 
@@ -24,7 +27,7 @@ async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(monkeypa
     from starlette.responses import Response
 
     route = resolve_litellm_route(
-        "google-vertex/gemini-3.1-flash-lite",
+        f"google-vertex/{model}",
         {"GOOGLE_CLOUD_PROJECT": "dummy-project", "GOOGLE_CLOUD_LOCATION": "global"},
     )
     config = litellm_proxy_config(route, master_key="gateway-key")
@@ -54,7 +57,7 @@ async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(monkeypa
     )
     # Actual CLI 0.42.0 Express-style path, captured using a dummy gateway key.
     await vendor._base_vertex_proxy_route(
-        endpoint="v1beta1/publishers/google/models/gemini-3.1-flash-lite:streamGenerateContent",
+        endpoint=f"v1beta1/publishers/google/models/{model}:streamGenerateContent",
         request=request,
         fastapi_response=Response(),
         get_vertex_pass_through_handler=vendor.get_vertex_pass_through_handler(
@@ -70,7 +73,7 @@ async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(monkeypa
     sent = forward.call_args.kwargs
     assert sent["target"] == (
         "https://aiplatform.googleapis.com/v1beta1/projects/dummy-project/locations/global/"
-        "publishers/google/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse"
+        f"publishers/google/models/{model}:streamGenerateContent?alt=sse"
     )
     assert sent["is_streaming_request"] is True
     # Use the forwarding layer's real merge rule, including incoming key headers.

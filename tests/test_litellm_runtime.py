@@ -761,8 +761,11 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 @pytest.mark.parametrize(
     "vertex,upstream_keys", [(False, True), (True, False), (True, True)]
 )
+@pytest.mark.parametrize(
+    "model", ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
+)
 async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
-    monkeypatch, vertex, upstream_keys
+    monkeypatch, vertex, upstream_keys, model
 ):
     """Guards PR #942/#1030 and Vertex auth regression in commit 28b82e33."""
 
@@ -797,7 +800,7 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
     updated, provider_runtime = await ensure_litellm_runtime(
         agent="gemini",
         agent_env=agent_env,
-        model="google-vertex/gemini-3.1-flash-lite" if vertex else "gemini-2.5-flash",
+        model=f"google-vertex/{model}" if vertex else model,
         runtime=None,
         environment="docker",
         usage_tracking="required",
