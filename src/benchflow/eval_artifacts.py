@@ -11,7 +11,7 @@ from typing import Any, Literal
 from benchflow._utils.task_authoring import task_digest
 from benchflow._utils.text import truncate_end
 from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
-from benchflow.trajectories.export_prime_sft import (
+from benchflow.trajectories.message_contract import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
 )

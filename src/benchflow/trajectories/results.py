@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
-from benchflow.trajectories.export_prime_sft import (
+from benchflow.trajectories.message_contract import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,

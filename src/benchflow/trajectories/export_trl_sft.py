@@ -20,6 +20,8 @@ from benchflow.trajectories.export_prime_sft import (
     _result_training_skip_reason,
     _reward_from_result,
     _row_reward,
+)
+from benchflow.trajectories.message_contract import (
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
     validate_prime_sft_row,

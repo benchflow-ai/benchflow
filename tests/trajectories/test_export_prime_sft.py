@@ -14,9 +14,9 @@ from benchflow.trajectories.export_prime_sft import (
     export_prime_sft_jsonl,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
-    normalize_provider_exchange,
     validate_prime_sft_jsonl,
 )
+from benchflow.trajectories.message_contract import normalize_provider_exchange
 
 
 @pytest.mark.parametrize("second_signature", ["", "other-signature"])
