@@ -1399,6 +1399,7 @@ _PROVIDER_ENDPOINT_ENV_NAMES = frozenset(
         "ANTHROPIC_BEDROCK_BASE_URL",
         "GEMINI_BASE_URL",
         "GOOGLE_GEMINI_BASE_URL",
+        "GOOGLE_VERTEX_BASE_URL",
     }
 )
 
@@ -1538,10 +1539,14 @@ def _wire_litellm_agent_env(
         # Gemini CLI speaks Google's native GenerateContent protocol. Use
         # LiteLLM's byte-preserving Gemini pass-through route: its translated
         # GenerateContent route can corrupt streamed, multi-tool responses.
-        # The gateway authenticates the reviewer with ``master_key`` and swaps
-        # in the upstream Gemini key server-side.
+        # Vertex keeps its CLI auth mode and uses the ADC-backed pass-through;
+        # its gateway route accepts bearer auth rather than x-goog-api-key.
         updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
-        updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
+        if route.provider_name == "google-vertex":
+            updated["GOOGLE_VERTEX_BASE_URL"] = f"{base_url.rstrip('/')}/vertex_ai"
+            updated["GEMINI_API_KEY_AUTH_MECHANISM"] = "bearer"
+        else:
+            updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
         # Gemini CLI recognizes several equivalent credential names, with the
         # selected alias varying by model family and CLI release. Point every
         # accepted alias at the gateway so Gemma cannot inherit a real Google
