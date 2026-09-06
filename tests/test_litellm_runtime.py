@@ -819,3 +819,74 @@ async def test_oracle_does_not_start_litellm(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
+
+
+@pytest.mark.parametrize("provided", [None, "source", "alias"])
+def test_proxy_alias_capabilities_preserve_caller_metadata(monkeypatch, provided):
+    """Guards PR #1093: proxy aliases retain reasoning and output limits."""
+    import litellm
+
+    route = runtime_mod.resolve_litellm_route("openai/gpt-5.5", {})
+    calls = []
+
+    def model_info(model):
+        calls.append(model)
+        return {
+            "supports_reasoning": True,
+            "max_output_tokens": 128000,
+            "max_input_tokens": 1050000,
+            "supports_vision": True,
+            "supported_openai_params": ["reasoning_effort"],
+        }
+
+    monkeypatch.setattr(litellm, "get_model_info", model_info)
+    env = {}
+    if provided:
+        env["BENCHFLOW_PROVIDER_MODELS"] = json.dumps(
+            [
+                {
+                    "id": route.model_alias if provided == "alias" else "gpt-5.5",
+                    "name": "caller",
+                    "reasoning": False,
+                    "maxTokens": 123,
+                }
+            ]
+        )
+    updated = runtime_mod._wire_litellm_agent_env(
+        agent="external-openclaw",
+        agent_env=env,
+        route=route,
+        base_url="http://proxy.test",
+        master_key="test-key",
+    )
+    alias = next(
+        m
+        for m in json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
+        if m["id"] == route.model_alias
+    )
+    assert alias["reasoning"] is (not provided)
+    assert alias["maxTokens"] == (123 if provided else 128000)
+    assert calls == ([] if provided else [route.upstream_model])
+    if not provided:
+        assert alias["contextWindow"] == 1050000
+        assert alias["input"] == ["text", "image"]
+        assert alias["compat"] == {"supportsReasoningEffort": True}
+    else:
+        assert "compat" not in alias
+
+
+@pytest.mark.parametrize(
+    "info", [None, {"supports_reasoning": None, "max_output_tokens": -1}]
+)
+def test_unknown_proxy_metadata_keeps_existing_behavior(monkeypatch, info):
+    """Guards PR #1093: absent catalog metadata does not block custom models."""
+    import litellm
+
+    def model_info(model):
+        if info is None:
+            raise Exception("This model isn't mapped yet")
+        return info
+
+    monkeypatch.setattr(litellm, "get_model_info", model_info)
+    route = runtime_mod.resolve_litellm_route("openai/custom-model", {})
+    assert runtime_mod._provider_models_for_proxy_alias(raw=None, route=route) is None

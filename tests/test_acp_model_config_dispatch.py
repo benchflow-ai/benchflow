@@ -219,7 +219,9 @@ async def test_effort_without_effort_config_id_fails_closed(tmp_path):
     """reasoning_effort requested for an agent that declares no effort config
     option must fail closed rather than silently drop the effort."""
     mock_acp = _make_mocks(config_options=[])
-    with pytest.raises(RuntimeError, match="does not declare an ACP effort"):
+    with pytest.raises(
+        RuntimeError, match="does not declare or advertise an ACP effort"
+    ):
         await _connect(
             mock_acp,
             agent="test-agent",
@@ -269,3 +271,31 @@ async def test_env_owned_model_skips_advertised_model_option(tmp_path):
         AGENTS.pop("env-owned-probe", None)
         AGENT_INSTALLERS.pop("env-owned-probe", None)
         AGENT_LAUNCH.pop("env-owned-probe", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", ["", "custom-effort"])
+async def test_effort_advertisement_and_registry_override(
+    tmp_path, monkeypatch, declared
+):
+    """Guards PR #1093 external effort discovery and registry precedence."""
+    from types import SimpleNamespace
+
+    from benchflow.acp import runtime
+
+    monkeypatch.setitem(
+        runtime.AGENTS,
+        "external-test",
+        SimpleNamespace(
+            acp_effort_config_id=declared,
+        ),
+    )
+    mock_acp = _make_mocks(config_options=[{"id": "effort"}, {"id": "custom-effort"}])
+    await _connect(
+        mock_acp,
+        agent="external-test",
+        model=None,
+        tmp_path=tmp_path,
+        reasoning_effort="low",
+    )
+    mock_acp.set_config_option.assert_awaited_once_with(declared or "effort", "low")

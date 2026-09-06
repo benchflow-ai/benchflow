@@ -1347,39 +1347,52 @@ def _provider_models_for_proxy_alias(
     raw: str | None,
     route: LiteLLMRoute,
 ) -> str | None:
-    """Mirror model metadata onto the LiteLLM alias Pi sees in proxy mode.
-
-    Pi resolves ``maxTokens``/``contextWindow`` by looking up the model it is
-    told to use (the LiteLLM alias) in ``BENCHFLOW_PROVIDER_MODELS``. Without an
-    alias entry that metadata is lost once traffic is routed through the proxy,
-    so clone the source entry under the alias id/name.
-    """
-    if not raw:
-        return None
+    """Preserve provider metadata when agents see a proxy alias instead of its ID."""
     try:
-        entries = json.loads(raw)
+        entries = json.loads(raw) if raw else []
     except json.JSONDecodeError:
         return None
     if not isinstance(entries, list):
         return None
+    if any(_provider_model_id(entry) == route.model_alias for entry in entries):
+        return raw
     wanted = {
         route.requested_model,
         strip_provider_prefix(route.requested_model),
         route.upstream_model,
         strip_provider_prefix(route.upstream_model),
     }
-    for entry in entries:
-        entry_id = _provider_model_id(entry)
-        if entry_id not in wanted:
-            continue
-        alias_entry = dict(cast("Mapping[str, Any]", entry))
-        alias_entry["id"] = route.model_alias
-        alias_entry["name"] = route.model_alias
-        merged = list(entries)
-        if not any(_provider_model_id(item) == route.model_alias for item in merged):
-            merged.append(alias_entry)
-        return json.dumps(merged)
-    return None
+    source = next(
+        (entry for entry in entries if _provider_model_id(entry) in wanted), None
+    )
+    if source is None:
+        from litellm import get_model_info
+
+        try:
+            info = get_model_info(route.upstream_model)
+        except Exception as exc:
+            # LiteLLM raises plain Exception for unmapped models. Metadata is
+            # optional; retain existing behavior when its catalog cannot resolve.
+            logger.debug("Proxy model metadata unavailable: %s", type(exc).__name__)
+            return None
+        source = {}
+        if "reasoning_effort" in (info.get("supported_openai_params") or []):
+            source["compat"] = {"supportsReasoningEffort": True}
+        if isinstance(info.get("supports_reasoning"), bool):
+            source["reasoning"] = info["supports_reasoning"]
+        for target, key in (
+            ("maxTokens", "max_output_tokens"),
+            ("contextWindow", "max_input_tokens"),
+        ):
+            value = info.get(key)
+            if type(value) is int and value > 0:
+                source[target] = value
+        if not source:
+            return None
+        source["input"] = ["text", "image"] if info.get("supports_vision") else ["text"]
+    alias_entry = dict(source)
+    alias_entry.update(id=route.model_alias, name=route.model_alias)
+    return json.dumps([*entries, alias_entry])
 
 
 # Caller-supplied provider endpoints. If any of these survive in the agent env,
@@ -1494,6 +1507,11 @@ def _wire_litellm_agent_env(
             LITELLM_MASTER_KEY_ENV: master_key,
         }
     )
+    alias_models = _provider_models_for_proxy_alias(
+        raw=agent_env.get("BENCHFLOW_PROVIDER_MODELS"), route=route
+    )
+    if alias_models:
+        updated["BENCHFLOW_PROVIDER_MODELS"] = alias_models
     # Generic model-via-env: an agent whose registration maps
     # BENCHFLOW_PROVIDER_MODEL into an agent-native env var AND declares
     # supports_acp_set_model=False states, in data, that launch/env config owns
@@ -1571,12 +1589,6 @@ def _wire_litellm_agent_env(
         updated["BENCHFLOW_PROVIDER_API_KEY"] = master_key
         updated["BENCHFLOW_PROVIDER_MODEL"] = route.model_alias
         updated["BENCHFLOW_PROVIDER_NAME"] = "litellm"
-        alias_models = _provider_models_for_proxy_alias(
-            raw=agent_env.get("BENCHFLOW_PROVIDER_MODELS"),
-            route=route,
-        )
-        if alias_models:
-            updated["BENCHFLOW_PROVIDER_MODELS"] = alias_models
         return updated
 
     agent_cfg = AGENTS.get(agent)

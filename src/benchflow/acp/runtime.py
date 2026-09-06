@@ -571,16 +571,19 @@ async def _configure_acp_session(
             f"Reasoning effort {reasoning_effort!r} applied with model selection for {agent}"
         )
         return
-    if not agent_cfg or not agent_cfg.acp_effort_config_id:
+    effort_config_id = getattr(agent_cfg, "acp_effort_config_id", "") or (
+        "effort" if "effort" in _session_config_option_ids(session) else None
+    )
+    if not effort_config_id:
         raise RuntimeError(
             f"reasoning_effort={reasoning_effort!r} was requested for agent "
-            f"{agent!r}, but that agent does not declare an ACP effort config option"
+            f"{agent!r}, but that agent does not declare or advertise an ACP effort config option"
         )
     await _set_acp_config_option(
         acp_client,
         session,
         agent=agent,
-        config_id=agent_cfg.acp_effort_config_id,
+        config_id=effort_config_id,
         value=reasoning_effort,
         label="reasoning effort",
     )
