@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -266,13 +267,25 @@ def test_apply_web_policy_noop_when_not_disallowed():
 
 def _run_setup_cmd(agent_name: str, tmp_path) -> dict:
     """Execute an agent's disallow_web_tools_setup_cmd and return the JSON it wrote."""
-    from benchflow.agents.registry import AGENTS
+    from benchflow.agents.registry import _BENCHFLOW_NODE_PREFIX, AGENTS
 
     cfg = AGENTS[agent_name]
     assert cfg.disallow_web_tools_setup_cmd, f"{agent_name} has no setup_cmd"
 
+    # JSON-merge policies target the Node runtime BenchFlow provisions inside the
+    # sandbox (#1047); a dev host has no such prefix, so retarget the local one.
+    # This is what kept the old python3 dependency invisible to these tests, so
+    # coverage on a real task image lives in the container test below.
+    cmd = cfg.disallow_web_tools_setup_cmd
+    sandbox_node = f"{_BENCHFLOW_NODE_PREFIX}/bin/node"
+    if sandbox_node in cmd:
+        host_node = shutil.which("node")
+        if host_node is None:
+            pytest.skip("no node runtime on PATH to exercise the JSON-merge policy")
+        cmd = cmd.replace(sandbox_node, host_node)
+
     result = subprocess.run(
-        ["bash", "-c", cfg.disallow_web_tools_setup_cmd],
+        ["bash", "-c", cmd],
         env={"BENCHFLOW_AGENT_HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
         capture_output=True,
         text=True,
@@ -424,3 +437,103 @@ def test_task_toml_missing_allow_internet_defaults_to_allowed(tmp_path):
 
     task = Task(task_dir)
     assert _task_disallows_internet(task) is False
+
+
+def test_json_merge_policies_do_not_borrow_task_image_interpreters():
+    """Policy setup runs in the task image, which owes BenchFlow no runtime.
+
+    The JSON merge used to shell out to ``python3``; a Python-free task image
+    with ``allow_internet = false`` then aborted at exit 127 before ACP launch
+    (#1047).
+    """
+    from benchflow.agents.registry import _BENCHFLOW_NODE_PREFIX, AGENTS
+
+    for agent in ("claude-agent-acp", "gemini", "opencode", "mimo"):
+        cmd = AGENTS[agent].disallow_web_tools_setup_cmd
+        assert "python3" not in cmd, agent
+        assert cmd.startswith(f"{_BENCHFLOW_NODE_PREFIX}/bin/node "), agent
+
+
+def test_node_backed_policies_are_guaranteed_by_their_own_install():
+    """Whoever depends on the Node runtime must also be the one installing it.
+
+    Pins the ownership boundary #1047 is about, rather than today's four
+    agents: a policy may only reach for the Node prefix if that agent's own
+    install_cmd provisions it.
+    """
+    from benchflow.agents.registry import _BENCHFLOW_NODE_PREFIX, AGENTS
+
+    for name, cfg in AGENTS.items():
+        cmd = cfg.disallow_web_tools_setup_cmd or ""
+        if f"{_BENCHFLOW_NODE_PREFIX}/bin/node" not in cmd:
+            continue
+        assert _BENCHFLOW_NODE_PREFIX in (cfg.install_cmd or ""), (
+            f"{name} runs its no-web policy on the BenchFlow Node runtime but "
+            "its install does not provision one"
+        )
+
+
+@pytest.mark.skipif(
+    not shutil.which("docker"), reason="needs a Docker daemon to build the task image"
+)
+async def test_no_web_policies_apply_in_a_python_free_task_image():
+    """End-to-end guard for #1047 on an image that ships no Python at all.
+
+    Provisions the agent runtime first — exactly what the JS installers do
+    before policy application — then applies each policy twice, so the run
+    covers the merge content and the idempotence it promises.
+    """
+    from benchflow.agents.install import apply_web_tool_policy
+    from benchflow.agents.registry import _NODE_INSTALL, AGENTS
+
+    expected = {
+        "claude-agent-acp": (
+            "/root/.claude/settings.json",
+            {"permissions": {"deny": ["WebSearch", "WebFetch"]}},
+        ),
+        "gemini": (
+            "/root/.gemini/settings.json",
+            {"tools": {"exclude": ["google_web_search", "web_fetch"]}},
+        ),
+        "opencode": (
+            "/root/.config/opencode/opencode.json",
+            {"tools": {"webfetch": False}},
+        ),
+        "mimo": (
+            "/root/.config/mimocode/mimocode.json",
+            {"tools": {"webfetch": False}},
+        ),
+    }
+
+    def sh(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(args, capture_output=True, text=True, timeout=900)
+
+    container = subprocess.check_output(
+        ["docker", "run", "--detach", "--rm", "ubuntu:24.04", "sleep", "infinity"],
+        text=True,
+    ).strip()
+
+    class ContainerEnv:
+        async def exec(self, command: str, *, timeout_sec=None, **_kwargs):
+            done = sh("docker", "exec", container, "bash", "-lc", command)
+            return SimpleNamespace(
+                return_code=done.returncode, stdout=done.stdout, stderr=done.stderr
+            )
+
+    try:
+        probe = sh("docker", "exec", container, "bash", "-lc", "command -v python3")
+        assert probe.returncode != 0, "base image unexpectedly ships python3"
+
+        provision = sh("docker", "exec", container, "bash", "-lc", _NODE_INSTALL)
+        assert provision.returncode == 0, provision.stderr[-400:]
+
+        for agent, (path, want) in expected.items():
+            for _ in range(2):
+                await apply_web_tool_policy(
+                    ContainerEnv(), agent, AGENTS[agent], "/root", disallow=True
+                )
+            written = sh("docker", "exec", container, "cat", path)
+            assert written.returncode == 0, f"{agent}: {path} not written"
+            assert json.loads(written.stdout) == want, agent
+    finally:
+        sh("docker", "rm", "--force", container)
