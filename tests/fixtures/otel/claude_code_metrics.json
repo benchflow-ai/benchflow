@@ -1,0 +1,324 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "amd64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "7.0.0-1011-gcp"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.263"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code",
+      "version": "2.1.263"
+     },
+     "metrics": [
+      {
+       "name": "claude_code.session.count",
+       "description": "Count of CLI sessions started",
+       "unit": "",
+       "sum": {
+        "aggregationTemporality": 1,
+        "isMonotonic": true,
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "<user-id-redacted>"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "abfe0a1e-b5ad-49c9-9fcd-bebdd3b6f19c"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "tmux"
+            }
+           },
+           {
+            "key": "start_type",
+            "value": {
+             "stringValue": "fresh"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1788803838118000000",
+          "timeUnixNano": "1788803840107000000",
+          "asDouble": 1
+         }
+        ]
+       }
+      },
+      {
+       "name": "claude_code.cost.usage",
+       "description": "Cost of the Claude Code session",
+       "unit": "USD",
+       "sum": {
+        "aggregationTemporality": 1,
+        "isMonotonic": true,
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "<user-id-redacted>"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "abfe0a1e-b5ad-49c9-9fcd-bebdd3b6f19c"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "tmux"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "auxiliary"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1788803839146000000",
+          "timeUnixNano": "1788803840107000000",
+          "asDouble": 0.000939
+         }
+        ]
+       }
+      },
+      {
+       "name": "claude_code.token.usage",
+       "description": "Number of tokens used",
+       "unit": "tokens",
+       "sum": {
+        "aggregationTemporality": 1,
+        "isMonotonic": true,
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "<user-id-redacted>"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "abfe0a1e-b5ad-49c9-9fcd-bebdd3b6f19c"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "tmux"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "auxiliary"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "input"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1788803839146000000",
+          "timeUnixNano": "1788803840107000000",
+          "asDouble": 899
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "<user-id-redacted>"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "abfe0a1e-b5ad-49c9-9fcd-bebdd3b6f19c"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "tmux"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "auxiliary"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "output"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1788803839146000000",
+          "timeUnixNano": "1788803840107000000",
+          "asDouble": 8
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "<user-id-redacted>"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "abfe0a1e-b5ad-49c9-9fcd-bebdd3b6f19c"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "tmux"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "auxiliary"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "cacheRead"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1788803839147000000",
+          "timeUnixNano": "1788803840107000000",
+          "asDouble": 0
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "<user-id-redacted>"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "abfe0a1e-b5ad-49c9-9fcd-bebdd3b6f19c"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "tmux"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "auxiliary"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "cacheCreation"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1788803839147000000",
+          "timeUnixNano": "1788803840107000000",
+          "asDouble": 0
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
