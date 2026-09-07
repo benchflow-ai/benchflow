@@ -47,6 +47,7 @@ from benchflow.cli._shared import (
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
+from benchflow.cli.cost import register_cost
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
 from benchflow.cli.eval_lift import register_eval_lift
@@ -1314,6 +1315,7 @@ register_traj(app)
 register_train(app)
 register_hub(app)
 register_agent(app)
+register_cost(app)
 register_adopt_deprecated(app)
 register_sandbox(app)
 register_environment(app)

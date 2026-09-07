@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+- **Post-hoc cost from recorded usage (`bench cost`).** New `benchflow/pricing.py`
+  holds a version-stamped table of official list prices per model (input /
+  output / cache read / cache write 5m+1h, USD per MTok) and
+  `benchflow/cost.py` recomputes `total_cost_usd` for any rollout dir from
+  per-turn usage — `trajectory/llm_trajectory.jsonl` (LiteLLM), the new
+  `trajectory/otel_usage.jsonl` (OAuth capture), or the `result.json`
+  aggregate — with `--write` (cost_recompute.json) and `--update-result`
+  (rewrites `final_metrics.total_cost_usd`, keeps `agent_result.cost_history`).
+  A second table reproduces the prices LiteLLM applied in the FrontierPhysics
+  2026-09 run, which charged cache writes at 0.25x input instead of 1.25x.
+- **OAuth / subscription-mode usage capture.** `benchflow/otel_capture.py`
+  provides an OTLP/HTTP JSON receiver that turns Claude Code's
+  `claude_code.api_request` telemetry (model, input / output / cache-read /
+  cache-creation tokens, duration, request id, query source) into
+  `trajectory/otel_usage.jsonl`, plus `agent_env()` with the environment the
+  agent needs (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_LOGS_EXPORTER=otlp`,
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, endpoint). Wiring it into `Rollout`
+  is a follow-up.
+
 ## 0.7.6 — 2026-09-04
 
 ### Added
