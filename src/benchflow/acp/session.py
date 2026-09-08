@@ -468,17 +468,9 @@ class ACPSession:
                 content = update.get("content")
                 if content:
                     record.content.extend(content)
-                if "status" in update and record.status not in {
-                    ToolCallStatus.COMPLETED,
-                    ToolCallStatus.FAILED,
-                    ToolCallStatus.CANCELLED,
-                }:
-                    try:
-                        record.update_status(ToolCallStatus(update["status"]))
-                    except ValueError:
-                        logger.warning(
-                            f"Unknown tool call status: {update.get('status')}"
-                        )
+                # This initial notification arrived after at least one update.
+                # Preserve the newer update's status instead of moving the
+                # lifecycle backwards (for example, in_progress -> pending).
             else:
                 record = ToolCallRecord(
                     tool_call_id=tc_id,

@@ -323,6 +323,28 @@ class TestACPSession:
             "tool_call",
         ]
 
+    def test_delayed_tool_call_does_not_regress_update_status(self):
+        """Guards PR #1111 against regressing a newer out-of-order status."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "in_progress",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Delayed initial call",
+                "kind": "execute",
+                "status": "pending",
+            }
+        )
+
+        assert session.tool_calls[0].status == ToolCallStatus.IN_PROGRESS
+
     def test_delayed_tool_call_preserves_skill_inferred_from_update(self):
         """Guards PR #1111: delayed initial calls preserve inferred skill kind."""
         session = ACPSession("test-session")
