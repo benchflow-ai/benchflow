@@ -160,6 +160,46 @@ def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
     _skill_catalog_gate_passed = True
 
 
+def _is_server_web_tool(tool: Any) -> bool:
+    # Recognize provider-executed web tools without matching client functions.
+    if not isinstance(tool, dict):
+        return False
+    tool_type = str(tool.get("type") or "").lower().replace("-", "_")
+    if tool_type.startswith(("web_search", "web_fetch", "url_context")):
+        return True
+    normalized_keys = {str(key).lower().replace("-", "_") for key in tool}
+    return bool(
+        normalized_keys
+        & {
+            "google_search",
+            "google_search_retrieval",
+            "web_search",
+            "web_search_preview",
+            "url_context",
+        }
+    )
+
+
+def _remove_server_web_fields(data: dict[str, Any]) -> dict[str, Any]:
+    # Strip confused-deputy web controls from requests to the model proxy.
+    forbidden = {
+        "google_search",
+        "google_search_retrieval",
+        "web_search",
+        "web_search_options",
+        "web_search_preview",
+        "url_context",
+    }
+    cleaned = dict(data)
+    for key in list(cleaned):
+        if str(key).lower().replace("-", "_") in forbidden:
+            cleaned.pop(key, None)
+    tools = cleaned.get("tools")
+    if isinstance(tools, list):
+        cleaned["tools"] = [tool for tool in tools if not _is_server_web_tool(tool)]
+    return cleaned
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -314,6 +354,19 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept
+
+        # In no-web / filtered-research runs, the agent can reach only this
+        # loopback model proxy. Do not let that proxy become a confused deputy:
+        # strip provider-executed search/URL-context tools even when a curious
+        # agent crafts the request directly instead of using its harness. Client
+        # function tools (shell/file/MCP calls) remain available.
+        if os.environ.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1":
+            web_cleaned = _remove_server_web_fields(cleaned)
+            extra_body = web_cleaned.get("extra_body")
+            if isinstance(extra_body, dict):
+                web_cleaned["extra_body"] = _remove_server_web_fields(extra_body)
+            if web_cleaned != cleaned:
+                cleaned = web_cleaned
 
         # Forward ``reasoning_effort`` VERBATIM on deepseek routes. LiteLLM's
         # deepseek transform consumes the top-level field (it maps it into its

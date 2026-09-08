@@ -451,6 +451,16 @@ def eval_run(
             help="Disable web tools for the self-generated run",
         ),
     ] = False,
+    research_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--research-policy",
+            help=(
+                "Private YAML policy for filtered web research. Docker only; "
+                "the policy contents are not copied into run artifacts."
+            ),
+        ),
+    ] = None,
     loop_strategy: Annotated[
         str | None,
         typer.Option(
@@ -658,6 +668,7 @@ def eval_run(
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,
         self_gen_no_internet=self_gen_no_internet,
+        research_policy=research_policy,
         loop_strategy=loop_strategy,
         agent_env=_parse_agent_env(agent_env),
         include=include,
@@ -966,6 +977,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # run-config file was a no-op.
         if plan.eval_config_override is not None:
             j._config.config_override = plan.eval_config_override
+        if req.research_policy is not None:
+            j._config.research_policy_path = str(req.research_policy.resolve())
     except subprocess.CalledProcessError as e:
         # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
         # as a raw traceback — it is not a config-parse error, so give it its own
