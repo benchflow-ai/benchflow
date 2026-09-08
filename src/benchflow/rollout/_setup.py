@@ -132,19 +132,6 @@ _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 # Shell operators that separate commands; the agent invocation is the final
 # command in a ``setup && … && <agent>`` launch (openhands).
 _SHELL_SEP_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
-_SHELL_CONTROL_TOKENS = {
-    "command",
-    "do",
-    "done",
-    "else",
-    "env",
-    "exec",
-    "export",
-    "fi",
-    "if",
-    "nohup",
-    "then",
-}
 
 
 def _is_generic_interpreter(basename: str) -> bool:
@@ -189,30 +176,13 @@ def _agent_process_kill_pattern(agent_launch: str) -> str | None:
         basename = PurePosixPath(token).name
         if not basename:
             continue
-        if basename in _SHELL_CONTROL_TOKENS:
-            continue
         if _is_generic_interpreter(basename):  # too broad to pkill on
             after_runner = basename in _PACKAGE_RUNNERS
             continue
         if after_runner and basename in _RUNNER_SUBCOMMANDS:  # `uv run` etc.
             after_runner = False
             continue
-        # Keep the regex from matching the pkill/pgrep command that embeds it.
-        # ``[c]laude`` still matches ``claude`` in the target argv, while the
-        # literal regex text in the command line contains ``[c]`` instead.
-        # Agent binaries always carry at least one word character; refuse an
-        # unusable token rather than producing a self-matching pattern.
-        first_word = next(
-            (i for i, char in enumerate(basename) if char.isalnum()), None
-        )
-        if first_word is None:
-            return None
-        escaped = (
-            re.escape(basename[:first_word])
-            + f"[{basename[first_word]}]"
-            + re.escape(basename[first_word + 1 :])
-        )
-        return rf"(^|[ /]){escaped}( |$)"
+        return rf"(^|[ /]){re.escape(basename)}( |$)"
     return None
 
 
