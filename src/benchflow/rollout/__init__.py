@@ -629,7 +629,9 @@ class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
     def __init__(self, config: RolloutConfig) -> None:
-        self._planes = config.planes or default_rollout_planes()
+        self._planes = (
+            config.planes if config.planes is not None else default_rollout_planes()
+        )
         # Activate Docker DinD compatibility shim on first rollout
         # construction (idempotent). Keeps `import benchflow.rollout`
         # side-effect free with respect to sandbox/provider behavior.
