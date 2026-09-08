@@ -7,7 +7,7 @@ independently testable private methods.
 import json
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -704,6 +704,37 @@ class TestRunWiring:
         assert result.rewards == {"reward": 1.0}
         assert seen["config"].sandbox_setup_timeout == 77
         assert seen["config"].task_path == tmp_path
+
+    @pytest.mark.parametrize(
+        "custom_planes", [None, MagicMock()], ids=["default", "custom"]
+    )
+    @pytest.mark.asyncio
+    async def test_run_forwards_planes_to_rollout_config(
+        self, monkeypatch, tmp_path, custom_planes
+    ):
+        """Guards the SDK custom-planes PR, including default composition."""
+        from benchflow.models import RunResult
+        from benchflow.rollout import Rollout
+        from benchflow.sdk import SDK
+
+        seen = {}
+
+        async def fake_create(config):
+            seen["config"] = config
+            trial = Rollout(config)
+            trial.run = AsyncMock(
+                return_value=RunResult(task_name="task-1", rewards={"reward": 1.0})
+            )
+            seen["trial"] = trial
+            return trial
+
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+
+        await SDK().run(task_path=tmp_path, planes=custom_planes)
+
+        assert seen["config"].planes is custom_planes
+        if custom_planes is not None:
+            assert seen["trial"]._planes is custom_planes
 
     @pytest.mark.asyncio
     async def test_run_forwards_source_provenance_to_rollout_config(
