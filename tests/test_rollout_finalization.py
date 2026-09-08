@@ -33,7 +33,7 @@ def _rollout_for_verify(tmp_path: Path) -> Rollout:
 async def test_hard_verify_disconnects_before_publishing_trajectory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards rollout-finalization PR: hard verify must quiesce agent first."""
+    """Guards PR #1109: hard verify must quiesce the agent first."""
     rollout = _rollout_for_verify(tmp_path)
     calls: list[str] = []
     rollout.disconnect.side_effect = lambda **kwargs: calls.append("disconnect")
@@ -57,7 +57,7 @@ async def test_hard_verify_disconnects_before_publishing_trajectory(
 async def test_soft_verify_does_not_disconnect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards rollout-finalization PR: intermediate verification stays connected."""
+    """Guards PR #1109: intermediate verification stays connected."""
     rollout = _rollout_for_verify(tmp_path)
     rollout._rollout_paths.verifier_dir = tmp_path / "verifier"
     rollout._agent_cwd = "/app"
@@ -126,6 +126,7 @@ def _rollout_for_cleanup(tmp_path: Path, disconnect_error: BaseException) -> Rol
 async def test_cleanup_finishes_teardown_and_preserves_disconnect_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
 ) -> None:
+    """Guards PR #1109: teardown continues without losing disconnect failure."""
     rollout = _rollout_for_cleanup(tmp_path, failure)
     monkeypatch.setattr(
         rollout_module, "_provider_failure_from_runtime", lambda runtime: None
@@ -151,7 +152,7 @@ async def test_cleanup_finishes_teardown_and_preserves_disconnect_failure(
 async def test_cleanup_failure_does_not_replace_active_primary_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards rollout-finalization PR: cleanup errors stay secondary."""
+    """Guards PR #1109: cleanup errors stay secondary to an active failure."""
     rollout = _rollout_for_cleanup(tmp_path, RuntimeError("disconnect failed"))
     monkeypatch.setattr(
         rollout_module, "_provider_failure_from_runtime", lambda runtime: None
