@@ -707,6 +707,7 @@ class TestRunWiring:
 
     @pytest.mark.asyncio
     async def test_run_forwards_false_valued_custom_planes(self, monkeypatch, tmp_path):
+        """Guards PR #1110: valid false-valued plane objects retain identity."""
         from benchflow.models import RunResult
         from benchflow.rollout import Rollout
         from benchflow.sdk import SDK
