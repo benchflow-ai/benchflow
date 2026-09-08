@@ -226,7 +226,7 @@ class TestACPSession:
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
 
     def test_tool_provenance_merges_only_documented_safe_metadata(self):
-        """Guards acp-tool-provenance against losing origin or retaining payloads."""
+        """Guards PR #1111 against losing origin or retaining metadata payloads."""
         session = ACPSession("test-session")
         initial_meta = {
             "claudeCode": {
@@ -263,7 +263,7 @@ class TestACPSession:
         }
 
     def test_delayed_tool_call_reconciles_update_fallback_in_place(self):
-        """Guards acp-tool-provenance against duplicate out-of-order records."""
+        """Guards PR #1111 against duplicate out-of-order tool records."""
         session = ACPSession("test-session")
         session.record_user_prompt("search")
         session.handle_update(
@@ -324,6 +324,7 @@ class TestACPSession:
         ]
 
     def test_delayed_tool_call_preserves_skill_inferred_from_update(self):
+        """Guards PR #1111: delayed initial calls preserve inferred skill kind."""
         session = ACPSession("test-session")
         session.handle_update(
             {

@@ -17,7 +17,7 @@ from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
 
 def test_acp_tool_provenance_is_additive_and_absent_by_default():
-    """Guards acp-tool-provenance in final trajectory capture."""
+    """Guards PR #1111 provenance shape in final trajectory capture."""
     session = ACPSession("test-session")
     session.handle_update(
         {
