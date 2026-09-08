@@ -879,3 +879,24 @@ def test_agent_kill_pattern_targets_agent_not_python_services(launch, agent_argv
 def test_agent_kill_pattern_empty_launch_is_none():
     assert _agent_process_kill_pattern("") is None
     assert _agent_process_kill_pattern("   ") is None
+
+
+def test_agent_kill_pattern_does_not_match_its_own_regex_text():
+    """Guards rollout-finalization PR against pkill/pgrep wrapper self-matches."""
+    pattern = _agent_process_kill_pattern("/opt/benchflow/bin/claude-agent-acp")
+
+    assert pattern is not None
+    assert re.search(pattern, "claude-agent-acp")
+    assert not re.search(pattern, f"pgrep -f {pattern}")
+
+
+def test_agent_kill_pattern_skips_exec_in_registered_codex_launch():
+    """Guards rollout-finalization PR against selecting shell control tokens."""
+    pattern = _agent_process_kill_pattern(AGENTS["codex-acp"].launch_cmd)
+    representative_argv = (
+        "/opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/codex-acp --stdio"
+    )
+
+    assert pattern is not None
+    assert "[e]xec" not in pattern
+    assert re.search(pattern, representative_argv)

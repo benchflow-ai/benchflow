@@ -50,6 +50,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import tarfile
 import tempfile
 from dataclasses import replace
@@ -1365,8 +1366,23 @@ class Rollout:
             TrajectoryWriter(traj_path), prior
         )
 
-    async def disconnect(self) -> None:
-        """Close the ACP client and clean up agent process, keeping the environment alive."""
+    async def disconnect(self, *, require_terminated: bool = False) -> None:
+        """Close the agent session while keeping the environment alive.
+
+        Between scenes, teardown remains best effort. Final verification sets
+        ``require_terminated`` so scoring cannot begin without evidence that
+        ACP closed and the agent process is absent.
+        """
+        managed_agent_seen = bool(
+            getattr(self, "_acp_client", None)
+            or getattr(self, "_session", None)
+            or getattr(self, "_agent_name", "")
+        )
+        skip_agent_install = bool(
+            getattr(getattr(self, "_config", None), "skip_agent_install", False)
+        )
+        no_managed_agent_started = skip_agent_install and not managed_agent_seen
+        termination_error: Exception | None = None
         if getattr(self, "_is_session_factory", False):
             self._capture_partial_session_factory_trajectory()
         else:
@@ -1379,13 +1395,44 @@ class Rollout:
                 await self._acp_client.close()
             except Exception as e:
                 logger.warning(f"ACP client close failed: {e}")
+                if require_terminated:
+                    termination_error = RuntimeError("ACP client close failed")
             self._acp_client = None
         self._session = None
         self._session_adapter = None
         self._is_session_factory = False
         # Kill any lingering agent processes to prevent context bleed between scenes
         agent_pattern = _agent_process_kill_pattern(self._agent_launch)
-        if self._env and agent_pattern:
+        if require_terminated and no_managed_agent_started:
+            pass
+        elif require_terminated and (not self._env or not agent_pattern):
+            termination_error = termination_error or RuntimeError(
+                "Cannot establish agent termination: sandbox or process pattern unavailable"
+            )
+        elif self._env and agent_pattern and require_terminated:
+            pattern = shlex.quote(agent_pattern)
+            command = (
+                f"pkill -f {pattern}; rc=$?; "
+                'if [ "$rc" -gt 1 ]; then exit "$rc"; fi; '
+                "i=0; while true; do "
+                f"pgrep -f {pattern} >/dev/null 2>&1; rc=$?; "
+                'if [ "$rc" -eq 1 ]; then exit 0; fi; '
+                'if [ "$rc" -ne 0 ]; then exit "$rc"; fi; '
+                'if [ "$i" -ge 20 ]; then exit 1; fi; '
+                "i=$((i + 1)); sleep 0.1; done"
+            )
+            try:
+                result = await self._env.exec(command, timeout_sec=10)
+                if result.return_code != 0:
+                    raise RuntimeError(
+                        "Agent process termination could not be established"
+                    )
+            except Exception as e:
+                logger.warning(f"Agent process termination failed: {e}")
+                termination_error = termination_error or RuntimeError(
+                    "Agent process termination could not be established"
+                )
+        elif self._env and agent_pattern:
             with contextlib.suppress(Exception):
                 await self._env.exec(
                     f"pkill -f {shlex.quote(agent_pattern)} || true",
@@ -1404,6 +1451,8 @@ class Rollout:
         # the same terminal phases.
         if getattr(self, "_phase", None) not in _TERMINAL_PHASES:
             self._phase = "installed"
+        if termination_error is not None:
+            raise termination_error
 
     def on_ask_user(self, handler: Any) -> None:
         """Register the agent-initiated ``session/request_permission`` handler.
@@ -1823,11 +1872,20 @@ class Rollout:
         """Run the verifier and return rewards."""
         cfg = self._config
 
-        # Mark the phase at entry (the other transitions mark completion):
-        # the verifier can run for minutes after disconnect() reset the phase
-        # to "installed", and the dashboard's activity cell reads _phase to
-        # label that stretch "verifying…" instead of going blank.
+        # Mark the phase at entry (the other transitions mark completion).
+        # disconnect() preserves terminal phases, so the dashboard labels the
+        # agent-teardown and verifier stretch "verifying…".
         self._phase = "verifying"
+
+        # Final verification operates on a quiescent agent session. Besides
+        # stopping agent activity, disconnect() captures the session's final
+        # trajectory delta before that evidence is published to the verifier.
+        # It is idempotent, so callers that already disconnected between
+        # scenes keep the same behavior.
+        if cfg.primary_agent == "oracle":
+            await self.disconnect()
+        else:
+            await self.disconnect(require_terminated=True)
 
         if not self._trajectory and cfg.primary_agent != "oracle":
             scraped = await _scrape_agent_trajectory(
@@ -1949,12 +2007,55 @@ class Rollout:
 
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment."""
-        self._capture_partial_acp_trajectory()
-        await self.disconnect()
+        active_failure = sys.exception()
+        primary_error: Exception | None = None
+        cancellation: asyncio.CancelledError | None = None
+
+        def record_failure(
+            label: str,
+            error: BaseException,
+            *,
+            preserve: bool = False,
+        ) -> None:
+            nonlocal primary_error, cancellation
+            logger.warning(f"{label} failed: {error}")
+            if isinstance(error, asyncio.CancelledError):
+                if cancellation is None:
+                    cancellation = error
+            elif preserve and primary_error is None and isinstance(error, Exception):
+                primary_error = error
+
+        async def attempt(
+            label: str, operation: Any, *, preserve: bool = False
+        ) -> None:
+            try:
+                await operation()
+            except asyncio.CancelledError as e:
+                record_failure(label, e)
+            except Exception as e:
+                record_failure(label, e, preserve=preserve)
+
+        def attempt_sync(label: str, operation: Any, *, preserve: bool = False) -> None:
+            try:
+                operation()
+            except Exception as e:
+                record_failure(label, e, preserve=preserve)
+
+        async def capture_trajectory() -> None:
+            self._capture_partial_acp_trajectory()
+
+        await attempt("Trajectory capture", capture_trajectory, preserve=True)
+        await attempt("Agent disconnect", self.disconnect, preserve=True)
 
         if self._env and self._config.export_generated_skills_to:
-            try:
+
+            async def export_generated_skills() -> None:
                 await self._export_generated_skills()
+
+            try:
+                await export_generated_skills()
+            except asyncio.CancelledError as e:
+                record_failure("Skill export", e)
             except Exception as e:
                 # Surface export failure on a dedicated sibling channel
                 # (#389 follow-up). Routing it through self._error caused
@@ -1971,69 +2072,83 @@ class Rollout:
 
         usage_runtime = getattr(self, "_usage_runtime", None)
         if usage_runtime is not None:
-            try:
-                await self._planes.stop_provider_runtime(usage_runtime)
-                self._usage_metrics = self._planes.extract_usage(usage_runtime)
-            except Exception as e:
-                logger.warning(f"Usage telemetry runtime stop failed: {e}")
-                self._usage_metrics = self._planes.extract_usage(None)
-            # Snapshot any provider failure (401/403/429/503) now that captures
-            # are imported (stop() populated the trajectory). This must happen
-            # before we drop the runtime reference below, and is read later by
-            # ACP-error classification — for Daytona the trajectory is empty
-            # until here (#546/#564).
-            #
-            # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
-            # auth failures flow through `self._provider_runtime`, whose server
-            # (BedrockProxyServer) exposes no `.trajectory`/`.exchanges`, so a
-            # fallback scan of it would always return None — useless, so it's
-            # not implemented. The direct-AWS-Bedrock case (remote sandbox,
-            # runtime=None) bypasses both proxies entirely and is out of scope.
-            self._provider_failure_cached = _provider_failure_from_runtime(
-                usage_runtime
-            )
-            self._provider_auth_status_cached = (
-                self._provider_failure_cached.status
-                if self._provider_failure_cached is not None
-                and self._provider_failure_cached.marker == "provider auth failed"
-                else None
-            )
-            self._api_failure_summary_cached = (
-                _provider_api_failure_summary_from_runtime(usage_runtime)
-            )
-            try:
-                self._write_llm_trajectory(usage_runtime)
-            except Exception as e:
-                logger.warning(f"LLM trajectory write failed: {e}")
-            try:
-                self._reconcile_acp_tool_evidence(usage_runtime)
-            except Exception as e:
-                logger.warning(f"ACP tool-evidence reconciliation failed: {e}")
-            finally:
-                self._usage_runtime = None
 
-        self._finalize_usage_metrics()
-        self._enforce_required_usage_tracking()
+            async def stop_usage_runtime() -> None:
+                try:
+                    try:
+                        await self._planes.stop_provider_runtime(usage_runtime)
+                        self._usage_metrics = self._planes.extract_usage(usage_runtime)
+                    except Exception as e:
+                        logger.warning(f"Usage telemetry runtime stop failed: {e}")
+                        self._usage_metrics = self._planes.extract_usage(None)
+                    # Snapshot any provider failure (401/403/429/503) now that
+                    # stop() imported captures. This must happen before the
+                    # runtime reference is dropped (#546/#564).
+                    self._provider_failure_cached = _provider_failure_from_runtime(
+                        usage_runtime
+                    )
+                    self._provider_auth_status_cached = (
+                        self._provider_failure_cached.status
+                        if self._provider_failure_cached is not None
+                        and self._provider_failure_cached.marker
+                        == "provider auth failed"
+                        else None
+                    )
+                    self._api_failure_summary_cached = (
+                        _provider_api_failure_summary_from_runtime(usage_runtime)
+                    )
+                    try:
+                        self._write_llm_trajectory(usage_runtime)
+                    except Exception as e:
+                        logger.warning(f"LLM trajectory write failed: {e}")
+                    try:
+                        self._reconcile_acp_tool_evidence(usage_runtime)
+                    except Exception as e:
+                        logger.warning(f"ACP tool-evidence reconciliation failed: {e}")
+                finally:
+                    self._usage_runtime = None
+
+            await attempt("Usage telemetry cleanup", stop_usage_runtime)
+
+        attempt_sync("Usage metric finalization", self._finalize_usage_metrics)
+        attempt_sync(
+            "Usage tracking enforcement", self._enforce_required_usage_tracking
+        )
 
         if self._environment is not None:
-            with contextlib.suppress(Exception):
-                await self._environment.teardown()
-            self._environment = None
+            environment = self._environment
+
+            async def teardown_environment() -> None:
+                try:
+                    await environment.teardown()
+                finally:
+                    self._environment = None
+
+            await attempt("Environment teardown", teardown_environment)
 
         if self._env and not getattr(self, "_env_externally_owned", False):
             # An externally-owned sandbox (use_prebuilt_env) belongs to the
             # caller — leave it running so they can reuse it or stop it
             # themselves. #388. getattr() keeps tests that bypass __init__
             # via Rollout.__new__() working.
-            try:
-                await self._env.stop(delete=True)
-            except Exception as e:
-                logger.warning(f"Cleanup failed: {e}")
+            await attempt("Sandbox cleanup", lambda: self._env.stop(delete=True))
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
-            shutil.rmtree(self._task_tmp, ignore_errors=True)
+            task_tmp = self._task_tmp
+            attempt_sync(
+                "Temporary task cleanup",
+                lambda: shutil.rmtree(task_tmp, ignore_errors=True),
+            )
 
         self._phase = "cleaned"
+
+        # Cancellation remains observable, but only after every independent
+        # teardown stage got its chance to run. Otherwise preserve the first
+        # capture/disconnect failure, matching cleanup's prior error surface.
+        if cancellation is not None:
+            raise cancellation
+        if primary_error is not None and active_failure is None:
+            raise primary_error
 
     def _finalize_usage_metrics(self) -> None:
         """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
