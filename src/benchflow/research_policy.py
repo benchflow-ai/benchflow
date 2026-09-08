@@ -25,6 +25,9 @@ RESEARCH_MCP_NAME = "benchflow-research"
 RESEARCH_RUNTIME_PATH = "/opt/benchflow/research_gateway.py"
 RESEARCH_POLICY_PATH = "/run/benchflow/research-policy.json"
 RESEARCH_GATEWAY_PORT = 8765
+RESEARCH_ANTHROPIC_RELAY_BASE = (
+    f"http://127.0.0.1:{RESEARCH_GATEWAY_PORT}/provider/anthropic"
+)
 _DEFAULT_SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
@@ -206,6 +209,41 @@ def attach_research_mcp(task: Any) -> None:
             ],
         )
     )
+
+
+def route_native_subscription_auth(
+    agent: str, model: str | None, agent_env: dict[str, str]
+) -> dict[str, str]:
+    """Keep native Claude auth usable after the agent UID loses Internet access.
+
+    Subscription-authenticated Claude cannot use LiteLLM because BenchFlow does
+    not own an upstream API key.  Route its native Anthropic protocol through
+    the root-owned, fixed-destination relay exposed by the research gateway.
+    The sandbox user can still reach only loopback; the relay can reach only
+    api.anthropic.com and cannot be repurposed as a general web proxy.
+    """
+
+    from benchflow.agents.env import uses_native_subscription_auth
+    from benchflow.agents.registry import AGENTS
+
+    if not uses_native_subscription_auth(agent, model, agent_env):
+        return agent_env
+
+    config = AGENTS.get(agent)
+    if (
+        config is None
+        or config.subscription_auth is None
+        or config.subscription_auth.replaces_env != "ANTHROPIC_API_KEY"
+    ):
+        raise RuntimeError(
+            "research policy does not support native subscription auth for "
+            f"agent {agent!r}; use provider API-key auth"
+        )
+
+    updated = dict(agent_env)
+    updated["ANTHROPIC_BASE_URL"] = RESEARCH_ANTHROPIC_RELAY_BASE
+    updated["BENCHFLOW_PROVIDER_BASE_URL"] = RESEARCH_ANTHROPIC_RELAY_BASE
+    return updated
 
 
 async def install_research_gateway(env: Any, policy: ResolvedResearchPolicy) -> None:

@@ -9,6 +9,8 @@ import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -18,6 +20,7 @@ from benchflow.eval_sharding import EvalShard, _config_payload, _worker_payload_
 from benchflow.eval_worker import _evaluation_config
 from benchflow.evaluation import EvaluationConfig
 from benchflow.research_policy import (
+    RESEARCH_ANTHROPIC_RELAY_BASE,
     RESEARCH_GATEWAY_PORT,
     RESEARCH_MCP_NAME,
     RESEARCH_POLICY_PATH,
@@ -25,6 +28,7 @@ from benchflow.research_policy import (
     attach_research_mcp,
     install_research_gateway,
     load_research_policy,
+    route_native_subscription_auth,
 )
 from benchflow.rollout import (
     Rollout,
@@ -213,6 +217,127 @@ def test_loopback_gateway_rejects_blocked_fetch_over_real_http() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_anthropic_subscription_relay_has_a_fixed_upstream(monkeypatch) -> None:
+    """Guards the Claude live path without making a provider API call in CI."""
+
+    calls = []
+
+    class Upstream:
+        status = 200
+        reason = "OK"
+
+        def __init__(self) -> None:
+            self._chunks = iter([b'{"type":"message"}', b""])
+
+        @staticmethod
+        def getheaders():
+            return [("Content-Type", "application/json")]
+
+        def read(self, _limit: int) -> bytes:
+            return next(self._chunks)
+
+    class Connection:
+        def __init__(self, host, port, ip, timeout) -> None:
+            calls.append({"host": host, "port": port, "ip": ip, "timeout": timeout})
+
+        def request(self, method, target, *, body, headers) -> None:
+            calls[-1].update(
+                {"method": method, "target": target, "body": body, "headers": headers}
+            )
+
+        @staticmethod
+        def getresponse():
+            return Upstream()
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    monkeypatch.setattr(
+        runtime, "_resolve_public_ip", lambda _host, _port: "93.184.216.34"
+    )
+    monkeypatch.setattr(runtime, "_PinnedHTTPSConnection", Connection)
+    runtime.GatewayHandler.policy = _runtime_policy()
+    server = runtime.ThreadingHTTPServer(("127.0.0.1", 0), runtime.GatewayHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}"
+            "/provider/anthropic/v1/messages?beta=true",
+            data=b'{"model":"claude-test"}',
+            headers={
+                "Authorization": "Bearer oauth-test",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            assert response.read() == b'{"type":"message"}'
+
+        blocked_request = Request(
+            f"http://127.0.0.1:{server.server_port}/provider/anthropic/v1/messages",
+            data=json.dumps(
+                {"tools": [{"type": "web_search_20250305", "name": "search"}]}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as blocked:
+            urlopen(blocked_request, timeout=2)
+        assert blocked.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert calls[0]["host"] == "api.anthropic.com"
+    assert calls[0]["port"] == 443
+    assert calls[0]["target"] == "/v1/messages?beta=true"
+    assert calls[0]["headers"]["Authorization"] == "Bearer oauth-test"
+    assert calls[0]["headers"]["Host"] == "api.anthropic.com"
+    assert len(calls) == 1
+
+
+def test_claude_subscription_auth_uses_fixed_research_relay() -> None:
+    env = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-test"}
+
+    updated = route_native_subscription_auth(
+        "claude-agent-acp", "claude-sonnet-4-6", env
+    )
+
+    assert updated is not env
+    assert updated["ANTHROPIC_BASE_URL"] == RESEARCH_ANTHROPIC_RELAY_BASE
+    assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == RESEARCH_ANTHROPIC_RELAY_BASE
+    assert updated["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"mcp_servers":[{"url":"https://outside.example/mcp"}]}',
+        b'{"tools":[{"type":"web-fetch-20250910"}]}',
+        b'{"safe":1,"safe":2}',
+    ],
+)
+def test_anthropic_relay_rejects_provider_web_bypasses(payload: bytes) -> None:
+    with pytest.raises(runtime.ProviderBlocked):
+        runtime._validate_anthropic_provider_body(
+            payload,
+            "/v1/messages",
+            {"Content-Type": "application/json"},
+        )
+
+
+def test_unsupported_native_subscription_auth_still_fails_closed() -> None:
+    with pytest.raises(RuntimeError, match="does not support native subscription auth"):
+        route_native_subscription_auth(
+            "codex-acp",
+            "gpt-4o",
+            {"CODEX_AUTH_JSON": '{"tokens":{"access_token":"test"}}'},
+        )
 
 
 def test_research_mcp_spec_contains_no_private_policy_values() -> None:
@@ -460,6 +585,18 @@ async def test_research_policy_docker_egress_canary(tmp_path) -> None:
         )
         assert allowed.return_code == 0
         assert '"content"' in (allowed.stdout or "")
+
+        provider_web = await rollout._env.exec(
+            "curl -sS -o /tmp/provider-web.out -w '%{http_code}' "
+            f"-X POST http://127.0.0.1:{RESEARCH_GATEWAY_PORT}"
+            "/provider/anthropic/v1/messages "
+            "-H 'Content-Type: application/json' "
+            '-d \'{"tools":[{"type":"web_search_20250305"}]}\'',
+            user="agent",
+            timeout_sec=10,
+        )
+        assert provider_web.return_code == 0
+        assert provider_web.stdout == "403"
 
         bypass = await rollout._env.exec(
             "curl -fsS --max-time 5 https://example.com/",

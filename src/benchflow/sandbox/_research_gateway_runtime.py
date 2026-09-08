@@ -30,7 +30,20 @@ from urllib.request import Request, urlopen
 MAX_FETCH_BYTES = 8 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
 MAX_REQUEST_BYTES = 64 * 1024
+MAX_PROVIDER_REQUEST_BYTES = 64 * 1024 * 1024
 MAX_REDIRECTS = 5
+ANTHROPIC_RELAY_PREFIX = "/provider/anthropic"
+ANTHROPIC_RELAY_HOST = "api.anthropic.com"
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 
 
 class PolicyBlocked(Exception):
@@ -38,6 +51,10 @@ class PolicyBlocked(Exception):
 
 
 class GatewayError(Exception):
+    pass
+
+
+class ProviderBlocked(Exception):
     pass
 
 
@@ -303,6 +320,59 @@ def _result_payload(policy: Policy, url: str, max_bytes: int) -> dict[str, Any]:
     }
 
 
+def _check_anthropic_provider_payload(value: Any) -> None:
+    """Reject Anthropic features that could perform server-side research."""
+
+    if isinstance(value, list):
+        for item in value:
+            _check_anthropic_provider_payload(item)
+        return
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        normalized_key = str(key).casefold().replace("-", "_")
+        if normalized_key in {"mcp_servers", "web_search_options"}:
+            raise ProviderBlocked
+        if normalized_key == "type" and isinstance(item, str):
+            normalized_type = item.casefold().replace("-", "_")
+            if normalized_type in {"web_search", "web_fetch"} or any(
+                normalized_type.startswith(prefix)
+                for prefix in ("web_search_", "web_fetch_")
+            ):
+                raise ProviderBlocked
+        _check_anthropic_provider_payload(item)
+
+
+def _provider_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ProviderBlocked
+        value[key] = item
+    return value
+
+
+def _validate_anthropic_provider_body(
+    body: bytes | None, target: str, headers: Any
+) -> None:
+    if not body:
+        return
+    content_encoding = (headers.get("Content-Encoding") or "").casefold()
+    if content_encoding not in {"", "identity"}:
+        raise ProviderBlocked
+    content_type = (headers.get("Content-Type") or "").casefold()
+    is_messages_request = urlsplit(target).path.startswith("/v1/messages")
+    if "json" not in content_type and not is_messages_request:
+        return
+    try:
+        payload = json.loads(body, object_pairs_hook=_provider_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if is_messages_request:
+            raise ProviderBlocked from exc
+        return
+    _check_anthropic_provider_payload(payload)
+
+
 class GatewayHandler(BaseHTTPRequestHandler):
     policy: Policy
 
@@ -318,13 +388,91 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _anthropic_target(self) -> str | None:
+        if self.path == ANTHROPIC_RELAY_PREFIX:
+            return "/"
+        if self.path.startswith(ANTHROPIC_RELAY_PREFIX + "/"):
+            return self.path[len(ANTHROPIC_RELAY_PREFIX) :]
+        if self.path.startswith(ANTHROPIC_RELAY_PREFIX + "?"):
+            return "/" + self.path[len(ANTHROPIC_RELAY_PREFIX) :]
+        return None
+
+    def _relay_anthropic(self, target: str) -> None:
+        """Relay one native Claude API request to a fixed HTTPS origin."""
+
+        raw_length = self.headers.get("Content-Length")
+        if self.headers.get("Transfer-Encoding"):
+            self._json(400, {"error": "chunked provider requests are not supported"})
+            return
+        try:
+            length = int(raw_length or "0")
+        except ValueError:
+            self._json(400, {"error": "invalid provider request length"})
+            return
+        if length < 0 or length > MAX_PROVIDER_REQUEST_BYTES:
+            self._json(413, {"error": "provider request exceeds size limit"})
+            return
+
+        body = self.rfile.read(length) if length else None
+        try:
+            _validate_anthropic_provider_body(body, target, self.headers)
+        except ProviderBlocked:
+            self._json(403, {"error": "provider-side web access is disabled"})
+            return
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() not in _HOP_BY_HOP_HEADERS | {"host", "content-length"}
+        }
+        headers["Host"] = ANTHROPIC_RELAY_HOST
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
+
+        connection: _PinnedHTTPSConnection | None = None
+        response_started = False
+        try:
+            ip = _resolve_public_ip(ANTHROPIC_RELAY_HOST, 443)
+            connection = _PinnedHTTPSConnection(ANTHROPIC_RELAY_HOST, 443, ip, 300.0)
+            connection.request(self.command, target, body=body, headers=headers)
+            upstream = connection.getresponse()
+            self.send_response(upstream.status, upstream.reason)
+            for key, value in upstream.getheaders():
+                if key.lower() not in _HOP_BY_HOP_HEADERS | {"content-length"}:
+                    self.send_header(key, value)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            response_started = True
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+            self.close_connection = True
+        except (OSError, http.client.HTTPException):
+            if response_started:
+                self.close_connection = True
+            else:
+                self._json(502, {"error": "native provider relay failed"})
+        finally:
+            if connection is not None:
+                connection.close()
+
     def do_GET(self) -> None:
+        provider_target = self._anthropic_target()
+        if provider_target is not None:
+            self._relay_anthropic(provider_target)
+            return
         if self.path == "/health":
             self._json(200, {"ok": True, "policy_sha256": self.policy.sha256})
             return
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        provider_target = self._anthropic_target()
+        if provider_target is not None:
+            self._relay_anthropic(provider_target)
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 0 or length > MAX_REQUEST_BYTES:
@@ -357,6 +505,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": str(exc)})
         except Exception:
             self._json(502, {"error": "research gateway request failed"})
+
+    def do_DELETE(self) -> None:
+        provider_target = self._anthropic_target()
+        if provider_target is None:
+            self._json(404, {"error": "not found"})
+            return
+        self._relay_anthropic(provider_target)
+
+    do_PATCH = do_DELETE
+    do_PUT = do_DELETE
 
 
 def _call_gateway(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:

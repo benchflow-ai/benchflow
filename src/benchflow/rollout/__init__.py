@@ -104,6 +104,7 @@ from benchflow.research_policy import (
     attach_research_mcp,
     install_research_gateway,
     load_research_policy,
+    route_native_subscription_auth,
 )
 from benchflow.rollout import _deadline as _deadline
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
@@ -2408,6 +2409,9 @@ class Rollout:
         if egress_denylist is not None:
             agent_env = denylist_agent_env(agent_env)
         if getattr(self, "_research_policy", None) is not None:
+            agent_env = route_native_subscription_auth(
+                role.agent, role.model, agent_env
+            )
             await self._planes.enforce_agent_egress_firewall(
                 self._env, cfg.sandbox_user, agent_env
             )

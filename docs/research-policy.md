@@ -58,6 +58,13 @@ the sandbox user. This prevents `curl`, sockets, or an unregistered harness tool
 from bypassing the gateway. Private, loopback, link-local, and other non-global
 fetch destinations are rejected to prevent SSRF.
 
+Claude subscription authentication cannot be translated through LiteLLM because
+there is no operator-owned API key. In that mode, the research gateway also
+provides a fixed-destination loopback relay for the native Anthropic protocol.
+The relay forwards only to `api.anthropic.com`; it is not a general HTTP proxy,
+and rejects provider-side web-search/web-fetch tools plus remote MCP requests,
+so the sandbox user remains unable to connect directly to research sites.
+
 Policy-enabled runs currently require Docker, Python 3 in the task image, and a
 non-root `sandbox_user`. Unsupported sandboxes and already-started external
 sandboxes fail closed.
