@@ -70,16 +70,17 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     for event in events:
         if event["type"] == "tool_call":
             tc = event["record"]
-            out.append(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tc.tool_call_id,
-                    "kind": tc.kind,
-                    "title": tc.title,
-                    "status": tc.status.value,
-                    "content": tc.content,
-                }
-            )
+            captured = {
+                "type": "tool_call",
+                "tool_call_id": tc.tool_call_id,
+                "kind": tc.kind,
+                "title": tc.title,
+                "status": tc.status.value,
+                "content": tc.content,
+            }
+            if tc.metadata:
+                captured["_meta"] = tc.metadata
+            out.append(captured)
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
             out.append({"type": event["type"], "text": event["text"]})
         elif event["type"] == "agent_timeout":
@@ -205,16 +206,17 @@ def _capture_session_trajectory(session: ACPSession | None) -> list[dict]:
     # handle_update). Preserves the old flat behaviour.
     trajectory = []
     for tc in session.tool_calls:
-        trajectory.append(
-            {
-                "type": "tool_call",
-                "tool_call_id": tc.tool_call_id,
-                "kind": tc.kind,
-                "title": tc.title,
-                "status": tc.status.value,
-                "content": tc.content,
-            }
-        )
+        captured = {
+            "type": "tool_call",
+            "tool_call_id": tc.tool_call_id,
+            "kind": tc.kind,
+            "title": tc.title,
+            "status": tc.status.value,
+            "content": tc.content,
+        }
+        if tc.metadata:
+            captured["_meta"] = tc.metadata
+        trajectory.append(captured)
     if session.full_message:
         trajectory.append({"type": "agent_message", "text": session.full_message})
     if session.full_thought:

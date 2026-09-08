@@ -225,6 +225,129 @@ class TestACPSession:
         )
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
 
+    def test_tool_provenance_merges_only_documented_safe_metadata(self):
+        """Guards acp-tool-provenance against losing origin or retaining payloads."""
+        session = ACPSession("test-session")
+        initial_meta = {
+            "claudeCode": {
+                "toolName": "mcp__google_drive__search",
+                "toolResponse": {"access_token": "secret"},
+            },
+            "unknown": {"authorization": "secret"},
+        }
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Search Drive",
+                "kind": "other",
+                "_meta": initial_meta,
+            }
+        )
+        initial_meta["claudeCode"]["toolName"] = "mutated"
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "_meta": {
+                    "is_mcp_tool_call": True,
+                    "mcp_output_delta": {"data": "sensitive output"},
+                },
+            }
+        )
+
+        assert session.tool_calls[0].metadata == {
+            "claudeCode": {"toolName": "mcp__google_drive__search"},
+            "is_mcp_tool_call": True,
+        }
+
+    def test_unknown_tool_call_update_keeps_safe_provenance(self):
+        """Guards acp-tool-provenance for agents that omit initial tool_call."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "_meta": {"claudeCode": {"toolName": "mcp__slack__search"}},
+            }
+        )
+
+        assert session.tool_calls[0].metadata == {
+            "claudeCode": {"toolName": "mcp__slack__search"}
+        }
+
+    def test_delayed_tool_call_reconciles_update_fallback_in_place(self):
+        """Guards acp-tool-provenance against duplicate out-of-order records."""
+        session = ACPSession("test-session")
+        session.record_user_prompt("search")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "title": "pending tool",
+                "kind": "other",
+                "status": "in_progress",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "starting"}}
+                ],
+                "_meta": {"is_mcp_tool_call": True},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Search Drive",
+                "kind": "execute",
+                "status": "in_progress",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "ready"}}
+                ],
+                "_meta": {"claudeCode": {"toolName": "mcp__google_drive__search"}},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "done"}}
+                ],
+            }
+        )
+
+        assert len(session.tool_calls) == 1
+        record = session.tool_calls[0]
+        assert record.tool_call_id == "tc_1"
+        assert record.title == "Search Drive"
+        assert record.kind == "execute"
+        assert record.status == ToolCallStatus.COMPLETED
+        assert [block["content"]["text"] for block in record.content] == [
+            "starting",
+            "ready",
+            "done",
+        ]
+        assert record.metadata == {
+            "is_mcp_tool_call": True,
+            "claudeCode": {"toolName": "mcp__google_drive__search"},
+        }
+        assert [event["type"] for event in session.events] == [
+            "user_message",
+            "tool_call",
+        ]
+        from benchflow.trajectories._capture import _capture_session_trajectory
+
+        (captured,) = [
+            event
+            for event in _capture_session_trajectory(session)
+            if event["type"] == "tool_call"
+        ]
+        assert captured["status"] == "completed"
+        assert captured["_meta"] == record.metadata
+
     def test_handle_openhands_invoke_skill_update_marks_kind_skill(self):
         """Guards issue #507: OpenHands invoke_skill ACP calls are canonicalized."""
         session = ACPSession("test-session")

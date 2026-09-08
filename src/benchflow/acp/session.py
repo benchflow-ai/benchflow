@@ -1,5 +1,6 @@
 """ACP session lifecycle management."""
 
+import copy
 import logging
 import os
 import time
@@ -156,10 +157,20 @@ class ToolCallRecord:
     content blocks, and wall-clock timing.
     """
 
-    def __init__(self, tool_call_id: str, title: str, kind: str):
+    def __init__(
+        self,
+        tool_call_id: str,
+        title: str,
+        kind: str,
+        metadata: dict[str, Any] | None = None,
+        *,
+        initial_received: bool = True,
+    ):
         self.tool_call_id = tool_call_id
         self.title = title
         self.kind = kind
+        self.metadata = copy.deepcopy(metadata or {})
+        self.initial_received = initial_received
         self.status = ToolCallStatus.PENDING
         self.content: list[dict] = []
         self.started_at = datetime.now()
@@ -177,6 +188,36 @@ class ToolCallRecord:
             ToolCallStatus.CANCELLED,
         ):
             self.finished_at = datetime.now()
+
+    def update_metadata(self, metadata: dict[str, Any]) -> None:
+        """Merge filtered ACP metadata without retaining producer-owned objects."""
+        _merge_metadata(self.metadata, metadata)
+
+
+def _merge_metadata(target: dict[str, Any], update: dict[str, Any]) -> None:
+    for key, value in update.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_metadata(target[key], value)
+        else:
+            target[key] = copy.deepcopy(value)
+
+
+def _tool_provenance_metadata(update: dict[str, Any]) -> dict[str, Any]:
+    """Keep documented, non-payload tool origin markers from ACP ``_meta``."""
+    metadata = update.get("_meta")
+    if not isinstance(metadata, dict):
+        return {}
+
+    safe: dict[str, Any] = {}
+    if metadata.get("is_mcp_tool_call") is True:
+        safe["is_mcp_tool_call"] = True
+
+    claude_code = metadata.get("claudeCode")
+    if isinstance(claude_code, dict):
+        tool_name = claude_code.get("toolName")
+        if isinstance(tool_name, str) and tool_name:
+            safe["claudeCode"] = {"toolName": tool_name}
+    return safe
 
 
 class ACPSession:
@@ -410,14 +451,42 @@ class ACPSession:
 
         if update_type == "tool_call":
             self._flush_agent_text()
-            record = ToolCallRecord(
-                tool_call_id=update.get("toolCallId", ""),
-                title=update.get("title", ""),
-                kind=_canonical_tool_kind(
-                    update.get("kind", "other"), update.get("title", "")
-                ),
-            )
-            self._record_tool_call(record)
+            tc_id = update.get("toolCallId", "")
+            record = self._tool_call_map.get(tc_id)
+            if record is not None and not record.initial_received:
+                record.initial_received = True
+                record.title = update.get("title", "")
+                record.kind = _canonical_tool_kind(
+                    update.get("kind", "other"), record.title
+                )
+                record.update_metadata(_tool_provenance_metadata(update))
+                self._seen_tool_titles.add(
+                    _tool_display_title(record.title, record.kind)
+                )
+                content = update.get("content")
+                if content:
+                    record.content.extend(content)
+                if "status" in update and record.status not in {
+                    ToolCallStatus.COMPLETED,
+                    ToolCallStatus.FAILED,
+                    ToolCallStatus.CANCELLED,
+                }:
+                    try:
+                        record.update_status(ToolCallStatus(update["status"]))
+                    except ValueError:
+                        logger.warning(
+                            f"Unknown tool call status: {update.get('status')}"
+                        )
+            else:
+                record = ToolCallRecord(
+                    tool_call_id=tc_id,
+                    title=update.get("title", ""),
+                    kind=_canonical_tool_kind(
+                        update.get("kind", "other"), update.get("title", "")
+                    ),
+                    metadata=_tool_provenance_metadata(update),
+                )
+                self._record_tool_call(record)
 
         elif update_type == "tool_call_update":
             self.tool_call_update_count += 1
@@ -431,8 +500,12 @@ class ACPSession:
                     kind=_canonical_tool_kind(
                         update.get("kind", "tool"), update.get("title", "")
                     ),
+                    metadata=_tool_provenance_metadata(update),
+                    initial_received=False,
                 )
                 self._record_tool_call(record)
+            else:
+                record.update_metadata(_tool_provenance_metadata(update))
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:
