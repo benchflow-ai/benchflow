@@ -81,7 +81,7 @@ def _runtime_policy() -> runtime.Policy:
 
 
 def test_policy_resolves_one_task_without_exposing_values(tmp_path) -> None:
-    """Guards FrontierPhysics #365: artifacts contain provenance, not deny rules."""
+    """Guards PR #1112 for FrontierPhysics #365: artifacts contain provenance, not deny rules."""
     policy = _resolved_policy(tmp_path)
 
     metadata = policy.artifact_metadata(enforced=False)
@@ -96,7 +96,7 @@ def test_policy_resolves_one_task_without_exposing_values(tmp_path) -> None:
 
 
 def test_policy_enabled_batch_fails_closed_on_missing_task(tmp_path) -> None:
-    """Guards FrontierPhysics #365 against silently unrestricted batch tasks."""
+    """Guards PR #1112 for FrontierPhysics #365 against silently unrestricted batch tasks."""
     path = tmp_path / "private-policy.yaml"
     path.write_text(_policy_yaml())
 
@@ -116,13 +116,13 @@ def test_policy_enabled_batch_fails_closed_on_missing_task(tmp_path) -> None:
     ],
 )
 def test_url_policy_closes_common_normalization_bypasses(url: str) -> None:
-    """Guards FrontierPhysics #365 across scheme/query/dot-path/subdomain variants."""
+    """Guards PR #1112 for FrontierPhysics #365 across scheme/query/dot-path/subdomain variants."""
     with pytest.raises(runtime.PolicyBlocked):
         _runtime_policy().check_url(url)
 
 
 def test_content_policy_blocks_terms_and_full_body_fingerprints() -> None:
-    """Guards FrontierPhysics #365 against allowed URLs leaking blocked content."""
+    """Guards PR #1112 for FrontierPhysics #365 against allowed URLs leaking blocked content."""
     policy = _runtime_policy()
 
     with pytest.raises(runtime.PolicyBlocked):
@@ -132,7 +132,7 @@ def test_content_policy_blocks_terms_and_full_body_fingerprints() -> None:
 
 
 def test_redirect_target_is_checked_before_second_connection(monkeypatch) -> None:
-    """Guards FrontierPhysics #365 against redirects into a denied resource."""
+    """Guards PR #1112 for FrontierPhysics #365 against redirects into a denied resource."""
 
     class Redirect:
         status = 302
@@ -176,7 +176,7 @@ def test_redirect_target_is_checked_before_second_connection(monkeypatch) -> Non
 
 
 def test_search_filters_denied_urls_and_titles(monkeypatch) -> None:
-    """Guards FrontierPhysics #365 by suppressing blocked-paper discovery results."""
+    """Guards PR #1112 for FrontierPhysics #365 by suppressing blocked-paper discovery results."""
     page = b"""
     <a class="result__a" href="https://allowed.example/a">Allowed result</a>
     <a class="result__a" href="https://papers.example/abs/365">Hidden by URL</a>
@@ -196,7 +196,7 @@ def test_search_filters_denied_urls_and_titles(monkeypatch) -> None:
 
 
 def test_loopback_gateway_rejects_blocked_fetch_over_real_http() -> None:
-    """Guards FrontierPhysics #365 at the MCP-relay/gateway HTTP boundary."""
+    """Guards PR #1112 for FrontierPhysics #365 at the MCP-relay/gateway HTTP boundary."""
     runtime.GatewayHandler.policy = _runtime_policy()
     server = runtime.ThreadingHTTPServer(("127.0.0.1", 0), runtime.GatewayHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -216,7 +216,7 @@ def test_loopback_gateway_rejects_blocked_fetch_over_real_http() -> None:
 
 
 def test_research_mcp_spec_contains_no_private_policy_values() -> None:
-    """Guards FrontierPhysics #365 across ACP and native-config harness injection."""
+    """Guards PR #1112 for FrontierPhysics #365 across ACP and native-config harness injection."""
     task = SimpleNamespace(config=SimpleNamespace(sandbox=SandboxConfig()))
 
     attach_research_mcp(task)
@@ -241,7 +241,7 @@ def test_research_mcp_spec_contains_no_private_policy_values() -> None:
     ],
 )
 def test_research_mcp_reaches_supported_harnesses(agent: str) -> None:
-    """Guards FrontierPhysics #365 across the release integration agent roster."""
+    """Guards PR #1112 for FrontierPhysics #365 across the release integration agent roster."""
     task = SimpleNamespace(config=SimpleNamespace(sandbox=SandboxConfig()))
     attach_research_mcp(task)
 
@@ -258,7 +258,7 @@ def test_research_mcp_reaches_supported_harnesses(agent: str) -> None:
 async def test_gateway_policy_upload_is_root_only_and_command_is_secret_free(
     tmp_path,
 ) -> None:
-    """Guards FrontierPhysics #365: the sandbox policy never enters agent argv/env."""
+    """Guards PR #1112 for FrontierPhysics #365: the sandbox policy never enters agent argv/env."""
     uploaded: list[tuple[str, str, str | None]] = []
 
     async def upload(source, target, *, mode=None):
@@ -285,7 +285,7 @@ async def test_gateway_policy_upload_is_root_only_and_command_is_secret_free(
 
 
 def test_docker_research_override_adds_net_admin_last(tmp_path) -> None:
-    """Guards FrontierPhysics #365 by making UID-firewall setup fail closed."""
+    """Guards PR #1112 for FrontierPhysics #365 by making UID-firewall setup fail closed."""
     sandbox = DockerSandbox.__new__(DockerSandbox)
     sandbox.rollout_paths = SimpleNamespace(rollout_dir=tmp_path)
     sandbox._research_policy_compose_path = None
@@ -300,7 +300,7 @@ def test_docker_research_override_adds_net_admin_last(tmp_path) -> None:
 
 
 def test_worker_private_payload_round_trip_and_public_redaction(tmp_path) -> None:
-    """Guards FrontierPhysics #365 when evaluation sharding crosses a process."""
+    """Guards PR #1112 for FrontierPhysics #365 when evaluation sharding crosses a process."""
     private_path = tmp_path / "contains-paper-names.yaml"
     config = EvaluationConfig(research_policy_path=str(private_path))
     shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
@@ -315,7 +315,7 @@ def test_worker_private_payload_round_trip_and_public_redaction(tmp_path) -> Non
 def test_eval_plan_threads_private_policy_and_rejects_unsupported_sandbox(
     tmp_path,
 ) -> None:
-    """Guards FrontierPhysics #365 at the CLI planning boundary."""
+    """Guards PR #1112 for FrontierPhysics #365 at the CLI planning boundary."""
     policy_path = tmp_path / "private.yaml"
     policy_path.write_text(_policy_yaml())
     tasks = tmp_path / "tasks"
@@ -340,7 +340,7 @@ def test_eval_plan_threads_private_policy_and_rejects_unsupported_sandbox(
 async def test_rollout_setup_records_only_policy_summary_and_configures_docker(
     tmp_path,
 ) -> None:
-    """Guards FrontierPhysics #365 through the real rollout setup composition."""
+    """Guards PR #1112 for FrontierPhysics #365 through the real rollout setup composition."""
     task = Path(__file__).parent / "examples" / "hello-world-task"
     policy_path = tmp_path / "private.yaml"
     policy_path.write_text(_policy_yaml(task_id=task.name))
@@ -383,7 +383,7 @@ def _docker_available() -> bool:
 @pytest.mark.skipif(not _docker_available(), reason="docker daemon unavailable")
 @pytest.mark.asyncio
 async def test_research_policy_docker_egress_canary(tmp_path) -> None:
-    """Guards FrontierPhysics #365 with a real Docker UID-firewall canary."""
+    """Guards PR #1112 for FrontierPhysics #365 with a real Docker UID-firewall canary."""
     source = Path(__file__).parent / "examples" / "hello-world-task"
     task = tmp_path / "research-policy-canary"
     shutil.copytree(source, task)

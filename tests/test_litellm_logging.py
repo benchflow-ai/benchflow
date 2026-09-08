@@ -58,7 +58,7 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
 
 
 def test_no_web_proxy_strips_provider_search_tools(monkeypatch):
-    """Guards FrontierPhysics #365 against the model proxy becoming a web bypass."""
+    """Guards PR #1112 for FrontierPhysics #365 against the model proxy becoming a web bypass."""
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     data = {
         "messages": [{"role": "user", "content": "hi"}],
