@@ -456,9 +456,11 @@ class ACPSession:
             if record is not None and not record.initial_received:
                 record.initial_received = True
                 record.title = update.get("title", "")
-                record.kind = _canonical_tool_kind(
+                initial_kind = _canonical_tool_kind(
                     update.get("kind", "other"), record.title
                 )
+                if record.kind != "skill":
+                    record.kind = initial_kind
                 record.update_metadata(_tool_provenance_metadata(update))
                 self._seen_tool_titles.add(
                     _tool_display_title(record.title, record.kind)

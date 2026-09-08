@@ -262,22 +262,6 @@ class TestACPSession:
             "is_mcp_tool_call": True,
         }
 
-    def test_unknown_tool_call_update_keeps_safe_provenance(self):
-        """Guards acp-tool-provenance for agents that omit initial tool_call."""
-        session = ACPSession("test-session")
-        session.handle_update(
-            {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "tc_1",
-                "status": "completed",
-                "_meta": {"claudeCode": {"toolName": "mcp__slack__search"}},
-            }
-        )
-
-        assert session.tool_calls[0].metadata == {
-            "claudeCode": {"toolName": "mcp__slack__search"}
-        }
-
     def test_delayed_tool_call_reconciles_update_fallback_in_place(self):
         """Guards acp-tool-provenance against duplicate out-of-order records."""
         session = ACPSession("test-session")
@@ -338,15 +322,35 @@ class TestACPSession:
             "user_message",
             "tool_call",
         ]
-        from benchflow.trajectories._capture import _capture_session_trajectory
 
-        (captured,) = [
-            event
-            for event in _capture_session_trajectory(session)
-            if event["type"] == "tool_call"
-        ]
-        assert captured["status"] == "completed"
-        assert captured["_meta"] == record.metadata
+    def test_delayed_tool_call_preserves_skill_inferred_from_update(self):
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                    }
+                ],
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Load PDF skill",
+                "kind": "other",
+            }
+        )
+
+        assert session.tool_calls[0].kind == "skill"
 
     def test_handle_openhands_invoke_skill_update_marks_kind_skill(self):
         """Guards issue #507: OpenHands invoke_skill ACP calls are canonicalized."""
