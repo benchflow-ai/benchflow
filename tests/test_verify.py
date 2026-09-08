@@ -977,7 +977,9 @@ class TestScrapedTrajectoryTrust:
         }
         planes.resolve_locked_paths.return_value = []
         planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
-        planes.agent_launch.side_effect = lambda agent, *, disallow_web_tools: agent
+        planes.agent_launch.side_effect = (
+            lambda agent, *, disallow_web_tools, disallow_hosted_search=False: agent
+        )
         planes.create_environment.return_value = mock_env
         planes.stage_dockerfile_deps.return_value = None
         planes.inject_skills_into_dockerfile.return_value = None

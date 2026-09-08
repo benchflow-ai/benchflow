@@ -1071,7 +1071,17 @@ def _telemetry_shape(evidence: Evidence) -> set[str]:
 _NET_NO_NETWORK = "no-network"
 _NET_ALLOWLIST = "allowlist"
 _NET_PUBLIC = "public"
-_VALID_NETWORK_MODES = frozenset({_NET_NO_NETWORK, _NET_ALLOWLIST, _NET_PUBLIC})
+_NET_DENYLIST = "denylist"
+_VALID_NETWORK_MODES = frozenset(
+    {_NET_NO_NETWORK, _NET_ALLOWLIST, _NET_PUBLIC, _NET_DENYLIST}
+)
+
+
+def _str_list(value: Any) -> list[str]:
+    """Non-empty stripped strings from a list-valued config field."""
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _norm_network_mode(value: Any) -> str | None:
@@ -1092,22 +1102,22 @@ def network_hardening(
 
     Policy (CONTRACT Q3): the default safe posture is ``no-network``. Network
     access is only acceptable as ``allowlist`` with a NON-EMPTY ``allowed_hosts``
-    set. A bare ``public`` mode is always flagged; on a PR that touches the
-    verifier or the sandbox/lockdown surface a ``public`` mode is a hard
-    ``fail`` (blocker) because that surface controls the isolation boundary.
+    set, or as ``denylist`` with a NON-EMPTY ``blocked_urls`` or
+    ``blocked_hosts`` set. A bare ``public`` mode is always flagged; on a PR
+    that touches the verifier or the sandbox/lockdown surface a ``public`` mode
+    is a hard ``fail`` (blocker) because that surface controls the isolation
+    boundary.
 
     Returns the ``V-NETWORK`` gate outcome. ``pass`` for a hardened config,
-    ``fail`` for an unsafe one (missing allowlist hosts, or ``public`` on a
-    verifier/sandbox PR), ``quarantine`` for a ``public`` config on an unrelated
-    PR (documented, needs human sign-off), ``na`` when no policy is declared.
+    ``fail`` for an unsafe one (missing allowlist hosts, missing denylist
+    entries, or ``public`` on a verifier/sandbox PR), ``quarantine`` for a
+    ``public`` config on an unrelated PR (documented, needs human sign-off),
+    ``na`` when no policy is declared.
     """
     mode = _norm_network_mode(task_config.get("network_mode"))
-    raw_hosts = task_config.get("allowed_hosts")
-    allowed_hosts = [
-        str(h).strip()
-        for h in (raw_hosts if isinstance(raw_hosts, list) else [])
-        if str(h).strip()
-    ]
+    allowed_hosts = _str_list(task_config.get("allowed_hosts"))
+    blocked_urls = _str_list(task_config.get("blocked_urls"))
+    blocked_hosts = _str_list(task_config.get("blocked_hosts"))
 
     if mode is None:
         # No declared policy => the runtime default (no-network) applies; an
@@ -1143,6 +1153,26 @@ def network_hardening(
             "V-NETWORK",
             "pass",
             f"allowlist hardened: hosts={sorted(allowed_hosts)}",
+        )
+
+    if mode == _NET_DENYLIST:
+        if allowed_hosts:
+            return (
+                "V-NETWORK",
+                "fail",
+                "allowed_hosts is only valid for network_mode='allowlist'",
+            )
+        if not (blocked_urls or blocked_hosts):
+            return (
+                "V-NETWORK",
+                "fail",
+                "denylist without blocked_urls/blocked_hosts",
+            )
+        return (
+            "V-NETWORK",
+            "pass",
+            f"denylist hardened: urls={sorted(blocked_urls)} "
+            f"hosts={sorted(blocked_hosts)}",
         )
 
     # mode == public

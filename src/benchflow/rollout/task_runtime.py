@@ -159,6 +159,11 @@ class TaskRuntime:
         rollout = await Rollout.create(self.config.to_rollout_config())
         try:
             await rollout.setup()
+            if getattr(rollout, "_egress_denylist", None) is not None:
+                raise RuntimeError(
+                    "network_mode='denylist' requires an ACP agent rollout; "
+                    "the bash primitive runs without the egress proxy"
+                )
             await rollout.start()
             await rollout.install_agent()
         except BaseException:

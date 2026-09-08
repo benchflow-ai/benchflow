@@ -99,7 +99,7 @@ def _owner_from_home(home: str) -> str | None:
 
 
 def _policy_home_dirs(agent: str, agent_cfg: AgentConfig) -> list[str]:
-    """Agent home dirs a no-web setup command may create."""
+    """Agent home dirs a web-policy setup command may create."""
     dirs = set(agent_cfg.home_dirs)
     for owned_path in agent_cfg.disallow_web_tools_owned_paths:
         if not owned_path.startswith("$HOME/"):
@@ -265,15 +265,21 @@ async def apply_web_tool_policy(
     home: str,
     *,
     disallow: bool,
+    disallow_hosted_search: bool = False,
 ) -> None:
-    """Apply an agent-specific hard web-tool disable in the agent home."""
-    if not disallow or not agent_cfg or not agent_cfg.disallow_web_tools_setup_cmd:
+    """Apply the agent's no-web or hosted-search-off setup command in the agent home."""
+    if not agent_cfg:
+        return
+    if disallow:
+        policy, setup_cmd = "no-web", agent_cfg.disallow_web_tools_setup_cmd
+    elif disallow_hosted_search:
+        policy, setup_cmd = "hosted-search", agent_cfg.disallow_hosted_search_setup_cmd
+    else:
+        return
+    if not setup_cmd:
         return
 
-    cmd = (
-        f"export BENCHFLOW_AGENT_HOME={shlex.quote(home)}; "
-        f"{agent_cfg.disallow_web_tools_setup_cmd}"
-    )
+    cmd = f"export BENCHFLOW_AGENT_HOME={shlex.quote(home)}; {setup_cmd}"
     owner = _owner_from_home(home)
     if owner:
         q_owner = shlex.quote(owner)
@@ -296,7 +302,7 @@ async def apply_web_tool_policy(
         if stderr:
             details.append(f"stderr: {stderr}")
         raise RuntimeError(
-            f"Failed to apply no-web policy for {agent}: {'; '.join(details)}"
+            f"Failed to apply {policy} policy for {agent}: {'; '.join(details)}"
         )
 
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **`network_mode: denylist` blocks a list of URLs and hosts for the agent on
+  Docker and Daytona.** The task keeps internet access; `blocked_urls` and
+  `blocked_hosts` are enforced by a root-owned loopback proxy behind the
+  sandbox-user firewall, hosted search tools are switched off per harness,
+  and every refused request lands in `trajectory/egress_denylist.jsonl`.
+  Other backends refuse the mode at preflight. (#1113)
+
 ## 0.7.6 — 2026-09-04
 
 ### Added

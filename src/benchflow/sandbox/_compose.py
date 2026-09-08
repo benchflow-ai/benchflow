@@ -9,6 +9,7 @@ COMPOSE_BASE_PATH = COMPOSE_DIR / "docker-compose-base.yaml"
 COMPOSE_BUILD_PATH = COMPOSE_DIR / "docker-compose-build.yaml"
 COMPOSE_PREBUILT_PATH = COMPOSE_DIR / "docker-compose-prebuilt.yaml"
 COMPOSE_NO_NETWORK_PATH = COMPOSE_DIR / "docker-compose-no-network.yaml"
+COMPOSE_NET_ADMIN_PATH = COMPOSE_DIR / "docker-compose-net-admin.yaml"
 
 # Back-off delays for retrying a `compose up` that hit a daemon-side network
 # create/attach race. Shared by the host docker.py path and the Daytona DinD

@@ -143,24 +143,51 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     )
 
 
+EGRESS_DENYLIST_ENV = "BENCHFLOW_EGRESS_DENYLIST"
+
+
+def _is_loopback_http(url: str) -> bool:
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in {"127.0.0.1", "localhost"}
+        and parsed.port is not None
+    )
+
+
 async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
     agent_env: dict[str, str],
 ) -> None:
-    """Block sandbox-user external egress after ACP bootstrap, before prompting."""
-    if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
+    """Block sandbox-user external egress after ACP bootstrap, before prompting.
+
+    Armed by the no-web policy (model traffic must already use the sandbox-local
+    proxy) or by the denylist mode (all traffic must already use the loopback
+    egress proxy).
+    """
+    no_web = agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1"
+    denylist = agent_env.get(EGRESS_DENYLIST_ENV) == "1"
+    if not (no_web or denylist):
+        return
+    if not sandbox_user:
+        if denylist:
+            raise RuntimeError("network_mode='denylist' requires a sandbox_user")
         return
 
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
         "LLM_BASE_URL", ""
     )
-    parsed = urlsplit(base_url)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.port is None
-    ):
+    if denylist:
+        if not _is_loopback_http(agent_env.get("HTTPS_PROXY", "")):
+            raise RuntimeError(
+                "Denylist agent requires HTTPS_PROXY on an HTTP loopback port"
+            )
+        if base_url and not _is_loopback_http(base_url):
+            raise RuntimeError(
+                "Denylist agent requires an HTTP loopback provider base URL with a port"
+            )
+    elif not _is_loopback_http(base_url):
         raise RuntimeError(
             "No-web agent requires an HTTP loopback provider base URL with a port"
         )
