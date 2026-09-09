@@ -8,9 +8,12 @@ the composition edge so the kernel does not import those concrete modules.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from benchflow.environment.manifest import EnvironmentManifest
+
+if TYPE_CHECKING:
+    from benchflow.sandbox.egress_denylist import EgressDenylist
 
 
 class LiveUsageGateway(Protocol):
@@ -33,7 +36,13 @@ class LiveUsageGateway(Protocol):
 class RolloutPlanes(Protocol):
     """Concrete-plane operations the rollout kernel needs."""
 
-    def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str: ...
+    def agent_launch(
+        self,
+        agent: str,
+        *,
+        disallow_web_tools: bool,
+        disallow_hosted_search: bool = False,
+    ) -> str: ...
     def agent_config(self, agent: str) -> Any: ...
 
     def resolve_agent_env(
@@ -102,6 +111,10 @@ class RolloutPlanes(Protocol):
     async def link_skill_paths(self, *args: Any, **kwargs: Any) -> None: ...
     async def ensure_litellm_runtime(self, *args: Any, **kwargs: Any) -> Any: ...
     async def stop_provider_runtime(self, runtime: Any) -> None: ...
+    async def start_egress_denylist(
+        self, env: Any, sandbox_user: str | None, denylist: EgressDenylist
+    ) -> None: ...
+    async def stop_egress_denylist(self, env: Any, rollout_dir: Path) -> None: ...
     def extract_usage(self, runtime: Any) -> dict[str, Any]: ...
     async def connect_acp(self, *args: Any, **kwargs: Any) -> Any: ...
     async def execute_prompts(self, *args: Any, **kwargs: Any) -> Any: ...

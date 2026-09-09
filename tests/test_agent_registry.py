@@ -413,6 +413,8 @@ class TestRegisterAgent:
         assert cfg.session_factory == ""
         assert cfg.disallow_web_tools_setup_cmd == ""
         assert cfg.disallow_web_tools_launch_suffix == ""
+        assert cfg.disallow_hosted_search_setup_cmd == ""
+        assert cfg.disallow_hosted_search_launch_suffix == ""
 
     def test_passes_through_new_fields(self, cleanup_agent):
         cleanup_agent.append("rt-full-agent")
@@ -426,6 +428,8 @@ class TestRegisterAgent:
             api_protocol="openai-completions",
             disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
             disallow_web_tools_launch_suffix=" --no-web",
+            disallow_hosted_search_setup_cmd="printf 'no search' > /tmp/policy",
+            disallow_hosted_search_launch_suffix=" --no-search",
         )
         assert cfg.protocol == "session-factory"
         assert cfg.session_factory == "my_agent.factory:create_agent"
@@ -433,6 +437,10 @@ class TestRegisterAgent:
         assert cfg.api_protocol == "openai-completions"
         assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
         assert cfg.disallow_web_tools_launch_suffix == " --no-web"
+        assert (
+            cfg.disallow_hosted_search_setup_cmd == "printf 'no search' > /tmp/policy"
+        )
+        assert cfg.disallow_hosted_search_launch_suffix == " --no-search"
 
         # And the registered entry reflects them.
         registered = AGENTS["rt-full-agent"]
@@ -441,3 +449,4 @@ class TestRegisterAgent:
         assert registered.default_model == "rt-model-1"
         assert registered.api_protocol == "openai-completions"
         assert registered.disallow_web_tools_launch_suffix == " --no-web"
+        assert registered.disallow_hosted_search_launch_suffix == " --no-search"

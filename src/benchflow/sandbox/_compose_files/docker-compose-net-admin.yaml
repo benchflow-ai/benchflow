@@ -1,0 +1,4 @@
+services:
+  main:
+    cap_add:
+      - NET_ADMIN

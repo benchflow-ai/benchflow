@@ -108,6 +108,14 @@ class TestResolveAgent:
             wrapped.disallow_web_tools_launch_suffix
             == underlying.disallow_web_tools_launch_suffix
         )
+        assert (
+            wrapped.disallow_hosted_search_setup_cmd
+            == underlying.disallow_hosted_search_setup_cmd
+        )
+        assert (
+            wrapped.disallow_hosted_search_launch_suffix
+            == underlying.disallow_hosted_search_launch_suffix
+        )
 
     def test_acpx_cached_config_keeps_api_protocol(self):
         """Regression for PR #322: the cached acpx runtime key in AGENTS must

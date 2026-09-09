@@ -760,6 +760,8 @@ def hardening_summary_md(
         cfg = {
             "network_mode": _cell_network_config(cell),
             "allowed_hosts": cell.raw.get("allowed_hosts"),
+            "blocked_urls": cell.raw.get("blocked_urls"),
+            "blocked_hosts": cell.raw.get("blocked_hosts"),
         }
         gate_id, status, detail = rubric_checks.network_hardening(
             cfg, verifier_or_sandbox_pr=verifier_or_sandbox_pr
@@ -794,10 +796,11 @@ def hardening_summary_md(
 def _cell_network_config(cell: Cell) -> str | None:
     """Map the cell's EXPECTED network_mode (Q3) to a NetworkMode literal.
 
-    The cell carries ``network_mode`` as ``default-off`` | ``allowlist`` (Q3:
-    derived from the task config, NOT passed to bench). Translate to the
-    benchflow ``NetworkMode`` literals the static checker understands, or use an
-    explicit per-cell ``network_mode`` override if the planner emitted one.
+    The cell carries ``network_mode`` as ``default-off`` | ``allowlist`` |
+    ``denylist`` (Q3: derived from the task config, NOT passed to bench).
+    Translate to the benchflow ``NetworkMode`` literals the static checker
+    understands, or use an explicit per-cell ``network_mode`` override if the
+    planner emitted one.
     """
     explicit = cell.raw.get("network_mode")
     mode = str(explicit) if explicit is not None else "default-off"
@@ -806,6 +809,8 @@ def _cell_network_config(cell: Cell) -> str | None:
         return "no-network"
     if norm == "allowlist":
         return "allowlist"
+    if norm == "denylist":
+        return "denylist"
     if norm == "public":
         return "public"
     return None
