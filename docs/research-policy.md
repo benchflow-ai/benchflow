@@ -42,7 +42,7 @@ search-result titles and fetched text; content hashes cover exact binary or text
 bodies.
 
 The optional top-level `search_endpoint` selects an HTTP(S) search HTML
-endpoint. It defaults to DuckDuckGo's HTML endpoint.
+endpoint. It defaults to DuckDuckGo's Lite HTML endpoint.
 
 ## Enforcement model
 

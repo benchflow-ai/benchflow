@@ -183,6 +183,7 @@ def test_search_filters_denied_urls_and_titles(monkeypatch) -> None:
     """Guards PR #1112 for FrontierPhysics #365 by suppressing blocked-paper discovery results."""
     page = b"""
     <a class="result__a" href="https://allowed.example/a">Allowed result</a>
+    <a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fallowed.example%2Fb">Lite result</a>
     <a class="result__a" href="https://papers.example/abs/365">Hidden by URL</a>
     <a class="result__a" href="https://mirror.example/x">Secret Paper Title</a>
     """
@@ -195,7 +196,8 @@ def test_search_filters_denied_urls_and_titles(monkeypatch) -> None:
     )
 
     assert runtime._search(_runtime_policy(), "allowed topic", 10) == [
-        {"title": "Allowed result", "url": "https://allowed.example/a"}
+        {"title": "Allowed result", "url": "https://allowed.example/a"},
+        {"title": "Lite result", "url": "https://allowed.example/b"},
     ]
 
 
@@ -312,6 +314,66 @@ def test_claude_subscription_auth_uses_fixed_research_relay() -> None:
     assert updated["ANTHROPIC_BASE_URL"] == RESEARCH_ANTHROPIC_RELAY_BASE
     assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == RESEARCH_ANTHROPIC_RELAY_BASE
     assert updated["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test"
+
+
+@pytest.mark.asyncio
+async def test_primary_connect_routes_claude_subscription_before_firewall(
+    tmp_path,
+) -> None:
+    """The direct Rollout.connect path must match scene-based connect_as."""
+    seen: dict[str, dict[str, str]] = {}
+
+    async def ensure_litellm_runtime(**kwargs):
+        return kwargs["agent_env"], None
+
+    async def enforce_firewall(_env, _user, agent_env):
+        seen["firewall"] = dict(agent_env)
+
+    async def connect_acp(**kwargs):
+        seen["connect"] = dict(kwargs["agent_env"])
+        return None, None, None, "claude-agent-acp"
+
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path,
+            agent="claude-agent-acp",
+            model="claude-haiku-4-5-20251001",
+        )
+    )
+    rollout._planes = SimpleNamespace(
+        ensure_litellm_runtime=ensure_litellm_runtime,
+        enforce_agent_egress_firewall=enforce_firewall,
+        connect_acp=connect_acp,
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._rollout_name = "primary-connect"
+    rollout._env = object()
+    rollout._agent_env = {
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test",
+        "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+    }
+    rollout._research_policy = object()
+    rollout._agent_cfg = AGENTS["claude-agent-acp"]
+    rollout._agent_launch = "claude-agent-acp"
+    rollout._agent_cwd = "/app"
+    rollout._timeout = 60
+    rollout._required_skill_names = ()
+    rollout._disallow_web_tools = True
+    rollout._timing = {}
+    (tmp_path / "config.json").write_text(
+        json.dumps({"research_policy": {"enforced": False}})
+    )
+
+    await rollout.connect()
+
+    assert seen["firewall"]["ANTHROPIC_BASE_URL"] == (RESEARCH_ANTHROPIC_RELAY_BASE)
+    assert seen["connect"]["ANTHROPIC_BASE_URL"] == RESEARCH_ANTHROPIC_RELAY_BASE
+    assert (
+        json.loads((tmp_path / "config.json").read_text())["research_policy"][
+            "enforced"
+        ]
+        is True
+    )
 
 
 @pytest.mark.parametrize(

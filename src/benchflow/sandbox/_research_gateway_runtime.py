@@ -251,7 +251,7 @@ class _SearchParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
         classes = (values.get("class") or "").split()
-        if tag == "a" and "result__a" in classes:
+        if tag == "a" and {"result__a", "result-link"} & set(classes):
             self._href = values.get("href")
             self._title = []
 

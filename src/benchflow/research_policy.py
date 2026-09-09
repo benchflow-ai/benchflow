@@ -28,7 +28,7 @@ RESEARCH_GATEWAY_PORT = 8765
 RESEARCH_ANTHROPIC_RELAY_BASE = (
     f"http://127.0.0.1:{RESEARCH_GATEWAY_PORT}/provider/anthropic"
 )
-_DEFAULT_SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
+_DEFAULT_SEARCH_ENDPOINT = "https://lite.duckduckgo.com/lite/"
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 

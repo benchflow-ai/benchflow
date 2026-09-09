@@ -1349,6 +1349,7 @@ class Rollout:
             model=cfg.primary_model,
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
+            reasoning_effort=cfg.primary_reasoning_effort,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
@@ -1361,6 +1362,9 @@ class Rollout:
         if egress_denylist is not None:
             self._agent_env = denylist_agent_env(self._agent_env)
         if getattr(self, "_research_policy", None) is not None:
+            self._agent_env = route_native_subscription_auth(
+                cfg.primary_agent, cfg.primary_model, self._agent_env
+            )
             # Install the UID firewall before the agent process starts. The
             # generic ACP path checks it again after bootstrap, but doing it
             # here closes the launch-to-session window and also covers native
@@ -2398,6 +2402,7 @@ class Rollout:
             model=role.model,
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
+            reasoning_effort=role.reasoning_effort,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,

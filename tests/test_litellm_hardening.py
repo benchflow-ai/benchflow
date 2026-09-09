@@ -372,6 +372,10 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     # config.yaml uses os.environ/ refs, so the secret is not inlined there either.
     config_files = [k for k in sandbox.uploaded if k.endswith("config.yaml")]
     assert config_files and secret not in sandbox.uploaded[config_files[0]]
+    install_command = next(call for call in sandbox.exec_calls if "pip install" in call)
+    assert "export OPENSSL_armcap=0" in install_command
+    launch_config = json.loads(sandbox.uploaded[launch_files[0]])
+    assert launch_config["env"]["OPENSSL_armcap"] == "0"
     launch_command = next(call for call in sandbox.exec_calls if "launcher.py" in call)
     assert f"rc=$?; rm -f {launch_files[0]}; exit $rc" in launch_command
 
