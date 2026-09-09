@@ -45,6 +45,14 @@ See [`progressive-disclosure.md`](./progressive-disclosure.md#per-task-hardening
 
 `network_mode: denylist` keeps the internet reachable and makes a list of URLs and hosts unreachable for the agent. The use case is a task built from a published paper: the agent may search and read freely, but the paper, its mirrors, and its code repository are off limits ([benchflow-ai/FrontierPhysics#365](https://github.com/benchflow-ai/FrontierPhysics/issues/365)).
 
+This is a shared sandbox policy, independent of the task's domain, harness name,
+model identifier, or provider. Every supported ACP harness, including custom
+registrations, receives the same proxy, certificates and UID firewall. Primary
+connections and later roles use the same enforcement path. Model compatibility
+is still governed by each harness/provider adapter. The requirements and hosted
+fetch limitations below apply regardless of model; they are not exceptions for
+particular model names.
+
 ```yaml
 sandbox:
   network_mode: denylist
@@ -61,21 +69,42 @@ See [task authoring](./task-authoring-task-md.md#network-policy) for the field r
 
 1. **Loopback proxy.** Before the agent starts, benchflow uploads a stdlib Python proxy (`src/benchflow/sandbox/_egress_denylist_proxy.py`) and starts it as root on `127.0.0.1:18628`. A request that matches the denylist gets `403 Forbidden` with an `X-BenchFlow-Blocked: 1` header; everything else is tunneled to its destination.
 2. **Uid firewall.** The same `iptables` owner rule that backs the no-web mode lets the sandbox user reach loopback only. Every other outbound packet from that uid is rejected, so the proxy is the only way out. `iptables` is installed on first use (apt, dnf, or apk) when the image lacks it.
-3. **Proxy and CA environment.** The agent env gets `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, and `NODE_USE_ENV_PROXY`, plus the `BENCHFLOW_EGRESS_DENYLIST=1` marker that arms the firewall. These are added after the sandbox-local LiteLLM gateway starts, so model traffic does not pass through the egress proxy.
+3. **Proxy and CA environment.** The agent env gets `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, and `NODE_USE_ENV_PROXY`, plus the `BENCHFLOW_EGRESS_DENYLIST=1` marker that arms the firewall. These are added after the sandbox-local LiteLLM gateway starts, so the gateway's upstream provider traffic does not pass through the egress proxy.
 4. **Selective TLS interception.** Hosts named in `blocked_urls` need their paths inspected, so the proxy terminates TLS for those hosts with a leaf certificate signed by a per-rollout CA (`BenchFlow egress policy CA`). Certificates are minted on the host; the CA private key never enters the sandbox. Hosts in `blocked_hosts` are refused at `CONNECT` time, and every other host passes through as an opaque tunnel.
 5. **Hosted search off.** Provider-side search tools fetch pages from the model provider's servers, outside the sandbox, so the proxy cannot see them. Benchflow disables them per harness:
 
    | Harness | Switched off | Still on |
    |---|---|---|
    | `claude-agent-acp` | `WebSearch` | `WebFetch` (fetches from inside the sandbox, through the proxy) |
-   | `codex-acp` | `tools.web_search` | |
+   | `codex-acp` | `web_search` (`CODEX_CONFIG`) | local shell tools |
    | `gemini` | `google_web_search`, `web_fetch` (tries a hosted fetch first) | |
    | `opencode`, `mimo` | `websearch` | `webfetch` |
    | other harnesses | nothing | whatever hosted tools they ship |
 
 6. **Block log.** Each refused attempt is appended to a root-owned log that benchflow downloads to `trajectory/egress_denylist.jsonl` in the rollout directory at cleanup: one JSON object per line with `ts`, `action`, `method`, `url`, and `rule` (`host:<host>`, `url:<host><path>`, or `ip-literal`). For a refused `CONNECT`, `url` holds the `host:port` the client asked for.
 
-Matching ignores scheme, port, query string, and case, strips a leading `www.`, and compares a normalized path: percent-encoding is decoded (repeatedly), `.` and `..` segments are resolved, duplicate slashes and backslashes collapse, and `;` path parameters are dropped, so `/abs/../abs/2401.12345` and `/abs/%2e%2e/abs/2401.12345` match the same entry as `/abs/2401.12345`. A `blocked_urls` entry blocks every path under it; a `blocked_hosts` entry blocks the host and its subdomains. Requests to addresses are refused in every notation a resolver accepts (dotted, decimal, hex, octal) and through wildcard DNS names that embed an address (`1-2-3-4.sslip.io`), so a blocked host cannot be reached by its address. A name the agent controls that resolves to the blocked address is not detected; that is the inherent limit of a hostname denylist. Before connecting anywhere, the proxy resolves the destination and refuses names that resolve to loopback, private, link-local, or other non-global addresses (cloud metadata included), so a hostname the agent controls cannot turn the root proxy into a bridge to sandbox-internal or host services. The uid firewall stays for the rest of the sandbox life, as in the no-web mode: a later oracle role in the same sandbox, and a verifier configured with `verifier.user` equal to the sandbox user, run without egress.
+The controller also registers the exact `127.0.0.1:<port>` endpoint of its local
+model gateway with the proxy. Clients such as Gemini's Undici `ProxyAgent`
+ignore `NO_PROXY` and tunnel even HTTP model calls through the egress proxy.
+Both direct and proxied requests can reach that one endpoint. This exception
+comes from the running provider gateway, never task metadata or agent-supplied
+environment variables; other IP addresses and private destinations remain
+blocked. Each reconnect registers the current gateway port.
+
+Codex runs in its `agent-full-access` session mode when BenchFlow has already
+selected a non-root sandbox user, unless the caller explicitly sets
+`INITIAL_AGENT_MODE`. This avoids nesting Codex's bubblewrap sandbox inside
+Docker or Daytona, where namespace creation can fail before a tool runs.
+BenchFlow's user, filesystem restrictions, proxy and UID firewall still apply.
+Hosted search is disabled through `CODEX_CONFIG.web_search`, including when a
+caller configured live search; codex-acp's CLI does not consume `-c` overrides.
+
+For OAuth runs, use the Claude Code harness (`claude-agent-acp`) with a bare
+Claude model and `CLAUDE_CODE_OAUTH_TOKEN`, without `ANTHROPIC_API_KEY`. Its
+native authenticated traffic passes through the same egress proxy, while
+`WebSearch` stays disabled and local requests still receive policy denials.
+
+Matching ignores scheme, port, query string, and case, strips a leading `www.`, and compares a normalized path: percent-encoding is decoded (repeatedly), `.` and `..` segments are resolved, duplicate slashes and backslashes collapse, and `;` path parameters are dropped, so `/abs/../abs/2401.12345` and `/abs/%2e%2e/abs/2401.12345` match the same entry as `/abs/2401.12345`. A `blocked_urls` entry blocks every path under it; a `blocked_hosts` entry blocks the host and its subdomains. Apart from the registered model gateway, requests to addresses are refused in every notation a resolver accepts (dotted, decimal, hex, octal) and through wildcard DNS names that embed an address (`1-2-3-4.sslip.io`), so a blocked host cannot be reached by its address. A name the agent controls that resolves to the blocked address is not detected; that is the inherent limit of a hostname denylist. For every other destination, the proxy resolves its address and refuses names that resolve to loopback, private, link-local, or other non-global addresses (cloud metadata included), so a hostname the agent controls cannot turn the root proxy into a bridge to sandbox-internal or host services. The uid firewall stays for the rest of the sandbox life, as in the no-web mode: a later oracle role in the same sandbox, and a verifier configured with `verifier.user` equal to the sandbox user, run without egress.
 
 ### Requirements
 

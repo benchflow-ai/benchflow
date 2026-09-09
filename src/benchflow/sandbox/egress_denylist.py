@@ -279,15 +279,34 @@ async def start_egress_denylist(
     sandbox_user: str | None,
     denylist: EgressDenylist,
     *,
+    model_gateway_url: str | None = None,
     timeout_sec: int = 120,
 ) -> None:
     """Upload policy, certificates and the proxy script, then start the proxy as root."""
     if not sandbox_user:
         raise RuntimeError("network_mode='denylist' requires a sandbox_user")
+    gateway_port = None
+    if model_gateway_url is not None:
+        gateway = urllib.parse.urlsplit(model_gateway_url)
+        if (
+            gateway.scheme != "http"
+            or gateway.hostname != "127.0.0.1"
+            or gateway.username is not None
+            or gateway.path not in ("", "/")
+            or gateway.query
+            or gateway.fragment
+            or gateway.port is None
+            or not 1024 <= gateway.port <= 65535
+        ):
+            raise ValueError(
+                "denylist model gateway must be a controller-owned loopback HTTP endpoint"
+            )
+        gateway_port = gateway.port
     material = certificate_material(denylist.inspect_hosts)
     policy = {
         "blocked_urls": list(denylist.blocked_urls),
         "blocked_hosts": list(denylist.blocked_hosts),
+        "model_gateway_port": gateway_port,
     }
     files = {
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),

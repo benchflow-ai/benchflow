@@ -621,6 +621,7 @@ async def connect_acp(
         agent_env,
         model=model,
         reasoning_effort=reasoning_effort,
+        sandboxed=bool(sandbox_user),
     )
     agent_env = await _prepare_openhands_direct_execution(
         env,

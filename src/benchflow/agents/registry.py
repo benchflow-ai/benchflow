@@ -670,8 +670,8 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],
         ),
-        disallow_web_tools_launch_suffix=" -c tools.web_search=false",
-        disallow_hosted_search_launch_suffix=" -c tools.web_search=false",
+        # codex-acp ignores CLI -c flags. codex_config applies the web policy
+        # through CODEX_CONFIG before launching the adapter.
     ),
     "gemini": AgentConfig(
         name="gemini",
