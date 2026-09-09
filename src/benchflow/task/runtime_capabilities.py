@@ -281,6 +281,13 @@ def _append_network_issue(
             reason="network allowlists are parsed but not enforced per sandbox",
             sandbox=sandbox,
         )
+    if mode == NetworkMode.BLOCKLIST:
+        _issue(
+            unsupported,
+            path=path,
+            reason="network blocklists are parsed but not enforced per sandbox",
+            sandbox=sandbox,
+        )
 
 
 def _append_document_issues(

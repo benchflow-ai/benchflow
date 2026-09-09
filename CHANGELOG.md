@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+- **`network_mode = "blocklist"` with `blocked_urls`.** Task configs (`agent`,
+  `sandbox`, and `verifier` sections) can now declare a list of hosts or
+  `host/path-prefix` entries that must stay unreachable while every other
+  destination remains open — the inverse of `allowlist`, for experiments that
+  hide specific papers or pages from a web-enabled agent. Entries accept pasted
+  `http(s)://` URLs and are normalized to `host[/path]`; ports, query strings,
+  fragments, and wildcards are rejected. Like `allowlist`, the mode is parsed
+  and validated but not yet enforced by any sandbox backend, and
+  `validate_task_runtime_support` reports it as an unsupported feature until
+  the egress layer lands.
+
 ## 0.7.6 — 2026-09-04
 
 ### Added

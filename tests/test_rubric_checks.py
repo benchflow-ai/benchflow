@@ -257,6 +257,28 @@ def test_network_hardening_public_is_blocker_on_verifier_sandbox_pr() -> None:
     assert sandbox[1] == "fail"
 
 
+def test_network_hardening_blocklist_is_graded_like_public() -> None:
+    """Guards the blocklist schema PR: open egress minus blocked_urls is not hardened."""
+    normal = rubric_checks.network_hardening(
+        {"network_mode": "blocklist", "blocked_urls": ["arxiv.org/abs/2401.12345"]}
+    )
+    assert normal[1] == "quarantine"
+    sandbox = rubric_checks.network_hardening(
+        {"network_mode": "blocklist", "blocked_urls": ["arxiv.org/abs/2401.12345"]},
+        verifier_or_sandbox_pr=True,
+    )
+    assert sandbox[1] == "fail"
+    # An empty blocklist, or blocked_urls under any other mode, is a misconfiguration.
+    assert rubric_checks.network_hardening({"network_mode": "blocklist"})[1] == "fail"
+    assert (
+        rubric_checks.network_hardening(
+            {"network_mode": "no-network", "blocked_urls": ["arxiv.org"]}
+        )[1]
+        == "fail"
+    )
+    assert rubric_checks.network_hardening({"blocked_urls": ["arxiv.org"]})[1] == "fail"
+
+
 # ------------------------------------------------------------------
 # Pinned-baseline reward-band parity (subprocess wrapper; needs benchflow).
 # ------------------------------------------------------------------

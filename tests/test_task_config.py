@@ -481,3 +481,151 @@ def test_task_config_toml_converts_step_verifier_environment_with_indexed_error(
             "[steps.verifier.environment]\ncpus = 2\n"
             "[steps.verifier.sandbox]\ncpus = 3\n"
         )
+
+
+# ------------------------------------------------------------------
+# network_mode = "blocklist" / blocked_urls (schema only; enforcement is a
+# follow-up PR — see runtime_capabilities for the unsupported-feature report).
+# ------------------------------------------------------------------
+
+
+def test_task_config_accepts_blocklist_network_mode_in_every_section():
+    """Guards the blocklist schema PR: the mode parses wherever network_mode does."""
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n'
+        "[agent]\n"
+        'network_mode = "blocklist"\n'
+        'blocked_urls = ["arxiv.org/abs/2401.12345"]\n'
+        "[verifier]\n"
+        'network_mode = "blocklist"\n'
+        'blocked_urls = ["openreview.net"]\n'
+        "[sandbox]\n"
+        'network_mode = "blocklist"\n'
+        'blocked_urls = ["https://arxiv.org/abs/2401.12345", "openreview.net"]\n'
+    )
+
+    assert cfg.agent.network_mode == NetworkMode.BLOCKLIST
+    assert cfg.agent.blocked_urls == ["arxiv.org/abs/2401.12345"]
+    assert cfg.verifier.network_mode == NetworkMode.BLOCKLIST
+    assert cfg.verifier.blocked_urls == ["openreview.net"]
+    assert cfg.sandbox.network_mode == NetworkMode.BLOCKLIST
+    assert cfg.sandbox.blocked_urls == ["arxiv.org/abs/2401.12345", "openreview.net"]
+    # A blocklist keeps the internet open — it never collapses to no-network.
+    assert cfg.sandbox.allow_internet is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://ArXiv.org/abs/2401.12345", "arxiv.org/abs/2401.12345"),
+        ("http://arxiv.org/abs/2401.12345/", "arxiv.org/abs/2401.12345"),
+        ("  OpenReview.net.  ", "openreview.net"),
+        ("arxiv.org/pdf/2401.12345v2", "arxiv.org/pdf/2401.12345v2"),
+        ("Semantic-Scholar.org/", "semantic-scholar.org"),
+    ],
+)
+def test_blocked_urls_normalize_to_host_and_path_prefix(raw, expected):
+    """Pasted paper URLs land in the exact ``host[/path]`` form the egress layer matches."""
+    cfg = TaskConfig.model_validate(
+        {"sandbox": {"network_mode": "blocklist", "blocked_urls": [raw]}}
+    )
+    assert cfg.sandbox.blocked_urls == [expected]
+
+
+def test_blocked_urls_deduplicate_after_normalization():
+    cfg = TaskConfig.model_validate(
+        {
+            "sandbox": {
+                "network_mode": "blocklist",
+                "blocked_urls": [
+                    "https://arxiv.org/abs/2401.12345",
+                    "ARXIV.ORG/abs/2401.12345/",
+                    "openreview.net",
+                ],
+            }
+        }
+    )
+    assert cfg.sandbox.blocked_urls == ["arxiv.org/abs/2401.12345", "openreview.net"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("", "non-empty"),
+        ("ftp://arxiv.org/abs/1", r"http\(s\) URLs"),
+        ("*.arxiv.org", "wildcards"),
+        ("arxiv.org/abs?id=1", "query strings"),
+        ("arxiv.org/abs#frag", "query strings or fragments"),
+        ("user@arxiv.org", "userinfo"),
+        ("arxiv.org:443/abs/1", "ports"),
+        ("/abs/2401.12345", "start with a hostname"),
+        ("arx_iv.org", "hostnames must contain only"),
+        ("arxiv.org/abs/2401 12345", "whitespace"),
+    ],
+)
+def test_blocked_urls_reject_unmatchable_entries(raw, message):
+    """Anything the host-suffix/path-prefix matcher cannot honor fails at parse time."""
+    with pytest.raises(ValueError, match=message):
+        TaskConfig.model_validate(
+            {"sandbox": {"network_mode": "blocklist", "blocked_urls": [raw]}}
+        )
+
+
+def test_blocklist_requires_non_empty_blocked_urls():
+    with pytest.raises(ValueError, match="blocked_urls must be non-empty"):
+        TaskConfig.model_validate({"sandbox": {"network_mode": "blocklist"}})
+    with pytest.raises(ValueError, match="blocked_urls must be non-empty"):
+        TaskConfig.model_validate(
+            {"sandbox": {"network_mode": "blocklist", "blocked_urls": []}}
+        )
+
+
+@pytest.mark.parametrize("mode", ["public", "no-network", "allowlist"])
+def test_blocked_urls_only_valid_with_blocklist_mode(mode):
+    data: dict = {"network_mode": mode, "blocked_urls": ["arxiv.org"]}
+    if mode == "allowlist":
+        data["allowed_hosts"] = ["api.example.com"]
+    with pytest.raises(ValueError, match="only valid for network_mode='blocklist'"):
+        TaskConfig.model_validate({"sandbox": data})
+
+
+def test_blocklist_rejects_allowed_hosts():
+    """allowed_hosts and blocked_urls are mutually exclusive policy shapes."""
+    with pytest.raises(ValueError, match="only valid for network_mode='allowlist'"):
+        TaskConfig.model_validate(
+            {
+                "sandbox": {
+                    "network_mode": "blocklist",
+                    "blocked_urls": ["arxiv.org"],
+                    "allowed_hosts": ["api.example.com"],
+                }
+            }
+        )
+
+
+def test_blocklist_contradicts_deprecated_allow_internet_false():
+    """The deprecated flag must not silently downgrade an explicit blocklist."""
+    with pytest.raises(ValueError, match="allow_internet=False contradicts"):
+        TaskConfig.model_validate(
+            {
+                "sandbox": {
+                    "network_mode": "blocklist",
+                    "blocked_urls": ["arxiv.org"],
+                    "allow_internet": False,
+                }
+            }
+        )
+
+
+def test_blocklist_round_trips_through_toml_dump():
+    cfg = TaskConfig.model_validate(
+        {
+            "sandbox": {
+                "network_mode": "blocklist",
+                "blocked_urls": ["https://arxiv.org/abs/2401.12345"],
+            }
+        }
+    )
+    reparsed = TaskConfig.model_validate_toml(cfg.model_dump_toml())
+    assert reparsed.sandbox.network_mode == NetworkMode.BLOCKLIST
+    assert reparsed.sandbox.blocked_urls == ["arxiv.org/abs/2401.12345"]

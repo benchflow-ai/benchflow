@@ -1127,3 +1127,32 @@ def test_sandbox_launch_allows_supported_legacy_task(tmp_path: Path) -> None:
 
     docker_sandbox.assert_called_once()
     assert result is docker_sandbox.return_value
+
+
+def test_validator_reports_blocklist_as_runtime_gap() -> None:
+    """Guards the blocklist schema PR: parsed blocklists stay unsupported until enforced."""
+    config = TaskConfig.model_validate(
+        {
+            "agent": {
+                "network_mode": "blocklist",
+                "blocked_urls": ["arxiv.org/abs/2401.12345"],
+            },
+            "sandbox": {
+                "network_mode": "blocklist",
+                "blocked_urls": ["openreview.net"],
+            },
+        }
+    )
+
+    issues = validate_task_runtime_support(config, sandbox="docker")
+
+    assert [(issue.path, issue.reason) for issue in issues] == [
+        (
+            "agent.network_mode",
+            "network blocklists are parsed but not enforced per sandbox",
+        ),
+        (
+            "sandbox.network_mode",
+            "network blocklists are parsed but not enforced per sandbox",
+        ),
+    ]
