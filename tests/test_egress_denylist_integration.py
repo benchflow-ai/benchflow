@@ -6,6 +6,8 @@ These tests exercise actual sockets as the sandbox user without a model API.
 Set BENCHFLOW_DENYLIST_MODEL and provider credentials to also run a full
 model rollout (Gemini by default). BENCHFLOW_DENYLIST_AGENT and
 BENCHFLOW_DENYLIST_EFFORT select a different native harness and effort.
+BENCHFLOW_DENYLIST_AGENT_ENV supplies native settings as a JSON object, e.g.
+``{"LLM_REASONING_EFFORT":"xhigh"}`` for OpenHands (which has no ACP effort option).
 """
 
 from __future__ import annotations
@@ -245,6 +247,7 @@ async def test_research_denylist_model_rollout(tmp_path: Path, backend: str):
             ],
             environment=backend,
             jobs_dir=tmp_path / "jobs",
+            agent_env=json.loads(os.environ.get("BENCHFLOW_DENYLIST_AGENT_ENV", "{}")),
             timeout=600,
         )
     )
