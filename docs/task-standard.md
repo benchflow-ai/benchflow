@@ -839,7 +839,7 @@ Current implementation status:
 | `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
 | imported `steps` | yes | no/partial | fail closed per sandbox until implemented |
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
-| network allowlist | yes | no/partial | per-sandbox capability check |
+| network allowlist / blocklist | yes | agent scope only | enforced for the agent by the in-sandbox egress filter and uid firewall on Docker, Daytona, and Modal; the verifier scope and other backends fail closed |
 | separate verifier env | yes | no/partial | materializer plus verifier runner support |
 | Windows / TPU | yes | no | fail closed |
 | healthcheck | yes | no/partial | fail closed until sandbox healthcheck support lands |
@@ -943,7 +943,7 @@ validate_task_runtime_support(task, *, sandbox, task_dir) -> list[UnsupportedTas
 ```
 
 It reports stable config paths and reasons for unsupported `steps`, root/step
-`artifacts`, allowlists, separate verifier environments, Windows, TPU,
+`artifacts`, network policies on scopes or backends that cannot enforce them, separate verifier environments, Windows, TPU,
 healthchecks, unsafe workdirs, document-only `user`/`benchflow` runtime
 semantics, and non-`main` verifier services on backends that cannot run them.
 It is wired into `bench tasks check --sandbox <backend>` and the shared sandbox
