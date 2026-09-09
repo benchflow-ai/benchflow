@@ -913,7 +913,9 @@ class Rollout:
     # through it. The oracle has no model and keeps the task's own network.
 
     def _network_policy_for(self, agent: str) -> NetworkPolicy | None:
-        return None if agent == "oracle" else self._network_policy
+        if agent == "oracle":
+            return None
+        return getattr(self, "_network_policy", None)
 
     def _require_enforceable_network_policy(self, cfg: RolloutConfig) -> None:
         """Refuse a policy the run could not hold rather than run it advisory."""
@@ -1369,7 +1371,7 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=self._disallow_web_tools
+            force_sandbox_local=getattr(self, "_disallow_web_tools", False)
             or self._network_policy_for(cfg.primary_agent) is not None,
             network_policy=self._network_policy_for(cfg.primary_agent),
         )
@@ -2438,12 +2440,10 @@ class Rollout:
         self._agent_launch = agent_launch
 
         sf_entrypoint = self._session_factory_entrypoint(role.agent)
-        if (
-            sf_entrypoint is not None
-            and self._network_policy_for(role.agent) is not None
-        ):
+        role_policy = self._network_policy_for(role.agent)
+        if sf_entrypoint is not None and role_policy is not None:
             raise RuntimeError(
-                f"network_mode='{self._network_policy.mode.value}' is not enforced "
+                f"network_mode='{role_policy.mode.value}' is not enforced "
                 f"for session-factory agent {role.agent!r}"
             )
         self._is_session_factory = sf_entrypoint is not None
