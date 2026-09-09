@@ -138,7 +138,7 @@ class FakePlanes:
     def resolve_agent_env(self, agent, model, agent_env):
         return dict(agent_env or {})
 
-    def agent_launch(self, agent, *, disallow_web_tools):
+    def agent_launch(self, agent, *, disallow_web_tools, disallow_hosted_search=False):
         return "oracle"
 
     def inject_skills_into_dockerfile(
