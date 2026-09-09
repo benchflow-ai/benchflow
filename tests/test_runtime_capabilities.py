@@ -128,7 +128,11 @@ def test_runtime_view_preserves_legacy_split_packages(tmp_path: Path) -> None:
 
 
 def test_validator_reports_allowlist_as_runtime_gap() -> None:
-    """Parsed allowlists are invalid for launch until a sandbox enforces them."""
+    """Allowlists are invalid for launch only where no egress filter enforces them.
+
+    The agent's mode overrides the sandbox default, so only the scope the
+    agent runs under is reported.
+    """
     config = TaskConfig.model_validate(
         {
             "agent": {
@@ -142,12 +146,11 @@ def test_validator_reports_allowlist_as_runtime_gap() -> None:
         }
     )
 
-    issues = validate_task_runtime_support(config, sandbox="docker")
+    assert validate_task_runtime_support(config, sandbox="docker") == []
 
-    assert [issue.path for issue in issues] == [
-        "agent.network_mode",
-        "sandbox.network_mode",
-    ]
+    issues = validate_task_runtime_support(config, sandbox="agentcore")
+
+    assert [issue.path for issue in issues] == ["agent.network_mode"]
 
 
 def test_validator_reports_unknown_sandbox_backend() -> None:
