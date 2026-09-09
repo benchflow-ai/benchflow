@@ -493,6 +493,30 @@ async def test_network_policy_marker_turns_on_the_loopback_firewall() -> None:
     assert env.exec.await_args.kwargs == {"user": "root", "timeout_sec": 120}
 
 
+async def test_filter_is_the_loopback_exit_without_a_model_proxy() -> None:
+    """Native subscription auth has no model proxy; the filter stands in."""
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0))
+
+    await enforce_agent_egress_firewall(
+        env,
+        "agent",
+        {NETWORK_POLICY_MARKER_ENV: "1", "HTTPS_PROXY": "http://127.0.0.1:4100"},
+    )
+
+    env.exec.assert_awaited_once()
+    # The no-web policy alone still needs the model proxy.
+    with pytest.raises(RuntimeError, match="loopback provider base URL"):
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "HTTPS_PROXY": "http://127.0.0.1:4100",
+            },
+        )
+
+
 # Starting the filter inside a sandbox.
 
 

@@ -167,6 +167,11 @@ async def enforce_agent_egress_firewall(
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
         "LLM_BASE_URL", ""
     )
+    if not base_url and agent_env.get("BENCHFLOW_NETWORK_POLICY") == "1":
+        # Native subscription auth runs without a model proxy; under a
+        # filtering policy the egress filter is the agent's loopback exit and
+        # carries the provider traffic as an ordinary tunnel.
+        base_url = agent_env.get("HTTPS_PROXY", "")
     parsed = urlsplit(base_url)
     if (
         parsed.scheme != "http"
