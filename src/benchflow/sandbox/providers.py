@@ -41,6 +41,9 @@ class SandboxProvider:
     #: registry instead of growing a ``sandbox == "<name>"`` special case per
     #: backend that cannot isolate the network.
     enforces_no_network: bool = True
+    #: Whether the backend can run the in-sandbox egress filter and the uid
+    #: firewall that make ``allowlist`` and ``blocklist`` fail closed.
+    enforces_egress_policy: bool = True
     #: Whether the backend can run a task's docker-compose side services.
     #: ``False`` means a multi-service task must be refused, not run partially.
     supports_compose: bool = False
@@ -77,6 +80,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         extra=None,
         model_proxy=ModelProxyLocation.SANDBOX,
         enforces_no_network=False,
+        enforces_egress_policy=False,
     ),
     SandboxProvider(
         "agentcore",
@@ -86,6 +90,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         # accepts PUBLIC or VPC — there is no isolated mode, so a no-network
         # task cannot be honored here.
         enforces_no_network=False,
+        enforces_egress_policy=False,
     ),
 )
 
@@ -114,6 +119,10 @@ SINGLE_CONTAINER_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "no-network"``.
 NO_NETWORK_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_no_network
+)
+#: Providers that cannot enforce ``network_mode = "allowlist" | "blocklist"``.
+EGRESS_POLICY_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if not p.enforces_egress_policy
 )
 
 

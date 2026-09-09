@@ -157,6 +157,7 @@ class NetworkMode(StrEnum):
     NO_NETWORK = "no-network"
     PUBLIC = "public"
     ALLOWLIST = "allowlist"
+    BLOCKLIST = "blocklist"
 
 
 class TaskOS(StrEnum):
@@ -202,14 +203,45 @@ def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
     return normalized
 
 
+_BLOCKED_URL_HELP = (
+    "blocked_urls entries must start with a valid hostname, optionally followed "
+    "by a path, e.g. 'arxiv.org/abs/2401.01234'"
+)
+
+
+def _validate_blocked_urls(urls: list[str] | None) -> list[str] | None:
+    """Store entries exactly as the egress filter will match them."""
+    if urls is None:
+        return None
+    from benchflow.sandbox.egress_filter import Rule
+
+    normalized: list[str] = []
+    for raw_url in urls:
+        try:
+            rule = Rule.parse(raw_url)
+        except ValueError as exc:
+            raise ValueError(f"{_BLOCKED_URL_HELP}: {exc}") from exc
+        if not all(
+            _NETWORK_HOST_LABEL_PATTERN.match(label) for label in rule.host.split(".")
+        ):
+            raise ValueError(f"{_BLOCKED_URL_HELP}: {raw_url!r}")
+        normalized.append(str(rule))
+    return normalized
+
+
 def _validate_network_policy_fields(
     network_mode: NetworkMode | None,
     allowed_hosts: list[str] | None,
+    blocked_urls: list[str] | None = None,
 ) -> None:
     if network_mode == NetworkMode.ALLOWLIST and not allowed_hosts:
         raise ValueError("allowed_hosts must be non-empty for network_mode='allowlist'")
     if network_mode != NetworkMode.ALLOWLIST and allowed_hosts:
         raise ValueError("allowed_hosts is only valid for network_mode='allowlist'")
+    if network_mode == NetworkMode.BLOCKLIST and not blocked_urls:
+        raise ValueError("blocked_urls must be non-empty for network_mode='blocklist'")
+    if network_mode != NetworkMode.BLOCKLIST and blocked_urls:
+        raise ValueError("blocked_urls is only valid for network_mode='blocklist'")
 
 
 class Author(TaskConfigModel):
@@ -416,6 +448,10 @@ class VerifierConfig(TaskConfigModel):
         default=None,
         description="Hostnames reachable when network_mode='allowlist'.",
     )
+    blocked_urls: list[str] | None = Field(
+        default=None,
+        description="Hosts or URL prefixes unreachable when network_mode='blocklist'.",
+    )
     sandbox_mode: VerifierSandboxMode | None = Field(
         default=None,
         description=(
@@ -467,6 +503,11 @@ class VerifierConfig(TaskConfigModel):
     def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
+    @field_validator("blocked_urls")
+    @classmethod
+    def validate_blocked_urls(cls, urls: list[str] | None) -> list[str] | None:
+        return _validate_blocked_urls(urls)
+
     @field_validator("reward_range")
     @classmethod
     def validate_reward_range(
@@ -488,7 +529,9 @@ class VerifierConfig(TaskConfigModel):
 
     @model_validator(mode="after")
     def validate_verifier_sandbox(self) -> VerifierConfig:
-        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        _validate_network_policy_fields(
+            self.network_mode, self.allowed_hosts, self.blocked_urls
+        )
         if self.sandbox_mode == VerifierSandboxMode.SHARED and self.sandbox is not None:
             raise ValueError(
                 "[verifier].sandbox_mode='shared' is incompatible with "
@@ -529,6 +572,10 @@ class AgentConfig(TaskConfigModel):
         default=None,
         description="Hostnames reachable when network_mode='allowlist'.",
     )
+    blocked_urls: list[str] | None = Field(
+        default=None,
+        description="Hosts or URL prefixes unreachable when network_mode='blocklist'.",
+    )
 
     @field_validator("prompt_prefix")
     @classmethod
@@ -545,9 +592,16 @@ class AgentConfig(TaskConfigModel):
     def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
+    @field_validator("blocked_urls")
+    @classmethod
+    def validate_blocked_urls(cls, urls: list[str] | None) -> list[str] | None:
+        return _validate_blocked_urls(urls)
+
     @model_validator(mode="after")
     def validate_network_policy(self) -> AgentConfig:
-        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        _validate_network_policy_fields(
+            self.network_mode, self.allowed_hosts, self.blocked_urls
+        )
         return self
 
 
@@ -725,6 +779,10 @@ class SandboxConfig(TaskConfigModel):
         default=None,
         description="Hostnames reachable when network_mode='allowlist'.",
     )
+    blocked_urls: list[str] | None = Field(
+        default=None,
+        description="Hosts or URL prefixes unreachable when network_mode='blocklist'.",
+    )
     build_timeout_sec: float = 600.0
     docker_image: str | None = Field(
         default=None,
@@ -812,6 +870,11 @@ class SandboxConfig(TaskConfigModel):
     def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
+    @field_validator("blocked_urls")
+    @classmethod
+    def validate_blocked_urls(cls, urls: list[str] | None) -> list[str] | None:
+        return _validate_blocked_urls(urls)
+
     @field_validator("os", mode="before")
     @classmethod
     def normalize_os(cls, value: Any) -> Any:
@@ -821,7 +884,9 @@ class SandboxConfig(TaskConfigModel):
 
     @model_validator(mode="after")
     def handle_deprecated_fields_and_network_policy(self) -> SandboxConfig:
-        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        _validate_network_policy_fields(
+            self.network_mode, self.allowed_hosts, self.blocked_urls
+        )
         memory = self.__dict__.get("memory")
         storage = self.__dict__.get("storage")
         if memory is not None:
@@ -862,7 +927,9 @@ class SandboxConfig(TaskConfigModel):
             self.allow_internet = False
         # Reconciliation must never leave the object in a state that
         # _validate_network_policy_fields itself rejects.
-        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        _validate_network_policy_fields(
+            self.network_mode, self.allowed_hosts, self.blocked_urls
+        )
         return self
 
 

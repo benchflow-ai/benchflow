@@ -126,6 +126,13 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
     )
 
 
+def _loopback_only_policy(agent_env: dict[str, str]) -> bool:
+    return "1" in (
+        agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS"),
+        agent_env.get("BENCHFLOW_NETWORK_POLICY"),
+    )
+
+
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     """Build a shell command that drops to sandbox_user via setpriv or su.
 
@@ -148,8 +155,13 @@ async def enforce_agent_egress_firewall(
     sandbox_user: str | None,
     agent_env: dict[str, str],
 ) -> None:
-    """Block sandbox-user external egress after ACP bootstrap, before prompting."""
-    if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
+    """Block sandbox-user external egress after ACP bootstrap, before prompting.
+
+    Applies under the no-web policy and under a filtering network policy
+    (``BENCHFLOW_NETWORK_POLICY=1``); both leave loopback, where the model
+    proxy and the egress filter listen, as the agent's only exit.
+    """
+    if not sandbox_user or not _loopback_only_policy(agent_env):
         return
 
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
@@ -162,7 +174,7 @@ async def enforce_agent_egress_firewall(
         or parsed.port is None
     ):
         raise RuntimeError(
-            "No-web agent requires an HTTP loopback provider base URL with a port"
+            "A loopback-only agent requires an HTTP loopback provider base URL with a port"
         )
 
     result = await env.exec(

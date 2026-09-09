@@ -17,6 +17,7 @@ from typing import cast
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
+    EGRESS_POLICY_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
     SINGLE_CONTAINER_PROVIDERS,
@@ -164,6 +165,8 @@ def _append_config_issues(
             sandbox=sandbox,
         )
 
+    # The agent's own mode overrides the sandbox default, so a sandbox-level
+    # filtering mode that the agent overrides never reaches the filter.
     _append_network_issue(
         unsupported,
         path="agent.network_mode",
@@ -175,12 +178,14 @@ def _append_config_issues(
         path="sandbox.network_mode",
         mode=config.sandbox.network_mode,
         sandbox=sandbox,
+        filtered=config.agent.network_mode is None,
     )
     _append_network_issue(
         unsupported,
         path="verifier.network_mode",
         mode=config.verifier.network_mode,
         sandbox=sandbox,
+        filtered=False,
     )
 
     if config.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE:
@@ -266,7 +271,9 @@ def _append_network_issue(
     path: str,
     mode: NetworkMode | None,
     sandbox: str,
+    filtered: bool = True,
 ) -> None:
+    """``filtered`` says whether this scope's mode is the one the agent runs under."""
     if mode == NetworkMode.NO_NETWORK and sandbox in NO_NETWORK_UNSUPPORTED_PROVIDERS:
         _issue(
             unsupported,
@@ -274,13 +281,21 @@ def _append_network_issue(
             reason=f"network_mode='no-network' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
-    if mode == NetworkMode.ALLOWLIST:
-        _issue(
-            unsupported,
-            path=path,
-            reason="network allowlists are parsed but not enforced per sandbox",
-            sandbox=sandbox,
-        )
+    if mode in {NetworkMode.ALLOWLIST, NetworkMode.BLOCKLIST}:
+        if path.startswith("verifier."):
+            _issue(
+                unsupported,
+                path=path,
+                reason=f"network_mode='{mode.value}' is enforced for the agent, not the verifier",
+                sandbox=sandbox,
+            )
+        elif filtered and sandbox in EGRESS_POLICY_UNSUPPORTED_PROVIDERS:
+            _issue(
+                unsupported,
+                path=path,
+                reason=f"network_mode='{mode.value}' is not enforced by {sandbox}",
+                sandbox=sandbox,
+            )
 
 
 def _append_document_issues(
