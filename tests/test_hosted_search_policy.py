@@ -427,6 +427,7 @@ def _rollout(
     task: Any,
     planes: Any,
     agent: str = "claude-agent-acp",
+    model: str = "test-model",
     sandbox_user: str | None = "agent",
 ) -> Rollout:
     task_dir = tmp_path / "task"
@@ -450,11 +451,67 @@ def _rollout(
     cfg = RolloutConfig(
         task_path=task_dir,
         agent=agent,
-        model="test-model",
+        model=model,
         sandbox_user=sandbox_user,
         planes=planes,
     )
     return Rollout(cfg)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [*sorted(AGENTS), "custom-denylist-acp"])
+@pytest.mark.parametrize(
+    "model", ["openai/model-a", "anthropic/model-b", "google/model-c", "custom/model-d"]
+)
+async def test_denylist_wiring_does_not_depend_on_harness_or_model(
+    tmp_path, monkeypatch, agent, model
+):
+    """Guards PR #1118's shared follow-up to #1113, including future ACP registrations.
+
+    Model identifiers are opaque to this policy layer. This checks wiring,
+    not whether each native harness speaks every provider's model protocol.
+    """
+    custom = agent == "custom-denylist-acp"
+    if custom:
+        register_agent(agent, "true", "true", protocol="acp")
+    try:
+        env = _fake_sandbox()
+        planes = _fake_planes(env)
+        runtime = SimpleNamespace(agent_base_url="http://127.0.0.1:12345")
+        planes.ensure_litellm_runtime.side_effect = lambda **k: (
+            k["agent_env"],
+            runtime,
+        )
+        rollout = _rollout(
+            tmp_path,
+            monkeypatch,
+            task=_denylist_task(),
+            planes=planes,
+            agent=agent,
+            model=model,
+        )
+        await rollout.setup()
+        await rollout.connect()
+        await rollout.disconnect()
+        await rollout.connect_as(Role(name="next", agent=agent, model=model))
+
+        assert planes.connect_acp.await_count == 2
+        for call in planes.ensure_litellm_runtime.await_args_list:
+            assert call.kwargs["force_sandbox_local"] is True
+            assert (call.kwargs["agent"], call.kwargs["model"]) == (agent, model)
+        for call in planes.start_egress_denylist.await_args_list:
+            assert call.args == (env, "agent", _DENYLIST)
+            assert call.kwargs == {"model_gateway_url": runtime.agent_base_url}
+        assert planes.start_egress_denylist.await_count == 2
+        for call in planes.connect_acp.await_args_list:
+            routed = call.kwargs["agent_env"]
+            assert routed[EGRESS_DENYLIST_ENV] == "1"
+            assert routed["HTTPS_PROXY"] == "http://127.0.0.1:18628"
+    finally:
+        if custom:
+            AGENTS.pop(agent, None)
+            AGENT_INSTALLERS.pop(agent, None)
+            AGENT_LAUNCH.pop(agent, None)
 
 
 @pytest.mark.asyncio

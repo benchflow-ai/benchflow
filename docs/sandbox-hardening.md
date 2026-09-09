@@ -45,6 +45,14 @@ See [`progressive-disclosure.md`](./progressive-disclosure.md#per-task-hardening
 
 `network_mode: denylist` keeps the internet reachable and makes a list of URLs and hosts unreachable for the agent. The use case is a task built from a published paper: the agent may search and read freely, but the paper, its mirrors, and its code repository are off limits ([benchflow-ai/FrontierPhysics#365](https://github.com/benchflow-ai/FrontierPhysics/issues/365)).
 
+This is a shared sandbox policy, independent of the task's domain, harness name,
+model identifier, or provider. Every supported ACP harness, including custom
+registrations, receives the same proxy, certificates and UID firewall. Primary
+connections and later roles use the same enforcement path. Model compatibility
+is still governed by each harness/provider adapter. The requirements and hosted
+fetch limitations below apply regardless of model; they are not exceptions for
+particular model names.
+
 ```yaml
 sandbox:
   network_mode: denylist
@@ -61,7 +69,7 @@ See [task authoring](./task-authoring-task-md.md#network-policy) for the field r
 
 1. **Loopback proxy.** Before the agent starts, benchflow uploads a stdlib Python proxy (`src/benchflow/sandbox/_egress_denylist_proxy.py`) and starts it as root on `127.0.0.1:18628`. A request that matches the denylist gets `403 Forbidden` with an `X-BenchFlow-Blocked: 1` header; everything else is tunneled to its destination.
 2. **Uid firewall.** The same `iptables` owner rule that backs the no-web mode lets the sandbox user reach loopback only. Every other outbound packet from that uid is rejected, so the proxy is the only way out. `iptables` is installed on first use (apt, dnf, or apk) when the image lacks it.
-3. **Proxy and CA environment.** The agent env gets `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, and `NODE_USE_ENV_PROXY`, plus the `BENCHFLOW_EGRESS_DENYLIST=1` marker that arms the firewall. These are added after the sandbox-local LiteLLM gateway starts, so model traffic does not pass through the egress proxy.
+3. **Proxy and CA environment.** The agent env gets `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, and `NODE_USE_ENV_PROXY`, plus the `BENCHFLOW_EGRESS_DENYLIST=1` marker that arms the firewall. These are added after the sandbox-local LiteLLM gateway starts, so the gateway's upstream provider traffic does not pass through the egress proxy.
 4. **Selective TLS interception.** Hosts named in `blocked_urls` need their paths inspected, so the proxy terminates TLS for those hosts with a leaf certificate signed by a per-rollout CA (`BenchFlow egress policy CA`). Certificates are minted on the host; the CA private key never enters the sandbox. Hosts in `blocked_hosts` are refused at `CONNECT` time, and every other host passes through as an opaque tunnel.
 5. **Hosted search off.** Provider-side search tools fetch pages from the model provider's servers, outside the sandbox, so the proxy cannot see them. Benchflow disables them per harness:
 
