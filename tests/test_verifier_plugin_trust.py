@@ -9,6 +9,8 @@ along, not whether it should have been.
 
 ``OLD_SCRIPT`` is the form these replace, kept so the contrast is asserted
 rather than described.
+
+These all guard PR #1117.
 """
 
 import json
@@ -95,7 +97,7 @@ class TestWorkspaceRegistrations:
     """A registration the agent could have authored must not be trusted."""
 
     def test_old_form_trusted_a_workspace_registration(self, tmp_path):
-        """The defect: enumeration alone, with nothing asked about the source.
+        """The defect PR #1117 fixes: enumeration, nothing asked about source.
 
         The sandbox user owns its workspace, so creating a dist-info there is
         an ordinary file write -- no pip, no root, nothing to intercept.
@@ -108,6 +110,7 @@ class TestWorkspaceRegistrations:
         assert "forged" in found
 
     def test_a_workspace_registration_is_rejected(self, tmp_path, script):
+        """Guards PR #1117: the forged dist-info no longer clears discovery."""
         _plant_registration(tmp_path, "forged", "forged", "forged")
         _plant_module(tmp_path, "forged")
 
@@ -116,7 +119,7 @@ class TestWorkspaceRegistrations:
         assert "forged" not in found
 
     def test_the_rejection_covers_a_dotted_entry_point(self, tmp_path, script):
-        """``pkg.plugin`` is the usual shape; only the top level is resolved."""
+        """Guards PR #1117 for ``pkg.plugin``, the usual entry point shape."""
         pkg = tmp_path / "forgedpkg"
         pkg.mkdir()
         (pkg / "__init__.py").write_text("")
@@ -128,7 +131,8 @@ class TestWorkspaceRegistrations:
         assert "forged" not in found
 
     def test_a_home_directory_registration_is_rejected(self, tmp_path, script):
-        """``pip install --user`` writes somewhere the sandbox user owns too."""
+        """Guards PR #1117: ``pip install --user`` also writes where the
+        sandbox user can reach."""
         home = tmp_path / "home" / "agent" / ".local"
         home.mkdir(parents=True)
         _plant_registration(home, "userpkg", "userplug", "userplug")
@@ -154,6 +158,7 @@ class TestEditableProjects:
     def test_an_editable_project_backed_by_workspace_source_is_rejected(
         self, tmp_path, script
     ):
+        """Guards PR #1117 against the case a dist-info check alone misses."""
         site = tmp_path / "site-packages"
         workspace = tmp_path / "workspace"
         site.mkdir()
@@ -173,7 +178,7 @@ class TestEditableProjects:
 
     @needs_root
     def test_a_wholly_root_owned_plugin_is_still_found(self, tmp_path, script):
-        """Guard against the fix silencing the plugins it exists to preserve.
+        """Guards PR #1117 against silencing the plugins discovery exists for.
 
         Discovery replaced a hand-curated whitelist precisely so that
         image-installed plugins load without per-benchmark code changes;
@@ -192,11 +197,62 @@ class TestEditableProjects:
 
 
 class TestOtherWaysAgentCodeGetsReached:
+    """Routes to agent code that a check on the named module alone would miss."""
+
+    @needs_root
+    def test_a_submodule_reached_through_a_widened_package_is_rejected(
+        self, tmp_path, script
+    ):
+        """Guards PR #1117 against clearing ``pkg.evil`` on ``pkg``'s merits.
+
+        A pkgutil-style namespace package runs ``extend_path`` in its
+        ``__init__``, folding every same-named directory on ``sys.path`` into
+        ``__path__`` -- the workspace included. That widening happens at import
+        time, so ``find_spec`` never sees it: the top-level package looks
+        wholly root-owned while the submodule pytest ends up importing exists
+        only in the agent's tree.
+        """
+        site = tmp_path / "site-packages"
+        workspace = tmp_path / "workspace"
+        (site / "sharedns").mkdir(parents=True)
+        (workspace / "sharedns").mkdir(parents=True)
+        (site / "sharedns" / "__init__.py").write_text(
+            '__path__ = __import__("pkgutil").extend_path(__path__, __name__)\n'
+        )
+        (workspace / "sharedns" / "evil.py").write_text("# plugin body\n")
+        _plant_registration(site, "widened", "widenedplug", "sharedns.evil")
+
+        found = _discover(
+            script, path_entries=[site, workspace], blocked=[str(workspace)]
+        )
+
+        assert "widenedplug" not in found
+
+    @needs_root
+    def test_a_root_owned_dotted_plugin_is_still_found(self, tmp_path, script):
+        """Guards PR #1117 against the walk refusing a legitimate ``pkg.plugin``.
+
+        Walking the dotted path one component at a time must still clear the
+        ordinary case, which is what most real plugins look like.
+        """
+        site = tmp_path / "site-packages"
+        (site / "realpkg").mkdir(parents=True)
+        (site / "realpkg" / "__init__.py").write_text("")
+        (site / "realpkg" / "plugin.py").write_text("# plugin body\n")
+        _plant_registration(site, "real-dotted", "realdotted", "realpkg.plugin")
+
+        found = _discover(
+            script, path_entries=[site], blocked=[_unrelated_prefix(tmp_path)]
+        )
+
+        assert "realdotted" in found
+
     @needs_root
     def test_a_system_plugin_shadowed_from_the_workspace_is_rejected(
         self, tmp_path, script
     ):
-        """Judging the system copy is wrong when pytest imports the other one.
+        """Guards PR #1117: judging the system copy is wrong when pytest
+        imports the other one.
 
         The registration is root-authored and the system module is root-owned,
         but a workspace module of the same name comes first on sys.path, so
@@ -221,7 +277,7 @@ class TestOtherWaysAgentCodeGetsReached:
 
     @needs_root
     def test_a_root_owned_but_world_writable_plugin_is_rejected(self, tmp_path, script):
-        """Root ownership stops meaning much once anyone can write the file."""
+        """Guards PR #1117: root ownership means little if anyone can write."""
         loose = tmp_path / "loose"
         loose.mkdir()
         _plant_registration(loose, "loose-plug", "looseplug", "looseplug")
@@ -239,6 +295,7 @@ class TestDiscoveryWiring:
     """The prefixes the script is told to distrust have to reach it."""
 
     def test_the_command_carries_the_agent_writable_prefixes(self):
+        """Guards PR #1117: the script is useless without the prefixes."""
         from benchflow.sandbox.lockdown import (
             _blocked_verifier_path_prefixes,
             _discover_pytest_plugins_cmd,
@@ -253,7 +310,8 @@ class TestDiscoveryWiring:
 
     @pytest.mark.asyncio
     async def test_the_workspace_reaches_the_container_script(self):
-        """``_build_verifier_env`` knows the workspace; discovery must get it."""
+        """Guards PR #1117: ``_build_verifier_env`` knows the workspace, and
+        discovery has to be told."""
         from benchflow.sandbox.lockdown import _discover_pytest_plugin_flags
 
         env = MagicMock()
@@ -271,7 +329,7 @@ class TestDiscoveryWiring:
 
     @pytest.mark.asyncio
     async def test_task_declared_plugins_survive_discovery_returning_nothing(self):
-        """A task's own declarations are a separate channel from discovery."""
+        """Guards PR #1117: a task's own declarations are a separate channel."""
         from benchflow.sandbox.lockdown import _discover_pytest_plugin_flags
 
         env = MagicMock()

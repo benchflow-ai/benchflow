@@ -518,14 +518,23 @@ def _verifier_confcutdir(task: "Task") -> str:
 #              such a plugin by its dist-info alone admits agent-owned code.
 #
 # Resolving the module covers both: a forged registration resolves into the
-# workspace, and an editable project resolves to its workspace source. The
-# resolution deliberately uses the full ``sys.path`` rather than a pre-filtered
-# one, because the question is which file pytest will actually import, not
-# which one it ideally would: a workspace module shadowing a system plugin of
-# the same name is what gets loaded, so it is what has to be judged. Only the
-# top-level name is resolved, and only through ``PathFinder``, which locates
-# modules without importing them — importing here would run the very code this
-# is deciding whether to trust.
+# workspace, and an editable project resolves to its workspace source. Three
+# things about how that resolution is done are load-bearing:
+#
+#   * It goes through ``PathFinder``, which locates modules without importing
+#     them — importing here would run the very code this is deciding whether
+#     to trust.
+#   * The first component is resolved against the full ``sys.path``, not a
+#     pre-filtered one, because the question is which file pytest will
+#     actually import, not which one it ideally would: a workspace module
+#     shadowing a system plugin of the same name is what gets loaded.
+#   * A dotted target is walked one component at a time, each step searching
+#     only the locations its parent declares. Checking the top level alone
+#     would clear ``trusted_pkg.evil`` on the strength of ``trusted_pkg``,
+#     and a pkgutil-style namespace package widens its ``__path__`` at import
+#     time to every same-named directory on ``sys.path`` — the workspace
+#     included — which ``find_spec`` never sees. A component living only in
+#     the workspace then resolves nowhere and the entry point is refused.
 #
 # ``argv[1]`` is the JSON list of agent-writable path prefixes.
 _DISCOVER_PYTEST_PLUGINS_SCRIPT = r"""
@@ -563,23 +572,29 @@ try:
         eps = list(entry_points().get('pytest11', []))
     names = []
     for ep in eps:
-        top = ep.value.split(':')[0].strip().split('.')[0]
-        if not top:
+        parts = [p for p in ep.value.split(':')[0].strip().split('.') if p]
+        if not parts:
             continue
-        try:
-            spec = PathFinder.find_spec(top)
-        except Exception:
-            continue
-        if spec is None:
-            continue
-        # A namespace package has no origin, only search locations; a builtin
-        # has a non-path origin. Requiring at least one real path keeps both
-        # from passing by vacuous truth.
-        locations = [spec.origin] if (spec.origin or "").startswith("/") else []
-        locations += [str(p) for p in (spec.submodule_search_locations or [])]
-        if not locations or not all(trusted(p) for p in locations):
-            continue
-        names.append(ep.name)
+        search = None
+        for i, part in enumerate(parts):
+            try:
+                spec = PathFinder.find_spec('.'.join(parts[:i + 1]), path=search)
+            except Exception:
+                break
+            if spec is None:
+                break
+            # A namespace package has no origin, only search locations; a
+            # builtin has a non-path origin. Requiring at least one real path
+            # keeps both from passing by vacuous truth.
+            locations = [spec.origin] if (spec.origin or "").startswith("/") else []
+            locations += [str(p) for p in (spec.submodule_search_locations or [])]
+            if not locations or not all(trusted(p) for p in locations):
+                break
+            search = [str(p) for p in (spec.submodule_search_locations or [])]
+            if i < len(parts) - 1 and not search:
+                break
+        else:
+            names.append(ep.name)
     print(json.dumps(sorted(set(names))))
 except Exception as e:
     print(json.dumps({"error": str(e)}), file=sys.stderr)
