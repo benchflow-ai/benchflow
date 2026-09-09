@@ -179,6 +179,16 @@ class DefaultRolloutPlanes:
     async def stop_provider_runtime(self, runtime: Any) -> None:
         await stop_provider_runtime(runtime)
 
+    async def start_egress_filter(self, *args: Any, **kwargs: Any) -> Any:
+        from benchflow.sandbox.egress import start_egress_filter
+
+        return await start_egress_filter(*args, **kwargs)
+
+    async def stop_egress_filter(self, *args: Any, **kwargs: Any) -> None:
+        from benchflow.sandbox.egress import stop_egress_filter
+
+        await stop_egress_filter(*args, **kwargs)
+
     def extract_usage(self, runtime: Any) -> dict[str, Any]:
         return extract_usage(runtime)
 

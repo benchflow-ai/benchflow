@@ -140,6 +140,33 @@ def _opencode_catalog_names(data: dict[str, Any]) -> set[str]:
     return set(re.findall(r"<name>\s*([^<]+?)\s*</name>", match.group(1)))
 
 
+# Keep provider-side search inside the run's network policy. Typed server
+# tools (Anthropic web_search_*, OpenAI web_search) never reach a provider: the
+# pre-call hook keeps only "function" tools. What does reach one is Gemini
+# grounding, declared as an untyped google_search tool, and the chat-completions
+# web_search_options field. Neither offers a domain blocklist, so under a
+# filtering policy both are removed and the harness falls back to fetching
+# through the sandbox, where the egress filter applies the same policy.
+def _apply_network_policy(data: dict[str, Any]) -> dict[str, Any] | None:
+    if not os.environ.get("BENCHFLOW_NETWORK_POLICY_JSON"):
+        return None
+    tools = data.get("tools")
+    kept = tools
+    if isinstance(tools, list):
+        kept = [
+            tool
+            for tool in tools
+            if not isinstance(tool, dict)
+            or not ({"google_search", "googleSearch", "google_search_retrieval"} & tool.keys())
+        ]
+    if kept is tools and "web_search_options" not in data:
+        return None
+    cleaned = {key: value for key, value in data.items() if key != "web_search_options"}
+    if kept is not tools:
+        cleaned["tools"] = kept
+    return cleaned
+
+
 def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
     global _skill_catalog_gate_passed
     if _skill_catalog_gate_passed:
@@ -314,6 +341,10 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept
+
+        policed = _apply_network_policy(cleaned)
+        if policed is not None:
+            cleaned = policed
 
         # Forward ``reasoning_effort`` VERBATIM on deepseek routes. LiteLLM's
         # deepseek transform consumes the top-level field (it maps it into its

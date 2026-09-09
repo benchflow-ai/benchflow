@@ -15,6 +15,7 @@ from benchflow.usage_tracking import UsageTrackingConfig
 
 if TYPE_CHECKING:
     from benchflow.providers.litellm_runtime import LiteLLMProcess
+    from benchflow.sandbox.egress import NetworkPolicy
 
 
 @dataclass
@@ -51,6 +52,7 @@ async def ensure_litellm_runtime(
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
     force_sandbox_local: bool = False,
+    network_policy: NetworkPolicy | None = None,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -69,6 +71,7 @@ async def ensure_litellm_runtime(
         required_skill_names=required_skill_names,
         live_trajectory_path=live_trajectory_path,
         force_sandbox_local=force_sandbox_local,
+        network_policy=network_policy,
     )
 
 

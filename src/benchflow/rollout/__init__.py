@@ -143,6 +143,7 @@ from benchflow.rollout._setup import (
     _publish_trajectory_for_verifier as _publish_trajectory_for_verifier,
 )
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
+from benchflow.rollout._setup import _resolve_network_policy as _resolve_network_policy
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
 from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upload
@@ -197,6 +198,7 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.egress import EgressFilterProcess, NetworkPolicy
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -658,6 +660,8 @@ class Rollout:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._network_policy: NetworkPolicy | None = None
+        self._egress_filter: EgressFilterProcess | None = None
         self._effective_skills_dir: Path | None = None
         self._effective_skills_sandbox_dir: str | None = None
         # Task dir actually deployed: a temp copy (self._task_tmp) when
@@ -904,6 +908,52 @@ class Rollout:
             raise RuntimeError("Rollout.setup() must run before this phase")
         return self._rollout_dir
 
+    # Network policy: the filter runs beside the sandbox model proxy, once
+    # per sandbox, and every model-driven agent in that sandbox routes
+    # through it. The oracle has no model and keeps the task's own network.
+
+    def _network_policy_for(self, agent: str) -> NetworkPolicy | None:
+        return None if agent == "oracle" else self._network_policy
+
+    def _require_enforceable_network_policy(self, cfg: RolloutConfig) -> None:
+        """Refuse a policy the run could not hold rather than run it advisory."""
+        policy = self._network_policy_for(cfg.primary_agent)
+        if policy is None:
+            return
+        if cfg.sandbox_user is None:
+            raise RuntimeError(
+                f"network_mode='{policy.mode.value}' needs a sandbox user: the "
+                "egress firewall is scoped to its uid (pass --sandbox-user)"
+            )
+        if self._session_factory_entrypoint(cfg.primary_agent) is not None:
+            raise RuntimeError(
+                f"network_mode='{policy.mode.value}' is not enforced for "
+                f"session-factory agent {cfg.primary_agent!r}"
+            )
+
+    def _with_network_policy(
+        self, agent_env: dict[str, str], agent: str
+    ) -> dict[str, str]:
+        policy = self._network_policy_for(agent)
+        return agent_env if policy is None else policy.agent_env(agent_env)
+
+    async def _start_egress_filter(
+        self, agent_env: dict[str, str], agent: str
+    ) -> dict[str, str]:
+        policy = self._network_policy_for(agent)
+        if policy is None:
+            return agent_env
+        if self._egress_filter is None:
+            server = getattr(getattr(self, "_usage_runtime", None), "server", None)
+            self._egress_filter = await self._planes.start_egress_filter(
+                self._env, policy, python=getattr(server, "python", None) or "python3"
+            )
+        return {**agent_env, **self._egress_filter.agent_env}
+
+    def _network_policy_log_path(self) -> Path | None:
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        return None if rollout_dir is None else rollout_dir / "network_policy.jsonl"
+
     def _require_started_at(self) -> datetime:
         if self._started_at is None:
             raise RuntimeError("Rollout.setup() must run before building a result")
@@ -952,11 +1002,16 @@ class Rollout:
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
-        self._agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
-                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+        self._network_policy = _resolve_network_policy(self._task)
+        self._require_enforceable_network_policy(cfg)
+        self._agent_env = self._with_network_policy(
+            _apply_web_policy(
+                self._planes.resolve_agent_env(
+                    cfg.primary_agent, cfg.primary_model, cfg.agent_env
+                ),
+                disallow=self._disallow_web_tools,
             ),
-            disallow=self._disallow_web_tools,
+            cfg.primary_agent,
         )
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
@@ -1295,7 +1350,12 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=getattr(self, "_disallow_web_tools", False),
+            force_sandbox_local=self._disallow_web_tools
+            or self._network_policy_for(cfg.primary_agent) is not None,
+            network_policy=self._network_policy_for(cfg.primary_agent),
+        )
+        self._agent_env = await self._start_egress_filter(
+            self._agent_env, cfg.primary_agent
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -1966,6 +2026,15 @@ class Rollout:
                     self._export_error = export_error
                 self._evolved_skills = None
 
+        egress_filter = getattr(self, "_egress_filter", None)
+        if egress_filter is not None:
+            try:
+                await self._planes.stop_egress_filter(
+                    egress_filter, log_destination=self._network_policy_log_path()
+                )
+            except Exception as e:
+                logger.warning(f"Egress filter stop failed: {e}")
+            self._egress_filter = None
         usage_runtime = getattr(self, "_usage_runtime", None)
         if usage_runtime is not None:
             try:
@@ -2273,13 +2342,16 @@ class Rollout:
             role.agent,
             disallow_web_tools=disallow_web_tools,
         )
-        agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
-                role.agent,
-                role.model,
-                {**(cfg.agent_env or {}), **(role.env or {})},
+        agent_env = self._with_network_policy(
+            _apply_web_policy(
+                self._planes.resolve_agent_env(
+                    role.agent,
+                    role.model,
+                    {**(cfg.agent_env or {}), **(role.env or {})},
+                ),
+                disallow=disallow_web_tools,
             ),
-            disallow=disallow_web_tools,
+            role.agent,
         )
         agent_env, self._usage_runtime = await self._planes.ensure_litellm_runtime(
             agent=role.agent,
@@ -2293,8 +2365,11 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=disallow_web_tools,
+            force_sandbox_local=disallow_web_tools
+            or self._network_policy_for(role.agent) is not None,
+            network_policy=self._network_policy_for(role.agent),
         )
+        agent_env = await self._start_egress_filter(agent_env, role.agent)
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
@@ -2344,6 +2419,14 @@ class Rollout:
         self._agent_launch = agent_launch
 
         sf_entrypoint = self._session_factory_entrypoint(role.agent)
+        if (
+            sf_entrypoint is not None
+            and self._network_policy_for(role.agent) is not None
+        ):
+            raise RuntimeError(
+                f"network_mode='{self._network_policy.mode.value}' is not enforced "
+                f"for session-factory agent {role.agent!r}"
+            )
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
             (

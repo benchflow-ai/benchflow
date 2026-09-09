@@ -50,6 +50,11 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.egress import (
+    AGENT_PROXY_ENV_KEYS,
+    NETWORK_POLICY_ENV,
+    NetworkPolicy,
+)
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
@@ -498,11 +503,15 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         stderr_path: str,
         session_id: str,
         agent_name: str,
+        python: str | None = None,
     ) -> None:
         self.sandbox = sandbox
         self.route = route
         self.runtime_dir = runtime_dir
         self.endpoint = endpoint
+        #: The sandbox interpreter the proxy runs on; other sandbox-side
+        #: helpers (the egress filter) run on the same one.
+        self.python = python
         self.log_path = log_path
         self.pid_path = pid_path
         self.stdout_path = stdout_path
@@ -1250,6 +1259,7 @@ async def _start_sandbox_litellm(
         stderr_path=paths["stderr"],
         session_id=session_id,
         agent_name=agent_name,
+        python=python,
     )
 
 
@@ -1410,15 +1420,25 @@ def _apply_litellm_agent_env(
 
 
 def _litellm_proxy_env(
-    *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    required_skill_names: tuple[str, ...],
+    network_policy: NetworkPolicy | None = None,
 ) -> dict[str, str]:
     updated = dict(agent_env)
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
+    # The proxy talks to providers directly; the agent's egress filter
+    # variables must not steer it, even when an env is reused on restart.
+    for key in (*AGENT_PROXY_ENV_KEYS, NETWORK_POLICY_ENV):
+        updated.pop(key, None)
     expected = sorted(set(required_skill_names))
     if agent == "opencode" and expected:
         updated[_SKILL_CATALOG_GATE_AGENT_ENV] = agent
         updated[_REQUIRED_SKILL_NAMES_ENV] = json.dumps(expected)
+    if network_policy is not None:
+        updated = network_policy.proxy_env(updated)
     return updated
 
 
@@ -1584,6 +1604,7 @@ async def ensure_litellm_runtime(
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
     force_sandbox_local: bool = False,
+    network_policy: NetworkPolicy | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1650,9 +1671,10 @@ async def ensure_litellm_runtime(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
     proxy_location = "sandbox" if sandbox_local else "host"
+    policy_key = "" if network_policy is None else json.dumps(network_policy.to_json())
     config_key = (
         f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
-        f"{session_id}:{skill_gate_key}"
+        f"{session_id}:{skill_gate_key}:{policy_key}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
@@ -1678,6 +1700,7 @@ async def ensure_litellm_runtime(
             agent=agent,
             agent_env=agent_env,
             required_skill_names=required_skill_names,
+            network_policy=network_policy,
         )
         if sandbox_local:
             server = await _start_sandbox_litellm(

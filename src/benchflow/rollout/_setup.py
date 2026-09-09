@@ -42,6 +42,7 @@ from benchflow.rewards.validation import (
     validate_reward_map,
 )
 from benchflow.rollout._results import _DIAG_TRUNCATE
+from benchflow.sandbox.egress import NetworkPolicy
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,12 @@ def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str,
     if not disallow:
         return agent_env
     return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
+
+
+def _resolve_network_policy(task: Any) -> NetworkPolicy | None:
+    """The agent's filtering network policy, if the task declares one."""
+    config = getattr(task, "config", None)
+    return None if config is None else NetworkPolicy.resolve(config)
 
 
 def _agent_launch_with_web_policy(
