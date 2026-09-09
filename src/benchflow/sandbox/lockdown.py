@@ -502,19 +502,85 @@ def _verifier_confcutdir(task: "Task") -> str:
 
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
-# Runs after sandbox_user processes are killed, so the agent cannot install
-# new packages between enumeration and verification. The sandbox_user cannot
-# pip install (not root), so all discovered plugins are image-authored.
+#
+# Discovery decides what goes on the verifier's ``-p`` allowlist, so a plugin
+# reaching this list executes *inside* pytest with the power to rewrite a test
+# report. A pytest11 entry point is therefore only trusted when the code it
+# resolves to is root-owned and outside every agent-writable tree; both halves
+# are needed, and neither is implied by the other:
+#
+#   forged   — ``importlib.metadata`` reads ``*.dist-info`` straight off
+#              ``sys.path``, needing neither pip nor root, so the sandbox user
+#              can register a plugin by creating a directory in its workspace.
+#   editable — a root-installed editable project puts a root-owned dist-info in
+#              site-packages while its *source* stays in the workspace, and
+#              adds that workspace path to ``sys.path`` via a ``.pth``. Judging
+#              such a plugin by its dist-info alone admits agent-owned code.
+#
+# Resolving the module covers both: a forged registration resolves into the
+# workspace, and an editable project resolves to its workspace source. The
+# resolution deliberately uses the full ``sys.path`` rather than a pre-filtered
+# one, because the question is which file pytest will actually import, not
+# which one it ideally would: a workspace module shadowing a system plugin of
+# the same name is what gets loaded, so it is what has to be judged. Only the
+# top-level name is resolved, and only through ``PathFinder``, which locates
+# modules without importing them — importing here would run the very code this
+# is deciding whether to trust.
+#
+# ``argv[1]`` is the JSON list of agent-writable path prefixes.
 _DISCOVER_PYTEST_PLUGINS_SCRIPT = r"""
-import json, sys
+import json, os, stat, sys
+from importlib.machinery import PathFinder
+
+blocked = tuple(json.loads(sys.argv[1]))
+
+
+def under(path, prefix):
+    prefix = prefix.rstrip("/")
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def trusted(path):
+    if not path or not path.startswith("/"):
+        return False
+    try:
+        real = os.path.realpath(path)
+        st = os.stat(real)
+    except OSError:
+        return False
+    if any(under(real, prefix) for prefix in blocked):
+        return False
+    if st.st_uid != 0:
+        return False
+    return not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
 try:
     from importlib.metadata import entry_points
     try:
         eps = list(entry_points(group='pytest11'))
     except TypeError:
         eps = list(entry_points().get('pytest11', []))
-    names = sorted(set(ep.name for ep in eps))
-    print(json.dumps(names))
+    names = []
+    for ep in eps:
+        top = ep.value.split(':')[0].strip().split('.')[0]
+        if not top:
+            continue
+        try:
+            spec = PathFinder.find_spec(top)
+        except Exception:
+            continue
+        if spec is None:
+            continue
+        # A namespace package has no origin, only search locations; a builtin
+        # has a non-path origin. Requiring at least one real path keeps both
+        # from passing by vacuous truth.
+        locations = [spec.origin] if (spec.origin or "").startswith("/") else []
+        locations += [str(p) for p in (spec.submodule_search_locations or [])]
+        if not locations or not all(trusted(p) for p in locations):
+            continue
+        names.append(ep.name)
+    print(json.dumps(sorted(set(names))))
 except Exception as e:
     print(json.dumps({"error": str(e)}), file=sys.stderr)
     print("[]")
@@ -616,11 +682,27 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
     )
 
 
-async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
-    """Auto-discover pytest plugins from root-owned system packages.
+def _discover_pytest_plugins_cmd(blocked_prefixes: tuple[str, ...]) -> str:
+    """Build the container-side pytest plugin discovery command."""
+    return (
+        f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)} "
+        f"{shlex.quote(_json.dumps(blocked_prefixes))}"
+    )
 
-    Runs a sandbox-side script that enumerates pytest11 entry points and
-    filters to only those whose dist-info is in a root-owned directory.
+
+async def _discover_pytest_plugin_flags(
+    env,
+    task: "Task",
+    sandbox_user: str | None = None,
+    workspace: str | None = None,
+) -> str:
+    """Auto-discover pytest plugins that resolve to root-owned code.
+
+    Runs a sandbox-side script that enumerates pytest11 entry points and keeps
+    only those whose module resolves, outside every agent-writable tree, to a
+    root-owned path -- so neither a dist-info forged in the workspace nor a
+    root-installed editable project backed by workspace source can put a plugin
+    on the verifier's ``-p`` allowlist.
     Falls back to task verifier pytest_plugins declarations if discovery fails.
     Replaces the previous hand-curated whitelist mechanism.
     """
@@ -634,7 +716,9 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     # Sandbox-side auto-discovery
     try:
         result = await env.exec(
-            f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
+            _discover_pytest_plugins_cmd(
+                _blocked_verifier_path_prefixes(sandbox_user, workspace)
+            ),
             user="root",
             timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
@@ -1188,9 +1272,9 @@ async def _build_verifier_env(
     verifier_env["COVERAGE_PROCESS_START"] = ""
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
-    # Auto-discover pytest plugins from root-owned system packages and
+    # Auto-discover pytest plugins that resolve to root-owned system code, plus
     # task config declarations. Appends -p flags to the hardened base.
-    flags = await _discover_pytest_plugin_flags(env, task)
+    flags = await _discover_pytest_plugin_flags(env, task, sandbox_user, workspace)
     verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(
         workspace,
         flags,
