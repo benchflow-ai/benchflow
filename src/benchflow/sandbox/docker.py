@@ -173,6 +173,7 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._egress_firewall_compose_path: Path | None = None
         self._logs_are_mounted = True
 
         verifier_dir = (
@@ -300,7 +301,27 @@ class DockerSandbox(BaseSandbox):
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 
+        if self._egress_firewall_compose_path:
+            paths.append(self._egress_firewall_compose_path)
+
         return paths
+
+    def grant_egress_firewall(self) -> None:
+        """Let the agent-uid firewall run: Docker withholds ``CAP_NET_ADMIN``.
+
+        The override is written per rollout and appended last, so it also
+        covers a task's own compose definition. It must run before ``start``.
+        """
+        if self.rollout_paths is None:
+            raise RuntimeError(
+                "the egress firewall needs rollout paths for its override"
+            )
+        path = self.rollout_paths.rollout_dir / "docker-compose-egress-firewall.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"services": {"main": {"cap_add": ["NET_ADMIN"]}}}, indent=2)
+        )
+        self._egress_firewall_compose_path = path
 
     def _docker_compose_env(self) -> dict[str, str]:
         env = self._env_vars.to_env_dict(include_os_env=True)

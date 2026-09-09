@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import http.server
 import json
+import os
 import socket
 import ssl
 import threading
@@ -767,3 +768,166 @@ def test_capability_gate_judges_the_mode_the_agent_runs_under() -> None:
     )
 
     assert validate_task_runtime_support(config, sandbox="agentcore") == []
+
+
+# Docker: the firewall needs a capability the daemon withholds by default.
+
+
+def test_docker_grants_the_firewall_capability_last(tmp_path: Path) -> None:
+    from benchflow.sandbox.docker import DockerSandbox
+
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    sandbox.rollout_paths = SimpleNamespace(rollout_dir=tmp_path)
+    sandbox._egress_firewall_compose_path = None
+    sandbox._mounts_compose_path = None
+    sandbox._use_prebuilt = False
+    sandbox.environment_dir = tmp_path
+    sandbox.task_env_config = SimpleNamespace(allow_internet=True)
+
+    sandbox.grant_egress_firewall()
+
+    override = sandbox._egress_firewall_compose_path
+    assert override is not None
+    assert json.loads(override.read_text()) == {
+        "services": {"main": {"cap_add": ["NET_ADMIN"]}}
+    }
+    assert sandbox._docker_compose_paths[-1] == override
+
+
+def test_rollout_grants_the_capability_only_to_backends_that_need_it() -> None:
+    from benchflow.rollout import Rollout
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._env_externally_owned = False
+    rollout._env = SimpleNamespace(grant_egress_firewall=MagicMock())
+    rollout._grant_egress_firewall()
+    rollout._env.grant_egress_firewall.assert_called_once_with()
+
+    rollout._env = object()  # Daytona-like: nothing to grant
+    rollout._grant_egress_firewall()
+
+    rollout._env = SimpleNamespace(grant_egress_firewall=MagicMock())
+    rollout._env_externally_owned = True
+    with pytest.raises(RuntimeError, match="already-started sandbox"):
+        rollout._grant_egress_firewall()
+
+
+# Live canary: a real sandbox, the filter, the firewall, and curl as the
+# sandbox user. Skipped by default; run with ``-m integration -k canary``.
+
+
+def _backend_available(backend: str) -> bool:
+    import shutil
+    import subprocess
+
+    if backend == "daytona":
+        return bool(os.environ.get("DAYTONA_API_KEY"))
+    if shutil.which("docker") is None:
+        return False
+    probe = subprocess.run(
+        ["docker", "info"], capture_output=True, timeout=15, check=False
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("backend", ["docker", "daytona"])
+async def test_network_policy_sandbox_canary(backend: str, tmp_path: Path) -> None:
+    """The blocklist holds inside a real sandbox for the sandbox user."""
+    import shlex
+    import shutil
+
+    from benchflow.sandbox.lockdown import build_priv_drop_cmd, setup_sandbox_user
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task.paths import RolloutPaths
+    from benchflow.task.task import Task
+
+    if not _backend_available(backend):
+        pytest.skip(f"{backend} is not available here")
+    task_dir = tmp_path / "blocklist-canary"
+    shutil.copytree(Path(__file__).parent / "examples" / "hello-world-task", task_dir)
+    dockerfile = task_dir / "environment" / "Dockerfile"
+    dockerfile.write_text(
+        dockerfile.read_text().replace(
+            "apt-get install -y -qq curl",
+            "apt-get install -y -qq curl python3 ca-certificates iptables",
+        )
+    )
+    # Keep the native task.md only, so the policy edit below is the config.
+    for legacy in ("task.toml", "instruction.md"):
+        (task_dir / legacy).unlink(missing_ok=True)
+    front_matter = (task_dir / "task.md").read_text()
+    (task_dir / "task.md").write_text(
+        front_matter.replace(
+            "agent:\n",
+            "agent:\n  network_mode: blocklist\n  blocked_urls:\n"
+            "  - pypi.org/simple/requests/\n  - api.github.com\n",
+            1,
+        )
+    )
+    task = Task(task_dir)
+    policy = NetworkPolicy.resolve(task.config)
+    assert policy is not None
+    rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+    rollout_paths.mkdir()
+    env = _create_sandbox_environment(
+        backend, task, task_dir, "blocklist-canary", rollout_paths
+    )
+    grant = getattr(env, "grant_egress_filter", None) or getattr(
+        env, "grant_egress_firewall", None
+    )
+    if callable(grant):
+        grant()
+    await env.start(force_build=False)
+    try:
+        await setup_sandbox_user(env, "agent", "/app")
+        process = await start_egress_filter(env, policy, python="python3")
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            policy.agent_env(
+                {
+                    **process.agent_env,
+                    "BENCHFLOW_PROVIDER_BASE_URL": f"http://127.0.0.1:{process.port}/v1",
+                }
+            ),
+        )
+        exports = " ".join(
+            f"export {k}={shlex.quote(v)};" for k, v in process.agent_env.items()
+        )
+
+        async def as_agent(command: str) -> str:
+            result = await env.exec(
+                build_priv_drop_cmd(f"{exports} {command}", "agent"), timeout_sec=120
+            )
+            return " ".join(
+                ((result.stdout or "") + " " + (result.stderr or "")).split()
+            )
+
+        code = "curl -sS -o /dev/null -w '%{http_code}' --max-time 40 "
+        assert await as_agent(code + "https://pypi.org/simple/requests/") == "403"
+        assert (
+            await as_agent(code + "'https://pypi.org/simple/../simple/%72equests/'")
+            == "403"
+        )
+        assert await as_agent(code + "https://pypi.org/simple/pip/") == "200"
+        assert "403" in await as_agent(code + "https://api.github.com/")
+        assert "403" in await as_agent(code + "https://151.101.0.223/simple/pip/")
+        direct = await as_agent(
+            "env -u HTTPS_PROXY -u https_proxy " + code + "https://pypi.org/simple/pip/"
+        )
+        assert "Could not resolve host" in direct or direct.endswith("000")
+        assert "denied" in await as_agent(
+            f"head -c 1 {process.paths['policy']} 2>&1 || echo denied"
+        )
+        await process.stop(log_destination=tmp_path / "network_policy.jsonl")
+        decisions = [
+            json.loads(line)
+            for line in (tmp_path / "network_policy.jsonl").read_text().splitlines()
+        ]
+        assert any(
+            d["decision"] == "block" and d["rule"] == "pypi.org/simple/requests/"
+            for d in decisions
+        )
+    finally:
+        await env.stop(delete=True)

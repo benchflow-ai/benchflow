@@ -931,6 +931,23 @@ class Rollout:
                 f"session-factory agent {cfg.primary_agent!r}"
             )
 
+    def _grant_egress_firewall(self) -> None:
+        """Give backends that withhold ``CAP_NET_ADMIN`` the firewall before start.
+
+        Docker needs a compose override for it; Daytona's root already has it.
+        A sandbox someone else started cannot be changed any more, so on a
+        backend that needs the grant such a sandbox is refused.
+        """
+        grant = getattr(self._env, "grant_egress_firewall", None)
+        if not callable(grant):
+            return
+        if self._env_externally_owned:
+            raise RuntimeError(
+                "a network policy cannot be enforced on an already-started sandbox "
+                "that needs CAP_NET_ADMIN granted before it starts"
+            )
+        grant()
+
     def _with_network_policy(
         self, agent_env: dict[str, str], agent: str
     ) -> dict[str, str]:
@@ -1099,6 +1116,8 @@ class Rollout:
                 preserve_agent_network=self._disallow_web_tools,
                 environment_manifest=cfg.environment_manifest,
             )
+        if self._network_policy_for(cfg.primary_agent) is not None:
+            self._grant_egress_firewall()
         # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
         # wins over the task's own default. Without this override there is
         # no way to tighten/loosen the agent budget per run — see #378.
