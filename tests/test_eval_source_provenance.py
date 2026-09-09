@@ -644,7 +644,9 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
         def resolve_agent_env(self, _agent, _model, agent_env):
             return agent_env or {}
 
-        def agent_launch(self, agent, *, disallow_web_tools):
+        def agent_launch(
+            self, agent, *, disallow_web_tools, disallow_hosted_search=False
+        ):
             return agent
 
         def stage_dockerfile_deps(self, *_args, **_kwargs):

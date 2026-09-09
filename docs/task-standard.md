@@ -840,6 +840,7 @@ Current implementation status:
 | imported `steps` | yes | no/partial | fail closed per sandbox until implemented |
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
 | network allowlist | yes | no/partial | per-sandbox capability check |
+| network denylist | yes | partial | `docker`: yes; `daytona`: yes; `modal`, `apple-container`, and `agentcore` refuse the mode at the capability gate |
 | separate verifier env | yes | no/partial | materializer plus verifier runner support |
 | Windows / TPU | yes | no | fail closed |
 | healthcheck | yes | no/partial | fail closed until sandbox healthcheck support lands |

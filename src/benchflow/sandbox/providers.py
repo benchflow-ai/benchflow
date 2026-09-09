@@ -44,6 +44,9 @@ class SandboxProvider:
     #: Whether the backend can run a task's docker-compose side services.
     #: ``False`` means a multi-service task must be refused, not run partially.
     supports_compose: bool = False
+    #: Whether the backend can enforce ``network_mode = "denylist"`` (a
+    #: root-owned loopback proxy behind the uid firewall).
+    enforces_denylist: bool = False
 
     @property
     def off_box_model(self) -> bool:
@@ -59,6 +62,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         extra=None,
         model_proxy=ModelProxyLocation.HOST,
         supports_compose=True,
+        enforces_denylist=True,
     ),
     SandboxProvider(
         "daytona",
@@ -66,6 +70,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         model_proxy=ModelProxyLocation.SANDBOX,
         # The DinD strategy runs compose inside the sandbox VM.
         supports_compose=True,
+        enforces_denylist=True,
     ),
     SandboxProvider(
         "modal",
@@ -114,6 +119,10 @@ SINGLE_CONTAINER_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "no-network"``.
 NO_NETWORK_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_no_network
+)
+#: Providers that cannot enforce ``network_mode = "denylist"``.
+DENYLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if not p.enforces_denylist
 )
 
 

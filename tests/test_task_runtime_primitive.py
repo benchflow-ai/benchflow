@@ -87,7 +87,13 @@ class _FakePlanes:
     def extract_usage(self, runtime: Any) -> dict[str, Any]:
         return {"usage_source": "unavailable"}
 
-    def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str:
+    def agent_launch(
+        self,
+        agent: str,
+        *,
+        disallow_web_tools: bool,
+        disallow_hosted_search: bool = False,
+    ) -> str:
         return agent
 
     def agent_config(self, agent: str) -> Any:

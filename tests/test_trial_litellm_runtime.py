@@ -102,7 +102,9 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
         return (AsyncMock(), AsyncMock(), AsyncMock(), "claude-agent-acp")
 
     rollout._planes = SimpleNamespace(
-        agent_launch=lambda agent, disallow_web_tools: agent,
+        agent_launch=lambda agent, disallow_web_tools, disallow_hosted_search=False: (
+            agent
+        ),
         resolve_agent_env=lambda agent, model, env: dict(env or {}),
         ensure_litellm_runtime=fake_litellm,
         install_agent=AsyncMock(return_value=SimpleNamespace()),

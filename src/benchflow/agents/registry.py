@@ -498,6 +498,12 @@ class AgentConfig:
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
     disallow_web_tools_launch_suffix: str = ""
+    # Shell snippet that switches off hosted (provider-side) search tools when
+    # the denylist egress policy is active; local fetch tools stay on because
+    # they go through the egress proxy. Reuses disallow_web_tools_owned_paths.
+    disallow_hosted_search_setup_cmd: str = ""
+    # String appended to launch_cmd when the denylist egress policy is active.
+    disallow_hosted_search_launch_suffix: str = ""
     # How task-declared MCP servers are delivered to the agent:
     # "acp" sends them in session/new; "native-config" writes an agent-specific
     # config file before launch (for agents whose ACP server drops/reformats
@@ -505,6 +511,15 @@ class AgentConfig:
     task_mcp_transport: str = "acp"
     # Native-config target path, relative to $HOME unless absolute.
     task_mcp_config_path: str = ""
+
+
+_GEMINI_EXCLUDE_WEB_TOOLS_CMD = _json_settings_merge(
+    "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
+    'd.setdefault("tools",{}).setdefault("exclude",[]);'
+    '[d["tools"]["exclude"].append(t) for t in '
+    '["google_web_search","web_fetch"] '
+    'if t not in d["tools"]["exclude"]]',
+)
 
 
 # Agent registry — all supported agents
@@ -548,6 +563,12 @@ AGENTS: dict[str, AgentConfig] = {
             'if t not in d["permissions"]["deny"]]',
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
+        disallow_hosted_search_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
+            'd.setdefault("permissions",{}).setdefault("deny",[]);'
+            '[d["permissions"]["deny"].append(t) for t in ["WebSearch"] '
+            'if t not in d["permissions"]["deny"]]',
+        ),
         supports_acp_set_model=False,
         acp_model_config_id="model",
         acp_effort_config_id="effort",
@@ -626,6 +647,7 @@ AGENTS: dict[str, AgentConfig] = {
             ],
         ),
         disallow_web_tools_launch_suffix=" -c tools.web_search=false",
+        disallow_hosted_search_launch_suffix=" -c tools.web_search=false",
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -670,14 +692,11 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ],
         ),
-        disallow_web_tools_setup_cmd=_json_settings_merge(
-            "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
-            'd.setdefault("tools",{}).setdefault("exclude",[]);'
-            '[d["tools"]["exclude"].append(t) for t in '
-            '["google_web_search","web_fetch"] '
-            'if t not in d["tools"]["exclude"]]',
-        ),
+        disallow_web_tools_setup_cmd=_GEMINI_EXCLUDE_WEB_TOOLS_CMD,
         disallow_web_tools_owned_paths=["$HOME/.gemini"],
+        # web_fetch tries the hosted urlContext path before any local fetch, so
+        # the egress proxy cannot filter it; the denylist excludes both tools.
+        disallow_hosted_search_setup_cmd=_GEMINI_EXCLUDE_WEB_TOOLS_CMD,
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -706,6 +725,10 @@ AGENTS: dict[str, AgentConfig] = {
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
+        disallow_hosted_search_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
+            'd.setdefault("tools",{})["websearch"]=False',
+        ),
     ),
     "mimo": AgentConfig(
         name="mimo",
@@ -755,6 +778,10 @@ AGENTS: dict[str, AgentConfig] = {
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/mimocode"],
+        disallow_hosted_search_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            'd.setdefault("tools",{})["websearch"]=False',
+        ),
     ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
@@ -1165,6 +1192,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        disallow_hosted_search_setup_cmd=config.disallow_hosted_search_setup_cmd,
+        disallow_hosted_search_launch_suffix=config.disallow_hosted_search_launch_suffix,
         task_mcp_transport=config.task_mcp_transport,
         task_mcp_config_path=config.task_mcp_config_path,
     )
@@ -1375,6 +1404,8 @@ def register_agent(
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
+    disallow_hosted_search_setup_cmd: str = "",
+    disallow_hosted_search_launch_suffix: str = "",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -1414,6 +1445,8 @@ def register_agent(
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
+        disallow_hosted_search_setup_cmd=disallow_hosted_search_setup_cmd,
+        disallow_hosted_search_launch_suffix=disallow_hosted_search_launch_suffix,
     )
     with _REGISTRY_LOCK:
         AGENTS[name] = config

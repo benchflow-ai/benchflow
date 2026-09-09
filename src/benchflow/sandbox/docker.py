@@ -31,13 +31,14 @@ from benchflow.sandbox._base import (
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
+    COMPOSE_NET_ADMIN_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_UP_RETRY_DELAYS_SEC,
     is_compose_up_network_race_error,
 )
 from benchflow.sandbox.protocol import SandboxImage
-from benchflow.task.config import SandboxConfig
+from benchflow.task.config import NetworkMode, SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 
@@ -114,6 +115,7 @@ class DockerSandbox(BaseSandbox):
     _DOCKER_COMPOSE_BUILD_PATH = COMPOSE_BUILD_PATH
     _DOCKER_COMPOSE_PREBUILT_PATH = COMPOSE_PREBUILT_PATH
     _DOCKER_COMPOSE_NO_NETWORK_PATH = COMPOSE_NO_NETWORK_PATH
+    _DOCKER_COMPOSE_NET_ADMIN_PATH = COMPOSE_NET_ADMIN_PATH
 
     _image_build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
     _build_semaphore: ClassVar[asyncio.Semaphore | None] = None
@@ -299,6 +301,9 @@ class DockerSandbox(BaseSandbox):
 
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
+
+        if self.task_env_config.network_mode == NetworkMode.DENYLIST:
+            paths.append(self._DOCKER_COMPOSE_NET_ADMIN_PATH)
 
         return paths
 
@@ -788,6 +793,8 @@ class DockerSandbox(BaseSandbox):
             "sleep",
             "infinity",
         ]
+        if self.task_env_config.network_mode == NetworkMode.DENYLIST:
+            run_cmd.insert(1, "--cap-add=NET_ADMIN")
         result = await self._docker_cli(run_cmd, check=False)
         if result.return_code != 0:
             raise RuntimeError(
