@@ -33,7 +33,9 @@ class LiveUsageGateway(Protocol):
 class RolloutPlanes(Protocol):
     """Concrete-plane operations the rollout kernel needs."""
 
-    def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str: ...
+    def agent_launch(
+        self, agent: str, *, disallow_web_tools: bool, blocklist_web_tools: bool = False
+    ) -> str: ...
     def agent_config(self, agent: str) -> Any: ...
 
     def resolve_agent_env(

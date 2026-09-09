@@ -265,15 +265,28 @@ async def apply_web_tool_policy(
     home: str,
     *,
     disallow: bool,
+    blocklist: bool = False,
 ) -> None:
-    """Apply an agent-specific hard web-tool disable in the agent home."""
-    if not disallow or not agent_cfg or not agent_cfg.disallow_web_tools_setup_cmd:
+    """Apply an agent-specific web-tool policy in the agent home.
+
+    ``disallow`` applies the hard no-web disable; otherwise ``blocklist``
+    applies the narrower egress-blocklist switch (server-side search tools
+    only). A no-web run always wins over a blocklist.
+    """
+    if not agent_cfg:
+        return
+    if disallow:
+        setup_cmd = agent_cfg.disallow_web_tools_setup_cmd
+        policy_name = "no-web"
+    elif blocklist:
+        setup_cmd = agent_cfg.blocklist_web_tools_setup_cmd
+        policy_name = "egress-blocklist"
+    else:
+        return
+    if not setup_cmd:
         return
 
-    cmd = (
-        f"export BENCHFLOW_AGENT_HOME={shlex.quote(home)}; "
-        f"{agent_cfg.disallow_web_tools_setup_cmd}"
-    )
+    cmd = f"export BENCHFLOW_AGENT_HOME={shlex.quote(home)}; {setup_cmd}"
     owner = _owner_from_home(home)
     if owner:
         q_owner = shlex.quote(owner)
@@ -296,7 +309,7 @@ async def apply_web_tool_policy(
         if stderr:
             details.append(f"stderr: {stderr}")
         raise RuntimeError(
-            f"Failed to apply no-web policy for {agent}: {'; '.join(details)}"
+            f"Failed to apply {policy_name} policy for {agent}: {'; '.join(details)}"
         )
 
 

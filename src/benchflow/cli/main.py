@@ -28,6 +28,7 @@ from rich.table import Table
 
 from benchflow import __version__
 from benchflow._utils.config import normalize_sandbox_user
+from benchflow._utils.config_override import blocklist_override
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli._live_progress import (
     LiveEvalProgress,
@@ -469,6 +470,26 @@ def eval_run(
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
     ] = None,
+    block_url: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--block-url",
+            help=(
+                "Hide a host or host/path-prefix from the agent for this run "
+                "(repeatable; a pasted https:// URL is fine). Internet stays open "
+                "otherwise. Applied as a C-axis overlay that sets "
+                "sandbox.network_mode=blocklist and REPLACES task-level blocked_urls."
+            ),
+        ),
+    ] = None,
+    block_url_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--block-url-file",
+            help="File with one host or host/path-prefix per line ('#' comments ok); "
+            "merged with --block-url.",
+        ),
+    ] = None,
     include: Annotated[
         list[str] | None,
         typer.Option(
@@ -641,7 +662,7 @@ def eval_run(
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
         state=state,
-        config_override=config_override,
+        config_override=blocklist_override(config_override, block_url, block_url_file),
         prompt=prompt,
         concurrency=concurrency,
         build_concurrency=build_concurrency,

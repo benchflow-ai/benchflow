@@ -42,6 +42,7 @@ from benchflow.rewards.validation import (
     validate_reward_map,
 )
 from benchflow.rollout._results import _DIAG_TRUNCATE
+from benchflow.sandbox.egress import EgressBlocklist, apply_blocklist_env
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
@@ -82,19 +83,104 @@ def _environment_uses_prebuilt_image(
     return bool(resolve_manifest_image(environment_manifest))
 
 
-def _apply_web_policy(agent_env: dict[str, str], *, disallow: bool) -> dict[str, str]:
-    """Inject BenchFlow's no-web policy marker into agent env when requested."""
-    if not disallow:
-        return agent_env
-    return {**agent_env, _DISALLOW_WEB_TOOLS_ENV: "1"}
+def _task_egress_blocklist(task: Any) -> EgressBlocklist | None:
+    """Return the agent-phase egress blocklist declared by the task, if any."""
+    config = getattr(task, "config", None)
+    if config is None:
+        return None
+    return EgressBlocklist.from_task_config(config)
+
+
+def _resolve_agent_network_policy(
+    task: Any, *, primary_agent: str, disallow_web_tools: bool
+) -> tuple[EgressBlocklist | None, bool]:
+    """Return ``(primary_agent_blocklist, container_policy_active)``.
+
+    The two answer different questions and must not be conflated:
+
+    * the first is the blocklist the PRIMARY agent process is routed through —
+      ``None`` for the oracle (exempt like no-web) and under a no-web run
+      (which wins);
+    * the second is whether the CONTAINER must be provisioned for an agent-
+      layer network policy (docker ``NET_ADMIN`` overlay, sandbox-local model
+      proxy). It follows the TASK: a task that declares a blocklist needs the
+      provisioning even when the primary is the oracle, because a later
+      ``connect_as(role)`` for the agent under test programs iptables in that
+      same container.
+    """
+    task_blocklist = _task_egress_blocklist(task)
+    primary_blocklist = (
+        None if disallow_web_tools or primary_agent == "oracle" else task_blocklist
+    )
+    policy_active = disallow_web_tools or task_blocklist is not None
+    return primary_blocklist, policy_active
+
+
+def _refuse_session_factory_under_blocklist(
+    agent: str, session_factory_entrypoint: str | None, blocklist: Any
+) -> None:
+    """A session-factory agent runs in-process on the HOST: no sandbox proxy
+    and no agent-UID firewall can cover it, so a blocklist run must refuse it
+    rather than run open."""
+    if session_factory_entrypoint is None or blocklist is None:
+        return
+    raise RuntimeError(
+        f"network_mode='blocklist' cannot be enforced for session-factory agent "
+        f"{agent!r} ({session_factory_entrypoint}): it runs on the host, outside "
+        "the sandbox egress proxy and agent-UID firewall. Use an ACP agent or "
+        "drop the blocklist."
+    )
+
+
+def _apply_web_policy(
+    agent_env: dict[str, str],
+    *,
+    disallow: bool,
+    blocklist: EgressBlocklist | None = None,
+) -> dict[str, str]:
+    """Inject BenchFlow's agent network policy markers into agent env.
+
+    ``disallow`` marks the no-web policy; ``blocklist`` routes the agent through
+    the sandbox egress proxy and carries the rule list for the model proxy.
+    """
+    updated = agent_env
+    if disallow:
+        updated = {**updated, _DISALLOW_WEB_TOOLS_ENV: "1"}
+    return apply_blocklist_env(updated, blocklist)
+
+
+def _web_policy_launch_kwargs(*, disallow: bool, blocklist: bool) -> dict[str, bool]:
+    """Keyword args for ``RolloutPlanes.agent_launch``.
+
+    ``blocklist_web_tools`` is only passed when a blocklist is active, so plane
+    implementations (and test fakes) written against the older
+    ``agent_launch(agent, *, disallow_web_tools)`` shape keep working for runs
+    that never use the blocklist.
+    """
+    kwargs: dict[str, bool] = {"disallow_web_tools": disallow}
+    if blocklist:
+        kwargs["blocklist_web_tools"] = True
+    return kwargs
+
+
+def _web_policy_apply_kwargs(*, disallow: bool, blocklist: bool) -> dict[str, bool]:
+    """Keyword args for ``RolloutPlanes.apply_web_tool_policy`` (same rule)."""
+    kwargs: dict[str, bool] = {"disallow": disallow}
+    if blocklist:
+        kwargs["blocklist"] = True
+    return kwargs
 
 
 def _agent_launch_with_web_policy(
-    agent: str, *, disallow: bool, planes: RolloutPlanes | None = None
+    agent: str,
+    *,
+    disallow: bool,
+    blocklist: bool = False,
+    planes: RolloutPlanes | None = None,
 ) -> str:
-    """Return launch command, appending the agent's no-web launch knob if any."""
+    """Return launch command, appending the agent's web-policy launch knob if any."""
     return (planes or default_rollout_planes()).agent_launch(
-        agent, disallow_web_tools=disallow
+        agent, **_web_policy_launch_kwargs(disallow=disallow, blocklist=blocklist)
     )
 
 

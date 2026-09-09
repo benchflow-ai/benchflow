@@ -1,0 +1,6 @@
+# Agent-layer network policies (no-web, egress blocklist) program iptables
+# inside the container, which needs NET_ADMIN. Stacked only for those runs.
+services:
+  main:
+    cap_add:
+      - NET_ADMIN

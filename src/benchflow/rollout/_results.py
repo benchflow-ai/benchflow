@@ -161,6 +161,7 @@ def _write_config(
     environment_manifest: EnvironmentManifest | None = None,
     config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
+    network_policy: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.acp.selection import selected_acp_transport
@@ -203,6 +204,10 @@ def _write_config(
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop_block(loop_strategy),
+        # Agent-phase egress policy actually bound for this run (None when the
+        # task/run declared no blocklist). Auditors read this — plus the
+        # downloaded agent/egress.jsonl — to confirm the hidden URLs stayed hidden.
+        "network_policy": network_policy,
     }
     if usage_tracking is not None:
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()

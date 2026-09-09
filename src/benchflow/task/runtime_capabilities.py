@@ -17,6 +17,7 @@ from typing import cast
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
+    EGRESS_BLOCKLIST_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
     SINGLE_CONTAINER_PROVIDERS,
@@ -282,12 +283,23 @@ def _append_network_issue(
             sandbox=sandbox,
         )
     if mode == NetworkMode.BLOCKLIST:
-        _issue(
-            unsupported,
-            path=path,
-            reason="network blocklists are parsed but not enforced per sandbox",
-            sandbox=sandbox,
-        )
+        if path.startswith("verifier"):
+            _issue(
+                unsupported,
+                path=path,
+                reason=(
+                    "network_mode='blocklist' applies to the agent phase only; "
+                    "the verifier has no egress blocklist"
+                ),
+                sandbox=sandbox,
+            )
+        elif sandbox in EGRESS_BLOCKLIST_UNSUPPORTED_PROVIDERS:
+            _issue(
+                unsupported,
+                path=path,
+                reason=f"network_mode='blocklist' is not enforced by {sandbox}",
+                sandbox=sandbox,
+            )
 
 
 def _append_document_issues(

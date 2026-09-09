@@ -76,7 +76,7 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | `metadata` | Freeform mapping — difficulty, category, tags, anything descriptive |
 | `agent` | Agent run policy: `timeout_sec`, `user`, `network_mode`, `allowed_hosts`, `blocked_urls` |
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |
-| `sandbox` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `allowed_hosts`, `blocked_urls`, `env`, `workdir`, … (legacy `task.toml` imports convert the Harbor `environment` table to this key; `environment:` in `task.md` is rejected with a rename hint) |
+| `sandbox` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `allowed_hosts`, `blocked_urls` (see [Sandbox hardening → Egress blocklist](./sandbox-hardening.md#egress-blocklist-network_mode--blocklist)), `env`, `workdir`, … (legacy `task.toml` imports convert the Harbor `environment` table to this key; `environment:` in `task.md` is rejected with a rename hint) |
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
 | `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance, artifact, and reward metadata |
 

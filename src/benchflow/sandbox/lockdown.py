@@ -143,13 +143,30 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     )
 
 
+def agent_network_policy_active(agent_env: dict[str, str]) -> bool:
+    """True when an agent-layer network policy is on: the no-web policy
+    (``BENCHFLOW_DISALLOW_WEB_TOOLS``) or the egress blocklist. Both keep the
+    container online for the sandbox-local model proxy and confine the agent
+    UID to loopback instead."""
+    from benchflow.sandbox.egress import blocklist_active
+
+    return agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1" or blocklist_active(
+        agent_env
+    )
+
+
 async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
     agent_env: dict[str, str],
 ) -> None:
-    """Block sandbox-user external egress after ACP bootstrap, before prompting."""
-    if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
+    """Block sandbox-user external egress after ACP bootstrap, before prompting.
+
+    Under the egress blocklist the same rule makes the loopback filtering
+    proxy the agent's only route out, so tools that ignore ``HTTP(S)_PROXY``
+    fail closed rather than bypassing the blocklist.
+    """
+    if not sandbox_user or not agent_network_policy_active(agent_env):
         return
 
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
@@ -162,7 +179,8 @@ async def enforce_agent_egress_firewall(
         or parsed.port is None
     ):
         raise RuntimeError(
-            "No-web agent requires an HTTP loopback provider base URL with a port"
+            "Agent network policy requires an HTTP loopback provider base URL "
+            "with a port"
         )
 
     result = await env.exec(

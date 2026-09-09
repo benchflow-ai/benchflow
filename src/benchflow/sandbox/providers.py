@@ -41,6 +41,11 @@ class SandboxProvider:
     #: registry instead of growing a ``sandbox == "<name>"`` special case per
     #: backend that cannot isolate the network.
     enforces_no_network: bool = True
+    #: Whether the backend can enforce the agent-phase egress blocklist
+    #: (``network_mode = "blocklist"``): a root-run loopback proxy plus an
+    #: agent-UID iptables rule inside the sandbox. Needs NET_ADMIN (docker
+    #: stacks a compose overlay; Daytona VMs allow it natively).
+    enforces_egress_blocklist: bool = False
     #: Whether the backend can run a task's docker-compose side services.
     #: ``False`` means a multi-service task must be refused, not run partially.
     supports_compose: bool = False
@@ -58,12 +63,14 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         "docker",
         extra=None,
         model_proxy=ModelProxyLocation.HOST,
+        enforces_egress_blocklist=True,
         supports_compose=True,
     ),
     SandboxProvider(
         "daytona",
         extra="sandbox-daytona",
         model_proxy=ModelProxyLocation.SANDBOX,
+        enforces_egress_blocklist=True,
         # The DinD strategy runs compose inside the sandbox VM.
         supports_compose=True,
     ),
@@ -114,6 +121,10 @@ SINGLE_CONTAINER_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "no-network"``.
 NO_NETWORK_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_no_network
+)
+#: Providers that cannot enforce ``network_mode = "blocklist"``.
+EGRESS_BLOCKLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if not p.enforces_egress_blocklist
 )
 
 

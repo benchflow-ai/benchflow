@@ -160,6 +160,15 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
+class NetworkPolicyPreflightError(ValueError):
+    """A selected task's network policy cannot be honored by this run.
+
+    Raised before any rollout starts, so a 50-task batch does not burn 49
+    tasks' worth of tokens before the one ``no-network`` task rejects the
+    ``--block-url`` overlay (or the backend refuses a blocklist).
+    """
+
+
 class ResumeMismatchError(ValueError):
     """Raised when resuming a jobs_dir whose completed tasks ran a different agent.
 
@@ -376,7 +385,97 @@ JOB_MODES = ("parallel-independent", "sequential-shared")
 DEFAULT_JOB_MODE = "parallel-independent"
 
 
-def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
+_NETWORK_POLICY_FIELDS = (
+    "network_mode",
+    "blocked_urls",
+    "allowed_hosts",
+    "allow_internet",
+)
+
+
+def _network_policy_key(policy: dict | None) -> tuple | None:
+    """The part of a recorded ``network_policy`` that defines the run's posture."""
+    if not policy:
+        return None
+    return (policy.get("mode"), tuple(policy.get("blocked_urls") or ()))
+
+
+def _expected_network_policies(
+    task_dirs: list[Path], config: EvaluationConfig
+) -> dict[str, dict | None]:
+    """Resolve, per selected task, the ``network_policy`` this run would bind.
+
+    Applies the C-axis overlay to each task's declared config and asks the
+    runtime-capability gate about the network posture, BEFORE any rollout
+    starts. Network-policy conflicts (e.g. ``--block-url`` against a task that
+    declares ``no-network``/``allowlist``, or a blocklist task on a backend
+    that cannot enforce it) raise :class:`NetworkPolicyPreflightError` naming
+    every offending task. Non-network problems are left to the rollout, which
+    already reports them per task, so this preflight cannot widen the set of
+    jobs that refuse to start.
+    """
+    from benchflow._utils.config_override import apply_config_override
+    from benchflow.sandbox.egress import EgressBlocklist
+    from benchflow.task import Task
+    from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+    expected: dict[str, dict | None] = {}
+    problems: list[str] = []
+    for task_dir in task_dirs:
+        try:
+            task = Task(task_dir)
+        except Exception:  # malformed task: the batch loader already reported it
+            continue
+        try:
+            merged = apply_config_override(task.config, config.config_override)
+        except ValueError as exc:
+            if any(field in str(exc) for field in _NETWORK_POLICY_FIELDS):
+                problems.append(f"{task_dir.name}: {exc}")
+            continue
+        network_issues = [
+            issue
+            for issue in validate_task_runtime_support(
+                merged, sandbox=config.environment
+            )
+            if "network_mode" in issue.path
+        ]
+        if network_issues:
+            problems.append(
+                f"{task_dir.name}: "
+                + "; ".join(issue.reason for issue in network_issues)
+            )
+            continue
+        # Mirror Rollout's precedence exactly: the oracle is exempt, and a
+        # no-web run (task allow_internet=false or --self-gen-no-internet)
+        # wins over a blocklist, recording network_policy=null (review #3).
+        disallow_web_tools = (
+            getattr(merged.sandbox, "allow_internet", True) is False
+            or config.self_gen_no_internet
+        ) and config.agent != "oracle"
+        try:
+            blocklist = (
+                None
+                if disallow_web_tools or config.agent == "oracle"
+                else EgressBlocklist.from_task_config(merged)
+            )
+        except ValueError as exc:  # agent-level mode shadows the blocklist
+            problems.append(f"{task_dir.name}: {exc}")
+            continue
+        expected[task_dir.name] = blocklist.config_metadata() if blocklist else None
+    if problems:
+        raise NetworkPolicyPreflightError(
+            "network policy preflight failed for "
+            f"{len(problems)} task(s); refusing to start the batch:\n  "
+            + "\n  ".join(problems)
+        )
+    return expected
+
+
+def _check_resume_mismatch(
+    job_dir: Path,
+    config: EvaluationConfig,
+    expected_network_policies: dict[str, dict | None] | None = None,
+) -> None:
     """Guard against resuming a jobs_dir whose completed tasks ran differently.
 
     Reads one completed rollout's config.json (written by SDK.run) and
@@ -388,7 +487,42 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
     An *agent* mismatch raises :class:`ResumeMismatchError` (a blended score is
     meaningless and silently mixing one in is the bug this guards). A
     *loop_strategy* mismatch — same agent, different tuning — only warns.
+
+    When ``expected_network_policies`` is given (task name -> the
+    ``network_policy`` block this run would record, ``None`` for an open
+    network), every completed rollout's recorded ``network_policy`` is compared
+    against it and a difference raises :class:`ResumeMismatchError`: scores
+    taken with and without an egress blocklist belong to different
+    experiments. Pre-feature config.json files (no key) count as open network.
     """
+    if expected_network_policies is not None and job_dir.exists():
+        for cfg_file in sorted(job_dir.rglob("config.json")):
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                continue
+            # config.json records the provenance path when the task came from a
+            # source repo (e.g. "benchmarks/physics/task-1"); the expectation map
+            # is keyed by task directory name, so fall back to the basename.
+            task_name = str(cfg.get("task_path") or cfg_file.parent.name)
+            task_key = (
+                task_name
+                if task_name in expected_network_policies
+                else Path(task_name).name
+            )
+            if task_key not in expected_network_policies:
+                continue
+            prev_key = _network_policy_key(cfg.get("network_policy"))
+            current_key = _network_policy_key(expected_network_policies[task_key])
+            if prev_key != current_key:
+                raise ResumeMismatchError(
+                    f"refusing to resume: completed task {task_name!r} ran with "
+                    f"network_policy={cfg.get('network_policy')}, but this run "
+                    f"would use network_policy={expected_network_policies[task_key]}. "
+                    "Scores taken with and without an egress blocklist belong to "
+                    "different experiments. Use a fresh --jobs-dir (the existing "
+                    "results are preserved)."
+                )
     sample_dir = (
         next((d for d in job_dir.iterdir() if d.is_dir()), None)
         if job_dir.exists()
@@ -399,11 +533,11 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
     if sample_dir:
         for cfg_file in sample_dir.rglob("config.json"):
             try:
-                cfg = json.loads(cfg_file.read_text())
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
                 prev_agent = cfg.get("agent", "")
                 prev_loop = cfg.get("loop") or loop_block(None)
                 break
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 logger.debug("Could not read %s", cfg_file)
     if prev_agent and prev_agent != config.agent:
         raise ResumeMismatchError(
@@ -1752,6 +1886,9 @@ class Evaluation:
                 f"({', '.join(detail_parts)}). Refusing to publish an "
                 "empty 0/0 summary."
             )
+        # Network-policy preflight: resolve every selected task's posture under
+        # this run's overlay/backend BEFORE anything runs (review round 3).
+        expected_network_policies = _expected_network_policies(task_dirs, self._config)
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
 
@@ -1782,7 +1919,11 @@ class Evaluation:
 
         # Warn if resuming with different config than completed tasks
         if completed:
-            _check_resume_mismatch(self._jobs_dir / self._job_name, self._config)
+            _check_resume_mismatch(
+                self._jobs_dir / self._job_name,
+                self._config,
+                expected_network_policies,
+            )
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._prune_docker()

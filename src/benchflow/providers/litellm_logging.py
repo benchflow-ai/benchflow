@@ -222,6 +222,92 @@ def _failure_traceback(detail: Any) -> str:
     return tb[-2000:]
 
 
+
+#: Anthropic server tools carry a versioned ``type`` (web_search_20250305,
+#: web_fetch_20250910, ...). They run at Anthropic, so the sandbox proxy never
+#: sees their traffic; Anthropic's own ``blocked_domains`` filter (domains and
+#: ``domain/path`` prefixes) is the only lever, injected below.
+_ANTHROPIC_SERVER_WEB_TOOL_PREFIXES = ("web_search_20", "web_fetch_20")
+#: OpenAI Responses hosted search tools support an ALLOWLIST filter only, so a
+#: blocklist run strips them (fail closed) instead of half-filtering.
+_OPENAI_HOSTED_SEARCH_TOOL_TYPES = frozenset(
+    {
+        "web_search",
+        "web_search_preview",
+        "web_search_preview_2025_03_11",
+        "web_search_2025_08_26",
+    }
+)
+
+
+def _is_anthropic_server_web_tool(tool: dict) -> bool:
+    tool_type = str(tool.get("type") or "")
+    return tool_type.startswith(_ANTHROPIC_SERVER_WEB_TOOL_PREFIXES)
+
+
+def _egress_blocked_domains() -> list[str]:
+    raw = os.environ.get("BENCHFLOW_EGRESS_BLOCKED_URLS", "")
+    if not raw:
+        return []
+    try:
+        rules = json.loads(raw)
+    except ValueError:
+        return []
+    return [r for r in rules if isinstance(r, str) and r]
+
+
+def _apply_egress_blocklist_to_tools(data: dict) -> dict:
+    # Rewrite server-side web tools under the egress blocklist. Anthropic
+    # web_search_* / web_fetch_* tools get the rule list merged into
+    # blocked_domains (an allowed_domains filter, which Anthropic forbids
+    # alongside blocked_domains, is narrowed instead by dropping the blocked
+    # entries). OpenAI hosted search tools are removed. Returns the SAME object
+    # when nothing applies so callers can detect "unchanged" by identity.
+    blocked = _egress_blocked_domains()
+    tools = data.get("tools")
+    if not blocked or not isinstance(tools, list):
+        return data
+    changed = False
+    new_tools: list = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            new_tools.append(tool)
+            continue
+        tool_type = str(tool.get("type") or "")
+        if _is_anthropic_server_web_tool(tool):
+            updated = dict(tool)
+            if isinstance(updated.get("allowed_domains"), list):
+                allowed = [
+                    d
+                    for d in updated["allowed_domains"]
+                    if not any(
+                        str(d).lower() == b or str(d).lower().endswith("." + b)
+                        for b in (r.split("/", 1)[0] for r in blocked)
+                    )
+                ]
+                if allowed != updated["allowed_domains"]:
+                    updated["allowed_domains"] = allowed
+                    changed = True
+            else:
+                existing = [
+                    str(d) for d in (updated.get("blocked_domains") or []) if d
+                ]
+                merged = existing + [b for b in blocked if b not in existing]
+                if merged != existing:
+                    updated["blocked_domains"] = merged
+                    changed = True
+            new_tools.append(updated)
+        elif tool_type in _OPENAI_HOSTED_SEARCH_TOOL_TYPES:
+            changed = True  # dropped
+        else:
+            new_tools.append(tool)
+    if not changed:
+        return data
+    rewritten = dict(data)
+    rewritten["tools"] = new_tools
+    return rewritten
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -278,7 +364,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "duration_ms": max((getattr(end_time, "timestamp", lambda: time.time())() - getattr(start_time, "timestamp", lambda: time.time())()) * 1000, 0),
         }
 
-    async def async_pre_call_hook(
+    async def async_pre_call_hook(  # noqa: C901 — one linear rewrite pipeline
         self, user_api_key_dict, cache, data, call_type
     ):
         if not isinstance(data, dict):
@@ -295,6 +381,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             cleaned = dict(cleaned)
             cleaned.pop("input", None)
 
+        # Egress blocklist: server-side web tools run at the provider, outside
+        # the sandbox proxy's reach, so filter/strip them here.
+        rewritten = _apply_egress_blocklist_to_tools(cleaned)
+        if rewritten is not cleaned:
+            cleaned = rewritten
+
         # Drop non-"function" tools before they reach a chat-only backend. A
         # responses-API client (codex) sends tools the Responses wire allows but
         # chat completions does not, e.g. a {"type": "namespace"} tool. When the
@@ -305,10 +397,17 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         # (shell, file IO, ...) survive untouched.
         tools = cleaned.get("tools")
         if isinstance(tools, list):
+            # Anthropic server web tools survive ONLY under an active egress
+            # blocklist (they were just given blocked_domains above). In every
+            # other mode — including the pure no-web policy — they are dropped
+            # exactly as before.
+            keep_anthropic_web = bool(_egress_blocked_domains())
             kept = [
                 t
                 for t in tools
-                if not isinstance(t, dict) or t.get("type", "function") == "function"
+                if not isinstance(t, dict)
+                or t.get("type", "function") == "function"
+                or (keep_anthropic_web and _is_anthropic_server_web_tool(t))
             ]
             if len(kept) != len(tools):
                 if cleaned is data:

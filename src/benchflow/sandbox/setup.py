@@ -749,6 +749,7 @@ def _create_sandbox_environment(
             rollout_paths=rollout_paths,
             task_env_config=env_config,
             persistent_env=manifest_env or None,
+            agent_network_policy=preserve_agent_network,
         )
     elif sandbox_type == "daytona":
         try:
