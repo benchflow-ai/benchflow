@@ -39,7 +39,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from posixpath import normpath
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 
 UPSTREAM_TIMEOUT_SEC = 60
@@ -312,6 +312,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             self.server.record(
                 method="CONNECT", host=authority, path=None, decision="block"
             )
+            _discard_pending(self.connection)
             return
         if self.server.policy.inspects(host):
             self.server.record(
@@ -417,7 +418,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
     def _inspect(self) -> None:
         """Terminate the client's TLS and serve its requests on this thread."""
-        context: ssl.SSLContext = self.server.server_context  # type: ignore[assignment]
+        context = self.server.server_context
+        if context is None:  # do_CONNECT refuses before reaching here
+            return
         try:
             with context.wrap_socket(self.connection, server_side=True) as secured:
                 _TunnelHandler(secured, self.client_address, self.server)
@@ -477,6 +480,25 @@ def _authority(value: str, default_port: int) -> tuple[str, int]:
     if host and port.isdigit():
         return host.strip("[]").lower().rstrip("."), int(port)
     return value.strip("[]").lower().rstrip("."), default_port
+
+
+def _discard_pending(sock: socket.socket) -> None:
+    """Consume what the peer already sent, so the close is a FIN and not a reset.
+
+    The bytes were only peeked; closing over unread data makes the kernel
+    reset the connection, and macOS reports that to the peer as an error
+    where Linux delivers the earlier FIN. Draining first keeps the close
+    orderly everywhere. Nothing is relayed either way.
+    """
+    previous = sock.gettimeout()
+    try:
+        sock.settimeout(0)
+        while sock.recv(_CHUNK):
+            pass
+    except OSError:
+        pass
+    finally:
+        sock.settimeout(previous)
 
 
 def _peek_server_name(sock: socket.socket) -> str | None:
@@ -545,7 +567,7 @@ def _relay(client: socket.socket, upstream: socket.socket) -> None:
             if not ready:
                 return
             for key, _ in ready:
-                source: socket.socket = key.fileobj  # type: ignore[assignment]
+                source = cast(socket.socket, key.fileobj)
                 try:
                     chunk = source.recv(_CHUNK)
                     if not chunk:
