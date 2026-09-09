@@ -240,7 +240,7 @@ def stack(tmp_path: Path, monkeypatch):
         "plain.test": plain.server_address[1],
     }
 
-    def fake_connect_upstream(host, port):
+    def fake_connect_upstream(host, port, *, model_gateway_port=None):
         if host == "internal.test":
             raise proxy_mod._PrivateDestination(host)
         return socket.create_connection(("127.0.0.1", ports[host]), timeout=10)

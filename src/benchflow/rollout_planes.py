@@ -193,9 +193,16 @@ class DefaultRolloutPlanes:
         await stop_provider_runtime(runtime)
 
     async def start_egress_denylist(
-        self, env: Any, sandbox_user: str | None, denylist: EgressDenylist
+        self,
+        env: Any,
+        sandbox_user: str | None,
+        denylist: EgressDenylist,
+        *,
+        model_gateway_url: str | None = None,
     ) -> None:
-        await start_egress_denylist(env, sandbox_user, denylist)
+        await start_egress_denylist(
+            env, sandbox_user, denylist, model_gateway_url=model_gateway_url
+        )
 
     async def stop_egress_denylist(self, env: Any, rollout_dir: Path) -> None:
         await stop_egress_denylist(env, rollout_dir)

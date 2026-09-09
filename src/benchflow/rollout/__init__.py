@@ -1290,8 +1290,12 @@ class Rollout:
 
     async def _start_egress_denylist(self, denylist: EgressDenylist) -> None:
         """(Re)start the egress proxy before an ACP connection; a restored sandbox has none running."""
+        runtime = self._usage_runtime
         await self._planes.start_egress_denylist(
-            self._env, self._config.sandbox_user, denylist
+            self._env,
+            self._config.sandbox_user,
+            denylist,
+            model_gateway_url=runtime.agent_base_url if runtime is not None else None,
         )
 
     async def connect(self) -> None:

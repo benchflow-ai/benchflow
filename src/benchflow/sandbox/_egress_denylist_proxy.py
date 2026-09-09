@@ -99,7 +99,19 @@ def _looks_like_address(host: str) -> bool:
 class Policy:
     """Match hosts and URLs against the denylist; scheme, port and query are ignored."""
 
-    def __init__(self, blocked_urls: list[str], blocked_hosts: list[str]):
+    def __init__(
+        self,
+        blocked_urls: list[str],
+        blocked_hosts: list[str],
+        model_gateway_port: int | None = None,
+    ):
+        # Controller-supplied runtime state, never a task-authored allowlist.
+        if model_gateway_port is not None and (
+            type(model_gateway_port) is not int
+            or not 1024 <= model_gateway_port <= 65535
+        ):
+            raise ValueError("invalid model gateway port")
+        self.model_gateway_port = model_gateway_port
         self.prefixes: list[tuple[str, str]] = []
         for raw in blocked_urls:
             url = raw if "://" in raw else "https://" + raw
@@ -118,9 +130,12 @@ class Policy:
         return cls(
             list(data.get("blocked_urls") or []),
             list(data.get("blocked_hosts") or []),
+            data.get("model_gateway_port"),
         )
 
-    def host_rule(self, host: str) -> str | None:
+    def host_rule(self, host: str, port: int = 0) -> str | None:
+        if (host, port) == ("127.0.0.1", self.model_gateway_port):
+            return None
         name = host.strip().rstrip(".").lower()
         if _looks_like_address(name):
             return "ip-literal"
@@ -129,8 +144,8 @@ class Policy:
                 return f"host:{blocked}"
         return None
 
-    def url_rule(self, host: str, path: str) -> str | None:
-        rule = self.host_rule(host)
+    def url_rule(self, host: str, path: str, port: int = 0) -> str | None:
+        rule = self.host_rule(host, port)
         if rule:
             return rule
         key, pkey = host_key(host), _path_key(path)
@@ -230,8 +245,15 @@ def _upstream_allowed(address: str) -> bool:
         return False
 
 
-def _connect_upstream(host: str, port: int) -> socket.socket:
+def _connect_upstream(
+    host: str, port: int, *, model_gateway_port: int | None = None
+) -> socket.socket:
     """Connect to a vetted address of ``host``; the root proxy must not reach sandbox-internal services."""
+    # Gemini's Undici ProxyAgent ignores NO_PROXY, even for the local model
+    # gateway. Permit only the endpoint BenchFlow created; do not resolve a
+    # hostname or expose any other private address/loopback port.
+    if (host, port) == ("127.0.0.1", model_gateway_port):
+        return socket.create_connection((host, port), timeout=HEAD_TIMEOUT)
     addresses = _resolve(host, port)
     if not addresses or not all(_upstream_allowed(a) for a in addresses):
         raise _PrivateDestination(host)
@@ -363,7 +385,7 @@ class Handler(socketserver.BaseRequestHandler):
         host, _, port_s = target.rpartition(":")
         host = host.strip("[]").rstrip(".").lower()
         port = int(port_s) if port_s.isdigit() else 443
-        rule = self.proxy.policy.host_rule(host)
+        rule = self.proxy.policy.host_rule(host, port)
         if rule:
             self._deny(self.request, "CONNECT", f"{host}:{port}", rule)
             return
@@ -378,7 +400,9 @@ class Handler(socketserver.BaseRequestHandler):
             )
             return
         try:
-            upstream = _connect_upstream(host, port)
+            upstream = _connect_upstream(
+                host, port, model_gateway_port=self.proxy.policy.model_gateway_port
+            )
         except _PrivateDestination:
             self._deny(self.request, "CONNECT", f"{host}:{port}", "private-address")
             return
@@ -422,7 +446,7 @@ class Handler(socketserver.BaseRequestHandler):
             if not host:
                 sock.sendall(_response("400 Bad Request", "absolute URL required\n"))
                 return
-        rule = self.proxy.policy.url_rule(host, path)
+        rule = self.proxy.policy.url_rule(host, path, port)
         if rule:
             self._deny(sock, method, url, rule)
             return
@@ -430,7 +454,9 @@ class Handler(socketserver.BaseRequestHandler):
         headers.insert(0, ("Host", authority))
         rest = _body_prefix(headers, rest)
         try:
-            upstream = _connect_upstream(host, port)
+            upstream = _connect_upstream(
+                host, port, model_gateway_port=self.proxy.policy.model_gateway_port
+            )
             if secure:
                 upstream = self.proxy.upstream_ctx.wrap_socket(
                     upstream, server_hostname=host
