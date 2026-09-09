@@ -149,7 +149,8 @@ def test_hosted_search_fields_are_shim_only():
 # Planes: launch suffix selection
 
 
-def test_codex_launch_suffix_disables_web_search_for_hosted_search():
+def test_codex_web_policy_uses_launch_config_instead_of_ignored_cli_flags():
+    """Guards PR #1118: codex-acp 1.6 ignores the -c flags added by PR #1113."""
     planes = DefaultRolloutPlanes()
     base = AGENT_LAUNCH["codex-acp"]
 
@@ -157,7 +158,7 @@ def test_codex_launch_suffix_disables_web_search_for_hosted_search():
         planes.agent_launch(
             "codex-acp", disallow_web_tools=False, disallow_hosted_search=True
         )
-        == f"{base} -c tools.web_search=false"
+        == base
     )
     assert planes.agent_launch("codex-acp", disallow_web_tools=False) == base
 

@@ -91,11 +91,23 @@ def apply_codex_launch_config(
     *,
     model: str | None,
     reasoning_effort: str | None,
+    sandboxed: bool = False,
 ) -> tuple[dict[str, str], bool]:
-    """Apply launch-owned effort and report whether config owns model selection."""
+    """Configure the adapter's sandbox, web policy and launch-owned model effort."""
     if agent != "codex-acp":
         return agent_env, False
-    config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV))
+    updated_env = dict(agent_env)
+    if sandboxed:
+        # BenchFlow's non-root sandbox and UID firewall own isolation. The
+        # adapter defaults to workspace-write, whose nested bwrap fails on
+        # Docker/Daytona before tools run. CODEX_CONFIG.sandbox_mode does not
+        # fix this: codex-acp overrides it with its session's AgentMode.
+        updated_env.setdefault("INITIAL_AGENT_MODE", "agent-full-access")
+    disable_search = any(
+        agent_env.get(key) == "1"
+        for key in ("BENCHFLOW_DISALLOW_WEB_TOOLS", "BENCHFLOW_EGRESS_DENYLIST")
+    )
+    config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=disable_search)
     provider_model = agent_env.get(_PROVIDER_MODEL_ENV)
     owns_model = bool(
         model
@@ -105,14 +117,15 @@ def apply_codex_launch_config(
         and config is not None
         and config.get("model") == provider_model
     )
-    if not owns_model or not reasoning_effort:
-        return agent_env, owns_model
-
-    assert config is not None
-    updated_env = dict(agent_env)
-    config["model_reasoning_effort"] = reasoning_effort
-    updated_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
-    return updated_env, True
+    if config is not None and (disable_search or (owns_model and reasoning_effort)):
+        if disable_search:
+            # codex-acp 1.6.0 ignores CLI -c flags; its supported CODEX_CONFIG
+            # is forwarded to the Codex app-server's thread configuration.
+            config["web_search"] = "disabled"
+        if owns_model and reasoning_effort:
+            config["model_reasoning_effort"] = reasoning_effort
+        updated_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
+    return (updated_env if updated_env != agent_env else agent_env), owns_model
 
 
 def _apply_codex_default_auth_request(

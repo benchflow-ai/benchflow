@@ -76,7 +76,7 @@ See [task authoring](./task-authoring-task-md.md#network-policy) for the field r
    | Harness | Switched off | Still on |
    |---|---|---|
    | `claude-agent-acp` | `WebSearch` | `WebFetch` (fetches from inside the sandbox, through the proxy) |
-   | `codex-acp` | `tools.web_search` | |
+   | `codex-acp` | `web_search` (`CODEX_CONFIG`) | local shell tools |
    | `gemini` | `google_web_search`, `web_fetch` (tries a hosted fetch first) | |
    | `opencode`, `mimo` | `websearch` | `webfetch` |
    | other harnesses | nothing | whatever hosted tools they ship |
@@ -90,6 +90,19 @@ Both direct and proxied requests can reach that one endpoint. This exception
 comes from the running provider gateway, never task metadata or agent-supplied
 environment variables; other IP addresses and private destinations remain
 blocked. Each reconnect registers the current gateway port.
+
+Codex runs in its `agent-full-access` session mode when BenchFlow has already
+selected a non-root sandbox user, unless the caller explicitly sets
+`INITIAL_AGENT_MODE`. This avoids nesting Codex's bubblewrap sandbox inside
+Docker or Daytona, where namespace creation can fail before a tool runs.
+BenchFlow's user, filesystem restrictions, proxy and UID firewall still apply.
+Hosted search is disabled through `CODEX_CONFIG.web_search`, including when a
+caller configured live search; codex-acp's CLI does not consume `-c` overrides.
+
+For OAuth runs, use the Claude Code harness (`claude-agent-acp`) with a bare
+Claude model and `CLAUDE_CODE_OAUTH_TOKEN`, without `ANTHROPIC_API_KEY`. Its
+native authenticated traffic passes through the same egress proxy, while
+`WebSearch` stays disabled and local requests still receive policy denials.
 
 Matching ignores scheme, port, query string, and case, strips a leading `www.`, and compares a normalized path: percent-encoding is decoded (repeatedly), `.` and `..` segments are resolved, duplicate slashes and backslashes collapse, and `;` path parameters are dropped, so `/abs/../abs/2401.12345` and `/abs/%2e%2e/abs/2401.12345` match the same entry as `/abs/2401.12345`. A `blocked_urls` entry blocks every path under it; a `blocked_hosts` entry blocks the host and its subdomains. Apart from the registered model gateway, requests to addresses are refused in every notation a resolver accepts (dotted, decimal, hex, octal) and through wildcard DNS names that embed an address (`1-2-3-4.sslip.io`), so a blocked host cannot be reached by its address. A name the agent controls that resolves to the blocked address is not detected; that is the inherent limit of a hostname denylist. For every other destination, the proxy resolves its address and refuses names that resolve to loopback, private, link-local, or other non-global addresses (cloud metadata included), so a hostname the agent controls cannot turn the root proxy into a bridge to sandbox-internal or host services. The uid firewall stays for the rest of the sandbox life, as in the no-web mode: a later oracle role in the same sandbox, and a verifier configured with `verifier.user` equal to the sandbox user, run without egress.
 
