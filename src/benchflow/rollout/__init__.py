@@ -149,6 +149,7 @@ from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upl
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
 )
+from benchflow.rollout._setup import _task_egress_denylist as _task_egress_denylist
 from benchflow.rollout._setup import _verify_rollout as _verify_rollout
 from benchflow.rollout._skills import (
     _resolve_skill_creator_root as _resolve_skill_creator_root,
@@ -197,6 +198,7 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.egress_denylist import EgressDenylist, denylist_agent_env
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -658,6 +660,8 @@ class Rollout:
         self._timing: dict[str, float] = {}
         self._effective_locked: list[str] = []
         self._disallow_web_tools: bool = False
+        self._egress_denylist: EgressDenylist | None = None
+        self._disallow_hosted_search: bool = False
         self._effective_skills_dir: Path | None = None
         self._effective_skills_sandbox_dir: str | None = None
         # Task dir actually deployed: a temp copy (self._task_tmp) when
@@ -952,6 +956,14 @@ class Rollout:
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
+        self._egress_denylist = (
+            None
+            if self._disallow_web_tools or cfg.primary_agent == "oracle"
+            else _task_egress_denylist(self._task)
+        )
+        if self._egress_denylist is not None and not cfg.sandbox_user:
+            raise ValueError("network_mode='denylist' requires a sandbox_user")
+        self._disallow_hosted_search = self._egress_denylist is not None
         self._agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
                 cfg.primary_agent, cfg.primary_model, cfg.agent_env
@@ -973,6 +985,7 @@ class Rollout:
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
             disallow_web_tools=self._disallow_web_tools,
+            disallow_hosted_search=self._disallow_hosted_search,
         )
 
         # Copy task dir to temp when Dockerfile mutations are needed
@@ -1231,6 +1244,7 @@ class Rollout:
             self._agent_cfg,
             cred_home,
             disallow=self._disallow_web_tools,
+            disallow_hosted_search=self._disallow_hosted_search,
         )
         await self._planes.snapshot_build_config(self._env, workspace=self._agent_cwd)
         await self._planes.seed_verifier_workspace(
@@ -1274,11 +1288,18 @@ class Rollout:
             return cfg.session_factory
         return None
 
+    async def _start_egress_denylist(self, denylist: EgressDenylist) -> None:
+        """(Re)start the egress proxy before an ACP connection; a restored sandbox has none running."""
+        await self._planes.start_egress_denylist(
+            self._env, self._config.sandbox_user, denylist
+        )
+
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
         t0 = datetime.now()
+        egress_denylist = getattr(self, "_egress_denylist", None)
 
         (
             self._agent_env,
@@ -1295,11 +1316,16 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=getattr(self, "_disallow_web_tools", False),
+            force_sandbox_local=getattr(self, "_disallow_web_tools", False)
+            or egress_denylist is not None,
         )
+        if egress_denylist is not None:
+            self._agent_env = denylist_agent_env(self._agent_env)
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
+            if egress_denylist is not None:
+                raise RuntimeError("network_mode='denylist' requires an ACP agent")
             (
                 self._acp_client,
                 self._session,
@@ -1317,6 +1343,8 @@ class Rollout:
                 agent_cwd=self._agent_cwd,
             )
         else:
+            if egress_denylist is not None:
+                await self._start_egress_denylist(egress_denylist)
             (
                 self._acp_client,
                 self._session,
@@ -2012,6 +2040,17 @@ class Rollout:
             finally:
                 self._usage_runtime = None
 
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        if (
+            getattr(self, "_egress_denylist", None) is not None
+            and self._env is not None
+            and rollout_dir is not None
+        ):
+            try:
+                await self._planes.stop_egress_denylist(self._env, rollout_dir)
+            except Exception as e:
+                logger.warning(f"Egress denylist proxy stop failed: {e}")
+
         self._finalize_usage_metrics()
         self._enforce_required_usage_tracking()
 
@@ -2272,9 +2311,16 @@ class Rollout:
         if disallow_web_tools is None:
             disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
         disallow_web_tools = bool(disallow_web_tools and role.agent != "oracle")
+        egress_denylist = (
+            None
+            if disallow_web_tools or role.agent == "oracle"
+            else _task_egress_denylist(getattr(self, "_task", None))
+        )
+        disallow_hosted_search = egress_denylist is not None
         agent_launch = self._planes.agent_launch(
             role.agent,
             disallow_web_tools=disallow_web_tools,
+            disallow_hosted_search=disallow_hosted_search,
         )
         agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
@@ -2296,8 +2342,10 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=disallow_web_tools,
+            force_sandbox_local=disallow_web_tools or disallow_hosted_search,
         )
+        if egress_denylist is not None:
+            agent_env = denylist_agent_env(agent_env)
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (
@@ -2342,6 +2390,7 @@ class Rollout:
                 agent_cfg,
                 cred_home,
                 disallow=disallow_web_tools,
+                disallow_hosted_search=disallow_hosted_search,
             )
 
         self._agent_launch = agent_launch
@@ -2349,6 +2398,8 @@ class Rollout:
         sf_entrypoint = self._session_factory_entrypoint(role.agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
+            if egress_denylist is not None:
+                raise RuntimeError("network_mode='denylist' requires an ACP agent")
             (
                 self._acp_client,
                 self._session,
@@ -2368,6 +2419,8 @@ class Rollout:
                 agent_cwd=self._agent_cwd,
             )
         else:
+            if egress_denylist is not None:
+                await self._start_egress_denylist(egress_denylist)
             (
                 self._acp_client,
                 self._session,

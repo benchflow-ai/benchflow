@@ -39,6 +39,8 @@ _REQUIRED_METHODS = (
     "link_skill_paths",
     "ensure_litellm_runtime",
     "stop_provider_runtime",
+    "start_egress_denylist",
+    "stop_egress_denylist",
     "extract_usage",
     "connect_acp",
     "execute_prompts",

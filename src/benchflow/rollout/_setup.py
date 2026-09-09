@@ -42,6 +42,7 @@ from benchflow.rewards.validation import (
     validate_reward_map,
 )
 from benchflow.rollout._results import _DIAG_TRUNCATE
+from benchflow.sandbox.egress_denylist import EgressDenylist, egress_denylist_for
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,11 @@ def _task_disallows_internet(task: Any) -> bool:
     """Return True when task config requests no internet for the agent task."""
     env_config = getattr(getattr(task, "config", None), "sandbox", None)
     return getattr(env_config, "allow_internet", True) is False
+
+
+def _task_egress_denylist(task: Any) -> EgressDenylist | None:
+    """Return the egress denylist the task's sandbox config declares, if any."""
+    return egress_denylist_for(getattr(getattr(task, "config", None), "sandbox", None))
 
 
 def _read_task_instruction(task_path: Path) -> str:

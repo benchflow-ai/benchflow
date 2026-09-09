@@ -17,6 +17,7 @@ from typing import cast
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
+    DENYLIST_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
     SINGLE_CONTAINER_PROVIDERS,
@@ -279,6 +280,13 @@ def _append_network_issue(
             unsupported,
             path=path,
             reason="network allowlists are parsed but not enforced per sandbox",
+            sandbox=sandbox,
+        )
+    if mode == NetworkMode.DENYLIST and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS:
+        _issue(
+            unsupported,
+            path=path,
+            reason=f"network_mode='denylist' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
 

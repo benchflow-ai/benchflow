@@ -108,6 +108,27 @@ def test_agent_collection_invariants(name, cfg):
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
+def test_agent_hosted_search_switches_are_well_formed(name, cfg):
+    """Hosted-search switches target $BENCHFLOW_AGENT_HOME and append cleanly.
+
+    Guards the denylist egress mode, benchflow-ai/FrontierPhysics#365: the
+    setup command runs with BENCHFLOW_AGENT_HOME exported, and the launch
+    suffix is concatenated onto launch_cmd without a separator.
+    """
+    assert isinstance(cfg.disallow_hosted_search_setup_cmd, str)
+    assert isinstance(cfg.disallow_hosted_search_launch_suffix, str)
+    if cfg.disallow_hosted_search_setup_cmd:
+        assert "$BENCHFLOW_AGENT_HOME" in cfg.disallow_hosted_search_setup_cmd, (
+            f"{name!r} disallow_hosted_search_setup_cmd must write under "
+            "$BENCHFLOW_AGENT_HOME"
+        )
+    if cfg.disallow_hosted_search_launch_suffix:
+        assert cfg.disallow_hosted_search_launch_suffix[0].isspace(), (
+            f"{name!r} disallow_hosted_search_launch_suffix must start with a space"
+        )
+
+
+@pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
 def test_agent_install_cmd_targets_shared_paths(name, cfg):
     """Installed binaries must land in shared prefixes, not a root-only home.
 

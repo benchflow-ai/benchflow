@@ -80,6 +80,8 @@ def test_register_agent():
             description="Test agent",
             disallow_web_tools_setup_cmd="true",
             disallow_web_tools_owned_paths=["$HOME/.test-agent"],
+            disallow_hosted_search_setup_cmd="false",
+            disallow_hosted_search_launch_suffix=" --no-search",
         )
 
         assert "test-custom-agent" in AGENTS
@@ -88,6 +90,8 @@ def test_register_agent():
         assert cfg.requires_env == ["TEST_KEY"]
         assert cfg.disallow_web_tools_setup_cmd == "true"
         assert cfg.disallow_web_tools_owned_paths == ["$HOME/.test-agent"]
+        assert cfg.disallow_hosted_search_setup_cmd == "false"
+        assert cfg.disallow_hosted_search_launch_suffix == " --no-search"
         assert alias_model == ""
     finally:
         # register_agent writes to all three dicts; clean up all three to keep
