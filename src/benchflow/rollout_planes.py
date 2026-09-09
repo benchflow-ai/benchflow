@@ -53,13 +53,25 @@ from benchflow.sandbox.setup import (
 class DefaultRolloutPlanes:
     """Default bindings for the four concrete planes."""
 
-    def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str:
+    def agent_launch(
+        self,
+        agent: str,
+        *,
+        disallow_web_tools: bool,
+        blocklist_web_tools: bool = False,
+    ) -> str:
         launch = AGENT_LAUNCH.get(agent, agent)
-        if not disallow_web_tools:
-            return launch
         agent_cfg = AGENTS.get(agent)
-        if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
-            return launch + agent_cfg.disallow_web_tools_launch_suffix
+        if disallow_web_tools:
+            if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
+                return launch + agent_cfg.disallow_web_tools_launch_suffix
+            return launch
+        if (
+            blocklist_web_tools
+            and agent_cfg
+            and agent_cfg.blocklist_web_tools_launch_suffix
+        ):
+            return launch + agent_cfg.blocklist_web_tools_launch_suffix
         return launch
 
     def agent_config(self, agent: str) -> Any:

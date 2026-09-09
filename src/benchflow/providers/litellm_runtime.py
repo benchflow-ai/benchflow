@@ -50,6 +50,7 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.egress import strip_proxy_env
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
@@ -1451,7 +1452,11 @@ def _apply_litellm_agent_env(
 def _litellm_proxy_env(
     *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
 ) -> dict[str, str]:
-    updated = dict(agent_env)
+    # The model proxy is a root-run helper that must reach providers
+    # directly: never route it through the agent's egress filter (nor trust
+    # the agent-side CA bundle). The blocklist rule list itself stays — the
+    # pre-call hook reads it to filter server-side web tools.
+    updated = strip_proxy_env(dict(agent_env))
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     expected = sorted(set(required_skill_names))

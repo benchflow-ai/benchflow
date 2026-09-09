@@ -1127,3 +1127,55 @@ def test_sandbox_launch_allows_supported_legacy_task(tmp_path: Path) -> None:
 
     docker_sandbox.assert_called_once()
     assert result is docker_sandbox.return_value
+
+
+_BLOCKLIST_TASK = {
+    "agent": {
+        "network_mode": "blocklist",
+        "blocked_urls": ["arxiv.org/abs/2401.12345"],
+    },
+    "sandbox": {
+        "network_mode": "blocklist",
+        "blocked_urls": ["openreview.net"],
+    },
+}
+
+
+@pytest.mark.parametrize("sandbox", ["docker", "daytona"])
+def test_validator_accepts_blocklist_on_enforcing_backends(sandbox: str) -> None:
+    """Guards the egress-blocklist PR: docker and daytona enforce network_mode='blocklist'."""
+    config = TaskConfig.model_validate(_BLOCKLIST_TASK)
+
+    assert validate_task_runtime_support(config, sandbox=sandbox) == []
+
+
+@pytest.mark.parametrize("sandbox", ["modal", "apple-container", "agentcore"])
+def test_validator_reports_blocklist_gap_on_other_backends(sandbox: str) -> None:
+    """Guards the egress-blocklist PR: backends without a root proxy + agent-UID
+    firewall must refuse a blocklist task instead of running it open."""
+    config = TaskConfig.model_validate(_BLOCKLIST_TASK)
+
+    issues = validate_task_runtime_support(config, sandbox=sandbox)
+
+    assert [(issue.path, issue.reason) for issue in issues] == [
+        (
+            "agent.network_mode",
+            f"network_mode='blocklist' is not enforced by {sandbox}",
+        ),
+        (
+            "sandbox.network_mode",
+            f"network_mode='blocklist' is not enforced by {sandbox}",
+        ),
+    ]
+
+
+def test_validator_reports_verifier_blocklist_as_unsupported() -> None:
+    """Guards the egress-blocklist PR: the blocklist is an agent-phase control only."""
+    config = TaskConfig.model_validate(
+        {"verifier": {"network_mode": "blocklist", "blocked_urls": ["arxiv.org"]}}
+    )
+
+    issues = validate_task_runtime_support(config, sandbox="docker")
+
+    assert [issue.path for issue in issues] == ["verifier.network_mode"]
+    assert "agent phase only" in issues[0].reason

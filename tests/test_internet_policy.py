@@ -18,8 +18,14 @@ from benchflow.rollout import (
 
 def _wire_fake_planes(trial: Rollout) -> MagicMock:
     planes = MagicMock()
-    planes.agent_launch.side_effect = lambda agent, *, disallow_web_tools: (
-        f"{agent} --no-web" if disallow_web_tools else agent
+    # Mirrors RolloutPlanes.agent_launch: the blocklist keyword landed with
+    # the egress-blocklist PR, so the fake accepts both policy knobs.
+    planes.agent_launch.side_effect = (
+        lambda agent, *, disallow_web_tools, blocklist_web_tools=False: (
+            f"{agent} --no-web"
+            if disallow_web_tools
+            else (f"{agent} --blocklist" if blocklist_web_tools else agent)
+        )
     )
     planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
     planes.ensure_litellm_runtime = AsyncMock(

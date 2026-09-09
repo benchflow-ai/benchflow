@@ -31,6 +31,7 @@ from benchflow.sandbox._base import (
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
+    COMPOSE_NET_ADMIN_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_UP_RETRY_DELAYS_SEC,
@@ -114,6 +115,7 @@ class DockerSandbox(BaseSandbox):
     _DOCKER_COMPOSE_BUILD_PATH = COMPOSE_BUILD_PATH
     _DOCKER_COMPOSE_PREBUILT_PATH = COMPOSE_PREBUILT_PATH
     _DOCKER_COMPOSE_NO_NETWORK_PATH = COMPOSE_NO_NETWORK_PATH
+    _DOCKER_COMPOSE_NET_ADMIN_PATH = COMPOSE_NET_ADMIN_PATH
 
     _image_build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
     _build_semaphore: ClassVar[asyncio.Semaphore | None] = None
@@ -158,6 +160,7 @@ class DockerSandbox(BaseSandbox):
         task_env_config: SandboxConfig,
         keep_containers: bool = False,
         mounts_json: list[dict[str, str]] | None = None,
+        agent_network_policy: bool = False,
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -172,6 +175,9 @@ class DockerSandbox(BaseSandbox):
 
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
+        # An agent-layer network policy (no-web / egress blocklist) programs
+        # iptables inside the container, which needs NET_ADMIN.
+        self._agent_network_policy = agent_network_policy
         self._mounts_compose_path: Path | None = None
         self._logs_are_mounted = True
 
@@ -299,6 +305,9 @@ class DockerSandbox(BaseSandbox):
 
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
+
+        if self._agent_network_policy:
+            paths.append(self._DOCKER_COMPOSE_NET_ADMIN_PATH)
 
         return paths
 

@@ -1071,7 +1071,10 @@ def _telemetry_shape(evidence: Evidence) -> set[str]:
 _NET_NO_NETWORK = "no-network"
 _NET_ALLOWLIST = "allowlist"
 _NET_PUBLIC = "public"
-_VALID_NETWORK_MODES = frozenset({_NET_NO_NETWORK, _NET_ALLOWLIST, _NET_PUBLIC})
+_NET_BLOCKLIST = "blocklist"
+_VALID_NETWORK_MODES = frozenset(
+    {_NET_NO_NETWORK, _NET_ALLOWLIST, _NET_PUBLIC, _NET_BLOCKLIST}
+)
 
 
 def _norm_network_mode(value: Any) -> str | None:
@@ -1096,10 +1099,15 @@ def network_hardening(
     verifier or the sandbox/lockdown surface a ``public`` mode is a hard
     ``fail`` (blocker) because that surface controls the isolation boundary.
 
+    ``blocklist`` (broad egress minus ``blocked_urls``) is graded exactly like
+    ``public``: the agent still reaches the open internet, so a blocklist is an
+    experiment-design control (hide specific papers), not an isolation boundary.
+
     Returns the ``V-NETWORK`` gate outcome. ``pass`` for a hardened config,
-    ``fail`` for an unsafe one (missing allowlist hosts, or ``public`` on a
-    verifier/sandbox PR), ``quarantine`` for a ``public`` config on an unrelated
-    PR (documented, needs human sign-off), ``na`` when no policy is declared.
+    ``fail`` for an unsafe one (missing allowlist hosts, or ``public`` /
+    ``blocklist`` on a verifier/sandbox PR), ``quarantine`` for a ``public`` /
+    ``blocklist`` config on an unrelated PR (documented, needs human sign-off),
+    ``na`` when no policy is declared.
     """
     mode = _norm_network_mode(task_config.get("network_mode"))
     raw_hosts = task_config.get("allowed_hosts")
@@ -1108,20 +1116,39 @@ def network_hardening(
         for h in (raw_hosts if isinstance(raw_hosts, list) else [])
         if str(h).strip()
     ]
+    raw_blocked = task_config.get("blocked_urls")
+    blocked_urls = [
+        str(u).strip()
+        for u in (raw_blocked if isinstance(raw_blocked, list) else [])
+        if str(u).strip()
+    ]
 
     if mode is None:
         # No declared policy => the runtime default (no-network) applies; an
-        # explicit allowlist list without a mode is a misconfiguration.
+        # explicit allowlist/blocklist without a mode is a misconfiguration.
         if allowed_hosts:
             return (
                 "V-NETWORK",
                 "fail",
                 "allowed_hosts declared without network_mode='allowlist'",
             )
+        if blocked_urls:
+            return (
+                "V-NETWORK",
+                "fail",
+                "blocked_urls declared without network_mode='blocklist'",
+            )
         return ("V-NETWORK", "na", "no network_mode declared; runtime default applies")
 
     if mode not in _VALID_NETWORK_MODES:
         return ("V-NETWORK", "fail", f"unknown network_mode={mode!r}")
+
+    if mode != _NET_BLOCKLIST and blocked_urls:
+        return (
+            "V-NETWORK",
+            "fail",
+            "blocked_urls is only valid for network_mode='blocklist'",
+        )
 
     if mode == _NET_NO_NETWORK:
         if allowed_hosts:
@@ -1145,17 +1172,24 @@ def network_hardening(
             f"allowlist hardened: hosts={sorted(allowed_hosts)}",
         )
 
-    # mode == public
+    if mode == _NET_BLOCKLIST and not blocked_urls:
+        return (
+            "V-NETWORK",
+            "fail",
+            "network_mode='blocklist' requires a non-empty blocked_urls",
+        )
+
+    # mode == public, or blocklist (open egress minus blocked_urls)
     if verifier_or_sandbox_pr:
         return (
             "V-NETWORK",
             "fail",
-            "network_mode='public' on a verifier/sandbox PR (isolation boundary)",
+            f"network_mode={mode!r} on a verifier/sandbox PR (isolation boundary)",
         )
     return (
         "V-NETWORK",
         "quarantine",
-        "network_mode='public' (no allowlist) — requires human sign-off",
+        f"network_mode={mode!r} (no allowlist) — requires human sign-off",
     )
 
 

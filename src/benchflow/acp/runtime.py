@@ -51,6 +51,11 @@ from benchflow.diagnostics import (
     TransportClosedDiagnostic,
     TransportClosedError,
 )
+from benchflow.sandbox.egress import (
+    blocklist_active,
+    strip_blocklist_secret,
+    verify_egress_blocklist,
+)
 from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
     enforce_agent_egress_firewall,
@@ -644,6 +649,20 @@ async def connect_acp(
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
         logger.info(f"Agent sandboxed as: {sandbox_user}")
 
+    # Egress blocklist: the filtering proxy was started in the install phase
+    # (Rollout.install_agent / connect_as); here the rule list is kept out of
+    # the agent process env and the post-firewall self-check runs below.
+    process_env = strip_blocklist_secret(agent_env)
+    # Under the blocklist the proxy is already up and HTTP(S)_PROXY is in the
+    # agent env, so the UID firewall goes up BEFORE the agent process exists:
+    # startup traffic that ignores the proxy fails closed instead of enjoying
+    # a pre-handshake window. The no-web policy keeps its post-handshake
+    # placement (its agents have no proxy to fall back on during bootstrap).
+    firewall_applied = False
+    if blocklist_active(agent_env):
+        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
+        firewall_applied = True
+
     acp_client: ACPClient | None = None
     session: object | None = None
     agent_name = agent
@@ -668,7 +687,7 @@ async def connect_acp(
             transport = ContainerTransport(
                 container_process=live_proc,
                 command=agent_launch,
-                env=agent_env,
+                env=process_env,
                 cwd=agent_cwd,
                 agent_log_path=agent_log,
             )
@@ -720,7 +739,9 @@ async def connect_acp(
             reasoning_effort=reasoning_effort,
             launch_config_owns_model=launch_config_owns_model,
         )
-        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
+        if not firewall_applied:
+            await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
+        await verify_egress_blocklist(env, sandbox_user, agent_env)
     except Exception:
         with contextlib.suppress(Exception):
             await acp_client.close()

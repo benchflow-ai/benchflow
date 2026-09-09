@@ -90,6 +90,43 @@ def load_config_override(value: str | None) -> dict[str, Any] | None:
     return _parse_overlay(value)
 
 
+def blocklist_override(
+    raw_override: str | None,
+    block_urls: list[str] | None,
+    block_url_file: str | Path | None,
+) -> str | None:
+    """Fold ``--block-url`` / ``--block-url-file`` into a C-axis overlay string.
+
+    The run-level list REPLACES any task-level ``blocked_urls`` (overlay lists
+    are not unioned) and forces ``sandbox.network_mode = "blocklist"``; the
+    task config is re-validated at rollout, so a task that declared
+    ``no-network`` or ``allowlist`` fails loudly instead of silently changing
+    posture. A task whose ``agent`` section pins its own ``network_mode`` is
+    refused as well (that override would otherwise shadow the sandbox
+    blocklist and serve the hidden URLs). Returns ``raw_override`` untouched
+    when no URLs were given.
+    """
+    entries: list[str] = []
+    for url in block_urls or []:
+        url = url.strip()
+        if url and url not in entries:
+            entries.append(url)
+    if block_url_file is not None:
+        listing = Path(block_url_file).expanduser().read_text(encoding="utf-8")
+        for line in listing.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line and line not in entries:
+                entries.append(line)
+    if not entries:
+        return raw_override
+    overlay = dict(load_config_override(raw_override) or {})
+    sandbox = dict(overlay.get("sandbox") or {})
+    sandbox["network_mode"] = "blocklist"
+    sandbox["blocked_urls"] = entries
+    overlay["sandbox"] = sandbox
+    return json.dumps(overlay)
+
+
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge ``overlay`` into ``base``.
 

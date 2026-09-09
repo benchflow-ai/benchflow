@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+- **Egress blocklist: `network_mode = "blocklist"` with `blocked_urls`.** The
+  agent keeps full internet access except for a declared list of `host` or
+  `host/path-prefix` entries — the inverse of `allowlist`, for experiments that
+  hide specific papers or pages from a web-enabled research agent. Declare it in
+  `task.md` (`agent`/`sandbox` sections) or per run with
+  `bench eval run --block-url https://arxiv.org/abs/2401.12345 --block-url-file hidden.txt`
+  (a C-axis overlay that replaces task-level `blocked_urls`). Enforcement is
+  layered so every path an agent has to the web is covered: a root-run
+  filtering proxy on the sandbox loopback (host rules reject `CONNECT`
+  tunnels; hosts with path rules are TLS-inspected under a per-run CA installed
+  into the sandbox trust store), the existing agent-UID iptables rule so tools
+  that ignore `HTTP(S)_PROXY` fail closed, Anthropic `blocked_domains`
+  injection plus OpenAI hosted-search stripping in the LiteLLM pre-call hook,
+  and narrow per-harness knobs (`blocklist_web_tools_*`) that switch off only
+  server-side search (Codex `web_search`, Gemini grounding). Blocked requests
+  answer `404`, the rule list never enters the agent process env, a self-check
+  runs as the sandbox user before the first prompt, and every decision lands in
+  `agent/egress.jsonl` next to a `network_policy` block in `config.json`.
+  Supported on docker (stacks a `NET_ADMIN` compose overlay) and daytona; modal,
+  apple-container, and agentcore refuse blocklist tasks before launch.
+
 ## 0.7.6 — 2026-09-04
 
 ### Added

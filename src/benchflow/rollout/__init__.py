@@ -142,14 +142,29 @@ from benchflow.rollout._setup import _install_docker_compat as _install_docker_c
 from benchflow.rollout._setup import (
     _publish_trajectory_for_verifier as _publish_trajectory_for_verifier,
 )
+from benchflow.rollout._setup import (
+    _refuse_session_factory_under_blocklist as _refuse_session_factory_under_blocklist,
+)
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
+from benchflow.rollout._setup import (
+    _resolve_agent_network_policy as _resolve_agent_network_policy,
+)
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
 from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upload
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
 )
+from benchflow.rollout._setup import (
+    _task_egress_blocklist as _task_egress_blocklist,
+)
 from benchflow.rollout._setup import _verify_rollout as _verify_rollout
+from benchflow.rollout._setup import (
+    _web_policy_apply_kwargs as _web_policy_apply_kwargs,
+)
+from benchflow.rollout._setup import (
+    _web_policy_launch_kwargs as _web_policy_launch_kwargs,
+)
 from benchflow.rollout._skills import (
     _resolve_skill_creator_root as _resolve_skill_creator_root,
 )
@@ -197,6 +212,11 @@ from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfi
 from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
+from benchflow.sandbox.egress import (
+    EgressBlocklist,
+    download_egress_log,
+    start_egress_proxy,
+)
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.scenes import scene_step_prompt as scene_step_prompt
@@ -952,11 +972,26 @@ class Rollout:
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
+        # Egress blocklist (network_mode='blocklist'): the inverse of the
+        # no-web policy — internet stays open except for the declared URLs.
+        # The oracle is exempt like it is from no-web; a no-web run wins.
+        # Either policy keeps the container online for the sandbox-local model
+        # proxy and confines the agent UID to loopback instead. The container
+        # provisioning follows the TASK (an oracle primary must not switch it
+        # off for the role agents that connect later — review P0 #3).
+        self._egress_blocklist, self._agent_network_policy = (
+            _resolve_agent_network_policy(
+                self._task,
+                primary_agent=cfg.primary_agent,
+                disallow_web_tools=self._disallow_web_tools,
+            )
+        )
         self._agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
                 cfg.primary_agent, cfg.primary_model, cfg.agent_env
             ),
             disallow=self._disallow_web_tools,
+            blocklist=self._egress_blocklist,
         )
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
@@ -972,7 +1007,10 @@ class Rollout:
         )
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
-            disallow_web_tools=self._disallow_web_tools,
+            **_web_policy_launch_kwargs(
+                disallow=self._disallow_web_tools,
+                blocklist=self._egress_blocklist is not None,
+            ),
         )
 
         # Copy task dir to temp when Dockerfile mutations are needed
@@ -1041,7 +1079,7 @@ class Rollout:
                 effective_task_path,
                 self._rollout_name,
                 self._rollout_paths,
-                preserve_agent_network=self._disallow_web_tools,
+                preserve_agent_network=self._agent_network_policy,
                 environment_manifest=cfg.environment_manifest,
             )
         # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
@@ -1086,6 +1124,12 @@ class Rollout:
             task_digest=cfg.task_digest,
             config_override=cfg.config_override,
             loop_strategy=cfg.loop_strategy_spec,
+            network_policy=(
+                egress_blocklist.config_metadata()
+                if (egress_blocklist := getattr(self, "_egress_blocklist", None))
+                is not None
+                else None
+            ),
         )
 
         self._phase = "setup"
@@ -1230,8 +1274,18 @@ class Rollout:
             agent_name,
             self._agent_cfg,
             cred_home,
-            disallow=self._disallow_web_tools,
+            **_web_policy_apply_kwargs(
+                disallow=self._disallow_web_tools,
+                blocklist=getattr(self, "_egress_blocklist", None) is not None,
+            ),
         )
+        # Egress blocklist: the loopback filtering proxy is part of the
+        # sandbox setup, not of any particular connect protocol — it must be
+        # listening before whichever agent process inherits HTTP(S)_PROXY.
+        egress_blocklist = getattr(self, "_egress_blocklist", None)
+        if egress_blocklist is not None:
+            await start_egress_proxy(self._env, egress_blocklist)
+            self._egress_proxy_started = True
         await self._planes.snapshot_build_config(self._env, workspace=self._agent_cwd)
         await self._planes.seed_verifier_workspace(
             self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
@@ -1295,9 +1349,12 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=getattr(self, "_disallow_web_tools", False),
+            force_sandbox_local=getattr(self, "_agent_network_policy", False),
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
+        _refuse_session_factory_under_blocklist(
+            cfg.primary_agent, sf_entrypoint, getattr(self, "_egress_blocklist", None)
+        )
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
             (
@@ -1391,6 +1448,15 @@ class Rollout:
                     f"pkill -f {shlex.quote(agent_pattern)} || true",
                     timeout_sec=10,
                 )
+        # The audit log exists whenever the proxy ran for ANY role in this
+        # sandbox — an oracle primary's env carries no blocklist marker, so
+        # the gate is the proxy-started flag, not self._agent_env (review #1).
+        if (
+            getattr(self, "_egress_proxy_started", False)
+            and self._env is not None
+            and getattr(self, "_rollout_paths", None) is not None
+        ):
+            await download_egress_log(self._env, self._rollout_paths.agent_dir)
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
@@ -2272,9 +2338,18 @@ class Rollout:
         if disallow_web_tools is None:
             disallow_web_tools = _task_disallows_internet(getattr(self, "_task", None))
         disallow_web_tools = bool(disallow_web_tools and role.agent != "oracle")
+        egress_blocklist = (
+            None
+            if disallow_web_tools or role.agent == "oracle"
+            else _task_egress_blocklist(getattr(self, "_task", None))
+        )
+        agent_network_policy = disallow_web_tools or egress_blocklist is not None
         agent_launch = self._planes.agent_launch(
             role.agent,
-            disallow_web_tools=disallow_web_tools,
+            **_web_policy_launch_kwargs(
+                disallow=disallow_web_tools,
+                blocklist=egress_blocklist is not None,
+            ),
         )
         agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(
@@ -2283,6 +2358,7 @@ class Rollout:
                 {**(cfg.agent_env or {}), **(role.env or {})},
             ),
             disallow=disallow_web_tools,
+            blocklist=egress_blocklist,
         )
         agent_env, self._usage_runtime = await self._planes.ensure_litellm_runtime(
             agent=role.agent,
@@ -2296,7 +2372,7 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
-            force_sandbox_local=disallow_web_tools,
+            force_sandbox_local=agent_network_policy,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -2341,12 +2417,23 @@ class Rollout:
                 role.agent,
                 agent_cfg,
                 cred_home,
-                disallow=disallow_web_tools,
+                **_web_policy_apply_kwargs(
+                    disallow=disallow_web_tools,
+                    blocklist=egress_blocklist is not None,
+                ),
             )
+        if egress_blocklist is not None:
+            await start_egress_proxy(
+                self._env, EgressBlocklist.from_env(agent_env) or egress_blocklist
+            )
+            self._egress_proxy_started = True
 
         self._agent_launch = agent_launch
 
         sf_entrypoint = self._session_factory_entrypoint(role.agent)
+        _refuse_session_factory_under_blocklist(
+            role.agent, sf_entrypoint, egress_blocklist
+        )
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
             (
