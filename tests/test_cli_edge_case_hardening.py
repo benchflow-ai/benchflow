@@ -89,6 +89,17 @@ def test_continue_batch_rejects_zero_concurrency(invoke, tmp_path):
     assert not isinstance(res.exception, ValueError)  # typer rejects it, not a crash
 
 
+def _flat(text: str) -> str:
+    """Collapse Rich's terminal wrapping so a message can be matched as one line.
+
+    Click/Rich wrap at the console width, so an assertion on a phrase that sits
+    near the wrap point passes or fails depending on how long an interpolated
+    tmp_path happens to be. Matching against the whitespace-collapsed output
+    tests the message, not the terminal geometry.
+    """
+    return " ".join(text.split())
+
+
 def test_continue_is_canonical_under_eval_group(tmp_path):
     """Guards PR #800: `continue` is canonical under the `eval` group.
 
@@ -895,7 +906,7 @@ def test_tasks_generate_output_is_file_clean_error(tmp_path):
     )
     assert res.exit_code == 1
     assert not isinstance(res.exception, OSError), res.exception
-    assert "is not a directory" in res.output
+    assert "is not a directory" in _flat(res.output)
 
 
 def test_tasks_generate_zero_results_exits_nonzero(tmp_path):
