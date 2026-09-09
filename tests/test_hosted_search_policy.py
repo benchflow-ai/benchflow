@@ -543,11 +543,15 @@ async def test_install_agent_requests_hosted_search_policy(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("gateway_url", [None, "http://127.0.0.1:12345"])
 async def test_connect_starts_proxy_before_acp_and_cleanup_stops_it(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, gateway_url
 ):
+    """Guards PR #1113: proxy startup carries the controller gateway before ACP."""
     env = _fake_sandbox()
     planes = _fake_planes(env)
+    runtime = SimpleNamespace(agent_base_url=gateway_url) if gateway_url else None
+    planes.ensure_litellm_runtime.side_effect = lambda **k: (k["agent_env"], runtime)
     order: list[str] = []
     planes.start_egress_denylist.side_effect = lambda *a, **k: order.append("start")
     planes.connect_acp.side_effect = lambda **k: (
@@ -565,7 +569,9 @@ async def test_connect_starts_proxy_before_acp_and_cleanup_stops_it(
     assert litellm_kwargs["force_sandbox_local"] is True
     assert "SSL_CERT_FILE" not in litellm_kwargs["agent_env"]
     assert "HTTPS_PROXY" not in litellm_kwargs["agent_env"]
-    planes.start_egress_denylist.assert_awaited_once_with(env, "agent", _DENYLIST)
+    planes.start_egress_denylist.assert_awaited_once_with(
+        env, "agent", _DENYLIST, model_gateway_url=gateway_url
+    )
     acp_env = planes.connect_acp.await_args.kwargs["agent_env"]
     assert acp_env[EGRESS_DENYLIST_ENV] == "1"
     assert acp_env["HTTPS_PROXY"] == "http://127.0.0.1:18628"
@@ -579,9 +585,15 @@ async def test_connect_starts_proxy_before_acp_and_cleanup_stops_it(
 
 @pytest.mark.asyncio
 async def test_connect_restarts_proxy_on_every_reconnect(tmp_path, monkeypatch):
-    """A restored sandbox has no proxy running, so each connect starts it again."""
+    """Guards PR #1113: a restored sandbox must register its current gateway."""
     env = _fake_sandbox()
     planes = _fake_planes(env)
+    gateway_urls = ["http://127.0.0.1:12345", "http://127.0.0.1:23456"]
+    runtimes = iter(SimpleNamespace(agent_base_url=url) for url in gateway_urls)
+    planes.ensure_litellm_runtime.side_effect = lambda **k: (
+        k["agent_env"],
+        next(runtimes),
+    )
     rollout = _rollout(tmp_path, monkeypatch, task=_denylist_task(), planes=planes)
     await rollout.setup()
 
@@ -590,6 +602,10 @@ async def test_connect_restarts_proxy_on_every_reconnect(tmp_path, monkeypatch):
     await rollout.connect()
 
     assert planes.start_egress_denylist.await_count == 2
+    assert [
+        call.kwargs["model_gateway_url"]
+        for call in planes.start_egress_denylist.await_args_list
+    ] == gateway_urls
     assert planes.connect_acp.await_count == 2
 
 
@@ -668,7 +684,9 @@ async def test_connect_as_applies_denylist_to_role_env(tmp_path):
         "disallow": False,
         "disallow_hosted_search": True,
     }
-    planes.start_egress_denylist.assert_awaited_once_with(env, "agent", _DENYLIST)
+    planes.start_egress_denylist.assert_awaited_once_with(
+        env, "agent", _DENYLIST, model_gateway_url=None
+    )
     acp_env = planes.connect_acp.await_args.kwargs["agent_env"]
     assert acp_env[EGRESS_DENYLIST_ENV] == "1"
     assert acp_env["HTTPS_PROXY"] == "http://127.0.0.1:18628"
@@ -700,7 +718,9 @@ async def test_connect_as_applies_denylist_when_primary_is_oracle(tmp_path):
 
     await trial.connect_as(role)
 
-    planes.start_egress_denylist.assert_awaited_once_with(env, "agent", _DENYLIST)
+    planes.start_egress_denylist.assert_awaited_once_with(
+        env, "agent", _DENYLIST, model_gateway_url=None
+    )
     assert planes.connect_acp.await_args.kwargs["agent_env"][EGRESS_DENYLIST_ENV] == "1"
 
 
