@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.7.7 — 2026-09-09
+
 ### Added
 - **`network_mode: denylist` blocks a list of URLs and hosts for the agent on
   Docker and Daytona.** The task keeps internet access; `blocked_urls` and
@@ -9,6 +11,29 @@
   sandbox-user firewall, hosted search tools are switched off per harness,
   and every refused request lands in `trajectory/egress_denylist.jsonl`.
   Other backends refuse the mode at preflight. (#1113)
+
+### Fixed
+
+- **Denylist egress no longer cuts the agent off from its own model.** The
+  controller registers the running LiteLLM gateway's exact
+  `127.0.0.1:<port>` endpoint with the proxy, so clients that ignore
+  `NO_PROXY` (Gemini's Undici `ProxyAgent` tunnels even plain HTTP) still
+  reach it; the exception comes from the live gateway, never task metadata or
+  agent-supplied environment, and every other private destination stays
+  blocked. Reconnects re-register the current port. (#1118)
+- **The denylist is a shared sandbox policy, not a per-harness one.** Every
+  supported ACP harness — custom registrations included — gets the same proxy,
+  certificates, and UID firewall on primary connections and later roles alike,
+  independent of harness name, model id, or provider. (#1118)
+- **`codex-acp` sessions are configured through native ACP settings.** Hosted
+  search is switched off via `CODEX_CONFIG.web_search` (the CLI ignores `-c`
+  overrides), and Codex runs in `agent-full-access` session mode when
+  BenchFlow has already selected a non-root sandbox user, so its bubblewrap
+  sandbox is not nested inside Docker or Daytona — BenchFlow's own user,
+  filesystem restrictions, proxy, and firewall still apply. (#1118)
+- **`cryptography>=44` is a core dependency.** Denylist egress mints TLS
+  certificates on both Docker and Daytona, so the pin moved out of the
+  `sandbox-agentcore` extra. (#1118)
 
 ## 0.7.6 — 2026-09-04
 
