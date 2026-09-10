@@ -5,11 +5,33 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from benchflow.providers.litellm_config import safe_model_alias
+
 CODEX_CONFIG_ENV = "CODEX_CONFIG"
 CODEX_DEFAULT_AUTH_REQUEST_ENV = "DEFAULT_AUTH_REQUEST"
 CODEX_MODEL_PROVIDER_ENV = "MODEL_PROVIDER"
 
 _CODEX_PROVIDER_ID_PREFIX = "benchflow-"
+_LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
+_PROVIDER_MODEL_ENV = "BENCHFLOW_PROVIDER_MODEL"
+
+
+def _parse_codex_config(
+    raw_config: str | None, *, strict: bool = False
+) -> dict[str, Any] | None:
+    if not raw_config:
+        return {}
+    try:
+        config = json.loads(raw_config)
+    except (json.JSONDecodeError, TypeError) as exc:
+        if strict:
+            raise ValueError(f"{CODEX_CONFIG_ENV} must be valid JSON") from exc
+        return None
+    if not isinstance(config, dict):
+        if strict:
+            raise ValueError(f"{CODEX_CONFIG_ENV} must decode to a JSON object")
+        return None
+    return config
 
 
 def codex_provider_id(provider_name: str | None) -> str:
@@ -29,19 +51,8 @@ def apply_codex_provider_config(
     strict: bool = False,
 ) -> None:
     """Create or update Codex's model provider entry in ``agent_env``."""
-    raw_config = agent_env.get(CODEX_CONFIG_ENV)
-    if not raw_config:
-        config: dict[str, Any] = {}
-    else:
-        try:
-            config = json.loads(raw_config)
-        except json.JSONDecodeError as exc:
-            if strict:
-                raise ValueError(f"{CODEX_CONFIG_ENV} must be valid JSON") from exc
-            return
-    if not isinstance(config, dict):
-        if strict:
-            raise ValueError(f"{CODEX_CONFIG_ENV} must decode to a JSON object")
+    config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=strict)
+    if config is None:
         return
 
     provider_id = (
@@ -72,6 +83,49 @@ def apply_codex_provider_config(
         base_url=base_url,
         provider_name=provider_name,
     )
+
+
+def apply_codex_launch_config(
+    agent: str,
+    agent_env: dict[str, str],
+    *,
+    model: str | None,
+    reasoning_effort: str | None,
+    sandboxed: bool = False,
+) -> tuple[dict[str, str], bool]:
+    """Configure the adapter's sandbox, web policy and launch-owned model effort."""
+    if agent != "codex-acp":
+        return agent_env, False
+    updated_env = dict(agent_env)
+    if sandboxed:
+        # BenchFlow's non-root sandbox and UID firewall own isolation. The
+        # adapter defaults to workspace-write, whose nested bwrap fails on
+        # Docker/Daytona before tools run. CODEX_CONFIG.sandbox_mode does not
+        # fix this: codex-acp overrides it with its session's AgentMode.
+        updated_env.setdefault("INITIAL_AGENT_MODE", "agent-full-access")
+    disable_search = any(
+        agent_env.get(key) == "1"
+        for key in ("BENCHFLOW_DISALLOW_WEB_TOOLS", "BENCHFLOW_EGRESS_DENYLIST")
+    )
+    config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=disable_search)
+    provider_model = agent_env.get(_PROVIDER_MODEL_ENV)
+    owns_model = bool(
+        model
+        and agent_env.get(_LITELLM_MODEL_VIA_ENV) in {"1", "true", "True"}
+        and provider_model
+        and provider_model == safe_model_alias(model)
+        and config is not None
+        and config.get("model") == provider_model
+    )
+    if config is not None and (disable_search or (owns_model and reasoning_effort)):
+        if disable_search:
+            # codex-acp 1.6.0 ignores CLI -c flags; its supported CODEX_CONFIG
+            # is forwarded to the Codex app-server's thread configuration.
+            config["web_search"] = "disabled"
+        if owns_model and reasoning_effort:
+            config["model_reasoning_effort"] = reasoning_effort
+        updated_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
+    return (updated_env if updated_env != agent_env else agent_env), owns_model
 
 
 def _apply_codex_default_auth_request(

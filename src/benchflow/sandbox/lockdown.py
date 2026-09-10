@@ -143,24 +143,51 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     )
 
 
+EGRESS_DENYLIST_ENV = "BENCHFLOW_EGRESS_DENYLIST"
+
+
+def _is_loopback_http(url: str) -> bool:
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in {"127.0.0.1", "localhost"}
+        and parsed.port is not None
+    )
+
+
 async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
     agent_env: dict[str, str],
 ) -> None:
-    """Block sandbox-user external egress after ACP bootstrap, before prompting."""
-    if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
+    """Block sandbox-user external egress after ACP bootstrap, before prompting.
+
+    Armed by the no-web policy (model traffic must already use the sandbox-local
+    proxy) or by the denylist mode (all traffic must already use the loopback
+    egress proxy).
+    """
+    no_web = agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1"
+    denylist = agent_env.get(EGRESS_DENYLIST_ENV) == "1"
+    if not (no_web or denylist):
+        return
+    if not sandbox_user:
+        if denylist:
+            raise RuntimeError("network_mode='denylist' requires a sandbox_user")
         return
 
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
         "LLM_BASE_URL", ""
     )
-    parsed = urlsplit(base_url)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.port is None
-    ):
+    if denylist:
+        if not _is_loopback_http(agent_env.get("HTTPS_PROXY", "")):
+            raise RuntimeError(
+                "Denylist agent requires HTTPS_PROXY on an HTTP loopback port"
+            )
+        if base_url and not _is_loopback_http(base_url):
+            raise RuntimeError(
+                "Denylist agent requires an HTTP loopback provider base URL with a port"
+            )
+    elif not _is_loopback_http(base_url):
         raise RuntimeError(
             "No-web agent requires an HTTP loopback provider base URL with a port"
         )
@@ -609,7 +636,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         result = await env.exec(
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
             user="root",
-            timeout_sec=15,
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
         if result.stderr:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
@@ -684,7 +711,9 @@ async def _distro_pip_env(env) -> dict[str, str]:
     """
     try:
         result = await env.exec(
-            "cat /etc/os-release 2>/dev/null || true", user="root", timeout_sec=5
+            "cat /etc/os-release 2>/dev/null || true",
+            user="root",
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
     except Exception as e:
         logger.warning("distro detection failed (%s); skipping pip env tweaks", e)
@@ -709,14 +738,16 @@ async def _trusted_verifier_path(
     checks prove they are root-owned directories and not group/world writable.
     Runtime locations and sandbox-user writable locations stay excluded.
     """
-    path_result = await env.exec("printenv PATH", user="root", timeout_sec=10)
+    path_result = await env.exec(
+        "printenv PATH", user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+    )
     raw_path = path_result.stdout or ""
     if not raw_path.strip():
         return _SAFE_VERIFIER_PATH
     cmd = _trusted_path_extras_cmd(
         raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
     )
-    result = await env.exec(cmd, user="root", timeout_sec=10)
+    result = await env.exec(cmd, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC)
     if _exec_return_code(result) != 0:
         logger.debug(
             "Trusted verifier PATH extras unavailable; using safe PATH.%s",
@@ -748,14 +779,16 @@ async def _trusted_verifier_pythonpath(
     is chowned to root before verification.
     """
     pp_result = await env.exec(
-        "printenv PYTHONPATH 2>/dev/null || true", user="root", timeout_sec=10
+        "printenv PYTHONPATH 2>/dev/null || true",
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     raw_pp = (pp_result.stdout or "").strip()
     if not raw_pp:
         return ""
     blocked = _blocked_verifier_pythonpath_prefixes(sandbox_user)
     cmd = _trusted_path_extras_cmd(raw_pp, blocked)
-    result = await env.exec(cmd, user="root", timeout_sec=10)
+    result = await env.exec(cmd, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC)
     try:
         extras = _json.loads(result.stdout or "[]")
     except _json.JSONDecodeError:
@@ -1052,13 +1085,14 @@ async def _kill_sandbox_user_procs(env, sandbox_user: str) -> None:
     await env.exec(
         f"pkill -u {sandbox_user} 2>/dev/null; "
         f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
-        timeout_sec=10,
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
     await env.exec(
         f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
         f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
 
 

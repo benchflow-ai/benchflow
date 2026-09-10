@@ -31,6 +31,11 @@ from benchflow.providers.runtime import (
     extract_usage,
     stop_provider_runtime,
 )
+from benchflow.sandbox.egress_denylist import (
+    EgressDenylist,
+    start_egress_denylist,
+    stop_egress_denylist,
+)
 from benchflow.sandbox.lockdown import (
     _resolve_locked_paths,
     _seed_verifier_workspace,
@@ -53,13 +58,21 @@ from benchflow.sandbox.setup import (
 class DefaultRolloutPlanes:
     """Default bindings for the four concrete planes."""
 
-    def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str:
+    def agent_launch(
+        self,
+        agent: str,
+        *,
+        disallow_web_tools: bool,
+        disallow_hosted_search: bool = False,
+    ) -> str:
         launch = AGENT_LAUNCH.get(agent, agent)
-        if not disallow_web_tools:
-            return launch
         agent_cfg = AGENTS.get(agent)
-        if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
+        if agent_cfg is None:
+            return launch
+        if disallow_web_tools:
             return launch + agent_cfg.disallow_web_tools_launch_suffix
+        if disallow_hosted_search:
+            return launch + agent_cfg.disallow_hosted_search_launch_suffix
         return launch
 
     def agent_config(self, agent: str) -> Any:
@@ -178,6 +191,21 @@ class DefaultRolloutPlanes:
 
     async def stop_provider_runtime(self, runtime: Any) -> None:
         await stop_provider_runtime(runtime)
+
+    async def start_egress_denylist(
+        self,
+        env: Any,
+        sandbox_user: str | None,
+        denylist: EgressDenylist,
+        *,
+        model_gateway_url: str | None = None,
+    ) -> None:
+        await start_egress_denylist(
+            env, sandbox_user, denylist, model_gateway_url=model_gateway_url
+        )
+
+    async def stop_egress_denylist(self, env: Any, rollout_dir: Path) -> None:
+        await stop_egress_denylist(env, rollout_dir)
 
     def extract_usage(self, runtime: Any) -> dict[str, Any]:
         return extract_usage(runtime)

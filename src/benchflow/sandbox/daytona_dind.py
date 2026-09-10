@@ -233,6 +233,8 @@ class _DaytonaDinD(_DaytonaStrategy):
         ]
         if not self._env.task_env_config.allow_internet:
             files.append(f"{self._COMPOSE_DIR}/docker-compose-no-network.yaml")
+        if self._env.task_env_config.network_mode == "denylist":
+            files.append(f"{self._COMPOSE_DIR}/docker-compose-net-admin.yaml")
 
         flags: list[str] = []
         for f in files:

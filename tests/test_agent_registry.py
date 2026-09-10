@@ -26,6 +26,7 @@ class TestEnvMappingField:
     """env_mapping exists on AgentConfig and is populated for known agents."""
 
     def test_claude_agent_has_mapping(self):
+        """Guards PR #1086's Fable-compatible adapter pin and ACP config ids."""
         cfg = AGENTS["claude-agent-acp"]
         assert "BENCHFLOW_PROVIDER_BASE_URL" in cfg.env_mapping
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"
@@ -33,7 +34,7 @@ class TestEnvMappingField:
         assert cfg.supports_acp_set_model is False
         assert cfg.acp_model_config_id == "model"
         assert cfg.acp_effort_config_id == "effort"
-        assert "@agentclientprotocol/claude-agent-acp@0.40.0" in cfg.install_cmd
+        assert "@agentclientprotocol/claude-agent-acp@0.73.0" in cfg.install_cmd
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
@@ -412,6 +413,8 @@ class TestRegisterAgent:
         assert cfg.session_factory == ""
         assert cfg.disallow_web_tools_setup_cmd == ""
         assert cfg.disallow_web_tools_launch_suffix == ""
+        assert cfg.disallow_hosted_search_setup_cmd == ""
+        assert cfg.disallow_hosted_search_launch_suffix == ""
 
     def test_passes_through_new_fields(self, cleanup_agent):
         cleanup_agent.append("rt-full-agent")
@@ -425,6 +428,8 @@ class TestRegisterAgent:
             api_protocol="openai-completions",
             disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
             disallow_web_tools_launch_suffix=" --no-web",
+            disallow_hosted_search_setup_cmd="printf 'no search' > /tmp/policy",
+            disallow_hosted_search_launch_suffix=" --no-search",
         )
         assert cfg.protocol == "session-factory"
         assert cfg.session_factory == "my_agent.factory:create_agent"
@@ -432,6 +437,10 @@ class TestRegisterAgent:
         assert cfg.api_protocol == "openai-completions"
         assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
         assert cfg.disallow_web_tools_launch_suffix == " --no-web"
+        assert (
+            cfg.disallow_hosted_search_setup_cmd == "printf 'no search' > /tmp/policy"
+        )
+        assert cfg.disallow_hosted_search_launch_suffix == " --no-search"
 
         # And the registered entry reflects them.
         registered = AGENTS["rt-full-agent"]
@@ -440,3 +449,4 @@ class TestRegisterAgent:
         assert registered.default_model == "rt-model-1"
         assert registered.api_protocol == "openai-completions"
         assert registered.disallow_web_tools_launch_suffix == " --no-web"
+        assert registered.disallow_hosted_search_launch_suffix == " --no-search"

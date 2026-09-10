@@ -469,6 +469,7 @@ def resolve_provider_env(
 ) -> None:
     """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
     from benchflow.agents.providers import (
+        ZAI_CODING_REGISTRY_BASE_ENV,
         find_provider,
         find_provider_for_bare_model,
         resolve_base_url,
@@ -515,6 +516,8 @@ def resolve_provider_env(
                 "BENCHFLOW_PROVIDER_BASE_URL",
                 base_url,
             )
+            if _prov_name == "zai-coding" and base_url:
+                agent_env[ZAI_CODING_REGISTRY_BASE_ENV] = "1"
         agent_env.setdefault(
             "BENCHFLOW_PROVIDER_PROTOCOL",
             agent_protocol or _prov_cfg.api_protocol,

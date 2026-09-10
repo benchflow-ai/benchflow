@@ -349,13 +349,21 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
 | AgentCore | `--sandbox agentcore` | AWS-native isolated microVMs (needs AWS credentials) |
 
+`network_mode = "denylist"` tasks run on Docker, where BenchFlow adds
+`NET_ADMIN` to the agent container through its own compose overlay, and on
+direct Daytona sandboxes, where the mode was verified with `iptables`. The
+other backends refuse the mode at preflight. See
+[sandbox hardening](./sandbox-hardening.md#network-policy-denylist-egress)
+for what the mode does and does not guarantee.
+
 Apple Container requires Apple Container 1.1+ on Apple Silicon and runs the model
 proxy inside each VM. It supports public-network, single-container arm64 tasks and
 has no snapshot support. BenchFlow serializes Apple rollouts within each process
 and blocks new VMs when the live `data.kalloc.1024` headroom is unsafe. Avoid
 running concurrent BenchFlow processes, because the macOS allocation leak is
 system-wide. Use Docker, Daytona, or Modal for `network_mode = "no-network"`,
-multi-service, snapshot, or high-concurrency runs.
+multi-service, snapshot, or high-concurrency runs. Apple Container also
+refuses `network_mode = "denylist"`; use Docker or Daytona for those tasks.
 
 ### Amazon Bedrock AgentCore
 
@@ -435,7 +443,8 @@ tasks), no snapshot support, and `network_mode = "no-network"` is **not**
 enforceable — AgentCore's network mode is either `PUBLIC` or `VPC`, so
 BenchFlow refuses no-network tasks on this backend rather than running them
 unisolated. (A VPC with no egress is not the same guarantee: BenchFlow cannot
-verify the route table, so it still declines no-network tasks.) The model proxy
+verify the route table, so it still declines no-network tasks.)
+`network_mode = "denylist"` is refused on this backend as well. The model proxy
 runs inside the sandbox, as on Daytona and Modal.
 Sessions default to a 15-minute idle timeout and an 8-hour lifetime; override
 with `BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC` / `BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC`

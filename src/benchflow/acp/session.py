@@ -202,6 +202,11 @@ class ACPSession:
         self.thought_chunks: list[str] = []
         self.tool_calls: list[ToolCallRecord] = []
         self._tool_call_map: dict[str, ToolCallRecord] = {}
+        # Total update count is diagnostic. Per-call pending versions let the
+        # idle watchdog distinguish relevant streaming progress from repeated
+        # terminal updates for another call (PR #1066).
+        self.tool_call_update_count: int = 0
+        self._pending_tool_call_update_counts: dict[str, int] = {}
         # Distinct display titles across recorded tool calls, maintained
         # incrementally at record creation so the eval dashboard can detect
         # single-tool agents (prime-agent funnels everything through one
@@ -300,6 +305,20 @@ class ACPSession:
             for record in self.tool_calls
             if record.status in pending_statuses
         ]
+
+    def pending_tool_call_state(self) -> tuple[tuple[str, int], ...]:
+        """Return stable pending-call identities with progress versions."""
+        pending_statuses = {ToolCallStatus.PENDING, ToolCallStatus.IN_PROGRESS}
+        return tuple(
+            sorted(
+                (
+                    record.tool_call_id,
+                    self._pending_tool_call_update_counts.get(record.tool_call_id, 0),
+                )
+                for record in self.tool_calls
+                if record.status in pending_statuses
+            )
+        )
 
     def record_agent_timeout(
         self,
@@ -401,6 +420,7 @@ class ACPSession:
             self._record_tool_call(record)
 
         elif update_type == "tool_call_update":
+            self.tool_call_update_count += 1
             tc_id = update.get("toolCallId", "")
             record = self._tool_call_map.get(tc_id)
             if not record:
@@ -420,6 +440,10 @@ class ACPSession:
                 status = ToolCallStatus.IN_PROGRESS
             content = update.get("content")
             record.update_status(status, content)
+            if status in (ToolCallStatus.PENDING, ToolCallStatus.IN_PROGRESS):
+                self._pending_tool_call_update_counts[tc_id] = (
+                    self._pending_tool_call_update_counts.get(tc_id, 0) + 1
+                )
             # Canonicalize legacy OpenHands invoke_skill calls using the same
             # classifier the rescan path uses. Only upgrade to "skill"; never
             # downgrade, and never reclassify a tool that already has a real

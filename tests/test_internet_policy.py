@@ -18,8 +18,10 @@ from benchflow.rollout import (
 
 def _wire_fake_planes(trial: Rollout) -> MagicMock:
     planes = MagicMock()
-    planes.agent_launch.side_effect = lambda agent, *, disallow_web_tools: (
-        f"{agent} --no-web" if disallow_web_tools else agent
+    planes.agent_launch.side_effect = (
+        lambda agent, *, disallow_web_tools, disallow_hosted_search=False: (
+            f"{agent} --no-web" if disallow_web_tools else agent
+        )
     )
     planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
     planes.ensure_litellm_runtime = AsyncMock(
@@ -165,16 +167,12 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
 
 
 def test_codex_launch_disable_is_gated_by_web_policy():
-    # codex-acp's launch_cmd now self-writes ~/.codex/auth.json before exec'ing the
-    # isolated bin; derive the base from the registry so this stays about the
-    # web-policy gating, not the exact launcher string.
+    """Guards PR #1118: web policy is carried by CODEX_CONFIG, not ignored flags."""
     from benchflow.agents.registry import AGENTS
 
     base_cmd = AGENTS["codex-acp"].launch_cmd
     assert _agent_launch_with_web_policy("codex-acp", disallow=False) == base_cmd
-    assert _agent_launch_with_web_policy("codex-acp", disallow=True) == (
-        f"{base_cmd} -c tools.web_search=false"
-    )
+    assert _agent_launch_with_web_policy("codex-acp", disallow=True) == base_cmd
 
 
 def test_agent_registry_has_supported_hard_web_disable_snippets():

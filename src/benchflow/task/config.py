@@ -9,11 +9,13 @@ Terminology (per https://leehanchung.github.io/blogs/2026/03/21/rl-environments-
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import tomllib
 import warnings
 from enum import StrEnum
 from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     AliasChoices,
@@ -157,6 +159,7 @@ class NetworkMode(StrEnum):
     NO_NETWORK = "no-network"
     PUBLIC = "public"
     ALLOWLIST = "allowlist"
+    DENYLIST = "denylist"
 
 
 class TaskOS(StrEnum):
@@ -180,36 +183,100 @@ class MultiStepRewardStrategy(StrEnum):
     FINAL = "final"
 
 
-def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
+def _validate_hostnames(hosts: list[str] | None, field_name: str) -> list[str] | None:
+    """Normalize a hostname list, rejecting URLs, ports, paths, and bad labels."""
     if hosts is None:
         return None
     normalized: list[str] = []
     for raw_host in hosts:
         host = raw_host.strip().lower().rstrip(".")
         if not host:
-            raise ValueError("allowed_hosts entries must be non-empty hostnames")
+            raise ValueError(f"{field_name} entries must be non-empty hostnames")
         if "://" in host or "/" in host or ":" in host:
             raise ValueError(
-                "allowed_hosts entries must be hostnames, not URLs, ports, or paths"
+                f"{field_name} entries must be hostnames, not URLs, ports, or paths"
             )
         labels = host.split(".")
         if not all(_NETWORK_HOST_LABEL_PATTERN.match(label) for label in labels):
             raise ValueError(
-                "allowed_hosts entries must be valid hostnames containing only "
+                f"{field_name} entries must be valid hostnames containing only "
                 "letters, digits, hyphens, and dots"
             )
         normalized.append(host)
     return normalized
 
 
+def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
+    return _validate_hostnames(hosts, "allowed_hosts")
+
+
+def _validate_blocked_hosts(hosts: list[str] | None) -> list[str] | None:
+    normalized = _validate_hostnames(hosts, "blocked_hosts")
+    for host in normalized or ():
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            continue
+        raise ValueError("blocked_hosts entries must name a hostname, not an IP")
+    return normalized
+
+
+def _validate_blocked_urls(urls: list[str] | None) -> list[str] | None:
+    """Normalize URL prefixes to ``scheme://host/path`` with query and fragment dropped."""
+    if urls is None:
+        return None
+    normalized: dict[str, None] = {}
+    for raw_url in urls:
+        url = raw_url.strip()
+        if not url:
+            raise ValueError("blocked_urls entries must be non-empty URLs")
+        if "://" not in url:
+            url = f"https://{url}"
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError("blocked_urls entries must use the http or https scheme")
+        if "@" in parts.netloc:
+            raise ValueError("blocked_urls entries must not contain userinfo")
+        if ":" in parts.netloc:
+            raise ValueError("blocked_urls entries must not contain a port")
+        hosts = _validate_hostnames([parts.netloc], "blocked_urls")
+        host = hosts[0] if hosts else ""
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("blocked_urls entries must name a hostname, not an IP")
+        normalized.setdefault(f"{parts.scheme}://{host}{parts.path.rstrip('/')}")
+    return list(normalized)
+
+
+def _reject_role_denylist(network_mode: NetworkMode | None, role: str) -> None:
+    if network_mode == NetworkMode.DENYLIST:
+        raise ValueError(
+            f"{role}.network_mode='denylist' is not supported; "
+            "declare the denylist on sandbox.network_mode"
+        )
+
+
 def _validate_network_policy_fields(
     network_mode: NetworkMode | None,
     allowed_hosts: list[str] | None,
+    blocked_urls: list[str] | None = None,
+    blocked_hosts: list[str] | None = None,
 ) -> None:
     if network_mode == NetworkMode.ALLOWLIST and not allowed_hosts:
         raise ValueError("allowed_hosts must be non-empty for network_mode='allowlist'")
     if network_mode != NetworkMode.ALLOWLIST and allowed_hosts:
         raise ValueError("allowed_hosts is only valid for network_mode='allowlist'")
+    if network_mode == NetworkMode.DENYLIST and not (blocked_urls or blocked_hosts):
+        raise ValueError(
+            "network_mode='denylist' requires blocked_urls or blocked_hosts"
+        )
+    if network_mode != NetworkMode.DENYLIST and (blocked_urls or blocked_hosts):
+        raise ValueError(
+            "blocked_urls and blocked_hosts are only valid for network_mode='denylist'"
+        )
 
 
 class Author(TaskConfigModel):
@@ -488,6 +555,7 @@ class VerifierConfig(TaskConfigModel):
 
     @model_validator(mode="after")
     def validate_verifier_sandbox(self) -> VerifierConfig:
+        _reject_role_denylist(self.network_mode, "verifier")
         _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
         if self.sandbox_mode == VerifierSandboxMode.SHARED and self.sandbox is not None:
             raise ValueError(
@@ -547,6 +615,7 @@ class AgentConfig(TaskConfigModel):
 
     @model_validator(mode="after")
     def validate_network_policy(self) -> AgentConfig:
+        _reject_role_denylist(self.network_mode, "agent")
         _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
         return self
 
@@ -725,6 +794,20 @@ class SandboxConfig(TaskConfigModel):
         default=None,
         description="Hostnames reachable when network_mode='allowlist'.",
     )
+    blocked_urls: list[str] | None = Field(
+        default=None,
+        description=(
+            "URL prefixes the agent cannot reach when network_mode='denylist'; "
+            "scheme optional, query ignored"
+        ),
+    )
+    blocked_hosts: list[str] | None = Field(
+        default=None,
+        description=(
+            "Hostnames (and their subdomains) the agent cannot reach when "
+            "network_mode='denylist'"
+        ),
+    )
     build_timeout_sec: float = 600.0
     docker_image: str | None = Field(
         default=None,
@@ -812,6 +895,16 @@ class SandboxConfig(TaskConfigModel):
     def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
+    @field_validator("blocked_urls")
+    @classmethod
+    def validate_blocked_urls(cls, urls: list[str] | None) -> list[str] | None:
+        return _validate_blocked_urls(urls)
+
+    @field_validator("blocked_hosts")
+    @classmethod
+    def validate_blocked_hosts(cls, hosts: list[str] | None) -> list[str] | None:
+        return _validate_blocked_hosts(hosts)
+
     @field_validator("os", mode="before")
     @classmethod
     def normalize_os(cls, value: Any) -> Any:
@@ -821,7 +914,12 @@ class SandboxConfig(TaskConfigModel):
 
     @model_validator(mode="after")
     def handle_deprecated_fields_and_network_policy(self) -> SandboxConfig:
-        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        _validate_network_policy_fields(
+            self.network_mode,
+            self.allowed_hosts,
+            self.blocked_urls,
+            self.blocked_hosts,
+        )
         memory = self.__dict__.get("memory")
         storage = self.__dict__.get("storage")
         if memory is not None:
@@ -862,7 +960,12 @@ class SandboxConfig(TaskConfigModel):
             self.allow_internet = False
         # Reconciliation must never leave the object in a state that
         # _validate_network_policy_fields itself rejects.
-        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        _validate_network_policy_fields(
+            self.network_mode,
+            self.allowed_hosts,
+            self.blocked_urls,
+            self.blocked_hosts,
+        )
         return self
 
 

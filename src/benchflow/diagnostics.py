@@ -132,18 +132,37 @@ class IdleTimeoutDiagnostic(Diagnostic):
     n_message_chunks: int = 0
     n_thought_chunks: int = 0
     last_activity_at: str = ""
+    # Pending-grace truth (PR #1066): when the fire happened because a
+    # pending tool call exhausted the grace window, these say so instead of
+    # letting the fields above imply pure silence. Additive — older
+    # result.json dicts round-trip through format_issue_from_dict with the
+    # defaults below.
+    pending_tool_call_ids: list[str] = field(default_factory=list)
+    expired_pending_tool_call_ids: list[str] = field(default_factory=list)
+    pending_grace_sec: int | None = None
+    pending_set_last_changed_at: str | None = None
+    last_tool_update_at: str | None = None
+    n_tool_call_updates: int = 0
+    n_pending_tool_call_updates: int = 0
+    n_expired_pending_tool_call_updates: int = 0
 
     field: ClassVar[str] = "idle_timeout_info"
     category: ClassVar[str | None] = "idle_timeout"
     summary_description: ClassVar[str] = "hit idle timeout"
 
     def format_issue(self, task_name: str) -> str:
-        return (
+        line = (
             f"{task_name}: idle timeout after "
             f"{self.idle_duration_sec}s idle "
             f"({self.n_tool_calls} tool calls, "
             f"{self.wall_clock_elapsed_sec}s wall)"
         )
+        if self.pending_tool_call_ids:
+            line += (
+                f" — {len(self.pending_tool_call_ids)} pending tool call(s) "
+                f"exceeded the {self.pending_grace_sec}s pending grace"
+            )
+        return line
 
 
 @dataclass

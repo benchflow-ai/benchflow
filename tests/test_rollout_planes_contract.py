@@ -10,7 +10,9 @@ adapter owns (``agent_launch`` web-tool suffixing, registry delegation) behaves.
 
 from __future__ import annotations
 
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+import pytest
+
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
 from benchflow.contracts.planes import RolloutPlanes, default_rollout_planes
 from benchflow.rollout_planes import DefaultRolloutPlanes
 
@@ -39,6 +41,8 @@ _REQUIRED_METHODS = (
     "link_skill_paths",
     "ensure_litellm_runtime",
     "stop_provider_runtime",
+    "start_egress_denylist",
+    "stop_egress_denylist",
     "extract_usage",
     "connect_acp",
     "execute_prompts",
@@ -71,9 +75,23 @@ def test_agent_launch_passthrough_without_web_policy() -> None:
     assert planes.agent_launch(agent, disallow_web_tools=False) == expected
 
 
-def test_agent_launch_appends_web_tool_suffix_when_disallowed() -> None:
+def test_agent_launch_appends_web_tool_suffix_when_disallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1118: custom suffixes work after Codex moved to native config."""
     planes = DefaultRolloutPlanes()
-    agent = "codex-acp"
+    agent = "web-policy-fixture"
+    monkeypatch.setitem(
+        AGENTS,
+        agent,
+        AgentConfig(
+            name=agent,
+            install_cmd="true",
+            launch_cmd="probe --acp",
+            disallow_web_tools_launch_suffix=" --no-web",
+        ),
+    )
+    monkeypatch.setitem(AGENT_LAUNCH, agent, "probe --acp")
     cfg = AGENTS[agent]
     suffix = cfg.disallow_web_tools_launch_suffix
     assert suffix, "fixture agent must carry a web-tool suffix to exercise the branch"

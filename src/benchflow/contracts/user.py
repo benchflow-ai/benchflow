@@ -62,7 +62,7 @@ class FunctionUser(BaseUser):
         self,
         fn: Callable[
             [int, str, RoundResult | None],
-            str | None | Awaitable[str | None],
+            str | Awaitable[str | None] | None,
         ],
     ) -> None:
         self._fn = fn
