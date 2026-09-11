@@ -758,8 +758,16 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeypatch):
-    """Guards PR #942 and PR #1030: every Google key alias stays proxied."""
+@pytest.mark.parametrize(
+    "vertex,upstream_keys", [(False, True), (True, False), (True, True)]
+)
+@pytest.mark.parametrize(
+    "model", ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
+)
+async def test_gemini_uses_native_generate_content_through_sandbox_proxy(
+    monkeypatch, vertex, upstream_keys, model
+):
+    """Guards PR #942/#1030 and Vertex auth regression in commit 28b82e33."""
 
     starts = []
 
@@ -774,14 +782,25 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
     sandbox = SimpleNamespace()
 
+    agent_env = {
+        "GOOGLE_CLOUD_PROJECT": "dummy-project",
+        "GOOGLE_CLOUD_LOCATION": "global",
+        "GOOGLE_GEMINI_BASE_URL": "https://stale-gemini.example.test",
+        "GOOGLE_VERTEX_BASE_URL": "https://stale-vertex.example.test",
+        "GEMINI_API_KEY_AUTH_MECHANISM": "x-goog-api-key" if vertex else "bearer",
+    }
+    if upstream_keys or not vertex:
+        agent_env.update(
+            {
+                "GEMINI_API_KEY": "upstream-gemini-key",
+                "GOOGLE_API_KEY": "upstream-google-key",
+                "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
+            }
+        )
     updated, provider_runtime = await ensure_litellm_runtime(
         agent="gemini",
-        agent_env={
-            "GEMINI_API_KEY": "upstream-gemini-key",
-            "GOOGLE_API_KEY": "upstream-google-key",
-            "GOOGLE_GENERATIVE_AI_API_KEY": "upstream-generative-ai-key",
-        },
-        model="gemini-2.5-flash",
+        agent_env=agent_env,
+        model=f"google-vertex/{model}" if vertex else model,
         runtime=None,
         environment="docker",
         usage_tracking="required",
@@ -791,7 +810,14 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
 
     assert starts[0]["sandbox"] is sandbox
     assert provider_runtime is not None
-    assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
+    if vertex:
+        assert updated["GOOGLE_VERTEX_BASE_URL"] == "http://127.0.0.1:45678/vertex_ai"
+        assert updated["GEMINI_API_KEY_AUTH_MECHANISM"] == "bearer"
+        assert "GOOGLE_GEMINI_BASE_URL" not in updated
+    else:
+        assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
+        assert "GOOGLE_VERTEX_BASE_URL" not in updated
+        assert "GEMINI_API_KEY_AUTH_MECHANISM" not in updated
     for key in (
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",

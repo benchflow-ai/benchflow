@@ -9,6 +9,85 @@ from benchflow.providers.litellm_config import (
 )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model", ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
+)
+async def test_gemini_vertex_passthrough_exchanges_gateway_auth_for_adc(
+    monkeypatch, model
+):
+    """Guards Vertex proxy auth against the regression in commit 28b82e33."""
+    from unittest.mock import AsyncMock, Mock
+
+    import litellm
+    from litellm.proxy import proxy_server
+    from litellm.proxy.pass_through_endpoints import llm_passthrough_endpoints as vendor
+    from litellm.proxy.pass_through_endpoints.passthrough_endpoint_router import (
+        PassthroughEndpointRouter,
+    )
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    route = resolve_litellm_route(
+        f"google-vertex/{model}",
+        {"GOOGLE_CLOUD_PROJECT": "dummy-project", "GOOGLE_CLOUD_LOCATION": "global"},
+    )
+    config = litellm_proxy_config(route, master_key="gateway-key")
+    monkeypatch.setattr(
+        vendor, "passthrough_endpoint_router", PassthroughEndpointRouter()
+    )
+    model_router = litellm.Router(model_list=config["model_list"])
+    monkeypatch.setattr(proxy_server, "llm_router", model_router)
+    # Native registration must leave other harnesses' translated routes usable.
+    deployment = model_router.get_available_deployment(model=route.model_alias)
+    assert deployment["litellm_params"]["model"] == route.upstream_model
+
+    auth = AsyncMock()
+    adc = AsyncMock(return_value=("mock-oauth-token", "dummy-project"))
+    forward = Mock(return_value=AsyncMock())
+    monkeypatch.setattr(vendor, "user_api_key_auth", auth)
+    monkeypatch.setattr(vendor.VertexBase, "_ensure_access_token_async", adc)
+    monkeypatch.setattr(vendor, "create_pass_through_route", forward)
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"authorization", b"Bearer gateway-key"),
+                (b"x-goog-api-key", b"gateway-key"),
+            ],
+        }
+    )
+    # Actual CLI 0.42.0 Express-style path, captured using a dummy gateway key.
+    await vendor._base_vertex_proxy_route(
+        endpoint=f"v1beta1/publishers/google/models/{model}:streamGenerateContent",
+        request=request,
+        fastapi_response=Response(),
+        get_vertex_pass_through_handler=vendor.get_vertex_pass_through_handler(
+            call_type="aiplatform"
+        ),
+    )
+    auth.assert_awaited_once_with(request=request, api_key="Bearer gateway-key")
+    adc.assert_awaited_once_with(
+        credentials=None,
+        project_id="dummy-project",
+        custom_llm_provider="vertex_ai_beta",
+    )
+    sent = forward.call_args.kwargs
+    assert sent["target"] == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/dummy-project/locations/global/"
+        f"publishers/google/models/{model}:streamGenerateContent?alt=sse"
+    )
+    assert sent["is_streaming_request"] is True
+    # Use the forwarding layer's real merge rule, including incoming key headers.
+    headers = vendor.HttpPassThroughEndpointHelpers.forward_headers_from_request(
+        dict(request.headers),
+        sent["custom_headers"],
+        sent.get("_forward_headers", False),
+    )
+    assert headers["Authorization"] == "Bearer mock-oauth-token"
+    assert "gateway-key" not in str(headers)
+
+
 def test_bedrock_model_maps_to_litellm_bedrock_route():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",

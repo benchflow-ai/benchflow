@@ -434,6 +434,10 @@ def litellm_proxy_config(
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
     params = dict(route.litellm_params)
+    if route.provider_name == "google-vertex":
+        # Gemini gateway keys omit project/location from request paths. Native
+        # pass-through registration resolves both and uses the proxy's ADC.
+        params["use_in_pass_through"] = True
     cost = custom_cost_per_token(route.upstream_model)
     if cost is not None:
         params.setdefault("input_cost_per_token", cost[0])
