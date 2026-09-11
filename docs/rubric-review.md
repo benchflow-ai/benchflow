@@ -1,17 +1,20 @@
 # Rubric review
 
-Rubric review is a detached, agentic quality review of finished rollouts. A
-reviewer agent reads a rollout's records — trajectory, result, verifier
-output, and the task definition — inside its own sandbox and grades the run
-against a rubric. Legacy rubrics produce one `pass` / `fail` /
-`not_applicable` verdict per criterion; weighted rubrics combine binary
-blocker verdicts with 0–2 scores.
+Rubric review is an isolated, agentic quality review of a finished rollout. A
+reviewer agent reads the solver's trajectory, deterministic verifier output,
+task definition, and created or modified workspace files inside a second
+sandbox. Legacy rubrics produce one `pass` / `fail` / `not_applicable` verdict
+per criterion; weighted rubrics combine binary blocker verdicts with 0–2
+scores.
 
-Review is **report-only**. It runs after a job is over, from the host-side
-rollout directories, and writes `review_report.json`. It never modifies a
-reviewed rollout's `rewards` or `result.json`, and there is no code path
-through which it could: the deterministic verifier is the only owner of
-`reward`.
+There are two entry points:
+
+- Normal `bench eval run`, SDK, and runtime rollouts automatically
+  review a task that ships `verifier/rubric.json` or `tests/rubric.json`. A
+  weighted review becomes part of that rollout's canonical reward and score.
+- `bench review` is the read-only audit command for already-finished rollouts.
+  It writes a separate `review_report.json` and never changes the source
+  rollout.
 
 This is distinct from the [`llm-judge` verifier strategy](./llm-judge.md):
 an llm-judge is part of a task's verifier and *produces* the reward, while
@@ -96,8 +99,15 @@ BenchFlow aggregates a structurally valid v0.2 review on the host:
 raw_quality = sum(score * weight) / (2 * sum(non-blocker weights))
 gates_pass = deterministic reward is 1.0 with no recorded error
              AND every blocker passes
-gated_quality = raw_quality if gates_pass, otherwise 0
+pass_at_1 = 1 if gates_pass, otherwise 0
+final_score = raw_quality if gates_pass, otherwise 0
 ```
+
+`weighted_points` and `max_weighted_points` retain the unnormalized weighted
+sum and denominator. `score` is the normalized, gated value in `[0, 1]` so it
+can be aggregated across tasks with different rubrics. A review or workspace
+capture error is unscored (`reward`, `pass_at_1`, and `score` are null), not a
+silent zero.
 
 The raw quality remains visible when a gate fails, making the rubric judgment
 auditable without mistaking it for a publishable result. A failed gate always
@@ -131,6 +141,62 @@ Rubric resolution order, per reviewed rollout:
 
 ## Running a review
 
+### Automatic scoring during normal runs
+
+No extra flag is required. When the selected task contains a review-shaped
+`verifier/rubric.json` or `tests/rubric.json`, BenchFlow captures the solver's
+workspace delta, finishes the deterministic verifier, and then launches the
+reviewer in a fresh sandbox of the same backend. The default reviewer is
+`codex-acp` with `openai/gpt-5.6-sol` at `xhigh` reasoning. It retries an
+invalid or failed review once without rerunning the solver.
+
+The reviewer sandbox receives read-only copies of the source trajectory,
+verifier output, task, workspace manifest, and every regular workspace file
+created or modified after task installation. Credential-like files, runtime
+configuration, VCS metadata, dependency trees, caches, and symlinks are
+excluded. The reviewer cannot modify the source sandbox or rollout.
+
+Override the policy in a YAML run config when necessary:
+
+```yaml
+tasks_dir: ./tasks
+agent: claude-agent-acp
+model: anthropic/claude-opus-4-6
+environment: daytona
+
+rubric_review:
+  enabled: true
+  agent: codex-acp
+  model: openai/gpt-5.6-sol
+  reasoning_effort: xhigh
+  environment: null       # inherit the solver's sandbox backend
+  timeout_sec: 1800
+  max_retries: 1
+  allow_open_network: false
+```
+
+Set `rubric_review.enabled: false` only for an explicitly unreviewed diagnostic
+run. Reviewer `agent_env` values can also be supplied through YAML or the SDK;
+only their key names are persisted in public config artifacts.
+
+For a valid weighted review, the integrated result obeys both gates:
+
+```text
+reward = pass_at_1 = 1 only when verifier reward == 1 with no verifier error
+                         and every blocker criterion passes
+score = weighted_points / max_weighted_points when reward == 1, else 0
+```
+
+The source rollout retains the complete audit under `review/` and refreshes
+all score-bearing representations: `result.json`, `timing.json`,
+`rewards.jsonl`, `results.jsonl`, and the files under `trainer/`. Job
+`summary.json`, CLI output, metrics, health summaries, and publish README files
+then derive pass@1 and score from those canonical per-rollout results. The
+reviewer's token, timing, and cost telemetry remains separate from the solver's
+telemetry.
+
+### Read-only review of existing rollouts
+
 ```bash
 # review one rollout
 bench review jobs/<job>/<rollout> --sandbox docker \
@@ -150,10 +216,9 @@ bench review jobs/<job> --failing -r spec-rubric.json \
 
 `--passing` selects rollouts with reward 1.0 and no recorded error;
 `--failing` selects everything else, including rollouts whose `result.json`
-is unreadable. The reviewer agent (`--agent`, default `opencode`) and model
-(`--model`; agents without a registry default require one — pass a gateway
-model id such as `gemini/gemini-2.5-flash`) are independent of whatever ran
-the original job.
+is unreadable. The reviewer agent (`--agent`, default `codex-acp`) and model
+(`--model`) are independent of whatever ran the original job. Its defaults
+match automatic scoring: `codex-acp`, `openai/gpt-5.6-sol`, and `xhigh`.
 
 ## How a review executes
 
@@ -234,7 +299,7 @@ no aggregate score:
 {
   "path": "…/jobs/2026-08-03__12-00-00",
   "rubric": {"path": "…", "criteria": ["…"], "contracts": ["v0.1"]},
-  "reviewer": {"agent": "opencode", "model": "gemini/gemini-2.5-flash", "environment": "docker", "network": "no-internet"},
+  "reviewer": {"agent": "codex-acp", "model": "openai/gpt-5.6-sol", "reasoning_effort": "xhigh", "environment": "docker", "network": "no-internet"},
   "job_summary": "Deterministic aggregation over VALID reviews only.",
   "trials": [
     {

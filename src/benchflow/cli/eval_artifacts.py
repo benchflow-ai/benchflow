@@ -40,6 +40,7 @@ def _redacted_eval_config(eval_config: EvaluationConfig) -> dict:
         "source_provenance": eval_config.source_provenance,
         "dataset_name": eval_config.dataset_name,
         "dataset_version": eval_config.dataset_version,
+        "rubric_review": eval_config.rubric_review.to_config_artifact(),
     }
 
 

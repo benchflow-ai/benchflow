@@ -31,6 +31,7 @@ from benchflow.loop_strategies import (
     build_loop_user,
     parse_loop_strategy_spec,
 )
+from benchflow.review.policy import RubricReviewConfig
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -128,6 +129,10 @@ class RolloutConfig:
     # budget without editing every task definition (#378).
     timeout: int | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
+    # When the trusted task contains a weighted rubric.json, run a second,
+    # isolated reviewer rollout and fold its blocker gates / weighted score
+    # into this rollout's final result. Tasks without a rubric are unchanged.
+    rubric_review: RubricReviewConfig = field(default_factory=RubricReviewConfig)
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -233,6 +238,7 @@ class RolloutConfig:
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.rubric_review = RubricReviewConfig.coerce(self.rubric_review)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)

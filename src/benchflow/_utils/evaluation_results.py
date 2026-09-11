@@ -79,6 +79,8 @@ def rollout_result_payload(
         "error_category": result.error_category,
         "verifier_error": result.verifier_error,
         "verifier_error_category": result.verifier_error_category,
+        "final_score": result.final_score,
+        "rubric_review": result.rubric_review,
         "export_error": result.export_error,
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": n_skill_invocations,
@@ -132,6 +134,78 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
             round(total_cost / len(covered), 10) if covered else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
+def rubric_review_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate automatic rubric outcomes and reviewer-only telemetry."""
+
+    reviewed = [
+        result
+        for result in results.values()
+        if isinstance(result.get("rubric_review"), dict)
+    ]
+    if not reviewed:
+        return {}
+    final_scores = [
+        score
+        for result in reviewed
+        if isinstance((score := result.get("final_score")), dict)
+    ]
+    numeric_scores = [
+        float(score["score"])
+        for score in final_scores
+        if isinstance(score.get("score"), (int, float))
+        and not isinstance(score.get("score"), bool)
+    ]
+    passed = sum(score.get("pass") is True for score in final_scores)
+    failed = sum(score.get("pass") is False for score in final_scores)
+    errors = sum(
+        (result.get("rubric_review") or {}).get("status") == "error"
+        for result in reviewed
+    )
+    unweighted = sum(
+        (result.get("rubric_review") or {}).get("status") == "complete_unweighted"
+        for result in reviewed
+    )
+    reviewer_results = [
+        reviewer
+        for result in reviewed
+        if isinstance((review := result.get("rubric_review")), dict)
+        and isinstance((reviewer := review.get("reviewer")), dict)
+    ]
+    usage = [
+        agent_result
+        for reviewer in reviewer_results
+        if isinstance((agent_result := reviewer.get("agent_result")), dict)
+    ]
+
+    def usage_total(field: str) -> float:
+        return sum(
+            float(value)
+            for item in usage
+            if isinstance((value := item.get(field)), (int, float))
+            and not isinstance(value, bool)
+        )
+
+    required = len(reviewed)
+    completed = passed + failed
+    mean_score = sum(numeric_scores) / len(numeric_scores) if numeric_scores else None
+    return {
+        "rubric_review": {
+            "required": required,
+            "completed": completed,
+            "passed": passed,
+            "failed": failed,
+            "errored": errors,
+            "unweighted": unweighted,
+            "pass_at_1": passed / required if required else None,
+            "mean_score": mean_score,
+            "score_coverage": len(numeric_scores) / required if required else 0.0,
+            "reviewer_total_tokens": int(usage_total("total_tokens")),
+            "reviewer_total_cost_usd": round(usage_total("cost_usd"), 10),
+            "reviewer_usage_coverage": len(usage) / required if required else 0.0,
+        }
     }
 
 

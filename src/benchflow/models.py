@@ -153,6 +153,8 @@ class RolloutResult:
         reward_events: list[RewardEvent] | None = None,
         evolved_skills: dict[str, str] | None = None,
         source_provenance: dict[str, Any] | None = None,
+        final_score: dict[str, Any] | None = None,
+        rubric_review: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ):
@@ -185,6 +187,8 @@ class RolloutResult:
         self.reward_events = reward_events
         self.evolved_skills = evolved_skills
         self.source_provenance = source_provenance
+        self.final_score = final_score
+        self.rubric_review = rubric_review
         self.started_at = started_at
         self.finished_at = finished_at
 

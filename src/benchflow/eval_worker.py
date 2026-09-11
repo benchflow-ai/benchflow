@@ -18,6 +18,7 @@ from typing import Any
 
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.loop_strategies import LoopStrategySpec
+from benchflow.review.policy import RubricReviewConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -82,6 +83,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
             if raw.get("loop_strategy")
             else None
         ),
+        rubric_review=RubricReviewConfig.coerce(raw.get("rubric_review")),
     )
 
 
@@ -96,6 +98,10 @@ def _result_payload(result) -> dict[str, Any]:
         "elapsed_sec": result.elapsed_sec,
         "score": result.score,
         "score_excl_errors": result.score_excl_errors,
+        "mean_final_score": result.mean_final_score,
+        "rubric_reviews_required": result.rubric_reviews_required,
+        "rubric_reviews_completed": result.rubric_reviews_completed,
+        "rubric_review": result.rubric_review_details,
     }
 
 

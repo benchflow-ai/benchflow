@@ -53,6 +53,16 @@ def _reward_value(rewards: dict[str, Any] | None) -> float:
     return 0.0
 
 
+def _score_value(rewards: dict[str, Any] | None) -> float:
+    """Return rubric quality when present, otherwise the legacy reward."""
+
+    if isinstance(rewards, dict):
+        score = rewards.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            return float(score)
+    return _reward_value(rewards)
+
+
 def _metrics_from_rewards(
     rewards: dict[str, Any] | None,
     *,
@@ -562,7 +572,7 @@ def build_rollout_results_record(
         "metrics": metrics,
         "tool_defs": tool_defs,
         "token_usage": token_usage,
-        "score": reward,
+        "score": _score_value(rewards),
         "total_tool_calls": float(n_tool_calls),
         "trajectory": steps,
     }

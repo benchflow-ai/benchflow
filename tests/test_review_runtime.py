@@ -15,9 +15,9 @@ from benchflow.review.runner import (
     ReviewRunError,
     TrialReview,
     _lock_review_evidence,
-    _task_digest_issue,
     discover_rollouts,
     run_reviews,
+    task_digest_issue,
 )
 from benchflow.rollout import RolloutConfig
 
@@ -793,7 +793,7 @@ class TestTaskDigestAdmission:
         result = json.loads((rollout / "result.json").read_text(encoding="utf-8"))
         result.pop("task_digest")
         (rollout / "result.json").write_text(json.dumps(result), encoding="utf-8")
-        assert _task_digest_issue(rollout, task) is None
+        assert task_digest_issue(rollout, task) is None
 
     def test_missing_digest_excludes_task(self, tmp_path):
         """Guards PR #942: unverifiable task evidence fails closed."""
@@ -804,7 +804,7 @@ class TestTaskDigestAdmission:
             data = json.loads((rollout / filename).read_text(encoding="utf-8"))
             data.pop("task_digest", None)
             (rollout / filename).write_text(json.dumps(data), encoding="utf-8")
-        assert "missing" in (_task_digest_issue(rollout, task) or "")
+        assert "missing" in (task_digest_issue(rollout, task) or "")
 
     def test_conflicting_digests_exclude_task(self, tmp_path):
         """Guards PR #942: conflicting provenance cannot select task evidence."""
@@ -814,7 +814,7 @@ class TestTaskDigestAdmission:
         result = json.loads((rollout / "result.json").read_text(encoding="utf-8"))
         result["task_digest"] = "sha256:" + "0" * 64
         (rollout / "result.json").write_text(json.dumps(result), encoding="utf-8")
-        assert "conflicting" in (_task_digest_issue(rollout, task) or "")
+        assert "conflicting" in (task_digest_issue(rollout, task) or "")
 
     def test_digest_computation_failure_excludes_task(self, tmp_path, monkeypatch):
         """Guards PR #942: digest errors cannot admit unverified task files."""
@@ -826,7 +826,7 @@ class TestTaskDigestAdmission:
             raise OSError("cannot hash")
 
         monkeypatch.setattr("benchflow._utils.task_authoring.task_digest", fail)
-        assert "could not be verified" in (_task_digest_issue(rollout, task) or "")
+        assert "could not be verified" in (task_digest_issue(rollout, task) or "")
 
 
 @pytest.mark.asyncio

@@ -329,10 +329,13 @@ reason is a bare reward. Multi-failure CTRF reports roll up as
 `(details: …/verifier)` pointer names the artifact directory whenever one
 exists on disk.
 
-The final `Score: P/T (…%)` line is pass-threshold aggregation — a task counts
-as passed only at reward 1.0 — while `mean reward` beside it is the average raw
-verifier reward, so `0/1 (0.0%)` next to `mean reward 0.80` means partial
-credit below the pass threshold, not a flat zero.
+The final `Score: P/T (…%)` line is pass@1 aggregation — a task counts as
+passed only at final reward 1.0. Tasks with a weighted `verifier/rubric.json`
+or `tests/rubric.json` are reviewed automatically in a second sandbox, and
+must pass both the deterministic verifier and every blocker criterion. The
+line also reports mean rubric score and review coverage when reviewed tasks
+are present. For tasks without a review rubric, `mean reward` remains the
+average raw verifier reward.
 
 Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
 give slow-starting agents more time to answer the pre-prompt ACP handshake
@@ -375,15 +378,17 @@ bench review jobs/<job>/<rollout> -r my-rubric.json --agent gemini
 bench review jobs/<job> --passing --sandbox daytona -n 8 -m gemini/gemini-2.5-flash
 ```
 
-The default `opencode` reviewer has no registry default model, so `-m` is
-required with it (a run without one exits with an actionable error).
+This command is a read-only audit of existing results. Normal run and eval
+commands automatically integrate a shipped review rubric into final scoring;
+see [Rubric review](../rubric-review.md#automatic-scoring-during-normal-runs).
 
 | Flag | Default | Description |
 |---|---|---|
 | `--rubric`, `-r` | task / built-in | Rubric JSON file. Default: an admitted task copy's `verifier/rubric.json` (requires `--tasks-root` and a verified recorded digest), else the built-in default rubric |
 | `--prompt`, `-p` | built-in | Custom reviewer instruction template |
-| `--agent`, `-a` | `opencode` | Reviewer agent harness |
-| `--model`, `-m` | agent registry | Reviewer model (required for agents without a registry default; gateway ids such as `gemini/gemini-2.5-flash`) |
+| `--agent`, `-a` | `codex-acp` | Reviewer agent harness |
+| `--model`, `-m` | `openai/gpt-5.6-sol` | Reviewer model |
+| `--reasoning-effort` | `xhigh` | Reviewer reasoning effort |
 | `--sandbox` | `docker` | Sandbox backend for reviewer rollouts |
 | `--concurrency`, `-n` | `4` | Max concurrent reviews |
 | `--passing` | `false` | Only review passing rollouts (reward 1.0) |

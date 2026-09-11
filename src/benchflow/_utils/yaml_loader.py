@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from benchflow._types import Role, Scene, Turn
+from benchflow.review.policy import RubricReviewConfig
 from benchflow.rollout import RolloutConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
@@ -132,6 +133,7 @@ def rollout_config_from_dict(
         skill_creator_dir=raw.get("skill_creator_dir"),
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
         usage_tracking=UsageTrackingConfig.from_mapping(raw),
+        rubric_review=RubricReviewConfig.coerce(raw.get("rubric_review")),
     )
 
 

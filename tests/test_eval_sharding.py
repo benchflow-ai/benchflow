@@ -73,6 +73,34 @@ def test_worker_payload_without_loop_strategy_stays_none() -> None:
     assert _evaluation_config(json.loads(json.dumps(payload))).loop_strategy is None
 
 
+def test_worker_payload_round_trips_and_redacts_rubric_reviewer_policy() -> None:
+    """Guards PR #1092's private shard policy transport."""
+
+    config = EvaluationConfig(
+        rubric_review={
+            "model": "azure-foundry-openai/gpt-5.6-sol",
+            "reasoning_effort": "xhigh",
+            "agent_env": {"AZURE_API_KEY": "review-secret"},
+        }
+    )
+    shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
+    raw = {
+        "tasks_dir": "/tasks",
+        "jobs_dir": "/jobs",
+        "result_path": "/result.json",
+        "config": _config_payload(config, shard=shard),
+    }
+
+    restored = _evaluation_config(json.loads(json.dumps(raw["config"])))
+    artifact = _worker_payload_artifact(raw)
+
+    assert restored.rubric_review.model == "azure-foundry-openai/gpt-5.6-sol"
+    assert restored.rubric_review.reasoning_effort == "xhigh"
+    assert restored.rubric_review.agent_env == {"AZURE_API_KEY": "review-secret"}
+    assert "review-secret" not in json.dumps(artifact)
+    assert artifact["config"]["rubric_review"]["agent_env_keys"] == ["AZURE_API_KEY"]
+
+
 def test_worker_payload_artifact_redacts_agent_env_secrets() -> None:
     config = EvaluationConfig(
         agent_env={
@@ -209,3 +237,74 @@ def test_worker_sharded_summary_includes_numeric_score_ratios(tmp_path) -> None:
     assert summary["score_ratio"] == pytest.approx(1 / 3)
     assert summary["score_excl_errors_ratio"] == pytest.approx(1 / 2)
     assert advertised_summary == summary
+
+
+def test_worker_sharded_summary_aggregates_full_rubric_review(tmp_path) -> None:
+    """Guards PR #1092's cross-worker review summary."""
+
+    plan = EvalShardPlan(
+        total_concurrency=2,
+        worker_concurrency=1,
+        shards=(
+            EvalShard(index=0, task_names=("task-a",), concurrency=1),
+            EvalShard(index=1, task_names=("task-b",), concurrency=1),
+        ),
+    )
+    shard_results = [
+        {
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errored": 0,
+            "verifier_errored": 0,
+            "mean_final_score": 0.8,
+            "rubric_reviews_required": 1,
+            "rubric_reviews_completed": 1,
+            "rubric_review": {
+                "required": 1,
+                "completed": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "unweighted": 0,
+                "reviewer_total_tokens": 100,
+                "reviewer_total_cost_usd": 0.02,
+                "reviewer_usage_coverage": 1.0,
+            },
+        },
+        {
+            "total": 1,
+            "passed": 0,
+            "failed": 1,
+            "errored": 0,
+            "verifier_errored": 0,
+            "mean_final_score": 0.4,
+            "rubric_reviews_required": 1,
+            "rubric_reviews_completed": 1,
+            "rubric_review": {
+                "required": 1,
+                "completed": 1,
+                "passed": 0,
+                "failed": 1,
+                "errored": 0,
+                "unweighted": 0,
+                "reviewer_total_tokens": 50,
+                "reviewer_total_cost_usd": 0.01,
+                "reviewer_usage_coverage": 1.0,
+            },
+        },
+    ]
+
+    result = _aggregate_result(
+        jobs_dir=tmp_path,
+        config=EvaluationConfig(),
+        plan=plan,
+        shard_results=shard_results,
+        elapsed_sec=1.0,
+    )
+    summary = json.loads((tmp_path / "summary.json").read_text())
+
+    assert result.mean_final_score == pytest.approx(0.6)
+    assert summary["rubric_review"]["pass_at_1"] == 0.5
+    assert summary["rubric_review"]["reviewer_total_tokens"] == 150
+    assert summary["rubric_review"]["reviewer_total_cost_usd"] == 0.03
