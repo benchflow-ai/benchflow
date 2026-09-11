@@ -104,6 +104,10 @@ class RolloutResult:
                       and ``verifier_error``. See #389 follow-up.
         partial_trajectory: True when the trajectory was salvaged from a timed-out
                       or crashed session and may be incomplete.
+        no_tool_completion: True when the agent produced model output but ended
+                      without a single tool call (chat-only completion, #988).
+                      Behavior visibility only — rewards and error stay as the
+                      verifier/agent left them.
         trajectory_source: Provenance label for ``trajectory`` — one of
                       ``"acp"`` (trusted), ``"scraped"`` (UNTRUSTED, agent-writable,
                       forgeable), ``"partial_acp"`` (partial ACP capture). Verifier
@@ -149,6 +153,7 @@ class RolloutResult:
         verifier_error_category: str | None = None,
         export_error: str | None = None,
         partial_trajectory: bool = False,
+        no_tool_completion: bool = False,
         trajectory_source: TrajectorySource | None = None,
         reward_events: list[RewardEvent] | None = None,
         evolved_skills: dict[str, str] | None = None,
@@ -181,6 +186,7 @@ class RolloutResult:
         self.verifier_error_category = verifier_error_category
         self.export_error = export_error
         self.partial_trajectory = partial_trajectory
+        self.no_tool_completion = no_tool_completion
         self.trajectory_source = trajectory_source
         self.reward_events = reward_events
         self.evolved_skills = evolved_skills
