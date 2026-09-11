@@ -16,6 +16,33 @@ from benchflow.trajectories._capture import (
 from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
 
+def test_acp_tool_provenance_is_additive_and_absent_by_default():
+    """Guards PR #1111 provenance shape in final trajectory capture."""
+    session = ACPSession("test-session")
+    session.handle_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "mcp-1",
+            "title": "mcp.google_drive.search",
+            "kind": "execute",
+            "_meta": {"is_mcp_tool_call": True, "unknown": "drop me"},
+        }
+    )
+    session.handle_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "shell-1",
+            "title": "pwd",
+            "kind": "execute",
+        }
+    )
+
+    trajectory = _capture_session_trajectory(session)
+
+    assert trajectory[0]["_meta"] == {"is_mcp_tool_call": True}
+    assert "_meta" not in trajectory[1]
+
+
 def test_pr_942_backfills_empty_gemini_acp_observation_by_exact_id():
     """Guards PR #942: rubric evidence retains Gemini-native tool results."""
 

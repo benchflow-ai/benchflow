@@ -225,6 +225,156 @@ class TestACPSession:
         )
         assert session.tool_calls[0].status == ToolCallStatus.COMPLETED
 
+    def test_tool_provenance_merges_only_documented_safe_metadata(self):
+        """Guards PR #1111 against losing origin or retaining metadata payloads."""
+        session = ACPSession("test-session")
+        initial_meta = {
+            "claudeCode": {
+                "toolName": "mcp__google_drive__search",
+                "toolResponse": {"access_token": "secret"},
+            },
+            "unknown": {"authorization": "secret"},
+        }
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Search Drive",
+                "kind": "other",
+                "_meta": initial_meta,
+            }
+        )
+        initial_meta["claudeCode"]["toolName"] = "mutated"
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "_meta": {
+                    "is_mcp_tool_call": True,
+                    "mcp_output_delta": {"data": "sensitive output"},
+                },
+            }
+        )
+
+        assert session.tool_calls[0].metadata == {
+            "claudeCode": {"toolName": "mcp__google_drive__search"},
+            "is_mcp_tool_call": True,
+        }
+
+    def test_delayed_tool_call_reconciles_update_fallback_in_place(self):
+        """Guards PR #1111 against duplicate out-of-order tool records."""
+        session = ACPSession("test-session")
+        session.record_user_prompt("search")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "title": "pending tool",
+                "kind": "other",
+                "status": "in_progress",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "starting"}}
+                ],
+                "_meta": {"is_mcp_tool_call": True},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Search Drive",
+                "kind": "execute",
+                "status": "in_progress",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "ready"}}
+                ],
+                "_meta": {"claudeCode": {"toolName": "mcp__google_drive__search"}},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "done"}}
+                ],
+            }
+        )
+
+        assert len(session.tool_calls) == 1
+        record = session.tool_calls[0]
+        assert record.tool_call_id == "tc_1"
+        assert record.title == "Search Drive"
+        assert record.kind == "execute"
+        assert record.status == ToolCallStatus.COMPLETED
+        assert [block["content"]["text"] for block in record.content] == [
+            "starting",
+            "ready",
+            "done",
+        ]
+        assert record.metadata == {
+            "is_mcp_tool_call": True,
+            "claudeCode": {"toolName": "mcp__google_drive__search"},
+        }
+        assert [event["type"] for event in session.events] == [
+            "user_message",
+            "tool_call",
+        ]
+
+    def test_delayed_tool_call_does_not_regress_update_status(self):
+        """Guards PR #1111 against regressing a newer out-of-order status."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "in_progress",
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Delayed initial call",
+                "kind": "execute",
+                "status": "pending",
+            }
+        )
+
+        assert session.tool_calls[0].status == ToolCallStatus.IN_PROGRESS
+
+    def test_delayed_tool_call_preserves_skill_inferred_from_update(self):
+        """Guards PR #1111: delayed initial calls preserve inferred skill kind."""
+        session = ACPSession("test-session")
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                    }
+                ],
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "Load PDF skill",
+                "kind": "other",
+            }
+        )
+
+        assert session.tool_calls[0].kind == "skill"
+
     def test_handle_openhands_invoke_skill_update_marks_kind_skill(self):
         """Guards issue #507: OpenHands invoke_skill ACP calls are canonicalized."""
         session = ACPSession("test-session")
