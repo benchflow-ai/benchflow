@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -228,6 +229,46 @@ def test_yaml_string_prompts_are_wrapped_in_a_list(tmp_path):
     p.write_text(f"tasks_dir: {tdir}\nagent: gemini\nprompts: do the thing\n")
     ev = Evaluation.from_yaml(p)
     assert ev._config.prompts == ["do the thing"]
+
+
+def test_from_yaml_rejects_missing_tasks_dir_with_programbench_hint(tmp_path):
+    """Guards the fix from PR #918 / Linear ENG-162: missing ProgramBench tasks fail cleanly."""
+    from benchflow.evaluation import Evaluation
+
+    p = tmp_path / "programbench.yaml"
+    p.write_text("tasks_dir: .cache/programbench-benchflow\nagent: oracle\n")
+
+    with pytest.raises(ValueError, match=r"run_programbench\.py"):
+        Evaluation.from_yaml(p)
+
+
+def test_from_yaml_accepts_existing_programbench_tasks_dir(tmp_path, monkeypatch):
+    """Guards the fix from PR #918 / Linear ENG-162: generated ProgramBench dirs load."""
+    from benchflow.evaluation import Evaluation
+
+    (tmp_path / ".cache" / "programbench-benchflow").mkdir(parents=True)
+    p = tmp_path / "programbench.yaml"
+    p.write_text("tasks_dir: .cache/programbench-benchflow\nagent: oracle\n")
+
+    monkeypatch.chdir(tmp_path)
+
+    ev = Evaluation.from_yaml(p)
+
+    assert ev._tasks_dir == Path(".cache/programbench-benchflow")
+
+
+def test_eval_create_config_missing_tasks_dir_no_raw_traceback(tmp_path):
+    """Guards the fix from PR #918 / Linear ENG-162 at the CLI config boundary."""
+    p = tmp_path / "programbench.yaml"
+    p.write_text("tasks_dir: .cache/programbench-benchflow\nagent: oracle\n")
+
+    res = runner.invoke(app, ["eval", "create", "--config", str(p)])
+
+    assert res.exit_code == 1
+    assert "Traceback (most recent call last)" not in res.output
+    normalized = " ".join(res.output.split())
+    assert "YAML tasks_dir not found" in normalized
+    assert "run_programbench.py" in res.output
 
 
 # ── markup in user input crashes error handlers (H10/M13) ─────────────────────
