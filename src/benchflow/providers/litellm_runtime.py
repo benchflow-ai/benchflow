@@ -1654,9 +1654,9 @@ async def ensure_litellm_runtime(
     routed through it: ``oracle`` (no model), native-subscription auth (no
     API key to proxy), and ``native_provider`` agents on their own provider's
     models (wire protocol the proxy does not expose; that provider's key
-    reaches the agent, other provider secrets are scrubbed, usage is
-    ACP-reported only, ``required`` usage tracking fails closed). Gemini uses
-    LiteLLM's native GenerateContent endpoints.
+    reaches the agent, other provider secrets are scrubbed, and usage is
+    ACP-reported — ``required`` tracking is enforced at end of run). Gemini
+    uses LiteLLM's native GenerateContent endpoints.
     """
     # Re-entrant connects pass back proxy-owned env, which cannot reconstruct
     # upstream routing or credentials. Restore controller-held source config.
@@ -1671,8 +1671,6 @@ async def ensure_litellm_runtime(
     ):
         agent_env = dict(runtime.source_env)
 
-    usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
-
     if uses_native_subscription_auth(agent, model, agent_env):
         return await _skip_litellm_runtime(
             agent_env,
@@ -1681,11 +1679,6 @@ async def ensure_litellm_runtime(
         )
 
     if not needs_litellm_runtime(agent, model):
-        if usage_cfg.mode == "required" and agent != "oracle":
-            raise RuntimeError(
-                "Token usage tracking is required, but agent "
-                f"{agent!r} cannot be routed through LiteLLM."
-            )
         cfg = AGENTS.get(agent)
         if cfg is not None and cfg.native_provider:
             from benchflow.agents.providers import PROVIDERS
