@@ -54,13 +54,14 @@ def _auto_approve_option_id(options: list[dict[str, Any]]) -> str:
     return option_id
 
 
-# fx's ACP dialect: non-spec stop reasons and usage keys, mapped to the spec.
-_FX_STOP_REASONS = {
+# Non-spec ACP stop reasons and usage keys seen in the wild (fx's dialect),
+# mapped to the spec values the SDK models accept.
+_STOP_REASON_ALIASES = {
     "refused": "refusal",
     "max_output_tokens": "max_tokens",
     "max_model_turns": "max_turn_requests",
 }
-_FX_USAGE_KEYS = {
+_USAGE_KEY_ALIASES = {
     "cacheReadTokens": "cachedReadTokens",
     "cacheWriteTokens": "cachedWriteTokens",
     "reasoningTokens": "thoughtTokens",
@@ -68,13 +69,13 @@ _FX_USAGE_KEYS = {
 
 
 def _normalize_prompt_result(result: dict) -> None:
-    """Map fx's ACP dialect in-place onto the spec shapes the SDK accepts."""
+    """Map known non-spec ACP values in-place onto their spec equivalents."""
     stop = result.get("stopReason")
-    if stop in _FX_STOP_REASONS:
-        result["stopReason"] = _FX_STOP_REASONS[stop]
+    if stop in _STOP_REASON_ALIASES:
+        result["stopReason"] = _STOP_REASON_ALIASES[stop]
     usage = result.get("usage")
     if isinstance(usage, dict):
-        for theirs, ours in _FX_USAGE_KEYS.items():
+        for theirs, ours in _USAGE_KEY_ALIASES.items():
             if theirs in usage:
                 usage[ours] = usage.pop(theirs)
         if "inputTokens" in usage and "outputTokens" in usage:

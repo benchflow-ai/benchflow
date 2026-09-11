@@ -472,6 +472,7 @@ def resolve_provider_env(
         ZAI_CODING_REGISTRY_BASE_ENV,
         find_provider,
         find_provider_for_bare_model,
+        is_native_provider_model,
         resolve_base_url,
         strip_provider_prefix,
     )
@@ -489,7 +490,7 @@ def resolve_provider_env(
     if (
         agent_cfg
         and agent_cfg.native_provider
-        and (_prov is None or _prov[0] != agent_cfg.native_provider)
+        and not is_native_provider_model(agent_cfg.native_provider, model)
     ):
         raise ValueError(
             f"Agent {agent!r} only runs {agent_cfg.native_provider}/ models; "

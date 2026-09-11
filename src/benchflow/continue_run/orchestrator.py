@@ -4,10 +4,10 @@ Reuses benchflow's normal :class:`~benchflow.rollout.Rollout` machinery (so the
 new run produces a standard HF-compatible folder) but injects a record-replay
 proxy in front of OpenHands:
 
-- Host proxy mode uses ``usage_tracking="off"`` so ``ensure_litellm_runtime`` is
-  a no-op and the
-  ``agent_env`` we pass through (``LLM_BASE_URL`` → the replay proxy) is left
-  untouched (``providers/litellm_runtime.py``).
+- Host proxy mode passes ``model=None`` so ``ensure_litellm_runtime`` is a
+  no-op and the ``agent_env`` we pass through (``LLM_BASE_URL`` → the replay
+  proxy) is left untouched (``providers/litellm_runtime.py``);
+  ``usage_tracking="off"`` marks telemetry off in result metadata.
 - Sandbox proxy mode starts the provider LiteLLM proxy inside the sandbox and
   keeps the replay proxy on sandbox loopback, so remote environments such as
   Daytona do not need host-loopback connectivity.
@@ -184,8 +184,8 @@ def build_rollout_config(
         environment=run.environment,
         sandbox_user=run.sandbox_user,
         agent_env=agent_env,
-        # The seam that stops benchflow starting its own gateway / rewriting
-        # LLM_BASE_URL — our replay proxy stays in front of the agent.
+        # model=None above keeps benchflow's gateway out (the replay proxy
+        # stays in front of the agent); "off" marks telemetry off in results.
         usage_tracking="off",
         timeout=timeout,
         agent_idle_timeout=run.agent_idle_timeout_sec,
@@ -656,7 +656,6 @@ async def _continue_run_with_sandbox_proxy(
             runtime=None,
             environment=run.environment,
             session_id=rollout_name,
-            usage_tracking="required",
             sandbox=rollout.env,
         )
         replay_proxy = await SandboxReplayProxy.start(

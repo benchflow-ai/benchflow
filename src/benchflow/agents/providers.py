@@ -435,6 +435,12 @@ def find_provider(model: str) -> tuple[str, ProviderConfig] | None:
     return name, cfg
 
 
+def is_native_provider_model(native_provider: str, model: str) -> bool:
+    """True when ``model`` carries the given registered provider's prefix."""
+    provider = find_provider(model)
+    return provider is not None and provider[0] == native_provider
+
+
 def _bare_model_matches_token(model: str, token: str) -> bool:
     """True if a bare model id belongs to the family named by *token*.
 

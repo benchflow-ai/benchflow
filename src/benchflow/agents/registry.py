@@ -50,7 +50,7 @@ Look at the existing entries below for worked examples:
 
 import base64
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from benchflow._utils.text import describe_exception
@@ -1212,13 +1212,11 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             acpx_agent_name = alias
             break
 
-    # The acpx wrapper only overrides name/install_cmd/launch_cmd. Every other
-    # AgentConfig field must pass through from the underlying agent so that
-    # routing-relevant attributes (api_protocol, default_model, env_mapping,
-    # requires_env, credentials, …) survive when the wrapped config is cached
-    # into AGENTS and later read by resolve_provider_env. ``protocol`` stays
-    # "acp" because acpx itself speaks ACP regardless of the inner agent.
-    return AgentConfig(
+    # Only name/install/launch/protocol/description change; every other field
+    # passes through so routing-relevant attributes survive when the wrapped
+    # config is cached into AGENTS and later read by resolve_provider_env.
+    return replace(
+        config,
         # ``acpx:`` runtime key — see acpx_runtime_key / module-level contract.
         name=acpx_runtime_key(config.name),
         install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
@@ -1226,29 +1224,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
         ),
         protocol="acp",
-        session_factory=config.session_factory,
-        requires_env=config.requires_env,
         description=f"{config.description} (via acpx)",
-        skill_paths=config.skill_paths,
-        install_timeout=config.install_timeout,
-        default_model=config.default_model,
-        api_protocol=config.api_protocol,
-        env_mapping=config.env_mapping,
-        credential_files=config.credential_files,
-        home_dirs=config.home_dirs,
-        acp_model_format=config.acp_model_format,
-        subscription_auth=config.subscription_auth,
-        supports_acp_set_model=config.supports_acp_set_model,
-        native_provider=config.native_provider,
-        acp_model_config_id=config.acp_model_config_id,
-        acp_effort_config_id=config.acp_effort_config_id,
-        disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
-        disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
-        disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
-        disallow_hosted_search_setup_cmd=config.disallow_hosted_search_setup_cmd,
-        disallow_hosted_search_launch_suffix=config.disallow_hosted_search_launch_suffix,
-        task_mcp_transport=config.task_mcp_transport,
-        task_mcp_config_path=config.task_mcp_config_path,
     )
 
 

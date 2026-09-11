@@ -28,6 +28,7 @@ import yaml
 from benchflow._utils.text import describe_exception
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
+from benchflow.agents.providers import PROVIDERS, is_native_provider_model
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_bedrock_preflight import (
     BEDROCK_PATCH_PREFLIGHT_SOURCE,
@@ -53,7 +54,7 @@ from benchflow.providers.litellm_logging import (
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
-from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
+from benchflow.usage_tracking import usage_unavailable
 
 if TYPE_CHECKING:
     from benchflow.contracts.planes import LiveUsageGateway
@@ -654,10 +655,7 @@ def needs_litellm_runtime(agent: str, model: str | None) -> bool:
     cfg = AGENTS.get(agent)
     if cfg is None or not cfg.native_provider:
         return True
-    from benchflow.agents.providers import find_provider
-
-    provider = find_provider(model)
-    return provider is None or provider[0] != cfg.native_provider
+    return not is_native_provider_model(cfg.native_provider, model)
 
 
 def _find_free_port() -> int:
@@ -1325,10 +1323,16 @@ def _missing_required_env(route: LiteLLMRoute, env: dict[str, str]) -> list[str]
     return missing
 
 
+def _scrub_foreign_provider_secrets(
+    env: dict[str, str], keep: str | None
+) -> dict[str, str]:
+    """Copy of ``env`` without raw provider secrets, except ``keep``."""
+    secrets = _provider_secret_env_names() - {keep}
+    return {k: v for k, v in env.items() if k not in secrets}
+
+
 def _provider_secret_env_names() -> set[str]:
     """Upstream provider credentials the proxy owns and the agent must not see."""
-    from benchflow.agents.providers import PROVIDERS
-
     names = {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -1636,7 +1640,6 @@ async def ensure_litellm_runtime(
     runtime: Any | None,
     environment: str,
     session_id: str = "",
-    usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
@@ -1647,9 +1650,8 @@ async def ensure_litellm_runtime(
 
     Every LiteLLM-routable agent is *always* routed through the proxy so
     provider traffic is metered and captured (``llm_trajectory.jsonl``) and the
-    raw provider key never reaches the agent. ``usage_tracking`` no longer gates
-    whether the proxy runs — it only governs whether trusted telemetry is
-    *required* (``required`` fails closed when usage cannot be captured at all).
+    raw provider key never reaches the agent. Required-mode usage tracking is
+    enforced end-of-run by ``Rollout._enforce_required_usage_tracking``.
     The only agents that skip the proxy are those that physically cannot be
     routed through it: ``oracle`` (no model), native-subscription auth (no
     API key to proxy), and ``native_provider`` agents on their own provider's
@@ -1681,12 +1683,10 @@ async def ensure_litellm_runtime(
     if not needs_litellm_runtime(agent, model):
         cfg = AGENTS.get(agent)
         if cfg is not None and cfg.native_provider:
-            from benchflow.agents.providers import PROVIDERS
-
             # The agent only needs its own provider's key; scrub the rest.
-            keep = PROVIDERS[cfg.native_provider].auth_env
-            for name in _provider_secret_env_names() - {keep}:
-                agent_env.pop(name, None)
+            agent_env = _scrub_foreign_provider_secrets(
+                agent_env, PROVIDERS[cfg.native_provider].auth_env
+            )
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 
