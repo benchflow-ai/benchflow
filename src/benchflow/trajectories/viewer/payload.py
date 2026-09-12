@@ -231,6 +231,34 @@ def _tool_content_texts(content: Any) -> list[str]:
     return texts
 
 
+def _raw_io_texts(kind: str, raw_input: Any, raw_output: Any) -> list[str]:
+    """Render ACP ``rawInput`` / ``rawOutput`` for a call without content blocks.
+
+    codex-acp reports a command as ``rawInput.command`` and its result as
+    ``rawOutput.formatted_output`` plus ``exit_code``; anything else is shown
+    as JSON so no recorded detail is hidden.
+    """
+    texts: list[str] = []
+    if isinstance(raw_input, dict) and kind == "execute" and "command" in raw_input:
+        command = raw_input["command"]
+        texts.append(
+            " ".join(str(part) for part in command)
+            if isinstance(command, list)
+            else _display_text(command)
+        )
+    elif raw_input is not None:
+        texts.append(dumps_finite(raw_input, ensure_ascii=False, default=str))
+    if isinstance(raw_output, dict) and "formatted_output" in raw_output:
+        output = _display_text(raw_output.get("formatted_output"))
+        exit_code = raw_output.get("exit_code")
+        if exit_code not in (None, 0):
+            output = f"{output.rstrip()}\n[exit code {exit_code}]"
+        texts.append(output)
+    elif raw_output is not None:
+        texts.append(dumps_finite(raw_output, ensure_ascii=False, default=str))
+    return [text for text in texts if text]
+
+
 def _parse_ts(value: Any) -> float | None:
     """Parse finite epoch or ISO-8601 timestamps into epoch seconds."""
     numeric = _finite_float(value)
@@ -319,7 +347,10 @@ def _normalize_steps(
                         kind=kind,
                         title=title,
                         status=normalize_tool_status(event.get("status")),
-                        content=_tool_content_texts(event.get("content")),
+                        content=_tool_content_texts(event.get("content"))
+                        or _raw_io_texts(
+                            kind, event.get("raw_input"), event.get("raw_output")
+                        ),
                         hue=tool_hue(kind, title),
                     ),
                     t=started,

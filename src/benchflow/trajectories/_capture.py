@@ -70,16 +70,21 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     for event in events:
         if event["type"] == "tool_call":
             tc = event["record"]
-            out.append(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tc.tool_call_id,
-                    "kind": tc.kind,
-                    "title": tc.title,
-                    "status": tc.status.value,
-                    "content": tc.content,
-                }
-            )
+            record = {
+                "type": "tool_call",
+                "tool_call_id": tc.tool_call_id,
+                "kind": tc.kind,
+                "title": tc.title,
+                "status": tc.status.value,
+                "content": tc.content,
+            }
+            # Only present when the agent sent them, so trajectories of agents
+            # without raw I/O keep their exact shape.
+            if getattr(tc, "raw_input", None) is not None:
+                record["raw_input"] = tc.raw_input
+            if getattr(tc, "raw_output", None) is not None:
+                record["raw_output"] = tc.raw_output
+            out.append(record)
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
             out.append({"type": event["type"], "text": event["text"]})
         elif event["type"] == "agent_timeout":
