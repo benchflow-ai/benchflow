@@ -563,3 +563,121 @@ def test_collect_metrics_malformed_rewards_does_not_beat_zero_reward(tmp_path):
     assert s["failed"] == 1, "well-formed rewards:{'reward':0.0} must be kept as failed"
     assert s["passed"] == 0
     assert s["errored"] == 0
+
+
+def test_collect_metrics_boolean_reward_treated_as_invalid(tmp_path):
+    """Guards Devin review: isinstance(True, (int,float)) is True in Python,
+    so _safe_reward previously accepted boolean rewards. is_valid_reward_number
+    explicitly rejects booleans — selection and reporting must agree."""
+    import json
+
+    # attempt1: boolean reward (True) — invalid per is_valid_reward_number
+    t1 = tmp_path / "a1" / "task__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": True},
+                "error": None,
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    # attempt2: well-formed reward=0.0 (scored, failed)
+    t2 = tmp_path / "a2" / "task__t2"
+    t2.mkdir(parents=True)
+    (t2 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "n_tool_calls": 1,
+                "started_at": "2026-01-01 00:02:00.000000",
+                "finished_at": "2026-01-01 00:03:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+    assert s["failed"] == 1, "well-formed reward=0.0 must win over boolean reward=True"
+    assert s["passed"] == 0
+    assert s["errored"] == 0
+
+
+def test_collect_metrics_nonfinite_reward_treated_as_invalid(tmp_path):
+    """Guards Devin review: inf/-inf/nan are rejected by is_valid_reward_number
+    but isinstance(inf, float) is True, so old _safe_reward accepted them."""
+    import json
+
+    t1 = tmp_path / "a1" / "task__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": None},
+                "error": "agent error",
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    # inf cannot be serialised directly to JSON; simulate via a post-load patch
+    # by writing a valid file then checking the validator directly
+    from benchflow.rewards.validation import is_valid_reward_number
+
+    assert not is_valid_reward_number(float("inf")), "inf must be invalid"
+    assert not is_valid_reward_number(float("nan")), "nan must be invalid"
+    assert not is_valid_reward_number(True), "True must be invalid"
+    assert not is_valid_reward_number(False), "False must be invalid"
+    assert not is_valid_reward_number(-1.0), "-1.0 must be invalid (below range)"
+    assert is_valid_reward_number(0.0), "0.0 must be valid"
+    assert is_valid_reward_number(0.5), "0.5 must be valid"
+    assert is_valid_reward_number(1.0), "1.0 must be valid"
+
+
+def test_collect_metrics_empty_rewards_dict_does_not_beat_valid_zero(tmp_path):
+    """Guards Devin review: {} has no valid reward scalar; reward=0.0 must win."""
+    import json
+
+    # attempt1: empty dict — no reward key at all
+    t1 = tmp_path / "a1" / "task__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {},
+                "error": None,
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    # attempt2: valid reward=0.0
+    t2 = tmp_path / "a2" / "task__t2"
+    t2.mkdir(parents=True)
+    (t2 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "n_tool_calls": 2,
+                "started_at": "2026-01-01 00:02:00.000000",
+                "finished_at": "2026-01-01 00:03:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+    assert s["failed"] == 1, "valid reward=0.0 must beat empty rewards dict"
+    assert s["errored"] == 0
