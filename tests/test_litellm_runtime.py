@@ -63,7 +63,6 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
         runtime=None,
         environment="docker",
         session_id="run-1",
-        usage_tracking="required",
     )
 
     assert provider_runtime is not None
@@ -227,7 +226,6 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
         runtime=None,
         environment="docker",
         session_id="run-1",
-        usage_tracking="required",
     )
 
     assert provider_runtime is not None
@@ -272,7 +270,6 @@ async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
         runtime=None,
         environment="docker",
         session_id="run-1",
-        usage_tracking="required",
     )
 
     assert provider_runtime is not None
@@ -387,7 +384,6 @@ async def test_required_usage_fails_when_litellm_lacks_provider_key(monkeypatch)
             model="openai/gpt-4.1-mini",
             runtime=None,
             environment="docker",
-            usage_tracking="required",
         )
 
 
@@ -407,7 +403,6 @@ async def test_required_usage_skips_litellm_for_codex_subscription(monkeypatch):
         model="openai/gpt-4.1-mini",
         runtime=None,
         environment="docker",
-        usage_tracking="required",
     )
 
     assert updated == env
@@ -430,7 +425,6 @@ async def test_required_usage_skips_litellm_for_claude_subscription(monkeypatch)
         model="claude-sonnet-4-6",
         runtime=None,
         environment="docker",
-        usage_tracking="required",
     )
 
     assert updated == env
@@ -454,7 +448,6 @@ async def test_usage_tracking_off_still_routes_through_proxy(monkeypatch):
         model="openai/gpt-4.1-mini",
         runtime=None,
         environment="docker",
-        usage_tracking="off",
     )
 
     assert provider_runtime is not None
@@ -488,7 +481,6 @@ async def test_usage_tracking_off_replaces_stale_litellm_runtime(monkeypatch):
         model="openai/gpt-4.1-mini",
         runtime=existing,
         environment="docker",
-        usage_tracking="off",
     )
 
     assert old_server.stopped is True
@@ -520,7 +512,6 @@ async def test_openhands_azure_never_bypasses_proxy(monkeypatch):
         runtime=None,
         environment="daytona",
         session_id="run-1",
-        usage_tracking="off",
         sandbox=SimpleNamespace(),
     )
 
@@ -582,7 +573,6 @@ async def test_auto_usage_fails_closed_when_litellm_lacks_provider_key(monkeypat
             model="openai/gpt-4.1-mini",
             runtime=None,
             environment="docker",
-            usage_tracking="auto",
         )
 
 
@@ -606,7 +596,6 @@ async def test_auto_usage_fails_closed_when_route_resolution_fails(monkeypatch):
             model="azure-foundry-openai/gpt-4.1-mini",
             runtime=None,
             environment="docker",
-            usage_tracking="auto",
         )
 
 
@@ -626,7 +615,6 @@ async def test_auto_usage_fails_closed_when_litellm_start_fails(monkeypatch):
             model="openai/gpt-4.1-mini",
             runtime=None,
             environment="docker",
-            usage_tracking="auto",
         )
 
 
@@ -662,7 +650,6 @@ async def test_proxy_start_failure_keeps_the_exception_type_and_retries(monkeypa
             model="openai/gpt-4.1-mini",
             runtime=None,
             environment="docker",
-            usage_tracking="auto",
         )
 
     message = str(excinfo.value)
@@ -691,7 +678,6 @@ async def test_auto_usage_does_not_fallback_on_bedrock_patch_preflight(monkeypat
             model="aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0",
             runtime=None,
             environment="docker",
-            usage_tracking="auto",
         )
 
 
@@ -706,7 +692,6 @@ async def test_auto_usage_requires_sandbox_handle_for_sandbox_local_litellm():
             model="openai/gpt-4.1-mini",
             runtime=None,
             environment="daytona",
-            usage_tracking="auto",
             sandbox=None,
         )
 
@@ -730,7 +715,6 @@ async def test_auto_usage_checks_sandbox_handle_before_route_fallback(monkeypatc
             model="azure-foundry-openai/gpt-4.1-mini",
             runtime=None,
             environment="daytona",
-            usage_tracking="auto",
             sandbox=None,
         )
 
@@ -753,7 +737,6 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
             model="openai/gpt-4.1-mini",
             runtime=None,
             environment="docker",
-            usage_tracking="required",
         )
 
 
@@ -784,7 +767,6 @@ async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeyp
         model="gemini-2.5-flash",
         runtime=None,
         environment="docker",
-        usage_tracking="required",
         sandbox=sandbox,
         force_sandbox_local=True,
     )

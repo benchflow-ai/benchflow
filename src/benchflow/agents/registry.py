@@ -50,7 +50,7 @@ Look at the existing entries below for worked examples:
 
 import base64
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from benchflow._utils.text import describe_exception
@@ -123,6 +123,8 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
+# fx release pin, passed to the fx.sh installer (`bash -s -- <version>`).
+_FX_VERSION = "v0.0.8"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -487,6 +489,9 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    native_provider: str = ""
+    # Provider whose models this agent serves natively; its traffic cannot be
+    # proxied, so runs bypass the proxy for those models and reject others.
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
     acp_model_config_id: str = ""
@@ -1019,6 +1024,35 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_owned_paths=["$HOME/.openhands"],
     ),
+    "fx": AgentConfig(
+        name="fx",
+        description="Vercel fx agent via ACP (native binary; models served "
+        "through the Vercel AI Gateway)",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            # Shared prefix so the sandbox user inherits the binary.
+            "export FX_INSTALL_DIR=/usr/local/bin && "
+            f"curl -fsSL https://fx.sh/setup.sh | bash -s -- {_FX_VERSION} && "
+            "command -v fx >/dev/null 2>&1"
+        ),
+        launch_cmd="fx acp",
+        protocol="acp",
+        requires_env=["AI_GATEWAY_API_KEY"],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_MODEL": "FX_MODEL",
+        },
+        supports_acp_set_model=False,
+        # fx speaks the AI SDK gateway wire protocol.
+        native_provider="vercel",
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.fx/settings.json",
+            'perm=d.setdefault("permission",{});'
+            'perm["web_fetch"]={"*":"deny"};perm["web_search"]={"*":"deny"}',
+        ),
+        disallow_web_tools_owned_paths=["$HOME/.fx"],
+    ),
 }
 
 
@@ -1178,13 +1212,11 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             acpx_agent_name = alias
             break
 
-    # The acpx wrapper only overrides name/install_cmd/launch_cmd. Every other
-    # AgentConfig field must pass through from the underlying agent so that
-    # routing-relevant attributes (api_protocol, default_model, env_mapping,
-    # requires_env, credentials, …) survive when the wrapped config is cached
-    # into AGENTS and later read by resolve_provider_env. ``protocol`` stays
-    # "acp" because acpx itself speaks ACP regardless of the inner agent.
-    return AgentConfig(
+    # Only name/install/launch/protocol/description change; every other field
+    # passes through so routing-relevant attributes survive when the wrapped
+    # config is cached into AGENTS and later read by resolve_provider_env.
+    return replace(
+        config,
         # ``acpx:`` runtime key — see acpx_runtime_key / module-level contract.
         name=acpx_runtime_key(config.name),
         install_cmd=f"{config.install_cmd} && {_ACPX_INSTALL}",
@@ -1192,28 +1224,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
         ),
         protocol="acp",
-        session_factory=config.session_factory,
-        requires_env=config.requires_env,
         description=f"{config.description} (via acpx)",
-        skill_paths=config.skill_paths,
-        install_timeout=config.install_timeout,
-        default_model=config.default_model,
-        api_protocol=config.api_protocol,
-        env_mapping=config.env_mapping,
-        credential_files=config.credential_files,
-        home_dirs=config.home_dirs,
-        acp_model_format=config.acp_model_format,
-        subscription_auth=config.subscription_auth,
-        supports_acp_set_model=config.supports_acp_set_model,
-        acp_model_config_id=config.acp_model_config_id,
-        acp_effort_config_id=config.acp_effort_config_id,
-        disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
-        disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
-        disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
-        disallow_hosted_search_setup_cmd=config.disallow_hosted_search_setup_cmd,
-        disallow_hosted_search_launch_suffix=config.disallow_hosted_search_launch_suffix,
-        task_mcp_transport=config.task_mcp_transport,
-        task_mcp_config_path=config.task_mcp_config_path,
     )
 
 

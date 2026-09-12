@@ -53,6 +53,8 @@ class _FakeHostServer:
     [
         ("gemini", "gemini-3.5-flash", True),
         ("oracle", "openai/gpt-4.1-mini", False),
+        ("fx", "vercel/anthropic/claude-sonnet-4.5", False),
+        ("fx", "deepseek/deepseek-v4-flash", True),
         ("openhands", "gemini-3.5-flash", True),
         ("codex-acp", "openai/gpt-4.1-mini", True),
         ("openhands", None, False),
@@ -167,6 +169,29 @@ async def test_agent_env_strips_raw_provider_secrets(monkeypatch):
     assert "real-openai-secret" not in blob
     assert updated["LLM_API_KEY"] == provider_runtime.master_key
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:4000/v1"
+
+
+@pytest.mark.asyncio
+async def test_native_provider_bypass_scrubs_foreign_secrets():
+    """Guards PR #1052: foreign secrets must not reach a native_provider agent."""
+    real = {
+        "AI_GATEWAY_API_KEY": "real-gateway-secret",
+        "OPENAI_API_KEY": "real-openai-secret",
+        "DEEPSEEK_API_KEY": "real-deepseek-secret",
+    }
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="fx",
+        agent_env=real,
+        model="vercel/anthropic/claude-sonnet-4.5",
+        runtime=None,
+        environment="local",
+        session_id="s",
+    )
+
+    assert provider_runtime is None
+    assert updated["AI_GATEWAY_API_KEY"] == "real-gateway-secret"
+    assert "OPENAI_API_KEY" not in updated
+    assert "DEEPSEEK_API_KEY" not in updated
 
 
 # #

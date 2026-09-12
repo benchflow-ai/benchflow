@@ -54,6 +54,39 @@ def _auto_approve_option_id(options: list[dict[str, Any]]) -> str:
     return option_id
 
 
+# Non-spec ACP stop reasons and usage keys seen in the wild (fx's dialect),
+# mapped to the spec values the SDK models accept.
+_STOP_REASON_ALIASES = {
+    "refused": "refusal",
+    "max_output_tokens": "max_tokens",
+    "max_model_turns": "max_turn_requests",
+}
+_USAGE_KEY_ALIASES = {
+    "cacheReadTokens": "cachedReadTokens",
+    "cacheWriteTokens": "cachedWriteTokens",
+    "reasoningTokens": "thoughtTokens",
+}
+
+
+def _normalize_prompt_result(result: dict) -> None:
+    """Map known non-spec ACP values in-place onto their spec equivalents."""
+    stop = result.get("stopReason")
+    if stop in _STOP_REASON_ALIASES:
+        result["stopReason"] = _STOP_REASON_ALIASES[stop]
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        for theirs, ours in _USAGE_KEY_ALIASES.items():
+            if theirs in usage:
+                usage[ours] = usage.pop(theirs)
+        if "inputTokens" in usage and "outputTokens" in usage:
+            usage.setdefault(
+                "totalTokens", usage["inputTokens"] + usage["outputTokens"]
+            )
+        else:
+            # The SDK requires input/output/total; drop unusable usage.
+            result.pop("usage")
+
+
 class ACPClient:
     """Client that speaks ACP to an agent process.
 
@@ -399,6 +432,8 @@ class ACPClient:
         result = await self._send_request(
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
         )
+        if isinstance(result, dict):
+            _normalize_prompt_result(result)
         prompt_result = PromptResult.model_validate(result)
         # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
