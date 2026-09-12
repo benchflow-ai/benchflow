@@ -320,7 +320,7 @@ class BenchmarkMetrics:
         }
 
 
-def _safe_reward(rewards: dict) -> float | None:
+def _safe_reward(rewards: dict | None) -> float | None:
     """Extract a validated reward scalar from a rewards dict, or None if invalid.
 
     Uses the canonical is_valid_reward_number validator so that booleans,
