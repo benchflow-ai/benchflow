@@ -5,6 +5,44 @@
 ## 0.7.7 — 2026-09-09
 
 ### Added
+- **Runs checkpoint at stage boundaries and fork into controlled children.**
+  `Rollout.branch_at_stage` composes the three layers a run owns — the
+  container image (`docker commit`), the environment's own state, and the
+  workspace — into one `StageSnapshot` taken at `env-ready`, `post-research`,
+  `pre-verify` or `post-verify`, and restores that exact world for each child.
+  Every child carries exactly one `BranchDelta` (`skill_mode`,
+  `injected_prompt`, `config_override`, `environment_ref`), so a difference in
+  outcome is attributable to that delta and nothing else. Checkpoints are
+  transactional and fail closed: a partially captured layer is rolled back
+  rather than half-restored, custody of every snapshot handle is tracked so
+  images are removed when the tree is done, and digests are recorded per layer
+  so a restore that would resolve to a different world is refused instead of
+  silently continuing. Lineage (`tree.json`) and per-child artifacts are
+  written under the run directory.
+- **`bench eval ablate` runs an ablation and attributes the result per
+  sub-test.** One command runs a parent rollout, snapshots it at the requested
+  stage, forks one arm per delta, and prints a table of reward, pass/fail, wall
+  clock and cost per arm. Attribution is mined from the verifier's own
+  per-sub-test reports rather than the scalar, so arms that tie on reward still
+  show which sub-tests differ and which are genuinely unaffected — a scalar tie
+  can no longer hide a behavioural difference. `--keep-snapshots` retains the
+  stage images for inspection; snapshot lifetimes are otherwise bounded by the
+  run.
+- **Snapshots can be exported and re-imported by handle.** A recorded stage can
+  be re-entered in a later process, with the image digest verified against the
+  one the run recorded, so a published handle either restores the world that was
+  snapshotted or fails.
+
+### Fixed
+- **A request-global rejection no longer looks like a task failure.** A model or
+  reasoning-effort setting the agent refuses is a property of the request, not
+  of the task: it is now detected before provisioning where it is statically
+  knowable, raised as a typed `ACPRequestGlobalError` classified as
+  `request_global`, and never retried in branch children — instead of
+  provisioning, snapshotting, installing and connecting an agent only to hit the
+  same rejection once per child.
+
+### Added
 - **`network_mode: denylist` blocks a list of URLs and hosts for the agent on
   Docker and Daytona.** The task keeps internet access; `blocked_urls` and
   `blocked_hosts` are enforced by a root-owned loopback proxy behind the

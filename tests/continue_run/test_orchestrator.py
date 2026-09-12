@@ -139,11 +139,10 @@ def test_live_forwarder_build_kwargs_resolves_route_offline():
     assert kwargs["temperature"] == 0.5
 
 
-def test_stitched_trajectory_recorded_prefix_plus_live_suffix(tmp_path):
-    original = tmp_path / "orig.jsonl"
-    original.write_text('{"a": 1}\n{"b": 2}\n')
+def test_stitched_trajectory_recorded_prefix_plus_live_suffix():
+    recorded_lines = ['{"a": 1}', '{"b": 2}']
     live = [exchange(completion(content="LIVE"))]
-    lines = stitched_trajectory_lines(original, live)
+    lines = stitched_trajectory_lines(recorded_lines, live)
     assert len(lines) == 3
     assert json.loads(lines[0]) == {"a": 1}
     last = json.loads(lines[2])
@@ -151,11 +150,9 @@ def test_stitched_trajectory_recorded_prefix_plus_live_suffix(tmp_path):
 
 
 def test_write_stitched_trajectory_creates_file(tmp_path):
-    original = tmp_path / "orig.jsonl"
-    original.write_text('{"a": 1}\n')
     rollout_dir = tmp_path / "rollout"
     out = write_stitched_trajectory(
-        rollout_dir, original, [exchange(completion(content="L"))]
+        rollout_dir, ['{"a": 1}'], [exchange(completion(content="L"))]
     )
     assert out == rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     assert len(out.read_text().strip().splitlines()) == 2

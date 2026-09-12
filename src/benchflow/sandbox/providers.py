@@ -47,6 +47,15 @@ class SandboxProvider:
     #: Whether the backend can enforce ``network_mode = "denylist"`` (a
     #: root-owned loopback proxy behind the uid firewall).
     enforces_denylist: bool = False
+    #: Whether the backend can take container-level snapshots — the sandbox
+    #: layer of the rollout-branching RFC's composed checkpoint (§3.1/§4:
+    #: docker via ``docker commit``, daytona direct via provider snapshots).
+    #: Declared registry-level so pre-launch gates (a task declaring
+    #: ``branch_execution: forked-snapshot``) read a fact instead of growing
+    #: per-backend special cases; the runtime capability gate
+    #: (``Sandbox.supports_snapshot``) stays the final authority — it also
+    #: catches the per-strategy holes a name cannot express (Daytona DinD).
+    supports_container_snapshot: bool = False
 
     @property
     def off_box_model(self) -> bool:
@@ -63,6 +72,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         model_proxy=ModelProxyLocation.HOST,
         supports_compose=True,
         enforces_denylist=True,
+        supports_container_snapshot=True,
     ),
     SandboxProvider(
         "daytona",
@@ -71,6 +81,9 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         # The DinD strategy runs compose inside the sandbox VM.
         supports_compose=True,
         enforces_denylist=True,
+        # Direct sandboxes snapshot via provider images; the DinD strategy
+        # cannot — the runtime gate fails that combination closed.
+        supports_container_snapshot=True,
     ),
     SandboxProvider(
         "modal",
@@ -123,6 +136,12 @@ NO_NETWORK_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "denylist"``.
 DENYLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_denylist
+)
+#: Providers whose sandboxes can take container-level snapshots (the branch
+#: engine's sandbox layer). Registry-level fact for pre-launch gates; the
+#: runtime ``Sandbox.supports_snapshot`` gate remains the final authority.
+CONTAINER_SNAPSHOT_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.supports_container_snapshot
 )
 
 

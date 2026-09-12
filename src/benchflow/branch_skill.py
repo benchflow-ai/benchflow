@@ -1,0 +1,527 @@
+"""Executing an ``env-ready`` branch child as a fresh child rollout (RFC §3.3).
+
+Skills are deployed by ``install_agent()``, so a branch taken at the cursor —
+after installation — cannot vary them: the container already carries the pack
+(or already lacks it), and restoring environment *state* cannot put a
+filesystem back. The ``env-ready`` stage snapshot (RFC §3.2) is the seam that
+makes the ablation honest: it is taken at the end of ``start()``, **before**
+``install_agent()``, so restoring it yields a world with no agent and no skills
+in it yet.
+
+That seam cuts both ways, and it is a property of the **stage**, not of the
+delta: a world restored to ``env-ready`` has no agent binary, no sandbox user,
+no seeded verifier workspace, no path lockdown and no skill pack, because none
+of them exist until ``install_agent()`` runs. An *in-place* child forked there
+— the default runner's ``connect()`` → ``execute()`` → ``verify()`` on the
+parent instance — therefore either dies launching an agent the restore just
+deleted, or (when the agent survives in the base image) runs and scores inside
+a world missing everything installation deploys, and reports that as an
+ordinary child carrying one recorded delta. So **every** engine-run child of
+``env-ready`` runs through this module, whatever its delta: with a
+``skill_mode`` delta the mode is switched, without one the parent's own
+recorded mode is re-installed unchanged.
+
+This module owns the child side of that path. It derives the child's
+:class:`~benchflow.rollout.RolloutConfig` from the parent's with the skill mode
+set — the existing skill-policy resolution then does the real work
+(``no-skill`` strips the task-bundled pack out of the staged build context and
+rewrites the Dockerfile ``COPY`` lines, ``with-skill`` mounts it) — and runs
+the child as a first-class Rollout over the already-restored sandbox through
+the ``use_prebuilt_env`` seam (#388): ``setup`` → ``install_agent`` →
+``connect`` → ``execute`` → ``verify`` → ``cleanup``. ``start()`` is
+deliberately skipped: the sandbox is up and the environment plane provisioned,
+which is exactly what ``env-ready`` means, and most backends' ``start()`` is
+not idempotent.
+
+The gates deciding whether such a child may run at all — the stage, the
+snapshot layer it requires, the caller-supplied-runner conflict — belong to the
+branch engine (:mod:`benchflow.rollout_branch`), which fails closed before
+anything is quiesced, restored, or run.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from benchflow._utils.config_override import deep_merge
+from benchflow.branch import UnscoredChildError
+from benchflow.branch_delta import BranchDeltaNotSupported
+from benchflow.branch_lineage import branch_child_dir, child_provenance
+from benchflow.branch_stage import STAGE_ENV_READY
+from benchflow.skill_policy import (
+    SKILL_MODE_WITH_SKILL,
+    TaskSkillPolicy,
+    resolve_task_skill_policy,
+)
+
+if TYPE_CHECKING:
+    from benchflow.branch_delta import BranchDelta
+    from benchflow.environment.manifest import EnvironmentManifest
+    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.trajectories.tree import RolloutNode
+
+logger = logging.getLogger(__name__)
+
+#: The branch point whose children must run as fresh rollouts: it is the one
+#: recorded boundary that precedes ``install_agent()``, so a child restored to
+#: it has no agent and no skills and must re-run installation for itself.
+#: Also the only branch point a ``skill_mode`` delta can execute from.
+FRESH_CHILD_STAGE = STAGE_ENV_READY
+
+#: The checkpoint layer that snapshot must carry. Everything
+#: ``install_agent()`` deploys — the agent binary, the sandbox user, the skill
+#: pack, the path lockdown — lives in the container filesystem, so an
+#: environment-state-only checkpoint cannot roll it back: a child restored
+#: without this layer would re-install on top of the parent's install (and a
+#: ``no-skill`` child would still find the parent's pack mounted), quietly
+#: measuring nothing.
+FRESH_CHILD_LAYER = "sandbox"
+
+#: Back-compat aliases. Skills were the original reason this boundary exists,
+#: and the skill-specific diagnostics still name it that way.
+SKILL_DELTA_STAGE = FRESH_CHILD_STAGE
+SKILL_DELTA_LAYER = FRESH_CHILD_LAYER
+
+#: ``delta_execution`` in lineage: the child was run as its own Rollout rather
+#: than in place on the parent instance. Absent = the ordinary in-place child.
+EXECUTION_FRESH_ROLLOUT = "fresh-rollout"
+
+
+class BranchEnvironmentImageConflict(BranchDeltaNotSupported):
+    """An ``environment_ref`` delta whose manifest changes the *image*.
+
+    Branching from a snapshot restores the **parent's** container — a commit
+    of the image the parent's manifest named. A child manifest that names a
+    different image (or per-task base image) is asking for a world that
+    snapshot never contained: honoring it would need a rebuild-and-reprovision
+    path, which contradicts branching from a snapshot (the arms would no
+    longer share a byte-identical starting world). Fails closed naming both
+    images; an image-changing environment comparison is two independent runs,
+    not a branch.
+    """
+
+
+def resolve_environment_ref_delta(
+    parent_manifest: EnvironmentManifest | None,
+    environment_ref: str,
+    *,
+    subject: str = "environment_ref delta",
+) -> EnvironmentManifest:
+    """Resolve an ``environment_ref`` delta into the child's manifest (RFC §3.3).
+
+    The executable slice is the documented tool-outage pattern (``env0@prod``
+    vs ``env0@outage``): the *same* image with a *different
+    framework-started service set*. The env-ready snapshot restores the
+    parent's container, whose entrypoint starts nothing when
+    ``owns_lifecycle = false`` — so the running services of the restored world
+    are exactly what the framework provisions, and provisioning the child
+    manifest's set over the restore executes the delta soundly. Everything
+    outside that slice fails closed here, before anything is quiesced:
+
+    * a parent with **no bound manifest** — there is no Environment plane to
+      swap, and the child would run a world the snapshot never contained;
+    * a ref that does not resolve (registry spec or manifest path, through the
+      same :func:`~benchflow.environment.manifest.load_manifest` every run
+      binds with, so the delta stays content-addressed);
+    * a manifest that changes the **image**
+      (:class:`BranchEnvironmentImageConflict` — see its docstring);
+    * an **entrypoint-owned lifecycle** on either side: the restored
+      container's entrypoint (re)starts whatever the image bakes in, so the
+      framework can neither subtract a service from an ``owns_lifecycle``
+      parent nor hand lifecycle ownership to a same-image child — the delta
+      would be recorded but not enforced.
+
+    ``subject`` names the caller's delta in every diagnostic
+    (``deltas[1].environment_ref``, ``arm 'env:env0@outage'``).
+    """
+    from benchflow.environment.manifest import load_manifest
+
+    if parent_manifest is None:
+        raise BranchDeltaNotSupported(
+            f"{subject}={environment_ref!r} cannot execute: the parent bound "
+            "no environment manifest, so there is no Environment plane to "
+            "swap — the child would run against a world its snapshot never "
+            "contained. Bind the parent's world with "
+            "RolloutConfig(environment_manifest=...) (or declare it in "
+            "task.md) and make the delta a variation of it."
+        )
+    try:
+        child_manifest = load_manifest(environment_ref)
+    except Exception as exc:
+        raise BranchDeltaNotSupported(
+            f"{subject}={environment_ref!r} does not resolve to an "
+            f"environment manifest: {exc}"
+        ) from exc
+    if (child_manifest.image, child_manifest.base_image) != (
+        parent_manifest.image,
+        parent_manifest.base_image,
+    ):
+        raise BranchEnvironmentImageConflict(
+            f"{subject}={environment_ref!r} changes the environment image "
+            f"(parent manifest {parent_manifest.name!r} runs "
+            f"image={parent_manifest.image!r} / "
+            f"base_image={parent_manifest.base_image!r}; child manifest "
+            f"{child_manifest.name!r} names image={child_manifest.image!r} / "
+            f"base_image={child_manifest.base_image!r}). A branch child "
+            "restores the parent's committed container, so an image-changing "
+            "environment delta needs a rebuild path — which contradicts "
+            "branching from a snapshot. Run the two environments as "
+            "independent evaluations instead."
+        )
+    if parent_manifest.owns_lifecycle or child_manifest.owns_lifecycle:
+        raise BranchDeltaNotSupported(
+            f"{subject}={environment_ref!r} needs framework-started services "
+            "on both sides (owns_lifecycle = false), got parent "
+            f"owns_lifecycle={parent_manifest.owns_lifecycle} / child "
+            f"owns_lifecycle={child_manifest.owns_lifecycle}: the restored "
+            "container's entrypoint (re)starts whatever the image bakes in, "
+            "so the framework cannot vary an entrypoint-owned service set — "
+            "the delta would be recorded in provenance but not enforced in "
+            "the world. Only the service-level slice (same image, different "
+            "[[environment.services]]) is executable from a snapshot."
+        )
+    return child_manifest
+
+
+async def provision_child_environment(
+    child_rollout: Rollout, manifest: EnvironmentManifest
+) -> None:
+    """Provision ``manifest``'s environment plane over the child's sandbox.
+
+    The fresh-child counterpart of the ``start()`` provisioning step the child
+    deliberately skips: the engine has already restored the parent's container
+    (killing every framework-started service with it) and rolled back the
+    declared environment state, so what runs *now* decides the child's service
+    topology. Building the plane from the **child's own** manifest is what
+    executes a service-level ``environment_ref`` delta — and re-provisioning
+    the parent's manifest for every other child is what keeps the control arm
+    honest: without it, a zero-delta arm of a framework-started environment
+    scores a world with no services at all and calls itself the baseline.
+
+    Mirrors ``start()`` exactly: provision, then gate on readiness before the
+    agent is installed. The provisioned plane is attached as the child's own
+    ``_environment`` (before the readiness gate, so ``cleanup()`` tears its
+    services down even when the gate fails).
+    """
+    environment = child_rollout._planes.manifest_environment(
+        manifest, sandbox=child_rollout.env
+    )
+    child_rollout._environment = environment
+    await environment.provision(ctx={"task_id": child_rollout._config.task_path.name})
+    probe = await environment.readiness()
+    if not probe.ready:
+        raise RuntimeError(
+            f"environment plane not ready for branch child "
+            f"{child_rollout._config.rollout_name}: {probe.error} "
+            f"(checked: {probe.checked})"
+        )
+    logger.info(
+        "branch child environment '%s' ready (%d probe(s))",
+        manifest.name,
+        len(probe.checked),
+    )
+
+
+def fresh_child_skill_mode(config: RolloutConfig, skill_mode: str | None) -> str:
+    """The skill mode a fresh ``env-ready`` child installs under.
+
+    A ``skill_mode`` delta names it; every other child re-installs the mode the
+    parent itself recorded (``artifact_skill_mode or skill_mode``). Falling
+    back to the *recorded* mode rather than the raw field is what keeps a
+    non-skill child a genuine zero-delta-on-skills child: a
+    ``from_legacy``-built parent carries its effective mode in
+    ``artifact_skill_mode``, and re-installing from ``skill_mode`` alone would
+    hand the child a different world than the parent ran in and label it "no
+    delta".
+    """
+    return skill_mode if skill_mode is not None else config.recorded_skill_mode
+
+
+def resolve_child_skill_policy(
+    config: RolloutConfig, skill_mode: str
+) -> TaskSkillPolicy:
+    """Resolve the child's skill policy — the ablation's precondition.
+
+    Called at delta-validation time, before anything is quiesced, so that a
+    ``with-skill`` delta against a task shipping no bundled pack (or a runtime
+    ``skills_dir`` that has since gone missing) fails closed with the same
+    typed error ``setup()`` would raise later — after the branch had already
+    restored a snapshot and started running children.
+    """
+    return resolve_task_skill_policy(
+        task_path=config.task_path,
+        skill_mode=skill_mode,
+        runtime_skills_dir=(
+            config.skills_dir if skill_mode == SKILL_MODE_WITH_SKILL else None
+        ),
+        declared_sandbox_skills_dir=None,
+    )
+
+
+def child_run_location(
+    config: RolloutConfig,
+    *,
+    run_dir: Path | None,
+    parent_id: str,
+    child_id: str,
+) -> tuple[Path, str, str]:
+    """Where the child rollout writes its own artifacts, as ``_init_rollout`` args.
+
+    A branch child is a first-class rollout (RFC §3.4), so its run directory
+    *is* the per-child artifact directory the lineage writer already owns
+    (:func:`~benchflow.branch_lineage.branch_child_dir`): the standard
+    ``config.json`` / ``result.json`` / trajectory files land beside the
+    branch's own ``provenance.json``. ``_init_rollout`` composes the run
+    directory as ``jobs_dir / job_name / rollout_name``, so the target
+    directory is split back into exactly those three parts. A parent with no
+    run directory (a branch-first rollout that never ran ``setup()``) falls
+    back to its configured jobs directory under a node-derived name.
+    """
+    target = (
+        branch_child_dir(Path(run_dir), parent_id, child_id)
+        if run_dir is not None
+        else Path(config.jobs_dir)
+        / (config.job_name or "branches")
+        / f"branch-{child_id}"
+    )
+    return target.parent.parent, target.parent.name, target.name
+
+
+def child_skill_config(
+    config: RolloutConfig,
+    *,
+    skill_mode: str,
+    jobs_dir: Path,
+    job_name: str,
+    rollout_name: str,
+    source_provenance: dict[str, Any] | None = None,
+    config_override: dict[str, Any] | None = None,
+    environment_manifest: EnvironmentManifest | None = None,
+) -> RolloutConfig:
+    """The parent's config with the delta's fields replaced — nothing else moved.
+
+    Both ``skill_mode`` and ``artifact_skill_mode`` are written: the skill
+    policy resolves from ``recorded_skill_mode`` (``artifact_skill_mode or
+    skill_mode``), so setting only the former would leave a
+    ``from_legacy``-built parent's recorded mode in place and the delta would
+    silently do nothing. ``skills_dir`` is a with-skill-only field and is
+    dropped for a ``no-skill`` child; ``snapshot_stages`` is cleared because a
+    child forked *from* a stage does not re-checkpoint the parent's boundaries
+    (its environment plane belongs to the parent).
+
+    ``config_override`` is the child's *delta* overlay (RFC §3.3): it is
+    deep-merged **over the parent's own overlay** so the child's effective
+    C-axis patch is "everything the parent ran under, plus the one recorded
+    change" — dropping the parent's overlay would silently vary two things.
+    The merged dict rides the existing seam: the child's ``setup()`` applies
+    it through :func:`~benchflow._utils.config_override.apply_config_override`
+    (same allowlist, same re-validation) and its ``config.json`` records the
+    merged keys + sha exactly as a run-level overlay is recorded (#790).
+    ``None`` inherits the parent's overlay unchanged — the zero delta.
+
+    ``environment_manifest`` is the child's *resolved* ``environment_ref``
+    delta (see :func:`resolve_environment_ref_delta`): when set it replaces
+    the parent's manifest wholesale, so the child's ``config.json`` records
+    the world it actually provisioned; ``None`` inherits the parent's — every
+    non-environment child re-provisions the parent's own manifest.
+
+    The user is re-materialized from ``loop_strategy`` when the parent's was
+    strategy-built — ``RolloutConfig`` rejects carrying both, and the strategy
+    rebuilds an identical user — and left alone otherwise.
+    """
+    merged_override = config.config_override
+    if config_override:
+        merged_override = deep_merge(merged_override or {}, config_override)
+    return dataclasses.replace(
+        config,
+        skill_mode=skill_mode,
+        artifact_skill_mode=skill_mode,
+        skills_dir=(config.skills_dir if skill_mode == SKILL_MODE_WITH_SKILL else None),
+        snapshot_stages=frozenset(),
+        jobs_dir=jobs_dir,
+        job_name=job_name,
+        rollout_name=rollout_name,
+        config_override=merged_override,
+        environment_manifest=(
+            environment_manifest
+            if environment_manifest is not None
+            else config.environment_manifest
+        ),
+        user=None if config.loop_strategy_spec is not None else config.user,
+        source_provenance=source_provenance,
+    )
+
+
+async def run_fresh_child(
+    rollout: Rollout,
+    config: RolloutConfig,
+    *,
+    prompts: list[str] | None = None,
+) -> float:
+    """Run ``config`` as a fresh Rollout over ``rollout``'s restored sandbox.
+
+    The branch engine has already rolled the container and environment back to
+    the ``env-ready`` snapshot, so the child adopts that sandbox
+    (``use_prebuilt_env``) and re-runs installation from it: this is the call
+    that installs the agent binary the restore removed and redeploys — or
+    refuses to deploy — the skill pack. ``start()`` is skipped (see the module
+    docstring) — except for its one piece the restore undoes: when the child's
+    config binds an environment manifest, the manifest's plane is provisioned
+    over the restored sandbox and gated on readiness before ``install_agent()``
+    (:func:`provision_child_environment`), which is both how a service-level
+    ``environment_ref`` delta executes and how every other child gets the
+    parent's own services back.
+
+    ``cleanup()`` always runs, including on failure: it releases the child's own
+    resources (its LiteLLM runtime, its staged task copy) and, because the
+    sandbox is caller-owned, leaves the parent's container up for the next
+    child. Exceptions propagate — a child that could not run is not a child
+    that scored zero.
+
+    The child is a first-class rollout, so its terminal
+    :class:`~benchflow.models.RolloutResult` is materialized after cleanup —
+    that write is what leaves ``result.json`` / ``timing.json`` / ``prompts.json``
+    beside its ``config.json`` (RFC §3.4). Artifact failure is isolated and
+    logged, exactly as the branch engine isolates lineage writes: the child's
+    reward stands either way.
+
+    A child that *ran* but was never scored raises
+    :class:`~benchflow.branch.UnscoredChildError`. That is the same principle
+    one step further: a child whose reward does not exist is not a child that
+    scored zero either, and the engine records it as unscored.
+    """
+    from benchflow.rollout import Rollout as _Rollout
+
+    child_rollout = _Rollout(config)
+    child_rollout.use_prebuilt_env(rollout.env)
+    rewards: dict | None = None
+    try:
+        await child_rollout.setup()
+        if config.environment_manifest is not None:
+            await provision_child_environment(
+                child_rollout, config.environment_manifest
+            )
+        await child_rollout.install_agent()
+        await child_rollout.connect()
+        await child_rollout.execute(prompts)
+        rewards = await child_rollout.verify()
+    finally:
+        await child_rollout.cleanup()
+
+    result = None
+    try:
+        result = child_rollout.result
+    except Exception:
+        logger.warning(
+            "branch child result artifacts (%s) failed to build — the child's "
+            "reward is unaffected",
+            config.rollout_name,
+            exc_info=True,
+        )
+    scored = (result.rewards if result is not None else None) or rewards
+    if not scored or scored.get("reward") is None:
+        # The child ran but was never scored — its verifier crashed, or its
+        # output never reached the host. Reporting 0.0 here is how a lost
+        # reward became a real-looking observation in a live ablation; the
+        # engine records this as an unscored child instead.
+        verifier_error = getattr(child_rollout, "_verifier_error", None)
+        raise UnscoredChildError(
+            f"branch child {config.rollout_name} produced no verifier reward "
+            f"(verify() returned {rewards!r})"
+            + (f" — {verifier_error}" if verifier_error else "")
+        )
+    return float(scored["reward"])
+
+
+def make_fresh_child_runner(
+    rollout: Rollout,
+    *,
+    delta: BranchDelta | None,
+    parent: RolloutNode,
+    branch_stage: str,
+    run_dir: Path | None,
+) -> Callable[[RolloutNode], Awaitable[float]]:
+    """Build the per-child runner for a child forked from ``env-ready``.
+
+    Every engine-run child of that boundary uses this, whatever its delta —
+    the restored world has no agent installed, so there is nothing for an
+    in-place child to connect to (see the module docstring). ``delta`` may be
+    ``None`` (the zero delta): the child then re-installs the parent's own
+    recorded skill mode and runs the rollout's resolved prompts, which is what
+    makes it a genuine control arm rather than a differently-provisioned one.
+
+    The child carries the branch provenance as its *own* ``source_provenance``
+    — the seam a continued run already uses — so its ``config.json`` and
+    ``result.json`` record which rollout it forked from, at which stage, from
+    which snapshot refs, and that it ran as a fresh rollout. An
+    ``injected_prompt`` on the delta is delivered as the child's continuation
+    prompt, exactly as the default runner delivers it; a ``config_override``
+    is deep-merged over the parent's own overlay into the child's config (see
+    :func:`child_skill_config`) and applied by the child's own ``setup()``.
+    """
+    skill_mode = fresh_child_skill_mode(
+        rollout._config, delta.skill_mode if delta is not None else None
+    )
+    injected_prompt = delta.injected_prompt if delta is not None else None
+    config_override = delta.config_override if delta is not None else None
+    environment_ref = delta.environment_ref if delta is not None else None
+    # Resolved through the same gates the engine validated the delta against
+    # (one source of truth), so a registry that changed between validation and
+    # run still cannot hand the child an unbranchable manifest.
+    environment_manifest = (
+        resolve_environment_ref_delta(
+            rollout._config.environment_manifest, environment_ref
+        )
+        if environment_ref is not None
+        else None
+    )
+
+    async def _runner(child: RolloutNode) -> float:
+        jobs_dir, job_name, rollout_name = child_run_location(
+            rollout._config,
+            run_dir=run_dir,
+            parent_id=parent.id,
+            child_id=child.id,
+        )
+        config = child_skill_config(
+            rollout._config,
+            skill_mode=skill_mode,
+            jobs_dir=jobs_dir,
+            job_name=job_name,
+            rollout_name=rollout_name,
+            config_override=config_override,
+            environment_manifest=environment_manifest,
+            source_provenance=child_provenance(
+                str(run_dir) if run_dir is not None else str(rollout._config.task_path),
+                branch_stage=branch_stage,
+                snapshot=parent.state.get("snapshot"),
+                delta=child.state.get("delta"),
+                delta_execution=EXECUTION_FRESH_ROLLOUT,
+            ),
+        )
+        logger.info(
+            "branch child %s runs as a fresh rollout with skill_mode=%s%s%s",
+            child.id,
+            skill_mode,
+            (
+                f" config_override_keys={sorted(config_override)}"
+                if config_override
+                else ""
+            ),
+            (
+                f" environment_ref={environment_ref!r}"
+                if environment_ref is not None
+                else ""
+            ),
+        )
+        return await run_fresh_child(
+            rollout,
+            config,
+            prompts=([injected_prompt] if injected_prompt is not None else None),
+        )
+
+    return _runner

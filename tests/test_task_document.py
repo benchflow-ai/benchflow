@@ -1003,6 +1003,72 @@ Reveal private facts only after targeted clarification.
     assert config.user.branch_execution == "option-kinds-preserved"
 
 
+_FORKED_SNAPSHOT_TASK_MD = """---
+agents:
+  roles:
+    solver:
+      agent: codex
+scenes:
+  - name: solve
+    roles: [solver]
+user:
+  model: claude-haiku
+  stop_rule: satisfied-or-3-rounds
+  private_facts:
+    hidden_need: Use the quarterly file.
+benchflow:
+  nudges:
+    mode: simulated-user
+    nudge_budget: 2
+    branchable: true
+    branch_execution: forked-snapshot
+---
+## prompt
+
+Base instruction.
+"""
+
+
+def test_rollout_config_adopts_forked_snapshot_stage_request(
+    tmp_path: Path,
+) -> None:
+    """A forked-snapshot task's launch policy requests stage capture.
+
+    Guards "feat(task): accept branch_execution forked-snapshot now the
+    engine supports it": the declaration must *do* something — a plain
+    evaluation of the task captures the auto stages (container layer, since
+    no Environment plane is bound), so its run folder carries the
+    stage_snapshots.json a branch/ablation or continue --cut-stage forks.
+    """
+    (tmp_path / "task.md").write_text(_FORKED_SNAPSHOT_TASK_MD)
+
+    config = RolloutConfig.from_legacy(task_path=tmp_path)
+
+    assert isinstance(config.user, ModelDocumentNudgeUser)
+    assert config.user.branch_execution == "forked-snapshot"
+    assert config.snapshot_stages == frozenset(
+        {"env-ready", "pre-verify", "post-verify"}
+    )
+    assert config.snapshot_layers == frozenset({"sandbox"})
+
+
+def test_rollout_config_explicit_snapshot_request_beats_the_tasks(
+    tmp_path: Path,
+) -> None:
+    """The run-level request wins: a caller that set snapshot_stages keeps
+    exactly what it asked for, layers included."""
+    (tmp_path / "task.md").write_text(_FORKED_SNAPSHOT_TASK_MD)
+
+    config = RolloutConfig.from_legacy(
+        task_path=tmp_path,
+        snapshot_stages={"env-ready"},
+        snapshot_layers={"environment", "sandbox"},
+    )
+
+    assert config.snapshot_stages == frozenset({"env-ready"})
+    assert config.snapshot_layers == frozenset({"environment", "sandbox"})
+
+
 def test_rollout_config_compiles_multi_scene_document_user_runtime(
     tmp_path: Path,
 ) -> None:

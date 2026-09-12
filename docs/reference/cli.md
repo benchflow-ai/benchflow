@@ -286,6 +286,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--eval-results-task` | — | Benchmark `task_id`, as defined in the dataset's `eval.yaml` |
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
+| `--keep-snapshots` | `false` | Export each captured stage-snapshot image (`docker save`) to `<run-dir>/snapshots/<ref>.tar` before cleanup destroys it; `stage_snapshots.json` records the tar's path, sha256 and image id per stage with `ephemeral: false`. Without the flag the committed `bf-snap-*` images die with the run, and cleanup marks each recorded ref `ephemeral: true` with `exported: null` so it never reads as restorable. Only meaningful when the run captures stage snapshots (a task-declared `branch_execution: forked-snapshot`, or an SDK `snapshot_stages` request). Load the exported images back later with [`bench eval import-snapshots`](#bench-eval-import-snapshots) |
 
 `--publish-hf`/`--publish-bucket` also write a `README.md` run summary
 (agent, model, per-task reward and any error/verifier issue, deduplicated
@@ -360,6 +361,174 @@ their own harness and sandbox behavior. `--model` is passed to the Verifiers
 model endpoint; use a model id available to that provider. Provider-specific
 sampling options are not inferred; pass them explicitly with
 `--source-env-sampling-arg`.
+
+### bench eval ablate
+
+Run one task once, snapshot a lifecycle stage boundary as the run passes it,
+then fork that one world into a child per **arm** and compare the rewards. The
+mechanism is the rollout-branching design — see
+[the RFC](../rollout-branching-rfc.md) (§3.2 stage boundaries, §3.3 per-child
+deltas, §3.4 lineage artifacts). Every arm starts from a byte-identical world
+and differs by exactly one recorded delta, so the arms are comparable in a way
+two independent runs are not.
+
+```bash
+# the skills ablation: same env, one child installs the pack, one does not
+bench eval ablate --tasks-dir tasks/surface-ion-trap-shuttling \
+  --agent claude-agent-acp --model claude-sonnet-4-5 --sandbox docker
+
+# plan injection at the end of the agent's run, against the parent's own reward
+bench eval ablate --tasks-dir tasks/citation-check --at-stage pre-verify \
+  --arms inject:oracle-plan.md,inject:decoy-plan.md --json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tasks-dir` | — | Task directory to ablate (or a collection holding exactly one task); several tasks fail closed — the arms are the axis, the task is fixed |
+| `--agent` | `claude-agent-acp` | Agent harness for the parent run and every arm (`oracle` is rejected: a branch child connects an agent session, and `solve.sh` has none) |
+| `--model` | agent registry | Model for the parent run and every arm |
+| `--reasoning-effort` | agent default | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) — the same control as `bench eval run`, recorded in the parent's and every arm's `config.json` |
+| `--sandbox` | `docker` | Sandbox backend; it must implement container snapshot/restore (docker, daytona direct) or the stage capture fails closed |
+| `--environment-manifest` | task-declared | Environment-plane manifest for the parent and every arm — a manifest path or a `name@version` registry spec, same semantics as `bench eval run`. An explicit flag beats the task-declared `benchflow.environment.manifest` (the run path's precedence), and the bound environment is stamped into `ablation.json` |
+| `--at-stage` | `env-ready` | Stage boundary to fork: `env-ready`, `post-research`, `pre-verify`, `post-verify`. `post-research` is a mid-`execute()` cut point only `Rollout.mark_stage()` can record, so it needs a research-end trigger: pair it with `--mark-research-end-on` (without one, the rejection names both that flag and the SDK path — `mark_stage` at the cut point, then `branch_at_stage`) |
+| `--mark-research-end-on` | — | Workspace file whose first appearance marks `post-research` (e.g. `/app/PLAN.md`, the FrontierPhysics convention): the engine polls the sandbox (`test -e`, every ~2s, plus a final check when the agent quiesces) and snapshots the stage the first time the file exists — so the capture lands within one poll of the file appearing, and may include up to that much post-plan agent work. Required for `--at-stage post-research`; rejected for any other stage. If the file never appears, the ablation reports that the marker never appeared instead of forking |
+| `--arms` | `with-skill,no-skill` | Comma-separated arms, one branch child each: `with-skill`, `no-skill`, `inject:<path-to-file>`, `config:<inline-json-or-@file>`, `env:<registry-ref>`. At least two, no duplicates; commas inside a `config:` arm's JSON braces are content, not separators (quoted string values included); a comma inside a `config:@<file>` path is not representable |
+| `--out-dir`, `-o` | `jobs/ablate-<ts>` | Output directory: the parent rollout lands in `<out-dir>/ablation/<task>/`, the report in `<out-dir>/ablation.json` |
+| `--keep-snapshots` | `false` | Export the branched stage's sandbox snapshot image (`docker save`) to `<out-dir>/snapshots/<ref>.tar` before cleanup destroys it; `ablation.json` records the tar's path, sha256 and image id (`stage_snapshot.exported`), mirrored into the parent run's `stage_snapshots.json`. Without the flag the committed image dies with the run, and the report records the handle as `ephemeral: true` with `exported: null` so a reader knows the ref no longer resolves. Load the exported image back later with [`bench eval import-snapshots`](#bench-eval-import-snapshots) |
+| `--json` | `false` | Emit the report as JSON on stdout instead of the table |
+
+Arm kinds map onto the `BranchDelta` fields the branch engine executes:
+`with-skill` / `no-skill` set `skill_mode`, which re-runs `install_agent()`
+under the switched mode — so they are only valid at `env-ready`, the boundary
+captured *before* installation. `inject:<file>` sets `injected_prompt`,
+delivered as that child's user-visible continuation prompt and recorded as a
+content hash only. `config:<patch>` sets `config_override`: the arm runs as a
+fresh rollout whose config is the parent's with the patch deep-merged on top
+through the run-level overlay machinery (#790) — same value-or-`@file` form,
+same fail-closed allowlist (never the scorer: a `verifier`/`reward` key is
+rejected at parse time), same content addressing (the arm's provenance records
+the patch's sha256 and its allowlisted keys, and the child's `config.json`
+records the merged overlay). Like the skills arms it is only valid at
+`env-ready`, because the child's own `setup()` is what applies the patch.
+
+`env:<ref>` sets `environment_ref`: the arm runs against a *different
+environment-registry manifest* — the documented `env0@prod` vs `env0@outage`
+tool-outage pattern. The executable slice is **service-level only**: the child
+manifest must name the same image as the parent's and both must use
+framework-started services (`owns_lifecycle = false`); the arm then restores
+the parent's container and provisions the child manifest's service set over
+it. A manifest that changes the image fails closed — the snapshot commits the
+parent's image, so an image-changing environment delta would need a rebuild,
+which contradicts branching from a snapshot — as does an entrypoint-owned
+lifecycle on either side (the framework cannot subtract a service the
+entrypoint restarts). These gates run before the parent run costs anything,
+and the arm is only valid at `env-ready`, where the fresh child provisions its
+own environment plane.
+
+*How* an arm runs depends on `--at-stage`, not on its kind. `env-ready`
+precedes `install_agent()`, so **every** arm forked there runs as a fresh child
+rollout over the restored snapshot and installs the agent for itself —
+including an `inject:` arm, which would otherwise be scored in a world with no
+agent, no skills and no path lockdown and reported as "the parent's world plus
+one prompt". At `post-research` / `pre-verify` / `post-verify` the agent is
+already installed and the arms continue in place: each child restores the
+stage's workspace snapshot and connects a **fresh agent session** over it
+(agent-session memory is not snapshotted — RFC §7), so a `post-research` fork
+compares continuations of the recorded *workspace* boundary; to rebuild the
+agent's exact memory up to that boundary instead, replay to it with
+`bench eval continue --cut-stage post-research`.
+
+The table shows one row per arm — reward, pass/fail, wall clock, and a
+one-line attribution such as *"fails (0.00) where with-skill passes (1.00) at
+env-ready — this delta decides the outcome when applied at env-ready (1 run per
+arm)"*. Wording is deliberately confined to the comparison that was run: the
+skills arms are read against each other, any other arm against the parent's own
+reward, and nothing is claimed about boundaries this invocation did not fork.
+Localizing a failure to a stage takes a second ablation at a second boundary.
+
+**Sub-test attribution.** A binary reward is a lossy summary of what an arm
+did: two arms can both score 0.00 while one passes `test_a` and fails `test_b`
+and the other does the reverse — a large, reproducible behavioral difference
+that nets to exactly zero on the scalar. So a second table follows the first,
+listing **only the tests whose outcome differs across the arms**, with each
+arm's status per test; tying tests are counted and omitted. Outcomes are read
+from each branch child's own verifier CTRF report
+(`<child>/verifier/ctrf.json`), the same artifact the eval report mines its
+failure lines from — statuses (`passed` / `failed` / `skipped`) pass through
+verbatim, and a test one arm's report does not name at all shows as *not
+reported* rather than as a failure.
+
+When the sub-tests disagree while the rewards tie, the arm's own attribution
+line says so — *"matches no-skill at env-ready (both 0.00) — scalar rewards
+tie, but 2 sub-test outcome(s) differ: test_dominant_factor,
+test_trend_result"* — so "no difference in this comparison" can never be
+printed over a difference that was measured. A verifier that emits no CTRF
+report yields no rows and no invented ones: the section says *scalar-only
+attribution* and names the arms it could not read.
+
+`ablation.json` carries the task id, the stage, the parent's own reward, the
+**bound environment** (`environment`: manifest name, the ref exactly as
+given — flag value or `task.md` declaration, never a machine-local path — its
+`sha256` content address, and the image it names; `null` when no manifest was
+bound), the **branched stage's snapshot refs** (`stage_snapshot`: the
+committed sandbox image ref, the environment snapshot id, and the captured
+layers — the handles to restore that world and re-branch it by hand later,
+also on disk in the parent run's `stage_snapshots.json`, which carries
+the same `ephemeral`/`exported` lifetime annotation the report does), and
+per arm its content-addressed delta provenance, reward, status, wall clock,
+the swapped-in environment stamp when an `env:` delta changed it
+(`environment`, absent for arms that inherit the parent's),
+per-test outcome map (`tests`, `null` when that arm's verifier reported none)
+and the branch-child artifact directory
+(`<parent-run>/branches/<node>/children/<node>/`,
+holding that child's own `result.json` / `timing.json` / `provenance.json` —
+a fresh-rollout child adds the `config.json` its own `setup()` wrote, an
+in-place child the `mounted/` archive of what it wrote through the parent's
+bind mounts. An in-place child's `result.json` is synthesized from the
+child's own scoped state, so fields the child did not produce — token usage,
+a run-level error — are `null` rather than inherited from the parent; either
+way the child directory answers "what happened in this arm" without reading
+`tree.json`).
+The top-level `test_attribution` section repeats the differing tests with their
+per-arm outcomes, the tying test names, which arms reported per-test data at
+all, and whether the scalar rewards tied.
+Exit code is 1 when any arm errors or is skipped — a child failure propagates
+out of the branch, so the arms after it do not run and are never scored 0.0. A
+parent run that failed *after* the boundary is reported but does not fail the
+command: attributing a failed run is what the ablation is for.
+
+### bench eval import-snapshots
+
+Load a completed run's exported stage-snapshot images back into the local
+Docker image store, so a recorded stage boundary can be restored and branched
+after the run that captured it is gone.
+
+```bash
+# Everything the run exported
+bench eval import-snapshots jobs/2026-08-29__10-00-00/my-task__ab12cd34
+
+# One stage only
+bench eval import-snapshots jobs/.../my-task__ab12cd34 --stage pre-verify
+```
+
+Reads `<run-dir>/stage_snapshots.json`; the tars exist only when the run was
+made with `--keep-snapshots` (on `bench eval run` or `bench eval ablate`).
+Each import verifies the tar's recorded sha256, `docker load`s it, and
+verifies the loaded image id matches the recorded one — a snapshot is only
+reported restored when `docker image inspect` agrees. Entries recorded
+`ephemeral: true` fail closed, naming the flag to re-run with. A run folder
+copied from another machine works: when the recorded absolute tar path does
+not exist, the tar is found at `<run-dir>/snapshots/<basename>`.
+
+After a successful import the recorded `bf-snap-*` ref resolves again and the
+snapshotted world can be branched — restore it into a live sandbox
+(`DockerSandbox.restore`) or inspect it directly (`docker run <ref>`). SDK
+equivalent: `benchflow.snapshot_import.import_stage_snapshots(run_dir)`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--stage` | every exported stage | Import only this stage's snapshot; repeatable |
+
 
 ## bench review
 
@@ -1102,8 +1271,14 @@ The original top-level `bench continue` still works as a hidden, deprecated alia
 Key options: `--model` (override the live-continuation model; defaults to the
 original run's model), `--timeout`, `--output`, `--require-timeout`,
 `--strict-divergence`, `--replay-only` (rebuild via replay and stop at the
-cut-point — no live model or API key needed), and `--proxy-mode` (replay
-proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
+cut-point — no live model or API key needed), `--max-exchanges` (replay only
+the first K recorded LLM exchanges, then go live; default: all recorded — see
+[Cut-points](../continue-runs.md#cut-points)), `--cut-stage` (cut at a
+recorded stage boundary by name, e.g. `post-research`: resolves the exchange
+index the original run's `stage_snapshots.json` recorded when that stage
+closed; mutually exclusive with `--max-exchanges`, and an unrecorded stage
+fails closed listing the stages the run did record), and `--proxy-mode`
+(replay proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
 sandbox-local replay for Daytona/Modal and host replay for Docker).
 
 ### bench eval continue-batch

@@ -659,3 +659,80 @@ async def test_partial_read_of_a_growing_log_is_recorded_as_measured_lag(
     assert process._live_capture_lag_bytes == len(record) - 128
     assert process._live_capture_stall_ticks == 0  # advancing, so not a stall
     assert process._live_capture_stall_warned is False
+
+
+# ── live_exchange_count: the stage-marker read (RFC §3.5) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_count_drains_the_tail_before_counting(tmp_path):
+    """Guards "feat(branch): record stage markers with trajectory exchange
+    indices": the stage-marker read must not report a lagging mirror's count.
+
+    Three records sit in the gateway log but the poller never ran (the armed
+    capture's task is cancelled), so the mirror holds zero exchanges when the
+    read starts. ``live_exchange_count`` drains to EOF itself and returns 3 —
+    the index a stage-named replay cut can trust.
+    """
+    log = (
+        _callback_line(content="one")
+        + _callback_line(content="two")
+        + _callback_line(content="three")
+    ).encode()
+    process = _sandbox_process(_SandboxWithCallbackLog(log))
+    await _arm_capture(process, tmp_path / "trajectory" / "llm_trajectory.jsonl")
+
+    assert await process.live_exchange_count() == 3
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_count_is_none_before_capture_starts():
+    """No live capture, no count — never a fabricated zero."""
+    process = _sandbox_process(_SandboxWithCallbackLog(b""))
+
+    assert await process.live_exchange_count() is None
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_count_refuses_a_stale_lower_bound(tmp_path, monkeypatch):
+    """A tail that cannot catch up within the drain budget answers None.
+
+    A stage tag that undercounts would make ``--cut-stage`` silently replay a
+    shorter prefix than the stage boundary saw — worse than no tag. Shrink the
+    per-poll read budget below one record and the drain budget to one poll, so
+    the tail is guaranteed to still be behind when the budget runs out.
+    """
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_CHUNK_BYTES", 64)
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_MAX_READS_PER_TICK", 1)
+    monkeypatch.setattr(runtime_mod, "_LIVE_EXCHANGE_DRAIN_ATTEMPTS", 1)
+    log = (_callback_line(content="x" * 400) * 3).encode()
+    process = _sandbox_process(_SandboxWithCallbackLog(log))
+    await _arm_capture(process, tmp_path / "trajectory" / "llm_trajectory.jsonl")
+
+    assert await process.live_exchange_count() is None
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_count_counts_failure_records_too(tmp_path):
+    """Failure records are exchanges in llm_trajectory.jsonl, so the index
+    must count them — the replay prefix is counted on the same per-line basis."""
+    failure = json.dumps(
+        {
+            "event": "failure",
+            "request": {
+                "method": "POST",
+                "path": "/v1/chat/completions",
+                "body": {"messages": [{"role": "user", "content": "hello"}]},
+            },
+            "error": {"status_code": 429, "type": "rate_limit"},
+            "start_time": "2026-07-11T00:00:00Z",
+            "end_time": "2026-07-11T00:00:01Z",
+            "duration_ms": 1000,
+        },
+        separators=(",", ":"),
+    )
+    log = (_callback_line(content="ok") + failure + "\n").encode()
+    process = _sandbox_process(_SandboxWithCallbackLog(log))
+    await _arm_capture(process, tmp_path / "trajectory" / "llm_trajectory.jsonl")
+
+    assert await process.live_exchange_count() == 2
