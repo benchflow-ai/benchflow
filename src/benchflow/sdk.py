@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._types import Scene
-from benchflow.contracts import default_rollout_planes
+from benchflow.contracts import RolloutPlanes, default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
@@ -175,6 +175,7 @@ class SDK:
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
+        planes: RolloutPlanes | None = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`.
 
@@ -182,6 +183,9 @@ class SDK:
         backward compatibility with pre-v0.6 callers. Passing it emits a
         :class:`DeprecationWarning` and maps to ``rollout_name``. Passing both
         ``trial_name`` and ``rollout_name`` raises :class:`TypeError`.
+
+        ``planes`` supplies rollout composition for this run. ``None`` uses
+        the default planes.
         """
         from benchflow.rollout import RolloutConfig
         from benchflow.runtime import run
@@ -225,5 +229,6 @@ class SDK:
             self_gen_no_internet=self_gen_no_internet,
             source_provenance=source_provenance,
             usage_tracking=usage_tracking,
+            planes=planes,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
