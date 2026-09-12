@@ -640,8 +640,11 @@ class TestSources:
         assert root == tmp_path / "jobs" / "run-1"
         assert calls["repo_id"] == "org/name"
         assert calls["repo_type"] == "dataset"
-        assert all(p.startswith("jobs/run-1/") for p in calls["allow_patterns"])
+        rollout_patterns = [p for p in calls["allow_patterns"] if "review" not in p]
+        assert all(p.startswith("jobs/run-1/") for p in rollout_patterns)
         assert "jobs/run-1/trajectory/acp_trajectory.jsonl" in calls["allow_patterns"]
+        # review reports sit beside the run, so the parent's review-* dirs are in scope
+        assert "jobs/review*/**/review_report.json" in calls["allow_patterns"]
         assert not any("llm_trajectory" in p for p in calls["allow_patterns"])
 
     def test_resolve_raises_typed_error_for_missing_subpath(
@@ -888,6 +891,7 @@ class TestTypedContract:
             "meta",
             "steps",
             "verifier",
+            "rubric",
         }
         assert wire["steps"][0] == {
             "i": 1,
