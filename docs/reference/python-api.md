@@ -263,7 +263,7 @@ config = rollout_config_from_yaml("rollout.yaml")
 result = await bf.run(config)
 ```
 
-## Registered Agents
+## Built-in Agents
 
 | Agent | Protocol | Auth | Aliases |
 |-------|----------|------|---------|
@@ -273,7 +273,6 @@ result = await bf.run(config)
 | `opencode` | ACP | inferred from model/provider | — |
 | `openhands` | ACP | LLM_API_KEY | `oh` |
 | `pi-acp` | ACP | ANTHROPIC_API_KEY | `pi` |
-| `openclaw` | ACP | inferred from model | — |
 
 The Auth column shows each agent's native/default credentials. Provider-prefixed
 models can use provider-specific credentials instead; for example, Azure
@@ -281,6 +280,9 @@ Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` with prefixes such
 as `azure-foundry-openai/gpt-5.5` or
 `azure-foundry-anthropic/claude-opus-4-5`. BenchFlow routes these providers
 through LiteLLM on both Docker and Daytona.
+
+Additional agents load lazily from the external agents catalog. See
+[External agents](../external-agents.md).
 
 Any agent can be prefixed with `acpx/` to run via [ACPX](https://acpx.sh/) (e.g. `acpx/gemini`, `acpx/claude`). ACPX is a headless ACP client with persistent sessions and crash recovery. The underlying agent's install, env, credentials, and skill paths are preserved.
 

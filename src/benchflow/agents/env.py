@@ -484,7 +484,7 @@ def resolve_provider_env(
     # Resolve bare family ids (e.g. "deepseek-v4-pro") too, not just explicit
     # "provider/" prefixes — otherwise the provider env (NAME/BASE_URL/API_KEY)
     # is never emitted and harnesses that rely on it misroute (openhands' litellm
-    # saw no provider; openclaw defaulted to anthropic/). Mirrors acp/runtime.py.
+    # saw no provider and defaulted incorrectly). Mirrors acp/runtime.py.
     _prov = find_provider(model) or find_provider_for_bare_model(model)
     if _prov:
         _prov_name, _prov_cfg = _prov

@@ -13,7 +13,7 @@ def normalize_agent_name(agent: str) -> str:
     stable runtime key is returned, so the Rollout/Evaluation path resolves
     acpx install/launch commands instead of the literal spec string.
 
-    Unknown specs are returned unchanged.
+    Unknown bare IDs fail closed. Explicit raw commands pass through unchanged.
     """
     return resolve_agent_key(agent)
 

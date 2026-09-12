@@ -133,7 +133,8 @@ def test_opencode_hosted_search_cmd_merges_with_no_web_settings(tmp_path):
 
 
 def test_agents_without_hosted_search_switch_keep_defaults():
-    for name in ("pi-acp", "openclaw", "harvey-lab-harness", "deepagents", "openhands"):
+    """Guards PR #1093 after OpenClaw moves out of the built-in registry."""
+    for name in ("pi-acp", "harvey-lab-harness", "deepagents", "openhands"):
         assert AGENTS[name].disallow_hosted_search_setup_cmd == "", name
         assert AGENTS[name].disallow_hosted_search_launch_suffix == "", name
 
@@ -165,6 +166,7 @@ def test_codex_web_policy_uses_launch_config_instead_of_ignored_cli_flags():
 
 def test_launch_without_suffix_is_unchanged_for_hosted_search():
     planes = DefaultRolloutPlanes()
+    raw_command = "not-a-real-agent --acp"
 
     assert (
         planes.agent_launch(
@@ -174,9 +176,9 @@ def test_launch_without_suffix_is_unchanged_for_hosted_search():
     )
     assert (
         planes.agent_launch(
-            "not-a-real-agent", disallow_web_tools=False, disallow_hosted_search=True
+            raw_command, disallow_web_tools=False, disallow_hosted_search=True
         )
-        == "not-a-real-agent"
+        == raw_command
     )
 
 
@@ -535,23 +537,18 @@ async def test_setup_defers_proxy_env_until_connect(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.parametrize(
-    ("network_mode", "agent"),
-    [("public", "claude-agent-acp"), ("denylist", "oracle")],
-    ids=["other-network-mode", "oracle"],
-)
 @pytest.mark.asyncio
 async def test_setup_leaves_env_alone_outside_denylist_agent_runs(
-    tmp_path, monkeypatch, network_mode, agent
+    tmp_path, monkeypatch
 ):
     env = _fake_sandbox()
     planes = _fake_planes(env)
     rollout = _rollout(
         tmp_path,
         monkeypatch,
-        task=_denylist_task(network_mode),
+        task=_denylist_task("public"),
         planes=planes,
-        agent=agent,
+        agent="claude-agent-acp",
     )
 
     await rollout.setup()
@@ -561,8 +558,32 @@ async def test_setup_leaves_env_alone_outside_denylist_agent_runs(
     assert EGRESS_DENYLIST_ENV not in rollout._agent_env
     assert "HTTPS_PROXY" not in rollout._agent_env
     planes.agent_launch.assert_called_once_with(
-        agent, disallow_web_tools=False, disallow_hosted_search=False
+        "claude-agent-acp",
+        disallow_web_tools=False,
+        disallow_hosted_search=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_setup_does_not_resolve_agent_launch_for_oracle(tmp_path, monkeypatch):
+    """Guards PR #1093's non-agent rollout boundary under denylist tasks."""
+    env = _fake_sandbox()
+    planes = _fake_planes(env)
+    rollout = _rollout(
+        tmp_path,
+        monkeypatch,
+        task=_denylist_task("denylist"),
+        planes=planes,
+        agent="oracle",
+    )
+
+    await rollout.setup()
+
+    assert rollout._egress_denylist is None
+    assert rollout._disallow_hosted_search is False
+    assert EGRESS_DENYLIST_ENV not in rollout._agent_env
+    assert "HTTPS_PROXY" not in rollout._agent_env
+    planes.agent_launch.assert_not_called()
 
 
 @pytest.mark.asyncio

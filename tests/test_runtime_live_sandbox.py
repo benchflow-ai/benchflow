@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -126,6 +127,22 @@ async def test_setup_without_prebuilt_env_still_creates_one(
     assert len(create_calls) == 1, "setup() must create a sandbox when none injected"
     assert rollout.env is created
     assert rollout._env_externally_owned is False
+
+
+@pytest.mark.asyncio
+async def test_setup_oracle_skips_agent_launch_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1093: oracle setup has no agent process to launch."""
+    rollout = Rollout(RolloutConfig(task_path=TASK_PATH, agent="oracle"))
+    rollout.use_prebuilt_env(_FakeInner())
+    agent_launch = Mock(side_effect=AssertionError("oracle has no agent launch"))
+    monkeypatch.setattr(rollout._planes, "agent_launch", agent_launch)
+
+    await rollout.setup()
+
+    agent_launch.assert_not_called()
+    assert rollout._agent_launch == ""
 
 
 @pytest.mark.asyncio

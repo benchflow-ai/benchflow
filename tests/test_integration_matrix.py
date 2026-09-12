@@ -215,13 +215,6 @@ def test_deepseek_tiering_flash_for_low_pro_for_high():
     assert low_models == {maps.baseline_model}
 
 
-def test_agents_rule_acp_shim_path_map():
-    maps = _maps()
-    plan = _plan(["src/benchflow/agents/openclaw_acp_shim.py"])
-    assert "openclaw" in _agents(plan)
-    assert maps.baseline_agent in _agents(plan)
-
-
 def test_agent_runtime_infra_fans_roster_subset():
     # Changes to the registry / shared ACP infra affect EVERY agent, but at L2
     # (auto-on-push) we fan only the representative SUBSET — one agent per
@@ -573,7 +566,6 @@ def test_per_agent_concurrency_clamped_for_full_daytona_roster():
     "path,agent",
     [
         ("src/benchflow/agents/codex_config.py", "codex-acp"),
-        ("src/benchflow/agents/openclaw_acp_shim.py", "openclaw"),
         ("src/benchflow/agents/claude_agent_acp.py", "claude-agent-acp"),
         ("src/benchflow/agents/pi_acp_launcher.py", "pi-acp"),
     ],

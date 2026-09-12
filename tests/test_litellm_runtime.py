@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from importlib.metadata import version
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from packaging.requirements import Requirement
@@ -244,7 +245,12 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
 
 @pytest.mark.asyncio
 async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
-    """Guards PR #803: Pi metadata follows the LiteLLM alias in proxy mode."""
+    """Guards PRs #803/#1093: supplied metadata wins over catalog lookup."""
+    import litellm
+
+    monkeypatch.setattr(
+        litellm, "get_model_info", lambda *_: pytest.fail("unexpected catalog lookup")
+    )
 
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
@@ -278,10 +284,14 @@ async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
     assert provider_runtime is not None
     assert updated["BENCHFLOW_PROVIDER_MODEL"] == "benchflow-vllm-Qwen-Qwen3-4B"
     models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
-    alias = next(m for m in models if m["id"] == "benchflow-vllm-Qwen-Qwen3-4B")
-    assert alias["name"] == "benchflow-vllm-Qwen-Qwen3-4B"
-    assert alias["maxTokens"] == 1024
-    assert alias["contextWindow"] == 16384
+    assert models == [
+        provider_models[0],
+        {
+            **provider_models[0],
+            "id": "benchflow-vllm-Qwen-Qwen3-4B",
+            "name": "benchflow-vllm-Qwen-Qwen3-4B",
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -319,10 +329,10 @@ async def test_runtime_reuse_and_stop(monkeypatch):
     assert created[0].stopped is True
 
 
-@pytest.mark.parametrize("agent", ["claude-agent-acp", "openclaw"])
 @pytest.mark.asyncio
-async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch, agent):
+async def test_zai_runtime_reconnect_preserves_upstream_route(monkeypatch):
     """Guards PR #1074: reconnects retain Z.AI upstream routing and auth."""
+    agent = "claude-agent-acp"
     starts = []
 
     async def fake_start(**kwargs):
@@ -819,3 +829,62 @@ async def test_oracle_does_not_start_litellm(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
+
+
+def test_proxy_alias_metadata_is_reused_after_catalog_resolution(monkeypatch):
+    """Guards PR #1093: resolve capabilities once, preserve caller alias metadata."""
+    import litellm
+
+    route = runtime_mod.resolve_litellm_route("openai/gpt-5.5", {})
+    model_info = Mock(
+        return_value={
+            "supports_reasoning": True,
+            "max_output_tokens": 128000,
+            "max_input_tokens": 1050000,
+            "supports_vision": True,
+            "supported_openai_params": ["reasoning_effort"],
+        }
+    )
+    monkeypatch.setattr(litellm, "get_model_info", model_info)
+    params = dict(
+        agent="external-openclaw",
+        route=route,
+        base_url="http://proxy.test",
+        master_key="test-key",
+    )
+    updated = runtime_mod._wire_litellm_agent_env(agent_env={}, **params)
+    models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
+    assert models == [
+        {
+            "id": route.model_alias,
+            "name": route.model_alias,
+            "reasoning": True,
+            "maxTokens": 128000,
+            "contextWindow": 1050000,
+            "input": ["text", "image"],
+            "compat": {"supportsReasoningEffort": True},
+        }
+    ]
+    models[0].update(
+        reasoning=False, maxTokens=123, compat={"supportsReasoningEffort": False}
+    )
+    updated["BENCHFLOW_PROVIDER_MODELS"] = json.dumps(models)
+    rewired = runtime_mod._wire_litellm_agent_env(agent_env=updated, **params)
+    assert rewired["BENCHFLOW_PROVIDER_MODELS"] == updated["BENCHFLOW_PROVIDER_MODELS"]
+    model_info.assert_called_once_with(route.upstream_model)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Exception("This model isn't mapped yet"),
+        {"supports_reasoning": None, "max_output_tokens": -1},
+    ],
+)
+def test_unknown_proxy_metadata_keeps_existing_behavior(monkeypatch, outcome):
+    """Guards PR #1093: absent catalog metadata does not block custom models."""
+    import litellm
+
+    monkeypatch.setattr(litellm, "get_model_info", Mock(side_effect=[outcome]))
+    route = runtime_mod.resolve_litellm_route("openai/custom-model", {})
+    assert runtime_mod._provider_models_for_proxy_alias(raw=None, route=route) is None

@@ -452,7 +452,7 @@ class TestJobResumeScoped:
                 'version = "1.0"\n[verifier]\ntimeout_sec = 60\n'
                 "[agent]\ntimeout_sec = 60\n[environment]\n"
             )
-        cfg = EvaluationConfig(agent="new-agent")
+        cfg = EvaluationConfig(agent="new-agent --run")
         job = Evaluation(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="my-job"
         )

@@ -598,8 +598,8 @@ class TestChronologicalEventOrder:
         assert result[0]["text"] == "Solve it"
         assert result[2]["status"] == ToolCallStatus.PENDING.value
 
-    def test_openclaw_text_update_and_agent_thought(self) -> None:
-        """openclaw shim uses text_update and agent_thought (not chunks)."""
+    def test_full_text_update_and_agent_thought(self) -> None:
+        """Full text_update and agent_thought events are captured."""
         session = ACPSession("s1")
         session.record_user_prompt("Go")
         session.handle_update(

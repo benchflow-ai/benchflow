@@ -196,10 +196,17 @@ class TestResolveAgentEnv:
         self, monkeypatch
     ):
         """Only mapped agent-native keys can bypass provider-specific key checks."""
+        from benchflow.agents.registry import AGENTS, AgentConfig
+
+        monkeypatch.setitem(
+            AGENTS,
+            "auth-probe",
+            AgentConfig("auth-probe", "true", "true"),
+        )
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
             self._resolve(
-                agent="openclaw",
+                agent="auth-probe",
                 model="openai/gpt-4.1-mini",
                 agent_env={"BENCHFLOW_PROVIDER_API_KEY": "x"},
             )

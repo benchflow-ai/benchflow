@@ -28,12 +28,6 @@ class TestSandboxDirs:
         # codex-acp has credential_file at {home}/.codex/auth.json
         assert ".codex" in dirs
 
-    def test_home_dirs_included(self):
-        """Explicit home_dirs from AgentConfig are included."""
-        dirs = get_sandbox_home_dirs()
-        # openclaw has home_dirs=[".openclaw"]
-        assert ".openclaw" in dirs
-
     def test_does_not_include_legacy_local_tool_dir(self):
         """.local is not included unless an agent registry path derives it."""
         dirs = get_sandbox_home_dirs()
@@ -47,7 +41,7 @@ class TestSandboxDirs:
     def test_dirs_represent_registry_backed_home_config_or_auth(self):
         """Returned dirs are registry-derived user home config/auth roots."""
         dirs = get_sandbox_home_dirs()
-        assert {".claude", ".codex", ".gemini", ".openclaw"}.issubset(dirs)
+        assert {".claude", ".codex", ".gemini"}.issubset(dirs)
         assert ".agents" not in dirs
         assert ".pi" not in dirs
 
@@ -91,7 +85,6 @@ class TestSandboxDirs:
     def test_workspace_paths_excluded(self):
         """$WORKSPACE paths are not included (only $HOME paths)."""
         dirs = get_sandbox_home_dirs()
-        # openclaw has $WORKSPACE/skills — should NOT produce a dir entry
         assert "skills" not in dirs
 
     def test_returns_set_of_strings(self):

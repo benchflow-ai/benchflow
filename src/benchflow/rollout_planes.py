@@ -23,7 +23,11 @@ from benchflow.agents.install import (
     deploy_skills,
     install_agent,
 )
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+from benchflow.agents.registry import (
+    AGENT_LAUNCH,
+    AGENTS,
+    is_explicit_raw_agent_command,
+)
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.providers.runtime import (
@@ -65,7 +69,11 @@ class DefaultRolloutPlanes:
         disallow_web_tools: bool,
         disallow_hosted_search: bool = False,
     ) -> str:
-        launch = AGENT_LAUNCH.get(agent, agent)
+        launch = AGENT_LAUNCH.get(agent)
+        if launch is None:
+            if not is_explicit_raw_agent_command(agent):
+                raise KeyError(f"Unknown agent: {agent!r}")
+            launch = agent
         agent_cfg = AGENTS.get(agent)
         if agent_cfg is None:
             return launch

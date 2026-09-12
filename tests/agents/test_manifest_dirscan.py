@@ -1,13 +1,7 @@
 """Directory-scan registration: turn a tree of manifest.toml files into AGENTS
-entries (design decision #7, the eve-style filesystem discovery).
-
-The env-gated entry point ``register_env_manifest_agents`` is a no-op when
-``BENCHFLOW_AGENTS_DIR`` is unset — so importing core is unchanged by default;
-the dual-source registry only lights up when a developer opts in. Registration
-is fail-loud on collision (an agent or alias that already exists is an ambiguous
-source of truth, not a silent shadow) unless ``override=True``, and writes every
-name-keyed registry map (AGENTS / AGENT_INSTALLERS / AGENT_LAUNCH / AGENT_ALIASES)
-the install + rollout paths read from.
+entries (design decision #7, the eve-style filesystem discovery). Explicit-map
+registration remains fail-loud on collisions and writes every name-keyed map;
+environment source selection belongs to ``remote_manifests``.
 """
 
 from __future__ import annotations
@@ -20,7 +14,6 @@ from benchflow.agents.manifest import (
     AgentManifestError,
     discover_manifests,
     load_agents_from_dir,
-    register_env_manifest_agents,
     register_manifest_agents,
 )
 from benchflow.agents.registry import AgentConfig
@@ -116,28 +109,6 @@ def test_register_fails_loud_on_alias_collision(tmp_path: Path):
     m["aliases"]["taken"] = "someone-else"
     with pytest.raises(AgentManifestError, match="taken"):
         register_manifest_agents(load_agents_from_dir(tmp_path), **m)
-
-
-def test_env_entry_is_noop_when_unset(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("BENCHFLOW_AGENTS_DIR", raising=False)
-    m = _maps()
-    registered = register_env_manifest_agents(**m)
-    assert registered == []
-    # importing core stays behavior-preserving: nothing touched.
-    assert all(d == {} for d in m.values())
-
-
-def test_env_entry_registers_when_set(tmp_path: Path, monkeypatch):
-    _put(tmp_path, "demo", "demo", extra='aliases = ["demo-code"]\n')
-    _put(tmp_path, "beta", "beta")
-    monkeypatch.setenv("BENCHFLOW_AGENTS_DIR", str(tmp_path))
-    m = _maps()
-    registered = register_env_manifest_agents(**m)
-    assert registered == ["beta", "demo"]
-    assert set(m["agents"]) == {"beta", "demo"}
-    assert set(m["installers"]) == {"beta", "demo"}
-    assert set(m["launch"]) == {"beta", "demo"}
-    assert m["aliases"] == {"demo-code": "demo"}
 
 
 def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):

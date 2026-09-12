@@ -70,7 +70,7 @@ class RolloutResult:
                       None if verification was skipped or failed.
         trajectory:   Ordered list of ACP session-update dicts (tool calls,
                       messages, thoughts) captured during execution.
-        agent:        Harness name from the registry (e.g. "openclaw").
+        agent:        Harness name from the registry (e.g. "codex-acp").
         agent_name:   Name reported by the agent via ACP initialize handshake.
         model:        Model ID used (e.g. "google/gemini-3.1-flash-lite-preview").
         n_tool_calls: Total tool calls observed during the session.

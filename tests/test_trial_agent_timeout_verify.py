@@ -28,7 +28,7 @@ async def test_agent_timeout_verifier_result_handling(
     """Guards the reward-output regression on v0.5-integration@ffef85d."""
     cfg = RolloutConfig(
         task_path=tmp_path / "task",
-        scenes=[Scene.single(agent="dummy")],
+        scenes=[Scene.single(agent="dummy --agent")],
     )
     trial = Rollout(cfg)
     calls: list[str] = []
