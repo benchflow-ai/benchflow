@@ -1,0 +1,28 @@
+{
+    "upload_type": "software",
+    "title": "BenchFlow: framework for RL environments for LLM agents",
+    "description": "BenchFlow is a framework for building RL environments to evaluate and train LLM agents. Built on the Agent Client Protocol (ACP), it provides Scene-based multi-turn, multi-agent, and multi-model evaluation in shared sandboxes — without Docker Compose or sidecar containers. Supported use cases include interactive user simulation, code-review loops, bring-your-own-skill (BYOS) skill generation, multi-turn iterative refinement, cross-model review (cheap coder + strong reviewer), and stateful service tasks against live mock APIs (Gmail, Calendar, Docs, Drive, Slack). See docs/use-cases.md.",
+    "creators": [
+        {
+            "name": "TODO BEFORE MERGE - replace with the agreed author list (\"Family, Given\" per entry, plus orcid and affiliation where known). Zenodo mints a permanent DOI from this file, so a placeholder that reaches main becomes permanent authorship."
+        }
+    ],
+    "license": "Apache-2.0",
+    "access_right": "open",
+    "keywords": [
+        "benchmark",
+        "llm-agents",
+        "acp",
+        "agent-evaluation",
+        "multi-turn",
+        "terminal-bench",
+        "skillsbench"
+    ],
+    "related_identifiers": [
+        {
+            "relation": "isVariantFormOf",
+            "identifier": "https://pypi.org/project/benchflow/",
+            "resource_type": "software"
+        }
+    ]
+}

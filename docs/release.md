@@ -127,13 +127,17 @@ runs `uv publish`.
 Public release:
 
 1. Update `pyproject.toml` from the next `.dev0` version to the final public
-   version.
+   version, and set `CITATION.cff` `version` and `date-released` to that same
+   release.
 2. Merge the release PR to `main`.
 3. Push a matching release tag.
-4. `.github/workflows/public-release.yml` validates the tag, publishes to PyPI,
-   and creates a GitHub Release. The workflow refuses tags whose commits are
-   not contained in `origin/main`.
-5. Bump `main` to the next `.dev0`.
+4. `.github/workflows/public-release.yml` validates the tag against
+   `pyproject.toml` and `CITATION.cff`, publishes to PyPI, and creates a GitHub
+   Release. The workflow refuses tags whose commits are not contained in
+   `origin/main`, and tags whose `CITATION.cff` still names an older release.
+5. Bump `main` to the next `.dev0`. Leave `CITATION.cff` on the version just
+   released: it names the last published release, not the line under
+   development.
 
 ## One-Time PyPI Setup
 
@@ -154,3 +158,40 @@ Create matching GitHub environments:
 
 The workflows build with `uv build --no-sources`, check distributions with
 `twine check`, and publish with `uv publish`.
+
+## Zenodo Archiving
+
+Each published GitHub Release is archived on Zenodo through the official
+GitHub integration, which snapshots the tag's source tree and mints a version
+DOI for it. Zenodo also maintains a concept DOI that always resolves to the
+newest archived version; cite the concept DOI, not a version DOI, so the
+citation never goes stale.
+
+`.zenodo.json` at the repository root supplies the archive metadata. Without it
+Zenodo derives authorship from GitHub contributor statistics, which is not the
+project's author list. Its `version` and `publication_date` are deliberately
+absent: Zenodo takes both from the tag and the GitHub Release, so pinning them
+would go stale on every release.
+
+`CITATION.cff` is the human-facing citation record and names the **last
+published** release. On `main` it therefore sits one release behind the `.devN`
+version in `pyproject.toml`, which is correct, not drift. The tag-driven
+`public-release.yml` validation is what keeps it honest: a tag whose
+`CITATION.cff` names a different version fails before anything is built or
+published.
+
+One-time setup, which requires **admin** rights on the repository:
+
+1. Sign in to <https://zenodo.org> with the GitHub account, and grant Zenodo the
+   GitHub authorization it asks for.
+2. Open Zenodo's GitHub page (<https://zenodo.org/account/settings/github/>) and
+   flip the switch for `benchflow-ai/benchflow` on. Zenodo installs a release
+   webhook; it archives releases published *after* the switch is flipped, so the
+   first archived version is the next release, not the current one.
+3. After that release, confirm on Zenodo that the record's authors, title, and
+   license came from `.zenodo.json` rather than from contributor statistics.
+4. Add the concept DOI to `README.md` and to `CITATION.cff` once it exists.
+
+Flip the switch only after a `.zenodo.json` carrying the real author list has
+merged to `main`. Zenodo archives the tagged commit, and a published DOI cannot
+be withdrawn -- an incomplete author list becomes permanent public metadata.
