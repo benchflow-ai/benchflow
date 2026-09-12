@@ -335,7 +335,11 @@ def _safe_reward(rewards: dict | None) -> float | None:
     if not isinstance(rewards, dict):
         return None
     val = rewards.get("reward")
-    return float(val) if is_valid_reward_number(val) else None
+    # Use isinstance narrowing that type checkers can follow, then validate
+    # with is_valid_reward_number (rejects booleans, non-finite, out-of-range).
+    if not isinstance(val, (int, float)) or not is_valid_reward_number(val):
+        return None
+    return float(val)
 
 
 def collect_metrics(
