@@ -16,6 +16,7 @@ from benchflow._utils.scoring import (
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
+    extract_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
@@ -318,13 +319,15 @@ class BenchmarkMetrics:
         }
 
 
-def _safe_reward(rewards: dict) -> float:
+def _safe_reward(rewards: Any) -> float:
     """Extract reward value from a rewards dict, defaulting to 0 if None/missing.
 
     Prevents TypeError when comparing reward values where one is None
-    (e.g. rewards={"reward": None, "rubric": [...]}).
+    (e.g. rewards={"reward": None, "rubric": [...]}), and AttributeError when
+    the persisted ``rewards`` is not a mapping at all — the resume path feeds
+    raw json.loads payloads with no shape validation.
     """
-    val = rewards.get("reward")
+    val = rewards.get("reward") if isinstance(rewards, dict) else None
     return val if isinstance(val, (int, float)) else 0.0
 
 
@@ -361,7 +364,7 @@ def collect_metrics(
 
     tasks = []
     for task_name, r in sorted(best.items()):
-        reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+        reward = extract_reward(r)
         # Calculate duration
         duration = 0.0
         try:
