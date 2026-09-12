@@ -16,9 +16,11 @@ from benchflow._utils.scoring import (
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
+    extract_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
+from benchflow.rewards.validation import is_valid_reward_number
 from benchflow.trajectories.metrics import result_skill_invocations
 from benchflow.usage_tracking import UsageSource, is_trusted_usage_source
 
@@ -318,14 +320,26 @@ class BenchmarkMetrics:
         }
 
 
-def _safe_reward(rewards: dict) -> float:
-    """Extract reward value from a rewards dict, defaulting to 0 if None/missing.
+def _safe_reward(rewards: dict | None) -> float | None:
+    """Extract a validated reward scalar from a rewards dict, or None if invalid.
 
-    Prevents TypeError when comparing reward values where one is None
-    (e.g. rewards={"reward": None, "rubric": [...]}).
+    Uses the canonical is_valid_reward_number validator so that booleans,
+    non-finite values, and out-of-range values are all excluded — matching
+    exactly the contract that classify_score_outcome / extract_reward enforce
+    during reporting. This keeps selection and reporting on the same contract
+    so the same artifact is ranked and classified consistently.
+
+    Returns None (not 0.0) for any invalid or absent reward so the caller
+    can distinguish "no valid reward" from "reward is zero".
     """
+    if not isinstance(rewards, dict):
+        return None
     val = rewards.get("reward")
-    return val if isinstance(val, (int, float)) else 0.0
+    # Use isinstance narrowing that type checkers can follow, then validate
+    # with is_valid_reward_number (rejects booleans, non-finite, out-of-range).
+    if not isinstance(val, (int, float)) or not is_valid_reward_number(val):
+        return None
+    return float(val)
 
 
 def collect_metrics(
@@ -346,13 +360,15 @@ def collect_metrics(
         try:
             r = json.loads(rfile.read_text())
             task = r["task_name"]
+            r_reward = _safe_reward(r.get("rewards"))
+            best_reward = _safe_reward(best.get(task, {}).get("rewards"))
             if (
                 task not in best
-                or (r.get("rewards") is not None and best[task].get("rewards") is None)
+                or (r_reward is not None and best_reward is None)
                 or (
-                    r.get("rewards")
-                    and best[task].get("rewards")
-                    and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
+                    r_reward is not None
+                    and best_reward is not None
+                    and r_reward > best_reward
                 )
             ):
                 best[task] = r
@@ -361,7 +377,7 @@ def collect_metrics(
 
     tasks = []
     for task_name, r in sorted(best.items()):
-        reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+        reward = extract_reward(r)
         # Calculate duration
         duration = 0.0
         try:
