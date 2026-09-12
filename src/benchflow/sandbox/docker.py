@@ -175,6 +175,7 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._research_policy_compose_path: Path | None = None
         self._logs_are_mounted = True
 
         verifier_dir = (
@@ -299,6 +300,9 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
+        if self._research_policy_compose_path:
+            paths.append(self._research_policy_compose_path)
+
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 
@@ -306,6 +310,22 @@ class DockerSandbox(BaseSandbox):
             paths.append(self._DOCKER_COMPOSE_NET_ADMIN_PATH)
 
         return paths
+
+    def configure_research_policy(self) -> None:
+        """Grant only the capability needed for the agent-UID egress firewall.
+
+        The override is generated per rollout and is appended last so it also
+        covers task-authored Compose definitions.  Other sandbox providers do
+        not expose this hook and therefore fail closed at rollout setup.
+        """
+
+        if self.rollout_paths is None:
+            raise RuntimeError("research policy requires rollout paths")
+        compose = {"services": {"main": {"cap_add": ["NET_ADMIN"]}}}
+        path = self.rollout_paths.rollout_dir / "docker-compose-research-policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(compose, indent=2))
+        self._research_policy_compose_path = path
 
     def _docker_compose_env(self) -> dict[str, str]:
         env = self._env_vars.to_env_dict(include_os_env=True)

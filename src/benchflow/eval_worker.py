@@ -72,6 +72,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         skill_mode=raw.get("skill_mode") or SKILL_MODE_NO_SKILL,
         skill_creator_dir=raw.get("skill_creator_dir"),
         self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
+        research_policy_path=raw.get("research_policy_path"),
         job_mode=raw.get("job_mode") or "parallel-independent",
         source_provenance=raw.get("source_provenance"),
         usage_tracking=UsageTrackingConfig.from_mapping(raw),

@@ -99,6 +99,13 @@ from benchflow.loop_strategies import (
     loop_block,
 )
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.research_policy import (
+    ResolvedResearchPolicy,
+    attach_research_mcp,
+    install_research_gateway,
+    load_research_policy,
+    route_native_subscription_auth,
+)
 from benchflow.rollout import _deadline as _deadline
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
@@ -662,6 +669,7 @@ class Rollout:
         self._disallow_web_tools: bool = False
         self._egress_denylist: EgressDenylist | None = None
         self._disallow_hosted_search: bool = False
+        self._research_policy: ResolvedResearchPolicy | None = None
         self._effective_skills_dir: Path | None = None
         self._effective_skills_sandbox_dir: str | None = None
         # Task dir actually deployed: a temp copy (self._task_tmp) when
@@ -953,8 +961,17 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
+        if cfg.research_policy_path is not None:
+            self._research_policy = load_research_policy(
+                cfg.research_policy_path, task_id=cfg.task_path.name
+            )
+            if cfg.primary_agent != "oracle" and cfg.sandbox_user is None:
+                raise ValueError("research policy requires a non-root sandbox_user")
+
         self._disallow_web_tools = (
-            _task_disallows_internet(self._task) or cfg.self_gen_no_internet
+            _task_disallows_internet(self._task)
+            or cfg.self_gen_no_internet
+            or self._research_policy is not None
         ) and cfg.primary_agent != "oracle"
         self._egress_denylist = (
             None
@@ -1057,6 +1074,20 @@ class Rollout:
                 preserve_agent_network=self._disallow_web_tools,
                 environment_manifest=cfg.environment_manifest,
             )
+        if self._research_policy is not None and cfg.primary_agent != "oracle":
+            if self._env_externally_owned:
+                raise RuntimeError(
+                    "research policy cannot secure an already-started external sandbox"
+                )
+            configure_policy = getattr(
+                type(self._env), "configure_research_policy", None
+            )
+            if not callable(configure_policy):
+                raise RuntimeError(
+                    f"research policy is not supported by sandbox {cfg.environment!r}"
+                )
+            configure_policy(self._env)
+            attach_research_mcp(self._task)
         # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
         # wins over the task's own default. Without this override there is
         # no way to tighten/loosen the agent budget per run — see #378.
@@ -1099,6 +1130,11 @@ class Rollout:
             task_digest=cfg.task_digest,
             config_override=cfg.config_override,
             loop_strategy=cfg.loop_strategy_spec,
+            research_policy=(
+                self._research_policy.artifact_metadata(enforced=False)
+                if self._research_policy is not None
+                else None
+            ),
         )
 
         self._phase = "setup"
@@ -1227,6 +1263,9 @@ class Rollout:
             cfg.primary_model,
             cred_home,
         )
+        research_policy = getattr(self, "_research_policy", None)
+        if research_policy is not None:
+            await install_research_gateway(self._env, research_policy)
         await _install_native_task_mcp_config(
             self._env,
             self._task,
@@ -1314,6 +1353,7 @@ class Rollout:
             model=cfg.primary_model,
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
+            reasoning_effort=cfg.primary_reasoning_effort,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
@@ -1325,6 +1365,18 @@ class Rollout:
         )
         if egress_denylist is not None:
             self._agent_env = denylist_agent_env(self._agent_env)
+        if getattr(self, "_research_policy", None) is not None:
+            self._agent_env = route_native_subscription_auth(
+                cfg.primary_agent, cfg.primary_model, self._agent_env
+            )
+            # Install the UID firewall before the agent process starts. The
+            # generic ACP path checks it again after bootstrap, but doing it
+            # here closes the launch-to-session window and also covers native
+            # session-factory harnesses.
+            await self._planes.enforce_agent_egress_firewall(
+                self._env, cfg.sandbox_user, self._agent_env
+            )
+            self._mark_research_policy_enforced()
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:
@@ -1379,6 +1431,20 @@ class Rollout:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
 
         self._phase = "connected"
+
+    def _mark_research_policy_enforced(self) -> None:
+        """Atomically advance the public policy summary after firewall success."""
+
+        rollout_dir = self._require_rollout_dir()
+        config_path = rollout_dir / "config.json"
+        payload = json.loads(config_path.read_text())
+        summary = payload.get("research_policy")
+        if not isinstance(summary, dict):
+            raise RuntimeError("research policy metadata missing from config.json")
+        summary["enforced"] = True
+        replacement = config_path.with_suffix(".json.tmp")
+        replacement.write_text(json.dumps(payload, indent=2))
+        replacement.replace(config_path)
 
     def _attach_trajectory_writer(self, rollout_dir: Path) -> None:
         """Wire the current session's ``on_change`` to stream cumulative
@@ -2340,6 +2406,7 @@ class Rollout:
             model=role.model,
             runtime=getattr(self, "_usage_runtime", None),
             environment=cfg.environment,
+            reasoning_effort=role.reasoning_effort,
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
@@ -2350,6 +2417,14 @@ class Rollout:
         )
         if egress_denylist is not None:
             agent_env = denylist_agent_env(agent_env)
+        if getattr(self, "_research_policy", None) is not None:
+            agent_env = route_native_subscription_auth(
+                role.agent, role.model, agent_env
+            )
+            await self._planes.enforce_agent_egress_firewall(
+                self._env, cfg.sandbox_user, agent_env
+            )
+            self._mark_research_policy_enforced()
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (

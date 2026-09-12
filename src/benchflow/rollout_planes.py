@@ -42,6 +42,7 @@ from benchflow.sandbox.lockdown import (
     _snapshot_build_config,
     cleanup_verifier_python_hooks,
     clear_verifier_output_dir,
+    enforce_agent_egress_firewall,
     ensure_legacy_app_dir,
     lockdown_paths,
     setup_sandbox_user,
@@ -182,6 +183,11 @@ class DefaultRolloutPlanes:
 
     async def apply_web_tool_policy(self, *args: Any, **kwargs: Any) -> None:
         await apply_web_tool_policy(*args, **kwargs)
+
+    async def enforce_agent_egress_firewall(
+        self, env: Any, sandbox_user: str | None, agent_env: dict[str, str]
+    ) -> None:
+        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
 
     async def link_skill_paths(self, *args: Any, **kwargs: Any) -> None:
         await _link_skill_paths(*args, **kwargs)
