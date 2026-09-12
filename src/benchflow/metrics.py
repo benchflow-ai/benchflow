@@ -323,7 +323,11 @@ def _safe_reward(rewards: dict) -> float:
 
     Prevents TypeError when comparing reward values where one is None
     (e.g. rewards={"reward": None, "rubric": [...]}).
+    Only called when rewards is already confirmed to be a dict; the isinstance
+    guard here is a defensive belt-and-braces for any future caller.
     """
+    if not isinstance(rewards, dict):
+        return 0.0
     val = rewards.get("reward")
     return val if isinstance(val, (int, float)) else 0.0
 
@@ -348,10 +352,13 @@ def collect_metrics(
             task = r["task_name"]
             if (
                 task not in best
-                or (r.get("rewards") is not None and best[task].get("rewards") is None)
                 or (
-                    r.get("rewards")
-                    and best[task].get("rewards")
+                    isinstance(r.get("rewards"), dict)
+                    and not isinstance(best[task].get("rewards"), dict)
+                )
+                or (
+                    isinstance(r.get("rewards"), dict)
+                    and isinstance(best[task].get("rewards"), dict)
                     and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
                 )
             ):
@@ -361,7 +368,9 @@ def collect_metrics(
 
     tasks = []
     for task_name, r in sorted(best.items()):
-        reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+        reward = (
+            r["rewards"].get("reward") if isinstance(r.get("rewards"), dict) else None
+        )
         # Calculate duration
         duration = 0.0
         try:

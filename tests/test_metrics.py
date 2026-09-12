@@ -452,3 +452,114 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     )
     with pytest.raises(ValueError, match="usage_source must be one of"):
         normalize_usage_source("new_unregistered_source")
+
+
+def test_collect_metrics_malformed_rewards_does_not_win_over_none(tmp_path):
+    """Guards the follow-up noted in PR #1096.
+
+    A malformed rewards value (truthy non-dict, e.g. 1.0, True, []) must NOT
+    win clause 2 of the selection predicate over a well-formed rewards=None
+    result. Before the fix, `r.get("rewards") is not None` passed for any
+    truthy non-dict, so rewards:1.0 beat rewards:None and then crashed
+    _safe_reward (which called .get() on a float) in clause 3.
+
+    After the fix, only isinstance(..., dict) values are treated as
+    having a scoreable reward — malformed artifacts are treated as errored
+    (no reward), consistent with _classify_completed_outcomes and evaluation.py.
+    """
+    import json
+
+    # attempt1: malformed rewards (bare float — the exact shape from PR #1096 comment)
+    t1 = tmp_path / "attempt1" / "task-x__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-x",
+                "rewards": 1.0,
+                "error": None,
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    # attempt2: well-formed rewards=None (errored)
+    t2 = tmp_path / "attempt2" / "task-x__t2"
+    t2.mkdir(parents=True)
+    (t2 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-x",
+                "rewards": None,
+                "error": "install failed",
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:02:00.000000",
+                "finished_at": "2026-01-01 00:03:00.000000",
+            }
+        )
+    )
+
+    # Must not crash, and malformed rewards must NOT be treated as a scored result
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+
+    assert s["total"] == 1
+    # The malformed artifact must not win as a scored (passed/failed) result.
+    # Either the errored artifact wins (errored=1) or the malformed one is
+    # kept as-is but still counted as errored (no valid reward extracted).
+    assert s["passed"] == 0, "malformed rewards:1.0 must not count as passed"
+    assert s["failed"] == 0, "malformed rewards:1.0 must not count as failed"
+    assert s["errored"] == 1, "task with malformed rewards must count as errored"
+
+
+def test_collect_metrics_malformed_rewards_does_not_beat_zero_reward(tmp_path):
+    """Guards clause 2 tie-breaking: malformed rewards must not displace a
+    well-formed rewards={'reward': 0.0} result.
+
+    The PR #1096 comment noted: 'a malformed artifact scores 0.0 in the
+    selection, so it can still tie out a well-formed artifact whose reward
+    is 0.0'. With the isinstance guard, the malformed artifact never enters
+    clause 2 or 3 as a winner — the well-formed dict is always preferred.
+    """
+    import json
+
+    # attempt1: well-formed rewards with reward=0.0 (scored, failed)
+    t1 = tmp_path / "attempt1" / "task-y__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-y",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "n_tool_calls": 2,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    # attempt2: malformed rewards (bare float)
+    t2 = tmp_path / "attempt2" / "task-y__t2"
+    t2.mkdir(parents=True)
+    (t2 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-y",
+                "rewards": 1.0,
+                "error": None,
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:02:00.000000",
+                "finished_at": "2026-01-01 00:03:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+
+    assert s["total"] == 1
+    # The well-formed reward=0.0 result must win — task is failed, not errored
+    assert s["failed"] == 1, "well-formed rewards:{'reward':0.0} must be kept as failed"
+    assert s["passed"] == 0
+    assert s["errored"] == 0
