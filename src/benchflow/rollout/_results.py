@@ -161,6 +161,7 @@ def _write_config(
     environment_manifest: EnvironmentManifest | None = None,
     config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
+    research_policy: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.acp.selection import selected_acp_transport
@@ -204,6 +205,8 @@ def _write_config(
         "scenes": _scene_metadata(scenes or []),
         "loop": loop_block(loop_strategy),
     }
+    if research_policy is not None:
+        config_data["research_policy"] = research_policy
     if usage_tracking is not None:
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
     if artifact_source is not None:

@@ -173,6 +173,7 @@ class SDK:
         skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
+        research_policy_path: str | Path | None = None,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
     ) -> RolloutResult:
@@ -223,6 +224,7 @@ class SDK:
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
+            research_policy_path=research_policy_path,
             source_provenance=source_provenance,
             usage_tracking=usage_tracking,
         )

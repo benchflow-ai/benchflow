@@ -132,6 +132,25 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+def test_bare_openai_model_honors_explicit_generic_proxy_env():
+    """Private/future bare models must not fall back to api.openai.com."""
+    route = resolve_litellm_route(
+        "gpt-5.6-sol",
+        {
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://responses.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "private-key",
+            "BENCHFLOW_REASONING_EFFORT": "xhigh",
+        },
+    )
+
+    assert route.requested_model == "gpt-5.6-sol"
+    assert route.upstream_model == "openai/gpt-5.6-sol"
+    assert route.litellm_params["api_base"] == ("https://responses.example.test/v1")
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+    assert route.litellm_params["reasoning_effort"] == "xhigh"
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+
+
 @pytest.mark.parametrize(
     ("agent", "agent_base"),
     [

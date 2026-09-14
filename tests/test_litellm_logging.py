@@ -57,6 +57,27 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
     )
 
 
+def test_no_web_proxy_strips_provider_search_tools(monkeypatch):
+    """Guards PR #1112 for FrontierPhysics #365 against the model proxy becoming a web bypass."""
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "shell"}},
+            {"google_search": {}},
+        ],
+        "extra_body": {"web_search_options": {"search_context_size": "high"}},
+    }
+    monkeypatch.setenv("BENCHFLOW_DISALLOW_WEB_TOOLS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "responses"))
+
+    assert cleaned is not None
+    assert cleaned["tools"] == [{"type": "function", "function": {"name": "shell"}}]
+    assert cleaned["extra_body"] == {}
+    assert len(data["tools"]) == 2
+
+
 def test_pre_call_hook_opt_in_requests_token_logprobs(
     monkeypatch: pytest.MonkeyPatch,
 ):

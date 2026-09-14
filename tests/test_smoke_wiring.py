@@ -41,6 +41,15 @@ def clean_env(monkeypatch):
     """
     for var in ALL_SMOKE_CRED_VARS:
         monkeypatch.delenv(var, raising=False)
+    credentials_path = Path("~/.claude/.credentials.json").expanduser()
+    real_is_file = Path.is_file
+
+    def isolated_is_file(self):
+        if self == credentials_path:
+            return False
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", isolated_is_file)
     return monkeypatch
 
 

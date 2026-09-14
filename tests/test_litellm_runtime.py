@@ -92,6 +92,35 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_codex_reasoning_effort_reaches_litellm_route(monkeypatch):
+    seen = {}
+
+    async def fake_start(**kwargs):
+        seen["route"] = kwargs["route"]
+        return FakeLiteLLMServer("http://host.docker.internal:32123", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://responses.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "private-key",
+        },
+        model="gpt-5.6-sol",
+        reasoning_effort="xhigh",
+        runtime=None,
+        environment="docker",
+        session_id="run-xhigh",
+    )
+
+    route = seen["route"]
+    assert route.requested_model == "gpt-5.6-sol"
+    assert route.litellm_params["api_base"] == ("https://responses.example.test/v1")
+    assert route.litellm_params["reasoning_effort"] == "xhigh"
+
+
+@pytest.mark.asyncio
 async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
     """Guards the OpenCode first-request catalog gate from PR #919."""
     starts = []

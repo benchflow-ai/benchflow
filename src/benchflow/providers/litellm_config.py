@@ -404,14 +404,21 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
         required = ("OPENAI_API_KEY",)
 
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
-    if upstream.lower().startswith("gemini/"):
-        explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
-        explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-        if explicit_api_base:
-            params["api_base"] = explicit_api_base
-            if explicit_api_key:
-                params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
-                required = ("BENCHFLOW_PROVIDER_API_KEY",)
+    explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+    if explicit_api_base:
+        # Explicit generic endpoints also apply to unregistered/bare model IDs.
+        # Without this, a future or private OpenAI-compatible model silently
+        # falls back to the canonical provider even though resolve_agent_env()
+        # has accepted the operator-supplied route.
+        params["api_base"] = explicit_api_base
+        if explicit_api_key:
+            params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
+            required = ("BENCHFLOW_PROVIDER_API_KEY",)
+    if upstream.lower().startswith("openai/"):
+        effort = _provider_reasoning_effort(env)
+        if effort:
+            params["reasoning_effort"] = effort
 
     key = required[0] if required else None
     if key and "api_key" not in params:

@@ -138,6 +138,7 @@ def _config_payload(
         "skill_mode": config.skill_mode,
         "skill_creator_dir": config.skill_creator_dir,
         "self_gen_no_internet": config.self_gen_no_internet,
+        "research_policy_path": config.research_policy_path,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
         # Serialize the already-resolved manifest OBJECT (the S axis), not a
@@ -163,6 +164,10 @@ def _config_payload(
 
 def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
     artifact_payload = dict(config_payload)
+    # Workers receive this through a mode-0600 temporary payload, but the
+    # durable worker_payload.json must not disclose the private policy path.
+    if artifact_payload.get("research_policy_path") is not None:
+        artifact_payload["research_policy_path"] = "<private>"
     agent_env = artifact_payload.get("agent_env")
     if isinstance(agent_env, dict):
         artifact_payload["agent_env"] = {

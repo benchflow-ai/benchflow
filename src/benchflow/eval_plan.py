@@ -106,6 +106,7 @@ class EvalCreateRequest:
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
     self_gen_no_internet: bool = False
+    research_policy: Path | None = None
     loop_strategy: str | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     include: list[str] | None = None
@@ -204,6 +205,9 @@ class EvalPlan:
                 str(req.skill_creator_dir) if req.skill_creator_dir else None
             ),
             self_gen_no_internet=req.self_gen_no_internet,
+            research_policy_path=(
+                str(req.research_policy.resolve()) if req.research_policy else None
+            ),
             source_provenance=source_provenance,
             dataset_name=dataset_name,
             dataset_version=dataset_version,
@@ -258,6 +262,13 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         )
     if request.registry and not request.dataset:
         raise EvalPlanError("--registry requires --dataset")
+    if request.research_policy is not None:
+        if request.source_env:
+            raise EvalPlanError("--research-policy is not supported with --source-env")
+        if not request.research_policy.is_file():
+            raise EvalPlanError(
+                f"Research policy file does not exist: {request.research_policy}"
+            )
     if request.ignore_bench_version and not request.dataset:
         raise EvalPlanError("--ignore-bench-version requires --dataset")
     if request.matrix is not None and not request.tasks_dir:
@@ -364,8 +375,12 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
                     "Missing optional dependency for 'modal' sandbox. "
                     f"Install it with `uv sync --extra {provider_extra('modal')}`."
                 ) from exc
+        if request.research_policy is not None and eval_environment != "docker":
+            raise EvalPlanError("--research-policy currently requires --sandbox docker")
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
+    if request.research_policy is not None and sandbox_user is None:
+        raise EvalPlanError("--research-policy requires a non-root --sandbox-user")
     eval_concurrency = request.concurrency if request.concurrency is not None else 4
     if eval_concurrency < 1:
         # A non-positive concurrency builds asyncio.Semaphore(0), which can never

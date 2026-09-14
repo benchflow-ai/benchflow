@@ -262,6 +262,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
 | `--self-gen-no-internet` | `false` | Disable web tools for the self-generated skill run |
+| `--research-policy` | — | Apply a private per-task filtered-research policy (Docker only); see [Filtered web research](../research-policy.md) |
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
 | `--include` | — | Only run these task names; repeatable (e.g. `--include jax-computing-basics --include data-to-d3`) |
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |

@@ -164,6 +164,7 @@ class RolloutConfig:
     skill_creator_dir: str | Path | None = None
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
+    research_policy_path: str | Path | None = None
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
@@ -193,6 +194,10 @@ class RolloutConfig:
             self.base_image_override = base_image
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
+        if self.research_policy_path is not None and not isinstance(
+            self.research_policy_path, Path
+        ):
+            self.research_policy_path = Path(self.research_policy_path)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)

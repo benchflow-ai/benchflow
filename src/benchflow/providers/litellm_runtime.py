@@ -40,6 +40,7 @@ from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
     LITELLM_MODEL_ALIAS_ENV,
     LITELLM_MODEL_VIA_ENV,
+    PROVIDER_REASONING_EFFORT_ENV,
     LiteLLMRoute,
     litellm_proxy_config,
     resolve_litellm_route,
@@ -1057,6 +1058,11 @@ async def _ensure_sandbox_litellm(
     )
     command = f"""
 set -eu
+# cryptography 48's aarch64 wheel can execute an unsupported OpenSSL feature
+# probe under Docker Desktop's ARM VM and terminate with SIGILL.  LiteLLM
+# 1.91 pins cryptography to the 48.x line, so force the portable OpenSSL path
+# for the bootstrap import as well as for the long-running proxy below.
+export OPENSSL_armcap=0
 export PATH="$HOME/.local/bin:$PATH"
 UV="$(command -v uv || true)"
 if [ -z "$UV" ]; then
@@ -1214,6 +1220,7 @@ async def _start_sandbox_litellm(
         env.update(
             {
                 "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
+                "OPENSSL_armcap": "0",
                 "LITELLM_MASTER_KEY": master_key,
                 "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
                 **_PROXY_DOCS_DISABLE_ENV,
@@ -1625,6 +1632,7 @@ async def ensure_litellm_runtime(
     model: str | None,
     runtime: Any | None,
     environment: str,
+    reasoning_effort: str | None = None,
     session_id: str = "",
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
@@ -1680,7 +1688,11 @@ async def ensure_litellm_runtime(
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
     try:
-        route = resolve_litellm_route(model, agent_env)
+        route_env = agent_env
+        if agent == "codex-acp" and reasoning_effort:
+            route_env = dict(agent_env)
+            route_env[PROVIDER_REASONING_EFFORT_ENV] = reasoning_effort
+        route = resolve_litellm_route(model, route_env)
     except ValueError as exc:
         await _raise_litellm_unavailable(
             runtime=runtime,

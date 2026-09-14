@@ -503,6 +503,9 @@ class EvaluationConfig:
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
+    # Private operator-side policy file. Its contents and path are never copied
+    # into public rollout/worker artifacts.
+    research_policy_path: str | None = None
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
     # Registry dataset identity (`bench eval run -d name@version`). When
@@ -914,6 +917,7 @@ class Evaluation:
                 else None
             ),
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
+            research_policy_path=raw.get("research_policy"),
             job_mode=raw.get("job_mode", DEFAULT_JOB_MODE),
             source_provenance=source_provenance,
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
@@ -1304,6 +1308,7 @@ class Evaluation:
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
+            research_policy_path=cfg.research_policy_path,
             export_generated_skills_to=export_to,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
             dataset=dataset,
@@ -1364,6 +1369,7 @@ class Evaluation:
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
+            research_policy_path=cfg.research_policy_path,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
             usage_tracking=cfg.usage_tracking,
         )
