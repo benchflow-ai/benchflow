@@ -214,13 +214,15 @@ class _Upstream(http.server.BaseHTTPRequestHandler):
 def stack(tmp_path: Path, monkeypatch):
     """Proxy plus TLS and plain upstreams; test hostnames resolve to the local servers."""
     upstream_ca = certificate_material(("paper.test", "other.test"))
-    proxy_ca = certificate_material(("paper.test",))
+    proxy_ca = certificate_material(("paper.test", "other.test", "internal.test"))
     (tmp_path / "upstream-ca.crt").write_bytes(upstream_ca["ca.crt"])
     (tmp_path / "proxy-ca.crt").write_bytes(proxy_ca["ca.crt"])
     (tmp_path / "client-ca.crt").write_bytes(upstream_ca["ca.crt"] + proxy_ca["ca.crt"])
     certs = tmp_path / "certs"
     certs.mkdir()
-    (certs / "paper.test.pem").write_bytes(proxy_ca["paper.test.pem"])
+    for name, material in proxy_ca.items():
+        if name.endswith(".pem"):
+            (certs / name).write_bytes(material)
 
     def tls_server(host: str) -> http.server.ThreadingHTTPServer:
         pem = tmp_path / f"upstream-{host}.pem"
@@ -246,6 +248,13 @@ def stack(tmp_path: Path, monkeypatch):
         return socket.create_connection(("127.0.0.1", ports[host]), timeout=10)
 
     monkeypatch.setattr(proxy_mod, "_connect_upstream", fake_connect_upstream)
+    monkeypatch.setattr(
+        proxy_mod,
+        "_resolve",
+        lambda host, port: (
+            ["93.184.216.34"] if host != "internal.test" else ["127.0.0.1"]
+        ),
+    )
     log = tmp_path / "blocked.jsonl"
     server = proxy_mod.serve(
         _free_port(),
@@ -295,7 +304,7 @@ class TestProxy:
         assert (code, body) == (200, "hello /abs/1706.03762")
         assert not stack.log.exists()
 
-    def test_other_host_is_tunnelled_end_to_end(self, stack):
+    def test_other_host_remains_accessible(self, stack):
         code, body = _status(stack.opener, "https://other.test/anything")
         assert (code, body) == (200, "hello /anything")
 
@@ -454,6 +463,7 @@ class TestStartStop:
             "/opt/benchflow-egress/policy.json",
             "/opt/benchflow-egress/proxy.py",
             "/opt/benchflow-egress/ca.crt",
+            "/opt/benchflow-egress/ca.key",
             "/opt/benchflow-egress/certs/a.test.pem",
         }
         assert all(call.kwargs == {"mode": "600"} for call in uploaded.values())

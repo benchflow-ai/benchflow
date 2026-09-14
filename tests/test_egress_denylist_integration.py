@@ -73,7 +73,7 @@ def write_denylist_task(root: Path) -> Path:
 # header, an allowed sibling must return origin content, and direct sockets
 # must fail even when the caller deliberately ignores every proxy variable.
 PROBE = dedent("""\
-    import json, os, socket, urllib.error, urllib.request
+    import json, os, socket, ssl, urllib.error, urllib.parse, urllib.request
     assert os.getuid() != 0, 'probe must run as the agent'
     with urllib.request.urlopen('https://example.com/', timeout=30) as r:
         assert r.status == 200
@@ -108,7 +108,57 @@ PROBE = dedent("""\
             raise AssertionError('direct egress bypassed the firewall')
     except OSError:
         pass
+    # A non-root client must not obtain the dynamic certificate signing key.
+    try:
+        with open('/opt/benchflow-egress/ca.key', 'rb') as secret:
+            secret.read()
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError('agent can read the proxy CA signing key')
+
+    def response_head(sock):
+        data = b''
+        while b'\\r\\n\\r\\n' not in data:
+            part = sock.recv(4096)
+            if not part:
+                raise AssertionError('connection closed before HTTP headers')
+            data += part
+        return data.partition(b'\\r\\n\\r\\n')[0]
+
+    proxy = urllib.parse.urlsplit(os.environ['HTTPS_PROXY'])
+    carrier = 's.sni.global.fastly.net'
+    protected = 'arxiv.org'
+    context = ssl._create_unverified_context()
+
+    def carrier_socket():
+        raw = socket.create_connection((proxy.hostname, proxy.port), timeout=30)
+        raw.sendall(('CONNECT ' + carrier + ':443 HTTP/1.1\\r\\nHost: ' +
+                     carrier + ':443\\r\\n\\r\\n').encode())
+        head = response_head(raw)
+        assert head.split(b' ', 2)[1] == b'200', head
+        return raw
+
+    # Changing SNI after an allowed CONNECT must fail during TLS negotiation.
+    with carrier_socket() as raw:
+        try:
+            with context.wrap_socket(raw, server_hostname=protected) as tls:
+                tls.sendall(b'GET /abs/2401.12345 HTTP/1.1\\r\\nHost: arxiv.org\\r\\n\\r\\n')
+                response_head(tls)
+        except ssl.SSLError:
+            pass
+        else:
+            raise AssertionError('CONNECT/SNI fronting was accepted')
+
+    # Keeping the carrier SNI must not allow a different encrypted HTTP Host.
+    with carrier_socket() as raw, context.wrap_socket(raw, server_hostname=carrier) as tls:
+        tls.sendall(b'GET /abs/2401.12345 HTTP/1.1\\r\\nHost: arxiv.org\\r\\n\\r\\n')
+        head = response_head(tls)
+        assert head.split(b' ', 2)[1] == b'403', head
+        assert b'\\r\\nx-benchflow-blocked: 1' in head.lower(), head
+
     print(json.dumps({'allowed_origin': True, 'blocked_requests': len(urls) + 2,
+                      'fronting_attempts_blocked': 2, 'signer_key_unreadable': True,
                       'direct_egress_blocked': True, 'uid': os.getuid()}))
     """)
 
@@ -117,7 +167,7 @@ PROBE = dedent("""\
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["docker", "daytona"])
 async def test_research_denylist_sandbox_canary(tmp_path: Path, backend: str):
-    """Guards PR #1113's real Docker/Daytona enforcement for FrontierPhysics #366."""
+    """Guards PR #1113 and the CONNECT authority bypass found at b3b8afaf."""
     if backend == "daytona":
         if not os.environ.get("DAYTONA_API_KEY"):
             pytest.skip("DAYTONA_API_KEY not set")
@@ -162,6 +212,8 @@ async def test_research_denylist_sandbox_canary(tmp_path: Path, backend: str):
         assert result.return_code == 0, result.stdout + result.stderr
         evidence = json.loads(result.stdout)
         assert evidence["blocked_requests"] == 8
+        assert evidence["fronting_attempts_blocked"] == 2
+        assert evidence["signer_key_unreadable"] is True
         # The verifier/oracle UID must still be able to use direct egress.
         result = await sandbox.exec(
             "curl --noproxy '*' --fail --max-time 30 https://example.com/",
@@ -179,9 +231,11 @@ async def test_research_denylist_sandbox_canary(tmp_path: Path, backend: str):
 
     log = rollout_dir / "trajectory" / "egress_denylist.jsonl"
     events = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(events) == 8
+    assert len(events) == 10
     assert all(event["action"] == "blocked" for event in events)
     assert any(event["rule"] == "host:example.net" for event in events)
+    assert any(event["rule"] == "tls-sni-mismatch" for event in events)
+    assert any(event["rule"] == "authority-mismatch" for event in events)
 
 
 @pytest.mark.integration
@@ -228,6 +282,8 @@ async def test_research_denylist_model_rollout(tmp_path: Path, backend: str):
         data = json.loads(Path('/app/network_probe.json').read_text())
         assert data['allowed_origin'] is True
         assert data['blocked_requests'] == 8
+        assert data['fronting_attempts_blocked'] == 2
+        assert data['signer_key_unreadable'] is True
         assert data['direct_egress_blocked'] is True
         assert data['uid'] != 0
         Path('/logs/verifier/network_probe.json').write_text(json.dumps(data))
@@ -256,4 +312,5 @@ async def test_research_denylist_model_rollout(tmp_path: Path, backend: str):
     logs = list((tmp_path / "jobs").rglob("egress_denylist.jsonl"))
     assert len(logs) == 1
     events = [json.loads(line) for line in logs[0].read_text().splitlines()]
-    assert len(events) == 8 and all(e["action"] == "blocked" for e in events)
+    assert len(events) == 10 and all(e["action"] == "blocked" for e in events)
+    assert {"tls-sni-mismatch", "authority-mismatch"} <= {e["rule"] for e in events}

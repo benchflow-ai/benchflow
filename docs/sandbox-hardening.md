@@ -67,10 +67,10 @@ See [task authoring](./task-authoring-task-md.md#network-policy) for the field r
 
 ### Mechanism
 
-1. **Loopback proxy.** Before the agent starts, benchflow uploads a stdlib Python proxy (`src/benchflow/sandbox/_egress_denylist_proxy.py`) and starts it as root on `127.0.0.1:18628`. A request that matches the denylist gets `403 Forbidden` with an `X-BenchFlow-Blocked: 1` header; everything else is tunneled to its destination.
+1. **Loopback proxy.** Before the agent starts, benchflow uploads a stdlib Python proxy (`src/benchflow/sandbox/_egress_denylist_proxy.py`) and starts it as root on `127.0.0.1:18628`. A request that matches the denylist gets `403 Forbidden` with an `X-BenchFlow-Blocked: 1` header; allowed HTTP requests are forwarded to their checked destination.
 2. **Uid firewall.** The same `iptables` owner rule that backs the no-web mode lets the sandbox user reach loopback only. Every other outbound packet from that uid is rejected, so the proxy is the only way out. `iptables` is installed on first use (apt, dnf, or apk) when the image lacks it.
 3. **Proxy and CA environment.** The agent env gets `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, and `NODE_USE_ENV_PROXY`, plus the `BENCHFLOW_EGRESS_DENYLIST=1` marker that arms the firewall. These are added after the sandbox-local LiteLLM gateway starts, so the gateway's upstream provider traffic does not pass through the egress proxy.
-4. **Selective TLS interception.** Hosts named in `blocked_urls` need their paths inspected, so the proxy terminates TLS for those hosts with a leaf certificate signed by a per-rollout CA (`BenchFlow egress policy CA`). Certificates are minted on the host; the CA private key never enters the sandbox. Hosts in `blocked_hosts` are refused at `CONNECT` time, and every other host passes through as an opaque tunnel.
+4. **HTTPS inspection.** The proxy terminates every external TLS connection with a leaf certificate signed by a per-rollout CA (`BenchFlow egress policy CA`). Known policy hosts have pre-generated leaves; OpenSSL mints other leaves on demand. The CA signing key and proxy files are root-only inside `/opt/benchflow-egress` (directory mode `0700`, files `0600`) and are removed at cleanup. `CONNECT`, TLS SNI when supplied, the HTTP Host, and any absolute request URL must agree on the destination; mismatches fail closed even when a client disables certificate verification. This prevents shared-CDN domain fronting. The proxy forwards one framed HTTP request per connection and does not relay later client bytes. Hosts in `blocked_hosts` are refused at `CONNECT` time.
 5. **Hosted search off.** Provider-side search tools fetch pages from the model provider's servers, outside the sandbox, so the proxy cannot see them. Benchflow disables them per harness:
 
    | Harness | Switched off | Still on |
@@ -81,7 +81,7 @@ See [task authoring](./task-authoring-task-md.md#network-policy) for the field r
    | `opencode`, `mimo` | `websearch` | `webfetch` |
    | other harnesses | nothing | whatever hosted tools they ship |
 
-6. **Block log.** Each refused attempt is appended to a root-owned log that benchflow downloads to `trajectory/egress_denylist.jsonl` in the rollout directory at cleanup: one JSON object per line with `ts`, `action`, `method`, `url`, and `rule` (`host:<host>`, `url:<host><path>`, or `ip-literal`). For a refused `CONNECT`, `url` holds the `host:port` the client asked for.
+6. **Block log.** Each refused attempt is appended to a root-owned log that benchflow downloads to `trajectory/egress_denylist.jsonl` in the rollout directory at cleanup: one JSON object per line with `ts`, `action`, `method`, `url`, and `rule` (`host:<host>`, `url:<host><path>`, `ip-literal`, `private-address`, `authority-mismatch`, or `tls-sni-mismatch`). A TLS SNI mismatch is rejected during the handshake and logged with `server_name`, rather than returning an HTTP response. For a refused `CONNECT`, `url` holds the requested hostname (with its port for pre-TLS denials).
 
 The controller also registers the exact `127.0.0.1:<port>` endpoint of its local
 model gateway with the proxy. Clients such as Gemini's Undici `ProxyAgent`
@@ -109,7 +109,7 @@ Matching ignores scheme, port, query string, and case, strips a leading `www.`, 
 ### Requirements
 
 - A non-root `sandbox_user`. Setup fails closed before any sandbox is created when it is missing.
-- `python3` (or `python`) on `PATH` in the task image. The proxy is a stdlib script and installs nothing.
+- `python3` (or `python`) and `openssl` on `PATH` in the task image. The proxy is a stdlib script; OpenSSL signs dynamic leaf certificates. Setup fails closed if either runtime is absent.
 - An ACP agent. Session-factory agents raise at connect time because the uid firewall only runs in the ACP path.
 - `docker`: the agent container needs `NET_ADMIN` for `iptables`. Benchflow adds it through its own compose overlay (`src/benchflow/sandbox/_compose_files/docker-compose-net-admin.yaml`), so the task's `Dockerfile` and `docker-compose.yaml` need nothing extra.
 - `daytona`: verified on direct sandboxes with `iptables`.
@@ -122,7 +122,7 @@ Matching ignores scheme, port, query string, and case, strips a leading `www.`, 
 - **The block is visible.** A refused request gets a `403` that names the policy, and the agent can tell intercepted hosts from the certificate issuer (`BenchFlow egress policy CA`). Do not expect the agent to be unaware that a page is off limits.
 - **Tools that ignore proxy variables fail closed.** A client that does not honor `HTTP_PROXY` and `HTTPS_PROXY` cannot reach the network at all, because the uid firewall rejects non-loopback traffic. It gets a connection error, not the page, and the attempt does not appear in the block log.
 - **Hosted search coverage is per harness.** Only the harnesses in the table have a switch. A harness with a hosted fetch that is not listed there can reach blocked pages through the provider.
-- **Only HTTP requests and `CONNECT` targets are inspected.** A tunnel to an unblocked host carries any protocol the client chooses, uninspected. A client that does not speak the HTTP proxy protocol at all is rejected by the firewall rather than filtered.
+- **External egress is HTTP/1.x.** External `CONNECT` requests must carry TLS and a checked HTTP/1.x request. Arbitrary TCP tunnels, HTTP upgrades, and clients pinned to an origin certificate are not supported. TLS clients must trust the injected CA; HTTP/2-capable clients must permit HTTP/1.1 fallback. Only the exact controller-registered loopback HTTP model gateway keeps opaque tunneling. A client that ignores the HTTP proxy protocol is rejected by the firewall.
 
 ## Threat model and known gaps
 

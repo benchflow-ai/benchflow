@@ -1,21 +1,26 @@
 """Loopback egress proxy for network_mode='denylist'. Stdlib only; runs inside the sandbox as root.
 
-Hosts named in ``blocked_urls`` are TLS-intercepted with pre-generated
-certificates so the full path is visible; every other host passes through as
-an opaque CONNECT tunnel.
+HTTPS is intercepted so the CONNECT authority, TLS name and decrypted HTTP
+authority stay bound to the same destination. Leaf certificates are generated
+on demand with the per-rollout CA kept in the root-only runtime directory.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import ipaddress
 import json
+import os
 import re
+import secrets
 import socket
 import socketserver
 import ssl
+import subprocess
 import sys
+import tempfile
 import threading
 import urllib.parse
 from datetime import datetime, timezone
@@ -26,6 +31,7 @@ HEAD_LIMIT = 64 * 1024
 HEAD_TIMEOUT = 30
 IDLE_TIMEOUT = 900
 BLOCK_BODY = "Blocked by the task network policy: {url}\n"
+CERT_MINT_TIMEOUT = 15
 
 
 def host_key(host: str) -> str:
@@ -159,23 +165,156 @@ class Policy:
 
 
 class CertStore:
-    """Server TLS contexts for intercepted hosts, from ``<cert_dir>/<host>.pem`` (cert + key)."""
+    """Cached server TLS contexts, with root-only on-demand leaf signing."""
 
-    def __init__(self, cert_dir: str):
+    def __init__(
+        self,
+        cert_dir: str,
+        *,
+        ca_cert: str | None = None,
+        ca_key: str | None = None,
+        openssl_bin: str = "openssl",
+    ):
+        if (ca_cert is None) != (ca_key is None):
+            raise ValueError("ca_cert and ca_key must be provided together")
         self.cert_dir = Path(cert_dir)
+        self.ca_cert = Path(ca_cert) if ca_cert is not None else None
+        self.ca_key = Path(ca_key) if ca_key is not None else None
+        self.openssl_bin = openssl_bin
         self._lock = threading.Lock()
         self._contexts: dict[str, ssl.SSLContext] = {}
 
     def context_for(self, host: str) -> ssl.SSLContext:
-        key = host_key(host)
+        key = self._certificate_host(host)
         with self._lock:
             ctx = self._contexts.get(key)
             if ctx is None:
+                pem = self.cert_dir / f"{key}.pem"
+                if not pem.is_file():
+                    pem = self._mint(key)
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                ctx.load_cert_chain(str(self.cert_dir / f"{key}.pem"))
+                ctx.load_cert_chain(str(pem))
                 ctx.set_alpn_protocols(["http/1.1"])
+                ctx.sni_callback = _check_sni
                 self._contexts[key] = ctx
             return ctx
+
+    @staticmethod
+    def _certificate_host(host: str) -> str:
+        """Return a safe ASCII DNS name for certificate and cache use."""
+        try:
+            name = host_key(host).encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise ValueError("invalid certificate hostname") from exc
+        if len(name) > 253 or _looks_like_address(name):
+            raise ValueError("invalid certificate hostname")
+        labels = name.split(".")
+        if any(
+            not label
+            or len(label) > 63
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+            for label in labels
+        ):
+            raise ValueError("invalid certificate hostname")
+        return name
+
+    def _mint(self, host: str) -> Path:
+        """Mint one leaf with argv-only OpenSSL calls and atomically cache it."""
+        if self.ca_cert is None or self.ca_key is None:
+            raise RuntimeError(f"no signer configured for TLS destination {host!r}")
+        digest = hashlib.sha256(host.encode("ascii")).hexdigest()
+        destination = self.cert_dir / f"dynamic-{digest}.pem"
+        if destination.is_file():
+            return destination
+        alt_names = [host]
+        if not host.startswith("www.") and len(f"www.{host}") <= 253:
+            alt_names.append(f"www.{host}")
+        alt_config = "\n".join(
+            f"DNS.{index} = {name}" for index, name in enumerate(alt_names, 1)
+        )
+        config = (
+            "[req]\n"
+            "prompt = no\n"
+            "distinguished_name = dn\n"
+            "req_extensions = leaf\n"
+            "[dn]\n"
+            "CN = BenchFlow egress proxy\n"
+            "[leaf]\n"
+            "basicConstraints = critical,CA:FALSE\n"
+            "keyUsage = critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage = serverAuth\n"
+            "subjectAltName = @alt_names\n"
+            "[alt_names]\n"
+            f"{alt_config}\n"
+        )
+        self.cert_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(prefix=".mint-", dir=self.cert_dir) as tmp:
+                work = Path(tmp)
+                config_path = work / "leaf.cnf"
+                key_path, request_path = work / "leaf.key", work / "leaf.csr"
+                cert_path = work / "leaf.crt"
+                config_path.write_text(config, encoding="ascii")
+                commands = (
+                    [
+                        self.openssl_bin,
+                        "req",
+                        "-new",
+                        "-newkey",
+                        "ec",
+                        "-pkeyopt",
+                        "ec_paramgen_curve:P-256",
+                        "-nodes",
+                        "-config",
+                        str(config_path),
+                        "-keyout",
+                        str(key_path),
+                        "-out",
+                        str(request_path),
+                    ],
+                    [
+                        self.openssl_bin,
+                        "x509",
+                        "-req",
+                        "-in",
+                        str(request_path),
+                        "-CA",
+                        str(self.ca_cert),
+                        "-CAkey",
+                        str(self.ca_key),
+                        "-set_serial",
+                        f"0x{secrets.randbits(159) or 1:x}",
+                        "-days",
+                        "30",
+                        "-sha256",
+                        "-extfile",
+                        str(config_path),
+                        "-extensions",
+                        "leaf",
+                        "-out",
+                        str(cert_path),
+                    ],
+                )
+                for command in commands:
+                    subprocess.run(
+                        command,
+                        check=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        timeout=CERT_MINT_TIMEOUT,
+                    )
+                temporary = self.cert_dir / f".{digest}.{secrets.token_hex(8)}.tmp"
+                descriptor = os.open(
+                    temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                )
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(cert_path.read_bytes())
+                    output.write(key_path.read_bytes())
+                os.replace(temporary, destination)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"could not mint TLS certificate for {host!r}") from exc
+        return destination
 
 
 class Log:
@@ -216,13 +355,129 @@ def _parse_head(head: bytes) -> tuple[str, str, str, list[tuple[str, str]], byte
     headers = []
     for line in lines[1:]:
         name, sep, value = line.partition(":")
-        if sep:
-            headers.append((name.strip(), value.strip()))
+        if not sep or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ConnectionError("invalid request header")
+        if any(ord(c) < 32 and c != "\t" for c in value):
+            raise ConnectionError("invalid request header value")
+        headers.append((name, value.strip()))
     return parts[0], parts[1], parts[2], headers, rest
 
 
 _HOP_HEADERS = {"proxy-connection", "proxy-authorization", "connection", "keep-alive"}
 _ABSOLUTE_FORM = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _authority(value: str, default_port: int) -> tuple[str, int]:
+    """Parse an HTTP authority without accepting userinfo, paths or whitespace."""
+    if (
+        not value
+        or any(c.isspace() for c in value)
+        or any(c in value for c in "/?#@\\")
+    ):
+        raise ValueError("invalid authority")
+    parts = urllib.parse.urlsplit("//" + value)
+    if not parts.hostname:
+        raise ValueError("missing hostname")
+    return parts.hostname.rstrip(".").lower(), parts.port or default_port
+
+
+def _check_sni(
+    sock: ssl.SSLObject | ssl.SSLSocket, server_name: str | None, _ctx: ssl.SSLContext
+) -> int | None:
+    """Bind TLS routing to CONNECT even for clients that disable certificate checks."""
+    host = getattr(sock, "_benchflow_connect_host", "")
+    if server_name is not None and server_name.rstrip(".").lower() != host:
+        log = getattr(sock, "_benchflow_log", None)
+        if log is not None:
+            log.write(
+                action="blocked",
+                method="CONNECT",
+                url=host,
+                rule="tls-sni-mismatch",
+                server_name=server_name,
+            )
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+def _request_framing(headers: list[tuple[str, str]]) -> tuple[int, bool]:
+    """Accept one unambiguous HTTP request body, never a following request."""
+    lengths = [v for n, v in headers if n.lower() == "content-length"]
+    encodings = [v for n, v in headers if n.lower() == "transfer-encoding"]
+    if len(lengths) > 1 or len(encodings) > 1 or (lengths and encodings):
+        raise ValueError("ambiguous request framing")
+    if encodings:
+        if encodings[0].lower() != "chunked":
+            raise ValueError("unsupported transfer encoding")
+        return 0, True
+    if lengths and not re.fullmatch(r"[0-9]+", lengths[0]):
+        raise ValueError("invalid content length")
+    return int(lengths[0]) if lengths else 0, False
+
+
+class _BodyReader:
+    def __init__(self, sock: socket.socket, initial: bytes):
+        self.sock, self.buffer = sock, initial
+
+    def take(self, size: int) -> bytes:
+        if not self.buffer:
+            self.buffer = self.sock.recv(min(size, 65536))
+            if not self.buffer:
+                raise ConnectionError("incomplete request body")
+        data, self.buffer = self.buffer[:size], self.buffer[size:]
+        return data
+
+    def line(self) -> bytes:
+        while b"\r\n" not in self.buffer:
+            if len(self.buffer) > HEAD_LIMIT:
+                raise ConnectionError("body line too large")
+            data = self.sock.recv(4096)
+            if not data:
+                raise ConnectionError("incomplete chunked body")
+            self.buffer += data
+        line, self.buffer = self.buffer.split(b"\r\n", 1)
+        if len(line) > HEAD_LIMIT:
+            raise ConnectionError("body line too large")
+        return line
+
+
+def _copy_request_body(
+    client: socket.socket,
+    upstream: socket.socket,
+    rest: bytes,
+    length: int,
+    chunked: bool,
+) -> None:
+    """Stream only this body. Canonicalize chunks and discard trailers/pipeline bytes."""
+    reader = _BodyReader(client, rest)
+
+    def copy(size: int) -> None:
+        while size:
+            data = reader.take(min(size, 65536))
+            upstream.sendall(data)
+            size -= len(data)
+
+    if not chunked:
+        copy(length)
+        return
+    while True:
+        size_text = reader.line().split(b";", 1)[0]
+        if not re.fullmatch(rb"[0-9a-fA-F]+", size_text):
+            raise ConnectionError("invalid chunk size")
+        size = int(size_text, 16)
+        if size == 0:
+            trailer_size = 0
+            while line := reader.line():
+                trailer_size += len(line) + 2
+                if trailer_size > HEAD_LIMIT:
+                    raise ConnectionError("trailers too large")
+            upstream.sendall(b"0\r\n\r\n")
+            return
+        upstream.sendall(f"{size:x}\r\n".encode("ascii"))
+        copy(size)
+        if reader.line() != b"":
+            raise ConnectionError("invalid chunk terminator")
+        upstream.sendall(b"\r\n")
 
 
 class _PrivateDestination(Exception):
@@ -322,6 +577,32 @@ def _relay(client: socket.socket, upstream: socket.socket) -> None:
         upstream.close()
 
 
+def _relay_response(client: socket.socket, upstream: socket.socket) -> None:
+    """Relay the response and propagate client EOF without forwarding more requests."""
+
+    def discard_client_bytes() -> None:
+        try:
+            while client.recv(65536):
+                pass
+        except OSError:
+            with contextlib.suppress(OSError):
+                socket.socket.shutdown(upstream, socket.SHUT_RDWR)
+            return
+        # Preserve half-close semantics for clients that finish sending before
+        # reading the response, while waking origins waiting for another request.
+        with contextlib.suppress(OSError):
+            socket.socket.shutdown(upstream, socket.SHUT_WR)
+
+    watcher = threading.Thread(target=discard_client_bytes, daemon=True)
+    watcher.start()
+    try:
+        _pump(upstream, client)
+    finally:
+        with contextlib.suppress(OSError):
+            socket.socket.shutdown(client, socket.SHUT_RD)
+        watcher.join()
+
+
 class Proxy(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -371,8 +652,12 @@ class Handler(socketserver.BaseRequestHandler):
                 self.request, method, target, version, headers, rest, secure=False
             )
 
-    def _deny(self, sock: socket.socket, method: str, url: str, rule: str) -> None:
-        self.proxy.log.write(action="blocked", method=method, url=url, rule=rule)
+    def _deny(
+        self, sock: socket.socket, method: str, url: str, rule: str, **evidence: object
+    ) -> None:
+        self.proxy.log.write(
+            action="blocked", method=method, url=url, rule=rule, **evidence
+        )
         sock.sendall(
             _response(
                 "403 Forbidden",
@@ -382,22 +667,57 @@ class Handler(socketserver.BaseRequestHandler):
         )
 
     def _connect(self, target: str, early: bytes) -> None:
-        host, _, port_s = target.rpartition(":")
-        host = host.strip("[]").rstrip(".").lower()
-        port = int(port_s) if port_s.isdigit() else 443
+        host, port = _authority(target, 443)
         rule = self.proxy.policy.host_rule(host, port)
         if rule:
             self._deny(self.request, "CONNECT", f"{host}:{port}", rule)
             return
-        if self.proxy.policy.inspect(host):
+        # Only the controller-created HTTP model gateway may use an opaque
+        # tunnel. Every external CONNECT must expose its HTTP authority/path:
+        # a CDN can route a permitted SNI to a protected inner Host as well.
+        if (host, port) != ("127.0.0.1", self.proxy.policy.model_gateway_port):
+            # Reject internal destinations before issuing a certificate or
+            # acknowledging CONNECT. Known URL-policy hosts remain inspectable
+            # even when their origin is offline, so blocked paths still log.
+            if not self.proxy.policy.inspect(host):
+                try:
+                    addresses = _resolve(host, port)
+                except OSError:
+                    self.request.sendall(
+                        _response("502 Bad Gateway", "cannot resolve destination\n")
+                    )
+                    return
+                if not addresses or not all(_upstream_allowed(a) for a in addresses):
+                    self._deny(
+                        self.request, "CONNECT", f"{host}:{port}", "private-address"
+                    )
+                    return
+            if early:
+                self.request.sendall(
+                    _response("400 Bad Request", "wait for CONNECT response\n")
+                )
+                return
+            context = self.proxy.certs.context_for(host)
             self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            tls = self.proxy.certs.context_for(host).wrap_socket(
-                self.request, server_side=True
-            )
-            method, path, ver, headers, rest = _parse_head(_read_head(tls))
-            self._forward(
-                tls, method, path, ver, headers, rest, secure=True, host=host, port=port
-            )
+            with context.wrap_socket(
+                self.request, server_side=True, do_handshake_on_connect=False
+            ) as tls:
+                tls._benchflow_connect_host = host  # ty: ignore[invalid-assignment]
+                tls._benchflow_log = self.proxy.log  # ty: ignore[invalid-assignment]
+                tls.settimeout(HEAD_TIMEOUT)
+                tls.do_handshake()
+                method, path, ver, headers, rest = _parse_head(_read_head(tls))
+                self._forward(
+                    tls,
+                    method,
+                    path,
+                    ver,
+                    headers,
+                    rest,
+                    secure=True,
+                    host=host,
+                    port=port,
+                )
             return
         try:
             upstream = _connect_upstream(
@@ -431,28 +751,78 @@ class Handler(socketserver.BaseRequestHandler):
         host: str = "",
         port: int = 0,
     ) -> None:
+        if (
+            version not in ("HTTP/1.0", "HTTP/1.1")
+            or not re.fullmatch(r"[A-Z]+", method)
+            or method == "CONNECT"
+        ):
+            sock.sendall(_response("400 Bad Request", "HTTP/1.x request required\n"))
+            return
         if secure:
             path = target
             if _ABSOLUTE_FORM.match(target):
-                path = "/" + target.split("://", 1)[1].partition("/")[2]
+                parts = urllib.parse.urlsplit(target)
+                if parts.scheme.lower() != "https" or _authority(parts.netloc, 443) != (
+                    host,
+                    port,
+                ):
+                    self._deny(sock, method, target, "authority-mismatch")
+                    return
+                path = (parts.path or "/") + (
+                    ("?" + parts.query) if parts.query else ""
+                )
             url = f"https://{host}{path}"
             authority = host if port == 443 else f"{host}:{port}"
         else:
             parts = urllib.parse.urlsplit(target)
-            host, port = (parts.hostname or "").rstrip("."), parts.port or 80
+            if parts.scheme.lower() != "http":
+                sock.sendall(_response("400 Bad Request", "HTTP URL required\n"))
+                return
+            host, port = _authority(parts.netloc, 80)
             path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
             url = f"http://{host}{path}"
             authority = host if port == 80 else f"{host}:{port}"
-            if not host:
-                sock.sendall(_response("400 Bad Request", "absolute URL required\n"))
-                return
+        if not path.startswith("/") or "#" in path:
+            sock.sendall(_response("400 Bad Request", "origin path required\n"))
+            return
+        authorities = [v for n, v in headers if n.lower() == "host"]
+        if len(authorities) > 1 or (version == "HTTP/1.1" and not authorities):
+            sock.sendall(_response("400 Bad Request", "one Host header required\n"))
+            return
+        if authorities and _authority(authorities[0], 443 if secure else 80) != (
+            host,
+            port,
+        ):
+            self._deny(
+                sock,
+                method,
+                url,
+                "authority-mismatch",
+                received_authority=authorities[0],
+                expected_authority=authority,
+            )
+            return
+        try:
+            length, chunked = _request_framing(headers)
+        except ValueError as exc:
+            sock.sendall(_response("400 Bad Request", str(exc) + "\n"))
+            return
+        expectations = [v.lower() for n, v in headers if n.lower() == "expect"]
+        if expectations and expectations != ["100-continue"]:
+            sock.sendall(
+                _response("417 Expectation Failed", "unsupported expectation\n")
+            )
+            return
         rule = self.proxy.policy.url_rule(host, path, port)
         if rule:
             self._deny(sock, method, url, rule)
             return
-        headers = [(n, v) for n, v in headers if n.lower() != "host"]
+        headers = [
+            (n, v)
+            for n, v in headers
+            if n.lower() not in {"host", "expect", "upgrade", "trailer"}
+        ]
         headers.insert(0, ("Host", authority))
-        rest = _body_prefix(headers, rest)
         try:
             upstream = _connect_upstream(
                 host, port, model_gateway_port=self.proxy.policy.model_gateway_port
@@ -471,8 +841,20 @@ class Handler(socketserver.BaseRequestHandler):
                 )
             )
             return
-        upstream.sendall(_build_head(method, path, version, headers) + rest)
-        _relay(sock, upstream)
+        try:
+            sock.settimeout(IDLE_TIMEOUT)
+            upstream.settimeout(IDLE_TIMEOUT)
+            upstream.sendall(_build_head(method, path, version, headers))
+            if expectations:
+                sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+            _copy_request_body(
+                sock, upstream, _body_prefix(headers, rest), length, chunked
+            )
+            # Never relay additional client bytes: a later request could name
+            # an unchecked virtual host or path on the same origin connection.
+            _relay_response(sock, upstream)
+        finally:
+            upstream.close()
 
 
 def serve(
@@ -497,6 +879,13 @@ def main(argv: list[str] | None = None) -> int:
         "--cert-dir", required=True, help="directory of <host>.pem leaf certificates"
     )
     parser.add_argument(
+        "--ca-cert", required=True, help="per-rollout signer certificate"
+    )
+    parser.add_argument(
+        "--ca-key", required=True, help="root-only per-rollout signer key"
+    )
+    parser.add_argument("--openssl", required=True, help="OpenSSL executable")
+    parser.add_argument(
         "--log", help="JSONL file for blocked attempts (default stderr)"
     )
     parser.add_argument("--upstream-ca", help="CA bundle for upstream TLS (tests)")
@@ -504,7 +893,12 @@ def main(argv: list[str] | None = None) -> int:
     server = serve(
         args.port,
         Policy.load(args.policy),
-        CertStore(args.cert_dir),
+        CertStore(
+            args.cert_dir,
+            ca_cert=args.ca_cert,
+            ca_key=args.ca_key,
+            openssl_bin=args.openssl,
+        ),
         Log(args.log),
         upstream_ca=args.upstream_ca,
     )

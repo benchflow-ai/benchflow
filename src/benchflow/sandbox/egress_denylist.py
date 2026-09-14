@@ -2,9 +2,10 @@
 
 The sandbox user can only reach loopback (the uid firewall in ``lockdown``),
 so every HTTP(S) request goes through the proxy, which refuses the denylist
-and tunnels everything else. Only hosts named in ``blocked_urls`` are
-TLS-intercepted; their leaf certificates are minted on the host and the CA
-private key never enters the sandbox.
+and binds each forwarded request to its proxy destination. HTTPS is
+TLS-intercepted so a client cannot disguise a protected HTTP host behind an
+allowed CONNECT target. The per-rollout CA signing key is uploaded only to the
+root-owned proxy directory and removed during cleanup.
 """
 
 from __future__ import annotations
@@ -107,9 +108,17 @@ def denylist_agent_env(agent_env: dict[str, str]) -> dict[str, str]:
 
 
 def certificate_material(
-    hosts: tuple[str, ...], *, now: datetime | None = None
+    hosts: tuple[str, ...],
+    *,
+    now: datetime | None = None,
+    include_ca_key: bool = False,
 ) -> dict[str, bytes]:
-    """PEM files for the proxy: ``ca.crt`` plus one ``<host>.pem`` (leaf cert and key) per host."""
+    """Return the per-rollout CA and pre-generated leaf certificate PEM files.
+
+    ``include_ca_key`` is reserved for the root-owned sandbox proxy, which uses
+    the key to mint certificates for previously unseen HTTPS destinations. The
+    default intentionally preserves the historical public helper result.
+    """
     try:
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
@@ -156,6 +165,12 @@ def certificate_material(
         .sign(ca_key, hashes.SHA256())
     )
     files = {"ca.crt": ca_cert.public_bytes(serialization.Encoding.PEM)}
+    if include_ca_key:
+        files["ca.key"] = ca_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
     for host in hosts:
         key = ec.generate_private_key(ec.SECP256R1())
         cert = (
@@ -195,18 +210,22 @@ def certificate_material(
 
 
 def _setup_cmd(*, runtime_dir: str = RUNTIME_DIR, ca_dir: str = CA_DIR) -> str:
-    """Root shell: find python, install the CA and bundle, replace any running proxy, start it detached."""
+    """Root shell: validate dependencies, install the CA, and start the proxy."""
     q = shlex.quote
     ca_cert, bundle = f"{ca_dir}/ca.crt", f"{ca_dir}/ca-bundle.crt"
     log, pid = f"{runtime_dir}/blocked.jsonl", f"{runtime_dir}/proxy.pid"
     proxy = (
         f'"$PY" {q(runtime_dir + "/proxy.py")} --port {EGRESS_PORT} '
-        f"--policy {q(runtime_dir + '/policy.json')} --cert-dir {q(runtime_dir + '/certs')} --log {q(log)}"
+        f"--policy {q(runtime_dir + '/policy.json')} --cert-dir {q(runtime_dir + '/certs')} "
+        f"--ca-cert {q(runtime_dir + '/ca.crt')} --ca-key {q(runtime_dir + '/ca.key')} "
+        f'--openssl "$OPENSSL" --log {q(log)}'
     )
     return (
         "set -e; "
         'PY="$(command -v python3 || command -v python || true)"; '
         '[ -n "$PY" ] || { echo "network_mode=denylist needs python3 in the task image" >&2; exit 87; }; '
+        'OPENSSL="$(command -v openssl || true)"; '
+        '[ -n "$OPENSSL" ] || { echo "network_mode=denylist needs openssl in the task image" >&2; exit 87; }; '
         f"mkdir -p {q(ca_dir)} && chmod 755 {q(ca_dir)}; "
         f"cp {q(runtime_dir + '/ca.crt')} {q(ca_cert)} && chmod 644 {q(ca_cert)}; "
         'SYS=""; for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do '
@@ -302,7 +321,7 @@ async def start_egress_denylist(
                 "denylist model gateway must be a controller-owned loopback HTTP endpoint"
             )
         gateway_port = gateway.port
-    material = certificate_material(denylist.inspect_hosts)
+    material = certificate_material(denylist.inspect_hosts, include_ca_key=True)
     policy = {
         "blocked_urls": list(denylist.blocked_urls),
         "blocked_hosts": list(denylist.blocked_hosts),
@@ -312,7 +331,12 @@ async def start_egress_denylist(
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),
         "proxy.py": _PROXY_SCRIPT.read_bytes(),
         "ca.crt": material["ca.crt"],
-        **{f"certs/{name}": pem for name, pem in material.items() if name != "ca.crt"},
+        "ca.key": material["ca.key"],
+        **{
+            f"certs/{name}": pem
+            for name, pem in material.items()
+            if name not in {"ca.crt", "ca.key"}
+        },
     }
     await _run(
         env,
