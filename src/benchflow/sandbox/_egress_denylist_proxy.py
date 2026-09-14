@@ -577,6 +577,32 @@ def _relay(client: socket.socket, upstream: socket.socket) -> None:
         upstream.close()
 
 
+def _relay_response(client: socket.socket, upstream: socket.socket) -> None:
+    """Relay the response and propagate client EOF without forwarding more requests."""
+
+    def discard_client_bytes() -> None:
+        try:
+            while client.recv(65536):
+                pass
+        except OSError:
+            with contextlib.suppress(OSError):
+                socket.socket.shutdown(upstream, socket.SHUT_RDWR)
+            return
+        # Preserve half-close semantics for clients that finish sending before
+        # reading the response, while waking origins waiting for another request.
+        with contextlib.suppress(OSError):
+            socket.socket.shutdown(upstream, socket.SHUT_WR)
+
+    watcher = threading.Thread(target=discard_client_bytes, daemon=True)
+    watcher.start()
+    try:
+        _pump(upstream, client)
+    finally:
+        with contextlib.suppress(OSError):
+            socket.socket.shutdown(client, socket.SHUT_RD)
+        watcher.join()
+
+
 class Proxy(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -826,7 +852,7 @@ class Handler(socketserver.BaseRequestHandler):
             )
             # Never relay additional client bytes: a later request could name
             # an unchecked virtual host or path on the same origin connection.
-            _pump(upstream, sock)
+            _relay_response(sock, upstream)
         finally:
             upstream.close()
 

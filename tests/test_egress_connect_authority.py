@@ -23,6 +23,12 @@ from benchflow.sandbox.egress_denylist import certificate_material
 
 class _VirtualHostOrigin(socketserver.StreamRequestHandler):
     def handle(self):
+        try:
+            self._serve_requests()
+        finally:
+            self.server.connection_closed.set()
+
+    def _serve_requests(self):
         # Keep accepting requests even when a client asks for Connection: close.
         # Enforcement must not depend on a remote server honoring that header.
         self.connection.settimeout(2)
@@ -30,6 +36,7 @@ class _VirtualHostOrigin(socketserver.StreamRequestHandler):
             try:
                 line = self.rfile.readline()
                 if not line:
+                    self.server.client_eof.set()
                     return
                 method, path, _ = line.decode("ascii").strip().split(" ")
                 headers = {}
@@ -111,6 +118,8 @@ def authority_stack(tmp_path: Path, monkeypatch):
     origin.requests = []
     origin.protected_seen = threading.Event()
     origin.body_prefix_seen = threading.Event()
+    origin.client_eof = threading.Event()
+    origin.connection_closed = threading.Event()
     origin.socket = origin_ctx.wrap_socket(origin.socket, server_side=True)
 
     def connect_shared_origin(host, port, *, model_gateway_port=None):
@@ -128,6 +137,16 @@ def authority_stack(tmp_path: Path, monkeypatch):
         proxy_mod.Log(str(log)),
         upstream_ca=str(origin_ca),
     )
+    handler_finished = threading.Event()
+    original_process_request = proxy.process_request_thread
+
+    def observe_handler_release(request, client_address):
+        try:
+            original_process_request(request, client_address)
+        finally:
+            handler_finished.set()
+
+    proxy.process_request_thread = observe_handler_release
     for server in (origin, proxy):
         threading.Thread(target=server.serve_forever, daemon=True).start()
     yield SimpleNamespace(
@@ -137,6 +156,9 @@ def authority_stack(tmp_path: Path, monkeypatch):
         requests=origin.requests,
         protected_seen=origin.protected_seen,
         body_prefix_seen=origin.body_prefix_seen,
+        client_eof=origin.client_eof,
+        origin_closed=origin.connection_closed,
+        handler_finished=handler_finished,
         log=log,
     )
     for server in (proxy, origin):
@@ -332,3 +354,64 @@ def test_expect_continue_allows_a_fragmented_post_body(authority_stack, expectat
         code, _, body = _read_response(tls)
     assert code == 200
     assert json.loads(body)["body"] == "abcdef"
+
+
+def test_client_close_releases_checked_upstream_without_forwarding_pipeline(
+    authority_stack,
+):
+    """Guards PR #1122 against the connection leak introduced by commit 10090f48."""
+    with _tunnel(authority_stack) as tls:
+        tls.sendall(_get())
+        code, _, body = _read_response(tls)
+        assert code == 200 and json.loads(body)["path"] == "/ordinary"
+        # The origin remains ready for another request despite Connection: close.
+        # Extra client bytes must be discarded, while its eventual EOF must be
+        # propagated so neither the origin socket nor proxy handler is leaked.
+        tls.sendall(_get("paper.test", "/protected"))
+    assert authority_stack.client_eof.wait(0.75), (
+        "origin still waiting after client closed"
+    )
+    assert authority_stack.origin_closed.wait(0.75), (
+        "origin connection was not released"
+    )
+    assert authority_stack.handler_finished.wait(0.75), "proxy handler was not released"
+    assert not authority_stack.protected_seen.is_set()
+    assert len(authority_stack.requests) == 1
+
+
+def test_http_request_half_close_preserves_complete_response(
+    authority_stack, monkeypatch
+):
+    """Guards PR #1122 cleanup after 10090f48 without breaking request half-close."""
+    origin = _Origin(("127.0.0.1", 0), _VirtualHostOrigin)
+    origin.requests = authority_stack.requests
+    origin.protected_seen = authority_stack.protected_seen
+    origin.body_prefix_seen = authority_stack.body_prefix_seen
+    origin.client_eof = authority_stack.client_eof
+    origin.connection_closed = authority_stack.origin_closed
+
+    def connect_plain_origin(host, port, *, model_gateway_port=None):
+        assert (host, port) == ("carrier.test", 80)
+        return socket.create_connection(origin.server_address, timeout=3)
+
+    monkeypatch.setattr(proxy_mod, "_connect_upstream", connect_plain_origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    try:
+        with socket.create_connection(authority_stack.address, timeout=3) as client:
+            client.sendall(_get(path="http://carrier.test/ordinary"))
+            # HTTP permits request-side EOF while the client is still reading
+            # its response. Cleanup must not close the upstream read side.
+            client.shutdown(socket.SHUT_WR)
+            code, _, body = _read_response(client)
+        assert code == 200
+        assert json.loads(body) == {
+            "method": "GET",
+            "host": "carrier.test",
+            "path": "/ordinary",
+            "body": "",
+        }
+        assert authority_stack.client_eof.wait(0.75)
+        assert authority_stack.handler_finished.wait(0.75)
+    finally:
+        origin.shutdown()
+        origin.server_close()
