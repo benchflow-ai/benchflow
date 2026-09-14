@@ -25,6 +25,7 @@ from benchflow.sandbox._base import ExecResult, _filter_compose_service_names
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
+    COMPOSE_NET_ADMIN_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_UP_RETRY_DELAYS_SEC,
@@ -406,6 +407,7 @@ class _DaytonaDinD(_DaytonaStrategy):
                 COMPOSE_BUILD_PATH,
                 COMPOSE_PREBUILT_PATH,
                 COMPOSE_NO_NETWORK_PATH,
+                COMPOSE_NET_ADMIN_PATH,
             ):
                 await env._sdk_upload_file(path, f"{self._COMPOSE_DIR}/{path.name}")
 

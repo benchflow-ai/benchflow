@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -223,6 +224,95 @@ async def test_pre_compose_hook_failure_raises():
 
     with pytest.raises(RuntimeError, match="setup failed"):
         await strategy._run_pre_compose_hook()
+
+
+@pytest.mark.asyncio
+async def test_denylist_build_uploads_every_referenced_compose_file(
+    monkeypatch, tmp_path
+):
+    """Guards the DinD overlay fix against the regression introduced by f396c355."""
+    from benchflow.sandbox import daytona as daytona_module
+
+    class FakeClientManager:
+        @classmethod
+        async def get_instance(cls):
+            return object()
+
+    monkeypatch.setattr(daytona_module, "DaytonaClientManager", FakeClientManager)
+    monkeypatch.setattr(
+        daytona_module,
+        "Resources",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        daytona_module,
+        "Image",
+        SimpleNamespace(base=lambda image: SimpleNamespace(image=image)),
+    )
+    monkeypatch.setattr(
+        daytona_module,
+        "CreateSandboxFromImageParams",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    available_paths: set[str] = set()
+
+    async def upload_file(_source, destination):
+        available_paths.add(destination)
+
+    async def upload_dir(_source, destination):
+        available_paths.add(f"{destination}/docker-compose.yaml")
+
+    task_config = SimpleNamespace(
+        allow_internet=True,
+        build_timeout_sec=1200,
+        cpus=4,
+        docker_image=None,
+        memory_mb=8192,
+        network_mode="denylist",
+        storage_mb=10240,
+    )
+    env = SimpleNamespace(
+        _auto_delete_interval=0,
+        _auto_stop_interval=0,
+        _create_sandbox=AsyncMock(),
+        _kwargs={},
+        _sdk_upload_dir=upload_dir,
+        _sdk_upload_file=upload_file,
+        environment_dir=tmp_path,
+        environment_name="task",
+        logger=logging.getLogger("test.daytona.dind.overlays"),
+        task_env_config=task_config,
+    )
+    strategy = _DaytonaDinD.__new__(_DaytonaDinD)
+    strategy._env = env
+    strategy._vm_exec = AsyncMock(
+        return_value=ExecResult(stdout="", stderr="", return_code=0)
+    )
+    strategy._wait_for_docker_daemon = AsyncMock()
+    strategy._run_pre_compose_hook = AsyncMock()
+    strategy._compose_up_with_retry = AsyncMock()
+    strategy._wait_for_main_container = AsyncMock()
+
+    referenced_at_build: list[str] = []
+
+    async def compose_exec(subcommand, timeout_sec=None):
+        del timeout_sec
+        if subcommand == ["build"]:
+            flags = strategy._compose_file_flags()
+            referenced_at_build.extend(
+                flags[index + 1] for index, item in enumerate(flags) if item == "-f"
+            )
+            assert set(referenced_at_build) <= available_paths
+        return ExecResult(stdout="", stderr="", return_code=0)
+
+    strategy._compose_exec = compose_exec
+
+    await strategy.start(force_build=False)
+
+    assert f"{strategy._COMPOSE_DIR}/docker-compose-net-admin.yaml" in (
+        referenced_at_build
+    )
 
 
 class AsyncNoop:
