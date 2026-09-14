@@ -7,7 +7,7 @@ independently testable private methods.
 import json
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -704,6 +704,33 @@ class TestRunWiring:
         assert result.rewards == {"reward": 1.0}
         assert seen["config"].sandbox_setup_timeout == 77
         assert seen["config"].task_path == tmp_path
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_false_valued_custom_planes(self, monkeypatch, tmp_path):
+        """Guards PR #1110: valid false-valued plane objects retain identity."""
+        from benchflow.models import RunResult
+        from benchflow.rollout import Rollout
+        from benchflow.sdk import SDK
+
+        seen = {}
+        custom_planes = MagicMock()
+        custom_planes.__bool__.return_value = False
+
+        async def fake_create(config):
+            seen["config"] = config
+            trial = Rollout(config)
+            trial.run = AsyncMock(
+                return_value=RunResult(task_name="task-1", rewards={"reward": 1.0})
+            )
+            seen["trial"] = trial
+            return trial
+
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+
+        await SDK().run(task_path=tmp_path, planes=custom_planes)
+
+        assert seen["config"].planes is custom_planes
+        assert seen["trial"]._planes is custom_planes
 
     @pytest.mark.asyncio
     async def test_run_forwards_source_provenance_to_rollout_config(
