@@ -738,7 +738,7 @@ class SkillEvaluator:
                     try:
                         result_data = json.loads(result_file.read_text())
                         rewards = result_data.get("rewards")
-                        if rewards:
+                        if isinstance(rewards, dict):
                             reward = rewards.get(
                                 "reward", next(iter(rewards.values()), None)
                             )
