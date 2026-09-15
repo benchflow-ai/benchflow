@@ -1,4 +1,4 @@
-"""Guards terminal reviewer lifecycle boundaries after commit 6bc55f66."""
+"""Guards terminal reviewer lifecycle boundaries after PR #1126."""
 
 import asyncio
 from unittest.mock import AsyncMock, Mock
@@ -13,7 +13,7 @@ from benchflow.rollout import Rollout, RolloutConfig
 def test_result_cannot_publish_test_only_reward_while_review_is_pending(
     tmp_path, phase
 ):
-    """Guards premature result publication after commit 6bc55f66."""
+    """Guards premature result publication after PR #1126."""
     rollout = Rollout(RolloutConfig(task_path=tmp_path))
     rollout._phase = phase
     rollout._review_plan = object()
@@ -25,11 +25,13 @@ def test_result_cannot_publish_test_only_reward_while_review_is_pending(
 
 @pytest.mark.asyncio
 async def test_reviewer_wait_is_outside_solver_deadline(tmp_path, monkeypatch):
-    """Guards legitimate reviewer queues from solver watchdogs after 6bc55f66."""
+    """Guards legitimate reviewer queues from solver watchdogs after PR #1126."""
     rollout = Rollout(RolloutConfig(task_path=tmp_path))
     rollout._rollout_dir = tmp_path
     (tmp_path / "solver.json").write_text("{}")
-    original = RolloutResult("physics", rewards={"reward": 1.0})
+    original = RolloutResult(
+        "physics", rollout_name="physics__trial", rewards={"reward": 1.0}
+    )
     reviewed = RolloutResult("physics", rewards={"reward": 0.8})
     rollout._review_plan = object()
 
@@ -55,7 +57,7 @@ async def test_reviewer_wait_is_outside_solver_deadline(tmp_path, monkeypatch):
 async def test_manual_finalize_releases_solver_and_runs_reviewer_once(
     tmp_path, monkeypatch
 ):
-    """Guards phased SDK finalization after commit 6bc55f66."""
+    """Guards phased SDK finalization after PR #1126."""
     rollout = Rollout(RolloutConfig(task_path=tmp_path))
     rollout._review_plan = object()
     rollout._phase = "verified"
@@ -79,7 +81,7 @@ async def test_manual_finalize_releases_solver_and_runs_reviewer_once(
 async def test_hard_deadline_without_checkpoint_does_not_launch_reviewer(
     tmp_path, monkeypatch
 ):
-    """Guards watchdog cancellation before solver commit after 6bc55f66."""
+    """Guards watchdog cancellation before solver commit after PR #1126."""
     rollout = Rollout(RolloutConfig(task_path=tmp_path))
     rollout._rollout_dir = tmp_path
     rollout._review_plan = object()
@@ -103,14 +105,16 @@ async def test_hard_deadline_without_checkpoint_does_not_launch_reviewer(
 
 @pytest.mark.asyncio
 async def test_scoring_disk_failure_never_becomes_a_solver_retry(tmp_path, monkeypatch):
-    """Guards durable solver evidence on scoring commit errors after 6bc55f66."""
+    """Guards durable solver evidence on scoring commit errors after PR #1126."""
     from benchflow.rollout import _review
     from tests.test_automatic_review_scoring import _score
 
     rollout = Rollout(RolloutConfig(task_path=tmp_path))
     rollout._rollout_dir = tmp_path
     rollout._review_plan = object()
-    original = RolloutResult("physics", rewards={"reward": 1.0})
+    original = RolloutResult(
+        "physics", rollout_name="physics__trial", rewards={"reward": 1.0}
+    )
     monkeypatch.setattr(_review, "finish_review", AsyncMock(return_value=_score()))
     monkeypatch.setattr(
         _review, "commit_scoring_result", Mock(side_effect=OSError("disk full"))

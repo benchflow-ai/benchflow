@@ -20,10 +20,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.config_redaction import _should_record_env_entry
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
 from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
 from benchflow.loop_strategies import LoopStrategySpec
-from benchflow.rollout._results import _should_record_env_entry
 
 
 @dataclass(frozen=True)

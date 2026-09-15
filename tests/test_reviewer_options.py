@@ -339,3 +339,87 @@ def test_reviewer_missing_optional_sdk_has_install_hint() -> None:
         pytest.raises(ValueError, match=r"benchflow\[sandbox-daytona\]"),
     ):
         validate_reviewer_backend(ReviewerConfig(environment="daytona"))
+
+
+def test_public_reviewer_config_preserves_effort_when_resuming(tmp_path: Path) -> None:
+    """Guards PR #1126 against losing OpenCode effort during scoring-only resume."""
+    from benchflow.review.resume import _reviewer_options
+
+    config = ReviewerConfig(
+        agent="opencode",
+        model="azure/reviewer",
+        environment="daytona",
+        agent_env={
+            "BENCHFLOW_REASONING_EFFORT": "max",
+            "AZURE_API_KEY": "private-azure-key",
+            "CODEX_AUTH_JSON": '{"access_token":"private-oauth-token"}',
+            "OPENAI_BASE_URL": "https://proxy.invalid/__benchflow/private-proxy-key",
+        },
+    )
+    artifact = config.to_config_artifact()
+    assert artifact["agent_env"] == {"BENCHFLOW_REASONING_EFFORT": "max"}
+    assert artifact["agent_env_keys"] == sorted(config.agent_env)
+    serialized = json.dumps({"review": {"reviewer": artifact}})
+    for secret in ("private-azure-key", "private-oauth-token", "private-proxy-key"):
+        assert secret not in serialized
+    (tmp_path / "config.json").write_text(serialized)
+    resumed = _reviewer_options(tmp_path, None)
+    assert resumed.agent_env == {"BENCHFLOW_REASONING_EFFORT": "max"}
+    assert resumed.model == config.model
+    assert resumed.environment == config.environment
+    assert config.to_dict()["agent_env"]["AZURE_API_KEY"] == "private-azure-key"
+    rotated = _reviewer_options(
+        tmp_path, ReviewerConfig(agent_env={"AZURE_API_KEY": "rotated-key"})
+    )
+    assert rotated.agent_env == {
+        "BENCHFLOW_REASONING_EFFORT": "max",
+        "AZURE_API_KEY": "rotated-key",
+    }
+
+
+@pytest.mark.parametrize(
+    "name, inline_config",
+    [
+        (
+            "OPENCODE_CONFIG_CONTENT",
+            '{"provider":{"azure":{"options":{"apiKey":"synthetic-prefixless-secret"}}}}',
+        ),
+        (
+            "CODEX_CONFIG",
+            '{"model_provider":{"baseURL":"https://proxy.invalid/__benchflow/synthetic-credential"}}',
+        ),
+    ],
+)
+def test_public_reviewer_config_omits_secret_bearing_inline_configs(
+    name: str,
+    inline_config: str,
+) -> None:
+    """Guards PR #1126's effort preservation against embedded config credentials."""
+    config = ReviewerConfig(
+        agent_env={name: inline_config, "BENCHFLOW_REASONING_EFFORT": "max"}
+    )
+    artifact = config.to_config_artifact()
+    assert artifact["agent_env"] == {"BENCHFLOW_REASONING_EFFORT": "max"}
+    assert name in artifact["agent_env_keys"]
+    assert "synthetic-" not in json.dumps(artifact)
+
+
+def test_nonsecret_inline_reviewer_config_survives_resume(tmp_path: Path) -> None:
+    """Guards PR #1126: nonsecret inline effort and skill settings remain replayable."""
+    from benchflow.review.resume import _reviewer_options
+
+    inline_config = json.dumps(
+        {
+            "model": "azure/reviewer",
+            "options": {"reasoningEffort": "max"},
+            "skills": {"paths": ["/reviewer/skills"]},
+        }
+    )
+    config = ReviewerConfig(agent_env={"OPENCODE_CONFIG_CONTENT": inline_config})
+    artifact = config.to_config_artifact()
+    assert artifact["agent_env"]["OPENCODE_CONFIG_CONTENT"] == inline_config
+    (tmp_path / "config.json").write_text(
+        json.dumps({"review": {"reviewer": artifact}})
+    )
+    resumed = _reviewer_options(tmp_path, None)
+    assert resumed.agent_env == config.agent_env

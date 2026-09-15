@@ -7,6 +7,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from benchflow._utils.config import normalize_agent_name, normalize_reasoning_effort
+from benchflow._utils.config_redaction import _should_record_env_entry
 from benchflow.sandbox.providers import is_known_provider, providers_phrase
 
 # Keep the runtime reproducible; a mutable python:3.13-slim tag can drift.
@@ -73,5 +74,10 @@ class ReviewerConfig(BaseModel):
 
     def to_config_artifact(self) -> dict:
         result = self.model_dump(mode="json", exclude={"agent_env"})
+        result["agent_env"] = {
+            name: value
+            for name, value in self.agent_env.items()
+            if _should_record_env_entry(name, value)
+        }
         result["agent_env_keys"] = sorted(self.agent_env)
         return result

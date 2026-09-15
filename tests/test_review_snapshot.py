@@ -1,4 +1,4 @@
-"""Guards immutable reviewer inputs after baseline commit 6bc55f66."""
+"""Guards immutable reviewer inputs after baseline PR #1126."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from tests.test_review_runtime import FakeRun, good_weighted_review
 
 
 def test_rubric_snapshot_parse_and_hash_use_one_read(prepared, monkeypatch):
-    """Guards provenance against a second file read after commit 6bc55f66."""
+    """Guards provenance against a second file read after PR #1126."""
     path = prepared.rubric_path
     original = path.read_bytes()
     reads = []
@@ -46,7 +46,7 @@ def test_rubric_snapshot_parse_and_hash_use_one_read(prepared, monkeypatch):
 async def test_task_edit_during_reviewer_queue_cannot_replace_evidence(
     prepared, saved, monkeypatch
 ):
-    """Guards queued reviewer provenance after commit 6bc55f66."""
+    """Guards queued reviewer provenance after PR #1126."""
     original = (prepared.task_path / "task.md").read_bytes()
     observed = []
     fake = FakeRun(review_payload=good_weighted_review(saved.name))
@@ -83,7 +83,7 @@ async def test_task_edit_during_reviewer_queue_cannot_replace_evidence(
 
 @pytest.mark.asyncio
 async def test_mutation_during_task_copy_rejects_review(prepared, saved, monkeypatch):
-    """Guards copied task identity after commit 6bc55f66."""
+    """Guards copied task identity after PR #1126."""
     copytree = shutil.copytree
 
     def corrupt_copy(source, target, *args, **kwargs):

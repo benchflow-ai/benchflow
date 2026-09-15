@@ -1,7 +1,7 @@
-"""Scoring-stage resume for automatic review introduced after 6bc55f66.
+"""Scoring-stage resume for automatic review introduced after PR #1126.
 
 Guards the rubric integration against the solver replay behavior at commit
-6bc55f66: a reviewer failure must never spend on a second solver trajectory.
+PR #1126: a reviewer failure must never spend on a second solver trajectory.
 """
 
 from __future__ import annotations
@@ -309,7 +309,7 @@ def test_failed_review_is_retained_for_review_only_resume(saved_trial):
 def test_deferred_score_uses_execution_time_and_preserves_solver_timestamps(
     saved_trial,
 ):
-    """Guards delayed rubric retries against elapsed-time inflation after 6bc55f66."""
+    """Guards delayed rubric retries against elapsed-time inflation after PR #1126."""
     rollout, _ = saved_trial
     source = json.loads((rollout / "solver.json").read_text())
     source.update(
@@ -336,7 +336,7 @@ def test_deferred_score_uses_execution_time_and_preserves_solver_timestamps(
 
 
 def test_force_commit_retains_prior_revision_exports(saved_trial):
-    """Guards immutable scoring exports when revising a verdict after 6bc55f66."""
+    """Guards immutable scoring exports when revising a verdict after PR #1126."""
     rollout, _ = saved_trial
     first = _complete().model_copy(update={"revision": "scoring/first.json"})
     second = _complete(passed=False).model_copy(
@@ -360,7 +360,7 @@ def test_force_commit_retains_prior_revision_exports(saved_trial):
 def test_trainer_export_error_does_not_publish_a_new_final_result(
     saved_trial, monkeypatch
 ):
-    """Guards required export failures being swallowed after commit 6bc55f66."""
+    """Guards required export failures being swallowed after PR #1126."""
     rollout, _ = saved_trial
     original = _parent(rollout, _complete())
     _write(rollout / "result.json", original)

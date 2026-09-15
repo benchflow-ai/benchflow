@@ -76,7 +76,7 @@ def make_bundle(root: Path) -> Path:
 async def test_review_before_final_result_uses_explicit_test_gate(
     tmp_path, monkeypatch
 ):
-    """Guards terminal integration after commit 6bc55f66 without a fake final result."""
+    """Guards terminal integration after PR #1126 without a fake final result."""
     task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
     source = make_rollout(tmp_path / "jobs", "rollout-a", reward=0.0)
     (source / "result.json").rename(source / "solver.json")
@@ -122,7 +122,7 @@ async def test_review_before_final_result_uses_explicit_test_gate(
 async def test_interrupted_reviewer_cannot_score_valid_json(
     tmp_path, monkeypatch, failure
 ):
-    """Guards terminal integration after commit 6bc55f66 against premature JSON."""
+    """Guards terminal integration after PR #1126 against premature JSON."""
     task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
     source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
     fake = FakeRun(review_payload=good_weighted_review())
@@ -152,7 +152,7 @@ async def test_interrupted_reviewer_cannot_score_valid_json(
 
 
 def test_workspace_upload_preserves_links_and_redacts_provider_capture(tmp_path):
-    """Guards terminal integration after commit 6bc55f66 on Daytona upload semantics."""
+    """Guards terminal integration after PR #1126 on Daytona upload semantics."""
     source = make_rollout(tmp_path / "jobs", "rollout-a")
     (source / "trajectory/llm_trajectory.jsonl").write_text(
         json.dumps(
@@ -219,7 +219,7 @@ def test_workspace_upload_preserves_links_and_redacts_provider_capture(tmp_path)
 async def test_detached_review_uses_preserved_test_gate_for_partial_quality(
     tmp_path, monkeypatch
 ):
-    """Guards the partial-quality re-review trap after commit 6bc55f66."""
+    """Guards the partial-quality re-review trap after PR #1126."""
     task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
     source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
     scoring = ScoringResult(
@@ -246,7 +246,7 @@ async def test_detached_review_uses_preserved_test_gate_for_partial_quality(
 
 @pytest.mark.asyncio
 async def test_default_artifact_tools_use_failing_setup_boundary(tmp_path):
-    """Guards scientific reviewer bootstrap after commit 6bc55f66."""
+    """Guards scientific reviewer bootstrap after PR #1126."""
     from types import SimpleNamespace
 
     from benchflow.rollout import _run_environment_setup_commands
@@ -282,7 +282,7 @@ async def test_default_artifact_tools_use_failing_setup_boundary(tmp_path):
 
 
 def test_custom_reviewer_image_owns_its_artifact_tools(tmp_path):
-    """Guards custom image independence after commit 6bc55f66."""
+    """Guards custom image independence after PR #1126."""
     from benchflow.task import Task
 
     source = make_rollout(tmp_path / "jobs", "rollout-a")

@@ -2165,7 +2165,8 @@ class Rollout:
         # Scoring queues own no solver VM and may legitimately outlive its
         # deadline. Each reviewer has its own bounded rollout lifecycle.
         if (
-            self._review_plan is not None
+            result.rollout_name
+            and self._review_plan is not None
             and self._phase == "cleaned"
             and self._rollout_dir is not None
             and (self._rollout_dir / "solver.json").is_file()

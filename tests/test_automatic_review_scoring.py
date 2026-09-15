@@ -1,4 +1,4 @@
-"""Guards automatic rubric review integration based on commit 6bc55f66."""
+"""Guards automatic rubric review integration based on PR #1126."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def _result(scoring):
 def test_gate_success_and_quality_are_independent(
     tests, blocker, scores, reward, outcome
 ):
-    """Guards automatic review semantics introduced after commit 6bc55f66."""
+    """Guards automatic review semantics introduced after PR #1126."""
     scoring = _score(tests=tests, blocker=blocker, scores=scores)
     result = _result(scoring)
     assert result["rewards"]["reward"] == reward
@@ -127,7 +127,7 @@ def test_gate_success_and_quality_are_independent(
     ],
 )
 def test_malformed_scoring_cannot_fall_back_to_legacy_pass(patch):
-    """Guards the commit 6bc55f66 migration against stale-reward false passes."""
+    """Guards the PR #1126 migration against stale-reward false passes."""
     result = _result(_score(scores=(2, 2)))
     result["scoring"].update(patch)
     assert classify_score_outcome(result) == "verifier_errored"
@@ -137,7 +137,7 @@ def test_malformed_scoring_cannot_fall_back_to_legacy_pass(patch):
 
 
 def test_stale_numeric_reward_is_excluded_from_score_denominators():
-    """Guards scoring/reward consistency after commit 6bc55f66."""
+    """Guards scoring/reward consistency after PR #1126."""
     result = _result(_score())
     result["rewards"]["reward"] = 1.0
     with pytest.raises(ValueError, match="disagrees"):
@@ -147,7 +147,7 @@ def test_stale_numeric_reward_is_excluded_from_score_denominators():
 
 
 def test_review_error_with_known_test_pass_is_unscored():
-    """Guards reviewer failure accounting after commit 6bc55f66."""
+    """Guards reviewer failure accounting after PR #1126."""
     scoring = scoring_error("Reviewer timed out", tests_pass=True, verifier_reward=1.0)
     result = _result(scoring)
     result["rewards"] = {"reward": 1.0}  # Interrupted writer's old test reward.
@@ -159,7 +159,7 @@ def test_review_error_with_known_test_pass_is_unscored():
 
 
 def test_legacy_score_contract_is_preserved():
-    """Guards historical results from commit 6bc55f66 during migration."""
+    """Guards historical results from PR #1126 during migration."""
     assert classify_score_outcome({"rewards": {"reward": 0.8}}) == "failed"
     assert classify_score_outcome({"rewards": {"reward": 1.0}}) == "passed"
     assert not deterministic_pass({"rewards": {"reward": True}})
@@ -169,7 +169,7 @@ def test_legacy_score_contract_is_preserved():
 
 
 def test_inconsistent_component_cannot_be_constructed():
-    """Guards the typed contract introduced after commit 6bc55f66."""
+    """Guards the typed contract introduced after PR #1126."""
     data = _score().to_dict()
     data["verifier_reward"] = 0.0
     with pytest.raises(ValidationError, match="test gate"):
@@ -182,7 +182,7 @@ def _write(path: Path, result):
 
 
 def test_reports_count_parent_gate_success_and_exclude_reviewer_trials(tmp_path):
-    """Guards all result readers against review-child inflation after 6bc55f66."""
+    """Guards all result readers against review-child inflation after PR #1126."""
     task = tmp_path / "physics__trial"
     parent_result = task / "result.json"
     _write(parent_result, _result(_score()))
@@ -202,7 +202,7 @@ def test_reports_count_parent_gate_success_and_exclude_reviewer_trials(tmp_path)
 
 
 def test_pending_parent_checkpoint_excludes_captured_results(tmp_path):
-    """Guards pre-commit result discovery after baseline commit 6bc55f66."""
+    """Guards pre-commit result discovery after baseline PR #1126."""
     trial = tmp_path / "physics__pending"
     _write(trial / "solver.json", {"task_name": "physics", "rewards": {"reward": 1.0}})
     _write(
@@ -229,7 +229,7 @@ def test_pending_parent_checkpoint_excludes_captured_results(tmp_path):
 
 
 def test_live_progress_counts_partial_quality_as_pass():
-    """Guards runtime pass@1 after commit 6bc55f66."""
+    """Guards runtime pass@1 after PR #1126."""
     scoring = _score()
     dashboard = LiveEvalProgress(
         Console(), label="physics", agent="codex", model="terra", sandbox="daytona"
@@ -242,7 +242,7 @@ def test_live_progress_counts_partial_quality_as_pass():
 
 
 def test_fresh_evaluation_payload_preserves_score_contract(tmp_path):
-    """Guards fresh/resumed evaluation parity after commit 6bc55f66."""
+    """Guards fresh/resumed evaluation parity after PR #1126."""
     scoring = _score()
     result = RolloutResult(
         "physics", rewards=scoring.numeric_rewards(), scoring=scoring
@@ -255,7 +255,7 @@ def test_fresh_evaluation_payload_preserves_score_contract(tmp_path):
 
 
 def test_trainer_record_preserves_gate_verdict(tmp_path):
-    """Guards trainer result metadata after commit 6bc55f66."""
+    """Guards trainer result metadata after PR #1126."""
     scoring = _score()
     record = build_rollout_results_record(
         tmp_path,
@@ -281,7 +281,7 @@ def test_trainer_record_preserves_gate_verdict(tmp_path):
 
 
 def test_rescored_summary_uses_gate_passes_and_quality_mean():
-    """Guards initial/resumed summary parity after commit 6bc55f66."""
+    """Guards initial/resumed summary parity after PR #1126."""
     summary = score_summary_fields(
         [
             _result(_score()),

@@ -75,7 +75,13 @@ def _reviewer_options(
     # through the current environment or explicit private reviewer overrides.
     saved = {key: value for key, value in saved.items() if key != "agent_env_keys"}
     if override is not None:
-        saved.update(override.model_dump(exclude_unset=True))
+        fields = override.model_dump(exclude_unset=True)
+        if "agent_env" in fields:
+            fields["agent_env"] = {
+                **ReviewerConfig.model_validate(saved).agent_env,
+                **override.agent_env,
+            }
+        saved.update(fields)
     return ReviewerConfig.model_validate(saved)
 
 

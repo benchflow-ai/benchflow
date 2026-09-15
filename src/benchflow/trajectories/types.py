@@ -389,12 +389,13 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         r"\1***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
     ),
-    # Underscore form `api_key`. No leading boundary: namespaced env dumps like
+    # Underscore/camel-case forms `api_key` and `apiKey`. No leading boundary:
+    # inline harness JSON and namespaced env dumps like
     # `GEMINI_API_KEY=secret` / JSON keys such as `"openai_api_key"` must redact
     # too (#585). The `\1` capture preserves the matched name+separator.
     (
         re.compile(
-            rf"({_ESCQ}api_key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
+            rf"({_ESCQ}api[_-]?key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
         ),
         r"\1***REDACTED***",
         REDACTION_CATEGORY_API_KEY,

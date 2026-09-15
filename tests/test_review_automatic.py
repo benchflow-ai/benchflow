@@ -1,4 +1,4 @@
-"""Guards automatic review planning and commit after baseline commit 6bc55f66."""
+"""Guards automatic review planning and commit after baseline PR #1126."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def _edit_solver(rollout: Path, **updates):
 
 
 def test_no_rubric_never_requires_reviewer_credentials(tmp_path, auth):
-    """Guards unchanged no-rubric execution from commit 6bc55f66."""
+    """Guards unchanged no-rubric execution from PR #1126."""
     task = make_task(tmp_path)
     auth.side_effect = AssertionError("A no-rubric task must not resolve reviewer auth")
     assert automatic.prepare_review(task, ReviewerConfig()) is None
@@ -96,7 +96,7 @@ def test_no_rubric_never_requires_reviewer_credentials(tmp_path, auth):
     "payload", ["{", "[]", '{"criteria": []}', '{"criteria": [{"name":"x"}]}']
 )
 def test_malformed_rubric_fails_before_reviewer_auth(tmp_path, auth, payload):
-    """Guards fail-closed task discovery after commit 6bc55f66."""
+    """Guards fail-closed task discovery after PR #1126."""
     task = make_task(tmp_path)
     (task / "rubric.json").write_text(payload)
     with pytest.raises(ValueError):
@@ -105,7 +105,7 @@ def test_malformed_rubric_fails_before_reviewer_auth(tmp_path, auth, payload):
 
 
 def test_ambiguous_rubrics_fail_before_execution(prepared, auth):
-    """Guards unambiguous automatic rubric selection after commit 6bc55f66."""
+    """Guards unambiguous automatic rubric selection after PR #1126."""
     auth.reset_mock()
     (prepared.task_path / "rubric.json").write_bytes(prepared.rubric_path.read_bytes())
     with pytest.raises(ValueError, match="ambiguous"):
@@ -114,7 +114,7 @@ def test_ambiguous_rubrics_fail_before_execution(prepared, auth):
 
 
 def test_symlink_rubric_cannot_import_an_untrusted_file(tmp_path, auth):
-    """Guards task-local rubric authority after commit 6bc55f66."""
+    """Guards task-local rubric authority after PR #1126."""
     task = make_task(tmp_path)
     target = tmp_path / "outside.json"
     target.write_text(json.dumps(WEIGHTED_RUBRIC))
@@ -125,7 +125,7 @@ def test_symlink_rubric_cannot_import_an_untrusted_file(tmp_path, auth):
 
 
 def test_verifier_judge_dialect_is_not_automatically_reviewed(tmp_path, auth):
-    """Guards the distinct legacy verifier dialect from commit 6bc55f66."""
+    """Guards the distinct legacy verifier dialect from PR #1126."""
     task = make_task(tmp_path)
     (task / "verifier/rubric.json").write_text(
         json.dumps(
@@ -137,7 +137,7 @@ def test_verifier_judge_dialect_is_not_automatically_reviewed(tmp_path, auth):
 
 
 def test_explicit_reviewer_routing_and_private_auth(prepared, auth):
-    """Guards shared provider routing and credential redaction after 6bc55f66."""
+    """Guards shared provider routing and credential redaction after PR #1126."""
     auth.assert_called_once_with(
         "codex-acp", "azure/gpt5.6terra", {"AZURE_API_KEY": "explicit-test-secret"}
     )
@@ -149,14 +149,14 @@ def test_explicit_reviewer_routing_and_private_auth(prepared, auth):
 
 
 def test_missing_reviewer_auth_has_actionable_preflight_error(prepared, auth):
-    """Guards fail-before-solver authentication after commit 6bc55f66."""
+    """Guards fail-before-solver authentication after PR #1126."""
     auth.side_effect = ValueError("AZURE_API_KEY or supported OAuth login is required")
     with pytest.raises(ValueError, match=r"Reviewer preflight.*AZURE_API_KEY"):
         automatic.prepare_review(prepared.task_path, prepared.config)
 
 
 def test_solver_checkpoint_is_not_published_as_a_completed_trial(saved):
-    """Guards checkpoint/final artifact separation after commit 6bc55f66."""
+    """Guards checkpoint/final artifact separation after PR #1126."""
     assert (saved / "solver.json").is_file()
     assert (saved / "trajectory/acp_trajectory.jsonl").is_file()
     assert (saved / "prompts.json").is_file()
@@ -185,7 +185,7 @@ async def test_finish_review_and_commit_preserve_all_components(
     reward,
     passed,
 ):
-    """Guards the full mocked reviewer/commit flow after commit 6bc55f66."""
+    """Guards the full mocked reviewer/commit flow after PR #1126."""
     _edit_solver(saved, rewards={"reward": float(tests_pass)})
     original = (saved / "solver.json").read_bytes()
     payload = good_weighted_review(saved.name)
@@ -221,7 +221,7 @@ async def test_finish_review_and_commit_preserve_all_components(
 async def test_invalid_verifier_reward_becomes_unscored_error(
     prepared, saved, monkeypatch, raw_reward
 ):
-    """Guards finite scoring error persistence after commit 6bc55f66."""
+    """Guards finite scoring error persistence after PR #1126."""
     reviewer = AsyncMock(side_effect=AssertionError("reviewer must not run"))
     monkeypatch.setattr("benchflow.review.runner.run_review", reviewer)
     _edit_solver(saved, rewards={"reward": raw_reward})
@@ -238,7 +238,7 @@ async def test_invalid_verifier_reward_becomes_unscored_error(
 async def test_detail_free_reviewer_exception_still_saves_failure(
     prepared, saved, monkeypatch
 ):
-    """Guards transport exception evidence after commit 6bc55f66."""
+    """Guards transport exception evidence after PR #1126."""
     monkeypatch.setattr(
         "benchflow.review.runner.run_review", AsyncMock(side_effect=TimeoutError())
     )
@@ -257,7 +257,7 @@ async def test_detail_free_reviewer_exception_still_saves_failure(
 async def test_changed_evidence_rejected_before_reviewer(
     prepared, saved, monkeypatch, change
 ):
-    """Guards immutable review inputs after commit 6bc55f66."""
+    """Guards immutable review inputs after PR #1126."""
     reviewer = AsyncMock(side_effect=AssertionError("reviewer must not run"))
     monkeypatch.setattr("benchflow.review.runner.run_review", reviewer)
     target = {
@@ -276,7 +276,7 @@ async def test_changed_evidence_rejected_before_reviewer(
 async def test_workspace_freezes_before_capture_and_keeps_actual_cwd(
     tmp_path, monkeypatch
 ):
-    """Guards terminal capture ordering after commit 6bc55f66."""
+    """Guards terminal capture ordering after PR #1126."""
     order = []
 
     async def disconnect():
@@ -309,7 +309,7 @@ async def test_workspace_freezes_before_capture_and_keeps_actual_cwd(
 
 
 def test_reviewer_child_never_recursively_preflights(monkeypatch):
-    """Guards child execution recursion after commit 6bc55f66."""
+    """Guards child execution recursion after PR #1126."""
     prepare = Mock(side_effect=AssertionError("reviewer cannot review itself"))
     monkeypatch.setattr(_review, "prepare_review", prepare)
     _review.prepare_terminal_review(
@@ -319,7 +319,7 @@ def test_reviewer_child_never_recursively_preflights(monkeypatch):
 
 
 def test_commit_failure_never_publishes_partial_parent(saved, monkeypatch):
-    """Guards final-result commit ordering after commit 6bc55f66."""
+    """Guards final-result commit ordering after PR #1126."""
     from tests.test_automatic_review_scoring import _score
 
     monkeypatch.setattr(
