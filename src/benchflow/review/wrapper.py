@@ -20,8 +20,11 @@ synthetic task built here on the host:
 The rubric file itself never enters the sandbox.  Only its derivatives do:
 guidance lines inside the instruction, criterion names inside the output
 schema, and non-prompt contract metadata inside ``tests/criteria.json``. Task
-evidence is sanitized: skills and any shipped ``rubric.json`` are excluded,
-and symlinks anywhere in the evidence are dropped rather than dereferenced.
+definitions are sanitized: skills and any shipped ``rubric.json`` are excluded.
+Generic run/task copies drop symlinks. Automatic workspace bundles preserve
+manifest-validated internal links through an archive and verify every file after
+upload, before the reviewer starts. Available provider traces cross the canonical
+redaction boundary before inclusion.
 """
 
 from __future__ import annotations
@@ -36,20 +39,16 @@ from benchflow.review.config import (
     Rubric,
     build_review_response_model,
 )
+from benchflow.review.options import REVIEWER_AGENT_TIMEOUT_SEC, REVIEWER_IMAGE
 from benchflow.review.prompts import (
     TASK_MOUNT,
     TRIAL_MOUNT,
+    WORKSPACE_MOUNT,
     render_review_instruction,
 )
 
-#: Pinned by digest: ``python:3.13-slim`` is a mutable tag, so a bare tag
-#: would silently change the reviewer environment between runs. Override
-#: with ``--image`` (e.g. to an internal mirror or a newer digest).
-REVIEWER_IMAGE = (
-    "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
-)
-REVIEWER_AGENT_TIMEOUT_SEC = 1800
 REVIEWER_VERIFIER_TIMEOUT_SEC = 120
+REVIEWER_ARTIFACT_PACKAGES = ("numpy==2.2.6", "pypdf==5.9.0")
 
 #: Rollout-side entries never copied into the evidence snapshot.  Excluding
 #: prior review output means a re-review can never read an earlier verdict.
@@ -57,6 +56,8 @@ _EVIDENCE_EXCLUDES = (
     ".git",
     "llm_trajectory.jsonl",
     "review",
+    "reviews",
+    "scoring",
     REVIEW_RESULT_FILENAME,
     "review_report.json",
 )
@@ -196,7 +197,7 @@ sandbox:
   workdir: /app{network_line}
   cpus: 1
   memory_mb: 2048
-  storage_mb: 4096
+  storage_mb: 4096{setup_commands}
 ---
 
 """
@@ -247,6 +248,42 @@ def copy_evidence(
     _strip_write_bits(destination)
 
 
+def _copy_provider_trace(source: Path, destination: Path) -> None:
+    """Include canonical provider capture only after its established redactor."""
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    relative = Path("trajectory") / "llm_trajectory.jsonl"
+    original = source / relative
+    if original.is_symlink() or original.parent.is_symlink():
+        raise ValueError("provider trajectory must be a regular captured file")
+    if not original.exists():
+        return
+    target = destination / relative
+    target.parent.chmod(target.parent.stat().st_mode | stat.S_IWUSR)
+    try:
+        with (
+            original.open(encoding="utf-8") as reader,
+            target.open("w", encoding="utf-8") as writer,
+        ):
+            for line in reader:
+                if line.strip():
+                    writer.write(
+                        json.dumps(redact_trajectory_obj(json.loads(line))) + "\n"
+                    )
+    finally:
+        _strip_write_bits(target.parent)
+
+
+def remove_review_task(root: Path) -> None:
+    """Remove read-only upload copies without following evidence symlinks."""
+    if not root.exists():
+        return
+    for path in [root, *root.rglob("*")]:
+        if not path.is_symlink():
+            path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+    shutil.rmtree(root)
+
+
 def _strip_write_bits(root: Path) -> None:
     """Clear every write bit under *root*.
 
@@ -276,6 +313,7 @@ def assemble_review_task(
     agent_timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
     open_network: bool = False,
     net_admin_overlay: bool = False,
+    workspace_bundle: Path | None = None,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
@@ -284,12 +322,33 @@ def assemble_review_task(
     """
 
     if dest.exists():
-        shutil.rmtree(dest)
+        remove_review_task(dest)
     dest.mkdir(parents=True)
 
     evidence = dest / "evidence"
-    copy_evidence(rollout_dir, evidence / "trial")
+    copy_evidence(rollout_dir, evidence / "trial", extra_excludes=("evidence",))
     uploads = {str(evidence / "trial"): TRIAL_MOUNT}
+    if workspace_bundle is not None:
+        from benchflow.review.evidence import EvidenceManifest, prepare_workspace_upload
+
+        manifest = EvidenceManifest.model_validate_json(
+            (workspace_bundle / "manifest.json").read_text()
+        )
+        bundles = [(workspace_bundle, "workspace")]
+        bundles.extend(
+            (workspace_bundle / artifact.bundle_path, artifact.bundle_path)
+            for artifact in manifest.artifacts
+            if artifact.status == "captured" and artifact.bundle_path is not None
+        )
+        for bundle, relative in bundles:
+            archive = evidence / f"{relative}.tar"
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            prepare_workspace_upload(bundle, archive)
+            manifest_copy = evidence / f"{relative}-manifest.json"
+            shutil.copyfile(bundle / "manifest.json", manifest_copy)
+            uploads[str(archive)] = f"/evidence/{relative}.tar"
+            uploads[str(manifest_copy)] = f"/evidence/{relative}-manifest.json"
+        _copy_provider_trace(rollout_dir, evidence / "trial")
     task_mount: str | None = None
     if task_dir is not None and task_dir.is_dir():
         copy_evidence(
@@ -309,12 +368,21 @@ def assemble_review_task(
         result_path=f"/app/{REVIEW_RESULT_FILENAME}",
         trial_name=rollout_dir.name,
         output_schema=response_model.model_json_schema(),
+        workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
     )
     frontmatter = _TASK_FRONTMATTER.format(
         verifier_timeout=float(REVIEWER_VERIFIER_TIMEOUT_SEC),
         agent_timeout=float(agent_timeout_sec),
         image=image,
         network_line=_NETWORK_LINE_OPEN if open_network else _NETWORK_LINE_ISOLATED,
+        setup_commands=(
+            "\n  setup_commands:"
+            "\n    - command: python3 -m pip install --disable-pip-version-check --no-cache-dir "
+            + " ".join(REVIEWER_ARTIFACT_PACKAGES)
+            + "\n      user: root\n      timeout_sec: 600\n      cwd: /tmp"
+            if image == REVIEWER_IMAGE
+            else ""
+        ),
     )
     (dest / "task.md").write_text(frontmatter + instruction, encoding="utf-8")
 

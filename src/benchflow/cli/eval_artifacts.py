@@ -35,6 +35,7 @@ def _redacted_eval_config(eval_config: EvaluationConfig) -> dict:
         "skills_dir": eval_config.skills_dir,
         "usage_tracking": eval_config.usage_tracking.to_config_artifact(),
         "agent_env_keys": sorted(eval_config.agent_env),
+        "reviewer": eval_config.reviewer.to_config_artifact(),
         "include_tasks": sorted(eval_config.include_tasks),
         "exclude_tasks": sorted(eval_config.exclude_tasks),
         "source_provenance": eval_config.source_provenance,

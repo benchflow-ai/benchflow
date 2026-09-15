@@ -329,10 +329,11 @@ reason is a bare reward. Multi-failure CTRF reports roll up as
 `(details: …/verifier)` pointer names the artifact directory whenever one
 exists on disk.
 
-The final `Score: P/T (…%)` line is pass-threshold aggregation — a task counts
-as passed only at reward 1.0 — while `mean reward` beside it is the average raw
-verifier reward, so `0/1 (0.0%)` next to `mean reward 0.80` means partial
-credit below the pass threshold, not a flat zero.
+The final `Score: P/T (…%)` line is pass aggregation. Automatically reviewed
+tasks pass when every test and blocker passes, even with final quality below
+one; legacy tasks retain their reward-one threshold. `mean reward` reports
+continuous final credit separately. An integrated task can therefore show
+`1/1 (100.0%)` and `mean reward 0.80`.
 
 Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
 give slow-starting agents more time to answer the pre-prompt ACP handshake
@@ -360,6 +361,46 @@ their own harness and sandbox behavior. `--model` is passed to the Verifiers
 model endpoint; use a model id available to that provider. Provider-specific
 sampling options are not inferred; pass them explicitly with
 `--source-env-sampling-arg`.
+
+Tasks shipping a weighted review rubric automatically run a separate reviewer
+before their final reward is committed. Reviewer options are independent of
+solver options; credentials resolve through the same API-key/OAuth machinery.
+
+| Reviewer flag | Meaning |
+|---|---|
+| `--reviewer-agent` | Reviewer harness (default `opencode`). |
+| `--reviewer-model` | Reviewer model; otherwise resolve the harness default. |
+| `--reviewer-reasoning-effort` | Reviewer inference effort. |
+| `--reviewer-sandbox` | Separate reviewer backend (default `docker`). |
+| `--reviewer-timeout-sec` | Reviewer model timeout (default 1800 seconds). |
+| `--reviewer-concurrency` | Reviewer concurrency within a worker (default 4). |
+| `--reviewer-image` | Reviewer sandbox image; defaults to the pinned review image. |
+| `--reviewer-agent-env` | Repeatable reviewer-only `KEY=VALUE` overrides. |
+| `--reviewer-open-network` | Explicitly allow unrestricted reviewer network access. |
+
+See [automatic rubric review](../rubric-review.md) for evidence capture,
+gate-based pass rates, and recovery without rerunning the solver.
+
+
+### bench eval score
+
+Finish rubric scoring from a saved solver snapshot without running the solver
+again. Supply the exact original task through a trusted tasks root:
+
+```bash
+bench eval score jobs/<job>/<trial> --tasks-root ./tasks \
+  --reviewer-agent codex-acp \
+  --reviewer-model azure-foundry-openai/gpt-5.6-terra \
+  --reviewer-sandbox daytona
+```
+
+All reviewer options from `bench eval run` are accepted. Omitted values reuse
+the saved reviewer profile, with credentials resolved from the current runtime.
+A complete verdict is retained by default, including valid failures. `--force`
+explicitly creates another scoring revision. The task digest and evidence
+manifest must match the solver snapshot. Normal job resume also retries pending
+reviews before determining which solver trials remain unfinished.
+
 
 ## bench review
 
@@ -413,6 +454,7 @@ is `not_publishable`. Otherwise, quality `>= 0.80` is `publishable`, quality
 `not_publishable`. The wrapper reward still means only that the review is
 structurally valid; it is not a quality or publication score. See
 [Rubric review](../rubric-review.md) for the full contract and report shape.
+
 
 ### bench eval list
 

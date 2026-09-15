@@ -99,6 +99,8 @@ from benchflow.loop_strategies import (
     loop_block,
 )
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.review.automatic import PreparedReview
+from benchflow.review.outcome import ScoringResult
 from benchflow.rollout import _deadline as _deadline
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
@@ -118,6 +120,11 @@ from benchflow.rollout._results import _write_config as _write_config
 from benchflow.rollout._results import _write_rewards_jsonl as _write_rewards_jsonl
 from benchflow.rollout._results import (
     _write_trainer_artifact as _write_trainer_artifact,
+)
+from benchflow.rollout._review import (
+    capture_terminal_workspace,
+    finish_terminal_review,
+    prepare_terminal_review,
 )
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
@@ -235,7 +242,7 @@ _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # rollout once one of these is set, so nothing may rewind ``_phase`` out of
 # them — the live dashboard renders the phase as a label and a backwards step
 # reads as the run having restarted (see disconnect()).
-_TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned"})
+_TERMINAL_PHASES = frozenset({"verifying", "verified", "reviewing", "cleaned"})
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -638,6 +645,9 @@ class Rollout:
         _install_docker_compat(self._planes)
 
         self._config = config
+        self._review_plan: PreparedReview | None = None
+        self._scoring: ScoringResult | None = None
+        self._completed_result: RolloutResult | None = None
         self._phase = "created"
 
         # Populated by setup()
@@ -899,7 +909,11 @@ class Rollout:
 
     @property
     def result(self) -> RolloutResult | None:
+        if self._completed_result is not None:
+            return self._completed_result
         if self._phase not in ("verified", "cleaned"):
+            return None
+        if self._review_plan is not None and self._scoring is None:
             return None
         return self._build_result()
 
@@ -952,6 +966,8 @@ class Rollout:
             self._task.config = apply_config_override(
                 self._task.config, cfg.config_override
             )
+
+        prepare_terminal_review(self)
 
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
@@ -1099,6 +1115,9 @@ class Rollout:
             task_digest=cfg.task_digest,
             config_override=cfg.config_override,
             loop_strategy=cfg.loop_strategy_spec,
+            review=self._review_plan.metadata() if self._review_plan else None,
+            purpose=cfg.purpose,
+            parent_rollout=cfg.parent_rollout,
         )
 
         self._phase = "setup"
@@ -1860,6 +1879,7 @@ class Rollout:
         # to "installed", and the dashboard's activity cell reads _phase to
         # label that stretch "verifying…" instead of going blank.
         self._phase = "verifying"
+        await capture_terminal_workspace(self)
 
         if not self._trajectory and cfg.primary_agent != "oracle":
             scraped = await _scrape_agent_trajectory(
@@ -2139,9 +2159,33 @@ class Rollout:
         A trip becomes a normal infra-retryable error result and the
         abandoned attempt's cleanup is bounded too.
         """
-        return await _deadline.enforce_hard_deadline(
+        result = await _deadline.enforce_hard_deadline(
             self._run_lifecycle(), config=self._config
         )
+        # Scoring queues own no solver VM and may legitimately outlive its
+        # deadline. Each reviewer has its own bounded rollout lifecycle.
+        if (
+            result.rollout_name
+            and self._review_plan is not None
+            and self._phase == "cleaned"
+            and self._rollout_dir is not None
+            and (self._rollout_dir / "solver.json").is_file()
+        ):
+            result = await finish_terminal_review(self, result=result)
+        self._completed_result = result
+        return result
+
+    async def finalize(self) -> RolloutResult:
+        """Finish a manually driven rollout, including required rubric review."""
+        if self._completed_result is not None:
+            return self._completed_result
+        if self._phase != "cleaned":
+            await self.cleanup()
+        if self._review_plan is not None:
+            self._completed_result = await finish_terminal_review(self)
+        else:
+            self._completed_result = self._build_result()
+        return self._completed_result
 
     async def _run_lifecycle(self) -> RolloutResult:
         """Run the complete trial lifecycle.
@@ -2260,6 +2304,8 @@ class Rollout:
                 task_name=self._config.task_path.name,
                 error=self._error or "Setup failed before trial directory was created",
             )
+        if self._review_plan is not None:
+            return self._build_result(result_filename="solver.json")
         return self._build_result()
 
     # Scene-authored Step execution
@@ -2707,7 +2753,7 @@ class Rollout:
             error=getattr(self, "_error", None),
         )
 
-    def _build_result(self) -> RolloutResult:
+    def _build_result(self, *, result_filename: str = "result.json") -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         self._maybe_classify_api_error()
         # For Scene/multi-turn rollouts, each execute() call records the
@@ -2740,6 +2786,10 @@ class Rollout:
             source_provenance=self._config.source_provenance,
             dataset=self._config.dataset,
             task_digest=self._config.task_digest,
+            scoring=getattr(self, "_scoring", None),
+            purpose=self._config.purpose,
+            parent_rollout=self._config.parent_rollout,
+            result_filename=result_filename,
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
             skill_policy=getattr(self, "_task_skill_policy", None)

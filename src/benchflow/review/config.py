@@ -249,27 +249,30 @@ class ScoredCriterionCheck(BaseModel):
 
 
 def load_rubric(path: Path | None = None) -> Rubric:
-    """Load a rubric from a JSON file, or the built-in default rubric.
+    """Load the parsed rubric using the canonical snapshot reader."""
+    return load_rubric_snapshot(path)[0]
+
+
+def load_rubric_snapshot(path: Path | None = None) -> tuple[Rubric, bytes]:
+    """Read once so parsed judgments and provenance refer to identical bytes.
 
     Only JSON is accepted. Every criterion must consistently use either the
     legacy v0.1 three-field shape or the weighted v0.2 five-field shape.
     """
-
     rubric_path = path if path is not None else DEFAULT_RUBRIC_PATH
     if rubric_path.suffix.lower() != ".json":
         raise ReviewRubricError(
             f"unsupported rubric format {rubric_path.suffix!r}: rubrics are JSON files"
         )
     try:
-        text = rubric_path.read_text(encoding="utf-8")
+        contents = rubric_path.read_bytes()
+        data = json.loads(contents.decode("utf-8"))
     except OSError as exc:
         raise ReviewRubricError(f"cannot read {rubric_path}: {exc}") from exc
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ReviewRubricError(f"{rubric_path} is not valid JSON: {exc}") from exc
     try:
-        return Rubric.model_validate(data)
+        return Rubric.model_validate(data), contents
     except ValidationError as exc:
         raise ReviewRubricError(f"{rubric_path} is not a valid rubric: {exc}") from exc
 
@@ -300,14 +303,25 @@ def is_review_rubric_file(path: Path) -> bool:
     return not (criteria and all(is_judge_entry(entry) for entry in criteria))
 
 
-def find_task_rubric(task_path: Path) -> Path | None:
-    """Return the detached-review rubric a task ships, if any."""
+def find_task_rubrics(task_path: Path) -> list[Path]:
+    """Discover review rubrics at documented task locations."""
 
-    for tests_dir_name in ("verifier", "tests"):
-        candidate = task_path / tests_dir_name / REVIEW_RUBRIC_FILENAME
+    candidates = []
+    for directory in ("verifier", "tests", ""):
+        candidate = task_path / directory / REVIEW_RUBRIC_FILENAME
+        if candidate.is_symlink():
+            raise ReviewRubricError(
+                f"Review rubric must be a regular task file: {candidate}"
+            )
         if candidate.is_file() and is_review_rubric_file(candidate):
-            return candidate
-    return None
+            candidates.append(candidate)
+    return candidates
+
+
+def find_task_rubric(task_path: Path) -> Path | None:
+    """Keep detached review's native-before-legacy precedence (PR #942)."""
+    candidates = find_task_rubrics(task_path)
+    return candidates[0] if candidates else None
 
 
 def build_criteria_guidance(rubric: Rubric) -> str:

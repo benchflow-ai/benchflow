@@ -338,3 +338,41 @@ def test_external_tool_call_rejects_reserved_event_fields(tmp_path: Path) -> Non
             tool_name="bash",
             event={"type": "agent_message", "tool_name": "python"},
         )
+
+
+async def test_task_runtime_returns_integrated_reward_after_releasing_solver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #902's runtime entry point when automatic rubric scoring is added."""
+    from benchflow.models import RolloutResult
+
+    planes = _FakePlanes()
+    runtime = TaskRuntime(
+        TaskRuntimeConfig(
+            task_path=TASK_PATH,
+            environment="synthetic",
+            jobs_dir=tmp_path,
+            planes=planes,
+        )
+    )
+    await runtime.start()
+    runtime.rollout._review_plan = object()
+    expected = RolloutResult(task_name=TASK_PATH.name, rewards={"reward": 0.8})
+
+    async def deterministic_verifier(self):
+        return {"reward": 1.0}
+
+    async def reviewer(rollout):
+        assert planes.sandbox.stopped == 1
+        return expected
+
+    monkeypatch.setattr(Rollout, "verify", deterministic_verifier)
+    monkeypatch.setattr("benchflow.rollout.finish_terminal_review", reviewer)
+    result = await runtime.verify()
+    await runtime.close()
+    assert result.reward == 0.8
+    assert result.result is expected
+    assert planes.sandbox.stopped == 1
+    with pytest.raises(RuntimeError, match=r"start.*before bash"):
+        await runtime.bash("touch after-review")

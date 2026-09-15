@@ -20,10 +20,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.config_redaction import _should_record_env_entry
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
 from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
 from benchflow.loop_strategies import LoopStrategySpec
-from benchflow.rollout._results import _should_record_env_entry
 
 
 @dataclass(frozen=True)
@@ -125,6 +125,7 @@ def _config_payload(
         "concurrency": shard.concurrency,
         "prompts": config.prompts,
         "agent_env": config.agent_env,
+        "reviewer": config.reviewer.to_dict(),
         "retry": _retry_payload(config),
         "skills_dir": config.skills_dir,
         "sandbox_user": config.sandbox_user,
@@ -171,6 +172,13 @@ def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
             if _should_record_env_entry(str(key), str(value))
         }
         artifact_payload["agent_env_keys"] = sorted(str(key) for key in agent_env)
+    reviewer = artifact_payload.get("reviewer")
+    if isinstance(reviewer, dict):
+        from benchflow.review.options import ReviewerConfig
+
+        artifact_payload["reviewer"] = ReviewerConfig.coerce(
+            reviewer
+        ).to_config_artifact()
     return artifact_payload
 
 
@@ -356,6 +364,13 @@ async def run_sharded_evaluation(
         from benchflow.evaluation import EmptyTaskSelectionError
 
         raise EmptyTaskSelectionError(f"No tasks selected after filtering: {tasks_dir}")
+
+    # Check the complete selection before launching any worker; each worker
+    # then validates its own credential context before starting a solver.
+    from benchflow.review.automatic import prepare_review
+
+    for task_dir in task_dirs:
+        prepare_review(task_dir, config.reviewer)
 
     root = jobs_dir / "worker-shards"
     _write_or_validate_plan(root / "plan.json", plan)

@@ -1,13 +1,13 @@
-"""Detached rubric review over finished rollout directories.
+"""Shared reviewer execution and detached review reporting.
 
 ``run_reviews`` takes a path that is either one rollout directory or a job
 directory containing many, assembles one wrapper task per rollout (see
 :mod:`benchflow.review.wrapper`), runs every wrapper as an ordinary rollout
 on the selected sandbox backend, and writes ``review_report.json``.
 
-Reviews never touch the reviewed rollouts: evidence is copied, results live
-under the review output directory, and the source ``result.json`` /
-``rewards`` are read-only inputs.  A wrapper rollout's own reward means only
+Both entry points copy evidence and retain complete reviewer child runs.
+``run_reviews`` is report-only; automatic terminal scoring calls ``run_review``
+with an explicit deterministic verdict before the parent result is committed.  A wrapper rollout's own reward means only
 "the reviewer produced a structurally valid result file"; the graded
 outcomes live in the report.
 """
@@ -23,6 +23,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -36,11 +37,15 @@ from benchflow.review.config import (
     find_task_rubric,
     load_rubric,
 )
+from benchflow.review.options import ReviewerConfig
+from benchflow.review.outcome import deterministic_pass as source_deterministic_pass
 from benchflow.review.scoring import ReviewScoring, score_weighted_review
 from benchflow.review.wrapper import (
     REVIEWER_AGENT_TIMEOUT_SEC,
+    REVIEWER_ARTIFACT_PACKAGES,
     REVIEWER_IMAGE,
     assemble_review_task,
+    remove_review_task,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,23 +161,16 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _is_passing(rollout_dir: Path) -> bool:
-    """A rollout passes when it earned reward 1.0 and recorded no error.
+    """Read integrated gates; keep detached review's strict legacy error rule."""
 
-    Anything unreadable counts as failing, so ``--failing`` sweeps in runs
-    that crashed before writing a result.
-    """
+    from benchflow._utils.scoring import classify_score_outcome
 
     result = _read_json(rollout_dir / "result.json")
     if result is None:
         return False
-    rewards = result.get("rewards")
-    reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    return (
-        isinstance(reward, int | float)
-        and not isinstance(reward, bool)
-        and reward == 1.0
-        and result.get("error") is None
-    )
+    if result.get("scoring") is not None:
+        return classify_score_outcome(result) == "passed"
+    return source_deterministic_pass(result)
 
 
 def discover_rollouts(
@@ -376,9 +374,7 @@ def _reviewer_rollout_leaf(runtime_dir: Path) -> Path | None:
     """
 
     leaves = sorted(
-        candidate.parent
-        for candidate in runtime_dir.rglob("config.json")
-        if candidate.parent != runtime_dir
+        candidate.parent for candidate in runtime_dir.glob("*/*/config.json")
     )
     return leaves[0] if len(leaves) == 1 else None
 
@@ -399,11 +395,23 @@ def _leaf_reward(leaf: Path) -> float | None:
     if result is None:
         return None
     rewards = result.get("rewards")
-    if isinstance(rewards, dict) and "reward" in rewards:
-        try:
-            return float(rewards["reward"])
-        except (TypeError, ValueError):
-            return None
+    if isinstance(rewards, dict):
+        reward = rewards.get("reward")
+        if isinstance(reward, int | float) and not isinstance(reward, bool):
+            return float(reward)
+    return None
+
+
+def _reviewer_completion_error(leaf: Path) -> str | None:
+    """A valid JSON verdict does not make an interrupted reviewer complete."""
+    result = _read_json(leaf / "result.json")
+    if result is None:
+        return "reviewer result is missing or unreadable"
+    for error_field in ("error", "verifier_error", "export_error"):
+        if result.get(error_field):
+            return f"reviewer {error_field}: {result[error_field]}"
+    if result.get("partial_trajectory"):
+        return "reviewer trajectory is incomplete"
     return None
 
 
@@ -415,20 +423,10 @@ async def _review_one(
     *,
     explicit_rubric: tuple[Rubric, Path] | None,
     template: str | None,
-    agent: str,
-    model: str | None,
-    environment: str,
-    agent_env: dict[str, str],
-    timeout_sec: int,
-    image: str,
-    open_network: bool,
+    config: ReviewerConfig,
     tasks_root: Path | None,
     out_dir: Path,
-    workdir: Path,
 ) -> TrialReview:
-    from benchflow import run as run_rollout
-    from benchflow.rollout import RolloutConfig
-
     trial = TrialReview(
         trial_name=rollout_dir.name,
         source_rollout=str(rollout_dir),
@@ -455,12 +453,52 @@ async def _review_one(
     except ReviewRubricError as exc:
         trial.error = str(exc)
         return trial
-    trial.rubric_path = str(resolved_rubric)
+    reviewed = await run_review(
+        rollout_dir,
+        task_dir,
+        rubric,
+        resolved_rubric,
+        config,
+        out_dir,
+        deterministic_pass=source_deterministic_pass(
+            _read_json(rollout_dir / "result.json") or {}
+        ),
+        template=template,
+    )
+    reviewed.notes[:0] = trial.notes
+    return reviewed
+
+
+async def run_review(
+    rollout_dir: Path,
+    task_dir: Path | None,
+    rubric: Rubric,
+    rubric_path: Path,
+    config: ReviewerConfig,
+    out_dir: Path,
+    deterministic_pass: bool,
+    workspace_bundle: Path | None = None,
+    *,
+    template: str | None = None,
+) -> TrialReview:
+    """Run one reviewer over admitted evidence, independently of parent persistence.
+
+    Automatic scoring passes the deterministic verdict explicitly and can call
+    this before its final result exists. Detached review resolves untrusted task
+    provenance before calling the same operation. Child artifacts are durable;
+    only the generated wrapper and its evidence upload copies are temporary.
+    """
+    from benchflow import run as run_rollout
+    from benchflow.rollout import RolloutConfig
+
+    trial = TrialReview(trial_name=rollout_dir.name, source_rollout=str(rollout_dir))
+    wrapper_root = Path(tempfile.mkdtemp(prefix="benchflow-review-"))
+    trial.rubric_path = str(rubric_path)
     trial.rubric_contract = rubric.contract
     trial.criteria = [criterion.name for criterion in rubric.criteria]
     trial.criterion_metadata = [criterion.metadata() for criterion in rubric.criteria]
 
-    wrapper_dir = workdir / f"review-{rollout_dir.name}"
+    wrapper_dir = wrapper_root / f"review-{rollout_dir.name}"
     # Unique per invocation: reusing --out-dir must never let this run see a
     # previous run's reviewer artifacts.
     runtime_dir = out_dir / "runtime" / rollout_dir.name / uuid.uuid4().hex[:12]
@@ -472,31 +510,64 @@ async def _review_one(
             rubric,
             wrapper_dir,
             template=template,
-            image=image,
-            agent_timeout_sec=timeout_sec,
-            open_network=open_network,
-            net_admin_overlay=(environment == "docker" and not open_network),
+            image=config.image,
+            agent_timeout_sec=config.timeout_sec,
+            open_network=config.open_network,
+            net_admin_overlay=(
+                config.environment == "docker" and not config.open_network
+            ),
+            workspace_bundle=workspace_bundle,
         )
+        from benchflow.review.persistence import write_json_atomic
+
+        write_json_atomic(
+            runtime_dir / "reviewer-environment.json",
+            {
+                "image": config.image,
+                "artifact_packages": list(REVIEWER_ARTIFACT_PACKAGES)
+                if config.image == REVIEWER_IMAGE
+                else [],
+                "open_network": config.open_network,
+            },
+        )
+        shutil.copyfile(wrapper_dir / "task.md", runtime_dir / "reviewer-task.md")
         # The wrapper task declares allow_internet: false, which engages the
         # no-web pipeline end to end: web tools disabled, the model proxy
         # forced sandbox-local, and the agent-UID egress firewall scoped to
         # that loopback gateway.
-        config = RolloutConfig(
+        hooks = [_lock_review_evidence]
+        if workspace_bundle is not None:
+            from benchflow.review.evidence import (
+                EvidenceManifest,
+                install_review_evidence,
+            )
+
+            manifest = EvidenceManifest.model_validate_json(
+                (workspace_bundle / "manifest.json").read_text()
+            )
+            hooks.insert(0, partial(install_review_evidence, manifest=manifest))
+        rollout_config = RolloutConfig(
             task_path=wrapper_dir,
-            agent=agent,
-            model=model,
-            agent_env=dict(agent_env),
-            environment=environment,
+            agent=config.agent,
+            model=config.model,
+            agent_env=dict(config.agent_env),
+            environment=config.environment,
+            reasoning_effort=config.reasoning_effort,
+            purpose="reviewer",
+            parent_rollout=rollout_dir.name,
             jobs_dir=runtime_dir,
-            timeout=timeout_sec,
+            timeout=config.timeout_sec,
             uploads=uploads,
-            pre_agent_hooks=[_lock_review_evidence],
+            pre_agent_hooks=hooks,
         )
-        result = await run_rollout(config)
+        result = await run_rollout(rollout_config)
         leaf = _reviewer_rollout_leaf(runtime_dir)
         trial.reviewer_rollout = str(leaf) if leaf else None
         reward = _leaf_reward(leaf) if leaf else None
-        trial.review_valid = reward == 1.0
+        completion_error = _reviewer_completion_error(leaf) if leaf else None
+        if result.error and completion_error is None:
+            completion_error = f"reviewer error: {result.error}"
+        trial.review_valid = reward == 1.0 and completion_error is None
         review = _leaf_review_result(leaf) if leaf else None
         if review is None:
             trial.error = (
@@ -509,7 +580,9 @@ async def _review_one(
         trial.summary = _coerce_summary(review.get("summary"))
         trial.checks = _coerce_checks(review.get("checks"))
         if not trial.review_valid:
-            trial.error = "reviewer output failed structural validation"
+            trial.error = (
+                completion_error or "reviewer output failed structural validation"
+            )
         elif rubric.is_weighted:
             try:
                 trial.summary, trial.checks = _validate_review_payload(
@@ -527,7 +600,7 @@ async def _review_one(
                 trial.scoring = score_weighted_review(
                     rubric,
                     trial.checks,
-                    deterministic_pass=_is_passing(rollout_dir),
+                    deterministic_pass=deterministic_pass,
                 )
             except ValueError as exc:
                 # Defense in depth for an internal aggregation invariant.
@@ -538,14 +611,17 @@ async def _review_one(
         logger.info(
             "Reviewed %s with rubric %s (valid=%s)",
             rollout_dir.name,
-            resolved_rubric,
+            rubric_path,
             trial.review_valid,
         )
     except Exception as exc:
         logger.error("Review failed for %s", rollout_dir.name, exc_info=True)
         trial.error = str(exc)
+        leaf = _reviewer_rollout_leaf(runtime_dir)
+        if leaf is not None:
+            trial.reviewer_rollout = str(leaf)
     finally:
-        shutil.rmtree(wrapper_dir, ignore_errors=True)
+        remove_review_task(wrapper_root)
     return trial
 
 
@@ -677,8 +753,17 @@ async def run_reviews(
         out_dir = Path("jobs") / f"review-{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    reviewer = ReviewerConfig(
+        agent=agent,
+        model=model,
+        environment=environment,
+        agent_env=agent_env or {},
+        timeout_sec=timeout_sec,
+        image=image,
+        open_network=open_network,
+        concurrency=max(1, concurrency),
+    )
     semaphore = asyncio.Semaphore(max(1, concurrency))
-    workdir = Path(tempfile.mkdtemp(prefix="benchflow-review-"))
 
     async def bounded(rollout_dir: Path) -> TrialReview:
         async with semaphore:
@@ -686,22 +771,12 @@ async def run_reviews(
                 rollout_dir,
                 explicit_rubric=explicit_rubric,
                 template=template,
-                agent=agent,
-                model=model,
-                environment=environment,
-                agent_env=agent_env or {},
-                timeout_sec=timeout_sec,
-                image=image,
-                open_network=open_network,
+                config=reviewer,
                 tasks_root=tasks_root,
                 out_dir=out_dir,
-                workdir=workdir,
             )
 
-    try:
-        trials = await asyncio.gather(*(bounded(rollout) for rollout in rollouts))
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+    trials = await asyncio.gather(*(bounded(rollout) for rollout in rollouts))
 
     trials.sort(key=lambda trial: trial.trial_name)
     rubric_for_report = rubric_path or Path("<per-task or default>")

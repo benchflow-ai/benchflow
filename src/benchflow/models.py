@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from benchflow.usage_tracking import UsageSource
 
 if TYPE_CHECKING:
+    from benchflow._utils.scoring import ScoreOutcome
+    from benchflow.review.outcome import ScoringResult
     from benchflow.rewards.events import RewardEvent
 
 TrajectorySource = Literal["acp", "scraped", "partial_acp", "hosted_env"]
@@ -68,6 +70,9 @@ class RolloutResult:
         rollout_name:   Unique trial identifier within a job run.
         rewards:      Verifier-produced reward dict (e.g. {"exact_match": 1.0}).
                       None if verification was skipped or failed.
+        scoring:      Explicit gate verdict for automatically reviewed tasks.
+                      Its pass flag is independent of the quality reward.
+        purpose:      Distinguishes task trials from nested reviewer runs.
         trajectory:   Ordered list of ACP session-update dicts (tool calls,
                       messages, thoughts) captured during execution.
         agent:        Harness name from the registry (e.g. "openclaw").
@@ -155,6 +160,9 @@ class RolloutResult:
         source_provenance: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        scoring: ScoringResult | None = None,
+        purpose: Literal["task", "reviewer"] = "task",
+        parent_rollout: str | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
@@ -187,6 +195,23 @@ class RolloutResult:
         self.source_provenance = source_provenance
         self.started_at = started_at
         self.finished_at = finished_at
+        self.scoring = scoring
+        self.purpose = purpose
+        self.parent_rollout = parent_rollout
+
+    @property
+    def score_outcome(self) -> ScoreOutcome:
+        """Canonical scoring classification shared by runtime and saved reports."""
+        from benchflow._utils.scoring import classify_score_outcome
+
+        return classify_score_outcome(
+            {
+                "rewards": self.rewards,
+                "scoring": self.scoring.to_dict() if self.scoring else None,
+                "error": self.error,
+                "verifier_error": self.verifier_error,
+            }
+        )
 
     @property
     def success(self) -> bool:
@@ -200,6 +225,7 @@ class RolloutResult:
             self.error is None
             and self.verifier_error is None
             and self.export_error is None
+            and (self.scoring is None or self.scoring.status == "complete")
         )
 
     def __repr__(self) -> str:

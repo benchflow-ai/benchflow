@@ -1,22 +1,82 @@
 # Rubric review
 
-Rubric review is a detached, agentic quality review of finished rollouts. A
-reviewer agent reads a rollout's records — trajectory, result, verifier
-output, and the task definition — inside its own sandbox and grades the run
-against a rubric. Legacy rubrics produce one `pass` / `fail` /
-`not_applicable` verdict per criterion; weighted rubrics combine binary
-blocker verdicts with 0–2 scores.
+BenchFlow automatically reviews a task when it ships a weighted `rubric.json`.
+A reviewer agent reads the solver's workspace, trajectory, test output, and task
+definition in a separate sandbox. Host code validates its judgments and computes
+the final reward. Tasks without a review rubric retain their existing verifier.
 
-Review is **report-only**. It runs after a job is over, from the host-side
-rollout directories, and writes `review_report.json`. It never modifies a
-reviewed rollout's `rewards` or `result.json`, and there is no code path
-through which it could: the deterministic verifier is the only owner of
-`reward`.
+The standalone `bench review` command remains a detached audit: it writes a
+report without modifying the source result. Both entry points share the same
+reviewer runtime, rubric contract, and weighted scorer. `bench eval score`
+explicitly finishes or revises automatic scoring from a saved solver snapshot.
 
-This is distinct from the [`llm-judge` verifier strategy](./llm-judge.md):
-an llm-judge is part of a task's verifier and *produces* the reward, while
-rubric review is downstream quality assurance *about* finished runs — is the
-task well specified, did the agent game the grader, was the method sound.
+## Automatic evaluation
+
+```bash
+bench eval run --tasks-dir ./tasks/example \
+  --agent codex-acp --model azure-foundry-openai/gpt-5.6-terra \
+  --sandbox daytona --reasoning-effort max \
+  --reviewer-agent codex-acp \
+  --reviewer-model azure-foundry-openai/gpt-5.6-terra \
+  --reviewer-sandbox daytona --reviewer-reasoning-effort max
+```
+
+The default pinned reviewer image installs `numpy==2.2.6` and `pypdf==5.9.0`
+during trusted setup, before the agent starts. Its network restrictions remain
+unchanged. Custom reviewer images supply their own artifact-reading tools.
+
+Reviewer defaults are `opencode`, its registered model, Docker, 1800 seconds,
+and concurrency 4. Set reviewer options explicitly when using a different
+provider or backend. API keys and supported native OAuth are resolved through
+normal BenchFlow credential handling; solver environment overrides do not become
+reviewer overrides. Missing reviewer configuration or authentication is rejected
+before solver startup. Backend preflight checks local configuration/readiness;
+it does not guarantee a key will remain valid or a service will remain available.
+
+Automatic discovery recognizes `verifier/rubric.json`, `tests/rubric.json`, and
+root `rubric.json`. Multiple review rubrics are rejected as ambiguous. Malformed
+or legacy v0.1 review rubrics require correction/migration before automatic
+scoring. A recognized `{id, match_criteria}` LLM-judge rubric keeps its existing
+verifier meaning and does not trigger a second review.
+
+For a fully scored task, success and reward are different fields:
+
+```text
+passed = all required tests pass AND every blocker rubric passes
+quality = sum(non-blocker score * weight) / sum(2 * weight)
+reward = quality if passed else 0
+```
+
+For example, test reward 1, all blockers passing, and quality 0.8 produces
+`scoring.passed=true` and `rewards.reward=0.8`. It counts as a pass in pass@1.
+Quality zero can also coexist with gate success. Reports use the explicit pass
+flag, never a threshold on the final reward. Old results without a scoring block
+keep their historical reward-one pass contract. The deterministic verifier must
+attest execution and passage of all its required checks with a valid reward of
+exactly one; a partial test score does not satisfy the gate.
+
+Terminal evaluation freezes the actual solver working directory before verifier
+hardening, captures durable evidence, runs tests, finalizes telemetry, and releases
+the solver sandbox before waiting for reviewer capacity. The reviewer receives
+read-only evidence plus its own writable workspace. File manifests and archive
+hashes validate transfers; required capture failures are scoring errors, not
+scientific zeros. Intermediate test feedback does not run the reviewer.
+
+Artifacts retain `solver.json`, the workspace bundle under `evidence/`, every
+reviewer child under `reviews/`, and immutable reports under `scoring/`. Final
+`result.json` includes a typed scoring block plus `reward`, `verifier_reward`,
+and `rubric_reward` components. Reviewer trajectories, generated files, timing,
+usage, and errors stay inspectable as child-run artifacts and are excluded from
+solver-trial counts. Provider traces unavailable under supported native OAuth
+remain explicitly unavailable rather than being fabricated.
+
+If review fails, final reward stays unavailable and the successful solver/test
+evidence is retained. Resume the job or use `bench eval score` with the exact
+original task. Review retries never rerun the solver. Valid negative reviews are
+not retried automatically. Publication failures are separate from scoring failure.
+For manually driven `Rollout` phases, call `await rollout.finalize()` after the
+terminal verifier; `.result` stays unavailable until required review finishes.
+`bf.run()` and `TaskRuntime.verify()` perform this finalization automatically.
 
 ## The rubric (versionless contracts v0.1 and v0.2)
 
@@ -94,7 +154,7 @@ BenchFlow aggregates a structurally valid v0.2 review on the host:
 
 ```text
 raw_quality = sum(score * weight) / (2 * sum(non-blocker weights))
-gates_pass = deterministic reward is 1.0 with no recorded error
+gates_pass = preserved deterministic test reward is 1.0 and valid
              AND every blocker passes
 gated_quality = raw_quality if gates_pass, otherwise 0
 ```
@@ -122,10 +182,10 @@ and `match_criteria`). Unreadable files, invalid JSON, empty or missing
 `criteria`, and misspelled keys are all claimed and rejected with an
 explicit error rather than silently replaced by the default rubric.
 
-Rubric resolution order, per reviewed rollout:
+Detached `bench review` resolution order, per reviewed rollout:
 
 1. an explicit `--rubric/-r` file,
-2. the reviewed task's own `verifier/rubric.json` (or `tests/rubric.json`)
+2. the reviewed task's own `verifier/rubric.json`, `tests/rubric.json`, or root `rubric.json`
    when it is shaped like a review rubric,
 3. the built-in default rubric (`reward_hacking`, `task_specification`).
 

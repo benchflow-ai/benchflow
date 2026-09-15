@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from benchflow._types import Role, Scene
 from benchflow._utils.config import (
@@ -31,6 +31,7 @@ from benchflow.loop_strategies import (
     build_loop_user,
     parse_loop_strategy_spec,
 )
+from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -165,6 +166,9 @@ class RolloutConfig:
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
     skip_verify: bool = False
+    reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
+    purpose: Literal["task", "reviewer"] = "task"
+    parent_rollout: str | None = None
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
     # Registry dataset identity: {"name", "version"} — stamped into
@@ -233,6 +237,9 @@ class RolloutConfig:
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.reviewer = ReviewerConfig.coerce(self.reviewer)
+        if self.purpose not in {"task", "reviewer"}:
+            raise ValueError("purpose must be task or reviewer")
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)

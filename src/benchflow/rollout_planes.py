@@ -230,6 +230,11 @@ class DefaultRolloutPlanes:
 
         return await execute_prompts_session_factory(*args, **kwargs)
 
+    async def quiesce_agent(self, env: Any, sandbox_user: str) -> None:
+        from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
+
+        await _kill_sandbox_user_procs(env, sandbox_user)
+
     async def harden_before_verify(self, *args: Any, **kwargs: Any) -> None:
         from benchflow.sandbox.lockdown import harden_before_verify as _harden
 

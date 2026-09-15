@@ -24,10 +24,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.registry import AgentConfig, resolve_agent
+from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 if TYPE_CHECKING:
     from benchflow.models import RolloutResult as RunResult
+    from benchflow.review.outcome import ScoringResult
     from benchflow.rollout import RolloutConfig as TrialConfig
 
 logger = logging.getLogger(__name__)
@@ -220,6 +222,7 @@ class RuntimeConfig:
     pre_agent_hooks: list | None = None
     sandbox_locked_paths: list[str] | None = None
     usage_tracking: Any = None
+    reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
 
 
 @dataclass
@@ -254,6 +257,7 @@ class RuntimeResult:
     rollout_dir: Path | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    scoring: ScoringResult | None = None
 
     @property
     def passed(self) -> bool:
@@ -263,6 +267,9 @@ class RuntimeResult:
             classify_result_outcome(
                 {
                     "rewards": self.rewards,
+                    "scoring": self.scoring.to_dict()
+                    if self.scoring is not None
+                    else None,
                     "error": self.error,
                     "verifier_error": self.verifier_error,
                 }
@@ -277,6 +284,7 @@ class RuntimeResult:
         return classify_result_outcome(
             {
                 "rewards": self.rewards,
+                "scoring": self.scoring.to_dict() if self.scoring is not None else None,
                 "error": self.error,
                 "verifier_error": self.verifier_error,
             }
@@ -348,6 +356,7 @@ class Runtime:
             skills_dir=config.skills_dir,
             skill_mode=config.skill_mode,
             usage_tracking=config.usage_tracking,
+            reviewer=config.reviewer,
         )
 
         rollout = await Rollout.create(trial_config)
@@ -381,6 +390,7 @@ class Runtime:
             rollout_dir=rollout_dir,
             started_at=run_result.started_at,
             finished_at=run_result.finished_at,
+            scoring=run_result.scoring,
         )
 
 
@@ -447,6 +457,7 @@ async def run(
             agent=subject,
             model=model,
             usage_tracking=rc.usage_tracking,
+            reviewer=rc.reviewer,
         )
         rollout = await Rollout.create(rollout_config)
         return await rollout.run()

@@ -18,6 +18,7 @@ from typing import Any
 
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.loop_strategies import LoopStrategySpec
+from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -54,6 +55,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
     return EvaluationConfig(
         agent=raw.get("agent") or "claude-agent-acp",
         model=raw.get("model"),
+        reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
         reasoning_effort=raw.get("reasoning_effort"),
         environment=raw.get("environment") or "docker",
         concurrency=int(raw.get("concurrency") or 1),

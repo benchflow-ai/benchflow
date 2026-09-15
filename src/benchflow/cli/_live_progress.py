@@ -264,13 +264,10 @@ class LiveEvalProgress:
     def on_result(self, name: str, result: RunResult) -> None:
         with self._lock:
             self._running.pop(name, None)
-            # Mirror Evaluation._log_and_report exactly: reward==1 -> PASS,
-            # reward not None -> FAIL, else ERR (no reward reached).
-            rewards = getattr(result, "rewards", None)
-            reward = rewards.get("reward") if rewards else None
-            if reward == 1:
+            outcome = result.score_outcome
+            if outcome == "passed":
                 self._passed += 1
-            elif reward is not None:
+            elif outcome == "failed":
                 self._failed += 1
             else:
                 self._errored += 1

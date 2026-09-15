@@ -19,13 +19,62 @@ Does not own:
 import json
 import logging
 import os
+import posixpath
 import shlex
 import tempfile
-from pathlib import Path
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 
 from benchflow.agents.registry import AGENTS
 
 logger = logging.getLogger(__name__)
+
+# These runtime files can contain API keys or OAuth tokens. Keep this inventory
+# beside the credential writers, including files written by harness launchers
+# rather than upload_credential. Evidence capture records every exclusion.
+CREDENTIAL_EVIDENCE_PATHS = (
+    ".codex/auth.json",
+    ".claude/.credentials.json",
+    ".config/opencode/auth.json",
+    ".config/opencode/opencode.json",
+    ".local/share/opencode/auth.json",
+    ".config/mimocode/mimocode.json",
+    "mimocode.json",
+    ".openhands/agent_settings.json",
+    ".pi/agent/models.json",
+    ".pi/agent/auth.json",
+    ".openclaw/openclaw.json",
+    ".openclaw/agents/main/agent/auth-profiles.json",
+    ".gemini/oauth_creds.json",
+    ".aws/credentials",
+    ".config/gcloud/application_default_credentials.json",
+    ".ssh",
+)
+
+
+def credential_evidence_overrides(
+    agent_env: Mapping[str, str], *, workspace: str, cred_home: str
+) -> tuple[str, ...]:
+    """Resolve supported credential/config file overrides in sandbox paths.
+
+    Values are filenames, not credential JSON. In particular, CODEX_CONFIG is
+    inline JSON forwarded to the adapter and must never be treated as a path.
+    """
+    paths: set[str] = set()
+    for variable in (
+        "MIMOCODE_CONFIG",
+        "OPENCODE_CONFIG",
+        "OPENCLAW_CONFIG_PATH",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AWS_SHARED_CREDENTIALS_FILE",
+    ):
+        value = agent_env.get(variable)
+        if not value:
+            continue
+        if value.startswith("~/"):
+            value = str(PurePosixPath(cred_home) / value[2:])
+        paths.add(posixpath.normpath(str(PurePosixPath(workspace) / value)))
+    return tuple(sorted(paths))
 
 
 def _owner_from_home(cred_home: str) -> str | None:

@@ -36,6 +36,7 @@ from benchflow.loop_strategies import (
     LoopStrategySpec,
     parse_loop_strategy_spec,
 )
+from benchflow.review.options import ReviewerConfig
 from benchflow.sandbox.providers import (
     is_known_provider,
     provider_extra,
@@ -108,6 +109,7 @@ class EvalCreateRequest:
     self_gen_no_internet: bool = False
     loop_strategy: str | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
+    reviewer: ReviewerConfig | None = None
     include: list[str] | None = None
     exclude: list[str] | None = None
     dataset: str | None = None
@@ -194,6 +196,7 @@ class EvalPlan:
             prompts=self.eval_prompts,
             agent_idle_timeout=self.eval_agent_idle_timeout,
             agent_env=self.parsed_env,
+            reviewer=ReviewerConfig.coerce(req.reviewer),
             sandbox_user=self.sandbox_user,
             sandbox_setup_timeout=req.sandbox_setup_timeout,
             context_root=str(req.context_root) if req.context_root else None,
@@ -327,6 +330,10 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     ):
         raise EvalPlanError(
             "--worker-concurrency is supported for --tasks-dir and --source-repo batch runs"
+        )
+    if request.source_env and request.reviewer is not None:
+        raise EvalPlanError(
+            "--reviewer-* options require local tasks; --source-env owns its scoring"
         )
     if request.worker_retries < 0:
         raise EvalPlanError("--worker-retries must be >= 0")

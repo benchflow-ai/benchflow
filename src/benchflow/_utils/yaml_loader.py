@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from benchflow._types import Role, Scene, Turn
+from benchflow.review.options import ReviewerConfig
 from benchflow.rollout import RolloutConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
@@ -109,6 +110,7 @@ def rollout_config_from_dict(
 
     return RolloutConfig(
         task_path=tp,
+        reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
         scenes=scenes,
         environment=raw.get("environment", "docker"),
         sandbox_user=raw.get("sandbox_user", "agent"),

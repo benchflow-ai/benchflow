@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow._utils.result_paths import iter_task_result_paths
+from benchflow._utils.scoring import extract_reward
 from benchflow._utils.task_authoring import task_digest
 from benchflow._utils.text import truncate_end
 from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
@@ -100,8 +102,6 @@ def write_task_manifest(path: Path, options: TaskManifestOptions) -> dict[str, A
 
 
 def _iter_rollouts(job_dir: Path) -> list[Path]:
-    if (job_dir / "result.json").is_file():
-        return [job_dir]
     roots = [job_dir]
     shard_root = _worker_shards_root(job_dir)
     if shard_root is not None:
@@ -111,7 +111,7 @@ def _iter_rollouts(job_dir: Path) -> list[Path]:
             path.parent
             for root in roots
             if root.is_dir()
-            for path in root.rglob("result.json")
+            for path in iter_task_result_paths(root)
         }
     )
 
@@ -166,6 +166,8 @@ def _iter_selected_rollouts(selection_path: Path) -> list[Path]:
 
 
 def _reward(result: dict[str, Any]) -> float | None:
+    if result.get("scoring") is not None:
+        return extract_reward(result)
     rewards = result.get("rewards")
     if isinstance(rewards, dict):
         value = rewards.get("reward")

@@ -11,11 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.result_paths import iter_task_result_paths
 from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
+    extract_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
@@ -46,6 +48,7 @@ class TaskMetrics:
     cost_usd: float | None = None
     usage_source: UsageSource = "unavailable"
     memory_score: float | None = None
+    scoring: dict[str, Any] | None = None
 
     @property
     def outcome(self) -> str:
@@ -66,6 +69,7 @@ class TaskMetrics:
             "rewards": {"reward": self.reward} if self.reward is not None else None,
             "error": self.error,
             "verifier_error": self.verifier_error,
+            "scoring": self.scoring,
         }
 
     @property
@@ -318,14 +322,14 @@ class BenchmarkMetrics:
         }
 
 
-def _safe_reward(rewards: dict) -> float:
-    """Extract reward value from a rewards dict, defaulting to 0 if None/missing.
-
-    Prevents TypeError when comparing reward values where one is None
-    (e.g. rewards={"reward": None, "rubric": [...]}).
-    """
-    val = rewards.get("reward")
-    return val if isinstance(val, (int, float)) else 0.0
+def _result_rank(result: dict[str, Any]) -> tuple[bool, bool, float]:
+    """Prefer a scored pass, then quality, without selecting stale error rewards."""
+    reward = extract_reward(result)
+    return (
+        reward is not None,
+        classify_score_outcome(result) == "passed",
+        reward if isinstance(reward, (int, float)) else 0.0,
+    )
 
 
 def collect_metrics(
@@ -342,26 +346,18 @@ def collect_metrics(
     results_dir = Path(results_dir)
     best: dict[str, dict] = {}
 
-    for rfile in sorted(results_dir.rglob("result.json")):
+    for rfile in iter_task_result_paths(results_dir):
         try:
             r = json.loads(rfile.read_text())
             task = r["task_name"]
-            if (
-                task not in best
-                or (r.get("rewards") is not None and best[task].get("rewards") is None)
-                or (
-                    r.get("rewards")
-                    and best[task].get("rewards")
-                    and _safe_reward(r["rewards"]) > _safe_reward(best[task]["rewards"])
-                )
-            ):
+            if task not in best or _result_rank(r) > _result_rank(best[task]):
                 best[task] = r
         except Exception as e:
             logger.debug(f"Skipping corrupt result file {rfile}: {e}")
 
     tasks = []
     for task_name, r in sorted(best.items()):
-        reward = r.get("rewards", {}).get("reward") if r.get("rewards") else None
+        reward = extract_reward(r)
         # Calculate duration
         duration = 0.0
         try:
@@ -375,6 +371,7 @@ def collect_metrics(
             TaskMetrics(
                 task_name=task_name,
                 reward=reward,
+                scoring=r.get("scoring"),
                 n_tool_calls=r.get("n_tool_calls", 0),
                 n_skill_invocations=result_skill_invocations(r),
                 n_prompts=r.get("n_prompts", 0),

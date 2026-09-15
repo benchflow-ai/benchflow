@@ -1119,3 +1119,16 @@ def test_format_redaction_breakdown_orders_and_pluralizes():
     assert redaction_breakdown(counts) == (("API key", 2), ("bearer token", 1))
     assert format_redaction_breakdown(counts) == "2 API keys, 1 bearer token"
     assert format_redaction_breakdown({}) == ""
+
+
+@pytest.mark.parametrize("key_name", ["apiKey", "api_key", "api-key"])
+def test_redacts_api_key_in_inline_harness_config(key_name: str) -> None:
+    """Guards PR #1126's replayable reviewer settings against prefixless apiKey leaks."""
+    raw = (
+        '{"provider":{"azure":{"options":{"'
+        + key_name
+        + '":"synthetic-prefixless-secret","reasoningEffort":"max"}}}}'
+    )
+    redacted = redact_trajectory_text(raw)
+    assert "synthetic-prefixless-secret" not in redacted
+    assert '"reasoningEffort":"max"' in redacted

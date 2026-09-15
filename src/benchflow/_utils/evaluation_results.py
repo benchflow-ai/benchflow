@@ -75,6 +75,12 @@ def rollout_result_payload(
         "task_name": result.task_name,
         "rollout_name": result.rollout_name,
         "rewards": result.rewards,
+        **({"scoring": result.scoring.to_dict()} if result.scoring is not None else {}),
+        **(
+            {"purpose": result.purpose, "parent_rollout": result.parent_rollout}
+            if result.purpose != "task"
+            else {}
+        ),
         "error": result.error,
         "error_category": result.error_category,
         "verifier_error": result.verifier_error,
