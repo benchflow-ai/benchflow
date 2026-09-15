@@ -421,3 +421,47 @@ def test_preview_rejects_invalid_explicit_provenance(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "invalid tested SHA" in result.stdout
     assert github_output == ""
+
+
+def _public_release_steps() -> list[dict]:
+    return _workflow("public-release.yml")["jobs"]["publish"]["steps"]
+
+
+def _step_index(steps: list[dict], name: str) -> int:
+    return next(index for index, step in enumerate(steps) if step.get("name") == name)
+
+
+def test_public_release_validates_citation_before_anything_irreversible() -> None:
+    """Guards the Zenodo archiving citation gate against running too late.
+
+    A stale CITATION.cff must stop the release while it is still reversible; the
+    PyPI publish and the GitHub Release that triggers Zenodo archiving are not.
+    """
+    steps = _public_release_steps()
+    validate = _step_index(steps, "Validate release tag")
+
+    assert validate < _step_index(steps, "Build distributions")
+    assert validate < _step_index(steps, "Publish public release")
+    assert validate < _step_index(steps, "Create or update GitHub release")
+
+
+def test_public_release_validation_can_read_citation_yaml() -> None:
+    """Guards the Zenodo archiving citation gate against a missing PyYAML.
+
+    The step runs with `--no-project`, so the release tool's YAML dependency has
+    to be requested explicitly or the gate dies on import.
+    """
+    steps = _public_release_steps()
+    run = steps[_step_index(steps, "Validate release tag")]["run"]
+
+    assert "tools/release_version.py public-release" in " ".join(run.split())
+    assert "--with pyyaml" in run
+
+
+def test_internal_preview_version_step_can_import_the_release_tool() -> None:
+    """Guards the preview lane against the release tool's YAML import."""
+    preview = _workflow("internal-preview-release.yml")
+    steps = preview["jobs"]["publish"]["steps"]
+    run = steps[_step_index(steps, "Compute internal preview version")]["run"]
+
+    assert "--with pyyaml" in run

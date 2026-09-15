@@ -105,7 +105,8 @@ jobs:
       - name: Compute internal preview version
         id: version
         run: >-
-          uv run --with packaging --no-project python tools/release_version.py
+          uv run --with packaging --with pyyaml --no-project python
+          tools/release_version.py
           internal-preview
           --run-number "${{ steps.provenance.outputs.source_run_number }}"
 

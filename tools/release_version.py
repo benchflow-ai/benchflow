@@ -8,9 +8,16 @@ import sys
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import yaml
 from packaging.version import InvalidVersion, Version
+
+# CITATION.cff names the last published release, so its `date-released` is
+# written by a human whose local date can already be a day ahead of the runner's
+# UTC date. Tolerate exactly that much, and nothing more.
+CITATION_DATE_SKEW = timedelta(days=1)
 
 
 class ReleaseVersionError(ValueError):
@@ -23,6 +30,14 @@ class InternalPreviewDecision:
 
     publish: bool
     version: str = ""
+
+
+@dataclass(frozen=True)
+class CitationRelease:
+    """Release identity recorded in a CITATION.cff file."""
+
+    version: str
+    date_released: date
 
 
 def read_project_version(pyproject_path: Path) -> str:
@@ -39,6 +54,45 @@ def read_project_version(pyproject_path: Path) -> str:
             f"[project].version in {pyproject_path} must be a non-empty string."
         )
     return version
+
+
+def read_citation_release(citation_path: Path) -> CitationRelease:
+    """Return the release identity recorded in a CITATION.cff file."""
+    try:
+        citation = yaml.safe_load(citation_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ReleaseVersionError(
+            f"{citation_path} is missing; public releases must ship a citation "
+            "file naming the released version."
+        ) from exc
+    except yaml.YAMLError as exc:
+        raise ReleaseVersionError(f"Could not parse {citation_path} as YAML.") from exc
+
+    if not isinstance(citation, dict):
+        raise ReleaseVersionError(f"{citation_path} must contain a YAML mapping.")
+
+    return CitationRelease(
+        version=_citation_version(citation, citation_path),
+        date_released=_citation_date_released(citation, citation_path),
+    )
+
+
+def validate_public_release_citation(
+    version_text: str, citation: CitationRelease, today: date
+) -> None:
+    """Validate that CITATION.cff names the version being released today."""
+    if _parse_version(citation.version) != _parse_version(version_text):
+        raise ReleaseVersionError(
+            f"CITATION.cff records version {citation.version!r} but this release "
+            f"publishes {version_text!r}. Update CITATION.cff `version` and "
+            "`date-released` in the release PR before tagging."
+        )
+    if citation.date_released > today + CITATION_DATE_SKEW:
+        raise ReleaseVersionError(
+            f"CITATION.cff records date-released {citation.date_released.isoformat()}, "
+            f"which is in the future (today is {today.isoformat()} UTC). A citation "
+            "file must not claim a release date that has not happened."
+        )
 
 
 def compute_internal_preview_version(
@@ -98,6 +152,38 @@ def _parse_version(version_text: str) -> Version:
         ) from exc
 
 
+def _citation_version(citation: dict, citation_path: Path) -> str:
+    # YAML parses `version: 1.0` as a float and `version: 0.7.4` as a string, so
+    # accept either shape and let PEP 440 comparison decide equality.
+    version = citation.get("version")
+    if isinstance(version, bool) or not isinstance(version, (str, int, float)):
+        raise ReleaseVersionError(
+            f"{citation_path} must set `version` to the released version."
+        )
+    return str(version)
+
+
+def _citation_date_released(citation: dict, citation_path: Path) -> date:
+    # An unquoted `date-released: 2026-08-17` arrives as a date; a quoted one
+    # arrives as a string.
+    date_released = citation.get("date-released")
+    if isinstance(date_released, datetime):
+        return date_released.date()
+    if isinstance(date_released, date):
+        return date_released
+    if isinstance(date_released, str):
+        try:
+            return date.fromisoformat(date_released)
+        except ValueError as exc:
+            raise ReleaseVersionError(
+                f"{citation_path} has an unparsable `date-released` "
+                f"{date_released!r}; use an ISO 8601 date."
+            ) from exc
+    raise ReleaseVersionError(
+        f"{citation_path} must set `date-released` to the release date."
+    )
+
+
 def _normalize_run_number(run_number: str | int) -> str:
     run_number_text = str(run_number)
     if not run_number_text.isdecimal() or int(run_number_text) <= 0:
@@ -136,6 +222,11 @@ def _cmd_public_release(args: argparse.Namespace) -> int:
         tag_name,
         read_project_version(args.pyproject),
     )
+    validate_public_release_citation(
+        version,
+        read_citation_release(args.citation),
+        datetime.now(UTC).date(),
+    )
     write_github_output({"version": version})
     return 0
 
@@ -162,13 +253,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     public_release = subparsers.add_parser(
         "public-release",
-        help="Validate a public release tag against pyproject.toml.",
+        help="Validate a public release tag against pyproject.toml and CITATION.cff.",
     )
     public_release.add_argument(
         "--pyproject",
         type=Path,
         default=Path("pyproject.toml"),
         help="Path to pyproject.toml.",
+    )
+    public_release.add_argument(
+        "--citation",
+        type=Path,
+        default=Path("CITATION.cff"),
+        help="Path to CITATION.cff.",
     )
     public_release.add_argument(
         "--tag",
