@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## 0.7.8 — 2026-09-14
+
+### Added
+
+- **Automatic rubric review and scoring.** Tasks with a weighted `rubric.json`
+  run a separate reviewer after verification. Passing requires all required
+  tests and rubric blockers to pass; the final reward is the weighted quality
+  score. Solver evidence and reviewer runs are retained, and `bench eval score`
+  can retry an interrupted review without rerunning the solver. (#1126)
+- **Rubric results in the trajectory viewer.** The Rubric tab displays criterion
+  judgments, explanations, blocker outcomes, and weighted scores. (#1102)
+- **Viewer themes and syntax highlighting.** Trajectory pages support a dark
+  theme and highlighted tool content. (#1098)
+
+### Fixed
+
+- **Denylist enforcement closes CONNECT and HTTP Host bypasses.** TLS identity
+  and HTTP authority are checked against the allowed destination on Docker and
+  Daytona. (#1122)
+- **IPv6 egress rules are installed when procfs reports zero-size files.**
+  Sandbox firewall setup reads the kernel data instead of relying on the
+  reported file size. (#1124)
+- **Buffered ACP prompts respect their deadlines.** Timeout handling no longer
+  repeats captured provider history. (#1125)
+- **Tool captures retain their content and raw input/output.** ACP trajectories
+  preserve observations needed for later review. (#1100)
+
 ## 0.7.7 — 2026-09-09
 
 ### Added
