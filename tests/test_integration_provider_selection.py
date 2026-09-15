@@ -3,9 +3,14 @@ import os
 import sys
 from pathlib import Path
 
+import yaml
+
 SCRIPT = (
     Path(__file__).resolve().parents[1]
     / ".github/scripts/select_integration_provider.py"
+)
+INTEGRATION_LIGHT_WORKFLOW = (
+    Path(__file__).resolve().parents[1] / ".github/workflows/integration-light.yml"
 )
 spec = importlib.util.spec_from_file_location("select_integration_provider", SCRIPT)
 assert spec is not None
@@ -55,3 +60,22 @@ def test_github_env_writer_uses_multiline_format(tmp_path, monkeypatch):
     assert path.read_text() == (
         "OPENAI_API_KEY<<__BENCHFLOW_ENV__\nsecret\nvalue\n__BENCHFLOW_ENV__\n"
     )
+
+
+def test_integration_light_exposes_provider_fallback_envs():
+    """Guards the CI unblock from PR #887 so light smoke can use fallbacks."""
+    workflow = yaml.safe_load(INTEGRATION_LIGHT_WORKFLOW.read_text())
+    env = workflow["jobs"]["rollout-smoke"]["env"]
+
+    assert {
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "GLM_API_KEY",
+        "GLM_BASE_URL",
+        "QWEN_API_KEY",
+        "QWEN_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_BASE_URL",
+        "OPENAI_API_KEY",
+        "GITHUB_MODELS_TOKEN",
+    } <= set(env)
