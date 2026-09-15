@@ -112,7 +112,10 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
         'iptables -C OUTPUT -m owner --uid-owner "$agent_uid" '
         "-j REJECT 2>/dev/null || "
         'iptables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
-        "if [ -s /proc/net/if_inet6 ]; then "
+        # procfs reports zero stat size even when this interface has content.
+        # Install IPv6 rules whenever the kernel exposes the stack, including
+        # before a non-loopback interface acquires an address.
+        "if [ -e /proc/net/if_inet6 ]; then "
         "command -v ip6tables >/dev/null 2>&1 || "
         "{ echo 'IPv6 enabled but ip6tables unavailable' >&2; exit 86; }; "
         'ip6tables -C OUTPUT -o lo -m owner --uid-owner "$agent_uid" '
