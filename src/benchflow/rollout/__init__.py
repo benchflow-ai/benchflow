@@ -1189,6 +1189,10 @@ class Rollout:
 
         self._agent_cwd = await _resolve_agent_cwd(self._env, self._task)
 
+        from benchflow.rollout._review import prepare_capture_runtime
+
+        await prepare_capture_runtime(self)
+
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
                 await self._planes.setup_sandbox_user(

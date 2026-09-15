@@ -18,6 +18,9 @@
 
 ### Fixed
 
+- **Automatic review supports shell-only task images.** Required Python
+  capture tools are provisioned before the solver starts, so a successful
+  shell task does not lose its review to a missing interpreter. (#1127)
 - **Denylist enforcement closes CONNECT and HTTP Host bypasses.** TLS identity
   and HTTP authority are checked against the allowed destination on Docker and
   Daytona. (#1122)
