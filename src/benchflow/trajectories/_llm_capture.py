@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from benchflow.trajectories._snapshot import RedactedJSONLSnapshot
 from benchflow.trajectories.types import Trajectory
 
 
@@ -23,12 +24,15 @@ class LiveLLMTrajectoryWriter:
         self._tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         self._tmp.unlink(missing_ok=True)
         self._last_payload: str | None = None
+        self._snapshot = RedactedJSONLSnapshot()
 
     def write(self, trajectory: Trajectory | None) -> bool:
         """Publish *trajectory* when it is non-empty and changed."""
         if trajectory is None or not trajectory.exchanges:
             return False
-        payload = trajectory.to_jsonl(redact_keys=True)
+        payload = self._snapshot.serialize(
+            exchange.model_dump(mode="json") for exchange in trajectory.exchanges
+        )
         if payload == self._last_payload:
             return False
         self._tmp.write_text(payload)

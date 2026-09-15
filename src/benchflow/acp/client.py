@@ -1,5 +1,6 @@
 """ACP client — benchflow acts as the client, agents are ACP servers."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -137,6 +138,10 @@ class ACPClient:
     async def _read_until_response(self, request_id: int) -> dict[str, Any]:
         """Read messages, handling notifications, until we get the response we want."""
         while True:
+            # Buffered transports can receive inline, and session capture is
+            # synchronous. Give cancellation and watchdog tasks a turn even
+            # while the peer's notification backlog remains non-empty.
+            await asyncio.sleep(0)
             msg = await self._transport.receive()
             logger.debug(
                 f"ACPClient recv: id={msg.get('id')} method={msg.get('method', '')} "

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.acp.session import ACPSession
-from benchflow.trajectories.types import redact_acp_trajectory_jsonl
+from benchflow.trajectories._snapshot import RedactedJSONLSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,7 @@ class TrajectoryWriter:
         # so a follow-up reader can't pick up an orphaned partial file.
         self._tmp.unlink(missing_ok=True)
         self._last_payload: str | None = None
+        self._snapshot = RedactedJSONLSnapshot()
 
     def __call__(self, session: ACPSession) -> None:
         self.flush(session)
@@ -167,7 +168,7 @@ class TrajectoryWriter:
         to the previous one — keeps a no-op chunk (an unchanged
         tool_call status poll) from churning the filesystem.
         """
-        payload = redact_acp_trajectory_jsonl(events)
+        payload = self._snapshot.serialize(events)
         if payload == self._last_payload:
             return
         self._tmp.write_text(payload)
@@ -182,7 +183,7 @@ class TrajectoryWriter:
         lands on disk even if the live streaming writer had already
         written the same content.
         """
-        payload = redact_acp_trajectory_jsonl(trajectory)
+        payload = self._snapshot.serialize(trajectory)
         self._tmp.write_text(payload)
         os.replace(self._tmp, self.path)
         self._last_payload = payload
