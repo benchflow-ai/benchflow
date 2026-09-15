@@ -30,7 +30,7 @@ from benchflow.acp.timeout_cleanup import (
     cancel_and_drain_prompt_task,
     cancel_prompt_after_timeout,
 )
-from benchflow.acp.types import McpServerSpec
+from benchflow.acp.types import McpServerSpec, PromptResult
 from benchflow.acp.watchdog import IdleWatchdog
 from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
@@ -800,6 +800,28 @@ def _agent_prompt_timeout_error(session, timeout: int) -> AgentPromptTimeoutErro
     )
 
 
+async def _timed_prompt(
+    acp_client: ACPClient, prompt: str
+) -> tuple[PromptResult, float]:
+    """Record completion in the prompt task, before a delayed observer runs."""
+    result = await acp_client.prompt(prompt)
+    return result, asyncio.get_running_loop().time()
+
+
+def _completed_prompt_result(
+    prompt_task: asyncio.Task[tuple[PromptResult, float]],
+    session,
+    *,
+    deadline: float,
+    timeout: int,
+) -> PromptResult:
+    """A delayed watchdog must distinguish late completion from late observation."""
+    result, completed_at = prompt_task.result()
+    if completed_at > deadline:
+        raise _agent_prompt_timeout_error(session, timeout)
+    return result
+
+
 async def _prompt_with_wall_clock_budget(
     acp_client: ACPClient,
     session,
@@ -807,12 +829,15 @@ async def _prompt_with_wall_clock_budget(
     timeout: int,
 ):
     """Run a prompt until either it finishes or BenchFlow's budget expires."""
-    prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    deadline = asyncio.get_running_loop().time() + timeout
+    prompt_task = asyncio.create_task(_timed_prompt(acp_client, prompt))
     cleanup_attempted = False
     try:
         done, _pending = await asyncio.wait({prompt_task}, timeout=timeout)
         if done:
-            return prompt_task.result()
+            return _completed_prompt_result(
+                prompt_task, session, deadline=deadline, timeout=timeout
+            )
         cleanup_attempted = True
         if await cancel_prompt_after_timeout(acp_client, prompt_task):
             raise _agent_prompt_timeout_error(session, timeout)
@@ -831,7 +856,7 @@ async def _prompt_with_idle_watchdog(
     idle_timeout: int,
 ):
     """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
-    prompt_task = asyncio.create_task(acp_client.prompt(prompt))
+    prompt_task = asyncio.create_task(_timed_prompt(acp_client, prompt))
     cleanup_attempted = False
     loop = asyncio.get_running_loop()
     watchdog = IdleWatchdog.start(
@@ -864,7 +889,9 @@ async def _prompt_with_idle_watchdog(
                     f"Agent prompt exceeded wall-clock budget {timeout}s"
                 )
 
-        return prompt_task.result()
+        return _completed_prompt_result(
+            prompt_task, session, deadline=watchdog.deadline, timeout=timeout
+        )
     finally:
         # Always cancel + drain the prompt task on exit, including the
         # external-cancellation path (CancelledError from sleep). Bound the
