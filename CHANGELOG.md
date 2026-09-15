@@ -11,7 +11,7 @@
   scoring error with `rewards: null` although its verifier had run. Capture now
   leaves that tree out as `sandbox_runtime` and records any other socket, FIFO
   or device node as a `special_file` exclusion instead of aborting. Capture
-  limits, escaping symlinks and concurrent changes still fail closed.
+  limits, escaping symlinks and concurrent changes still fail closed. (#1128)
 
 ## 0.7.7 — 2026-09-09
 
