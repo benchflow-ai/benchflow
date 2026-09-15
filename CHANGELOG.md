@@ -18,6 +18,14 @@
 
 ### Fixed
 
+- **Automatic rubric review works on Daytona when the task workspace is
+  `/root`.** Daytona's daemon keeps its session tree in `/root/.daytona` (the
+  entrypoint's FIFOs plus every session command's script, log and exit code),
+  and evidence capture aborted on the first FIFO, so the rollout ended in a
+  scoring error with `rewards: null` although its verifier had run. Capture now
+  leaves that tree out as `sandbox_runtime` and records any other socket, FIFO
+  or device node as a `special_file` exclusion instead of aborting. Capture
+  limits, escaping symlinks and concurrent changes still fail closed. (#1128)
 - **Automatic review supports shell-only task images.** Required Python
   capture tools are provisioned before the solver starts, so a successful
   shell task does not lose its review to a missing interpreter. (#1127)

@@ -25,7 +25,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from benchflow.agents.credentials import CREDENTIAL_EVIDENCE_PATHS
-from benchflow.sandbox.protocol import Sandbox
+from benchflow.sandbox.protocol import SANDBOX_RUNTIME_STATE_PATHS, Sandbox
 from benchflow.task.config import ArtifactConfig
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class EvidenceExclusion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     original_path: str
-    reason: Literal["credential", "task_exclude"]
+    reason: Literal["credential", "sandbox_runtime", "special_file", "task_exclude"]
 
 
 class ArtifactEvidence(BaseModel):
@@ -94,8 +94,10 @@ class _CaptureReceipt(BaseModel):
 
 
 # Runs in both Docker and Daytona without requiring BenchFlow in the image.
-# Enumeration is explicit so sockets, devices, FIFOs and quota overflows fail
-# rather than being silently omitted by a tar command.
+# Enumeration is explicit so nothing is silently omitted by a tar command.
+# Sockets, devices and FIFOs hold no bytes to preserve, and provider runtime
+# state is harness-owned, so both are recorded as manifest exclusions; quota
+# overflows, escaping links and concurrent changes still fail the capture.
 _CAPTURE_SCRIPT = r"""
 import fnmatch, hashlib, json, os, pathlib, stat, sys, tarfile, tempfile
 source = pathlib.Path(sys.argv[1]).resolve()
@@ -107,18 +109,26 @@ root = source if source.is_dir() else source.parent
 max_bytes, max_entries = map(int, sys.argv[2:4])
 rules = json.loads(sys.argv[4])
 paths, exclusions, total = [], [], 0
+def record(path, reason):
+    exclusions.append({"original_path": path.as_posix(), "reason": reason})
+    if len(paths) + len(exclusions) > max_entries:
+        raise ValueError("workspace evidence exceeds configured capture limits")
+def component(path, rule):
+    return path.endswith("/" + rule) or "/" + rule + "/" in path
 def excluded(path):
     absolute = path.as_posix()
     relative = path.relative_to(root).as_posix()
-    credential = any(absolute.endswith("/" + rule) or "/" + rule + "/" in absolute for rule in rules["credentials"])
+    credential = any(component(absolute, rule) for rule in rules["credentials"])
     credential |= any(path == pathlib.Path(rule) or path.is_relative_to(rule) for rule in rules["paths"])
     reason = "credential" if credential else None
+    # Relative to the captured root: runtime state below the root is dropped,
+    # but a root that itself lies under such a directory is still captured.
+    if reason is None and any(component("/" + relative, rule) for rule in rules["sandbox_runtime"]):
+        reason = "sandbox_runtime"
     if reason is None and any(fnmatch.fnmatchcase(relative, rule) or fnmatch.fnmatchcase(path.name, rule) for rule in rules["exclude"]):
         reason = "task_exclude"
     if reason:
-        exclusions.append({"original_path": absolute, "reason": reason})
-        if len(paths) + len(exclusions) > max_entries:
-            raise ValueError("workspace evidence exceeds configured capture limits")
+        record(path, reason)
         return True
     return False
 def scan_error(error):
@@ -136,7 +146,8 @@ for directory, dirs, files in walk:
         info = path.lstat()
         if not any(check(info.st_mode) for check in
                    (stat.S_ISREG, stat.S_ISDIR, stat.S_ISLNK)):
-            raise ValueError("unsupported workspace entry: " + str(path))
+            record(path, "special_file")
+            continue
         if path.is_symlink() and not path.resolve().is_relative_to(root):
             raise ValueError("workspace symlink escapes evidence: " + str(path))
         total += info.st_size if stat.S_ISREG(info.st_mode) else 0
@@ -334,7 +345,10 @@ async def capture_workspace(
 
     ``destination`` must not exist. It receives ``workspace/`` and
     ``manifest.json`` together after successful validation. Capture limits are
-    hard errors: this API never labels a truncated tree complete.
+    hard errors: this API never labels a truncated tree complete. Credential
+    files, provider runtime state (``SANDBOX_RUNTIME_STATE_PATHS``) and
+    sockets, FIFOs or device nodes stay out of the bundle, each recorded in
+    ``manifest.exclusions``.
     """
     if destination.exists() or destination.is_symlink():
         raise EvidenceError(f"Evidence destination already exists: {destination}")
@@ -346,6 +360,7 @@ async def capture_workspace(
     rules = json.dumps(
         {
             "credentials": CREDENTIAL_EVIDENCE_PATHS,
+            "sandbox_runtime": SANDBOX_RUNTIME_STATE_PATHS,
             "exclude": list(exclude),
             "paths": list(excluded_paths),
         }

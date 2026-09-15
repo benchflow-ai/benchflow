@@ -6,6 +6,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+# Directories a provider daemon owns inside the sandbox, matched as path
+# components below a captured root. Daytona keeps ~/.daytona/sessions in the
+# home of the account its daemon runs as (root in task images): the
+# entrypoint's stdin/stdout/stderr FIFOs plus every session command's script,
+# output log and exit code. With a /root workspace that tree sits inside the
+# solver's working directory, changes while any command runs (evidence capture
+# included), and is harness state rather than solver output. Docker keeps exec
+# state outside the container filesystem, so it needs no entry.
+SANDBOX_RUNTIME_STATE_PATHS = (".daytona",)
+
 
 @dataclass(frozen=True)
 class ExecResult:

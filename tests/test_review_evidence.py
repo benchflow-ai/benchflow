@@ -11,6 +11,7 @@ import io
 import os
 import shlex
 import shutil
+import socket
 import sys
 import tarfile
 from pathlib import Path
@@ -157,13 +158,83 @@ async def test_external_symlink_never_imports_outside_files(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fifo_is_rejected_not_silently_omitted(tmp_path):
+@pytest.mark.parametrize("kind", ["fifo", "socket"])
+async def test_special_files_are_recorded_not_silently_omitted(
+    tmp_path, monkeypatch, kind
+):
+    """Guards the evidence-capture fix for automatic review from PR #1126.
+
+    A socket or FIFO holds no bytes to preserve. Aborting on one discarded the
+    solver's whole review; it is now an explicit manifest exclusion and the
+    rest of the workspace is still captured.
+    """
     source = tmp_path / "source"
     source.mkdir()
-    os.mkfifo(source / "results-pipe")
+    (source / "answer.txt").write_text("solver output")
+    special = source / "results-pipe"
+    if kind == "fifo":
+        os.mkfifo(special)
+    else:
+        # AF_UNIX addresses are length-limited; bind relative to the workspace.
+        monkeypatch.chdir(source)
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(special.name)
+    bundle = tmp_path / "evidence"
 
-    with pytest.raises(EvidenceError, match="unsupported workspace entry"):
-        await capture_workspace(LocalTransport(), str(source), tmp_path / "evidence")
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert (bundle / "workspace" / "answer.txt").read_text() == "solver output"
+    assert not (bundle / "workspace" / special.name).exists()
+    assert [(entry.original_path, entry.reason) for entry in manifest.exclusions] == [
+        (str(special), "special_file")
+    ]
+    validate_workspace(bundle / "workspace", manifest)
+
+
+@pytest.mark.asyncio
+async def test_daytona_session_state_never_blocks_or_enters_evidence(tmp_path):
+    """Guards automatic review on Daytona /root workspaces after PR #1126.
+
+    Daytona's daemon keeps ~/.daytona/sessions in /root: the entrypoint's
+    stdin/stdout/stderr FIFOs plus each session command's script, log and exit
+    code (layout observed in a live sandbox). Capture aborted on
+    input.pipe, so every such rollout lost its review and final reward.
+    """
+    source = tmp_path / "root"
+    entrypoint = source / ".daytona/sessions/entrypoint/entrypoint_command"
+    entrypoint.mkdir(parents=True)
+    for pipe in ("input.pipe", "stdout.pipe", "stderr.pipe"):
+        os.mkfifo(entrypoint / pipe)
+    (entrypoint / "cmd.sh").write_text("sleep infinity\n")
+    (entrypoint / "output.log").write_text("")
+    command = source / ".daytona/sessions/benchflow-exec/0b5e4c1d"
+    command.mkdir(parents=True)
+    (command / "cmd.sh").write_text("python3 -c capture\n")
+    (command / "exit_code").write_text("0")
+    (command / "output.log").write_text("harness output")
+    (source / "paper.pdf").write_bytes(b"%PDF-1.7 solver paper")
+    (source / "chains").mkdir()
+    (source / "chains" / "lcdm.csv").write_text("Om,rdh\n0.30,101.0\n")
+    (source / ".daytonarc").write_text("solver file that only resembles provider state")
+    (source / "daytona").mkdir()
+    (source / "daytona" / "notes.md").write_text("solver notes")
+    bundle = tmp_path / "evidence"
+
+    manifest = await capture_workspace(LocalTransport(), str(source), bundle)
+
+    assert [(entry.original_path, entry.reason) for entry in manifest.exclusions] == [
+        (str(source / ".daytona"), "sandbox_runtime")
+    ]
+    assert not (bundle / "workspace" / ".daytona").exists()
+    assert {entry.path for entry in manifest.entries} == {
+        ".daytonarc",
+        "chains",
+        "chains/lcdm.csv",
+        "daytona",
+        "daytona/notes.md",
+        "paper.pdf",
+    }
+    validate_workspace(bundle / "workspace", manifest)
 
 
 @pytest.mark.asyncio
@@ -442,10 +513,12 @@ async def test_external_artifact_failure_does_not_publish_partial_task_evidence(
     source.mkdir()
     (source / "answer").write_text("fine")
     unsupported = tmp_path / "unsupported-artifact"
-    os.mkfifo(unsupported)
+    unsupported.mkdir()
+    (tmp_path / "outside-secret").write_text("do not export")
+    (unsupported / "escape").symlink_to(tmp_path / "outside-secret")
     bundle = tmp_path / "evidence"
 
-    with pytest.raises(EvidenceError, match="unsupported workspace entry"):
+    with pytest.raises(EvidenceError, match="symlink escapes"):
         await capture_task_evidence(
             LocalTransport(), str(source), bundle, artifacts=[str(unsupported)]
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +15,11 @@ import benchflow
 from benchflow._utils.result_paths import iter_task_result_paths
 from benchflow._utils.scoring import classify_score_outcome
 from benchflow.review import automatic, persistence
+from benchflow.review.evidence import EvidenceManifest
 from benchflow.review.options import ReviewerConfig
 from benchflow.rollout import _review
 from benchflow.rollout._results import _build_rollout_result
+from tests.test_review_evidence import LocalTransport
 from tests.test_review_runtime import (
     WEIGHTED_RUBRIC,
     FakeRun,
@@ -306,6 +309,51 @@ async def test_workspace_freezes_before_capture_and_keeps_actual_cwd(
     monkeypatch.setattr(_review, "capture_task_evidence", capture)
     await _review.capture_terminal_workspace(rollout)
     assert order == ["disconnect", "stop", "capture"]
+
+
+@pytest.mark.asyncio
+async def test_daytona_session_fifos_keep_terminal_evidence_scorable(tmp_path):
+    """Guards terminal capture on Daytona /root workspaces after PR #1126.
+
+    Daytona's entrypoint FIFOs under /root/.daytona made capture fail, which
+    set _export_error; finish_review then ended in a scoring error with
+    rewards null even though the verifier had run.
+    """
+    workspace = tmp_path / "root"
+    entrypoint = workspace / ".daytona/sessions/entrypoint/entrypoint_command"
+    entrypoint.mkdir(parents=True)
+    os.mkfifo(entrypoint / "input.pipe")
+    (workspace / "paper.pdf").write_bytes(b"%PDF-1.7 solver paper")
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+
+    async def idle(*_args):
+        return None
+
+    rollout = SimpleNamespace(
+        _review_plan=object(),
+        _config=SimpleNamespace(purpose="task", sandbox_user=None),
+        _env=LocalTransport(),
+        _agent_env={},
+        _planes=SimpleNamespace(quiesce_agent=idle),
+        _task=SimpleNamespace(config=SimpleNamespace(artifacts=[])),
+        _agent_cwd=str(workspace),
+        disconnect=idle,
+        _require_rollout_dir=lambda: rollout_dir,
+    )
+
+    await _review.capture_terminal_workspace(rollout)
+
+    assert getattr(rollout, "_export_error", None) is None
+    manifest = EvidenceManifest.model_validate_json(
+        (rollout_dir / "evidence" / "manifest.json").read_text()
+    )
+    assert [(entry.original_path, entry.reason) for entry in manifest.exclusions] == [
+        (str(workspace / ".daytona"), "sandbox_runtime")
+    ]
+    assert (
+        rollout_dir / "evidence" / "workspace" / "paper.pdf"
+    ).read_bytes() == b"%PDF-1.7 solver paper"
 
 
 def test_reviewer_child_never_recursively_preflights(monkeypatch):
