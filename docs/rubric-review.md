@@ -5,6 +5,12 @@ A reviewer agent reads the solver's workspace, trajectory, test output, and task
 definition in a separate sandbox. Host code validates its judgments and computes
 the final reward. Tasks without a review rubric retain their existing verifier.
 
+Workspace capture requires Python 3.10 or newer inside the solver image.
+Before the solver starts, BenchFlow checks the interpreter and installs it
+through the image's package manager when needed (apt, apk, dnf, microdnf, or
+yum). Images without one of these package managers must provide a compatible
+`python3`. A setup failure stops the run before solver execution.
+
 The standalone `bench review` command remains a detached audit: it writes a
 report without modifying the source result. Both entry points share the same
 reviewer runtime, rubric contract, and weighted scorer. `bench eval score`
