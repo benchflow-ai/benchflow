@@ -9,7 +9,6 @@ import pytest
 async def test_daytona_required_usage_tracking_requires_sandbox_handle():
     """Guards the LiteLLM sandbox-local path: required still fails closed."""
     from benchflow.providers.runtime import ensure_litellm_runtime
-    from benchflow.usage_tracking import UsageTrackingConfig
 
     with pytest.raises(RuntimeError, match="sandbox-local LiteLLM"):
         await ensure_litellm_runtime(
@@ -19,7 +18,6 @@ async def test_daytona_required_usage_tracking_requires_sandbox_handle():
             runtime=None,
             environment="daytona",
             session_id="rollout-1",
-            usage_tracking=UsageTrackingConfig(mode="required"),
         )
 
 
@@ -28,7 +26,6 @@ async def test_daytona_usage_tracking_starts_sandbox_local_litellm(monkeypatch):
     """Daytona auto telemetry should use LiteLLM inside the agent sandbox."""
     from benchflow.providers import litellm_runtime as runtime_mod
     from benchflow.providers.runtime import ensure_litellm_runtime
-    from benchflow.usage_tracking import UsageTrackingConfig
 
     class FakeSandboxLiteLLM:
         def __init__(self, sandbox, route):
@@ -56,7 +53,6 @@ async def test_daytona_usage_tracking_starts_sandbox_local_litellm(monkeypatch):
         runtime=None,
         environment="daytona",
         session_id="rollout-1",
-        usage_tracking=UsageTrackingConfig(mode="required"),
         sandbox=sandbox,
     )
 

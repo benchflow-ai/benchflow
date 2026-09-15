@@ -93,6 +93,8 @@ _SHIM_ONLY = frozenset(
         "disallow_hosted_search_launch_suffix",
         "task_mcp_transport",
         "task_mcp_config_path",
+        # Proxy-bypass is a key-isolation decision; not manifest-declarable.
+        "native_provider",
     }
 )
 

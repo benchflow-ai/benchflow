@@ -472,6 +472,7 @@ def resolve_provider_env(
         ZAI_CODING_REGISTRY_BASE_ENV,
         find_provider,
         find_provider_for_bare_model,
+        is_native_provider_model,
         resolve_base_url,
         strip_provider_prefix,
     )
@@ -486,6 +487,15 @@ def resolve_provider_env(
     # is never emitted and harnesses that rely on it misroute (openhands' litellm
     # saw no provider; openclaw defaulted to anthropic/). Mirrors acp/runtime.py.
     _prov = find_provider(model) or find_provider_for_bare_model(model)
+    if (
+        agent_cfg
+        and agent_cfg.native_provider
+        and not is_native_provider_model(agent_cfg.native_provider, model)
+    ):
+        raise ValueError(
+            f"Agent {agent!r} only runs {agent_cfg.native_provider}/ models; "
+            f"got {model!r}."
+        )
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)

@@ -89,6 +89,23 @@ class TestFindProvider:
             == "qwen/qwen3.5-397b-a17b"
         )
 
+    def test_vercel_prefix(self):
+        name, cfg = find_provider("vercel/anthropic/claude-sonnet-4.5")
+
+        assert name == "vercel"
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.auth_env == "AI_GATEWAY_API_KEY"
+        assert cfg.base_url == "https://ai-gateway.vercel.sh/v1"
+        assert cfg.endpoints["anthropic-messages"] == "https://ai-gateway.vercel.sh"
+        assert (
+            resolve_auth_env("vercel/anthropic/claude-sonnet-4.5")
+            == "AI_GATEWAY_API_KEY"
+        )
+        assert (
+            strip_provider_prefix("vercel/anthropic/claude-sonnet-4.5")
+            == "anthropic/claude-sonnet-4.5"
+        )
+
     @pytest.mark.parametrize(
         ("model", "expected_protocol"),
         [

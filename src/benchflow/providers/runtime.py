@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from benchflow.usage_tracking import UsageTrackingConfig
-
 if TYPE_CHECKING:
     from benchflow.providers.litellm_runtime import LiteLLMProcess
 
@@ -49,7 +47,6 @@ async def ensure_litellm_runtime(
     runtime: ProviderRuntime | None,
     environment: str,
     session_id: str = "",
-    usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
@@ -67,7 +64,6 @@ async def ensure_litellm_runtime(
         runtime=runtime,
         environment=environment,
         session_id=session_id,
-        usage_tracking=usage_tracking,
         sandbox=sandbox,
         sandbox_setup_timeout=sandbox_setup_timeout,
         required_skill_names=required_skill_names,
