@@ -10,6 +10,7 @@ from benchflow._utils.text import describe_exception
 from benchflow.agents.credentials import credential_evidence_overrides
 from benchflow.review.automatic import finish_review, prepare_review
 from benchflow.review.evidence import capture_task_evidence
+from benchflow.review.evidence_runtime import ensure_evidence_python
 from benchflow.review.outcome import scoring_error
 from benchflow.review.persistence import commit_scoring_result, scoring_lock
 
@@ -33,6 +34,14 @@ def prepare_terminal_review(rollout: Rollout) -> None:
                 "Task digest differs from the task selected for automatic review"
             )
         cfg.task_digest = digest
+
+
+async def prepare_capture_runtime(rollout: Rollout) -> None:
+    """Ensure required capture dependencies exist before solver execution."""
+    if rollout._review_plan is not None or rollout._config.purpose == "reviewer":
+        await ensure_evidence_python(
+            rollout._env, timeout_sec=rollout._config.sandbox_setup_timeout
+        )
 
 
 async def capture_terminal_workspace(rollout: Rollout) -> None:
