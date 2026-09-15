@@ -33,7 +33,7 @@
   Such a link, a link whose target text climbs out of the workspace (which used
   to pass capture and then fail extraction), and a link loop are now
   `symlink_escape` exclusions that record their `link_target`; no outside file
-  is copied.
+  is copied. (#1130)
 - **Automatic review supports shell-only task images.** Required Python
   capture tools are provisioned before the solver starts, so a successful
   shell task does not lose its review to a missing interpreter. (#1127)
