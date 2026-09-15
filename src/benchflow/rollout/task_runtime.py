@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import contextlib
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult
+from benchflow.review.options import ReviewerConfig
 from benchflow.rollout._config import RolloutConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
 
@@ -41,6 +42,7 @@ class TaskRuntimeConfig:
     skills_dir: str | Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     runtime_label: str = "task-runtime"
+    reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     planes: Any | None = None
 
     def __post_init__(self) -> None:
@@ -70,6 +72,7 @@ class TaskRuntimeConfig:
             pre_agent_hooks=self.pre_agent_hooks,
             environment_manifest=self.environment_manifest,
             config_override=self.config_override,
+            reviewer=self.reviewer,
             agent=self.runtime_label,
             model=None,
             prompts=[],
@@ -237,15 +240,19 @@ class TaskRuntime:
         )
 
     async def verify(self) -> TaskRuntimeResult:
-        """Run the task verifier, write normal rollout artifacts, and return reward."""
+        """Finish task scoring, including automatic review when a rubric exists.
+
+        Rubric review releases the solver sandbox first so all telemetry is
+        durable and reviewer jobs do not compete with idle solver VMs.
+        """
 
         if self._verified:
             raise RuntimeError("TaskRuntime.verify() can only be called once")
-        rewards = await self.rollout.verify()
+        await self.rollout.verify()
         self._verified = True
-        result = self.rollout.result
-        if result is None:
-            raise RuntimeError("Rollout did not produce a verified result")
+        result = await self.rollout.finalize()
+        self._started = False
+        rewards = result.rewards
         reward = (rewards or {}).get("reward") if isinstance(rewards, dict) else None
         return TaskRuntimeResult(
             task_name=result.task_name,
@@ -261,7 +268,7 @@ class TaskRuntime:
     async def close(self) -> None:
         """Clean up the sandbox lifecycle owned by this runtime."""
 
-        if self._rollout is None:
+        if self._rollout is None or not self._started:
             return
         await self._rollout.cleanup()
         self._started = False

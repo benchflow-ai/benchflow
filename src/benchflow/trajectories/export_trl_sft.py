@@ -269,6 +269,7 @@ def _row_from_exchange(
         "completion": completion,
         "tools": normalized.tool_defs,
         "reward": reward,
+        "scoring": result.get("scoring"),
         "task_id": result.get("task_name") or rollout_dir.name,
         "agent": result.get("agent"),
         "model": ((exchange.get("request") or {}).get("body") or {}).get("model"),

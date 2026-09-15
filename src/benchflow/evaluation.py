@@ -42,6 +42,7 @@ from benchflow._utils.learner_memory import (
     memory_delta_from_skills,
     patch_learner_generation_artifact,
 )
+from benchflow._utils.result_paths import load_task_results
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
@@ -62,12 +63,11 @@ from benchflow._utils.scoring import (
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
-    count_audit_outcomes,
     count_score_outcomes,
-    extract_reward,
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
+    score_summary_fields,
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
@@ -80,6 +80,7 @@ from benchflow.loop_strategies import (
     parse_loop_strategy_spec,
 )
 from benchflow.models import RolloutResult
+from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -426,16 +427,15 @@ def _classify_completed_outcomes(
 ) -> tuple[int, int, int]:
     """(passed, failed, errored) over already-complete (resumed) result payloads.
 
-    Mirrors ``_log_and_report``'s classification (reward==1 → passed, reward not
-    None → failed, else errored) so the live dashboard's resumed-seeded counts
-    match how this-run results are tallied.
+    Use the same explicit gate outcome as fresh results, retaining the legacy
+    reward-equals-one rule only for results without integrated scoring.
     """
     passed = failed = errored = 0
     for r in completed.values():
-        reward = extract_reward(r) if isinstance(r, dict) else None
-        if reward == 1:
+        outcome = classify_score_outcome(r)
+        if outcome == "passed":
             passed += 1
-        elif reward is not None:
+        elif outcome == "failed":
             failed += 1
         else:
             errored += 1
@@ -490,6 +490,7 @@ class EvaluationConfig:
     prompts: list[str | None] | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     skills_dir: str | None = None
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
@@ -541,6 +542,7 @@ class EvaluationConfig:
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.reviewer = ReviewerConfig.coerce(self.reviewer)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if isinstance(self.loop_strategy, str):
             self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
@@ -578,7 +580,7 @@ class EvaluationConfig:
 
 @dataclass(frozen=True)
 class TaskFailure:
-    """Cheap failure evidence for one FAILED (scored, reward != 1) task.
+    """Cheap failure evidence for one task with a failed scoring outcome.
 
     Carried on :class:`EvaluationResult` so the CLI's final block can print a
     one-line reason per failed task from data the engine already holds —
@@ -611,7 +613,7 @@ class EvaluationResult:
     memory_scores: dict[str, float] = field(default_factory=dict)
     task_failures: list[TaskFailure] = field(default_factory=list)
     # Mean of rewards over scored rollouts (None when nothing scored). The
-    # pass/fail counts binarize at reward==1, which erases partial credit —
+    # pass/fail counts describe hard gates, while quality retains partial credit —
     # a 0.3 rubric score and a flat 0 both print as FAIL without this.
     mean_reward: float | None = None
 
@@ -894,6 +896,7 @@ class Evaluation:
             build_concurrency=raw.get("build_concurrency"),
             prompts=prompts,
             agent_env=agent_env_raw,
+            reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
             sandbox_user=sandbox_user,
@@ -990,6 +993,7 @@ class Evaluation:
             environment=environment,
             concurrency=concurrency,
             agent_env=agent_env,
+            reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
             sandbox_user=sandbox_user,
@@ -1098,36 +1102,7 @@ class Evaluation:
         job_dir = self._jobs_dir / self._job_name
         if not job_dir.exists():
             return {}
-        # A completed score is durable evidence and must not be displaced by a
-        # newer scoreless retry artifact. Within the same scored/unscored tier,
-        # prefer recency and use the path as a deterministic tie-breaker.
-        best: dict[str, tuple[tuple[bool, float, str], dict]] = {}
-        for rfile in job_dir.rglob("result.json"):
-            try:
-                r = json.loads(rfile.read_text())
-                task = r["task_name"]
-                if r.get("rewards") is not None or r.get("verifier_error"):
-                    rewards = r.get("rewards")
-                    if rewards is not None and not isinstance(rewards, dict):
-                        logger.warning(
-                            "Malformed rewards field in %s for task %r: "
-                            "expected dict or null, got %s %r — "
-                            "treating as no reward (task will count as errored)",
-                            rfile,
-                            task,
-                            type(rewards).__name__,
-                            rewards,
-                        )
-                    rank = (
-                        r.get("rewards") is not None,
-                        rfile.stat().st_mtime,
-                        str(rfile),
-                    )
-                    prev = best.get(task)
-                    if prev is None or rank >= prev[0]:
-                        best[task] = (rank, r)
-            except Exception as e:
-                logger.debug(f"Skipping corrupt result file {rfile}: {e}")
+        latest = load_task_results(job_dir)
         completed: dict[str, dict] = {}
         # Re-running an errored task is only safe when rollouts are
         # independent. A sequential-shared job advances one persisted learner
@@ -1135,7 +1110,12 @@ class Evaluation:
         # committed their skills would corrupt the learning curve; there the
         # errored result stays reused, matching the pre-existing behavior.
         rerun_ok = self._config.job_mode != "sequential-shared"
-        for task, (_rank, r) in best.items():
+        for task, r in latest.items():
+            # A durable solver snapshot makes rubric retries independent of the
+            # solver. Even an unsuccessful retry must never replay that solver.
+            if r.get("scoring") is not None:
+                completed[task] = r
+                continue
             if r.get("verifier_error"):
                 # A scoreless result whose verifier error is infra-retryable
                 # (same taxonomy as the within-run retry) records no signal
@@ -1287,6 +1267,7 @@ class Evaluation:
             reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
+            reviewer=cfg.reviewer,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
@@ -1350,6 +1331,7 @@ class Evaluation:
             reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
+            reviewer=cfg.reviewer,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
@@ -1387,6 +1369,10 @@ class Evaluation:
             else:
                 result = await self._run_single_task(task_dir, cfg)
             last_result = result
+            if result.scoring is not None:
+                # Once solver evidence is committed, only the scoring stage may
+                # be retried. Replaying the solver would change the trial.
+                return result
 
             retryable_agent_error = cfg.retry.should_retry(
                 result.error,
@@ -1433,11 +1419,10 @@ class Evaluation:
     def _log_and_report(self, td: Path, result: RunResult) -> None:
         """Log one rollout's outcome and fire the on_result callback."""
         reward = result.rewards.get("reward") if result.rewards else None
-        status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
+        status = {"passed": "PASS", "failed": "FAIL"}.get(result.score_outcome, "ERR")
         err_msg = result.error or result.verifier_error
         err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
-        # Show the fractional reward on scored lines: pass/fail binarizes at
-        # reward==1, so without it a 0.3 rubric score reads as a flat 0.
+        # Show quality separately from the hard-gate success classification.
         reward_part = (
             f"reward={reward:.2f}, "
             if isinstance(reward, (int, float)) and not isinstance(reward, bool)
@@ -1752,8 +1737,23 @@ class Evaluation:
                 f"({', '.join(detail_parts)}). Refusing to publish an "
                 "empty 0/0 summary."
             )
+        from benchflow.review.resume import resume_pending_reviews
+
+        await resume_pending_reviews(
+            self._jobs_dir / self._job_name,
+            tasks_root=self._tasks_dir,
+            reviewer=self._config.reviewer,
+            task_names={task_dir.name for task_dir in task_dirs},
+        )
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
+
+        # Validate every selected review plan before spending on any solver.
+        # Workers repeat this against their own effective credential context.
+        from benchflow.review.automatic import prepare_review
+
+        for task_dir in remaining:
+            prepare_review(task_dir, self._config.reviewer)
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
         # per-job snapshot under ``<job>/learner_store.json``. If that file
@@ -1849,10 +1849,9 @@ class Evaluation:
         # audit view consumed by result checkers, so verifier evidence remains
         # visible there even when the score view gives agent errors precedence.
         score_counts = count_score_outcomes(all_results.values())
-        audit_counts = count_audit_outcomes(all_results.values())
         memory, memory_scores = memory_summary(all_results)
         # Per-task failure evidence for the CLI's final block — FAILED (scored,
-        # reward != 1) tasks only, from data already in memory. Sorted by name
+        # failed gate outcome) tasks only, from data already in memory. Sorted by name
         # so the printed lines are deterministic across resume/concurrency.
         task_failures = [
             TaskFailure(
@@ -1896,24 +1895,16 @@ class Evaluation:
             f"{job_result.verifier_errored} != {job_result.total}"
         )
 
-        # Count error categories across all results for summary diagnostics.
-        error_category_counts: dict[str, int] = {}
-        verifier_error_category_counts: dict[str, int] = {}
-        for r in all_results.values():
-            cat = r.get("error_category") or classify_error(r.get("error"))
-            if cat:
-                error_category_counts[cat] = error_category_counts.get(cat, 0) + 1
-            vcat = r.get("verifier_error_category") or classify_verifier_error(
-                r.get("verifier_error")
-            )
-            if vcat:
-                verifier_error_category_counts[vcat] = (
-                    verifier_error_category_counts.get(vcat, 0) + 1
-                )
+        scoring_fields = score_summary_fields(all_results.values())
+        error_category_counts = scoring_fields["error_categories"] or {}
+        verifier_error_category_counts = (
+            scoring_fields["verifier_error_categories"] or {}
+        )
 
         # Save summary
         summary = {
             "job_name": self._job_name,
+            "reviewer": cfg.reviewer.to_config_artifact(),
             "agent": cfg.agent,
             "model": cfg.model,
             "environment": cfg.environment,
@@ -1921,26 +1912,7 @@ class Evaluation:
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "usage_tracking": cfg.usage_tracking.with_env_defaults().to_config_artifact(),
             "loop": loop_block(cfg.loop_strategy),
-            "total": job_result.total,
-            "passed": audit_counts["passed"],
-            "failed": audit_counts["failed"],
-            "errored": audit_counts["errored"],
-            "pass": audit_counts["passed"],
-            "fail": audit_counts["failed"],
-            "error": audit_counts["errored"],
-            "verifier_errored": audit_counts["verifier_errored"],
-            "idle_timeout": error_category_counts.get(IDLE_TIMEOUT, 0),
-            "error_categories": error_category_counts or None,
-            "verifier_error_categories": verifier_error_category_counts or None,
-            "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
-            "score_ratio": pass_rate(
-                passed=audit_counts["passed"], total=job_result.total
-            ),
-            "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
-            "score_excl_errors_ratio": pass_rate_excl_errors(
-                passed=audit_counts["passed"], failed=audit_counts["failed"]
-            ),
-            "mean_reward": job_result.mean_reward,
+            **scoring_fields,
             "elapsed_sec": elapsed,
             "memory_score": job_result.memory_score,
             "memory_score_coverage": (
@@ -2028,10 +2000,10 @@ class Evaluation:
                 f"dependency install — check verifier_error_category in result.json "
                 f"and fix the task's index policy"
             )
-        if audit_counts["verifier_errored"] > 0:
-            pct = audit_counts["verifier_errored"] / job_result.total * 100
+        if scoring_fields["verifier_errored"] > 0:
+            pct = scoring_fields["verifier_errored"] / job_result.total * 100
             logger.warning(
-                f"{audit_counts['verifier_errored']} tasks ({pct:.0f}%) had verifier errors — "
+                f"{scoring_fields['verifier_errored']} tasks ({pct:.0f}%) had verifier errors — "
                 f"check verifier scripts for bugs"
             )
             if pct > 20:

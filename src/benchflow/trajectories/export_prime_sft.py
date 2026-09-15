@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
+from benchflow._utils.result_paths import iter_task_result_paths
+from benchflow._utils.scoring import extract_reward
 from benchflow.trajectories.types import redact_trajectory_obj
 
 PrimeSftRowMode = Literal["rollout", "exchange"]
@@ -154,11 +156,9 @@ def load_llm_trajectory_jsonl(
 
 def _iter_rollout_dirs(root: str | Path) -> list[Path]:
     path = Path(root)
-    if (path / "result.json").is_file():
-        return [path]
     if not path.is_dir():
         return []
-    return sorted({p.parent for p in path.rglob("result.json")})
+    return [result.parent for result in iter_task_result_paths(path)]
 
 
 def _iter_selected_rollout_dirs(selection_path: str | Path) -> list[Path]:
@@ -208,6 +208,8 @@ def _iter_selected_rollout_dirs(selection_path: str | Path) -> list[Path]:
 def _reward_from_result(result: dict[str, Any] | None) -> float | None:
     if not isinstance(result, dict):
         return None
+    if result.get("scoring") is not None:
+        return extract_reward(result)
     rewards = result.get("rewards")
     if isinstance(rewards, dict):
         reward = rewards.get("reward")
@@ -1165,6 +1167,7 @@ def _row_from_exchange(
         "exchange_index": exchange_idx,
         "reward": reward,
         "score": reward,
+        "scoring": (result or {}).get("scoring"),
         "model": ((exchange.get("request") or {}).get("body") or {}).get("model"),
         "agent": (result or {}).get("agent"),
         "token_usage": agent_result if isinstance(agent_result, dict) else None,
@@ -1252,6 +1255,8 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
 
 
 def _result_training_skip_reason(result: dict[str, Any]) -> str | None:
+    if result.get("scoring") is not None and extract_reward(result) is None:
+        return "scoring_error"
     if result.get("error"):
         return "agent_error"
     if result.get("verifier_error"):

@@ -18,7 +18,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from benchflow._types import Role, Scene
 from benchflow._utils.result_metadata import (
@@ -37,6 +37,8 @@ from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.loop_strategies import LoopStrategySpec, loop_block
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.review.outcome import ScoringResult
+from benchflow.review.persistence import write_json_atomic
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     TaskSkillPolicy,
@@ -161,6 +163,9 @@ def _write_config(
     environment_manifest: EnvironmentManifest | None = None,
     config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
+    review: dict | None = None,
+    purpose: Literal["task", "reviewer"] = "task",
+    parent_rollout: str | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.acp.selection import selected_acp_transport
@@ -224,7 +229,11 @@ def _write_config(
             "sha256": overlay_hash(config_override),
             "patch": config_override,
         }
-    (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+    if review is not None:
+        config_data["review"] = review
+    if purpose != "task":
+        config_data.update(purpose=purpose, parent_rollout=parent_rollout)
+    write_json_atomic(rollout_dir / "config.json", config_data)
 
 
 def _role_metadata(role: Role) -> dict[str, Any]:
@@ -294,6 +303,10 @@ def _build_rollout_result(
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
     loop: dict[str, Any] | None = None,
+    scoring: ScoringResult | None = None,
+    purpose: Literal["task", "reviewer"] = "task",
+    parent_rollout: str | None = None,
+    result_filename: str = "result.json",
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -324,6 +337,9 @@ def _build_rollout_result(
         task_name=task_name,
         rollout_name=rollout_name,
         rewards=rewards,
+        scoring=scoring,
+        purpose=purpose,
+        parent_rollout=parent_rollout,
         trajectory=trajectory,
         agent=agent,
         agent_name=agent_name,
@@ -428,7 +444,14 @@ def _build_rollout_result(
         **({"task_digest": task_digest} if task_digest is not None else {}),
         "sandbox_id": sandbox_id,
     }
-    (rollout_dir / "result.json").write_text(json.dumps(result_data, indent=2))
+    if scoring is not None:
+        result_data["scoring"] = scoring.to_dict()
+    if purpose != "task":
+        result_data.update(purpose=purpose, parent_rollout=parent_rollout)
+    if result_filename != "result.json":
+        write_json_atomic(rollout_dir / result_filename, result_data)
+        write_json_atomic(rollout_dir / "prompts.json", prompts)
+        return result
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
@@ -464,7 +487,11 @@ def _build_rollout_result(
         export_error=export_error,
         timing=timing,
         agent_result=agent_result,
+        scoring=scoring,
+        purpose=purpose,
+        parent_rollout=parent_rollout,
     )
+    write_json_atomic(rollout_dir / "result.json", result_data)
     return result
 
 
@@ -496,6 +523,7 @@ def _write_trainer_artifact(
     total_completion_tokens: int | None = None,
     total_cached_tokens: int | None = None,
     total_cost_usd: float | None = None,
+    strict: bool = False,
 ) -> None:
     """Emit the trainer-format artifacts for this scored rollout.
 
@@ -504,8 +532,9 @@ def _write_trainer_artifact(
     record (``trainer/verifiers.jsonl``) plus the ecosystem trajectory
     formats — ATIF (``trainer/atif.json``; omitted for empty trajectories,
     which the schema forbids) and ADP (``trainer/adp.jsonl``). Each format
-    is written independently; failures are logged but never block result
-    writing or each other.
+    is written independently; failures are logged by default. Terminal scoring
+    commits use ``strict=True`` so a failed export cannot publish a healthy
+    final result before its required artifacts exist.
     """
     from benchflow.trajectories.export import write_rollout_verifiers_jsonl
     from benchflow.trajectories.export_adp import write_rollout_adp_jsonl
@@ -529,6 +558,8 @@ def _write_trainer_artifact(
             error=verifier_error,
         )
     except Exception as e:  # pragma: no cover - defensive
+        if strict:
+            raise
         logger.warning("Trainer artifact write failed: %s", e)
     try:
         write_rollout_atif_json(
@@ -544,6 +575,8 @@ def _write_trainer_artifact(
             total_cost_usd=total_cost_usd,
         )
     except Exception as e:  # pragma: no cover - defensive
+        if strict:
+            raise
         logger.warning("ATIF artifact write failed: %s", e)
     try:
         write_rollout_adp_jsonl(
@@ -557,6 +590,8 @@ def _write_trainer_artifact(
             reward=(rewards or {}).get("reward"),
         )
     except Exception as e:  # pragma: no cover - defensive
+        if strict:
+            raise
         logger.warning("ADP artifact write failed: %s", e)
 
 

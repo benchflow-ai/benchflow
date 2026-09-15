@@ -1,6 +1,7 @@
 """Pure scoring and classification helpers — no external dependencies."""
 
 import math
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
@@ -110,6 +111,18 @@ ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unsc
 
 def extract_reward(result: Mapping[str, Any]) -> float | None:
     """Extract the reward value from a result dict, or None if absent."""
+    if result.get("scoring") is not None:
+        from benchflow.review.outcome import scoring_from_result
+
+        try:
+            scoring = scoring_from_result(result)
+        except ValueError:
+            return None
+        if scoring is None or scoring.status != "complete":
+            return None
+        rewards = scoring.numeric_rewards()
+        assert rewards is not None
+        return rewards["reward"]
     rewards = result.get("rewards")
     if not isinstance(rewards, dict):
         return None
@@ -283,10 +296,20 @@ def classify_result(
 def classify_score_outcome(result: Mapping[str, Any]) -> ScoreOutcome:
     """Classify a persisted result for score/invariant accounting.
 
-    This is the canonical terminal score view. It keeps the four score
-    buckets disjoint and gives an explicit reward or agent error precedence
-    over verifier evidence so ``EvaluationResult`` cannot double-count tasks.
+    Integrated review uses its explicit gate verdict. Legacy results keep
+    reward/agent-error precedence. Malformed or incomplete scoring is never a
+    capability failure or an accidental pass from a stale reward.
     """
+    if result.get("scoring") is not None:
+        from benchflow.review.outcome import scoring_from_result
+
+        try:
+            scoring = scoring_from_result(result)
+        except ValueError:
+            scoring = None
+        if scoring is not None and scoring.status == "complete":
+            return "passed" if scoring.passed else "failed"
+        return "errored" if result.get("error") else "verifier_errored"
     return classify_result(
         reward=extract_reward(result),
         error=result.get("error"),
@@ -309,6 +332,8 @@ def classify_audit_outcome(result: Mapping[str, Any]) -> ResultOutcome:
     """
     if result.get("verifier_error"):
         return "verifier_errored"
+    if result.get("scoring") is not None:
+        return classify_score_outcome(result)
     reward = extract_reward(result)
     if reward == 1.0:
         return "passed"
@@ -386,3 +411,46 @@ def pass_rate_excl_errors(*, passed: int, failed: int) -> float:
     """Pass rate excluding errored tasks."""
     completed = passed + failed
     return passed / completed if completed > 0 else 0.0
+
+
+def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Scoring fields shared by initial evaluation and scoring-only resume.
+
+    Callers retain run configuration, solver usage, timing, and provenance; only
+    fields derived from the current terminal scoring evidence are rebuilt.
+    """
+    rows = list(results)
+    counts = count_audit_outcomes(rows)
+    error_categories: Counter[str] = Counter()
+    verifier_categories: Counter[str] = Counter()
+    for row in rows:
+        category = row.get("error_category") or classify_error(row.get("error"))
+        if category:
+            error_categories[category] += 1
+        verifier_category = row.get(
+            "verifier_error_category"
+        ) or classify_verifier_error(row.get("verifier_error"))
+        if verifier_category:
+            verifier_categories[verifier_category] += 1
+    ratio = pass_rate(passed=counts["passed"], total=len(rows))
+    scored_ratio = pass_rate_excl_errors(
+        passed=counts["passed"], failed=counts["failed"]
+    )
+    return {
+        "total": len(rows),
+        "passed": counts["passed"],
+        "failed": counts["failed"],
+        "errored": counts["errored"],
+        "verifier_errored": counts["verifier_errored"],
+        "pass": counts["passed"],
+        "fail": counts["failed"],
+        "error": counts["errored"],
+        "idle_timeout": error_categories.get(IDLE_TIMEOUT, 0),
+        "error_categories": dict(error_categories) or None,
+        "verifier_error_categories": dict(verifier_categories) or None,
+        "score": f"{ratio:.1%}",
+        "score_ratio": ratio,
+        "score_excl_errors": f"{scored_ratio:.1%}",
+        "score_excl_errors_ratio": scored_ratio,
+        "mean_reward": mean_scored_reward(rows),
+    }

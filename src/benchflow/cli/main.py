@@ -52,7 +52,20 @@ from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_
 from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
+from benchflow.cli.rescore import register_eval_score
 from benchflow.cli.review import register_review
+from benchflow.cli.reviewer_options import (
+    ReviewerAgentOption,
+    ReviewerConcurrencyOption,
+    ReviewerEffortOption,
+    ReviewerEnvOption,
+    ReviewerImageOption,
+    ReviewerModelOption,
+    ReviewerNetworkOption,
+    ReviewerSandboxOption,
+    ReviewerTimeoutOption,
+    reviewer_from_cli,
+)
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
@@ -189,6 +202,7 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
 register_eval_lift(eval_app)
+register_eval_score(eval_app)
 
 
 @eval_app.command("run")
@@ -465,6 +479,15 @@ def eval_run(
             ),
         ),
     ] = None,
+    reviewer_agent: ReviewerAgentOption = None,
+    reviewer_model: ReviewerModelOption = None,
+    reviewer_reasoning_effort: ReviewerEffortOption = None,
+    reviewer_sandbox: ReviewerSandboxOption = None,
+    reviewer_timeout_sec: ReviewerTimeoutOption = None,
+    reviewer_concurrency: ReviewerConcurrencyOption = None,
+    reviewer_image: ReviewerImageOption = None,
+    reviewer_agent_env: ReviewerEnvOption = None,
+    reviewer_open_network: ReviewerNetworkOption = None,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
@@ -660,6 +683,21 @@ def eval_run(
         self_gen_no_internet=self_gen_no_internet,
         loop_strategy=loop_strategy,
         agent_env=_parse_agent_env(agent_env),
+        reviewer=reviewer_from_cli(
+            agent=reviewer_agent,
+            model=reviewer_model,
+            reasoning_effort=reviewer_reasoning_effort,
+            environment=reviewer_sandbox,
+            timeout_sec=reviewer_timeout_sec,
+            concurrency=reviewer_concurrency,
+            image=reviewer_image,
+            agent_env=(
+                _parse_agent_env(reviewer_agent_env)
+                if reviewer_agent_env is not None
+                else None
+            ),
+            open_network=reviewer_open_network,
+        ),
         include=include,
         exclude=exclude,
         dataset=dataset,
@@ -934,6 +972,21 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         if req.environment is not None:
             j._config.environment = plan.eval_environment
         j._config.agent_env = {**j._config.agent_env, **plan.parsed_env}
+        if req.reviewer is not None:
+            from benchflow.review.options import ReviewerConfig
+
+            reviewer_fields = req.reviewer.model_dump(exclude_unset=True)
+            if "agent_env" in reviewer_fields:
+                reviewer_fields["agent_env"] = {
+                    **j._config.reviewer.agent_env,
+                    **req.reviewer.agent_env,
+                }
+            j._config.reviewer = ReviewerConfig.model_validate(
+                {
+                    **j._config.reviewer.to_dict(),
+                    **reviewer_fields,
+                }
+            )
         j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
         if req.jobs_dir is not None:
             j._jobs_dir = Path(req.jobs_dir)

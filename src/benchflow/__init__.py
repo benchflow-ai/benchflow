@@ -62,6 +62,7 @@ from benchflow.monitor import (
 )
 from benchflow.review import (
     PublicationDecision,
+    ReviewerConfig,
     ReviewReport,
     ReviewRubricError,
     ReviewScoring,
@@ -172,6 +173,7 @@ __all__ = [
     "load_rubric_json",
     "load_rubric_toml",
     "ReviewReport",
+    "ReviewerConfig",
     "PublicationDecision",
     "ReviewRubric",
     "ReviewRubricCriterion",

@@ -19,7 +19,7 @@ import json
 import logging
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.trajectories.export_prime_sft import (
@@ -31,6 +31,9 @@ from benchflow.trajectories.export_prime_sft import (
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
+
+if TYPE_CHECKING:
+    from benchflow.review.outcome import ScoringResult
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_FILENAME = "results.jsonl"
@@ -438,8 +441,13 @@ def build_rollout_results_record(
     timing: dict[str, Any] | None = None,
     agent_result: dict[str, Any] | None = None,
     example_id: int = 0,
+    scoring: ScoringResult | None = None,
+    purpose: Literal["task", "reviewer"] = "task",
+    parent_rollout: str | None = None,
 ) -> dict[str, Any]:
     rollout_path = Path(rollout_dir)
+    if scoring is not None and scoring.status == "error":
+        verifier_error = verifier_error or scoring.error
     reward = _reward_value(rewards)
     trajectory_id_prefix = (
         rollout_name
@@ -566,6 +574,12 @@ def build_rollout_results_record(
         "total_tool_calls": float(n_tool_calls),
         "trajectory": steps,
     }
+    if scoring is not None:
+        record["scoring"] = scoring.to_dict()
+        record["passed"] = scoring.passed
+    if purpose != "task":
+        record["purpose"] = purpose
+        record["parent_rollout"] = parent_rollout
     return record
 
 
@@ -663,6 +677,8 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
                             "error": "non_object_results_artifact_row",
                         }
                     )
+                    continue
+                if row.get("purpose") == "reviewer":
                     continue
                 key = _job_example_key(row, src.parent)
                 row["example_id"] = example_ids.setdefault(key, len(example_ids))

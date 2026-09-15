@@ -21,10 +21,12 @@ from benchflow.cli._live_progress import (
     progress_enabled,
     quiet_root_logging,
 )
+from benchflow.models import RolloutResult
 
 
 def _result(reward, *, tokens=0, cost=None, src="unavailable"):
-    return SimpleNamespace(
+    return RolloutResult(
+        task_name="test",
         rewards={"reward": reward} if reward is not None else None,
         total_tokens=tokens,
         cost_usd=cost,

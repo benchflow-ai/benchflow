@@ -17,6 +17,7 @@ from benchflow.contracts import default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.review.options import ReviewerConfig
 from benchflow.rollout import (
     _build_rollout_result,
     _init_rollout,
@@ -175,6 +176,7 @@ class SDK:
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
+        reviewer: ReviewerConfig | None = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`.
 
@@ -225,5 +227,6 @@ class SDK:
             self_gen_no_internet=self_gen_no_internet,
             source_provenance=source_provenance,
             usage_tracking=usage_tracking,
+            reviewer=ReviewerConfig.coerce(reviewer),
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
