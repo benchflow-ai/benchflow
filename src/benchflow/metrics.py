@@ -6,6 +6,7 @@ from trial results.
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,6 @@ from benchflow._utils.scoring import (
     pass_rate,
     pass_rate_excl_errors,
 )
-from benchflow.rewards.validation import is_valid_reward_number
 from benchflow.trajectories.metrics import result_skill_invocations
 from benchflow.usage_tracking import UsageSource, is_trusted_usage_source
 
@@ -323,21 +323,24 @@ class BenchmarkMetrics:
 def _safe_reward(rewards: dict | None) -> float | None:
     """Extract a validated reward scalar from a rewards dict, or None if invalid.
 
-    Uses the canonical is_valid_reward_number validator so that booleans,
-    non-finite values, and out-of-range values are all excluded — matching
-    exactly the contract that classify_score_outcome / extract_reward enforce
-    during reporting. This keeps selection and reporting on the same contract
-    so the same artifact is ranked and classified consistently.
+    Rejects booleans (isinstance(True, int) is True in Python so an explicit
+    check is required), non-finite values (inf, nan), and absent/non-numeric
+    reward values. Does NOT apply a [0, 1] range bound: collect_metrics reads
+    result.json files and never sees a TaskConfig, so it cannot know whether a
+    task declared a widened reward_range (e.g. [-1.0, 1.0] for safety-floor
+    tasks). Applying the canonical bound here would silently reclassify a
+    legitimate -1.0 score as "no valid reward", causing selection and the
+    downstream extract_reward call (which applies no bound) to disagree.
 
-    Returns None (not 0.0) for any invalid or absent reward so the caller
-    can distinguish "no valid reward" from "reward is zero".
+    Returns None for any invalid or absent reward so the caller can
+    distinguish "no valid reward" from "reward is zero".
     """
     if not isinstance(rewards, dict):
         return None
     val = rewards.get("reward")
-    # Use isinstance narrowing that type checkers can follow, then validate
-    # with is_valid_reward_number (rejects booleans, non-finite, out-of-range).
-    if not isinstance(val, (int, float)) or not is_valid_reward_number(val):
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return None
+    if not math.isfinite(val):
         return None
     return float(val)
 

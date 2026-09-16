@@ -610,36 +610,30 @@ def test_collect_metrics_boolean_reward_treated_as_invalid(tmp_path):
 
 
 def test_collect_metrics_nonfinite_reward_treated_as_invalid(tmp_path):
-    """Guards Devin review: inf/-inf/nan are rejected by is_valid_reward_number
-    but isinstance(inf, float) is True, so old _safe_reward accepted them."""
-    import json
+    """Guards: non-finite rewards (inf, nan) are excluded from selection.
 
-    t1 = tmp_path / "a1" / "task__t1"
-    t1.mkdir(parents=True)
-    (t1 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task",
-                "rewards": {"reward": None},
-                "error": "agent error",
-                "n_tool_calls": 0,
-                "started_at": "2026-01-01 00:00:00.000000",
-                "finished_at": "2026-01-01 00:01:00.000000",
-            }
-        )
-    )
-    # inf cannot be serialised directly to JSON; simulate via a post-load patch
-    # by writing a valid file then checking the validator directly
-    from benchflow.rewards.validation import is_valid_reward_number
+    isinstance(float('inf'), float) is True, so the old _safe_reward accepted
+    them. _safe_reward now checks math.isfinite explicitly. Note: -1.0 is NOT
+    tested here because collect_metrics applies no range bound — a task may
+    declare reward_range = [-1.0, 1.0] and a legitimate -1.0 score must still
+    be selected as a scored artifact.
+    """
 
-    assert not is_valid_reward_number(float("inf")), "inf must be invalid"
-    assert not is_valid_reward_number(float("nan")), "nan must be invalid"
-    assert not is_valid_reward_number(True), "True must be invalid"
-    assert not is_valid_reward_number(False), "False must be invalid"
-    assert not is_valid_reward_number(-1.0), "-1.0 must be invalid (below range)"
-    assert is_valid_reward_number(0.0), "0.0 must be valid"
-    assert is_valid_reward_number(0.5), "0.5 must be valid"
-    assert is_valid_reward_number(1.0), "1.0 must be valid"
+    # attempt1: non-finite reward (use a large valid float as stand-in for inf
+    # since JSON cannot encode inf; we test the math.isfinite path via _safe_reward)
+    from benchflow.metrics import _safe_reward
+
+    assert _safe_reward({"reward": float("inf")}) is None, "inf must be rejected"
+    assert _safe_reward({"reward": float("-inf")}) is None, "-inf must be rejected"
+    assert _safe_reward({"reward": float("nan")}) is None, "nan must be rejected"
+    assert _safe_reward({"reward": True}) is None, "True must be rejected"
+    assert _safe_reward({"reward": False}) is None, "False must be rejected"
+    assert _safe_reward({"reward": None}) is None, "None must be rejected"
+    assert _safe_reward({"reward": 0.0}) == 0.0, "0.0 must be valid"
+    assert _safe_reward({"reward": -1.0}) == -1.0, "-1.0 must be valid (no range bound)"
+    assert _safe_reward({"reward": 0.5}) == 0.5, "0.5 must be valid"
+    assert _safe_reward({"reward": 1.0}) == 1.0, "1.0 must be valid"
+    assert _safe_reward({"reward": 2.0}) == 2.0, "2.0 must be valid (no range bound)"
 
 
 def test_collect_metrics_empty_rewards_dict_does_not_beat_valid_zero(tmp_path):
