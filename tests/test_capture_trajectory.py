@@ -6,12 +6,15 @@ Writer / streaming / multi-scene / partial-capture-fix tests live in
 
 import json
 
+import pytest
+
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus
 from benchflow.trajectories._capture import (
     _capture_session_trajectory,
     _parse_provider_tool_evidence,
     _reconcile_tool_evidence,
+    _scrape_agent_trajectory,
 )
 from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
@@ -897,3 +900,20 @@ class TestFlushArrivalOrder:
         ]
         assert result[1]["text"] == "before tool"
         assert result[3]["text"] == "after tool"
+
+
+@pytest.mark.asyncio
+async def test_scrape_agent_trajectory_survives_exec_timeout():
+    """Guards issue #948 at the sibling call site that runs first.
+
+    ``verify()`` awaits the scrape before publishing, so a container too slow
+    for the 10 second budget aborted the rollout here before the publish-side
+    guard could apply. Every other failure in this fallback already degrades to
+    "no scraped trajectory"; a timeout must do the same.
+    """
+
+    class TimingOutEnv:
+        async def exec(self, command, user=None, timeout_sec=None):
+            raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
+    assert await _scrape_agent_trajectory(TimingOutEnv(), "gemini", None) == []
