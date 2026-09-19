@@ -980,7 +980,7 @@ class TestLoopStrategyEngine:
             except TimeoutError as e:
                 timed_out = True
                 # What Rollout.run()'s except TimeoutError handler does.
-                trial._record_agent_timeout(e)
+                trial._record_agent_timeout(e, agent_phase=True)
         assert timed_out
 
         result = trial._build_result()
