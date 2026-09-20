@@ -290,6 +290,17 @@ def test_claude_setup_cmd_disables_web_tools(tmp_path):
     assert "WebFetch" in deny
 
 
+def test_antigravity_setup_cmd_installs_deny_hooks(tmp_path):
+    """Antigravity has no tool-exclusion setting; the no-web policy installs
+    PreToolUse deny hooks for every web/browser tool in the agent home."""
+    _run_setup_cmd("antigravity", tmp_path)
+    hooks = json.loads(
+        (tmp_path / ".gemini" / "antigravity-cli" / "hooks.json").read_text()
+    )
+    matchers = {g["matcher"] for g in hooks["benchflow-no-web"]["PreToolUse"]}
+    assert {"search_web", "read_url_content", ".*browser.*"} <= matchers
+
+
 def test_gemini_setup_cmd_disables_web_tools(tmp_path):
     """Gemini setup_cmd should write settings.json excluding google_web_search+web_fetch."""
     _run_setup_cmd("gemini", tmp_path)

@@ -94,6 +94,17 @@ def test_claude_hosted_search_cmd_is_idempotent(tmp_path):
     assert settings["permissions"]["deny"].count("WebSearch") == 1
 
 
+def test_antigravity_hosted_search_cmd_denies_search_and_fetch(tmp_path):
+    """search_web is hosted and read_url_content fetches server-side, so the
+    denylist mode denies both through PreToolUse hooks and leaves the rest."""
+    _run_hosted_search_cmd("antigravity", tmp_path)
+    hooks = json.loads(
+        (tmp_path / ".gemini" / "antigravity-cli" / "hooks.json").read_text()
+    )
+    matchers = {g["matcher"] for g in hooks["benchflow-no-hosted-search"]["PreToolUse"]}
+    assert matchers == {"search_web", "read_url_content"}
+
+
 def test_gemini_hosted_search_cmd_excludes_search_and_fetch(tmp_path):
     """Gemini's web_fetch uses the hosted urlContext path first, so both go."""
     _run_hosted_search_cmd("gemini", tmp_path)

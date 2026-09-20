@@ -103,6 +103,11 @@ axes:
       # (ENG-265). Listed here so the config<->manifest consistency check
       # accepts configs/mimo.yaml rather than reporting it as drift.
       - mimo
+      # antigravity drives the Google Antigravity CLI (agy, the Gemini CLI
+      # successor) through BenchFlow's ACP shim with GEMINI_API_KEY. Kept
+      # outside the credentialed release set until it has a release cycle of
+      # evidence; listed so configs/antigravity.yaml is not reported as drift.
+      - antigravity
   models:
     default:
       gemini: gemini-3.1-flash-lite-preview
