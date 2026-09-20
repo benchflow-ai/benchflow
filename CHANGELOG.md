@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Native Google Antigravity CLI agent (`antigravity`, alias `agy`).** The
+  Antigravity CLI replaced the hosted Gemini CLI in mid-2026 but ships no ACP
+  mode, so BenchFlow bundles an ACP shim over its headless `stream-json`
+  protocol. The registry entry pins the native `agy` release (SHA-512
+  verified, no Node.js), runs in Gemini API-key mode, streams tool calls with
+  raw input/output and per-turn token usage, honors `--model` and
+  `--reasoning-effort` over ACP (agy requires an effort; the default is
+  `high`), discovers skills from `~/.gemini/config/skills` and
+  `<workspace>/.agents/skills` (a `SKILL.md` read is recorded as the skill
+  invocation), delivers task MCP servers through
+  `~/.gemini/config/mcp_config.json`, routes API-key runs through the LiteLLM
+  Gemini pass-through like the `gemini` agent, and enforces the no-web and
+  denylist policies with `PreToolUse` deny hooks.
+
 ## 0.7.8 — 2026-09-14
 
 ### Added

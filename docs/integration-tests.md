@@ -14,7 +14,7 @@ uv sync --extra dev --extra sandbox-daytona --locked
 
 | Variable | Required for |
 |---|---|
-| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, pi-acp, openclaw, opencode, openhands |
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | gemini, antigravity, pi-acp, openclaw, opencode, openhands |
 | `DAYTONA_API_KEY` | all agents (sandbox) |
 | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | claude-agent-acp |
 | `OPENAI_API_KEY` | codex-acp |

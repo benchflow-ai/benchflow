@@ -159,6 +159,7 @@ bench agent list
 | Agent | Protocol | Auth |
 |-------|----------|------|
 | `gemini` | ACP | GEMINI_API_KEY or host login |
+| `antigravity` (alias: `agy`) | ACP (bundled shim over `agy --output-format stream-json`) | GEMINI_API_KEY |
 | `claude-agent-acp` (alias: `claude`) | ACP | ANTHROPIC_API_KEY or host login |
 | `codex-acp` (alias: `codex`) | ACP | OPENAI_API_KEY or host login |
 | `opencode` | ACP | inferred from model |

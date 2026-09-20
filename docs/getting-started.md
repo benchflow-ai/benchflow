@@ -62,6 +62,7 @@ credential file and copies it into the sandbox. No API key billing.
 | `claude-agent-acp` | `claude auth login` (Claude Code CLI) | `~/.claude/.credentials.json` | `ANTHROPIC_API_KEY` |
 | `codex-acp` | `codex login` (Codex CLI) | `~/.codex/auth.json` | `OPENAI_API_KEY` |
 | `gemini` | `gemini` (interactive login) | `~/.gemini/oauth_creds.json` | `GEMINI_API_KEY` |
+| `antigravity` | — (Google sign-in lives in the OS keyring and cannot be copied into a sandbox; use `GEMINI_API_KEY`) | — | `GEMINI_API_KEY` |
 
 When benchflow finds the detect file, you'll see:
 
@@ -90,7 +91,7 @@ Set the API-key env var directly. Works with every agent:
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 export CODEX_API_KEY=sk-...       # Codex alias for OPENAI_API_KEY
-export GEMINI_API_KEY=...
+export GEMINI_API_KEY=...       # Gemini CLI and Antigravity CLI (agy)
 export LLM_API_KEY=...           # OpenHands / LiteLLM-compatible providers
 export AZURE_API_KEY=...
 export AZURE_API_ENDPOINT='https://<resource>.openai.azure.com/'

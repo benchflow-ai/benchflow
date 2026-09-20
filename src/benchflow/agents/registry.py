@@ -45,7 +45,8 @@ Common optional fields
 Look at the existing entries below for worked examples:
 ``claude-agent-acp`` (subscription auth + env_mapping), ``codex-acp``
 (credential_files), ``openclaw`` (home_dirs + custom shim), ``gemini``
-(multi-file subscription auth).
+(multi-file subscription auth), ``antigravity`` (pinned native binary +
+Python ACP shim, hook-based web policy, native MCP config).
 """
 
 import base64
@@ -54,6 +55,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from benchflow._utils.text import describe_exception
+from benchflow.agents.antigravity_config import (
+    ANTIGRAVITY_GLOBAL_SKILLS_PATH,
+    ANTIGRAVITY_HOME_DIR,
+    ANTIGRAVITY_HOOKS_RELPATH,
+    ANTIGRAVITY_HOSTED_WEB_TOOL_MATCHERS,
+    ANTIGRAVITY_MCP_CONFIG_RELPATH,
+    ANTIGRAVITY_MODEL_ENV,
+    ANTIGRAVITY_WEB_TOOL_MATCHERS,
+    ANTIGRAVITY_WORKSPACE_SKILLS_PATH,
+    GEMINI_NATIVE_BASE_URL_ENV,
+    agy_install_cmd,
+    hooks_deny_mutator,
+)
 
 
 def _install_python_script(container_path: str, source: str) -> str:
@@ -293,6 +307,10 @@ _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text(
 # Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
 
+# Path to the Antigravity ACP shim (drives `agy --input-format=stream-json` as an
+# ACP agent; agy has no ACP mode of its own)
+_ANTIGRAVITY_SHIM = (Path(__file__).parent / "antigravity_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -526,6 +544,32 @@ _GEMINI_EXCLUDE_WEB_TOOLS_CMD = _json_settings_merge(
 )
 
 
+_ANTIGRAVITY_INSTALL_CMD = (
+    agy_install_cmd(_apt_install("curl", "ca-certificates"))
+    + " && "
+    + _install_python_script(
+        f"{_BENCHFLOW_BIN_PREFIX}/antigravity-acp-shim", _ANTIGRAVITY_SHIM
+    )
+)
+# agy has no tool-exclusion setting; its documented switch is a PreToolUse
+# lifecycle hook answering {"decision": "deny"} (see antigravity_config).
+_ANTIGRAVITY_NO_WEB_TOOLS_CMD = _json_settings_merge(
+    f"$BENCHFLOW_AGENT_HOME/{ANTIGRAVITY_HOOKS_RELPATH}",
+    hooks_deny_mutator(
+        "benchflow-no-web",
+        ANTIGRAVITY_WEB_TOOL_MATCHERS,
+        "BenchFlow policy: web tools are disabled for this run.",
+    ),
+)
+_ANTIGRAVITY_NO_HOSTED_SEARCH_CMD = _json_settings_merge(
+    f"$BENCHFLOW_AGENT_HOME/{ANTIGRAVITY_HOOKS_RELPATH}",
+    hooks_deny_mutator(
+        "benchflow-no-hosted-search",
+        ANTIGRAVITY_HOSTED_WEB_TOOL_MATCHERS,
+        "BenchFlow policy: hosted web search and fetch are disabled for this run.",
+    ),
+)
+
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
@@ -721,6 +765,53 @@ AGENTS: dict[str, AgentConfig] = {
         # web_fetch tries the hosted urlContext path before any local fetch, so
         # the egress proxy cannot filter it; the denylist excludes both tools.
         disallow_hosted_search_setup_cmd=_GEMINI_EXCLUDE_WEB_TOOLS_CMD,
+    ),
+    "antigravity": AgentConfig(
+        name="antigravity",
+        description=(
+            "Google Antigravity CLI (agy, the Gemini CLI successor) via "
+            "BenchFlow's ACP shim over its headless stream-json mode"
+        ),
+        # agy discovers skills globally under ~/.gemini/config/skills and per
+        # workspace under <workspace>/.agents/skills (the shim launches agy
+        # with --add-dir=<cwd>, which is what makes the workspace tree count).
+        skill_paths=[
+            ANTIGRAVITY_GLOBAL_SKILLS_PATH,
+            ANTIGRAVITY_WORKSPACE_SKILLS_PATH,
+        ],
+        home_dirs=[ANTIGRAVITY_HOME_DIR],
+        # Pinned native binary (see antigravity_config.AGY_RELEASES) plus the
+        # Python shim; no Node.js is involved. The shim writes
+        # ~/.gemini/antigravity-cli/settings.json at launch (Gemini API-key
+        # mode when GEMINI_API_KEY is present, telemetry off, agy's own
+        # terminal sandbox off) — Google sign-in lives in the OS keyring and
+        # cannot be copied into a sandbox, so there is no subscription_auth.
+        install_cmd=_ANTIGRAVITY_INSTALL_CMD,
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/antigravity-acp-shim",
+        protocol="acp",
+        requires_env=["GEMINI_API_KEY"],
+        # agy's catalog ids carry the effort (gemini-3.8-flash-high); BenchFlow
+        # keeps the bare id and passes the effort through --reasoning-effort
+        # (ACP "thinking" config option), defaulting to high.
+        default_model="gemini-3.8-flash",
+        # api_protocol intentionally empty: agy speaks Google's native
+        # GenerateContent format, like the gemini agent.
+        api_protocol="",
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": GEMINI_NATIVE_BASE_URL_ENV,
+            "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
+            # Launch-time default only; the shim honors session/set_model.
+            "BENCHFLOW_PROVIDER_MODEL": ANTIGRAVITY_MODEL_ENV,
+        },
+        acp_effort_config_id="thinking",
+        disallow_web_tools_setup_cmd=_ANTIGRAVITY_NO_WEB_TOOLS_CMD,
+        disallow_web_tools_owned_paths=["$HOME/.gemini"],
+        # search_web is hosted and read_url_content fetches server-side, so the
+        # egress proxy never sees either; the denylist mode switches both off.
+        disallow_hosted_search_setup_cmd=_ANTIGRAVITY_NO_HOSTED_SEARCH_CMD,
+        # agy loads MCP servers from mcp_config.json, not from ACP session/new.
+        task_mcp_transport="native-config",
+        task_mcp_config_path=ANTIGRAVITY_MCP_CONFIG_RELPATH,
     ),
     "opencode": AgentConfig(
         name="opencode",
@@ -1096,6 +1187,8 @@ AGENT_ALIASES: dict[str, str] = {
     "claude": "claude-agent-acp",
     "codex": "codex-acp",
     "gemini": "gemini",
+    "agy": "antigravity",
+    "antigravity-cli": "antigravity",
     "pi": "pi-acp",
     "openclaw": "openclaw",
     "openhands": "openhands",

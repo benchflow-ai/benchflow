@@ -11,7 +11,7 @@ bench --version
 
 > **`bench agent` is agent management only.** `bench agent list` and `bench
 > agent show` operate on **registered AI agents** (Claude Code, Gemini CLI,
-> Codex, OpenHands, …) — the programs that solve tasks. Onboarding a third-party
+> Antigravity CLI, Codex, OpenHands, …) — the programs that solve tasks. Onboarding a third-party
 > benchmark (scaffold → drive → parity-gate a `benchmarks/<name>/` adoption) is a
 > separate workflow under [`bench eval adopt`](#bench-eval-adopt). The legacy
 > `bench agent create|run|verify` still work as hidden deprecated aliases through

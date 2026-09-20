@@ -26,6 +26,11 @@ import httpx
 import yaml
 
 from benchflow._utils.text import describe_exception
+from benchflow.agents.antigravity_config import (
+    GEMINI_NATIVE_BASE_URL_ENV,
+    gemini_native_model_id,
+    routes_gemini_natively,
+)
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
@@ -1461,6 +1466,14 @@ def _litellm_proxy_env(
     return updated
 
 
+def _gemini_native_route_model(route: LiteLLMRoute) -> str:
+    """Bare Gemini model id behind a LiteLLM route (``gemini/<id>`` upstream)."""
+    upstream = route.upstream_model or ""
+    if upstream.lower().startswith("gemini/"):
+        return upstream.split("/", 1)[1]
+    return strip_provider_prefix(route.requested_model)
+
+
 def _wire_litellm_agent_env(
     *,
     agent: str,
@@ -1534,14 +1547,15 @@ def _wire_litellm_agent_env(
         updated["LLM_MODEL"] = f"openai/{route.model_alias}"
         updated[LITELLM_MODEL_VIA_ENV] = "1"
         return updated
-    if agent == "gemini":
-        # Gemini CLI speaks Google's native GenerateContent protocol. Use
-        # LiteLLM's byte-preserving Gemini pass-through route: its translated
-        # GenerateContent route can corrupt streamed, multi-tool responses.
-        # The gateway authenticates the reviewer with ``master_key`` and swaps
-        # in the upstream Gemini key server-side.
+    if routes_gemini_natively(_cfg):
+        # Gemini CLI and the Antigravity CLI speak Google's native
+        # GenerateContent protocol. Use LiteLLM's byte-preserving Gemini
+        # pass-through route: its translated GenerateContent route can corrupt
+        # streamed, multi-tool responses. The gateway authenticates the
+        # reviewer with ``master_key`` and swaps in the upstream Gemini key
+        # server-side.
         updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
-        updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
+        updated[GEMINI_NATIVE_BASE_URL_ENV] = f"{base_url.rstrip('/')}/gemini"
         # Gemini CLI recognizes several equivalent credential names, with the
         # selected alias varying by model family and CLI release. Point every
         # accepted alias at the gateway so Gemma cannot inherit a real Google
@@ -1552,6 +1566,15 @@ def _wire_litellm_agent_env(
             "GOOGLE_GENERATIVE_AI_API_KEY",
         ):
             updated[key] = master_key
+        # The pass-through carries the real Gemini model id in the request
+        # URL, so an agent that reads its model from env at launch
+        # (antigravity's ANTIGRAVITY_MODEL) must keep that id rather than the
+        # OpenAI-style proxy alias the generic mapping below would hand it.
+        model_env = _cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL") if _cfg else None
+        if model_env:
+            updated[model_env] = gemini_native_model_id(
+                _gemini_native_route_model(route)
+            )
         return updated
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
