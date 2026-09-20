@@ -758,6 +758,37 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_antigravity_uses_gemini_pass_through(monkeypatch):
+    """The Antigravity CLI routes like Gemini CLI: the registry's
+    GOOGLE_GEMINI_BASE_URL mapping selects the GenerateContent pass-through,
+    every Google key alias is swapped for the master key, and no proxy alias
+    or env-owned model is left behind (the model is sent over ACP)."""
+
+    async def fake_sandbox_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="antigravity",
+        agent_env={"GEMINI_API_KEY": "upstream-gemini-key"},
+        model="gemini-3.8-flash",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=SimpleNamespace(),
+        force_sandbox_local=True,
+    )
+
+    assert provider_runtime is not None
+    assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
+    assert updated["GEMINI_API_KEY"] == provider_runtime.master_key
+    assert updated["GOOGLE_API_KEY"] == provider_runtime.master_key
+    assert "BENCHFLOW_LITELLM_MODEL_ALIAS" not in updated
+    assert "BENCHFLOW_LITELLM_MODEL_VIA_ENV" not in updated
+
+
+@pytest.mark.asyncio
 async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeypatch):
     """Guards PR #942 and PR #1030: every Google key alias stays proxied."""
 

@@ -43,6 +43,7 @@ from benchflow.agents.registry import (
     ACPX_KEY_PREFIX,
     AGENTS,
     OPENCODE_PROXY_PROVIDER_ID,
+    routes_gemini_natively,
 )
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
@@ -276,14 +277,17 @@ def _format_acp_model(model: str, agent: str) -> str:
     models.dev provider prefix when the agent requires it.
     """
     bare = strip_provider_prefix(model)
-    # Gemini CLI accepts bare Google model IDs. ``google/`` is a models.dev
-    # provider prefix rather than a registered BenchFlow provider, so the
-    # generic normalizer intentionally leaves it alone.
-    if agent.removeprefix(ACPX_KEY_PREFIX) == "gemini" and model.startswith(
+    agent_cfg = AGENTS.get(agent)
+    # Gemini-native agents (Gemini CLI, Antigravity CLI) take bare Google model
+    # IDs. ``google/`` is a models.dev provider prefix rather than a registered
+    # BenchFlow provider, so the generic normalizer intentionally leaves it
+    # alone. An acpx runtime key is only registered once resolve_agent_key has
+    # run, so fall back to the wrapped agent's own entry.
+    native_cfg = agent_cfg or AGENTS.get(agent.removeprefix(ACPX_KEY_PREFIX))
+    if routes_gemini_natively(native_cfg) and model.startswith(
         ("google/gemini-", "google/gemma-")
     ):
         bare = model.removeprefix("google/")
-    agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
         # Proxy mode: BenchFlow's LiteLLM proxy serves the model under the alias
         # "benchflow-…", which the pi-acp launcher registers under the "litellm"

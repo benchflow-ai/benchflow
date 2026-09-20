@@ -313,6 +313,7 @@ Common choices:
 | Agent | Key | Auth |
 |-------|-----|------|
 | Gemini | `gemini` | `GEMINI_API_KEY` or host login |
+| Antigravity CLI | `antigravity` (alias: `agy`) | `GEMINI_API_KEY` (Gemini API-key mode; no host login) |
 | Claude Code | `claude-agent-acp` (alias: `claude`) | `ANTHROPIC_API_KEY` or host login |
 | Codex | `codex-acp` (alias: `codex`) | `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or host login |
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
@@ -332,6 +333,17 @@ bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1
 
 ACPX is a headless ACP client that adds persistent sessions and crash recovery.
 The underlying agent's install, env vars, credentials, and skill paths are all preserved.
+
+The **Antigravity CLI** agent (`agy`, Google's successor to the Gemini CLI)
+has no ACP mode of its own, so BenchFlow drives its headless `stream-json`
+protocol through a bundled ACP shim. It runs in Gemini API-key mode
+(`GEMINI_API_KEY`), takes bare Gemini model ids (`gemini-3.8-flash`; catalog
+ids such as `gemini-3.8-flash-high` are accepted and their effort honored), and
+requires a reasoning effort for every model — `--reasoning-effort low|medium|high`,
+defaulting to `high`. Skills are discovered from `~/.gemini/config/skills` and
+`<workspace>/.agents/skills`; agy has no skill tool, so a read of
+`.../skills/<name>/SKILL.md` is recorded as the skill invocation. Task MCP
+servers are written to `~/.gemini/config/mcp_config.json`.
 
 The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent loop
 (6 tools, system prompt) inside BenchFlow's sandbox. Use it for parity testing

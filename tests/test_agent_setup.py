@@ -678,6 +678,7 @@ async def test_apply_web_tool_policy_repairs_config_paths_written_by_policy():
     [
         ("claude-agent-acp", ["/home/agent/.claude"]),
         ("gemini", ["/home/agent/.gemini"]),
+        ("antigravity", ["/home/agent/.gemini"]),
         ("opencode", ["/home/agent/.config/opencode", "/home/agent/.opencode"]),
         ("openhands", ["/home/agent/.agents", "/home/agent/.openhands"]),
     ],

@@ -1355,6 +1355,9 @@ class TestConnectAcpModelSelection:
             ("gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
             ("acpx:gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
             ("gemini", "google/text-bison", "google/text-bison"),
+            # The Antigravity CLI takes the same bare Google ids as Gemini CLI.
+            ("antigravity", "google/gemini-3.8-flash", "gemini-3.8-flash"),
+            ("antigravity", "gemini-3.8-flash", "gemini-3.8-flash"),
         ],
         ids=[
             "vllm-hf",
@@ -1366,6 +1369,8 @@ class TestConnectAcpModelSelection:
             "gemma-google",
             "acpx-gemma-google",
             "unrelated-google",
+            "antigravity-google",
+            "antigravity-bare",
         ],
     )
     async def test_model_id_selection(self, agent, model_in, expected_model, tmp_path):

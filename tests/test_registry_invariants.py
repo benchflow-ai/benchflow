@@ -356,8 +356,10 @@ def test_agent_negative_config_invariants():
     per-agent assertions live in test_agent_registry.py /
     test_subscription_auth.py; this is the dedicated negative side.
     """
-    no_credential_files = {"claude-agent-acp", "openclaw"}
-    no_subscription_auth = {"openclaw", "pi-acp"}
+    no_credential_files = {"claude-agent-acp", "openclaw", "antigravity"}
+    # antigravity: Google sign-in lives in the OS keyring, so there is no host
+    # login file to copy — only GEMINI_API_KEY mode works inside a sandbox.
+    no_subscription_auth = {"openclaw", "pi-acp", "antigravity"}
     no_env_mapping = {"openclaw", "pi-acp"}
 
     for name in no_credential_files:
