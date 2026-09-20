@@ -61,10 +61,8 @@ from benchflow.agents.antigravity_config import (
     ANTIGRAVITY_HOOKS_RELPATH,
     ANTIGRAVITY_HOSTED_WEB_TOOL_MATCHERS,
     ANTIGRAVITY_MCP_CONFIG_RELPATH,
-    ANTIGRAVITY_MODEL_ENV,
     ANTIGRAVITY_WEB_TOOL_MATCHERS,
     ANTIGRAVITY_WORKSPACE_SKILLS_PATH,
-    GEMINI_NATIVE_BASE_URL_ENV,
     agy_install_cmd,
     hooks_deny_mutator,
 )
@@ -77,11 +75,12 @@ def _install_python_script(container_path: str, source: str) -> str:
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
 
-    Used by pi-acp, openclaw, and harvey-lab-harness — all three ship a Python
-    launcher/shim baked into install_cmd. Semantics differ intentionally:
-    pi and openclaw bridge BENCHFLOW_PROVIDER_* env vars to agent-native
-    config; harvey-lab delegates to Harvey LAB's own model adapters which
-    read provider env vars directly. A shared base is not yet justified —
+    Used by pi-acp, openclaw, harvey-lab-harness, deepagents and antigravity —
+    each ships a Python launcher/shim baked into install_cmd. Semantics differ
+    intentionally: pi and openclaw bridge BENCHFLOW_PROVIDER_* env vars to
+    agent-native config; harvey-lab delegates to Harvey LAB's own model
+    adapters which read provider env vars directly; antigravity bridges ACP to
+    agy's headless stream-json protocol. A shared base is not yet justified —
     divergence is cheap, premature abstraction isn't.
     """
     encoded = base64.b64encode(source.encode()).decode()
@@ -535,6 +534,24 @@ class AgentConfig:
     task_mcp_config_path: str = ""
 
 
+# Agents that call Google's GenerateContent API themselves (Gemini CLI and its
+# successor, the Antigravity CLI) declare it by mapping the provider base URL
+# onto this env var. The ACP runtime and the LiteLLM gateway key their
+# Gemini-native handling (bare Google model ids, the byte-preserving Gemini
+# pass-through route) off this mapping rather than off agent names.
+GEMINI_NATIVE_BASE_URL_ENV = "GOOGLE_GEMINI_BASE_URL"
+
+
+def routes_gemini_natively(agent_cfg: AgentConfig | None) -> bool:
+    """True when ``agent_cfg`` talks to the Gemini API directly."""
+    if agent_cfg is None:
+        return False
+    return (
+        agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL")
+        == GEMINI_NATIVE_BASE_URL_ENV
+    )
+
+
 _GEMINI_EXCLUDE_WEB_TOOLS_CMD = _json_settings_merge(
     "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
     'd.setdefault("tools",{}).setdefault("exclude",[]);'
@@ -741,7 +758,7 @@ AGENTS: dict[str, AgentConfig] = {
         # a multi-endpoint option. Set this when a Gemini-compatible provider
         # with multiple endpoints (e.g. OpenRouter) is added.
         env_mapping={
-            "BENCHFLOW_PROVIDER_BASE_URL": "GOOGLE_GEMINI_BASE_URL",
+            "BENCHFLOW_PROVIDER_BASE_URL": GEMINI_NATIVE_BASE_URL_ENV,
             # Map to the CLI-native var; auto_inherit_env mirrors it to
             # GOOGLE_API_KEY for compatibility with users who set that alias.
             "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
@@ -790,9 +807,6 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/antigravity-acp-shim",
         protocol="acp",
         requires_env=["GEMINI_API_KEY"],
-        # agy's catalog ids carry the effort (gemini-3.8-flash-high); BenchFlow
-        # keeps the bare id and passes the effort through --reasoning-effort
-        # (ACP "thinking" config option), defaulting to high.
         default_model="gemini-3.8-flash",
         # api_protocol intentionally empty: agy speaks Google's native
         # GenerateContent format, like the gemini agent.
@@ -800,9 +814,12 @@ AGENTS: dict[str, AgentConfig] = {
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": GEMINI_NATIVE_BASE_URL_ENV,
             "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
-            # Launch-time default only; the shim honors session/set_model.
-            "BENCHFLOW_PROVIDER_MODEL": ANTIGRAVITY_MODEL_ENV,
         },
+        # The shim implements session/set_model and a "thinking" config
+        # option, so model and effort are driven over ACP like every other
+        # ACP agent. agy's catalog ids carry the effort (gemini-3.8-flash-high);
+        # BenchFlow keeps the bare id and passes --reasoning-effort through the
+        # option, defaulting to high (agy requires one for every model).
         acp_effort_config_id="thinking",
         disallow_web_tools_setup_cmd=_ANTIGRAVITY_NO_WEB_TOOLS_CMD,
         disallow_web_tools_owned_paths=["$HOME/.gemini"],
@@ -1188,7 +1205,6 @@ AGENT_ALIASES: dict[str, str] = {
     "codex": "codex-acp",
     "gemini": "gemini",
     "agy": "antigravity",
-    "antigravity-cli": "antigravity",
     "pi": "pi-acp",
     "openclaw": "openclaw",
     "openhands": "openhands",

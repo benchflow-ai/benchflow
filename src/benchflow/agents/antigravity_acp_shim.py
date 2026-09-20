@@ -46,7 +46,6 @@ AGY_BIN_ENV = "BENCHFLOW_AGY_BIN"
 DEFAULT_AGY_BIN = "/opt/benchflow/antigravity/agy"
 MODEL_ENV = "ANTIGRAVITY_MODEL"
 EFFORT_ENV = "ANTIGRAVITY_EFFORT"
-EXTRA_ARGS_ENV = "ANTIGRAVITY_EXTRA_ARGS"
 
 EFFORT_LEVELS = ("low", "medium", "high")
 DEFAULT_EFFORT = "high"
@@ -109,7 +108,6 @@ _TITLE_PARAMS = (
     "Path",
     "File",
 )
-_PATH_PARAMS = ("AbsolutePath", "TargetFile", "DirectoryPath", "SearchDirectory")
 
 _stdout_lock = threading.Lock()
 
@@ -192,7 +190,7 @@ def agy_binary():
     return os.environ.get(AGY_BIN_ENV) or DEFAULT_AGY_BIN
 
 
-def prepare_settings(home=None):
+def prepare_settings():
     """Write ``~/.gemini/antigravity-cli/settings.json`` for headless runs.
 
     ``modelProvider: "gemini"`` switches agy to Gemini API-key mode (no Google
@@ -202,9 +200,9 @@ def prepare_settings(home=None):
     (BenchFlow's sandbox owns isolation; nested sandboxes fail inside
     Docker/Daytona), non-workspace paths readable (tasks keep inputs under
     ``/logs``, ``/tests`` and friends), and every review gate set to proceed.
-    Returns the settings path, or ``None`` when the file could not be written.
+    Returns the settings path, or ``None`` when it could not be written.
     """
-    base = Path(home or agent_home()) / ".gemini" / "antigravity-cli"
+    base = Path(agent_home()) / ".gemini" / "antigravity-cli"
     path = base / "settings.json"
     try:
         base.mkdir(parents=True, exist_ok=True)
@@ -263,17 +261,6 @@ def _tool_title(name, params):
             if isinstance(value, str) and value.strip():
                 return f"{name}: {value.strip()}"[:_TOOL_TITLE_LIMIT]
     return name
-
-
-def _tool_locations(params):
-    if not isinstance(params, dict):
-        return []
-    locations = []
-    for key in _PATH_PARAMS:
-        value = params.get(key)
-        if isinstance(value, str) and value.startswith("/"):
-            locations.append({"path": value})
-    return locations
 
 
 def _truncate(text, limit=_TOOL_OUTPUT_LIMIT):
@@ -380,16 +367,6 @@ class AgySession:
             }
         ]
 
-    def model_state(self):
-        try:
-            model = self.resolved_model()
-        except RuntimeError:
-            return None
-        return {
-            "availableModels": [{"modelId": model, "name": model}],
-            "currentModelId": model,
-        }
-
     # -- process lifecycle --
 
     def _restart_on_next_prompt(self):
@@ -413,9 +390,6 @@ class AgySession:
             f"--model={model}",
             f"--effort={effort}",
         ]
-        extra = os.environ.get(EXTRA_ARGS_ENV, "").strip()
-        if extra:
-            args.extend(extra.split())
         env = dict(os.environ)
         env.setdefault("AGY_CLI_HIDE_LOGO", "1")
         env.setdefault("NO_COLOR", "1")
@@ -613,9 +587,6 @@ class AgySession:
             }
             if isinstance(params, dict):
                 update["rawInput"] = params
-            locations = _tool_locations(params)
-            if locations:
-                update["locations"] = locations
             _notify(self.session_id, update)
             open_tools.add(call_id)
         if state == "ACTIVE":
@@ -778,9 +749,6 @@ class Server:
             # ACP is acknowledged but not wired.
             log("ignoring session/new mcpServers (agy loads mcp_config.json)")
         result = {"sessionId": session_id, "configOptions": session.config_options()}
-        model_state = session.model_state()
-        if model_state:
-            result["models"] = model_state
         _respond(req_id, result)
 
     def on_set_model(self, req_id, params):

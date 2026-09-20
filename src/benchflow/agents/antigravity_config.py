@@ -1,15 +1,16 @@
-"""Google Antigravity CLI (``agy``) wiring shared by the registry and runtimes.
+"""Google Antigravity CLI (``agy``) install and policy wiring for the registry.
 
 The Antigravity CLI replaced the hosted Gemini CLI in mid-2026. It ships as a
 single native binary (no npm package) and has no ACP mode, so BenchFlow drives
 it through ``antigravity_acp_shim.py`` (an ACP server over agy's headless
-``stream-json`` protocol). This module holds the pieces the *host* side needs:
+``stream-json`` protocol). Model and effort selection, the settings file and
+everything else that happens *inside* the sandbox live in that shim; this
+module holds only what the registry entry needs on the host:
 
 - the pinned agy release (version, per-architecture download URL + SHA-512)
   and the POSIX ``sh`` snippet that installs it under ``/opt/benchflow``;
-- the env-var names and the model/effort helpers the shim also implements
-  (kept in sync by ``tests/test_agent_antigravity.py``);
-- the ``hooks.json`` builder used for BenchFlow's web-tool policies. agy has no
+- the discovery paths agy reads (skills, hooks, MCP config);
+- the ``hooks.json`` mutator behind BenchFlow's web-tool policies. agy has no
   tool-exclusion setting; its documented switch is a ``PreToolUse`` lifecycle
   hook whose command answers ``{"decision": "deny"}``.
 """
@@ -17,7 +18,6 @@ it through ``antigravity_acp_shim.py`` (an ACP server over agy's headless
 from __future__ import annotations
 
 import json
-import re
 import shlex
 
 AGY_VERSION = "1.2.7"
@@ -43,11 +43,7 @@ AGY_RELEASES: dict[str, tuple[str, str]] = {
     ),
 }
 
-ANTIGRAVITY_MODEL_ENV = "ANTIGRAVITY_MODEL"
-ANTIGRAVITY_EFFORT_ENV = "ANTIGRAVITY_EFFORT"
-GEMINI_NATIVE_BASE_URL_ENV = "GOOGLE_GEMINI_BASE_URL"
 ANTIGRAVITY_HOME_DIR = ".gemini"
-ANTIGRAVITY_SETTINGS_RELPATH = ".gemini/antigravity-cli/settings.json"
 ANTIGRAVITY_HOOKS_RELPATH = ".gemini/antigravity-cli/hooks.json"
 ANTIGRAVITY_MCP_CONFIG_RELPATH = ".gemini/config/mcp_config.json"
 ANTIGRAVITY_GLOBAL_SKILLS_PATH = "$HOME/.gemini/config/skills"
@@ -65,70 +61,6 @@ ANTIGRAVITY_WEB_TOOL_MATCHERS = (
     ".*browser.*",
 )
 
-EFFORT_LEVELS = ("low", "medium", "high")
-DEFAULT_EFFORT = "high"
-_EFFORT_ALIASES = {
-    "none": "low",
-    "minimal": "low",
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "high",
-    "max": "high",
-}
-_MODEL_EFFORT_SUFFIX = re.compile(r"^(?P<model>.+?)-(?P<effort>low|medium|high)$")
-_MODELS_DEV_PREFIXES = ("google/", "gemini/")
-
-
-def split_model_effort(model: str) -> tuple[str, str | None]:
-    """Split agy catalog ids like ``gemini-3.8-flash-high`` into model + effort.
-
-    agy lists models as ``<model>-<effort>`` and requires ``--effort`` for
-    every model in Gemini API-key mode. BenchFlow model ids stay effort-free;
-    a suffixed id is accepted and its effort honored. ``google/`` / ``gemini/``
-    prefixes are dropped because agy takes bare Google model ids.
-    """
-    bare = (model or "").strip()
-    for prefix in _MODELS_DEV_PREFIXES:
-        if bare.startswith(prefix):
-            bare = bare[len(prefix) :]
-    match = _MODEL_EFFORT_SUFFIX.match(bare)
-    if match:
-        return match.group("model"), match.group("effort")
-    return bare, None
-
-
-def normalize_antigravity_effort(value: str | None) -> str | None:
-    """Collapse BenchFlow's reasoning-effort labels onto agy's three levels."""
-    if value is None:
-        return None
-    key = str(value).strip().lower()
-    if not key:
-        return None
-    if key not in _EFFORT_ALIASES:
-        raise ValueError(
-            f"Unsupported reasoning effort {value!r} for Antigravity; "
-            f"expected one of {', '.join(_EFFORT_ALIASES)}"
-        )
-    return _EFFORT_ALIASES[key]
-
-
-def gemini_native_model_id(model: str) -> str:
-    """Model id agy should request from the Gemini API for a BenchFlow model."""
-    bare, _effort = split_model_effort(model)
-    return bare
-
-
-def routes_gemini_natively(agent_cfg: object | None) -> bool:
-    """True for agents that call the Gemini GenerateContent API directly.
-
-    Such agents (Gemini CLI, Antigravity CLI) are pointed at the LiteLLM
-    gateway through ``GOOGLE_GEMINI_BASE_URL`` and its byte-preserving Gemini
-    pass-through route instead of an OpenAI-compatible alias.
-    """
-    mapping = getattr(agent_cfg, "env_mapping", None) or {}
-    return mapping.get("BENCHFLOW_PROVIDER_BASE_URL") == GEMINI_NATIVE_BASE_URL_ENV
-
 
 def agy_install_cmd(apt_install_curl: str) -> str:
     """POSIX ``sh`` snippet installing the pinned agy binary under /opt/benchflow.
@@ -139,7 +71,9 @@ def agy_install_cmd(apt_install_curl: str) -> str:
     binary actually runs on the task image (glibc / architecture mismatch
     surfaces at install time, not as a silent ACP handshake failure).
     ``apt_install_curl`` is the registry's retrying apt snippet for
-    ``curl`` + ``ca-certificates``.
+    ``curl`` + ``ca-certificates``. ``DEBIAN_FRONTEND`` is exported for the
+    whole install line: on bare images the python3 install that follows pulls
+    ``tzdata``, whose configuration prompt otherwise blocks apt under a TTY.
     """
     q_bin = shlex.quote(AGY_BIN)
     q_dir = shlex.quote(AGY_BIN.rsplit("/", 1)[0])

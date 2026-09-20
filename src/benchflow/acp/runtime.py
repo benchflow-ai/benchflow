@@ -43,6 +43,7 @@ from benchflow.agents.registry import (
     ACPX_KEY_PREFIX,
     AGENTS,
     OPENCODE_PROXY_PROVIDER_ID,
+    routes_gemini_natively,
 )
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
@@ -169,11 +170,6 @@ async def _wait_for_acp_handshake(awaitable, *, phase: str):
         ) from e
 
 
-# Agents that call Google's GenerateContent API with bare Gemini/Gemma model
-# ids (no models.dev ``google/`` prefix): the Gemini CLI and its successor,
-# the Antigravity CLI (driven through BenchFlow's ACP shim).
-_GOOGLE_NATIVE_MODEL_AGENTS = frozenset({"gemini", "antigravity"})
-
 # models.dev provider inference — used when acp_model_format="provider/model"
 # to reconstruct "provider/model" from a bare model name.
 _MODELSDEV_PROVIDER_HEURISTICS: list[tuple[str, str]] = [
@@ -281,17 +277,17 @@ def _format_acp_model(model: str, agent: str) -> str:
     models.dev provider prefix when the agent requires it.
     """
     bare = strip_provider_prefix(model)
-    # Gemini CLI and the Antigravity CLI accept bare Google model IDs.
-    # ``google/`` is a models.dev provider prefix rather than a registered
+    agent_cfg = AGENTS.get(agent)
+    # Gemini-native agents (Gemini CLI, Antigravity CLI) take bare Google model
+    # IDs. ``google/`` is a models.dev provider prefix rather than a registered
     # BenchFlow provider, so the generic normalizer intentionally leaves it
-    # alone.
-    if agent.removeprefix(
-        ACPX_KEY_PREFIX
-    ) in _GOOGLE_NATIVE_MODEL_AGENTS and model.startswith(
+    # alone. An acpx runtime key is only registered once resolve_agent_key has
+    # run, so fall back to the wrapped agent's own entry.
+    native_cfg = agent_cfg or AGENTS.get(agent.removeprefix(ACPX_KEY_PREFIX))
+    if routes_gemini_natively(native_cfg) and model.startswith(
         ("google/gemini-", "google/gemma-")
     ):
         bare = model.removeprefix("google/")
-    agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
         # Proxy mode: BenchFlow's LiteLLM proxy serves the model under the alias
         # "benchflow-…", which the pi-acp launcher registers under the "litellm"

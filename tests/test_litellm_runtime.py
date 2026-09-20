@@ -758,13 +758,11 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_antigravity_uses_gemini_pass_through_and_keeps_real_model_id(
-    monkeypatch,
-):
-    """The Antigravity CLI routes like Gemini CLI: GenerateContent pass-through,
-    every Google key alias swapped for the master key, and ANTIGRAVITY_MODEL
-    left as the real Gemini id (the pass-through carries it in the URL, so
-    the OpenAI-style proxy alias would 404 at the gateway)."""
+async def test_antigravity_uses_gemini_pass_through(monkeypatch):
+    """The Antigravity CLI routes like Gemini CLI: the registry's
+    GOOGLE_GEMINI_BASE_URL mapping selects the GenerateContent pass-through,
+    every Google key alias is swapped for the master key, and no proxy alias
+    or env-owned model is left behind (the model is sent over ACP)."""
 
     async def fake_sandbox_start(**kwargs):
         return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
@@ -773,10 +771,7 @@ async def test_antigravity_uses_gemini_pass_through_and_keeps_real_model_id(
 
     updated, provider_runtime = await ensure_litellm_runtime(
         agent="antigravity",
-        agent_env={
-            "GEMINI_API_KEY": "upstream-gemini-key",
-            "ANTIGRAVITY_MODEL": "gemini-3.8-flash",
-        },
+        agent_env={"GEMINI_API_KEY": "upstream-gemini-key"},
         model="gemini-3.8-flash",
         runtime=None,
         environment="docker",
@@ -789,7 +784,6 @@ async def test_antigravity_uses_gemini_pass_through_and_keeps_real_model_id(
     assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
     assert updated["GEMINI_API_KEY"] == provider_runtime.master_key
     assert updated["GOOGLE_API_KEY"] == provider_runtime.master_key
-    assert updated["ANTIGRAVITY_MODEL"] == "gemini-3.8-flash"
     assert "BENCHFLOW_LITELLM_MODEL_ALIAS" not in updated
     assert "BENCHFLOW_LITELLM_MODEL_VIA_ENV" not in updated
 

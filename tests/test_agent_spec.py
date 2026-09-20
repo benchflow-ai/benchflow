@@ -38,9 +38,8 @@ class TestParseAgentSpec:
         assert parse_agent_spec("gemini") == ("acp", "gemini")
 
     def test_alias_agy_resolves_to_antigravity(self):
-        """The Antigravity CLI binary is ``agy``; both spellings resolve."""
+        """The Antigravity CLI binary is ``agy``."""
         assert parse_agent_spec("agy") == ("acp", "antigravity")
-        assert parse_agent_spec("antigravity-cli") == ("acp", "antigravity")
 
     def test_unknown_name_passes_through(self):
         assert parse_agent_spec("my-custom-agent") == ("acp", "my-custom-agent")

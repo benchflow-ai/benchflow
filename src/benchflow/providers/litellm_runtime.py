@@ -26,14 +26,13 @@ import httpx
 import yaml
 
 from benchflow._utils.text import describe_exception
-from benchflow.agents.antigravity_config import (
-    GEMINI_NATIVE_BASE_URL_ENV,
-    gemini_native_model_id,
-    routes_gemini_natively,
-)
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import (
+    AGENTS,
+    GEMINI_NATIVE_BASE_URL_ENV,
+    routes_gemini_natively,
+)
 from benchflow.providers.litellm_bedrock_preflight import (
     BEDROCK_PATCH_PREFLIGHT_SOURCE,
     BedrockPatchPreflightError,
@@ -1466,14 +1465,6 @@ def _litellm_proxy_env(
     return updated
 
 
-def _gemini_native_route_model(route: LiteLLMRoute) -> str:
-    """Bare Gemini model id behind a LiteLLM route (``gemini/<id>`` upstream)."""
-    upstream = route.upstream_model or ""
-    if upstream.lower().startswith("gemini/"):
-        return upstream.split("/", 1)[1]
-    return strip_provider_prefix(route.requested_model)
-
-
 def _wire_litellm_agent_env(
     *,
     agent: str,
@@ -1566,15 +1557,6 @@ def _wire_litellm_agent_env(
             "GOOGLE_GENERATIVE_AI_API_KEY",
         ):
             updated[key] = master_key
-        # The pass-through carries the real Gemini model id in the request
-        # URL, so an agent that reads its model from env at launch
-        # (antigravity's ANTIGRAVITY_MODEL) must keep that id rather than the
-        # OpenAI-style proxy alias the generic mapping below would hand it.
-        model_env = _cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL") if _cfg else None
-        if model_env:
-            updated[model_env] = gemini_native_model_id(
-                _gemini_native_route_model(route)
-            )
         return updated
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")

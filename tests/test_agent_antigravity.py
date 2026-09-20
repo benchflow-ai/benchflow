@@ -23,7 +23,13 @@ from pathlib import Path
 import pytest
 
 from benchflow.agents import antigravity_config as cfgmod
-from benchflow.agents.registry import AGENT_ALIASES, AGENTS, get_agent, resolve_agent
+from benchflow.agents.registry import (
+    AGENT_ALIASES,
+    AGENTS,
+    get_agent,
+    resolve_agent,
+    routes_gemini_natively,
+)
 from benchflow.evaluation import effective_model
 
 _SHIM = (
@@ -51,16 +57,20 @@ class TestRegistryEntry:
         assert effective_model("antigravity", None) == default_model
 
     def test_env_mapping_mirrors_gemini_native_routing(self):
+        """Same routing contract as the gemini agent: the base URL maps onto
+        GOOGLE_GEMINI_BASE_URL (which selects the Gemini pass-through and bare
+        Google model ids), the key onto GEMINI_API_KEY, and there is no model
+        env var — the model is ACP-owned."""
         cfg = AGENTS["antigravity"]
-        assert (
-            cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "GOOGLE_GEMINI_BASE_URL"
-        )
-        assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "GEMINI_API_KEY"
-        assert cfg.env_mapping["BENCHFLOW_PROVIDER_MODEL"] == "ANTIGRAVITY_MODEL"
+        assert cfg.env_mapping == {
+            "BENCHFLOW_PROVIDER_BASE_URL": "GOOGLE_GEMINI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
+        }
         assert cfg.api_protocol == ""
-        assert cfgmod.routes_gemini_natively(cfg)
-        assert cfgmod.routes_gemini_natively(AGENTS["gemini"])
-        assert not cfgmod.routes_gemini_natively(AGENTS["codex-acp"])
+        assert routes_gemini_natively(cfg)
+        assert routes_gemini_natively(AGENTS["gemini"])
+        assert not routes_gemini_natively(AGENTS["codex-acp"])
+        assert not routes_gemini_natively(None)
 
     def test_model_and_effort_go_through_acp(self):
         """The shim implements session/set_model and a ``thinking`` config
@@ -120,7 +130,7 @@ class TestRegistryEntry:
         assert result.stdout.strip() == cfgmod.AGY_VERSION
 
 
-# ── model / effort helpers (host and shim copies must agree) ─────────────────
+# ── model / effort helpers (shim) ────────────────────────────────────────────
 
 
 def _load_shim_module():
@@ -143,10 +153,11 @@ def _load_shim_module():
         ("gemini-3.5-flash-lite", ("gemini-3.5-flash-lite", None)),
     ],
 )
-def test_split_model_effort_matches_between_host_and_shim(model, expected):
-    shim = _load_shim_module()
-    assert cfgmod.split_model_effort(model) == expected
-    assert shim.split_model_effort(model) == expected
+def test_shim_splits_catalog_ids_into_model_and_effort(model, expected):
+    """agy lists models as ``<model>-<effort>`` and takes bare Google ids;
+    ``google/``/``gemini/`` prefixes are dropped and the suffix becomes the
+    effort."""
+    assert _load_shim_module().split_model_effort(model) == expected
 
 
 @pytest.mark.parametrize(
@@ -162,15 +173,14 @@ def test_split_model_effort_matches_between_host_and_shim(model, expected):
         ("", None),
     ],
 )
-def test_effort_normalization_matches_between_host_and_shim(value, expected):
-    shim = _load_shim_module()
-    assert cfgmod.normalize_antigravity_effort(value) == expected
-    assert shim.normalize_effort(value) == expected
+def test_shim_collapses_benchflow_efforts_onto_agy_levels(value, expected):
+    """BenchFlow's none/minimal/.../xhigh/max labels map onto agy's three."""
+    assert _load_shim_module().normalize_effort(value) == expected
 
 
-def test_effort_normalization_rejects_unknown_labels():
+def test_shim_rejects_unknown_effort_labels():
     with pytest.raises(ValueError):
-        cfgmod.normalize_antigravity_effort("ultra")
+        _load_shim_module().normalize_effort("ultra")
 
 
 # ── web-tool policy: PreToolUse deny hooks ───────────────────────────────────
@@ -424,7 +434,7 @@ def test_shim_streams_tool_calls_message_and_usage(shim, tmp_path):
     assert tool_calls[2]["rawInput"]["AbsolutePath"].endswith("/SKILL.md")
     assert tool_calls[0]["title"] == "run_command: ls -la"
     assert tool_calls[0]["rawInput"]["CommandLine"] == "ls -la"
-    assert tool_calls[1]["locations"] == [{"path": "/app/missing.txt"}]
+    assert tool_calls[1]["title"] == "view_file: /app/missing.txt"
     tool_updates = [u for u in updates if u["sessionUpdate"] == "tool_call_update"]
     assert [u["status"] for u in tool_updates] == ["completed", "failed", "completed"]
     assert tool_updates[0]["status"] == "completed"
