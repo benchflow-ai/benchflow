@@ -184,6 +184,21 @@ def test_host_bind_address_docker_uses_bridge_ip(monkeypatch):
     assert runtime_mod._host_bind_address("docker") == "172.17.0.1"
 
 
+def test_docker_host_address_selects_ipv4_from_dual_stack_bridge(monkeypatch):
+    monkeypatch.setattr(
+        runtime_mod.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: json.dumps(
+            [
+                {"Gateway": "172.17.0.1"},
+                {"Gateway": "fd64:8880:ab65::1"},
+            ]
+        ),
+    )
+
+    assert runtime_mod._docker_host_address() == "172.17.0.1"
+
+
 def test_host_bind_address_docker_hostname_falls_back_to_all_ifaces(monkeypatch):
     monkeypatch.setattr(
         runtime_mod, "_docker_host_address", lambda: "host.docker.internal"

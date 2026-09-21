@@ -481,6 +481,13 @@ def resolve_provider_env(
     # Agent-declared protocol takes precedence over provider's primary so
     # multi-endpoint providers (e.g. zai) route to the right URL.
     agent_protocol = agent_cfg.api_protocol if agent_cfg else ""
+    # Multi-protocol agents may leave api_protocol empty and accept an explicit
+    # per-run protocol. Honor that value for endpoint validation/resolution,
+    # rather than resolving the provider's primary URL and only preserving the
+    # protocol name afterward.
+    requested_protocol = agent_protocol or agent_env.get(
+        "BENCHFLOW_PROVIDER_PROTOCOL", ""
+    )
     # Resolve bare family ids (e.g. "deepseek-v4-pro") too, not just explicit
     # "provider/" prefixes — otherwise the provider env (NAME/BASE_URL/API_KEY)
     # is never emitted and harnesses that rely on it misroute (openhands' litellm
@@ -489,11 +496,11 @@ def resolve_provider_env(
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
-        if not _provider_supports_agent_protocol(_prov_cfg, agent_protocol):
+        if not _provider_supports_agent_protocol(_prov_cfg, requested_protocol):
             raise ValueError(
                 _unsupported_provider_protocol_message(
                     agent=agent,
-                    agent_protocol=agent_protocol,
+                    agent_protocol=requested_protocol,
                     provider_name=_prov_name,
                     model=model,
                     supported_protocols=sorted(_prov_cfg.all_endpoints),
@@ -502,7 +509,7 @@ def resolve_provider_env(
         if "BENCHFLOW_PROVIDER_BASE_URL" not in agent_env:
             try:
                 base_url = resolve_base_url(
-                    _prov_cfg, agent_env, protocol=agent_protocol or None
+                    _prov_cfg, agent_env, protocol=requested_protocol or None
                 )
             except KeyError as exc:
                 raise ValueError(
@@ -520,7 +527,7 @@ def resolve_provider_env(
                 agent_env[ZAI_CODING_REGISTRY_BASE_ENV] = "1"
         agent_env.setdefault(
             "BENCHFLOW_PROVIDER_PROTOCOL",
-            agent_protocol or _prov_cfg.api_protocol,
+            requested_protocol or _prov_cfg.api_protocol,
         )
         if _prov_cfg.models:
             agent_env.setdefault(

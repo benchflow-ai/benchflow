@@ -167,6 +167,16 @@ PROVIDERS: dict[str, ProviderConfig] = {
             "openai-responses": "https://{resource}.openai.azure.com/openai/v1",
         },
     ),
+    # Explicit first-party Anthropic route. Keep the historical
+    # ``anthropic/...`` prefix unregistered because existing LiteLLM callers use
+    # it as an agent-native model identifier rather than a BenchFlow provider.
+    "anthropic-direct": ProviderConfig(
+        name="anthropic-direct",
+        base_url="https://api.anthropic.com",
+        api_protocol="anthropic-messages",
+        auth_type="api_key",
+        auth_env="ANTHROPIC_API_KEY",
+    ),
     "azure-foundry-anthropic": ProviderConfig(
         name="azure-foundry-anthropic",
         base_url="https://{resource}.services.ai.azure.com/anthropic",
@@ -359,6 +369,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # endpoint; default to it so bare ids resolve without DEEPSEEK_BASE_URL
         # (matches the shim default), while DEEPSEEK_BASE_URL still overrides.
         url_param_defaults={"base_url": "https://api.deepseek.com/v1"},
+        endpoints={
+            "anthropic-messages": "https://api.deepseek.com/anthropic",
+        },
         model_prefixes=["deepseek"],
     ),
     "xiaomi": ProviderConfig(

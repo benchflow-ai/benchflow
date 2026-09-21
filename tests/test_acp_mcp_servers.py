@@ -9,6 +9,8 @@ plus the rollout-layer translation (``rollout._task_mcp_specs``) that feeds it.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -25,6 +27,7 @@ from benchflow.rollout import (
     RolloutConfig,
     _install_native_task_mcp_config,
     _openhands_mcp_config,
+    _openscience_task_mcp_config,
     _task_mcp_specs,
     _task_mcp_specs_for_agent,
 )
@@ -197,6 +200,40 @@ def test_openhands_mcp_config_uses_fastmcp_shape() -> None:
     }
 
 
+def test_openscience_mcp_config_uses_native_shape() -> None:
+    task = _task_with_mcp(
+        MCPServerConfig(
+            name="remote",
+            transport="streamable-http",
+            url="http://localhost:18765/mcp",
+            headers={"x-run": "smoke"},
+        ),
+        MCPServerConfig(
+            name="local",
+            transport="stdio",
+            command="python",
+            args=["server.py"],
+            env={"TOKEN": "abc"},
+        ),
+    )
+
+    assert _openscience_task_mcp_config(task) == {
+        "mcp": {
+            "remote": {
+                "type": "remote",
+                "url": "http://localhost:18765/mcp",
+                "headers": {"x-run": "smoke"},
+                "oauth": False,
+            },
+            "local": {
+                "type": "local",
+                "command": ["python", "server.py"],
+                "environment": {"TOKEN": "abc"},
+            },
+        }
+    }
+
+
 def test_openhands_mcp_servers_are_not_sent_over_acp() -> None:
     """OpenHands loads task MCP config from ~/.openhands/mcp.json, not session/new."""
     task = _task_with_mcp(
@@ -248,6 +285,45 @@ async def test_native_task_mcp_config_installer_uses_registry_path() -> None:
 
     uploaded_path = env.upload_file.await_args.args[1]
     assert uploaded_path == "/home/agent/.custom/mcp.json"
+
+
+@pytest.mark.asyncio
+async def test_openscience_native_task_mcp_installer_uses_native_shape() -> None:
+    task = _task_with_mcp(
+        MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp")
+    )
+    env = MagicMock()
+    env.exec = AsyncMock()
+    uploaded_content = ""
+
+    async def _capture_upload(source: str, _target: str) -> None:
+        nonlocal uploaded_content
+        uploaded_content = Path(source).read_text(encoding="utf-8")
+
+    env.upload_file = AsyncMock(side_effect=_capture_upload)
+
+    await _install_native_task_mcp_config(
+        env,
+        task,
+        agent_cfg=AGENTS["openscience"],
+        cred_home="/home/agent",
+        owner="agent",
+    )
+
+    uploaded = env.upload_file.await_args
+    assert uploaded.args[1] == (
+        "/home/agent/.openscience-benchflow/config/task-mcp.json"
+    )
+    assert json.loads(uploaded_content) == {
+        "mcp": {
+            "h": {
+                "type": "remote",
+                "url": "http://x/mcp",
+                "headers": {},
+                "oauth": False,
+            }
+        }
+    }
 
 
 def test_task_mcp_specs_handles_absent_config() -> None:
@@ -323,6 +399,29 @@ async def test_session_load_attaches_configured_mcp_servers() -> None:
     (sent,) = [m for m in transport.sent if m.get("method") == "session/load"]
     assert sent["params"]["mcpServers"] == [
         {"name": "playwright", "command": "npx", "args": ["-y", "x"], "env": []}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_resume_attaches_configured_mcp_servers() -> None:
+    transport = _RecordingTransport()
+    client = ACPClient(transport)
+
+    async def _fake_read(_request_id: int) -> dict[str, Any]:
+        return {"configOptions": []}
+
+    client._read_until_response = _fake_read  # type: ignore[method-assign]
+    spec = McpServerSpec(name="api", type="http", url="http://localhost:9000/mcp")
+    session = await client.session_resume("resumed-1", cwd="/app", mcp_servers=[spec])
+    (sent,) = [m for m in transport.sent if m.get("method") == "session/resume"]
+    assert session.session_id == "resumed-1"
+    assert sent["params"]["mcpServers"] == [
+        {
+            "type": "http",
+            "name": "api",
+            "url": "http://localhost:9000/mcp",
+            "headers": [],
+        }
     ]
 
 

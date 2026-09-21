@@ -347,6 +347,26 @@ def _fastmcp_task_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
     return {"mcpServers": servers}
 
 
+def _openscience_task_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return OpenScience's native ``mcp`` configuration shape."""
+    servers: dict[str, dict[str, Any]] = {}
+    for spec in _task_mcp_specs(task):
+        if spec.type == "stdio":
+            servers[spec.name] = {
+                "type": "local",
+                "command": [spec.command, *spec.args],
+                "environment": dict(spec.env),
+            }
+        else:
+            servers[spec.name] = {
+                "type": "remote",
+                "url": spec.url,
+                "headers": dict(spec.headers),
+                "oauth": False,
+            }
+    return {"mcp": servers}
+
+
 def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
     """Compatibility wrapper for tests and older imports."""
 
@@ -366,8 +386,14 @@ async def _install_native_task_mcp_config(
     config_path = getattr(agent_cfg, "task_mcp_config_path", "")
     if not config_path:
         return
-    config = _fastmcp_task_mcp_config(task)
-    if not config["mcpServers"]:
+    config_format = getattr(agent_cfg, "task_mcp_config_format", "fastmcp")
+    config = (
+        _openscience_task_mcp_config(task)
+        if config_format == "openscience"
+        else _fastmcp_task_mcp_config(task)
+    )
+    servers_key = "mcp" if config_format == "openscience" else "mcpServers"
+    if not config[servers_key]:
         return
     target = (
         config_path if config_path.startswith("/") else f"{cred_home}/{config_path}"
