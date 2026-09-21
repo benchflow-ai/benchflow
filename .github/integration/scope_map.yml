@@ -73,7 +73,8 @@ set_rank:
 # Agent roster — the testable integration agents.
 #
 # Two tiers (see scope_defaults.yml deepseek_roster):
-#  - DeepSeek lane (openhands, pi-acp, openclaw, opencode, mimo): proxy cleanly
+#  - DeepSeek lane (openhands, pi-acp, openclaw, opencode, mimo, openscience,
+#    deepseek-harness): proxy cleanly
 #    through the LiteLLM usage proxy on deepseek-v4-flash/pro. These are the
 #    agents fanned in the BROAD roster lanes (subset @ L2, full @ L3/expanded).
 #  - Gated native (claude-agent-acp via Bedrock, codex-acp via OpenAI): CANNOT
@@ -93,6 +94,8 @@ roster:
   - opencode
   - openhands
   - mimo
+  - openscience
+  - deepseek-harness
 
 # ------------------------------------------------------------------
 # Affected-agent path map. A changed file under src/benchflow/agents/<name>*.py
@@ -121,6 +124,10 @@ affected_agent_map:
     agent: mimo
   - glob: "src/benchflow/agents/claude*.py"
     agent: claude-agent-acp
+  - glob: "src/benchflow/agents/openscience*.py"
+    agent: openscience
+  - glob: "src/benchflow/agents/deepseek_harness*.py"
+    agent: deepseek-harness
 
 # ------------------------------------------------------------------
 # Q3 network trigger globs. A diff touching any of these puts the PR on the

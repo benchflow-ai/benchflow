@@ -1,3 +1,5 @@
+"""Regression coverage for commit 6429743f (ACP content and recovery support)."""
+
 from __future__ import annotations
 
 from typing import Any

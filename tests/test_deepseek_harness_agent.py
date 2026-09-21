@@ -1,3 +1,5 @@
+"""Regression coverage for commit 6429743f (native DeepSeek Harness ACP support)."""
+
 from __future__ import annotations
 
 import os
@@ -27,7 +29,10 @@ def test_deepseek_harness_registry_contract_is_pinned_and_native():
         "sha512-PHR/3ZHpJNWXlDQ3U9weFb7calWbSMJd2GD3z2iPJ8zAKL7ipuzyPy5xGbaXf2OA8hc0SAGJeoUW7nfatCNOYw=="
         in cfg.install_cmd
     )
-    assert "env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy" in cfg.install_cmd
+    assert (
+        "env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy"
+        in cfg.install_cmd
+    )
     assert "/opt/benchflow/bin/dsh --profile acp --help" in cfg.install_cmd
     assert cfg.launch_cmd == "/opt/benchflow/bin/deepseek-harness-acp-launcher"
 
@@ -56,7 +61,7 @@ def test_deepseek_harness_launcher_writes_deterministic_isolated_patch(
 
     patch_path = home / ".dsh-benchflow/benchflow-acp.patch.yml"
     rendered = patch_path.read_text()
-    assert "model: \"deepseek-v4-pro\"" in rendered
+    assert 'model: "deepseek-v4-pro"' in rendered
     assert "protocol: chat-completions" in rendered
     assert 'baseURL: "http://gateway.test/v1"' in rendered
     assert "apiKeyEnv: DEEPSEEK_API_KEY" in rendered

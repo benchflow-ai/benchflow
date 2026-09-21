@@ -185,6 +185,7 @@ def test_host_bind_address_docker_uses_bridge_ip(monkeypatch):
 
 
 def test_docker_host_address_selects_ipv4_from_dual_stack_bridge(monkeypatch):
+    """Guards commit 6429743f against dual-stack Docker gateway concatenation."""
     monkeypatch.setattr(
         runtime_mod.subprocess,
         "check_output",

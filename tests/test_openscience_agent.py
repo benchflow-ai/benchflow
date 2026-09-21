@@ -1,3 +1,5 @@
+"""Regression coverage for commit 6429743f (native OpenScience ACP support)."""
+
 from __future__ import annotations
 
 import json
