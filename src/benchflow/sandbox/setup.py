@@ -693,7 +693,7 @@ def _create_sandbox_environment(
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal).
+    """Create a sandbox environment for the selected provider.
 
     When ``environment_manifest`` is provided, its declared controls take
     effect at sandbox-construction time: the manifest's runnable ``image``
@@ -743,6 +743,18 @@ def _create_sandbox_environment(
         from benchflow.sandbox.docker import DockerSandbox
 
         return DockerSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
+    elif sandbox_type == "apptainer":
+        from benchflow.sandbox.apptainer import ApptainerSandbox
+
+        ApptainerSandbox.preflight()
+        return ApptainerSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,
