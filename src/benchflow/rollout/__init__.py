@@ -352,6 +352,11 @@ def _openscience_task_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any
     servers: dict[str, dict[str, Any]] = {}
     for spec in _task_mcp_specs(task):
         if spec.type == "stdio":
+            if spec.cwd is not None:
+                raise ValueError(
+                    f"OpenScience native MCP does not support cwd for stdio server "
+                    f"{spec.name!r}; remove cwd or use an ACP-compatible harness."
+                )
             servers[spec.name] = {
                 "type": "local",
                 "command": [spec.command, *spec.args],

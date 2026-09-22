@@ -234,6 +234,22 @@ def test_openscience_mcp_config_uses_native_shape() -> None:
     }
 
 
+def test_openscience_mcp_config_rejects_stdio_cwd() -> None:
+    """Guards PR #1133 against silently dropping OpenScience stdio MCP cwd."""
+    task = _task_with_mcp(
+        MCPServerConfig(
+            name="local",
+            transport="stdio",
+            command="python",
+            args=["server.py"],
+            cwd="/workspace/agent_workspace",
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not support cwd"):
+        _openscience_task_mcp_config(task)
+
+
 def test_openhands_mcp_servers_are_not_sent_over_acp() -> None:
     """OpenHands loads task MCP config from ~/.openhands/mcp.json, not session/new."""
     task = _task_with_mcp(
