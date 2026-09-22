@@ -17,6 +17,14 @@
   `~/.gemini/config/mcp_config.json`, routes API-key runs through the LiteLLM
   Gemini pass-through like the `gemini` agent, and enforces the no-web and
   denylist policies with `PreToolUse` deny hooks.
+- **OpenScience and official DeepSeek Harness native ACP integrations.** The new
+  `openscience` agent pins OpenScience `2.0.127`; the new
+  `deepseek-harness` agent (alias `dsh`) pins `@deepseek-ai/dsh` `0.1.6-alpha.2`.
+  Both use isolated state, deterministic launch configuration, BenchFlow-only
+  skill roots, disabled telemetry/auxiliary network tools, and exact-version
+  private runtime installation. Both launchers support OpenAI Chat Completions
+  and Anthropic Messages provider surfaces and reject unsupported OpenAI
+ Responses routing explicitly.
 
 ## 0.7.8 — 2026-09-14
 

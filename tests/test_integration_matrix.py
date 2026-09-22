@@ -85,9 +85,10 @@ def test_maps_load_and_caps_self_consistent():
     assert maps.caps.max_cells >= maps.caps.max_agents * maps.caps.max_tasks
     assert maps.caps.aggregate_concurrency <= 24
     assert maps.caps.agent_idle_timeout == 240
-    # Roster = 5 DeepSeek agents + 2 gated natives (claude-agent-acp, codex-acp).
+    # Roster = 7 DeepSeek agents + 2 gated natives (claude-agent-acp, codex-acp).
     # gemini and harvey-lab-harness were dropped (cannot run on DeepSeek).
-    assert len(maps.agents) == 7
+    assert len(maps.agents) == 9
+    assert {"openscience", "deepseek-harness"} <= set(maps.deepseek_roster)
     assert "gemini" not in maps.agents
     assert "harvey-lab-harness" not in maps.agents
     assert maps.baseline_agent == "openhands"

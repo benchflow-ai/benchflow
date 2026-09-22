@@ -136,6 +136,9 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
+_OPENSCIENCE_VERSION = "2.0.127"
+_DEEPSEEK_HARNESS_VERSION = "0.1.6-alpha.2"
+_DEEPSEEK_HARNESS_INTEGRITY = "sha512-PHR/3ZHpJNWXlDQ3U9weFb7calWbSMJd2GD3z2iPJ8zAKL7ipuzyPy5xGbaXf2OA8hc0SAGJeoUW7nfatCNOYw=="
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -189,17 +192,22 @@ def _npm_package_spec(package: str) -> str:
     return f"{package}@latest"
 
 
-def _js_agent_install(binary: str, package: str) -> str:
+def _js_agent_install(
+    binary: str, package: str, *, clear_proxy_env: bool = False
+) -> str:
     """Install an npm-distributed agent into BenchFlow's isolated prefix."""
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     package_spec = _npm_package_spec(package)
     install_guard = "" if package_spec == package else f"[ -x {agent_bin} ] || "
+    npm = f"{_BENCHFLOW_NODE_PREFIX}/bin/npm"
+    if clear_proxy_env:
+        npm = "env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy " + npm
     return (
         f"{_NODE_INSTALL} && "
         f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
         f'export PATH="{_JS_AGENT_PATH}" && '
-        f"( {install_guard}{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
+        f"( {install_guard}{npm} install -g "
         f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package_spec} ) && "
         f"printf '%s\\n' '#!/bin/sh' "
         f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
@@ -309,6 +317,14 @@ _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text(
 # Path to the Antigravity ACP shim (drives `agy --input-format=stream-json` as an
 # ACP agent; agy has no ACP mode of its own)
 _ANTIGRAVITY_SHIM = (Path(__file__).parent / "antigravity_acp_shim.py").read_text()
+
+# Native ACP launchers for OpenScience and the official DeepSeek Harness.
+_OPENSCIENCE_LAUNCHER = (
+    Path(__file__).parent / "openscience_acp_launcher.py"
+).read_text()
+_DEEPSEEK_HARNESS_LAUNCHER = (
+    Path(__file__).parent / "deepseek_harness_acp_launcher.py"
+).read_text()
 
 
 def _json_settings_merge(path: str, mutator: str) -> str:
@@ -532,6 +548,8 @@ class AgentConfig:
     task_mcp_transport: str = "acp"
     # Native-config target path, relative to $HOME unless absolute.
     task_mcp_config_path: str = ""
+    # Serialization shape for the native file ("fastmcp" or "openscience").
+    task_mcp_config_format: str = "fastmcp"
 
 
 # Agents that call Google's GenerateContent API themselves (Gemini CLI and its
@@ -1015,6 +1033,111 @@ AGENTS: dict[str, AgentConfig] = {
         # carries a registered provider prefix), with DEEPSEEK_* as a fallback
         # (auto_inherit_env propagates those).
     ),
+    "openscience": AgentConfig(
+        name="openscience",
+        description="OpenScience scientific coding harness via its native ACP server",
+        skill_paths=["$HOME/.claude/skills"],
+        home_dirs=[".openscience-benchflow"],
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "( command -v curl >/dev/null 2>&1 && command -v bash >/dev/null 2>&1 "
+            "  && command -v tar >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates', 'bash', 'tar')} ) && "
+            "mkdir -p /opt/benchflow/bin /opt/benchflow/openscience-installer-home && "
+            f"( [ -x {_BENCHFLOW_BIN_PREFIX}/openscience ] && "
+            f'  [ "$({_BENCHFLOW_BIN_PREFIX}/openscience --version 2>/dev/null)" = "{_OPENSCIENCE_VERSION}" ] || '
+            "  ( tmp=$(mktemp -d) && "
+            '    ( attempt=1; while [ "$attempt" -le 3 ]; do '
+            "        if curl -fsSL --connect-timeout 30 --max-time 60 "
+            "-H 'Accept: application/vnd.github.raw+json' "
+            f'-o "$tmp/install" "https://api.github.com/repos/synthetic-sciences/OpenScience/contents/install?ref=v{_OPENSCIENCE_VERSION}" || '
+            "           env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy "
+            "curl -fsSL --connect-timeout 30 --max-time 60 "
+            "-H 'Accept: application/vnd.github.raw+json' "
+            f'-o "$tmp/install" "https://api.github.com/repos/synthetic-sciences/OpenScience/contents/install?ref=v{_OPENSCIENCE_VERSION}"; then break; fi; '
+            '        case "$attempt" in '
+            "          1) sleep 2; attempt=2 ;; "
+            "          2) sleep 4; attempt=3 ;; "
+            "          *) exit 1 ;; "
+            "        esac; "
+            "      done ) && "
+            "    real_curl=$(command -v curl) && "
+            "    printf '%s\\n' '#!/bin/sh' "
+            '"exec $real_curl --connect-timeout 30 --max-time 120 '
+            '--retry 2 --retry-delay 2 --retry-all-errors \\"\\$@\\"" '
+            '> "$tmp/curl" && chmod +x "$tmp/curl" && '
+            f'    PATH="$tmp:$PATH" HOME=/opt/benchflow/openscience-installer-home OPENSCIENCE_SKIP_CHECKSUM=0 bash "$tmp/install" --version {_OPENSCIENCE_VERSION} --no-modify-path && '
+            f"    cp /opt/benchflow/openscience-installer-home/.openscience/bin/openscience {_BENCHFLOW_BIN_PREFIX}/openscience && "
+            '    rm -rf "$tmp" ) ) && '
+            "HOME=/opt/benchflow/openscience-installer-home "
+            "XDG_CONFIG_HOME=/opt/benchflow/openscience-installer-home/.config "
+            "OPENSCIENCE_DATA_DIR=/opt/benchflow/openscience-installer-home/.openscience "
+            "OPENSCIENCE_CONFIG_DIR=/opt/benchflow/openscience-installer-home/.config/openscience "
+            f'sh -c \'[ "$(/opt/benchflow/bin/openscience --version)" = "{_OPENSCIENCE_VERSION}" ] && '
+            "/opt/benchflow/bin/openscience acp --help >/dev/null' && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/openscience-acp-launcher",
+                _OPENSCIENCE_LAUNCHER,
+            )
+            + " && chmod -R a+rX /opt/benchflow"
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/openscience-acp-launcher",
+        install_timeout=600,
+        protocol="acp",
+        # OpenScience can use its bundled OpenAI-compatible and Anthropic SDK
+        # adapters. Let provider resolution select the protocol at runtime.
+        api_protocol="",
+        acp_model_format="provider/model",
+        supports_acp_set_model=True,
+        acp_model_config_id="model",
+        requires_env=[],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENSCIENCE_BENCHFLOW_API_KEY",
+            "BENCHFLOW_PROVIDER_MODEL": "OPENSCIENCE_BENCHFLOW_MODEL",
+        },
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".openscience-benchflow/config/task-mcp.json",
+        task_mcp_config_format="openscience",
+    ),
+    "deepseek-harness": AgentConfig(
+        name="deepseek-harness",
+        description="Official DeepSeek Harness via its native ACP profile",
+        skill_paths=["$HOME/.agents/skills"],
+        home_dirs=[".dsh-benchflow"],
+        install_cmd=(
+            _js_agent_install(
+                "dsh",
+                f"@deepseek-ai/dsh@{_DEEPSEEK_HARNESS_VERSION}",
+                clear_proxy_env=True,
+            )
+            + " && "
+            + '[ "$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy '
+            + f'{_BENCHFLOW_NODE_PREFIX}/bin/npm view @deepseek-ai/dsh@{_DEEPSEEK_HARNESS_VERSION} dist.integrity)" = '
+            + f'"{_DEEPSEEK_HARNESS_INTEGRITY}" ]'
+            + f" && {_BENCHFLOW_BIN_PREFIX}/dsh --version | grep -F '{_DEEPSEEK_HARNESS_VERSION}' >/dev/null"
+            + f" && {_BENCHFLOW_BIN_PREFIX}/dsh --profile acp --help >/dev/null"
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/deepseek-harness-acp-launcher",
+                _DEEPSEEK_HARNESS_LAUNCHER,
+            )
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/deepseek-harness-acp-launcher",
+        install_timeout=600,
+        protocol="acp",
+        # DSH natively supports both OpenAI Chat Completions and Anthropic
+        # Messages. The provider (or an explicit BENCHFLOW_PROVIDER_PROTOCOL)
+        # selects the wire format at runtime; OpenAI Responses is unsupported.
+        api_protocol="",
+        supports_acp_set_model=False,
+        acp_effort_config_id="reasoning_effort",
+        requires_env=[],
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "DEEPSEEK_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "DEEPSEEK_API_KEY",
+            "BENCHFLOW_PROVIDER_MODEL": "DSH_BENCHFLOW_MODEL",
+        },
+    ),
     "openhands": AgentConfig(
         name="openhands",
         description="OpenHands agent via ACP (multi-model, Python-based)",
@@ -1211,6 +1334,8 @@ AGENT_ALIASES: dict[str, str] = {
     "oh": "openhands",
     "harvey-lab": "harvey-lab-harness",
     "deepagents": "deepagents",
+    "openscience": "openscience",
+    "dsh": "deepseek-harness",
 }
 
 VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
@@ -1323,6 +1448,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_hosted_search_launch_suffix=config.disallow_hosted_search_launch_suffix,
         task_mcp_transport=config.task_mcp_transport,
         task_mcp_config_path=config.task_mcp_config_path,
+        task_mcp_config_format=config.task_mcp_config_format,
     )
 
 
