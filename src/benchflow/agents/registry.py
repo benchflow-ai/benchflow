@@ -132,7 +132,7 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
-_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
+_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -594,12 +594,12 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.73.0 (bundles @anthropic-ai/claude-agent-sdk 0.3.257):
-        # claude-fable-5-1 rejects Claude Code < 2.1.251 with
-        # `claude_code_version_too_old` (HTTP 400), so the previous 0.40.0 pin
-        # (sdk 0.3.160) cannot run that model at all. The config-option wiring
+        # Pinned to 0.81.0 (bundles @anthropic-ai/claude-agent-sdk 0.3.280):
+        # claude-opus-5-5 rejects Claude Code < 2.1.280 with
+        # `claude_code_version_too_old` (HTTP 400), as claude-fable-5-1 did
+        # < 2.1.251 against the 0.40.0 pin. The config-option wiring
         # below (set_config_option + the "model"/"effort" ids) was re-verified
-        # against 0.73.0 with tests/test_acp_pinned_protocol_guard.py; the ids
+        # against 0.81.0 with tests/test_acp_pinned_protocol_guard.py; the ids
         # stay coupled to this pin — re-run that guard when bumping. runtime.py
         # uses capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install("claude-agent-acp", _CLAUDE_AGENT_ACP_PACKAGE),
@@ -697,8 +697,11 @@ AGENTS: dict[str, AgentConfig] = {
         # config option, but that option rejects ``model[effort]`` ids
         # (-32602), so runtime.py keeps codex on session/set_model — verified
         # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
+        # Pinned to 1.13.1 (codex 0.156): the gpt-6 models are not advertised
+        # by 1.6.0's session, so set_model fails -32603. session/set_model was
+        # re-verified 2026-09-23 against gpt-6-sol/gpt-6-luna via LiteLLM.
         install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@1.6.0"
+            "codex-acp", "@agentclientprotocol/codex-acp@1.13.1"
         ),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
