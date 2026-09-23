@@ -1,0 +1,6 @@
+{
+  "instruction": "Untie the knot in the white paper tape measure lying on the table, using both arms, so that the tape is a single open strip with no loop passing through it. Leave the tape on the table and end with both grippers empty and both arms raised.",
+  "expected": {
+    "tape": "untied"
+  }
+}

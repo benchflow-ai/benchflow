@@ -1,0 +1,15 @@
+{
+  "retrieved_date": "2026-09-05",
+  "model": "gpt-6-astra",
+  "source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+  "currency": "USD",
+  "standard_per_million_tokens": {
+    "uncached_input": 10.0,
+    "cached_input": 1.0,
+    "cache_write": 12.5,
+    "output": 50.0
+  },
+  "long_context_threshold_input_tokens_per_request": 272000,
+  "long_context_multipliers": {"input_and_cache": 2.0, "output": 1.5},
+  "note": "API-equivalent reference only, not actual subscription billing. Native CLI aggregate usage may not identify per-request context thresholds or service tier. Preserve native cost as unknown when not reported."
+}

@@ -1,0 +1,21 @@
+{
+  "setup_id": "metal-doll-right-v1",
+  "robot_id": "metal_206735964543",
+  "arm_type": "metal",
+  "socket_path": "/home/lapis/.metal-arm-harness/operator-b.sock",
+  "frames_root": "/home/lapis/metal-arm-harness/frames/arm_b",
+  "episode_log": "/home/lapis/metal-arm-harness/logs/arm_b/episode-20260922-040021.jsonl",
+  "cameras": {
+    "wrist": "http://127.0.0.1:8787/front.jpg",
+    "side": "http://127.0.0.1:8787/front.jpg"
+  },
+  "public_facts": {
+    "table_z_m": -0.0067,
+    "floor_margin_m": 0.01,
+    "max_joint_step_deg": 35,
+    "gripper_lead_cap_deg": 8,
+    "start_pose": "The single arm you control starts raised at its Ready pose with the gripper open.",
+    "scene": "A tabletop within the single arm's reach. X is forward from the arm base, Y is left, Z is up. The arm reaches roughly x 0.15 to 0.55 at grasp height. Change pitch in steps of at most 12 degrees; no joint may move more than 35 degrees per command.",
+    "camera_notes": "This run uses one fixed camera looking across the table from the front; both returned images are that view. Objects and the arm are visible in it."
+  }
+}

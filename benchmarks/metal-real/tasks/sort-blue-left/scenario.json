@@ -1,0 +1,8 @@
+{
+  "instruction": "Put the blue block inside the left red cup. Put the green and yellow blocks inside the right red cup. Both cups must remain upright. Leave the gripper empty and clear of the cups.",
+  "expected": {
+    "blue": "left",
+    "green": "right",
+    "yellow": "right"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "setup_id": "metal-two-cups-v1",
+  "robot_id": "metal_arm_benchflow_metal",
+  "arm_type": "metal",
+  "socket_path": "/home/lapis/.metal-arm-harness/operator.sock",
+  "frames_root": "/home/lapis/metal-arm-harness/frames-reset-fixed",
+  "episode_log": "/home/lapis/metal-arm-harness/logs/episode-20260905-191108.jsonl",
+  "cameras": {
+    "wrist": "http://127.0.0.1:8765/camera-1.jpg",
+    "side": "http://127.0.0.1:8765/camera-2.jpg"
+  },
+  "public_facts": {
+    "table_z_m": 0.011,
+    "floor_margin_m": 0.010,
+    "max_joint_speed_deg_s": 10,
+    "max_joint_step_deg": 35,
+    "gripper_lead_cap_deg": 8,
+    "start_pose": "Harness rest, empty gripper",
+    "scene": "Two upright red cups; blue, green and yellow blocks on table. Photograph each reset. Left/right from the resting arm looking forward.",
+    "reset_requirement": "Same marked cup and block locations within the setup for each matched model trial; arm at rest. Operator records a distinct reset ID.",
+    "camera_notes": "Wrist camera rotates with wrist roll. Side camera is oblique, not overhead. Use wrist for XY alignment and side for height."
+  }
+}

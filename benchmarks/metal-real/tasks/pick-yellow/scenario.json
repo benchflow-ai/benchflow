@@ -1,0 +1,6 @@
+{
+  "instruction": "Pick up the yellow block and hold it with its bottom at least 5 cm above the table for 3 seconds. Finish while holding the block. Do not move the other objects.",
+  "expected": {
+    "yellow": "lifted_5cm_for_3s"
+  }
+}

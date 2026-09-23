@@ -1,0 +1,46 @@
+{
+  "setup_id": "metal-two-arm-tape-v1",
+  "arm_type": "metal",
+  "primary_arm": "right",
+  "arms": {
+    "right": {
+      "robot_id": "metal_206735964543",
+      "socket_path": "/home/lapis/.metal-arm-harness/operator-b.sock",
+      "frames_root": "/home/lapis/metal-arm-harness/frames/arm_b",
+      "episode_log": "/home/lapis/metal-arm-harness/logs/arm_b/episode-20260922-040021.jsonl",
+      "offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "left": {
+      "robot_id": "metal_0046003E4346570B20363833",
+      "socket_path": "/home/lapis/.metal-arm-harness/operator-a.sock",
+      "frames_root": "/home/lapis/metal-arm-harness/frames/arm_a",
+      "episode_log": "/home/lapis/metal-arm-harness/logs/arm_a/episode-20260922-040019.jsonl",
+      "offset_m": [
+        0.0,
+        0.58,
+        0.0
+      ]
+    }
+  },
+  "cameras": {
+    "wrist": "http://127.0.0.1:8787/left.jpg",
+    "side": "http://127.0.0.1:8787/front.jpg"
+  },
+  "public_facts": {
+    "table_z_m": -0.0067,
+    "floor_margin_m": 0.01,
+    "max_joint_step_deg": 35,
+    "gripper_lead_cap_deg": 8,
+    "arms": "Two identical Metal arms, named 'right' and 'left'. They stand side by side at the near edge of the table with parallel forward (+X) axes. The left arm's base is 0.58 m to the +Y side of the right arm's base, so a point (x, y) in the right arm's frame is (x, y - 0.58) in the left arm's frame, and vice versa. Each arm has its own wrist camera; 'side' is one fixed camera looking across the table from the front, with the left arm on the left of that image and the right arm on the right.",
+    "start_pose": "Both arms at their raised Ready pose with jaws open.",
+    "scene": "A white paper tape measure with a loose knot lies toward the left; one or more pink sheets lie in the center. At the far-right corner of the table are items that are not part of any task and must be left alone; the harness enforces a no-go region there and will refuse to lower a gripper into it, so keep clear of the far-right corner.",
+    "reach": "At grasp height (z 0.02-0.06) each arm reaches about x 0.48 at pitch -80, x 0.53 at pitch -70, x 0.58 at pitch -60. Sideways reach at low height is about |y| 0.45. Change pitch in steps of at most 12 degrees; no joint may move more than 35 degrees per command.",
+    "two_arm_safety": "The harness does not check arm-to-arm collisions. The bridge refuses any tip target within 20 cm horizontally of the other arm's last known gripper position; plan around that. Each wrist housing extends about 16 cm back from its tips along the tool axis, so never put one arm's tips under the other arm's gripper. Move one arm at a time and look at both wrist images after every move.",
+    "camera_notes": "Cameras available this run: the left arm's wrist camera and one fixed front/side camera looking across the table. The right arm's wrist camera is out of service, so for the right arm both returned images are the front/side view."
+  },
+  "episode_log": "/home/lapis/metal-arm-harness/logs/arm_b/episode-20260922-040021.jsonl"
+}

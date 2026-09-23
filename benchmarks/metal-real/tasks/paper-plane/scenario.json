@@ -1,0 +1,6 @@
+{
+  "instruction": "Fold the pink sheet of paper on the table into a paper plane.",
+  "expected": {
+    "plane": "folded"
+  }
+}

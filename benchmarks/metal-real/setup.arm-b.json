@@ -1,0 +1,23 @@
+{
+  "setup_id": "metal-pink-sheet-armb-v1",
+  "robot_id": "metal_206735964543",
+  "arm_type": "metal",
+  "socket_path": "/home/lapis/.metal-arm-harness/operator-b.sock",
+  "frames_root": "/home/lapis/metal-arm-harness/frames/arm_b",
+  "episode_log": "/home/lapis/metal-arm-harness/logs/arm_b/episode-20260921-224114.jsonl",
+  "cameras": {
+    "wrist": "http://127.0.0.1:8787/right.jpg",
+    "side": "http://127.0.0.1:8787/front.jpg"
+  },
+  "public_facts": {
+    "table_z_m": -0.0067,
+    "floor_margin_m": 0.01,
+    "max_joint_step_deg": 35,
+    "gripper_lead_cap_deg": 8,
+    "start_pose": "Harness Ready pose, gripper closed",
+    "scene": "A single pink sheet of paper lies flat on the table, ahead of the arm and to its right (negative Y). A loose white paper tape measure lies to the left; ignore it. A second arm to the left is parked and must not be touched.",
+    "reset_requirement": "Operator places the sheet flat and records a reset ID.",
+    "camera_notes": "Wrist camera rotates with wrist roll; jaws close along the image's horizontal axis. Side camera looks across the table from the front; this arm is on the right of that view. Use wrist for XY alignment and side for height.",
+    "contact_notes": "A sideways stroke with the closed tips below about 18 mm clearance touches the sheet; the reply then says 'stopped early' with a wrist_yaw residual of several degrees. That is normal contact, not a fault: lift 3 cm and continue. Flat paper cannot be pinched; raise an edge first."
+  }
+}

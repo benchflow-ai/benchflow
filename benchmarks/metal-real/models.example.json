@@ -1,0 +1,4 @@
+[
+  {"agent": "codex", "model": "gpt-6-astra", "reasoning_effort": "max"},
+  {"agent": "claude", "model": "claude-fable-5-1", "reasoning_effort": "max"}
+]

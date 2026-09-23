@@ -1,0 +1,186 @@
+{
+  "seed": 42,
+  "concurrency_per_arm": 1,
+  "trials": [
+    {
+      "slot": 1,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-green-left",
+      "repetition": 1,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 2,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-green-left",
+      "repetition": 1,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 3,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-blue-left",
+      "repetition": 1,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 4,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-blue-left",
+      "repetition": 1,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 5,
+      "setup_id": "metal-two-cups-v1",
+      "task": "pick-yellow",
+      "repetition": 1,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 6,
+      "setup_id": "metal-two-cups-v1",
+      "task": "pick-yellow",
+      "repetition": 1,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 7,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-green-left",
+      "repetition": 2,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 8,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-green-left",
+      "repetition": 2,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 9,
+      "setup_id": "metal-two-cups-v1",
+      "task": "pick-yellow",
+      "repetition": 2,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 10,
+      "setup_id": "metal-two-cups-v1",
+      "task": "pick-yellow",
+      "repetition": 2,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 11,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-blue-left",
+      "repetition": 2,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 12,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-blue-left",
+      "repetition": 2,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 13,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-green-left",
+      "repetition": 3,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 14,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-green-left",
+      "repetition": 3,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 15,
+      "setup_id": "metal-two-cups-v1",
+      "task": "pick-yellow",
+      "repetition": 3,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 16,
+      "setup_id": "metal-two-cups-v1",
+      "task": "pick-yellow",
+      "repetition": 3,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 17,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-blue-left",
+      "repetition": 3,
+      "agent": "claude",
+      "model": "claude-fable-5-1",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    },
+    {
+      "slot": 18,
+      "setup_id": "metal-two-cups-v1",
+      "task": "sort-blue-left",
+      "repetition": 3,
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "max",
+      "status": "needs_physical_reset"
+    }
+  ]
+}
