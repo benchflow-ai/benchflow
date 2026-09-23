@@ -452,3 +452,108 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     )
     with pytest.raises(ValueError, match="usage_source must be one of"):
         normalize_usage_source("new_unregistered_source")
+
+
+def test_collect_metrics_boolean_reward_treated_as_invalid(tmp_path):
+    """Boolean rewards must not count as passed.
+
+    isinstance(True, int) is True in Python so without an explicit bool guard
+    extract_reward returns True, and classify_result evaluates True == 1.0 as
+    passed. Both extract_reward and _result_rank must reject booleans.
+    """
+    import json
+
+    # attempt1: boolean reward True — must NOT count as passed
+    t1 = tmp_path / "a1" / "task__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": True},
+                "error": None,
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    # attempt2: well-formed reward=0.0 (scored, failed) — must win over bool
+    t2 = tmp_path / "a2" / "task__t2"
+    t2.mkdir(parents=True)
+    (t2 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "n_tool_calls": 1,
+                "started_at": "2026-01-01 00:02:00.000000",
+                "finished_at": "2026-01-01 00:03:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+    assert s["passed"] == 0, "boolean reward=True must NOT count as passed"
+    assert s["failed"] == 1, "well-formed reward=0.0 must win and count as failed"
+    assert s["errored"] == 0
+
+
+def test_collect_metrics_malformed_rewards_does_not_win_over_none(tmp_path):
+    """Non-dict rewards must not displace a well-formed rewards=None result."""
+    import json
+
+    t1 = tmp_path / "a1" / "task__t1"
+    t1.mkdir(parents=True)
+    (t1 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": 1.0,
+                "error": None,
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:00:00.000000",
+                "finished_at": "2026-01-01 00:01:00.000000",
+            }
+        )
+    )
+    t2 = tmp_path / "a2" / "task__t2"
+    t2.mkdir(parents=True)
+    (t2 / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task",
+                "rewards": None,
+                "error": "install failed",
+                "n_tool_calls": 0,
+                "started_at": "2026-01-01 00:02:00.000000",
+                "finished_at": "2026-01-01 00:03:00.000000",
+            }
+        )
+    )
+
+    metrics = collect_metrics(str(tmp_path))
+    s = metrics.summary()
+    assert s["passed"] == 0, "malformed rewards:1.0 must not count as passed"
+    assert s["failed"] == 0, "malformed rewards:1.0 must not count as failed"
+    assert s["errored"] == 1
+
+
+def test_collect_metrics_nonfinite_reward_rejected(tmp_path):
+    """Non-finite rewards (inf, nan) must not enter scoring."""
+
+    from benchflow.metrics import _valid_reward_scalar
+
+    assert not _valid_reward_scalar(float("inf")), "inf must be rejected"
+    assert not _valid_reward_scalar(float("-inf")), "-inf must be rejected"
+    assert not _valid_reward_scalar(float("nan")), "nan must be rejected"
+    assert not _valid_reward_scalar(True), "True must be rejected"
+    assert not _valid_reward_scalar(False), "False must be rejected"
+    assert not _valid_reward_scalar(None), "None must be rejected"
+    assert _valid_reward_scalar(0.0), "0.0 must be valid"
+    assert _valid_reward_scalar(-1.0), "-1.0 must be valid (no range bound)"
+    assert _valid_reward_scalar(0.5), "0.5 must be valid"
+    assert _valid_reward_scalar(1.0), "1.0 must be valid"
+    assert _valid_reward_scalar(2.0), "2.0 must be valid (no range bound)"

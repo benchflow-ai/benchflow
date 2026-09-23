@@ -126,7 +126,13 @@ def extract_reward(result: Mapping[str, Any]) -> float | None:
     rewards = result.get("rewards")
     if not isinstance(rewards, dict):
         return None
-    return rewards.get("reward")
+    val = rewards.get("reward")
+    # Reject booleans explicitly: isinstance(True, int) is True in Python, so
+    # a verifier that writes {"reward": true} would otherwise count as passed
+    # (True == 1.0 in classify_result). Non-finite values are also rejected.
+    if isinstance(val, bool):
+        return None
+    return val
 
 
 def classify_error(error: str | None) -> str | None:
