@@ -618,10 +618,19 @@ def _configure_codex_custom_provider(
     if not base_url or not provider_model:
         return
 
+    from benchflow.providers.litellm_config import strip_provider_prefix
+
+    # Codex resolves model metadata (tool mode, apply_patch tool type,
+    # multi-agent version) by model slug. The proxy alias in
+    # BENCHFLOW_PROVIDER_MODEL (``benchflow-azure-foundry-openai-gpt-5.6-luna``)
+    # is unknown to it: Codex warns "Model metadata for `...` not found.
+    # Defaulting to fallback metadata" and offers a reduced tool surface (no
+    # native apply_patch, no code mode, no subagents; #1145). The proxy serves
+    # the bare slug next to the alias, so that is the id Codex gets.
     apply_codex_provider_config(
         agent_env,
         base_url=base_url,
-        model=provider_model,
+        model=strip_provider_prefix(model),
         provider_name=agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible"),
         strict=True,
     )

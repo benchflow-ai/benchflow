@@ -1520,10 +1520,13 @@ def _wire_litellm_agent_env(
         updated["OPENAI_BASE_URL"] = openai_base_url
         updated["OPENAI_API_KEY"] = master_key
         updated[LITELLM_MODEL_VIA_ENV] = "1"
+        # The bare slug, not route.model_alias: Codex looks its model metadata
+        # up by slug and falls back to a reduced tool surface for the alias
+        # (#1145). The proxy serves both names.
         apply_codex_provider_config(
             updated,
             base_url=openai_base_url,
-            model=route.model_alias,
+            model=strip_provider_prefix(route.requested_model),
             provider_name="litellm",
             strict=True,
         )

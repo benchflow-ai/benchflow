@@ -697,8 +697,11 @@ AGENTS: dict[str, AgentConfig] = {
         # config option, but that option rejects ``model[effort]`` ids
         # (-32602), so runtime.py keeps codex on session/set_model — verified
         # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
+        # 1.13.1 bundles codex 0.156.1: 0.148 (bundled by 1.6.0) has no model
+        # metadata for gpt-6-astra, so even with the bare slug it offers the
+        # fallback tool surface (#1145).
         install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@1.6.0"
+            "codex-acp", "@agentclientprotocol/codex-acp@1.13.1"
         ),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
