@@ -44,11 +44,16 @@ jobs:
             exit 1
           fi
 
+      # Runs before the build so a stale CITATION.cff stops the release while it
+      # is still reversible; PyPI publishes are not. PyYAML is explicit because
+      # `--no-project` skips the project's own dependencies.
       - name: Validate release tag
         id: version
         env:
           TAG_NAME: ${{ github.ref_name }}
-        run: uv run --with packaging --no-project python tools/release_version.py public-release
+        run: >-
+          uv run --with packaging --with pyyaml --no-project
+          python tools/release_version.py public-release
 
       - name: Build distributions
         run: uv build --no-sources
