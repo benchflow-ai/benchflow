@@ -59,7 +59,15 @@
   scoring error with `rewards: null` although its verifier had run. Capture now
   leaves that tree out as `sandbox_runtime` and records any other socket, FIFO
   or device node as a `special_file` exclusion instead of aborting. Capture
-  limits, escaping symlinks and concurrent changes still fail closed. (#1128)
+  limits and concurrent changes still fail closed. (#1128)
+- **A symlink that leaves the workspace no longer costs a rollout its review.**
+  codex-acp can leave a helper link such as `/app/apply_patch` pointing outside
+  the workspace. Evidence capture aborted on it, and the trial ended in a
+  scoring error with `rewards: null` although agent and verifier had finished.
+  Such a link, a link whose target text climbs out of the workspace (which used
+  to pass capture and then fail extraction), and a link loop are now
+  `symlink_escape` exclusions that record their `link_target`; no outside file
+  is copied. (#1130)
 - **Automatic review supports shell-only task images.** Required Python
   capture tools are provisioned before the solver starts, so a successful
   shell task does not lose its review to a missing interpreter. (#1127)
