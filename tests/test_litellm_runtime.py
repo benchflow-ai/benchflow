@@ -74,10 +74,11 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
     assert updated[LITELLM_MODEL_ALIAS_ENV] == (
         "benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"
     )
-    assert (
-        '"model":"benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"'
-        in updated["CODEX_CONFIG"]
-    )
+    # Codex is handed the bare slug, not the proxy alias: it resolves model
+    # metadata by slug and falls back to a reduced tool surface otherwise
+    # (#1145). The proxy serves both names.
+    assert '"model":"us.anthropic.claude-opus-4-8"' in updated["CODEX_CONFIG"]
+    assert "benchflow-aws-bedrock" not in json.loads(updated["CODEX_CONFIG"])["model"]
     auth_request = json.loads(updated[CODEX_DEFAULT_AUTH_REQUEST_ENV])
     assert auth_request == {
         "methodId": "gateway",

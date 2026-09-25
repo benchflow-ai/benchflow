@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex gets its real model id, and a codex that knows it (#1145).** Under
+  a BenchFlow provider (LiteLLM proxy) the `codex-acp` thread was started with
+  the proxy alias as the model (`benchflow-azure-foundry-openai-gpt-5.6-luna`).
+  Codex resolves model metadata by slug, warned "Model metadata for `...` not
+  found. Defaulting to fallback metadata", and offered a reduced tool surface
+  on every rollout: eight function tools, no native `apply_patch`, no code
+  mode, no multi-agent tools, where native `codex exec` on the same provider
+  offers all of them. `CODEX_CONFIG.model` now names the bare slug (which the
+  proxy already serves next to the alias), the launch-config writer accepts
+  it when applying the reasoning effort, and the `codex-acp` pin moves to
+  1.13.1 (codex 0.156.1) because 0.148 has no metadata for `gpt-6-astra`
+  even under the bare slug. Verified on hello-world rollouts: bare slug +
+  0.156.1 gives `gpt-6-astra` code mode + `apply_patch` + `spawn_agent` /
+  `wait_agent` / `send_message` / `followup_task`, and `gpt-5.6-luna` code
+  mode + `apply_patch`, matching the native CLI's tool lists for both.
+
 ### Added
 
 - **Native Google Antigravity CLI agent (`antigravity`, alias `agy`).** The
