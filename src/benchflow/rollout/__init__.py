@@ -656,6 +656,61 @@ def _gateway_live_tokens(runtime: Any) -> int | None:
     return tokens if isinstance(tokens, int) else None
 
 
+def _classify_integration_failure(rollout: Any) -> bool:
+    """Withhold the reward of a trial whose agent integration broke.
+
+    See :mod:`benchflow.integration_health`: no tool call, message, genuine
+    thought or output token after the prompt makes the trial an
+    ``agent_integration`` execution failure with a named cause (auth, install,
+    empty or truncated trajectory, immediate exit, no activity), unscored.
+    Session-factory agents have no ACP event stream and are not judged;
+    neither is a run that captured no events at all. A module function, not
+    a method, so rollout doubles that borrow ``_maybe_classify_api_error``
+    keep working.
+    """
+    from benchflow.integration_health import diagnose, read_agent_logs
+
+    agent = rollout._config.agent
+    try:
+        cfg = resolve_agent(agent)
+        if cfg.protocol == "session-factory" and cfg.session_factory:
+            return False
+    except Exception:
+        pass
+    try:
+        usage = getattr(rollout, "_usage_metrics", None) or {}
+        output_tokens = usage.get("n_output_tokens")
+        rollout_dir = getattr(rollout, "_rollout_dir", None)
+        failure = diagnose(
+            getattr(rollout, "_trajectory", None) or [],
+            agent=agent,
+            n_tool_calls=getattr(rollout, "_n_tool_calls", 0),
+            output_tokens=output_tokens
+            if isinstance(output_tokens, int) and not isinstance(output_tokens, bool)
+            else None,
+            logs=read_agent_logs(rollout_dir) if rollout_dir is not None else {},
+            agent_seconds=(getattr(rollout, "_timing", None) or {}).get(
+                "agent_execution"
+            ),
+            prompt_sent=bool(getattr(rollout, "_executed_prompts", None)),
+        )
+    except Exception:  # the detector must never fail a finished rollout
+        logger.debug("integration-health check failed", exc_info=True)
+        return False
+    if failure is None:
+        return False
+    rollout._bare_timeout = False
+    rollout._diagnostics.set(failure.diagnostic(reward_withheld=rollout._rewards))
+    rollout._error = failure.error_text()
+    logger.warning(
+        "Agent integration failure [%s]: %s — trial unscored",
+        failure.cause,
+        failure.evidence,
+    )
+    rollout._rewards = None
+    return True
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -3090,7 +3145,7 @@ class Rollout:
         # info, not warning: trajectory repair is evidence-mutation an auditor
         # should find at default (non-TTY/CI) verbosity, but as a warning it
         # survived the live dashboard's WARNING+ replay and printed between
-        # teardown and the score line (dogfood 2026-08-09).
+        # teardown and the score line.
         logger.info(
             "Repaired %d lossy ACP tool event(s) from trusted provider capture",
             repaired,
@@ -3150,16 +3205,24 @@ class Rollout:
         # failures still surface via the agent error channels.
         from benchflow.agents.env import uses_native_subscription_auth
 
-        if uses_native_subscription_auth(
+        native = uses_native_subscription_auth(
             self._config.agent, self._config.model, self._agent_env
-        ):
-            return
-        total_tokens = _as_nonnegative_int(self._usage_metrics.get("total_tokens"))
-        verdict, info = classify_api_failure(
-            self._api_failure_summary_cached,
-            total_tokens=total_tokens,
-            n_tool_calls=self._n_tool_calls,
         )
+        total_tokens = _as_nonnegative_int(self._usage_metrics.get("total_tokens"))
+        verdict, info = (
+            (None, {})
+            if native
+            else classify_api_failure(
+                self._api_failure_summary_cached,
+                total_tokens=total_tokens,
+                n_tool_calls=self._n_tool_calls,
+            )
+        )
+        # A broken agent integration is judged on what the agent did (tool
+        # calls, messages, thoughts), so it also covers subscription runs; a
+        # proxy-proven provider failure keeps its more specific verdict.
+        if verdict != "api_error" and _classify_integration_failure(self):
+            return
         if verdict is None:
             return
         self._bare_timeout = False

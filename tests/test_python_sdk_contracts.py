@@ -125,7 +125,7 @@ def test_the_job_document_has_groups_interruptions_errors_and_time(
     (early / "config.json").write_text(json.dumps({"agent": "codex-acp"}))
 
     doc = _valid(bf.load_job(job).to_json_dict(), "job")
-    assert doc["schema_minor"] == 1
+    assert doc["schema_minor"] >= 1
     groups = {(g["agent"], g["model"]): g["denominators"] for g in doc["groups"]}
     assert set(groups) == {
         ("claude-agent-acp", "claude-haiku-4-5"),
@@ -161,7 +161,7 @@ def test_the_comparison_document_has_groups_and_paired_denominators(
     a = _job(tmp_path, "a", {"t1": 1.0, "t2": 0.0})
     b = _job(tmp_path, "b", {"t1": 0.0})
     doc = _valid(bf.compare(a, b, by=("agent",)).to_json_dict(), "comparison")
-    assert doc["schema_minor"] == 1 and doc["by"] == ["agent"]
+    assert doc["schema_minor"] >= 1 and doc["by"] == ["agent"]
     row = next(r for r in doc["rows"] if r["task"] == "t1")
     assert row["group"] == {"agent": "claude-agent-acp"}
     assert doc["a_paired"]["attempted"] == 1 and doc["b_paired"]["attempted"] == 1

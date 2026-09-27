@@ -42,7 +42,7 @@ def _rollout(
     reward: float | None,
     task: str = "demo-task",
     agent: str = "opencode",
-    model: str = "deepseek/deepseek-v4-pro",
+    model: str = "vendor/model-a",
     rewards: dict | None = None,
     error: str | None = None,
     extra: dict | None = None,
@@ -96,9 +96,7 @@ def test_two_scored_two_unscored_group(tmp_path: Path) -> None:
     assert by["demo__00000002"]["advantage"] == pytest.approx(0.5 / (std + 1e-4))
     assert by["demo__00000001"]["advantage"] == pytest.approx(-0.5 / (std + 1e-4))
     group = by["demo__00000002"]["group"]
-    assert group["id"] == (
-        "task=demo-task|agent=opencode|model=deepseek/deepseek-v4-pro"
-    )
+    assert group["id"] == ("task=demo-task|agent=opencode|model=vendor/model-a")
     assert group["by"] == ["task", "agent", "model"]
     assert group["normalisation"] == "grpo"
     assert group["rollouts"] == 4
@@ -166,8 +164,8 @@ def test_group_by_keeps_models_apart_and_is_configurable(tmp_path: Path) -> None
     job = tmp_path / "job"
     _rollout(job, "d0", reward=0.0)
     _rollout(job, "d1", reward=1.0)
-    _rollout(job, "o1", reward=1.0, agent="claude-agent-acp", model="claude-opus-5")
-    _rollout(job, "o2", reward=1.0, agent="claude-agent-acp", model="claude-opus-5")
+    _rollout(job, "o1", reward=1.0, agent="claude-agent-acp", model="vendor/model-b")
+    _rollout(job, "o2", reward=1.0, agent="claude-agent-acp", model="vendor/model-b")
     rows, _ = convert_benchflow_rollouts_to_prime_sft_rows(job, group_advantage="grpo")
     by = _by_rollout(rows)
     assert by["o1"]["advantage"] == 0.0

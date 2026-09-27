@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -230,6 +231,25 @@ def eval_preflight(
             _print_checks([claude])
 
 
+def _agent_start_checks(
+    agents: list[str], sandbox: str, *, quiet: bool = False
+) -> list[Check]:
+    """Run ``bench doctor --agent-start`` probes one at a time."""
+    from benchflow import agent_start as agent_start_mod
+
+    checks = []
+    for agent in dict.fromkeys(a.strip() for a in agents if a.strip()):
+        if not quiet:
+            err_console.print(
+                f"Starting {escape(agent)} in a fresh {escape(sandbox)} sandbox "
+                "(install + ACP handshake, no prompt)…",
+                highlight=False,
+            )
+        outcome = agent_start_mod.probe_agent_start(agent, sandbox=sandbox)
+        checks.append(agent_start_mod.agent_start_check(outcome))
+    return checks
+
+
 def register_doctor(app: typer.Typer) -> None:
     """Attach ``bench doctor`` to the top-level app."""
 
@@ -256,6 +276,17 @@ def register_doctor(app: typer.Typer) -> None:
             bool,
             typer.Option("--json", help="Print the report as JSON."),
         ] = False,
+        agent_start: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--agent-start",
+                help=(
+                    "Also install this agent in a fresh --sandbox and open its "
+                    "ACP connection without a prompt (no model call), to catch "
+                    "a broken install or login before a batch (repeatable)."
+                ),
+            ),
+        ] = None,
     ) -> None:
         """Check this machine can run evals: Python/uv, sandbox, agent credentials, network.
 
@@ -266,9 +297,15 @@ def register_doctor(app: typer.Typer) -> None:
 
         _validate_sandbox(sandbox)
         report = doctor_mod.run_doctor(sandbox=sandbox, offline=offline)
+        starts = _agent_start_checks(agent_start or [], sandbox, quiet=output_json)
+        failed = not report.ok or any(c.status == "fail" for c in starts)
         if output_json:
-            typer.echo(json.dumps(report.to_dict(), indent=2))
-            raise typer.Exit(0 if report.ok else 1)
+            data = report.to_dict()
+            data["checks"] = [*data.get("checks", []), *(asdict(c) for c in starts)]
+            if starts:
+                data["ok"] = not failed
+            typer.echo(json.dumps(data, indent=2))
+            raise typer.Exit(1 if failed else 0)
 
         from benchflow import __version__
 
@@ -278,9 +315,12 @@ def register_doctor(app: typer.Typer) -> None:
             highlight=False,
         )
         render_report(report)
+        if starts:
+            console.print()
+            _print_checks(starts)
         console.print()
         console.print(_counts_line(report))
-        if report.ok:
+        if not failed:
             console.print("Next: [cyan]bench eval smoke[/cyan]")
             return
         console.print(

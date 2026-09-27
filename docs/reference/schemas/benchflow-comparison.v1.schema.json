@@ -227,6 +227,12 @@
           "title": "Execution Errors",
           "type": "integer"
         },
+        "integration_failures": {
+          "default": 0,
+          "description": "attempted runs whose agent integration broke; also counted in unscored and execution_errors (1.2)",
+          "title": "Integration Failures",
+          "type": "integer"
+        },
         "mean_reward": {
           "anyOf": [
             {
@@ -600,7 +606,7 @@
       "type": "array"
     },
     "schema_minor": {
-      "default": 1,
+      "default": 2,
       "description": "optional fields added within schema_version; see the changelog",
       "title": "Schema Minor",
       "type": "integer"

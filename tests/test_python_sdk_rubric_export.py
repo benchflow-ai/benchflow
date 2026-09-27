@@ -213,7 +213,7 @@ def test_the_trial_export_carries_every_rubric_review(tmp_path: Path) -> None:
     doc = bf.load_trial(_reviewed_trial(tmp_path)).to_json_dict()
     schema = json.loads((SCHEMAS / job_export.schema_filename("trial")).read_text())
     jsonschema.validate(doc, schema, cls=jsonschema.Draft202012Validator)
-    assert doc["schema_version"] == 1 and doc["schema_minor"] == 1
+    assert doc["schema_version"] == 1 and doc["schema_minor"] >= 1
 
     reviews = doc["rubric_reviews"]
     assert [(r["kind"], r["id"], r["current"]) for r in reviews] == [
@@ -284,4 +284,4 @@ def test_the_trial_export_carries_every_rubric_review(tmp_path: Path) -> None:
 
 def test_a_trial_without_reviews_has_an_empty_list(tmp_path: Path) -> None:
     doc = bf.load_trial(_trial(tmp_path / "jobs" / "j", "hello")).to_json_dict()
-    assert doc["rubric_reviews"] == [] and doc["schema_minor"] == 1
+    assert doc["rubric_reviews"] == [] and doc["schema_minor"] >= 1

@@ -1691,6 +1691,13 @@ def eval_metrics(
     table.add_row("Passed", f"[green]{summary['passed']}[/green]")
     table.add_row("Failed", f"[red]{summary['failed']}[/red]")
     table.add_row("Errored", f"[yellow]{summary['errored']}[/yellow]")
+    broken = summary.get("integration_failures") or {}
+    if broken.get("total"):
+        causes = ", ".join(f"{k} {v}" for k, v in broken["by_cause"].items())
+        table.add_row(
+            "Integration failures",
+            f"[yellow]{broken['total']}[/yellow] (unscored, in Errored: {escape(causes)})",
+        )
     table.add_row("Score", f"[bold]{summary['score']}[/bold]")
     if summary.get("memory_score") is not None:
         scored = (summary.get("memory") or {}).get("scored", 0)

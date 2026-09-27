@@ -6,6 +6,7 @@ from trial results.
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,8 @@ class TaskMetrics:
     usage_source: UsageSource = "unavailable"
     memory_score: float | None = None
     scoring: dict[str, Any] | None = None
+    # Why the agent did nothing, when its integration broke (unscored).
+    integration_cause: str | None = None
 
     @property
     def outcome(self) -> str:
@@ -279,6 +282,14 @@ class BenchmarkMetrics:
                 breakdown[category] = breakdown.get(category, 0) + 1
         return breakdown
 
+    @property
+    def integration_failures(self) -> dict[str, Any]:
+        """Trials whose agent integration broke (unscored), by cause."""
+        causes = Counter(
+            t.integration_cause for t in self.tasks if t.integration_cause is not None
+        )
+        return {"total": sum(causes.values()), "by_cause": dict(sorted(causes.items()))}
+
     def summary(self) -> dict[str, Any]:
         """Export as summary dict."""
         return {
@@ -313,6 +324,7 @@ class BenchmarkMetrics:
             "memory_scores": self.memory_scores,
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
+            "integration_failures": self.integration_failures,
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
             "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
             "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
@@ -320,6 +332,48 @@ class BenchmarkMetrics:
                 t.task_name for t in self.tasks if t.score_verifier_errored
             ),
         }
+
+
+def _integration_cause(result: dict[str, Any]) -> str | None:
+    info = result.get("integration_failure_info")
+    if isinstance(info, dict):
+        cause = info.get("cause")
+        return cause if isinstance(cause, str) else "unknown"
+    return None
+
+
+def _with_integration_failure(
+    result: dict[str, Any], trial_dir: Path
+) -> dict[str, Any]:
+    """Apply read-time integration-failure detection to an older result.
+
+    A result written before ``integration_failure_info`` existed, whose agent
+    did nothing because its integration broke, is read as the run would
+    record it today: reward withheld, error ``agent integration failure``.
+    """
+    from benchflow.integration_health import diagnose_trial_dir
+
+    if (
+        "integration_failure_info" in result
+        or result.get("n_tool_calls")
+        or extract_reward(result) is None
+        or str(result.get("agent") or "").lower() in ("oracle", "nop", "")
+    ):
+        return result
+    finding = diagnose_trial_dir(trial_dir, result)
+    if finding is None:
+        return result
+    return {
+        **result,
+        "rewards": None,
+        "error": finding.error_text(),
+        "error_category": "agent_integration",
+        "integration_failure_info": {
+            **finding.to_dict(),
+            "reward_withheld": result.get("rewards"),
+            "detected": "on read",
+        },
+    }
 
 
 def _result_rank(result: dict[str, Any]) -> tuple[bool, bool, float]:
@@ -348,7 +402,7 @@ def collect_metrics(
 
     for rfile in iter_task_result_paths(results_dir):
         try:
-            r = json.loads(rfile.read_text())
+            r = _with_integration_failure(json.loads(rfile.read_text()), rfile.parent)
             task = r["task_name"]
             if task not in best or _result_rank(r) > _result_rank(best[task]):
                 best[task] = r
@@ -401,6 +455,7 @@ def collect_metrics(
                     "usage_source", r.get("usage_source", "unavailable")
                 ),
                 memory_score=memory_score_from_result(r),
+                integration_cause=_integration_cause(r),
             )
         )
 

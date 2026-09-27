@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 1
 #: Bumped when optional fields are added within a schema_version; the
 #: changelog is in docs/reference/json-export.md.
-SCHEMA_MINOR: dict[str, int] = {"trial": 1, "job": 1, "comparison": 1, "run-summary": 0}
+SCHEMA_MINOR: dict[str, int] = {"trial": 2, "job": 2, "comparison": 2, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -255,7 +255,12 @@ class TrialExport(_Model):
     rewards: dict[str, Any] | None
     passed: bool
     score_outcome: Literal["passed", "failed", "errored", "verifier_errored"]
-    execution: Literal["completed", "errored", "timed_out"]
+    execution: Literal["completed", "errored", "timed_out", "integration_failed"] = (
+        Field(
+            description="integration_failed (1.2): the agent did nothing because "
+            "its integration broke; see integration_failure"
+        )
+    )
     assessment: Literal["scored", "error", "unscored"]
     control: Literal["oracle", "empty"] | None = Field(
         description="control runs check the task, not an agent"
@@ -287,6 +292,13 @@ class TrialExport(_Model):
     scoring: dict[str, Any] | None = Field(
         None, description="the automatic reviewer's gate verdict"
     )
+    integration_failure: dict[str, Any] | None = Field(
+        None,
+        description="why the agent did nothing useful when its integration broke: "
+        "cause (agent_auth, agent_install, truncated_trajectory, empty_trajectory, "
+        "immediate_exit, no_activity), evidence, evidence_source, activity counts, "
+        "reward_withheld; detected: 'on read' for results written before 1.2 (1.2)",
+    )
     trajectory: list[dict[str, Any]] | None = Field(
         None, description="ACP events; null when not included in the export"
     )
@@ -306,6 +318,11 @@ class DenominatorsExport(_Model):
     clean_passed: int
     pass_rate_clean: float | None
     controls_excluded: int
+    integration_failures: int = Field(
+        0,
+        description="attempted runs whose agent integration broke; also counted in "
+        "unscored and execution_errors (1.2)",
+    )
 
 
 class SolveRatesExport(_Model):
@@ -555,6 +572,7 @@ def _denominators(d: Denominators) -> DenominatorsExport:
         clean_passed=d.clean_passed,
         pass_rate_clean=d.pass_rate_clean,
         controls_excluded=d.controls_excluded,
+        integration_failures=d.integration_failures,
     )
 
 
@@ -713,6 +731,9 @@ def trial_export(
         if trial.source == "result.json"
         else [],
         scoring=r.scoring.to_dict() if r.scoring is not None else None,
+        integration_failure=_safe(trial.integration_failure)
+        if trial.integration_failure is not None
+        else None,
         trajectory=_safe(trial.trajectory) if include_trajectory else None,
     )
 

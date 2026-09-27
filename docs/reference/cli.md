@@ -30,6 +30,7 @@ bench doctor --json | jq '.checks[] | select(.status != "pass")'
 | `--sandbox` | `docker` | Sandbox whose checks are required. `docker` and `daytona` are checked; other providers are listed as not checked. |
 | `--offline` | off | Skip the network probes and the live Daytona API call. |
 | `--json` | off | Print the report as JSON (`ok`, `counts`, `checks`, `agents`). The exit code is the same as the text mode. |
+| `--agent-start` | — | Repeatable. Also install this agent in a fresh `--sandbox` sandbox for the bundled hello-world task and open its ACP connection (`initialize`, `session/new`) without a prompt, so no model call is made. Passes when the handshake completes; fails with a cause (`agent_auth`, `agent_install`, `agent_start`), the evidence line and the tail of the agent's logs. `oracle` and `nop` stop after the install. The sandbox is always deleted. |
 
 ---
 
@@ -632,11 +633,13 @@ bench eval metrics jobs/ --json
 bench eval metrics jobs/matrix/haiku --k 1 --k 5 --solve-threshold 0.5
 ```
 
+Trials whose agent did nothing because its integration broke are counted apart: an `Integration failures` row (and `integration_failures: {total, by_cause}` in `--json`) lists them by cause; they are in `Errored`, never in `Failed`. Results written before the detector existed are checked on read. See [Agent integration failures](./integration-failures.md).
+
 It also prints pass@k, pass^k and the solve rate, pooling a task's trials across every job folder under the directory (the `trial-NN` folders of `--matrix --trials`). `--k` (repeatable) picks k; the default is 1, powers of two and multiples of five up to the smallest per-task trial count. `--solve-threshold` counts a scored trial as solved when its reward is at least the value (partial credit); the default rule is "passed". Unscored trials and control runs are left out, and a task with fewer than k scored trials is left out of that k with a caveat. See [pass@k, pass^k and solve rates](./pass-at-k.md).
 
 ### bench eval inspect
 
-Read a finished job (or trial, `results.jsonl` file, or a glob of folders) and print its denominators and one row per trial: reward, execution, assessment, control, agent, model, cost. It calls `bf.load_job` / `bf.load_trial` and reads files only. `--json` prints the versioned `benchflow.job` (or, for one trial, `benchflow.trial`) document described in [JSON export](./json-export.md).
+Read a finished job (or trial, `results.jsonl` file, or a glob of folders) and print its denominators and one row per trial: reward, execution, assessment, control, agent, model, cost. A trial whose agent integration broke shows `broken` as its execution and a `Cause` column (`agent_auth`, `agent_install`, …), and the headline counts it among the unscored ("2 integration failures: the agent did nothing"); see [Agent integration failures](./integration-failures.md). It calls `bf.load_job` / `bf.load_trial` and reads files only. `--json` prints the versioned `benchflow.job` (or, for one trial, `benchflow.trial`) document described in [JSON export](./json-export.md).
 
 ```bash
 bench eval inspect jobs/my-run/2026-01-01__12-00-00

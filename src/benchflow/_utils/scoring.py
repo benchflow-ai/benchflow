@@ -48,6 +48,9 @@ TIMED_OUT = "timeout"
 # null the reward so the slot is excluded from score denominators.
 API_ERROR = "api_error"
 SUSPECTED_API_ERROR = "suspected_api_error"
+# The agent did nothing useful because its integration broke (install, login,
+# launch); set by benchflow.integration_health with a named cause, unscored.
+AGENT_INTEGRATION = "agent_integration"
 
 # Matched case-insensitively against the error string. Covers the
 # human-authored markers plus the sanitized "provider auth failed (HTTP 401)"
@@ -110,6 +113,7 @@ ERROR_CATEGORIES = frozenset(
         TIMED_OUT,
         API_ERROR,
         SUSPECTED_API_ERROR,
+        AGENT_INTEGRATION,
         OTHER_ERROR,
     }
 )
@@ -210,6 +214,9 @@ def classify_error(error: str | None) -> str | None:
     if not error:
         return None
     lower = error.lower()
+    # First: the evidence quoted after it may contain any other marker.
+    if lower.startswith("agent integration failure"):
+        return AGENT_INTEGRATION
     if "agent idle for" in lower:
         return IDLE_TIMEOUT
     if "install failed" in lower:
@@ -541,10 +548,15 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
     counts = count_audit_outcomes(rows)
     error_categories: Counter[str] = Counter()
     verifier_categories: Counter[str] = Counter()
+    integration_causes: Counter[str] = Counter()
     for row in rows:
         category = row.get("error_category") or classify_error(row.get("error"))
         if category:
             error_categories[category] += 1
+        if category == AGENT_INTEGRATION:
+            info = row.get("integration_failure_info")
+            cause = info.get("cause") if isinstance(info, Mapping) else None
+            integration_causes[cause if isinstance(cause, str) else "unknown"] += 1
         verifier_category = row.get(
             "verifier_error_category"
         ) or classify_verifier_error(row.get("verifier_error"))
@@ -567,6 +579,11 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         "idle_timeout": error_categories.get(IDLE_TIMEOUT, 0),
         "error_categories": dict(error_categories) or None,
         "verifier_error_categories": dict(verifier_categories) or None,
+        # Trials whose agent integration broke (unscored, never 0), by cause.
+        "integration_failures": {
+            "total": sum(integration_causes.values()),
+            "by_cause": dict(sorted(integration_causes.items())),
+        },
         "score": f"{ratio:.1%}",
         "score_ratio": ratio,
         "score_excl_errors": f"{scored_ratio:.1%}",

@@ -523,6 +523,48 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
         )
 
 
+AGENT_INTEGRATION = "agent_integration"
+
+
+@dataclass
+class IntegrationFailureDiagnostic(Diagnostic):
+    """The agent did nothing useful because its integration broke.
+
+    Set by :mod:`benchflow.integration_health`; the reward is withheld
+    (``reward_withheld`` keeps what the verifier gave the untouched
+    workspace) and the trial is unscored.
+    """
+
+    cause: str = "no_activity"
+    evidence: str = ""
+    evidence_source: str = ""
+    tool_calls: int = 0
+    agent_messages: int = 0
+    agent_thoughts: int = 0
+    output_tokens: int | None = None
+    agent_seconds: float | None = None
+    reward_withheld: dict[str, Any] | None = None
+
+    field: ClassVar[str] = "integration_failure_info"
+    category: ClassVar[str | None] = AGENT_INTEGRATION
+    summary_description: ClassVar[str] = (
+        "did nothing because the agent integration broke (unscored)"
+    )
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("tool_calls", "nonnegative_integer"),
+        ("agent_messages", "nonnegative_integer"),
+        ("agent_thoughts", "nonnegative_integer"),
+        ("output_tokens", "nonnegative_integer"),
+        ("agent_seconds", "nonnegative_number"),
+    )
+
+    def format_issue(self, task_name: str) -> str:
+        return (
+            f"{task_name}: agent integration failure [{self.cause}] — "
+            f"{self.evidence[:160]} ({self.evidence_source}) — unscored"
+        )
+
+
 # Public registry — every diagnostic kind goes here exactly once.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     IdleTimeoutDiagnostic,
@@ -532,6 +574,7 @@ DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     VerifierTimeoutDiagnostic,
     ProviderApiErrorDiagnostic,
     SuspectedApiErrorDiagnostic,
+    IntegrationFailureDiagnostic,
 )
 
 # field_name → Diagnostic class, for check_results lookup.
@@ -811,6 +854,7 @@ __all__ = [
     "SandboxStartupDiagnostic",
     "TransportClosedDiagnostic",
     "VerifierTimeoutDiagnostic",
+    "IntegrationFailureDiagnostic",
     "DIAGNOSTIC_REGISTRY",
     "DIAGNOSTIC_BY_FIELD",
     "IdleTimeoutError",

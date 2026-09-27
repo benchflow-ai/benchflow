@@ -62,7 +62,7 @@ __all__ = [
 ]
 
 Control = Literal["oracle", "empty"]
-Execution = Literal["completed", "errored", "timed_out"]
+Execution = Literal["completed", "errored", "timed_out", "integration_failed"]
 Assessment = Literal["scored", "error", "unscored"]
 
 _EMPTY_AGENTS = {"nop", "noop", "empty"}
@@ -200,7 +200,9 @@ class Trial:
     """One finished trial (rollout) directory.
 
     ``result`` is the typed :class:`RolloutResult`; ``execution`` is
-    ``completed``, ``errored`` or ``timed_out``; ``assessment`` is ``scored``
+    ``completed``, ``errored``, ``timed_out`` or ``integration_failed`` (the
+    agent did nothing because its integration broke; see
+    ``integration_failure``); ``assessment`` is ``scored``
     (a reward exists), ``error`` (the verifier failed) or ``unscored``;
     ``control`` is ``"oracle"``/``"empty"`` for control runs and None for
     agent runs. The trajectory is read on first use.
@@ -242,12 +244,48 @@ class Trial:
 
     @property
     def reward(self) -> float | None:
+        if self.integration_failure is not None:
+            return None
         reward = self.result.reward
         return reward if reward is not None and math.isfinite(reward) else None
 
+    @cached_property
+    def integration_failure(self) -> dict[str, Any] | None:
+        """Why the agent did nothing useful, when its integration broke.
+
+        Recorded at run time as ``integration_failure_info``; for results
+        written before that existed it is detected here from the trajectory
+        and agent logs (:mod:`benchflow.integration_health`). Such a trial is
+        an execution failure (``integration_failed``) and unscored: its
+        verifier reward is withheld, never counted as 0.
+        """
+        from benchflow.integration_health import (
+            diagnose_trial_dir,
+            stored_integration_failure,
+        )
+
+        stored = stored_integration_failure(self.raw)
+        if stored is not None:
+            return stored
+        if (
+            self.source != "result.json"
+            or self.control is not None
+            or self.result.n_tool_calls
+            or self.result.reward is None
+        ):
+            return None
+        finding = diagnose_trial_dir(self.path, self.raw)
+        if finding is None:
+            return None
+        return {
+            **finding.to_dict(),
+            "reward_withheld": self.result.rewards,
+            "detected": "on read",
+        }
+
     @property
     def passed(self) -> bool:
-        return self.result.passed
+        return self.result.passed and self.integration_failure is None
 
     def __repr__(self) -> str:
         # Compact for notebooks: the path and the full result stay attributes.
@@ -289,6 +327,8 @@ class Trial:
 
     @property
     def execution(self) -> Execution:
+        if self.integration_failure is not None:
+            return "integration_failed"
         if not self.result.error:
             return "completed"
         return "timed_out" if self.result.error_category == "timeout" else "errored"
@@ -602,7 +642,8 @@ class Denominators:
     ``execution_errors`` counts errored and timed-out runs among the
     attempted (a timed-out run can still be scored). ``clean_*`` leave out
     scored runs whose execution failed. ``controls_excluded`` is how many
-    control runs were left out.
+    control runs were left out. ``integration_failures`` counts runs whose
+    agent integration broke (also in ``unscored`` and ``execution_errors``).
     """
 
     attempted: int = 0
@@ -615,6 +656,9 @@ class Denominators:
     clean_scored: int = 0
     clean_passed: int = 0
     controls_excluded: int = 0
+    # Attempted runs whose agent integration broke (unscored, never 0); they
+    # are also in ``unscored`` and ``execution_errors``.
+    integration_failures: int = 0
 
     @property
     def pass_rate_scored(self) -> float | None:
@@ -645,6 +689,7 @@ class Denominators:
             clean_scored=len(clean),
             clean_passed=sum(t.reward == 1 for t in clean),
             controls_excluded=controls_excluded,
+            integration_failures=sum(t.integration_failure is not None for t in items),
         )
 
 

@@ -1268,10 +1268,12 @@
       "title": "Error Category"
     },
     "execution": {
+      "description": "integration_failed (1.2): the agent did nothing because its integration broke; see integration_failure",
       "enum": [
         "completed",
         "errored",
-        "timed_out"
+        "timed_out",
+        "integration_failed"
       ],
       "title": "Execution",
       "type": "string"
@@ -1293,6 +1295,20 @@
       },
       "title": "Forks",
       "type": "array"
+    },
+    "integration_failure": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "why the agent did nothing useful when its integration broke: cause (agent_auth, agent_install, truncated_trajectory, empty_trajectory, immediate_exit, no_activity), evidence, evidence_source, activity counts, reward_withheld; detected: 'on read' for results written before 1.2 (1.2)",
+      "title": "Integration Failure"
     },
     "kind": {
       "const": "benchflow.trial",
@@ -1400,7 +1416,7 @@
       "description": "sandbox.json, written when the sandbox was created (1.1)"
     },
     "schema_minor": {
-      "default": 1,
+      "default": 2,
       "description": "optional fields added within schema_version; see the changelog",
       "title": "Schema Minor",
       "type": "integer"

@@ -48,6 +48,7 @@ from benchflow._utils.result_paths import load_task_results
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
+    AGENT_INTEGRATION,
     API_ERROR,
     IDLE_TIMEOUT,
     INFRA_ERROR,
@@ -361,6 +362,17 @@ class ApiErrorCircuitBreaker:
         category = result.error_category or classify_error(result.error)
         if category == SUSPECTED_API_ERROR:
             return "suspected:zero_signal"
+        if category == AGENT_INTEGRATION:
+            # An auth or install failure repeats on every trial of the batch
+            # (e.g. an exhausted credit balance); the other causes can be
+            # transient and never trip the breaker.
+            from benchflow.integration_health import PERMANENT_CAUSES
+
+            match = re.match(
+                r"agent integration failure \[([a-z_]+)\]", result.error or ""
+            )
+            cause = match.group(1) if match else None
+            return f"integration:{cause}" if cause in PERMANENT_CAUSES else None
         if category == API_ERROR and not api_error_is_transient(result.error):
             match = re.search(r"\[([a-z_]+)/permanent\] HTTP (\d+)", result.error or "")
             return (

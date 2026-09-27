@@ -78,7 +78,14 @@ def _rate(d) -> str:
         f"{d.passed}/{d.scored} scored passed"
         + (f" ({pr:.0%})" if pr is not None else "")
         + f", {d.attempted} attempted, {d.assessment_errors} verifier errors, "
-        f"{d.unscored} unscored, {d.controls_excluded} control runs left out"
+        f"{d.unscored} unscored"
+        + (
+            f" ({d.integration_failures} integration failure"
+            f"{'' if d.integration_failures == 1 else 's'}: the agent did nothing)"
+            if d.integration_failures
+            else ""
+        )
+        + f", {d.controls_excluded} control runs left out"
     )
 
 
@@ -212,11 +219,19 @@ def register_eval_results(eval_app: typer.Typer) -> None:
         priced = any(t.cost_usd is not None for t in job.trials)
         if priced:
             table.add_column("Cost", no_wrap=True)
+        # Why a trial did nothing, when its agent integration broke
+        # (agent_auth, agent_install, …); the column appears only when needed.
+        broken = any(t.integration_failure is not None for t in job.trials)
+        if broken:
+            table.add_column("Cause", no_wrap=True)
         for trial in job.trials:
             cells = [
                 escape(trial.task_name),
                 "" if trial.reward is None else f"{trial.reward:g}",
-                trial.execution,
+                # "broken" keeps the column narrow; the Cause column says why.
+                "broken"
+                if trial.execution == "integration_failed"
+                else trial.execution,
                 trial.assessment,
                 trial.control or "",
                 escape(trial.result.agent or ""),
@@ -224,6 +239,9 @@ def register_eval_results(eval_app: typer.Typer) -> None:
             ]
             if priced:
                 cells.append("" if trial.cost_usd is None else f"${trial.cost_usd:.4f}")
+            if broken:
+                failure = trial.integration_failure
+                cells.append(escape(str(failure.get("cause"))) if failure else "")
             table.add_row(*cells)
         console.print(table)
         if out is not None:
