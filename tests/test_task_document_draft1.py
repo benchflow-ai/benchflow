@@ -1780,3 +1780,75 @@ async def test_v06_reward_json_is_left_alone(
     )
 
     assert reward_json.read_text() == '{"reward": 0.0}'
+
+
+# The CLI: bench tasks check and bench eval run --tasks-dir -------------------------
+
+
+def _checkable_task(tmp_path: Path, config: str, files: dict[str, str]) -> Path:
+    """A draft-1 package with a runnable verifier, ``config``, and ``files``."""
+    task_dir = _write_task(
+        tmp_path, f'Say hi.\n\n```toml task\nname = "acme/hi"\n{config}```\n'
+    )
+    (task_dir / "verifier").mkdir()
+    (task_dir / "verifier" / "test.sh").write_text("#!/bin/bash\n")
+    for rel, text in files.items():
+        (task_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (task_dir / rel).write_text(text)
+    return task_dir
+
+
+@pytest.mark.parametrize(
+    ("config", "files"),
+    [
+        ("", {"sandbox/Dockerfile": "FROM ubuntu:24.04\n"}),
+        ('\n[sandbox]\nimage = "python:3.12-slim"\n', {}),
+        (
+            f'\n[sandbox]\ncompose = "{DRAFT1_COMPOSE}"\n',
+            {DRAFT1_COMPOSE: "services:\n  main:\n    image: python:3.12-slim\n"},
+        ),
+    ],
+    ids=["dockerfile", "image", "compose"],
+)
+def test_draft1_packages_are_tasks_to_the_cli(
+    tmp_path: Path, config: str, files: dict[str, str]
+) -> None:
+    """bench tasks check and bench eval run --tasks-dir take a directory whose
+    task.md is draft 1 for a task when its agent's container comes from
+    sandbox/Dockerfile, [sandbox] image, or a declared Compose file.
+    """
+    from benchflow._utils.task_authoring import check_task
+    from benchflow.evaluation import _is_task_dir
+
+    task_dir = _checkable_task(tmp_path, config, files)
+
+    assert check_task(task_dir) == []
+    assert _is_task_dir(task_dir)
+
+
+@pytest.mark.parametrize("name", ["hello-world", "stl-mass", "flaky-retry"])
+def test_draft1_examples_pass_the_structural_check(name: str) -> None:
+    """The spec's runnable examples are tasks; launch support is checked later."""
+    from benchflow._utils.task_authoring import check_task
+
+    assert check_task(FIXTURES / name) == []
+
+
+def test_draft1_package_needs_its_own_container(tmp_path: Path) -> None:
+    """environment/ is Harbor's and v0.6's folder: a draft-1 package that has only
+    that, or declares Compose without shipping the file, has no container.
+    """
+    from benchflow._utils.task_authoring import check_task
+    from benchflow.evaluation import _is_task_dir
+
+    task_dir = _checkable_task(
+        tmp_path,
+        f'\n[sandbox]\ncompose = "{DRAFT1_COMPOSE}"\n',
+        {"environment/Dockerfile": "FROM ubuntu:24.04\n"},
+    )
+
+    issues = check_task(task_dir)
+
+    assert len(issues) == 1
+    assert issues[0].startswith("Missing sandbox/Dockerfile")
+    assert not _is_task_dir(task_dir)

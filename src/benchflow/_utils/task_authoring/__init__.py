@@ -18,10 +18,15 @@ import hashlib
 import logging
 import os
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from benchflow.task._document_draft1 import (
+    DRAFT1_SANDBOX_DIRNAME,
+    is_draft1_task_dir,
+)
 from benchflow.task.acceptance_live import run_live_acceptance_checks
+from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths
 from benchflow.task.verifier_document import (
     VERIFIER_DOCUMENT_FILENAME,
@@ -135,8 +140,6 @@ def task_digest(task_dir: Path) -> str:
     """
     if not task_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {task_dir}")
-    from benchflow.task._document_draft1 import is_draft1_task_dir
-
     draft1 = is_draft1_task_dir(task_dir)
     files: list[tuple[str, Path]] = []
     # os.walk never descends into symlinked directories (unlike pre-3.13
@@ -160,6 +163,37 @@ def task_digest(task_dir: Path) -> str:
         digest.update(b"\x00")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return f"sha256:{digest.hexdigest()}"
+
+
+def _check_draft1_sandbox(task_dir: Path) -> list[str]:
+    """The agent's container in a task.md draft-1 package.
+
+    Draft 1 builds it from ``sandbox/Dockerfile``, runs ``[sandbox] image``, or
+    runs the Compose file ``[sandbox] compose`` names; ``environment/`` is
+    Harbor's and v0.6's folder and counts for nothing here. A task.md that
+    does not parse is reported by the document check, not here.
+    """
+    if (task_dir / DRAFT1_SANDBOX_DIRNAME / "Dockerfile").is_file():
+        return []
+    try:
+        document = TaskDocument.from_path(task_dir / TASK_DOCUMENT_FILE)
+    except Exception:
+        return []
+    config = document.draft1.config if document.draft1 is not None else {}
+    sandbox = config.get("sandbox") if isinstance(config.get("sandbox"), dict) else {}
+    compose = sandbox.get("compose")
+    if sandbox.get("image") or (
+        isinstance(compose, str)
+        and not PurePosixPath(compose).is_absolute()
+        and ".." not in PurePosixPath(compose).parts
+        and (task_dir / compose).is_file()
+    ):
+        return []
+    return [
+        "Missing sandbox/Dockerfile: a task.md draft-1 package builds the "
+        "agent's container from sandbox/Dockerfile, [sandbox] image, or the "
+        "Compose file [sandbox] compose names"
+    ]
 
 
 def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str]:
@@ -250,14 +284,17 @@ def check_task(
     if validation_level == "schema":
         return issues
 
-    for d in REQUIRED_DIRS:
-        if not (task_dir / d).is_dir():
-            issues.append(f"Missing required directory: {d}/")
+    if has_task_md and is_draft1_task_dir(task_dir):
+        issues.extend(_check_draft1_sandbox(task_dir))
+    else:
+        for d in REQUIRED_DIRS:
+            if not (task_dir / d).is_dir():
+                issues.append(f"Missing required directory: {d}/")
 
-    # Check Dockerfile exists
-    dockerfile = task_dir / "environment" / "Dockerfile"
-    if not dockerfile.exists():
-        issues.append("Missing environment/Dockerfile")
+        # Check Dockerfile exists
+        dockerfile = task_dir / "environment" / "Dockerfile"
+        if not dockerfile.exists():
+            issues.append("Missing environment/Dockerfile")
 
     paths = TaskPaths(task_dir)
     issues.extend(_check_compatibility_alias_drift(paths))
