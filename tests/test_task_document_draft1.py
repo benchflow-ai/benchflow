@@ -1886,3 +1886,139 @@ def test_draft1_package_needs_its_own_container(tmp_path: Path) -> None:
     assert len(issues) == 1
     assert issues[0].startswith("Missing sandbox/Dockerfile")
     assert not _is_task_dir(task_dir)
+
+
+# Services and network = "none": refused where the runtime would cut them off -------
+
+_WEB_SERVICE = '[[sandbox.services]]\nname = "web"\nimage = "python:3.12-slim"\n'
+
+
+def _closed_services_task(tmp_path: Path, *, compose: bool = False) -> Path:
+    """hello-world with [sandbox] network = "none" and a service beside main."""
+    task_dir = tmp_path / "closed"
+    shutil.copytree(FIXTURES / "hello-world", task_dir)
+    services = f'compose = "{DRAFT1_COMPOSE}"\n' if compose else f"\n{_WEB_SERVICE}"
+    if compose:
+        (task_dir / DRAFT1_COMPOSE).write_text(_COMPOSE_FILE)
+    text = (task_dir / "task.md").read_text()
+    (task_dir / "task.md").write_text(
+        text.replace(
+            '[agent]\ntimeout = "2m"\n',
+            f'[agent]\ntimeout = "2m"\n\n[sandbox]\nnetwork = "none"\n{services}',
+        )
+    )
+    return task_dir
+
+
+@pytest.mark.parametrize(
+    ("compose", "path"),
+    [(False, "[sandbox] services"), (True, "[sandbox] compose")],
+    ids=["services", "compose"],
+)
+def test_services_are_refused_where_the_container_network_is_cut(
+    tmp_path: Path, compose: bool, path: str
+) -> None:
+    """task.md's network governs the internet, not the services beside the agent's
+    container. Where the runtime keeps no network for an agent (an oracle run, or
+    a sandbox started on its own), network = "none" gives main network_mode "none",
+    which cuts it off from the services too, so the launch is refused.
+    """
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    task_dir = _closed_services_task(tmp_path, compose=compose)
+    assert _launch_issue_paths(task_dir) == set()  # launchable in general
+
+    with pytest.raises(UnsupportedTaskFeatureError) as refused:
+        _create_sandbox_environment(
+            "docker",
+            Task(task_dir),
+            task_dir,
+            "closed",
+            RolloutPaths(tmp_path / "rollout"),
+            preserve_agent_network=False,
+        )
+
+    (feature,) = refused.value.features
+    assert feature.path == path
+    assert 'network = "none" cuts all of the container\'s networking' in feature.reason
+    assert feature.reason.endswith(
+        "services beside the agent's container would be cut off"
+    )
+
+
+def test_services_run_where_the_compose_network_is_kept(tmp_path: Path) -> None:
+    """With an agent in the sandbox the container keeps its network (the agent's
+    web tools are disabled instead), so the services stay reachable; and a task
+    whose network is open is never cut off.
+    """
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    closed = _closed_services_task(tmp_path)
+    sandbox = _create_sandbox_environment(
+        "docker",
+        Task(closed),
+        closed,
+        "closed",
+        RolloutPaths(tmp_path / "rollout"),
+        preserve_agent_network=True,
+    )
+    assert sandbox.task_env_config.allow_internet  # no network_mode "none" on main
+    assert (
+        "web"
+        in json.loads((sandbox.environment_dir / "docker-compose.yaml").read_text())[
+            "services"
+        ]
+    )
+
+    opened = _services_task(tmp_path, f"\n{_WEB_SERVICE}")
+    _create_sandbox_environment(
+        "docker",
+        Task(opened),
+        opened,
+        "opened",
+        RolloutPaths(tmp_path / "rollout-open"),
+        preserve_agent_network=False,
+    )
+
+
+async def test_services_are_refused_for_a_sandbox_user_agent_without_internet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent under network = "none" keeps the container's network, but when it
+    runs as a sandbox user the runtime's egress firewall rejects every connection
+    that user makes except to loopback, so it would be cut off from the services:
+    refused at setup. Run as root (no sandbox user), it keeps them.
+    """
+    from benchflow.rollout import Rollout, RolloutConfig, Scene
+
+    task_dir = _closed_services_task(tmp_path)
+
+    def rollout(sandbox_user: str | None) -> Rollout:
+        return Rollout(
+            RolloutConfig(
+                task_path=task_dir,
+                scenes=[Scene.single(agent="dummy")],
+                jobs_dir=tmp_path / "jobs",
+                sandbox_user=sandbox_user,
+            )
+        )
+
+    with pytest.raises(UnsupportedTaskFeatureError) as refused:
+        await rollout("agent").setup()
+    (feature,) = refused.value.features
+    assert feature.path == "[sandbox] services"
+    assert "except to loopback" in feature.reason
+
+    class Reached(Exception):
+        """setup() got past the network checks."""
+
+    as_root = rollout(None)
+
+    def reached(*_args, **_kwargs):
+        raise Reached
+
+    monkeypatch.setattr(as_root._planes, "resolve_agent_env", reached)
+    with pytest.raises(Reached):
+        await as_root.setup()

@@ -993,6 +993,19 @@ class Rollout:
         )
         if self._egress_denylist is not None and not cfg.sandbox_user:
             raise ValueError("network_mode='denylist' requires a sandbox_user")
+        if self._disallow_web_tools and cfg.sandbox_user:
+            # The container keeps its network, but enforce_agent_egress_firewall
+            # rejects the sandbox user's traffic to every host but loopback.
+            from benchflow.task.runtime_capabilities import raise_for_services_cut_off
+
+            raise_for_services_cut_off(
+                self._task,
+                sandbox=cfg.environment,
+                cut=(
+                    "with no internet for the agent, the runtime rejects every "
+                    "connection the agent's user makes except to loopback"
+                ),
+            )
         self._disallow_hosted_search = self._egress_denylist is not None
         self._agent_env = _apply_web_policy(
             self._planes.resolve_agent_env(

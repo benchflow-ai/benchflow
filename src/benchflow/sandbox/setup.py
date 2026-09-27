@@ -715,6 +715,19 @@ def _create_sandbox_environment(
         sandbox_type=sandbox_type,
         task_path=task_path,
     )
+    if env_config.allow_internet is False and not preserve_agent_network:
+        # The compose backends give main network_mode "none" (no-network
+        # override), which cuts it off from the other services too.
+        from benchflow.task.runtime_capabilities import raise_for_services_cut_off
+
+        raise_for_services_cut_off(
+            task,
+            sandbox=sandbox_type,
+            cut=(
+                'network = "none" cuts all of the container\'s networking when no '
+                "agent runs in it (an oracle run, or a sandbox started on its own)"
+            ),
+        )
     # Past the launch gate, a task with task.md services runs on a compose
     # backend (docker or daytona), from a copy of its build context.
     staged_environment_dir = _stage_task_services(task, environment_dir)

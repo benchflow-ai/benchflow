@@ -116,6 +116,41 @@ def raise_for_task_runtime_support(
         raise UnsupportedTaskFeatureError(unsupported)
 
 
+def raise_for_services_cut_off(task: object, *, sandbox: str, cut: str) -> None:
+    """Refuse a task.md draft-1 task whose services this launch would cut off.
+
+    Services beside the agent's container are reached over the Compose network;
+    task.md's ``network`` governs the internet, not them (``docs/document.md``).
+    Callers pass ``cut`` when the runtime is about to cut the agent off from
+    every host but loopback: then it cannot honor both, so the task is refused
+    at launch. A launch that keeps the Compose network runs it.
+    """
+
+    document = getattr(task, "document", None)
+    draft1 = getattr(document, "draft1", None)
+    if draft1 is None:
+        return
+    sandbox_table = draft1.config.get("sandbox")
+    if draft1.services is not None:
+        path = "[sandbox] services"
+    elif isinstance(sandbox_table, dict) and "compose" in sandbox_table:
+        path = "[sandbox] compose"
+    else:
+        return
+    raise UnsupportedTaskFeatureError(
+        [
+            UnsupportedTaskFeature(
+                path=path,
+                reason=(
+                    f"task.md draft 1: {cut}, so the services beside the agent's "
+                    "container would be cut off"
+                ),
+                sandbox=sandbox,
+            )
+        ]
+    )
+
+
 def _issue(
     unsupported: list[UnsupportedTaskFeature],
     *,
