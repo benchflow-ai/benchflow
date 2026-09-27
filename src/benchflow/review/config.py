@@ -51,6 +51,9 @@ WEIGHTED_REVIEW_RUBRIC_CONTRACT = "v0.2"
 REVIEW_RUBRIC_CONTRACT = LEGACY_REVIEW_RUBRIC_CONTRACT
 REVIEW_RUBRIC_FILENAME = "rubric.json"
 REVIEW_RESULT_FILENAME = "review-result.json"
+# A task.md rubric names its schema; the verifier grades it from the test
+# report (benchflow.task.verifier_rubric), so it is not a review rubric.
+TASK_MD_RUBRIC_SCHEMA_PREFIX = "https://task.md/schema/rubric-"
 
 DEFAULT_RUBRIC_PATH = Path(__file__).parent / "default-rubric.json"
 
@@ -281,10 +284,11 @@ def is_review_rubric_file(path: Path) -> bool:
     """Whether ``path`` claims either detached-review rubric contract.
 
     ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics
-    use entries carrying the full ``{id, match_criteria}`` shape. Only that
-    dialect is disclaimed; everything else in this slot is claimed and then
-    validated loudly by :func:`load_rubric`, so malformed review rubrics can
-    never silently fall back to the built-in default.
+    use entries carrying the full ``{id, match_criteria}`` shape, and a
+    task.md rubric names task.md's ``$schema``. Only those two dialects are
+    disclaimed; everything else in this slot is claimed and then validated
+    loudly by :func:`load_rubric`, so malformed review rubrics can never
+    silently fall back to the built-in default.
     """
 
     try:
@@ -293,6 +297,8 @@ def is_review_rubric_file(path: Path) -> bool:
         return True
     if not isinstance(data, dict):
         return True
+    if str(data.get("$schema", "")).startswith(TASK_MD_RUBRIC_SCHEMA_PREFIX):
+        return False
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         return True

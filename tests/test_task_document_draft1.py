@@ -675,6 +675,21 @@ async def test_rubric_ignores_a_reward_the_script_wrote(tmp_path: Path) -> None:
     assert float(rollout.reward_text_path.read_text()) == 0.0
 
 
+def test_task_md_rubric_is_not_a_review_rubric() -> None:
+    """Guards efb211b3, which grades task.md rubrics in the verifier: automatic and
+    detached review, and task checks, took any verifier/rubric.json for a BenchFlow
+    review rubric, so a rollout of hello-world or stl-mass failed its review
+    preflight on a rubric it could not read. A task.md rubric names task.md's
+    $schema, and review leaves it to the verifier.
+    """
+    from benchflow.review.automatic import prepare_review
+    from benchflow.review.config import find_task_rubrics
+
+    for name in ("hello-world", "stl-mass"):
+        assert find_task_rubrics(FIXTURES / name) == []
+        assert prepare_review(FIXTURES / name, MagicMock()) is None
+
+
 def test_task_without_rubric_keeps_script_rewards(tmp_path: Path) -> None:
     """A draft-1 task with no task.md rubric: the script writes the reward, as today."""
     task_dir = tmp_path / "plain"
