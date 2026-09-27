@@ -5,7 +5,7 @@ Keep the public API of `HttpClient` unchanged, and do not add new dependencies. 
 ```toml task
 name = "examples/flaky-retry"
 title = "Fix the flaky retry in an HTTP client"
-version = "2.1.0"
+version = "3.0.0"
 keywords = ["python", "networking", "bugfix"]
 
 [about]
@@ -17,9 +17,9 @@ timeout = "15m"
 network = "none"
 
 [sandbox]
-image = "python:3.12-slim"
 cpus = 2
 memory = "4 GB"
+workdir = "/workspace"
 
 [verifier]
 timeout = "5m"

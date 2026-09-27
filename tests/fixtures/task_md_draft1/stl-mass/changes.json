@@ -1,0 +1,8 @@
+[
+  {
+    "version": "2.0.0",
+    "bump": "major",
+    "date": "2026-09-27",
+    "reason": "Replaced the stub with the SkillsBench task itself, converted with tools/convert.py import-v06: its instruction, data, solver, and tests."
+  }
+]

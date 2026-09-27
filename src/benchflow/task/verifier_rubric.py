@@ -12,7 +12,8 @@ scores the rubric (task.md ``docs/rubrics.md``, "Scoring"):
   only gates is all-or-nothing.
 - ``strict`` is 1 when all gates pass and ``partial`` reaches
   ``scoring.pass_threshold`` (default 1.0).
-- ``scoring.headline`` says which of the two is the reward.
+- ``scoring.headline`` says which of the two is the reward, and defaults to
+  ``partial``.
 
 A check is a test name or a test file. It matches by name first: every test
 whose name, with any pytest parameter id dropped, equals the check or ends with
@@ -23,8 +24,9 @@ the pytest plugin's ``file_path``, or the node id before ``::``) equals the
 check or ends with ``/<check>``. Every matching test must pass; a skipped or
 pending test does not pass.
 
-Tests assert the behavior the task wants. A penalty criterion is phrased as the
-bad thing, so its penalty applies when its check fails.
+A test-judged criterion passes or fails, so it has no ``levels``. A penalty
+criterion names the bad outcome; its test asserts the good behavior, so the
+penalty applies when the test fails.
 
 This module is pure: no filesystem or sandbox access.
 """
@@ -101,13 +103,6 @@ def rubric_gaps(rubric: dict[str, Any]) -> list[str]:
     if max_positive == 0 and any(p < 0 for p in point_values):
         gaps.append(
             "penalties with no positive points leave the partial score undefined"
-        )
-    scoring = rubric.get("scoring")
-    headline = scoring.get("headline") if isinstance(scoring, dict) else None
-    if headline is None and max_positive > 0:
-        gaps.append(
-            "scoring.headline is not declared; with point criteria strict and "
-            "partial differ, and the runtime will not guess which is the reward"
         )
     return gaps
 

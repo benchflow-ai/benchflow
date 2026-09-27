@@ -82,11 +82,11 @@ def test_draft1_instruction_keeps_ordinary_fences() -> None:
     """stl-mass shows a ```json fence inside its instruction."""
     document = TaskDocument.from_path(FIXTURES / "stl-mass" / "task.md")
 
-    assert '```json\n{"main_part_mass": 12345.67, "material_id": 42}\n```' in (
+    assert '```json\n{\n "main_part_mass": 12345.67,\n "material_id": 42\n}\n```' in (
         document.instruction
     )
     assert document.instruction.endswith(
-        "The result counts as correct within **0.1%**."
+        "NOTE: The result will be considered correct if it is within **0.1% accuracy**."
     )
 
 
@@ -125,7 +125,7 @@ def test_hello_world_maps_and_can_launch() -> None:
 
     assert task.name == "examples/hello-world"
     assert config.task is not None
-    assert config.task.version == "1.1.0"
+    assert config.task.version == "1.2.0"
     assert config.agent.timeout_sec == 120
     assert config.agent.network_mode is None
     assert config.sandbox.docker_image is None  # built from sandbox/Dockerfile
@@ -147,7 +147,8 @@ def test_flaky_retry_maps_config_and_refuses_launch() -> None:
 
     assert config.agent.timeout_sec == 900  # "15m"
     assert config.agent.network_mode == NetworkMode.NO_NETWORK  # "none"
-    assert config.sandbox.docker_image == "python:3.12-slim"
+    assert config.sandbox.docker_image is None  # built from sandbox/Dockerfile
+    assert config.sandbox.workdir == "/workspace"
     assert config.sandbox.cpus == 2
     assert config.sandbox.memory_mb == 4096  # "4 GB"
     assert config.verifier.timeout_sec == 300  # "5m"
@@ -455,6 +456,21 @@ def _points_task(tmp_path: Path, *, headline: str = "partial") -> Path:
     return task_dir
 
 
+def _points_ctrf() -> dict:
+    """builds and fast pass; one tidy test fails; the dependency test fails."""
+    ctrf = _ctrf(
+        ("test_build.py::test_builds", "passed"),
+        ("test_perf.py::test_fast", "passed"),
+        ("test_deps.py::test_no_new_dependencies", "failed"),
+    )
+    ctrf["results"]["tests"] += _ctrf(
+        ("test_style.py::test_imports", "passed"),
+        ("test_style.py::test_lint", "failed"),
+        file_path="../verifier/tests/test_style.py",
+    )["results"]["tests"]
+    return ctrf
+
+
 def _verifier(task_dir: Path, tmp_path: Path, ctrf: dict | None, *, exit_code: int = 0):
     """A Verifier over a fake host-mounted sandbox whose test script writes ``ctrf``."""
     from benchflow.task import RolloutPaths, Verifier
@@ -532,17 +548,9 @@ async def test_rubric_points_and_penalty(tmp_path: Path) -> None:
     fast (3) passes; tidy (1) fails because one test in its file failed; the
     dependency test fails, so the -2 penalty applies: (3 - 2) / 4 = 0.25.
     """
-    ctrf = _ctrf(
-        ("test_build.py::test_builds", "passed"),
-        ("test_perf.py::test_fast", "passed"),
-        ("test_deps.py::test_no_new_dependencies", "failed"),
+    verifier, rollout, _, _ = _verifier(
+        _points_task(tmp_path), tmp_path, _points_ctrf()
     )
-    ctrf["results"]["tests"] += _ctrf(
-        ("test_style.py::test_imports", "passed"),
-        ("test_style.py::test_lint", "failed"),
-        file_path="../verifier/tests/test_style.py",
-    )["results"]["tests"]
-    verifier, rollout, _, _ = _verifier(_points_task(tmp_path), tmp_path, ctrf)
 
     result = await verifier.verify()
 
@@ -686,15 +694,69 @@ def test_ungradable_rubrics_are_refused_at_launch(
     assert gap in issues[0].reason
 
 
-def test_point_rubric_without_headline_is_refused(tmp_path: Path) -> None:
-    """strict and partial differ with points, so the runtime will not guess."""
+async def test_point_rubric_without_headline_scores_partial(tmp_path: Path) -> None:
+    """headline defaults to partial (task.md docs/rubrics.md, Scoring)."""
     task_dir = _points_task(tmp_path)
     rubric_path = task_dir / "verifier" / "rubric.json"
     rubric = json.loads(rubric_path.read_text())
     del rubric["scoring"]["headline"]
     rubric_path.write_text(json.dumps(rubric))
+    verifier, _, _, _ = _verifier(task_dir, tmp_path, _points_ctrf())
 
-    assert "verifier/rubric.json" in _launch_issue_paths(task_dir)
+    result = await verifier.verify()
+
+    assert "verifier/rubric.json" not in _launch_issue_paths(task_dir)
+    assert result.rewards == {"reward": 0.25, "strict": 0.0, "partial": 0.25}
+
+
+@pytest.mark.parametrize(
+    "node_file",
+    [
+        "",  # runtime pytest options: -c /dev/null, --rootdir at the workspace
+        "test_outputs.py",  # pytest run from the verifier folder
+    ],
+)
+@pytest.mark.parametrize(
+    ("values_status", "reward"), [("passed", 1.0), ("failed", 0.0)]
+)
+async def test_stl_mass_rubric_from_pytest_ctrf(
+    tmp_path: Path, node_file: str, values_status: str, reward: float
+) -> None:
+    """stl-mass's real rubric (two gates, headline strict), graded from a report named
+    as pytest 8.4.1 with pytest-json-ctrf 0.3.5 names it, the versions its test.sh
+    pins. Under the runtime's pytest options the node id's file part is empty.
+    """
+    tests = [
+        {
+            "name": f"{node_file}::TestOutputs::{test}",
+            "status": status,
+            "raw_status": f"call_{status}",
+            "duration": 3,
+            "file_path": "../verifier/test_outputs.py",
+        }
+        for test, status in (
+            ("test_file_exists", "passed"),
+            ("test_values_correct", values_status),
+        )
+    ]
+    ctrf = {"results": {"tool": {"name": "pytest", "version": "8.4.1"}, "tests": tests}}
+    verifier, rollout, _, _ = _verifier(FIXTURES / "stl-mass", tmp_path, ctrf)
+
+    result = await verifier.verify()
+
+    assert result.rewards == {"reward": reward, "strict": reward, "partial": reward}
+    review = json.loads((rollout.verifier_dir / "review.json").read_text())
+    assert review["rubric_version"] == "2.0.0"
+    assert [
+        (v["id"], v["verdict"], v["citations"][0]["ref"]) for v in review["verdicts"]
+    ] == [
+        ("file-exists", "pass", f"{node_file}::TestOutputs::test_file_exists"),
+        (
+            "values",
+            "pass" if reward else "fail",
+            f"{node_file}::TestOutputs::test_values_correct",
+        ),
+    ]
 
 
 def test_check_matching_rules() -> None:
