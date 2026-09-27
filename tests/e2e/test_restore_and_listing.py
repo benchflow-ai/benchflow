@@ -52,7 +52,16 @@ RUBRIC = {
             "weight": 1,
             "description": "hello.txt exists",
             "guidance": "PASS when /app/hello.txt exists; FAIL otherwise.",
-        }
+        },
+        # A weighted rubric needs at least one scored (blocker: 0) criterion,
+        # or the task is refused as invalid before the reviewer check runs.
+        {
+            "name": "greeting_exact",
+            "blocker": 0,
+            "weight": 1,
+            "description": "hello.txt holds exactly the requested greeting",
+            "guidance": "Score 1 for exactly 'Hello, world!', 0 otherwise.",
+        },
     ]
 }
 
