@@ -597,6 +597,17 @@ async def _run_environment_healthcheck(env: Any, task: Any) -> None:
             await asyncio.sleep(delay)
 
 
+def agent_ran_out_of_time(error: TimeoutError) -> bool:
+    """Whether an agent timeout is its wall-clock budget running out.
+
+    An idle-watchdog abort (``IdleTimeoutError``) stops an agent that went
+    quiet; like Harbor's ``AgentStalledError``, it is not running out of time.
+    """
+    return isinstance(error, AgentPromptTimeoutError) or (
+        "exceeded wall-clock budget" in str(error)
+    )
+
+
 def _gateway_live_tokens(runtime: Any) -> int | None:
     """Cumulative provider tokens from the LiteLLM gateway's live capture.
 
@@ -742,6 +753,9 @@ class Rollout:
         # with no pending tool calls) fired — its captured trajectory is a
         # complete terminal one, not a rerunnable partial (#640).
         self._terminal_timeout: bool = False
+        # Set when the agent's wall-clock budget ran out (not an idle abort);
+        # a task.md draft-1 reward.json records it as timed_out.
+        self._agent_timed_out: bool = False
         # Every prompt actually sent to the agent across all execute() calls —
         # this is what `n_prompts` and `prompts.json` should reflect for Scene
         # rollouts where each turn issues its own prompt. The original
@@ -1915,9 +1929,35 @@ class Rollout:
         )
         if verifier_timeout_diag is not None:
             self._diagnostics.set(verifier_timeout_diag)
+        self._record_timed_out()
 
         self._phase = "verified"
         return self._rewards
+
+    def _record_timed_out(self) -> None:
+        """Record in a task.md draft-1 ``reward.json`` whether the agent ran out of time.
+
+        task.md says ``reward.json`` records ``timed_out`` in every case
+        (``docs/document.md``, "Timeouts"). It is added to the verifier's file,
+        or to one made from the rewards when the script wrote only
+        ``reward.txt``; the rewards themselves are unchanged. A trial without
+        a reward gets no reward file.
+        """
+        document = getattr(self._task, "document", None)
+        if getattr(document, "draft1", None) is None or self._rewards is None:
+            return
+        path = self._rollout_paths.reward_json_path
+        try:
+            recorded = json.loads(path.read_text()) if path.is_file() else {}
+        except (OSError, ValueError):
+            recorded = None
+        if not isinstance(recorded, dict):
+            logger.warning(f"Cannot record timed_out in unreadable {path}")
+            return
+        recorded = (recorded or dict(self._rewards)) | {
+            "timed_out": self._agent_timed_out
+        }
+        path.write_text(json.dumps(recorded, indent=2) + "\n")
 
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
         """Run the verifier without full hardening — for intermediate feedback.
@@ -2146,6 +2186,7 @@ class Rollout:
         """
         detail = str(e).strip()
         self._error = detail or f"Agent timed out after {self._timeout}s"
+        self._agent_timed_out = self._agent_timed_out or agent_ran_out_of_time(e)
         self._diagnostics.capture_idle(e)
         if isinstance(e, AgentPromptTimeoutError) and getattr(
             e, "terminal_trajectory_complete", False

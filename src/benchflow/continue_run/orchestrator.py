@@ -597,7 +597,7 @@ async def _continue_run_with_sandbox_proxy(
         ensure_litellm_runtime,
         stop_provider_runtime,
     )
-    from benchflow.rollout import Rollout
+    from benchflow.rollout import Rollout, agent_ran_out_of_time
 
     config = build_rollout_config(
         run,
@@ -684,6 +684,7 @@ async def _continue_run_with_sandbox_proxy(
                 )
         except TimeoutError as exc:
             agent_timed_out = True
+            rollout._agent_timed_out = agent_ran_out_of_time(exc)
             detail = str(exc).strip()
             rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
             rollout._diagnostics.capture_idle(exc)

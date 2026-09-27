@@ -1571,3 +1571,180 @@ def test_task_digest_of_other_layouts_is_unchanged(tmp_path: Path) -> None:
         "sha256:610869088426c2a3b8791da281781cdd95f9c146bcd5f1a7eb068dd640412602"
     )
     assert task_digest(draft1) == task_digest(bare)
+
+
+# Timeouts: reward.json records timed_out ----------------------------------------------
+
+
+def test_agent_ran_out_of_time_is_the_wall_clock_budget() -> None:
+    """Running out of time is the wall-clock budget expiring. An idle-watchdog abort
+    stops an agent that went quiet, as Harbor's AgentStalledError does, and other
+    timeouts are not the agent's budget either.
+    """
+    from benchflow.diagnostics import AgentPromptTimeoutError, IdleTimeoutError
+    from benchflow.rollout import agent_ran_out_of_time
+
+    captured = AgentPromptTimeoutError(
+        "Agent prompt exceeded wall-clock budget 120s",
+        trajectory=[],
+        diagnostic=MagicMock(n_tool_calls=0, terminal_trajectory_complete=True),
+    )
+
+    assert agent_ran_out_of_time(captured)
+    assert agent_ran_out_of_time(
+        TimeoutError("Agent prompt exceeded wall-clock budget 120s")
+    )
+    assert not agent_ran_out_of_time(
+        IdleTimeoutError("Agent idle for 600s with no new tool call", MagicMock())
+    )
+    assert not agent_ran_out_of_time(TimeoutError("set_model timed out"))
+
+
+async def _run_to_verified(
+    task_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    agent_error: TimeoutError | None,
+    reward_files: dict[str, str],
+    rewards: dict[str, float],
+):
+    """Run a rollout whose agent raises ``agent_error`` and whose verifier writes
+    ``reward_files`` and parses them as ``rewards``. The real Rollout.verify()
+    runs; only the sandbox is stubbed. Returns reward.json's path and the result.
+    """
+    from benchflow.models import RunResult
+    from benchflow.rollout import Rollout, RolloutConfig, Scene
+    from benchflow.task import RolloutPaths
+
+    rollout_paths = RolloutPaths(tmp_path / "rollout")
+    rollout = Rollout(
+        RolloutConfig(task_path=task_dir, scenes=[Scene.single(agent="dummy")])
+    )
+
+    async def setup():
+        rollout._task = Task(task_dir)
+        rollout._rollout_dir = rollout_paths.rollout_dir
+        rollout._rollout_paths = rollout_paths
+        rollout._rollout_name = "trial-1"
+        rollout_paths.mkdir()
+
+    async def run_steps(_steps):
+        if agent_error is not None:
+            raise agent_error
+
+    async def verify_rollout(*_args, **_kwargs):
+        for name, text in reward_files.items():
+            (rollout_paths.verifier_dir / name).write_text(text)
+        return dict(rewards), None, None
+
+    async def nothing(*_args, **_kwargs):
+        return None
+
+    def build_result():
+        return RunResult(
+            task_name="task",
+            rollout_name="trial-1",
+            rewards=rollout._rewards,
+            error=rollout._error,
+            verifier_error=rollout._verifier_error,
+        )
+
+    for name, value in (
+        ("setup", setup),
+        ("start", nothing),
+        ("install_agent", nothing),
+        ("_run_steps", run_steps),
+        ("cleanup", nothing),
+        ("_build_result", build_result),
+    ):
+        monkeypatch.setattr(rollout, name, value)
+    monkeypatch.setattr("benchflow.rollout._verify_rollout", verify_rollout)
+    monkeypatch.setattr("benchflow.rollout.capture_terminal_workspace", nothing)
+    monkeypatch.setattr("benchflow.rollout._scrape_agent_trajectory", nothing)
+    monkeypatch.setattr("benchflow.rollout._publish_trajectory_for_verifier", nothing)
+
+    result = await rollout.run()
+    return rollout_paths.reward_json_path, result
+
+
+_RUBRIC_REWARDS = {"reward": 0.0, "strict": 0.0, "partial": 0.0}
+
+
+@pytest.mark.parametrize(
+    ("agent_error", "timed_out"),
+    [
+        (TimeoutError("Agent prompt exceeded wall-clock budget 120s"), True),
+        (None, False),
+    ],
+    ids=["ran-out-of-time", "finished"],
+)
+async def test_draft1_reward_json_records_timed_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent_error: TimeoutError | None,
+    timed_out: bool,
+) -> None:
+    """task.md docs/document.md, "Timeouts": in every case reward.json records
+    timed_out. The runtime grades what the agent left (on_timeout = "grade") and
+    adds timed_out to the reward.json the verifier wrote; the rewards it reports
+    stay the verifier's.
+    """
+    reward_json, result = await _run_to_verified(
+        FIXTURES / "hello-world",
+        tmp_path,
+        monkeypatch,
+        agent_error=agent_error,
+        reward_files={"reward.json": json.dumps(_RUBRIC_REWARDS)},
+        rewards=_RUBRIC_REWARDS,
+    )
+
+    assert json.loads(reward_json.read_text()) == {
+        **_RUBRIC_REWARDS,
+        "timed_out": timed_out,
+    }
+    assert result.rewards == _RUBRIC_REWARDS
+
+
+async def test_draft1_reward_json_is_written_when_the_script_wrote_reward_txt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a rubric the script may write only reward.txt; reward.json is made
+    from the reward so that it records timed_out. An idle abort is not running out
+    of time.
+    """
+    from benchflow.diagnostics import IdleTimeoutError
+
+    task_dir = tmp_path / "plain"
+    shutil.copytree(FIXTURES / "hello-world", task_dir)
+    (task_dir / "verifier" / "rubric.json").unlink()
+
+    reward_json, result = await _run_to_verified(
+        task_dir,
+        tmp_path,
+        monkeypatch,
+        agent_error=IdleTimeoutError("Agent idle for 600s", MagicMock()),
+        reward_files={"reward.txt": "1\n"},
+        rewards={"reward": 1.0},
+    )
+
+    assert json.loads(reward_json.read_text()) == {"reward": 1.0, "timed_out": False}
+    assert result.rewards == {"reward": 1.0}
+
+
+async def test_v06_reward_json_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """timed_out is task.md's; a v0.6 task's reward.json is exactly what its
+    verifier wrote.
+    """
+    reward_json, _ = await _run_to_verified(
+        V06_TASK,
+        tmp_path,
+        monkeypatch,
+        agent_error=TimeoutError("Agent prompt exceeded wall-clock budget 120s"),
+        reward_files={"reward.json": '{"reward": 0.0}'},
+        rewards={"reward": 0.0},
+    )
+
+    assert reward_json.read_text() == '{"reward": 0.0}'
