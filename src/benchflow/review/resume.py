@@ -2,7 +2,8 @@
 
 The solver snapshot is the authority for provenance and deterministic reward.
 A previous final result is only consulted to avoid rejudging a completed trial.
-No function in this module starts a solver or reruns deterministic tests.
+No function in this module starts a solver. Declared workspace recovery may
+retry deterministic verification before rubric review.
 """
 
 from __future__ import annotations
@@ -10,12 +11,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow._utils.task_authoring import task_digest
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import scoring_from_result
+
+logger = logging.getLogger(__name__)
 
 
 class ReviewResumeError(ValueError):
@@ -100,6 +104,12 @@ async def resume_review(
     """
     from benchflow.review.automatic import finish_review, prepare_review
     from benchflow.review.persistence import commit_scoring_result, scoring_lock
+    from benchflow.rollout._verifier_recovery import (
+        needs_verifier_recovery,
+        recorded_recovery_ineligible_reason,
+        resume_verification,
+    )
+    from benchflow.task import Task
 
     path = Path(rollout_dir).resolve(strict=True)
     with scoring_lock(path):
@@ -115,9 +125,20 @@ async def resume_review(
                 "Reviewer child runs cannot be resumed as task trials"
             )
         task_path = _trusted_task(path, solver, Path(tasks_root))
+        await resume_verification(path, task_path)
         plan = prepare_review(task_path, _reviewer_options(path, reviewer))
         if plan is None:
-            raise ReviewResumeError("The original task has no automatic review rubric")
+            verifier = Task(task_path).config.verifier
+            # Without review, only an eligible recovery contract has scoring
+            # to finish; any other trial is refused as before.
+            if recorded_recovery_ineligible_reason(path) is not None or not (
+                verifier.workspace_recovery
+                or needs_verifier_recovery(solver.get("verifier_error"))
+            ):
+                raise ReviewResumeError(
+                    "The original task has no automatic review rubric"
+                )
+            return commit_scoring_result(path, None)
         review = _read_object(path / "config.json").get("review", {})
         if not isinstance(review, dict):
             raise ReviewResumeError("config.json review must be an object")
@@ -147,28 +168,52 @@ async def resume_pending_reviews(
     A completed score always wins over an orphaned retry, matching evaluation
     resume's precedence for durable scores. The shared reviewer runtime owns
     concurrency limits; resumed reviews do not occupy solver slots.
+
+    A trial whose resume fails is logged and left with its saved result for a
+    later ``bench eval score``; it cannot cancel the other trials' reviews or
+    abort the evaluation (#1134).
     """
+    from benchflow.rollout._verifier_recovery import (
+        recorded_recovery_ineligible_reason,
+    )
+
     best: dict[str, tuple[tuple[bool, float, str], Path]] = {}
     for snapshot in job_dir.glob("*/solver.json"):
         solver = _read_object(snapshot)
         task_name = solver.get("task_name")
         if task_name not in task_names or solver.get("purpose", "task") != "task":
             continue
+        config_path = snapshot.parent / "config.json"
+        config = _read_object(config_path) if config_path.is_file() else {}
+        if (
+            "review" not in config
+            and recorded_recovery_ineligible_reason(snapshot.parent) is not None
+        ):
+            # Neither review nor recovery owns this trial; its original result
+            # stays for the ordinary rerun, as before.
+            continue
         result_path = snapshot.parent / "result.json"
-        scoring = (
-            scoring_from_result(_read_object(result_path))
-            if result_path.is_file()
-            else None
+        result_payload = _read_object(result_path) if result_path.is_file() else {}
+        scoring = scoring_from_result(result_payload)
+        complete = (scoring is not None and scoring.status == "complete") or (
+            scoring is None
+            and result_payload.get("rewards") is not None
+            and not result_payload.get("verifier_error")
         )
-        complete = scoring is not None and scoring.status == "complete"
         rank = (complete, snapshot.stat().st_mtime, str(snapshot))
         previous = best.get(task_name)
         if previous is None or rank > previous[0]:
             best[task_name] = (rank, snapshot.parent)
 
+    async def resume_one(path: Path) -> None:
+        try:
+            await resume_review(path, tasks_root=tasks_root, reviewer=reviewer)
+        except Exception:
+            logger.exception(
+                "Could not resume scoring for %s; its saved result is kept", path.name
+            )
+
     async with asyncio.TaskGroup() as group:
         for (complete, _, _), path in best.values():
             if not complete:
-                group.create_task(
-                    resume_review(path, tasks_root=tasks_root, reviewer=reviewer)
-                )
+                group.create_task(resume_one(path))

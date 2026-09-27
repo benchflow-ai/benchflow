@@ -261,8 +261,9 @@ class ManifestEnvironment:
         snap_id = uuid4().hex[:12]
         snap_dir = f"/tmp/benchflow-snapshots/{snap_id}"
         cmds = [f"mkdir -p {shlex.quote(snap_dir)}"]
-        for src in spec.paths:
-            dest = f"{snap_dir}/{PurePosixPath(src).name}"
+        files = {src: f"{index}.sqlite" for index, src in enumerate(spec.paths)}
+        for src, filename in files.items():
+            dest = f"{snap_dir}/{filename}"
             cmds.append(f'sqlite3 {shlex.quote(src)} ".backup {shlex.quote(dest)}"')
         command = " && ".join(cmds)
         result = await self._sandbox.exec(command, timeout_sec=120)
@@ -276,9 +277,25 @@ class ManifestEnvironment:
                 stdout=result.stdout or "",
                 stderr=result.stderr or "",
             )
-        return StateSnapshot(id=snap_id, path=snap_dir)
+        return StateSnapshot(id=snap_id, path=snap_dir, files=files)
 
     async def restore(self, snap: StateSnapshot) -> None:
+        await self._restore(snap, clear_sqlite_sidecars=False)
+
+    async def restore_after_sandbox_restore(self, snap: StateSnapshot) -> None:
+        """Install standalone backups before framework services are restarted.
+
+        A container image may contain WAL/journal files newer than the online
+        backup. They must not replay over that backup. This entry point requires
+        successful sandbox recreation with no database processes running; ordinary
+        environment-only restoration cannot safely remove live SQLite sidecars.
+        """
+        self.validate_sandbox_restore()
+        await self._restore(snap, clear_sqlite_sidecars=True)
+
+    async def _restore(
+        self, snap: StateSnapshot, *, clear_sqlite_sidecars: bool
+    ) -> None:
         """Roll the environment's state back to a snapshot.
 
         Copies each captured DB file from the snapshot directory back over
@@ -288,8 +305,8 @@ class ManifestEnvironment:
         Issue #387: if the sandbox ``cp`` command fails (snapshot directory
         missing, destination not writable), raise
         ``EnvironmentSnapshotError`` rather than silently returning success
-        — the live state is then unchanged and the caller must treat it as
-        an infra failure, not a successful rollback.
+        — earlier copies may already have changed live state, so the caller
+        must treat it as an infra failure, not a successful rollback.
         """
         spec = self._manifest.state
         if spec is None:
@@ -298,9 +315,32 @@ class ManifestEnvironment:
                 "[environment.state]; snapshot/restore are unsupported for a "
                 "stateless environment"
             )
+        files = snap.files
+        if not files:
+            # Legacy snapshots used basenames. A collision has already destroyed
+            # one backup; refuse to restore silently corrupted state.
+            files = {dst: PurePosixPath(dst).name for dst in spec.paths}
+            if len(set(files.values())) != len(files):
+                raise ValueError("legacy snapshot has ambiguous database basenames")
+        if set(files) != set(spec.paths):
+            raise ValueError(
+                "snapshot database paths do not match the environment manifest"
+            )
+        if len(set(files.values())) != len(files):
+            raise ValueError("snapshot maps multiple databases to the same backup")
+        if any(
+            PurePosixPath(name).name != name or name in {"", ".", ".."}
+            for name in files.values()
+        ):
+            raise ValueError("snapshot contains an invalid backup filename")
         cmds = []
         for dst in spec.paths:
-            src = f"{snap.path}/{PurePosixPath(dst).name}"
+            src = f"{snap.path}/{files[dst]}"
+            if clear_sqlite_sidecars:
+                sidecars = " ".join(
+                    shlex.quote(dst + suffix) for suffix in ("-wal", "-shm", "-journal")
+                )
+                cmds.append(f"rm -f -- {sidecars}")
             cmds.append(f"cp {shlex.quote(src)} {shlex.quote(dst)}")
         command = " && ".join(cmds)
         result = await self._sandbox.exec(command, timeout_sec=120)
@@ -314,6 +354,48 @@ class ManifestEnvironment:
                 stdout=result.stdout or "",
                 stderr=result.stderr or "",
             )
+
+    def validate_sandbox_restore(self) -> None:
+        """Reject service lifecycles a recreated container cannot reproduce."""
+        m = self._manifest
+        has_services = bool(
+            m.services or m.all_ports or m.effective_http or m.readiness.tcp
+        )
+        if m.owns_lifecycle and has_services:
+            raise RuntimeError(
+                f"environment '{m.name}' has entrypoint-owned services; sandbox "
+                "branching has no validated service restart contract"
+            )
+        if m.services and not self._started:
+            raise RuntimeError(
+                f"environment '{m.name}' must be provisioned before sandbox branching"
+            )
+
+    def prepare_sandbox_restore(self) -> None:
+        """Invalidate the old handle before replacing its container/processes."""
+        self.validate_sandbox_restore()
+        self._handle = None
+
+    async def resume_after_sandbox_restore(self) -> None:
+        """Recreate framework services after container and database restoration.
+
+        Unlike provision(), this preserves the original reset baseline and starts
+        only the previously installed services. A handle is valid again only once
+        readiness succeeds. The engine also calls this for sandbox-only branches.
+        """
+        self.validate_sandbox_restore()
+        self._handle = None
+        for svc in self._started:
+            await self._start_service(svc)
+        probe = await self.readiness()
+        if not probe.ready:
+            raise RuntimeError(
+                probe.error or "environment not ready after sandbox restore"
+            )
+        self._handle = EnvHandle(
+            name=self._manifest.name,
+            endpoints={p: f"http://localhost:{p}" for p in self._manifest.all_ports},
+        )
 
     async def reset(self) -> None:
         """Return the environment to its per-task initial state.

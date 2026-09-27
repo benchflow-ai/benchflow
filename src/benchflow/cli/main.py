@@ -14,13 +14,13 @@ in :mod:`benchflow.cli._shared` and are re-exported here for backwards
 compatibility.
 """
 
-import asyncio
 import json
 import logging
 import os
+from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.markup import escape
@@ -37,22 +37,26 @@ from benchflow.cli._live_progress import (
 from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
-    _exit_if_evaluation_had_errors,
     _parse_agent_env,
     _report_eval_result,
     console,
     err_console,
     print_error,
 )
+from benchflow.cli._termination import run_until_terminated
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
+from benchflow.cli.branch import register_eval_branch, register_eval_branches
 from benchflow.cli.continue_cmd import register_continue
+from benchflow.cli.doctor import eval_preflight, register_doctor, register_eval_smoke
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
 from benchflow.cli.eval_lift import register_eval_lift
+from benchflow.cli.eval_regrade import register_eval_regrade
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.rescore import register_eval_score
+from benchflow.cli.results import register_eval_results, register_eval_resume
 from benchflow.cli.review import register_review
 from benchflow.cli.reviewer_options import (
     ReviewerAgentOption,
@@ -73,7 +77,7 @@ from benchflow.cli.train import register_train
 from benchflow.cli.traj import register_traj
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
-from benchflow.sandbox.providers import providers_phrase
+from benchflow.sandbox.providers import extra_install_hint, providers_phrase
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 if TYPE_CHECKING:
@@ -93,11 +97,23 @@ __all__ = [
     "eval_create",  # deprecated import alias of eval_run
 ]
 
-# Show progress messages (logger.info) from benchflow internals by default.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-)
+
+def _log_settings(environ: Mapping[str, str]) -> tuple[int, str]:
+    """Log level and format: progress messages (INFO, message only) by default.
+
+    ``BENCHFLOW_LOG_LEVEL`` (DEBUG, INFO, WARNING, ERROR) changes the level and
+    ``BENCHFLOW_LOG_FORMAT=time`` adds a timestamp, the level and the logger
+    name to each line, for CI logs.
+    """
+    name = environ.get("BENCHFLOW_LOG_LEVEL", "").strip().upper()
+    level = logging.getLevelNamesMapping().get(name, logging.INFO)
+    if environ.get("BENCHFLOW_LOG_FORMAT", "").strip().lower() == "time":
+        return level, "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    return level, "%(message)s"
+
+
+_level, _format = _log_settings(os.environ)
+logging.basicConfig(level=_level, format=_format)
 
 _TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
 
@@ -153,7 +169,8 @@ def _daytona_client_or_exit():
         if exc.name == "daytona":
             console.print(
                 "[red]daytona SDK not installed[/red]\n"
-                "Install it with [cyan]uv sync --extra sandbox-daytona[/cyan]."
+                "Install it with "
+                f"[cyan]{escape(extra_install_hint('sandbox-daytona'))}[/cyan]."
             )
         else:
             print_error(f"daytona SDK import failed: {exc}")
@@ -163,9 +180,14 @@ def _daytona_client_or_exit():
         raise typer.Exit(1) from None
 
 
-def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
+def _cleanup_daytona_sandboxes(
+    dry_run: bool, max_age_minutes: int, all_mine: bool = False
+) -> None:
     """Clean up orphaned Daytona sandboxes (display wrapper over the library reaper)."""
+    from collections import Counter
+
     from benchflow.sandbox.daytona import reap_stale_sandboxes
+    from benchflow.sandbox.daytona_reaper import _REAP_MIN_IDLE_MIN
 
     d = _daytona_client_or_exit()
 
@@ -176,21 +198,77 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
                 f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m {verdict}"
             )
 
+    reasons: Counter[str] = Counter()
     counts = reap_stale_sandboxes(
         d,
         max_age_minutes=max_age_minutes,
         failed_max_age_minutes=max_age_minutes,
         dry_run=dry_run,
         on_decision=_show,
+        ignore_age=all_mine,
+        on_skip=lambda sb, why: reasons.update([why]),
     )
+    # The real reason for each skip: not yours, active, young.
+    parts = []
+    if reasons["young"]:
+        parts.append(f"{reasons['young']} younger than {max_age_minutes}m")
+    if reasons["active"]:
+        parts.append(
+            f"{reasons['active']} active in the last {_REAP_MIN_IDLE_MIN}m "
+            "(use --all to delete your own anyway)"
+        )
+    if reasons["no_created_at"]:
+        parts.append(f"{reasons['no_created_at']} with no creation time")
+    if reasons["foreign"]:
+        parts.append(f"{reasons['foreign']} another owner's (ignored)")
+    detail = f" ({'; '.join(parts)})" if parts else ""
     if dry_run:
         console.print(
-            f"\n[bold]{counts['found']} sandboxes found, {counts['deleted']} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)"
+            f"\n[bold]{counts['found']} sandboxes found, {counts['deleted']} would be deleted[/bold]{detail} (use without --dry-run to delete)",
+            soft_wrap=True,
         )
     else:
         console.print(
-            f"\n[bold green]{counts['deleted']} sandboxes deleted[/bold green] ({counts['skipped']} skipped, younger than {max_age_minutes}m)"
+            f"\n[bold green]{counts['deleted']} sandboxes deleted[/bold green]{detail}"
+            + (f", {counts['failed']} failed" if counts["failed"] else ""),
+            soft_wrap=True,
         )
+    _cleanup_daytona_snapshots(d, dry_run=dry_run, max_age_minutes=max_age_minutes)
+
+
+def _cleanup_daytona_snapshots(client, *, dry_run: bool, max_age_minutes: int) -> None:
+    """Reap this owner's stale branch snapshots (bf-snap-<owner>-*)."""
+    from benchflow.sandbox.daytona import reap_stale_snapshots
+    from benchflow.sandbox.daytona_reaper import owner_snapshot_prefix
+
+    prefix = owner_snapshot_prefix()
+    if prefix is None:
+        console.print(
+            "[dim]Branch snapshots: set BENCHFLOW_DAYTONA_OWNER to clean up "
+            "your own bf-snap-* snapshots (without an owner, none are touched).[/dim]"
+        )
+        return
+
+    def _show(snap, age_minutes, will_delete):
+        verdict = "[red](delete)[/red]" if will_delete else "[green](skip)[/green]"
+        if dry_run or not will_delete:
+            console.print(f"  [dim]{snap.name}[/dim] age={age_minutes:.0f}m {verdict}")
+
+    try:
+        counts = reap_stale_snapshots(
+            client,
+            max_age_minutes=max_age_minutes,
+            dry_run=dry_run,
+            on_decision=_show,
+        )
+    except Exception as exc:
+        print_error(f"Skipping branch snapshot cleanup: {exc}")
+        return
+    verb = "would be deleted" if dry_run else "deleted"
+    console.print(
+        f"[bold]{counts['deleted']} {prefix}* snapshots {verb}[/bold]"
+        f" (older than {max_age_minutes}m; {counts['failed']} failed)"
+    )
 
 
 # Evaluation execution
@@ -198,11 +276,9 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
 
 eval_app = typer.Typer(help="Evaluation commands.")
 app.add_typer(eval_app, name="eval", rich_help_panel="Core")
-# Canonical single `bench eval adopt` command (eval is the universal benchmark
-# entry point; adopt makes a foreign benchmark runnable).
-register_eval_adopt(eval_app)
-register_eval_lift(eval_app)
-register_eval_score(eval_app)
+# `bench eval --help` lists commands in registration order: smoke, then run,
+# the order the README and getting-started use (doctor, smoke, run).
+register_eval_smoke(eval_app)
 
 
 @eval_app.command("run")
@@ -278,6 +354,33 @@ def eval_run(
             help="Hosted env sampling arg as KEY=VALUE; repeatable (e.g. reasoning_effort=minimal)",
         ),
     ] = None,
+    source_env_verifiers_version: Annotated[
+        str | None,
+        typer.Option(
+            "--source-env-verifiers-version",
+            help=(
+                "Pin the verifiers release installed with the hosted env "
+                "(default: the env package's own requirement)"
+            ),
+        ),
+    ] = None,
+    source_env_base_url: Annotated[
+        str | None,
+        typer.Option(
+            "--source-env-base-url",
+            help=(
+                "Model endpoint for the hosted env run (default: verifiers' "
+                "own, Prime inference with PRIME_API_KEY)"
+            ),
+        ),
+    ] = None,
+    source_env_api_key_var: Annotated[
+        str | None,
+        typer.Option(
+            "--source-env-api-key-var",
+            help="Name of the environment variable holding that endpoint's API key",
+        ),
+    ] = None,
     agent: Annotated[
         str | None,
         typer.Option("--agent", help="Agent name"),
@@ -334,7 +437,10 @@ def eval_run(
     ] = None,
     prompt: Annotated[
         list[str] | None,
-        typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
+        typer.Option(
+            "--prompt",
+            help="Prompt(s) to send (default: the task prompt: the task.md body, or instruction.md for older tasks)",
+        ),
     ] = None,
     config_override: Annotated[
         str | None,
@@ -400,6 +506,103 @@ def eval_run(
             ),
         ),
     ] = None,
+    checkpoints: Annotated[
+        str | None,
+        typer.Option(
+            "--checkpoints",
+            help=(
+                "Keep a sandbox snapshot after these prompts: every-prompt or "
+                "prompt:N[,M]. Later `bench eval branch --from-checkpoint "
+                "<trial>` forks from one. Docker, or Daytona direct; each is a "
+                "full filesystem image (see docs/composed-checkpoints.md)."
+            ),
+        ),
+    ] = None,
+    checkpoint_keep: Annotated[
+        int,
+        typer.Option(
+            "--checkpoint-keep",
+            min=1,
+            help="Keep at most this many checkpoints per trial; the oldest is deleted.",
+        ),
+    ] = 3,
+    freeze_workspace: Annotated[
+        bool,
+        typer.Option(
+            "--freeze-workspace",
+            help=(
+                "Save each trial's final workspace and declared artifacts "
+                "(evidence/, with a manifest) before the verifier runs, so "
+                "`bench eval regrade` can re-score it with a changed verifier."
+            ),
+        ),
+    ] = False,
+    retry_from_checkpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--retry-from-checkpoint",
+            help=(
+                "on-failure, on-timeout, or both: when a trial fails or times out, "
+                "fork one retry from its last --checkpoints snapshot, verified the "
+                "same way. The trial's reward is kept; the retry's is reported "
+                "next to it (result.json retry block, summary checkpoint_retries)."
+            ),
+        ),
+    ] = None,
+    retry_prompt: Annotated[
+        str | None,
+        typer.Option(
+            "--retry-prompt",
+            help=(
+                "Prompt for the retry, replacing the prompts after the "
+                "checkpoint (the default). '@instruction' is the task "
+                "instruction, '@verifier_feedback' the failed trial's reward "
+                "and verifier output tail."
+            ),
+        ),
+    ] = None,
+    max_cost_usd: Annotated[
+        float | None,
+        typer.Option(
+            "--max-cost-usd",
+            help=(
+                "Hard job budget in USD, over trials that report a cost: when "
+                "reached, no new trials start and running ones are cancelled "
+                "(recorded in summary.json budget, not as failures)"
+            ),
+        ),
+    ] = None,
+    max_sandbox_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--max-sandbox-seconds",
+            help=(
+                "Hard job budget in trial wall-clock seconds, running trials "
+                "included; same stop/cancel behaviour as --max-cost-usd"
+            ),
+        ),
+    ] = None,
+    max_tokens: Annotated[
+        int | None,
+        typer.Option(
+            "--max-tokens",
+            help=(
+                "Hard job budget in total tokens over finished trials; same "
+                "stop/cancel behaviour as --max-cost-usd"
+            ),
+        ),
+    ] = None,
+    retry_resume_session: Annotated[
+        bool,
+        typer.Option(
+            "--retry-resume-session",
+            help=(
+                "The retry resumes the failed trial's conversation at the "
+                "checkpoint (ACP session/load; Claude Code) instead of a fresh "
+                "session."
+            ),
+        ),
+    ] = False,
     quiet: Annotated[
         bool,
         typer.Option(
@@ -414,6 +617,50 @@ def eval_run(
     jobs_dir: Annotated[
         str | None,
         typer.Option("--jobs-dir", help="Output directory"),
+    ] = None,
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh",
+            help="Start a new timestamped job instead of resuming the latest job "
+            "in --jobs-dir (the default reuses its finished tasks)",
+        ),
+    ] = False,
+    job_name: Annotated[
+        str | None,
+        typer.Option(
+            "--job-name",
+            help="Job folder name under --jobs-dir (resumed if it exists)",
+        ),
+    ] = None,
+    fail_under: Annotated[
+        float | None,
+        typer.Option(
+            "--fail-under",
+            help="Exit 1 when the pass rate (passed / all tasks) is below this, e.g. 0.8",
+        ),
+    ] = None,
+    fail_on: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fail-on",
+            help="Exit 1 when any trial ended this way: timeout, error, verifier-error "
+            "(comma-separated or repeated)",
+        ),
+    ] = None,
+    summary_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--summary-out",
+            help="Write the run's benchflow.run-summary JSON (job dir, counts, gate) here",
+        ),
+    ] = None,
+    codex_apps_policy: Annotated[
+        str | None,
+        typer.Option(
+            "--codex-apps-policy",
+            help="Codex account Apps: disabled (scored-task default) or inherit (explicit opt-in).",
+        ),
     ] = None,
     sandbox_user: Annotated[
         str | None,
@@ -582,7 +829,10 @@ def eval_run(
     ] = "default",
     retry_attempts: Annotated[
         int | None,
-        typer.Option("--retry-attempts", help="Reserved retry-attempt override"),
+        typer.Option(
+            "--retry-attempts",
+            help="Retries per task after a retryable failure (overrides the default of 2)",
+        ),
     ] = None,
     retry_concurrency: Annotated[
         int | None,
@@ -672,7 +922,22 @@ def eval_run(
         worker_retries=worker_retries,
         worker_start_stagger_sec=worker_start_stagger_sec,
         agent_idle_timeout=agent_idle_timeout,
+        checkpoints=checkpoints,
+        checkpoint_keep=checkpoint_keep,
+        freeze_workspace=freeze_workspace,
+        retry_from_checkpoint=retry_from_checkpoint,
+        retry_prompt=retry_prompt,
+        retry_resume_session=retry_resume_session,
+        max_cost_usd=max_cost_usd,
+        max_sandbox_seconds=max_sandbox_seconds,
+        max_tokens=max_tokens,
         jobs_dir=jobs_dir,
+        fresh=fresh,
+        job_name=job_name,
+        fail_under=fail_under,
+        fail_on=fail_on,
+        summary_out=summary_out,
+        codex_apps_policy=codex_apps_policy,
         sandbox_user=sandbox_user,
         sandbox_setup_timeout=sandbox_setup_timeout,
         context_root=context_root,
@@ -728,11 +993,37 @@ def eval_run(
     if (source_path or source_ref) and not source_repo:
         print_error("--source-path/--source-ref require --source-repo")
         raise typer.Exit(1)
+    if checkpoints or retry_from_checkpoint:
+        from benchflow.checkpoint_retry import parse_retry_policy
+        from benchflow.checkpoints import parse_checkpoint_policy
+
+        try:
+            if checkpoints:
+                parse_checkpoint_policy(checkpoints, keep=checkpoint_keep)
+            if retry_from_checkpoint:
+                if not checkpoints:
+                    raise ValueError(
+                        "--retry-from-checkpoint needs --checkpoints: a trial can "
+                        "only be retried from a checkpoint it kept"
+                    )
+                parse_retry_policy(retry_from_checkpoint, prompt=retry_prompt)
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
     try:
         plan = build_eval_plan(request)
     except EvalPlanError as exc:
         print_error(f"{exc}")
         raise typer.Exit(1) from None
+    # Hosted source envs own their harness; a run config names its sandbox in
+    # the YAML, so _run_config_file_eval checks it once the file is loaded.
+    if not config_file and not source_env:
+        eval_preflight(
+            sandbox=plan.eval_environment,
+            agent=plan.eval_agent,
+            model=plan.request.model,
+            agent_env=plan.parsed_env,
+        )
 
     if config_file:
         _run_config_file_eval(plan)
@@ -746,6 +1037,9 @@ def eval_run(
             source_env_max_tokens=source_env_max_tokens,
             source_env_temperature=source_env_temperature,
             source_env_sampling_arg=source_env_sampling_arg,
+            source_env_verifiers_version=source_env_verifiers_version,
+            source_env_base_url=source_env_base_url,
+            source_env_api_key_var=source_env_api_key_var,
         )
     elif source_repo:
         import subprocess
@@ -859,6 +1153,52 @@ def _eval_label(plan: "EvalPlan", tasks_dir: Path) -> str:
     return tasks_dir.name
 
 
+def _finish_run(req: EvalCreateRequest, result: Any, job_dir: Path | None) -> None:
+    """Apply --fail-under/--fail-on, write --summary-out, and exit.
+
+    Exit 1 when a trial ended unscored with an error (as before) or a gate
+    failed; otherwise return (exit 0).
+    """
+    import json
+
+    from benchflow.eval_plan import split_fail_on
+    from benchflow.job_export import run_summary_export
+
+    results = getattr(result, "results", {}) or {}
+    counts = {
+        "timeout": sum(r.error_category == "timeout" for r in results.values()),
+        "error": int(getattr(result, "errored", 0) or 0),
+        "verifier-error": int(getattr(result, "verifier_errored", 0) or 0),
+    }
+    failed: list[str] = []
+    if req.fail_under is not None and result.score < req.fail_under:
+        failed.append(f"pass rate {result.score:.2f} < --fail-under {req.fail_under:g}")
+    for kind in split_fail_on(req.fail_on):
+        if counts[kind]:
+            failed.append(f"{counts[kind]} trial(s) with {kind} (--fail-on {kind})")
+    for line in failed:
+        err_console.print(
+            f"[red]Gate failed:[/red] {escape(line)}", highlight=False, soft_wrap=True
+        )
+    exit_code = 1 if (failed or counts["error"] or counts["verifier-error"]) else 0
+    if req.summary_out is not None:
+        document = run_summary_export(
+            result,
+            job_dir=job_dir,
+            timeouts=counts["timeout"],
+            fail_under=req.fail_under,
+            fail_on=split_fail_on(req.fail_on),
+            gate_failed=failed,
+            exit_code=exit_code,
+        ).model_dump(mode="json")
+        req.summary_out.parent.mkdir(parents=True, exist_ok=True)
+        req.summary_out.write_text(
+            json.dumps(document, indent=2, allow_nan=False) + "\n"
+        )
+    if exit_code:
+        raise typer.Exit(exit_code)
+
+
 def run_batch_eval(
     plan: "EvalPlan",
     resolved_tasks_dir: Path,
@@ -903,18 +1243,21 @@ def run_batch_eval(
                 }
                 run_ctx = live_session(live)
             with run_ctx:
-                result = asyncio.run(
+                result = run_until_terminated(
                     Evaluation(
                         tasks_dir=str(task_collection_dir),
                         jobs_dir=plan.output_jobs_dir,
                         config=eval_config,
+                        job_name=plan.job_name,
+                        # eval_preflight already ran for this command.
+                        preflight=False,
                         **hooks,
                     ).run()
                 )
         else:
             from benchflow.eval_sharding import run_sharded_evaluation
 
-            result = asyncio.run(
+            result = run_until_terminated(
                 run_sharded_evaluation(
                     tasks_dir=task_collection_dir,
                     jobs_dir=Path(plan.output_jobs_dir),
@@ -935,7 +1278,7 @@ def run_batch_eval(
     job_dir = Path(plan.output_jobs_dir) / job_name if job_name else None
     postprocess_eval_artifacts(plan, task_collection_dir, eval_config, job_dir)
     _report_eval_result(result, job_dir)
-    _exit_if_evaluation_had_errors(result)
+    _finish_run(plan.request, result, job_dir)
     return result
 
 
@@ -958,7 +1301,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     # whole block so the CLI prints one clean error instead of ~10 distinct raw
     # tracebacks. The exception type is kept in the message for diagnosability.
     try:
-        j = Evaluation.from_yaml(config_file)
+        # eval_preflight runs below, once the YAML's config is known.
+        j = Evaluation.from_yaml(config_file, preflight=False)
         if req.agent is not None:
             j._config.agent = plan.eval_agent
         else:
@@ -971,6 +1315,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             j._config.reasoning_effort = plan.eval_reasoning_effort
         if req.environment is not None:
             j._config.environment = plan.eval_environment
+        if req.codex_apps_policy is not None:
+            j._config.codex_apps_policy = req.codex_apps_policy
         j._config.agent_env = {**j._config.agent_env, **plan.parsed_env}
         if req.reviewer is not None:
             from benchflow.review.options import ReviewerConfig
@@ -988,8 +1334,14 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
                 }
             )
         j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
-        if req.jobs_dir is not None:
-            j._jobs_dir = Path(req.jobs_dir)
+        if req.jobs_dir is not None or plan.job_name is not None:
+            # Resolve the job folder against the CLI's --jobs-dir, not the
+            # YAML's: from_yaml already picked a name under the YAML's jobs dir.
+            if req.jobs_dir is not None:
+                j._jobs_dir = Path(req.jobs_dir)
+            j._job_name = plan.job_name or Evaluation._resolve_job_name(j._jobs_dir)
+            if j._config.job_mode == "sequential-shared":
+                j.learner_store = j._load_or_init_learner_store()
         if req.concurrency is not None:
             j._config.concurrency = req.concurrency
         if req.build_concurrency is not None:
@@ -1019,6 +1371,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # run-config file was a no-op.
         if plan.eval_config_override is not None:
             j._config.config_override = plan.eval_config_override
+        if plan.eval_budget is not None:
+            j._config.budget = plan.eval_budget
     except subprocess.CalledProcessError as e:
         # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
         # as a raw traceback — it is not a config-parse error, so give it its own
@@ -1039,15 +1393,24 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             f"{type(e).__name__}: {escape(str(e))}"
         )
         raise typer.Exit(1) from None
+    eval_preflight(
+        sandbox=j._config.environment,
+        agent=j._config.agent,
+        model=j._config.model,
+        agent_env=j._config.agent_env,
+    )
     try:
-        result = asyncio.run(j.run())
+        result = run_until_terminated(j.run())
     except (EmptyTaskSelectionError, ValueError) as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None
     job_name = getattr(result, "job_name", None)
     job_dir = Path(j._jobs_dir) / job_name if job_name else None
+    # The artifact flags (--run-config-out, --task-manifest-out, ...) apply to
+    # a --config run too.
+    postprocess_eval_artifacts(plan, j._tasks_dir, j._config, job_dir)
     _report_eval_result(result, job_dir)
-    _exit_if_evaluation_had_errors(result)
+    _finish_run(req, result, job_dir)
 
 
 def _run_source_env_eval(
@@ -1060,6 +1423,9 @@ def _run_source_env_eval(
     source_env_max_tokens: int,
     source_env_temperature: float,
     source_env_sampling_arg: list[str] | None,
+    source_env_verifiers_version: str | None = None,
+    source_env_base_url: str | None = None,
+    source_env_api_key_var: str | None = None,
 ) -> None:
     """Warn about ignored ACP-only flags, then run a hosted Verifiers env."""
     from benchflow.hosted_env import (
@@ -1118,6 +1484,9 @@ def _run_source_env_eval(
                 max_tokens=source_env_max_tokens,
                 temperature=source_env_temperature,
                 sampling_args=parse_sampling_args(source_env_sampling_arg),
+                verifiers_version=source_env_verifiers_version,
+                api_base_url=source_env_base_url,
+                api_key_var=source_env_api_key_var,
             )
         )
     except HostedEnvError as e:
@@ -1153,6 +1522,13 @@ eval_app.command("create", deprecated=True)(eval_run)
 # public surface (``__all__``). Keep it as an import alias of ``eval_run`` so any
 # `from benchflow.cli.main import eval_create` keeps resolving.
 eval_create = eval_run
+
+# Canonical single `bench eval adopt` command (eval is the universal benchmark
+# entry point; adopt makes a foreign benchmark runnable).
+register_eval_adopt(eval_app)
+register_eval_lift(eval_app)
+register_eval_score(eval_app)
+register_eval_regrade(eval_app)
 
 
 @eval_app.command("list")
@@ -1251,8 +1627,34 @@ def eval_metrics(
         bool,
         typer.Option("--json", help="Output as JSON"),
     ] = False,
+    k: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--k",
+            help=(
+                "k for pass@k and pass^k (repeatable; default 1, powers of two "
+                "and multiples of five up to the smallest per-task trial count)"
+            ),
+        ),
+    ] = None,
+    solve_threshold: Annotated[
+        float | None,
+        typer.Option(
+            "--solve-threshold",
+            help=(
+                "Count a scored trial as solved when reward >= this value "
+                "(partial credit); default: solved = passed (reward 1)"
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Collect and display metrics from a jobs directory."""
+    """Collect and display metrics from a jobs directory.
+
+    pass@k / pass^k pool a task's trials across every job folder under the
+    directory (e.g. the trial-NN folders of --matrix --trials); unscored
+    trials and control runs are left out.
+    """
+    import benchflow as bf
     from benchflow.metrics import collect_metrics
 
     if not Path(jobs_dir).is_dir():
@@ -1260,11 +1662,25 @@ def eval_metrics(
         # all-zeros table with exit 0 — a silent trap for scripted collectors.
         print_error(f"Not a directory: {jobs_dir}")
         raise typer.Exit(1)
+    if any(v < 1 for v in k or ()):
+        print_error("--k must be >= 1")
+        raise typer.Exit(2)
     m = collect_metrics(str(jobs_dir), benchmark=benchmark, agent=agent, model=model)
     summary = m.summary()
+    try:
+        rates = bf.load_job(jobs_dir).solve_rates(
+            ks=k or None, solve_threshold=solve_threshold
+        )
+    except FileNotFoundError:
+        rates = None
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(2) from None
+    summary["solve_rates"] = rates.to_dict() if rates is not None else None
 
     if output_json:
-        console.print(json.dumps(summary, indent=2))
+        # Plain echo: Rich wraps long lines, which breaks strings in the JSON.
+        typer.echo(json.dumps(summary, indent=2))
         return
 
     table = Table(title=f"Results: {escape(str(jobs_dir))}")
@@ -1284,8 +1700,21 @@ def eval_metrics(
         )
     table.add_row("Avg tool calls", f"{summary['avg_tool_calls']:.1f}")
     table.add_row("Avg duration", f"{summary['avg_duration_sec']:.0f}s")
+    if rates is not None:
+        table.add_row(
+            "Solve rate",
+            (f"{rates.solve_rate:.1%}" if rates.solve_rate is not None else "n/a")
+            + f" ({escape(rates.success_rule)}; {rates.trials} scored trials, "
+            f"{rates.tasks} tasks, n {rates.min_trials_per_task}"
+            f"-{rates.max_trials_per_task})",
+        )
+        for line in rates.lines():
+            label, _, value = line.partition(" ")
+            table.add_row(escape(label.rstrip(":")), escape(value))
 
     console.print(table)
+    for caveat in rates.caveats if rates is not None else ():
+        console.print(f"[dim]{escape(caveat)}[/dim]")
 
     if summary["passed_tasks"]:
         console.print(
@@ -1358,8 +1787,13 @@ def eval_view(
 # Each ``register_<group>(app)`` attaches one command group defined in a sibling
 # ``cli/<group>.py`` module, mirroring the existing ``register_continue`` /
 # ``register_tasks_generate`` / ``register_agent_router`` precedent. Order does
-# not affect behavior; it follows the historical top-level help ordering.
+# not affect behavior, only `bench --help`: doctor comes first, as in the docs.
+register_doctor(app)
 register_continue(eval_app, alias_app=app)
+register_eval_branch(eval_app)
+register_eval_results(eval_app)
+register_eval_resume(eval_app)
+register_eval_branches(eval_app)
 register_skills(app)
 register_review(app)
 register_tasks(app)

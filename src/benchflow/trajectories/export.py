@@ -32,7 +32,11 @@ from typing import Any, cast
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
-from benchflow.trajectories._export_common import aggregate_rollout_jsonl
+from benchflow.trajectories._export_common import (
+    acp_projection_coverage,
+    aggregate_rollout_jsonl,
+    is_attributed_child_event,
+)
 from benchflow.trajectories.types import redact_trajectory_obj
 
 # Canonical artifact locations (see issue #385).
@@ -168,7 +172,7 @@ def acp_events_to_messages(
             messages.append({"role": "user", "content": str(prompt)})
 
     for event in events:
-        if not isinstance(event, dict):
+        if not isinstance(event, dict) or is_attributed_child_event(event):
             continue
         etype = event.get("type")
         if etype == "user_message":
@@ -267,6 +271,9 @@ def write_rollout_verifiers_jsonl(
         is_completed=is_completed,
         is_truncated=is_truncated,
     )
+    coverage = acp_projection_coverage(trajectory)
+    if coverage is not None:
+        record["info"]["acp_projection"] = coverage
     out = Path(rollout_dir) / ROLLOUT_ARTIFACT_RELPATH
     redacted_record = _redact_verifiers_record(record)
     export_trajectories_to_jsonl([redacted_record], out)

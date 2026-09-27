@@ -18,20 +18,27 @@ import secrets
 import socket
 import socketserver
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 HEAD_LIMIT = 64 * 1024
 HEAD_TIMEOUT = 30
 IDLE_TIMEOUT = 900
 BLOCK_BODY = "Blocked by the task network policy: {url}\n"
 CERT_MINT_TIMEOUT = 15
+MODEL_BODY_LIMIT = 32 * 1024 * 1024  # Anthropic Messages API request-size ceiling
+# Content sources the model endpoint reads from the request itself; any other
+# source type (notably "url") is fetched by Anthropic on the caller's behalf.
+_REQUEST_SOURCE_TYPES = frozenset({"base64", "text", "content", "file"})
 
 
 def host_key(host: str) -> str:
@@ -103,13 +110,24 @@ def _looks_like_address(host: str) -> bool:
 
 
 class Policy:
-    """Match hosts and URLs against the denylist; scheme, port and query are ignored."""
+    """Match hosts and URLs against the task network policy.
+
+    Deny mode (``allowed_hosts is None``): everything is reachable except the
+    listed URLs and hosts; scheme, port and query are ignored. Allow mode:
+    only listed hostnames (exact, or ``*.`` for subdomains at any depth but not
+    the apex) and IP literals inside listed IP/CIDR entries are reachable.
+    CIDR entries never admit names, so the proxy never resolves an unlisted
+    name. The controller-registered model gateway stays reachable in both.
+    """
 
     def __init__(
         self,
         blocked_urls: list[str],
         blocked_hosts: list[str],
         model_gateway_port: int | None = None,
+        native_claude_model_only: bool = False,
+        allowed_hosts: list[str] | None = None,
+        native_claude_model_origin: bool = False,
     ):
         # Controller-supplied runtime state, never a task-authored allowlist.
         if model_gateway_port is not None and (
@@ -117,6 +135,18 @@ class Policy:
             or not 1024 <= model_gateway_port <= 65535
         ):
             raise ValueError("invalid model gateway port")
+        if type(native_claude_model_only) is not bool:
+            raise ValueError("invalid native model policy")
+        if type(native_claude_model_origin) is not bool:
+            raise ValueError("invalid native model origin policy")
+        if native_claude_model_only and model_gateway_port is not None:
+            raise ValueError("native model policy cannot tunnel a gateway")
+        if native_claude_model_only and allowed_hosts is not None:
+            raise ValueError("native model policy cannot carry an allowlist")
+        if native_claude_model_origin and allowed_hosts is None:
+            raise ValueError("native model origin is an allowlist addition")
+        self.native_claude_model_only = native_claude_model_only
+        self.native_claude_model_origin = native_claude_model_origin
         self.model_gateway_port = model_gateway_port
         self.prefixes: list[tuple[str, str]] = []
         for raw in blocked_urls:
@@ -128,27 +158,125 @@ class Policy:
             self.prefixes.append((host_key(parts.hostname), prefix))
         self.hosts = {h.strip().rstrip(".").lower() for h in blocked_hosts if h.strip()}
         self.inspect_hosts = {host for host, _ in self.prefixes}
+        self.allow_mode = allowed_hosts is not None
+        self.allow_names: set[str] = set()
+        self.allow_suffixes: set[str] = set()
+        self.allow_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for raw in allowed_hosts or ():
+            entry = raw.strip().rstrip(".").lower()
+            if not entry:
+                raise ValueError("empty allowed_hosts entry")
+            try:
+                self.allow_networks.append(ipaddress.ip_network(entry, strict=False))
+                continue
+            except ValueError:
+                pass
+            if entry.startswith("*."):
+                self.allow_suffixes.add(entry[2:])
+            elif "*" in entry or "/" in entry or ":" in entry:
+                raise ValueError(f"invalid allowed_hosts entry: {raw!r}")
+            else:
+                self.allow_names.add(entry)
 
     @classmethod
     def load(cls, path: str) -> Policy:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
+        allowed = data.get("allowed_hosts")
         return cls(
             list(data.get("blocked_urls") or []),
             list(data.get("blocked_hosts") or []),
             data.get("model_gateway_port"),
+            data.get("native_claude_model_only", False),
+            None if allowed is None else list(allowed),
+            data.get("native_claude_model_origin", False),
         )
 
+    def listed(self, name: str) -> bool:
+        """True when a hostname entry (exact or wildcard) names ``name``."""
+        name = name.strip().rstrip(".").lower()
+        return name in self.allow_names or any(
+            name.endswith("." + suffix) for suffix in self.allow_suffixes
+        )
+
+    @staticmethod
+    def _address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+        """The canonical address ``host`` names, judging IPv4-mapped IPv6 as IPv4."""
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return None
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            return address.ipv4_mapped
+        return address
+
+    def _in_networks(
+        self, address: ipaddress.IPv4Address | ipaddress.IPv6Address
+    ) -> bool:
+        return any(
+            address.version == net.version and address in net
+            for net in self.allow_networks
+        )
+
+    def address_allowed(self, address: str) -> bool:
+        """Whether the root proxy may open a socket to ``address``.
+
+        Deny mode: public addresses only. Allow mode: public addresses, plus
+        non-public ones inside a listed range. Loopback, unspecified and
+        multicast are never reached through the proxy.
+        """
+        parsed = self._address(address)
+        if parsed is None:
+            return False
+        if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
+            return False
+        if parsed.is_global:
+            return True
+        return self.allow_mode and self._in_networks(parsed)
+
+    def _allow_rule(self, name: str, port: int) -> str | None:
+        if self.native_claude_model_origin and (name, port) == (
+            "api.anthropic.com",
+            443,
+        ):
+            return None
+        if self.listed(name):
+            return None
+        address = self._address(name)
+        if address is not None:
+            return None if self._in_networks(address) else "not-allowlisted"
+        if _looks_like_address(name):
+            return "ip-literal"
+        return "not-allowlisted"
+
     def host_rule(self, host: str, port: int = 0) -> str | None:
+        if self.native_claude_model_only and (host, port) != ("api.anthropic.com", 443):
+            return "native-model-origin"
         if (host, port) == ("127.0.0.1", self.model_gateway_port):
             return None
         name = host.strip().rstrip(".").lower()
+        if self.allow_mode:
+            return self._allow_rule(name, port)
         if _looks_like_address(name):
             return "ip-literal"
         for blocked in self.hosts:
             if name == blocked or name.endswith("." + blocked):
                 return f"host:{blocked}"
         return None
+
+    def tunnels(self, host: str, port: int) -> bool:
+        """Destinations relayed without TLS interception.
+
+        The controller's model gateway, and in allow mode IP literals admitted
+        by a listed range: the address itself is the policy, so there is no
+        inner authority to bind.
+        """
+        if (host, port) == ("127.0.0.1", self.model_gateway_port):
+            return True
+        if not self.allow_mode:
+            return False
+        address = self._address(host)
+        return address is not None and self._in_networks(address)
 
     def url_rule(self, host: str, path: str, port: int = 0) -> str | None:
         rule = self.host_rule(host, port)
@@ -160,8 +288,92 @@ class Policy:
                 return f"url:{bhost}{bpath}"
         return None
 
+    def model_only(self, host: str) -> bool:
+        """Whether requests to ``host`` pass the native Claude model gate."""
+        if self.native_claude_model_only:
+            return True
+        return (
+            self.native_claude_model_origin
+            and host.strip().rstrip(".").lower() == "api.anthropic.com"
+            and not self.listed(host)
+        )
+
+    def request_rule(
+        self, host: str, port: int, path: str, method: str, secure: bool
+    ) -> str | None:
+        """Positive native model gate; deliberately separate from deny-prefix normalization."""
+        if self.model_only(host):
+            if (host, port, secure, method) != ("api.anthropic.com", 443, True, "POST"):
+                return "native-model-request"
+            if path not in ("/v1/messages", "/v1/messages?beta=true"):
+                return "native-model-path"
+        return self.url_rule(host, path, port)
+
+    def dns_rule(self, name: str) -> str | None:
+        """Allow mode answers DNS only for listed hostnames; deny mode answers all."""
+        if not self.allow_mode or self.listed(name):
+            return None
+        return "dns-not-allowlisted"
+
     def inspect(self, host: str) -> bool:
         return host_key(host) in self.inspect_hosts
+
+
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Refuse duplicate keys: parsers disagree on which one wins."""
+    obj = dict(pairs)
+    if len(obj) != len(pairs):
+        raise ValueError("duplicate JSON object key")
+    return obj
+
+
+def _fetches_source(value: Any) -> bool:
+    """True when a content block (or one nested in it) names a URL-like source."""
+    if isinstance(value, list):
+        return any(_fetches_source(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    source = value.get("source")
+    if isinstance(source, dict) and (
+        source.get("type") not in _REQUEST_SOURCE_TYPES
+        or _fetches_source(source.get("content"))
+    ):
+        return True
+    return _fetches_source(value.get("content"))
+
+
+def native_model_body_rule(body: bytes, headers: list[tuple[str, str]]) -> str | None:
+    """Admit a native model request only when Anthropic executes nothing for it.
+
+    Server tools (web search/fetch, code execution, advisor, MCP toolsets), MCP
+    connector servers and URL sources are run or fetched by Anthropic, so any of
+    them gives a no-web sandbox web access through the model endpoint. Only
+    client-executed custom tools pass; unreadable bodies are refused.
+    """
+    if any(
+        name.lower() == "content-encoding" and value.lower() not in ("", "identity")
+        for name, value in headers
+    ):
+        return "native-model-body-encoding"
+    try:
+        request = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_keys)
+        if not isinstance(request, dict):
+            return "native-model-body-json"
+        tools = request.get("tools", [])
+        if not isinstance(tools, list) or not all(
+            isinstance(tool, dict) and tool.get("type", "custom") == "custom"
+            for tool in tools
+        ):
+            return "native-model-body-server-tool"
+        if request.get("mcp_servers"):
+            return "native-model-body-mcp-server"
+        if _fetches_source(request.get("system")) or _fetches_source(
+            request.get("messages")
+        ):
+            return "native-model-body-url-source"
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return "native-model-body-json"
+    return None
 
 
 class CertStore:
@@ -416,12 +628,38 @@ def _request_framing(headers: list[tuple[str, str]]) -> tuple[int, bool]:
 
 
 class _BodyReader:
-    def __init__(self, sock: socket.socket, initial: bytes):
+    def __init__(
+        self,
+        sock: socket.socket,
+        initial: bytes,
+        *,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
+    ):
         self.sock, self.buffer = sock, initial
+        self.remaining = None if max_bytes is None else max_bytes - len(initial)
+        self.deadline = deadline
+        if self.remaining is not None and self.remaining < 0:
+            raise ConnectionError("request body drain budget exhausted")
+
+    def recv(self, size: int) -> bytes:
+        if self.deadline is not None:
+            remaining_time = self.deadline - time.monotonic()
+            if remaining_time <= 0:
+                raise TimeoutError("request body drain deadline exceeded")
+            self.sock.settimeout(remaining_time)
+        if self.remaining is not None:
+            if self.remaining <= 0:
+                raise ConnectionError("request body drain budget exhausted")
+            size = min(size, self.remaining)
+        data = self.sock.recv(size)
+        if self.remaining is not None:
+            self.remaining -= len(data)
+        return data
 
     def take(self, size: int) -> bytes:
         if not self.buffer:
-            self.buffer = self.sock.recv(min(size, 65536))
+            self.buffer = self.recv(min(size, 65536))
             if not self.buffer:
                 raise ConnectionError("incomplete request body")
         data, self.buffer = self.buffer[:size], self.buffer[size:]
@@ -431,7 +669,7 @@ class _BodyReader:
         while b"\r\n" not in self.buffer:
             if len(self.buffer) > HEAD_LIMIT:
                 raise ConnectionError("body line too large")
-            data = self.sock.recv(4096)
+            data = self.recv(4096)
             if not data:
                 raise ConnectionError("incomplete chunked body")
             self.buffer += data
@@ -441,20 +679,48 @@ class _BodyReader:
         return line
 
 
+class _BodyTooLarge(Exception):
+    """A buffered request body exceeded its limit."""
+
+
+class _BodyBuffer:
+    """Upstream stand-in that holds a request body for inspection."""
+
+    def __init__(self, limit: int):
+        self.data = bytearray()
+        self.limit = limit
+
+    def sendall(self, data: bytes) -> None:
+        self.data += data
+        if len(self.data) > self.limit:
+            raise _BodyTooLarge
+
+
 def _copy_request_body(
     client: socket.socket,
-    upstream: socket.socket,
+    upstream: socket.socket | _BodyBuffer | None,
     rest: bytes,
     length: int,
     chunked: bool,
+    *,
+    max_bytes: int | None = None,
+    deadline: float | None = None,
+    dechunk: bool = False,
 ) -> None:
-    """Stream only this body. Canonicalize chunks and discard trailers/pipeline bytes."""
-    reader = _BodyReader(client, rest)
+    """Stream only this body. Canonicalize chunks and discard trailers/pipeline bytes.
+
+    ``dechunk`` sends the chunk payloads alone, for a caller that re-frames them.
+    """
+    if upstream is None and (max_bytes is None or deadline is None):
+        raise ValueError("discarding a denied body requires byte and time bounds")
+    reader = _BodyReader(client, rest, max_bytes=max_bytes, deadline=deadline)
+    framing = None if dechunk else upstream
 
     def copy(size: int) -> None:
         while size:
             data = reader.take(min(size, 65536))
-            upstream.sendall(data)
+            if upstream is not None:
+                upstream.sendall(data)
             size -= len(data)
 
     if not chunked:
@@ -471,13 +737,36 @@ def _copy_request_body(
                 trailer_size += len(line) + 2
                 if trailer_size > HEAD_LIMIT:
                     raise ConnectionError("trailers too large")
-            upstream.sendall(b"0\r\n\r\n")
+            if framing is not None:
+                framing.sendall(b"0\r\n\r\n")
             return
-        upstream.sendall(f"{size:x}\r\n".encode("ascii"))
+        if framing is not None:
+            framing.sendall(f"{size:x}\r\n".encode("ascii"))
         copy(size)
         if reader.line() != b"":
             raise ConnectionError("invalid chunk terminator")
-        upstream.sendall(b"\r\n")
+        if framing is not None:
+            framing.sendall(b"\r\n")
+
+
+def _drain_denied_body(
+    client: socket.socket, rest: bytes, length: int, chunked: bool
+) -> None:
+    """Avoid TLS reset losing the refusal; consume no more than 64 KiB or 0.5 s."""
+    previous_timeout = client.gettimeout()
+    try:
+        with contextlib.suppress(OSError):
+            _copy_request_body(
+                client,
+                None,
+                rest,
+                length,
+                chunked,
+                max_bytes=65536,
+                deadline=time.monotonic() + 0.5,
+            )
+    finally:
+        client.settimeout(previous_timeout)
 
 
 class _PrivateDestination(Exception):
@@ -501,16 +790,25 @@ def _upstream_allowed(address: str) -> bool:
 
 
 def _connect_upstream(
-    host: str, port: int, *, model_gateway_port: int | None = None
+    host: str,
+    port: int,
+    *,
+    model_gateway_port: int | None = None,
+    address_allowed: Callable[[str], bool] = _upstream_allowed,
 ) -> socket.socket:
-    """Connect to a vetted address of ``host``; the root proxy must not reach sandbox-internal services."""
+    """Connect to a vetted address of ``host``; the root proxy must not reach sandbox-internal services.
+
+    Each call resolves once and connects only to the addresses it vetted, so
+    a DNS answer that changes between the policy check and the connection
+    (rebinding) is judged again rather than trusted.
+    """
     # Gemini's Undici ProxyAgent ignores NO_PROXY, even for the local model
     # gateway. Permit only the endpoint BenchFlow created; do not resolve a
     # hostname or expose any other private address/loopback port.
     if (host, port) == ("127.0.0.1", model_gateway_port):
         return socket.create_connection((host, port), timeout=HEAD_TIMEOUT)
     addresses = _resolve(host, port)
-    if not addresses or not all(_upstream_allowed(a) for a in addresses):
+    if not addresses or not all(address_allowed(a) for a in addresses):
         raise _PrivateDestination(host)
     error: OSError | None = None
     for address in addresses:
@@ -652,9 +950,19 @@ class Handler(socketserver.BaseRequestHandler):
                 self.request, method, target, version, headers, rest, secure=False
             )
 
+    def _upstream_options(self) -> dict[str, Any]:
+        policy = self.proxy.policy
+        options: dict[str, Any] = {"model_gateway_port": policy.model_gateway_port}
+        if policy.allow_mode:
+            options["address_allowed"] = policy.address_allowed
+        return options
+
     def _deny(
         self, sock: socket.socket, method: str, url: str, rule: str, **evidence: object
     ) -> None:
+        if self.proxy.policy.native_claude_model_only:
+            # Native model admission records rules, never caller-supplied URLs or headers.
+            url, evidence = "native-model-only", {}
         self.proxy.log.write(
             action="blocked", method=method, url=url, rule=rule, **evidence
         )
@@ -672,10 +980,11 @@ class Handler(socketserver.BaseRequestHandler):
         if rule:
             self._deny(self.request, "CONNECT", f"{host}:{port}", rule)
             return
-        # Only the controller-created HTTP model gateway may use an opaque
-        # tunnel. Every external CONNECT must expose its HTTP authority/path:
-        # a CDN can route a permitted SNI to a protected inner Host as well.
-        if (host, port) != ("127.0.0.1", self.proxy.policy.model_gateway_port):
+        # Only the controller-created HTTP model gateway (and, in allow mode,
+        # an IP literal inside a listed range) may use an opaque tunnel. Every
+        # other CONNECT must expose its HTTP authority/path: a CDN can route a
+        # permitted SNI to a protected inner Host as well.
+        if not self.proxy.policy.tunnels(host, port):
             # Reject internal destinations before issuing a certificate or
             # acknowledging CONNECT. Known URL-policy hosts remain inspectable
             # even when their origin is offline, so blocked paths still log.
@@ -687,7 +996,9 @@ class Handler(socketserver.BaseRequestHandler):
                         _response("502 Bad Gateway", "cannot resolve destination\n")
                     )
                     return
-                if not addresses or not all(_upstream_allowed(a) for a in addresses):
+                if not addresses or not all(
+                    self.proxy.policy.address_allowed(a) for a in addresses
+                ):
                     self._deny(
                         self.request, "CONNECT", f"{host}:{port}", "private-address"
                     )
@@ -720,9 +1031,7 @@ class Handler(socketserver.BaseRequestHandler):
                 )
             return
         try:
-            upstream = _connect_upstream(
-                host, port, model_gateway_port=self.proxy.policy.model_gateway_port
-            )
+            upstream = _connect_upstream(host, port, **self._upstream_options())
         except _PrivateDestination:
             self._deny(self.request, "CONNECT", f"{host}:{port}", "private-address")
             return
@@ -813,9 +1122,11 @@ class Handler(socketserver.BaseRequestHandler):
                 _response("417 Expectation Failed", "unsupported expectation\n")
             )
             return
-        rule = self.proxy.policy.url_rule(host, path, port)
+        rule = self.proxy.policy.request_rule(host, port, path, method, secure)
         if rule:
             self._deny(sock, method, url, rule)
+            if not expectations:
+                _drain_denied_body(sock, rest, length, chunked)
             return
         headers = [
             (n, v)
@@ -823,10 +1134,25 @@ class Handler(socketserver.BaseRequestHandler):
             if n.lower() not in {"host", "expect", "upgrade", "trailer"}
         ]
         headers.insert(0, ("Host", authority))
-        try:
-            upstream = _connect_upstream(
-                host, port, model_gateway_port=self.proxy.policy.model_gateway_port
+        body = None
+        if self.proxy.policy.model_only(host):
+            body, rule = self._read_model_body(
+                sock, headers, rest, length, chunked, bool(expectations)
             )
+            if rule:
+                self._deny(sock, method, url, rule)
+                if rule == "native-model-body-size":
+                    # Unread upload bytes would reset TLS before the refusal lands.
+                    _drain_denied_body(sock, b"", 65536, False)
+                return
+            headers = [
+                (n, v)
+                for n, v in headers
+                if n.lower() not in {"content-length", "transfer-encoding"}
+            ]
+            headers.append(("Content-Length", str(len(body))))
+        try:
+            upstream = _connect_upstream(host, port, **self._upstream_options())
             if secure:
                 upstream = self.proxy.upstream_ctx.wrap_socket(
                     upstream, server_hostname=host
@@ -845,16 +1171,270 @@ class Handler(socketserver.BaseRequestHandler):
             sock.settimeout(IDLE_TIMEOUT)
             upstream.settimeout(IDLE_TIMEOUT)
             upstream.sendall(_build_head(method, path, version, headers))
-            if expectations:
-                sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
-            _copy_request_body(
-                sock, upstream, _body_prefix(headers, rest), length, chunked
-            )
+            if body is not None:
+                upstream.sendall(body)
+            else:
+                if expectations:
+                    sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+                _copy_request_body(
+                    sock, upstream, _body_prefix(headers, rest), length, chunked
+                )
             # Never relay additional client bytes: a later request could name
             # an unchecked virtual host or path on the same origin connection.
             _relay_response(sock, upstream)
         finally:
             upstream.close()
+
+    def _read_model_body(
+        self,
+        sock: socket.socket,
+        headers: list[tuple[str, str]],
+        rest: bytes,
+        length: int,
+        chunked: bool,
+        expect_continue: bool,
+    ) -> tuple[bytes, str | None]:
+        """Buffer a native model request so no byte goes upstream before inspection."""
+        if not chunked and length > MODEL_BODY_LIMIT:
+            return b"", "native-model-body-size"
+        if expect_continue:
+            sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+        sock.settimeout(IDLE_TIMEOUT)
+        buffer = _BodyBuffer(MODEL_BODY_LIMIT)
+        try:
+            _copy_request_body(
+                sock, buffer, _body_prefix(headers, rest), length, chunked, dechunk=True
+            )
+        except _BodyTooLarge:
+            return b"", "native-model-body-size"
+        body = bytes(buffer.data)
+        return body, native_model_body_rule(body, headers)
+
+
+# ---------------------------------------------------------------- DNS filter
+#
+# Allow mode redirects the sandbox user's DNS (UDP and TCP port 53) to this
+# resolver. A listed hostname is forwarded to the resolvers in
+# /etc/resolv.conf (as root, which the redirect does not touch); every other
+# question is answered REFUSED without any upstream query, so a name the
+# agent chooses never leaves the sandbox (no DNS exfiltration, no resolution
+# of unlisted hosts).
+
+DNS_TIMEOUT = 5
+_DNS_MAX = 65535
+
+
+def _dns_question(query: bytes) -> str | None:
+    """The single question name of a standard query, or None when malformed."""
+    if len(query) < 12:
+        return None
+    _ident, flags, qdcount = struct.unpack("!HHH", query[:6])
+    if flags & 0x8000 or (flags >> 11) & 0xF != 0 or qdcount != 1:
+        return None
+    labels: list[str] = []
+    offset = 12
+    while True:
+        if offset >= len(query):
+            return None
+        length = query[offset]
+        offset += 1
+        if length == 0:
+            break
+        if length > 63 or offset + length > len(query):
+            return None  # compression pointers and oversize labels
+        try:
+            labels.append(query[offset : offset + length].decode("ascii").lower())
+        except UnicodeDecodeError:
+            return None
+        offset += length
+    if offset + 4 > len(query):
+        return None
+    return ".".join(labels)
+
+
+def _dns_error(query: bytes, rcode: int, *, echo_question: bool) -> bytes:
+    ident = query[:2] if len(query) >= 2 else b"\0\0"
+    flags = (struct.unpack("!H", query[2:4])[0] if len(query) >= 4 else 0) & 0x7900
+    flags |= 0x8000 | 0x0080 | rcode  # QR, RA, rcode; keep opcode and RD
+    if not echo_question:
+        return ident + struct.pack("!HHHHH", flags, 0, 0, 0, 0)
+    end = 12
+    while query[end] != 0:
+        end += 1 + query[end]
+    return ident + struct.pack("!HHHHH", flags, 1, 0, 0, 0) + query[12 : end + 5]
+
+
+def dns_answer(
+    query: bytes, policy: Policy, forward: Callable[[bytes], bytes]
+) -> tuple[bytes, str | None]:
+    """Answer one DNS query; ``forward`` is called only for permitted names."""
+    name = _dns_question(query)
+    if name is None:
+        return _dns_error(query, 1, echo_question=False), "dns-malformed"
+    rule = policy.dns_rule(name)
+    if rule:
+        return _dns_error(query, 5, echo_question=True), rule
+    return forward(query), None
+
+
+def resolv_conf_upstreams(path: str = "/etc/resolv.conf") -> list[str]:
+    """``host:53`` for each nameserver line (IPv6 bracketed)."""
+    upstreams: list[str] = []
+    with contextlib.suppress(OSError), open(path, encoding="utf-8") as fh:
+        for line in fh:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "nameserver":
+                host = parts[1].split("%", 1)[0]
+                upstreams.append(f"[{host}]:53" if ":" in host else f"{host}:53")
+    return upstreams
+
+
+def _split_upstream(upstream: str) -> tuple[str, int]:
+    host, _, port = upstream.rpartition(":")
+    return host.strip("[]"), int(port)
+
+
+def _forward_udp(query: bytes, upstreams: list[str]) -> bytes:
+    for upstream in upstreams:
+        host, port = _split_upstream(upstream)
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.socket(family, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(DNS_TIMEOUT)
+            try:
+                sock.sendto(query, (host, port))
+                while True:
+                    reply, _addr = sock.recvfrom(_DNS_MAX)
+                    if reply[:2] == query[:2]:
+                        return reply
+            except OSError:
+                continue
+    return _dns_error(query, 2, echo_question=True)  # SERVFAIL
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        part = sock.recv(size - len(data))
+        if not part:
+            raise ConnectionError("short DNS read")
+        data += part
+    return data
+
+
+def _forward_tcp(query: bytes, upstreams: list[str]) -> bytes:
+    for upstream in upstreams:
+        host, port = _split_upstream(upstream)
+        try:
+            with socket.create_connection((host, port), timeout=DNS_TIMEOUT) as sock:
+                sock.sendall(struct.pack("!H", len(query)) + query)
+                size = struct.unpack("!H", _recv_exact(sock, 2))[0]
+                return _recv_exact(sock, size)
+        except (OSError, ConnectionError, struct.error):
+            continue
+    return _dns_error(query, 2, echo_question=True)
+
+
+class _DnsUdpHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        query, sock = self.request
+        server = cast(_DnsServerState, self.server)
+        try:
+            reply, rule = dns_answer(
+                query, server.policy, lambda q: _forward_udp(q, server.upstreams)
+            )
+        except (IndexError, struct.error):
+            reply, rule = _dns_error(query, 1, echo_question=False), "dns-malformed"
+        if rule:
+            _log_dns_refusal(server, query, rule)
+        with contextlib.suppress(OSError):
+            sock.sendto(reply, self.client_address)
+
+
+class _DnsTcpHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        server = cast(_DnsServerState, self.server)
+        sock = self.request
+        sock.settimeout(DNS_TIMEOUT)
+        try:
+            size = struct.unpack("!H", _recv_exact(sock, 2))[0]
+            query = _recv_exact(sock, size)
+            try:
+                reply, rule = dns_answer(
+                    query, server.policy, lambda q: _forward_tcp(q, server.upstreams)
+                )
+            except (IndexError, struct.error):
+                reply, rule = _dns_error(query, 1, echo_question=False), "dns-malformed"
+            if rule:
+                _log_dns_refusal(server, query, rule)
+            sock.sendall(struct.pack("!H", len(reply)) + reply)
+        except (OSError, ConnectionError, struct.error):
+            pass
+
+
+def _log_dns_refusal(server: _DnsServerState, query: bytes, rule: str) -> None:
+    name = _dns_label(query)
+    if server.recent.first(f"{rule}:{name}"):
+        server.log.write(action="blocked", method="DNS", url=name, rule=rule)
+
+
+def _dns_label(query: bytes) -> str:
+    try:
+        return _dns_question(query) or "<malformed>"
+    except (IndexError, struct.error):
+        return "<malformed>"
+
+
+class _DnsServerState:
+    policy: Policy
+    log: Log
+    upstreams: list[str]
+    recent: _RecentRefusals
+
+
+class _RecentRefusals:
+    """Collapse a resolver's retry burst (each nameserver, A and AAAA) to one log line."""
+
+    WINDOW = 5.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: dict[str, float] = {}
+
+    def first(self, name: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            last = self._seen.get(name)
+            self._seen[name] = now
+            if len(self._seen) > 4096:
+                self._seen = {
+                    k: v for k, v in self._seen.items() if now - v < self.WINDOW
+                }
+            return last is None or now - last >= self.WINDOW
+
+
+class _DnsUdpServer(_DnsServerState, socketserver.ThreadingUDPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class _DnsTcpServer(_DnsServerState, socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def serve_dns(
+    port: int, policy: Policy, log: Log, upstreams: list[str]
+) -> list[_DnsUdpServer | _DnsTcpServer]:
+    """Bind the filtering resolver on loopback UDP and TCP (callers run ``serve_forever``)."""
+    servers: list[_DnsUdpServer | _DnsTcpServer] = [
+        _DnsUdpServer(("127.0.0.1", port), _DnsUdpHandler),
+        _DnsTcpServer(("127.0.0.1", port), _DnsTcpHandler),
+    ]
+    recent = _RecentRefusals()
+    for server in servers:
+        server.policy, server.log, server.upstreams = policy, log, upstreams
+        server.recent = recent
+    return servers
 
 
 def serve(
@@ -889,17 +1469,35 @@ def main(argv: list[str] | None = None) -> int:
         "--log", help="JSONL file for blocked attempts (default stderr)"
     )
     parser.add_argument("--upstream-ca", help="CA bundle for upstream TLS (tests)")
+    parser.add_argument(
+        "--dns-port", type=int, help="allow mode: loopback port of the DNS filter"
+    )
     args = parser.parse_args(argv)
+    policy = Policy.load(args.policy)
+    log = Log(args.log)
+    if args.dns_port is not None:
+        upstreams = resolv_conf_upstreams()
+        for dns_server in serve_dns(args.dns_port, policy, log, upstreams):
+            threading.Thread(
+                target=dns_server.serve_forever,
+                kwargs={"poll_interval": 0.5},
+                daemon=True,
+            ).start()
+        print(
+            f"egress DNS filter on 127.0.0.1:{args.dns_port} -> {','.join(upstreams)}",
+            file=sys.stderr,
+            flush=True,
+        )
     server = serve(
         args.port,
-        Policy.load(args.policy),
+        policy,
         CertStore(
             args.cert_dir,
             ca_cert=args.ca_cert,
             ca_key=args.ca_key,
             openssl_bin=args.openssl,
         ),
-        Log(args.log),
+        log,
         upstream_ca=args.upstream_ca,
     )
     print(

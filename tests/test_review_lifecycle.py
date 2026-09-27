@@ -39,7 +39,8 @@ async def test_reviewer_wait_is_outside_solver_deadline(tmp_path, monkeypatch):
         rollout._phase = "cleaned"
         return original
 
-    async def reviewer(instance, *, result):
+    async def reviewer(instance, *, result, lock_held=False):
+        assert lock_held
         assert result is original
         await asyncio.sleep(0.04)
         return reviewed

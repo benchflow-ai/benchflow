@@ -56,6 +56,13 @@ class SandboxSnapshotNotSupported(NotImplementedError):
     """
 
 
+class SandboxRestoreHostConfigUnavailable(RuntimeError):
+    """Restore cannot safely reconstruct the live container host configuration.
+
+    Adapted from JeremyJC67, benchflow-ai/benchflow PR #1046.
+    """
+
+
 class SandboxStartupError(RuntimeError):
     """Raised when sandbox creation fails or times out.
 

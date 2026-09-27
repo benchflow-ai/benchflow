@@ -314,3 +314,64 @@ class TestCrossBackendRedactionParity:
         canonical_norm = re.sub(r"/tmp/canonical_[0-9a-f]{16}", "<ENV_PATH>", canonical)
         assert self._normalize(docker_wrapped) == canonical_norm
         assert self._normalize(daytona_wrapped) == canonical_norm
+
+
+class TestEnvWrapperBackgroundCommands:
+    """A backgrounded command must stay a single background job once wrapped.
+
+    Guards the Environment-plane manifest service start on Daytona: every
+    manifest run adds ``BENCHFLOW_TASK_ID`` to the sandbox's persistent env, so
+    ``ManifestEnvironment`` service starts (``nohup CMD </dev/null >log 2>&1 &``)
+    go through this wrapper. Joined with ``&&``, the trailing ``&`` backgrounded
+    the whole list, including a subshell that kept the caller's stdout open, so
+    the Daytona session command never finished and every manifest rollout
+    failed with ``Command timed out after 15 seconds``.
+    """
+
+    @staticmethod
+    def _run(wrapped: str, timeout: float) -> None:
+        import subprocess
+
+        subprocess.run(
+            ["bash", "-c", wrapped],
+            # Pipes, like a Daytona session: a background job that inherits
+            # them keeps run() waiting until the timeout.
+            capture_output=True,
+            timeout=timeout,
+            check=True,
+        )
+
+    def test_detached_background_command_does_not_hold_the_output_pipe(
+        self, tmp_path
+    ) -> None:
+        wrapped = _wrap_daytona_command_with_env_file(
+            {"BENCHFLOW_TASK_ID": "demo"},
+            "nohup sleep 30 </dev/null >/dev/null 2>&1 &",
+        )
+        self._run(wrapped, timeout=10)
+
+    def test_background_command_still_sees_the_env(self, tmp_path) -> None:
+        import time
+
+        out = tmp_path / "seen.txt"
+        wrapped = _wrap_daytona_command_with_env_file(
+            {"BENCHFLOW_TASK_ID": "demo"},
+            f"nohup sh -c 'echo $BENCHFLOW_TASK_ID > {out}' </dev/null >/dev/null 2>&1 &",
+        )
+        self._run(wrapped, timeout=10)
+        for _ in range(50):
+            if out.exists() and out.read_text().strip():
+                break
+            time.sleep(0.1)
+        assert out.read_text().strip() == "demo"
+
+    def test_failed_env_source_does_not_run_the_command(self, tmp_path) -> None:
+        import subprocess
+
+        marker = tmp_path / "ran"
+        wrapped = _wrap_daytona_command_with_env_file(
+            {"X": "1"}, f"touch {marker}"
+        ).replace("base64 -d", "false")
+        proc = subprocess.run(["bash", "-c", wrapped], capture_output=True)
+        assert proc.returncode != 0
+        assert not marker.exists()

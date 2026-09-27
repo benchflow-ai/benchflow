@@ -39,8 +39,7 @@ async def test_evaluation_run_writes_summary_for_single_task(tmp_path):
     job = Evaluation(
         tasks_dir=task_dir, jobs_dir=jobs_dir, config=cfg, job_name="single-run"
     )
-    job._sdk = AsyncMock()
-    job._sdk.run = AsyncMock(
+    job._run_single_task = AsyncMock(
         return_value=RunResult(task_name="lone-task", rewards={"reward": 1.0})
     )
 

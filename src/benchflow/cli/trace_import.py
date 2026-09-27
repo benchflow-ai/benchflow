@@ -318,8 +318,6 @@ def _load_hf(dataset: str, format: str | None, split: str, max_rows: int) -> lis
 
 def _parse_hf_messages_file(path: Path) -> list:
     """Parse a JSONL file of HuggingFace ``claude-messages`` rows."""
-    import json as _json
-
     from benchflow.traces.huggingface import _parse_claude_messages_row
 
     traces = []
@@ -329,8 +327,8 @@ def _parse_hf_messages_file(path: Path) -> list:
             if not line:
                 continue
             try:
-                row = _json.loads(line)
-            except _json.JSONDecodeError:
+                row = json.loads(line)
+            except json.JSONDecodeError:
                 continue
             if isinstance(row, dict):
                 parsed = _parse_claude_messages_row(row, idx=i)

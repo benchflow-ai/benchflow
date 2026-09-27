@@ -839,9 +839,9 @@ Current implementation status:
 | `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
 | imported `steps` | yes | no/partial | fail closed per sandbox until implemented |
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
-| network allowlist | yes | no/partial | per-sandbox capability check |
+| network allowlist | yes | partial | `docker`: yes; `daytona`: yes (direct and DinD compose); `modal`, `apple-container`, and `agentcore` refuse the mode; `verifier.network_mode: allowlist` is refused on every backend |
 | network denylist | yes | partial | `docker`: yes; `daytona`: yes; `modal`, `apple-container`, and `agentcore` refuse the mode at the capability gate |
-| separate verifier env | yes | no/partial | materializer plus verifier runner support |
+| separate verifier env | yes | partial | `docker` and `daytona`: yes (image from `[verifier.sandbox]`, `[sandbox].docker_image`, `tests/Dockerfile` or `environment/Dockerfile`; see [separate-verifier.md](./separate-verifier.md)); other backends, `llm-judge` verifiers and per-step modes refuse at the capability gate |
 | Windows / TPU | yes | no | fail closed |
 | healthcheck | yes | no/partial | fail closed until sandbox healthcheck support lands |
 | workdir | yes | partial | absolute non-root paths are materialized; root/relative paths fail closed |
@@ -944,7 +944,7 @@ validate_task_runtime_support(task, *, sandbox, task_dir) -> list[UnsupportedTas
 ```
 
 It reports stable config paths and reasons for unsupported `steps`, root/step
-`artifacts`, allowlists, separate verifier environments, Windows, TPU,
+`artifacts`, allowlists on backends that cannot enforce them, verifier allowlists, separate verifier environments (off Docker and Daytona), Windows, TPU,
 healthchecks, unsafe workdirs, document-only `user`/`benchflow` runtime
 semantics, and non-`main` verifier services on backends that cannot run them.
 It is wired into `bench tasks check --sandbox <backend>` and the shared sandbox

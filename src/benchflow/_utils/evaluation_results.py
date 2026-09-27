@@ -141,6 +141,35 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
     }
 
 
+def solve_rate_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """The ``solve_rates`` block of summary.json (``benchflow.pass_at_k``).
+
+    One Evaluation holds one result per task, so ``n = 1`` and only pass@1
+    is defined here; pool repeated trials with ``bench eval metrics`` over
+    the trial folders, ``bf.load_job(...).solve_rates()`` or the matrix
+    summary. Errored / verifier-errored results are unscored (left out of
+    ``n``); the pass verdict is the shared score classifier's.
+    """
+    from benchflow._utils.scoring import classify_score_outcome, extract_reward
+    from benchflow.pass_at_k import Sample, solve_rates
+
+    samples = []
+    for name, r in results.items():
+        outcome = classify_score_outcome(r)
+        scored = outcome in ("passed", "failed")
+        reward = extract_reward(r) if scored else None
+        if scored and reward is None:  # a gate verdict without a reward value
+            reward = 1.0 if outcome == "passed" else 0.0
+        samples.append(
+            Sample(
+                str(r.get("task_name") or name),
+                reward,
+                outcome == "passed" if scored else None,
+            )
+        )
+    return {"solve_rates": solve_rates(samples).to_dict()}
+
+
 def loop_summary(results: dict[str, dict]) -> dict[str, Any]:
     """Aggregate per-rollout ``loop`` blocks into a job-level convergence report.
 

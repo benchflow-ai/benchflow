@@ -47,8 +47,10 @@ from typing import Any, cast
 from benchflow._utils.json_safe import dumps_finite
 from benchflow.trajectories._export_common import (
     ThoughtBuffer,
+    acp_projection_coverage,
     aggregate_rollout_jsonl,
     content_blocks_to_text,
+    is_attributed_child_event,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 
@@ -112,7 +114,7 @@ def acp_events_to_adp_content(
             )
 
     for event in events:
-        if not isinstance(event, dict):
+        if not isinstance(event, dict) or is_attributed_child_event(event):
             continue
         etype = event.get("type")
         if etype == "user_message":
@@ -186,6 +188,9 @@ def trajectory_to_adp_record(
     """
     content = acp_events_to_adp_content(events, prompts)
     out_details = dict(details or {})
+    coverage = acp_projection_coverage(events)
+    if coverage is not None:
+        out_details["acp_projection"] = coverage
     if reward is not None:
         placed = False
         for item in reversed(content):

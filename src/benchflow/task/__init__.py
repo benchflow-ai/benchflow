@@ -42,6 +42,12 @@ from benchflow.task.document import (
     render_task_md_from_legacy,
 )
 from benchflow.task.env import resolve_env_vars
+from benchflow.task.equivalence import (
+    EquivalenceReport,
+    check_equivalence,
+    check_equivalence_async,
+    run_equivalence_battery,
+)
 from benchflow.task.export import (
     CompatibilityExportLoss,
     CompatibilityExportReport,
@@ -117,6 +123,10 @@ from benchflow.task.verifier_document import (
 
 __all__ = [
     "Task",
+    "EquivalenceReport",
+    "check_equivalence",
+    "check_equivalence_async",
+    "run_equivalence_battery",
     "TaskPaths",
     "TaskConfig",
     "TASK_DOCUMENT_FILENAME",

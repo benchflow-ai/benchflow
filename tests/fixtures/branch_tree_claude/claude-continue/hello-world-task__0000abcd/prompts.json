@@ -1,0 +1,4 @@
+[
+  "This is step 1 of a two-step exercise. In the current working directory, create a file named draft.txt containing exactly one line: Hello world. Do not create any other files, and do not create hello.txt.",
+  "Create a file called `hello.txt` in the current directory containing exactly:\n\n```\nHello, world!\n```"
+]

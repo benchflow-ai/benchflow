@@ -7,7 +7,7 @@ from typing import Any
 
 from benchflow.agents.errors import AgentProtocolError
 
-from .session import ACPSession
+from .session import ACPSession, _host_receipt
 from .transport import StdioTransport, Transport
 from .types import (
     ACP_PROTOCOL_VERSION,
@@ -61,12 +61,28 @@ class ACPClient:
     Lifecycle: connect → initialize → session_new → prompt (loop) → close
     """
 
-    def __init__(self, transport: Transport):
+    def __init__(self, transport: Transport, *, subagent_transcript: bool = False):
         self._transport = transport
         self._request_id = 100000  # High start to avoid collision with agent IDs
         self._session: ACPSession | None = None
+        # True when session/new returned no sessionId and the session runs
+        # under a placeholder ID that cannot be compared with the agent's.
+        self._session_id_is_placeholder = False
+        self._subagent_transcript = subagent_transcript
+        self._opening_session_updates: (
+            list[tuple[dict[str, Any], dict[str, str]]] | None
+        ) = None
         self._initialize_result: InitializeResult | None = None
         self._ask_user_handler: AskUserHandler | None = None
+
+    def expect_silence(self, seconds: float) -> None:
+        """Let the transport's read guard wait at least *seconds* (#1143).
+
+        Transports without a read guard (stdio, test doubles) ignore it.
+        """
+        hook = getattr(self._transport, "expect_silence", None)
+        if callable(hook):
+            hook(seconds)
 
     def on_ask_user(self, handler: AskUserHandler | None) -> None:
         """Register the agent-initiated ``session/request_permission`` handler.
@@ -181,18 +197,43 @@ class ACPClient:
 
             logger.debug(f"ACPClient ignoring unknown message: {msg}")
 
-    async def _handle_notification(self, msg: dict[str, Any]) -> None:
+    async def _handle_notification(
+        self, msg: dict[str, Any], *, _receipt: dict[str, str] | None = None
+    ) -> None:
         """Handle incoming notifications from the agent."""
         method = msg.get("method", "")
         params = msg.get("params", {})
 
+        if method == "session/update" and self._opening_session_updates is not None:
+            # session/new and session/load may replay history before their
+            # response assigns the final ID. Do not contaminate the old session.
+            self._opening_session_updates.append((msg, _host_receipt()))
+            return
         if method == "session/update" and self._session:
+            # Drop only when both IDs are real and differ. Under a placeholder
+            # ID every update is the session's own as far as we can tell.
+            session_id = params.get("sessionId")
+            if (
+                not self._session_id_is_placeholder
+                and isinstance(session_id, str)
+                and session_id
+                and session_id != self._session.session_id
+            ):
+                logger.warning(
+                    "Ignoring ACP update for session %r (current session %r)",
+                    session_id,
+                    self._session.session_id,
+                )
+                return
             update = params.get("update", {})
             logger.debug(
                 f"ACPClient session/update: {update.get('sessionUpdate', '?')}"
                 f" toolCallId={update.get('toolCallId', '')}"
             )
-            self._session.handle_update(update)
+            if _receipt is None:
+                self._session.handle_update(update)
+            else:
+                self._session.handle_update(update, _receipt=_receipt)
 
     async def _handle_agent_request(self, msg: dict[str, Any]) -> None:
         """Handle requests from agent (fs/terminal) — auto-approve and proxy to environment."""
@@ -281,6 +322,9 @@ class ACPClient:
                 fs=FsCapabilities(read_text_file=False, write_text_file=False),
                 terminal=False,
                 auth=AuthCapabilities(),
+                field_meta=(
+                    {"subagent-transcript": True} if self._subagent_transcript else None
+                ),
             ),
             client_info=ClientInfo(name="benchflow", version="2.0.0"),
         )
@@ -315,19 +359,9 @@ class ACPClient:
         params = NewSessionParams.model_validate(
             {"cwd": cwd, "mcpServers": server_params}
         )
-        result = await self._send_request(
+        return await self._open_session(
             "session/new", params.model_dump(by_alias=True, exclude_none=True)
         )
-        session_id = result.get("sessionId", "default")
-        self._session = ACPSession(session_id)
-        self._session.model_state = result.get("models")
-        self._session.config_options = result.get("configOptions") or []
-        if self._initialize_result:
-            self._session.agent_info = self._initialize_result.agent_info
-            self._session.agent_capabilities = (
-                self._initialize_result.agent_capabilities
-            )
-        return self._session
 
     async def session_load(
         self,
@@ -342,17 +376,35 @@ class ACPClient:
         """
         server_params = [spec.to_new_session_param() for spec in mcp_servers or []]
         params = {"sessionId": session_id, "cwd": cwd, "mcpServers": server_params}
-        result = await self._send_request("session/load", params)
-        loaded_id = result.get("sessionId", session_id)
-        self._session = ACPSession(loaded_id)
-        self._session.model_state = result.get("models")
-        self._session.config_options = result.get("configOptions") or []
+        return await self._open_session("session/load", params, session_id)
+
+    async def _open_session(
+        self, method: str, params: dict[str, Any], known_id: str | None = None
+    ) -> ACPSession:
+        """Open a session; ``known_id`` is the caller's real ID for session/load."""
+        if self._opening_session_updates is not None:
+            raise RuntimeError("ACP session handshake already in progress")
+        updates: list[tuple[dict[str, Any], dict[str, str]]] = []
+        self._opening_session_updates = updates
+        try:
+            result = await self._send_request(method, params)
+        finally:
+            # Failed/cancelled handshakes discard their buffer and leave the
+            # previously assigned session unchanged.
+            self._opening_session_updates = None
+        agent_id = result.get("sessionId")
+        session_id = agent_id if isinstance(agent_id, str) and agent_id else known_id
+        session = ACPSession(session_id or "default")
+        session.model_state = result.get("models")
+        session.config_options = result.get("configOptions") or []
         if self._initialize_result:
-            self._session.agent_info = self._initialize_result.agent_info
-            self._session.agent_capabilities = (
-                self._initialize_result.agent_capabilities
-            )
-        return self._session
+            session.agent_info = self._initialize_result.agent_info
+            session.agent_capabilities = self._initialize_result.agent_capabilities
+        self._session = session
+        self._session_id_is_placeholder = not session_id
+        for notification, receipt in updates:
+            await self._handle_notification(notification, _receipt=receipt)
+        return session
 
     async def authenticate(self, method_id: str) -> dict:
         """Authenticate with the agent using one of its advertised auth methods.

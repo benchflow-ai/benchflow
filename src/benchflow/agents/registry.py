@@ -132,7 +132,11 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
+# Exact pins. The Codex Apps and native Claude no-web admission gates verify
+# installed clients against these through pinned_npm_package(), so a bump here
+# retargets them; re-run their credential-free conformance fixtures when bumping.
 _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
+_CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.6.0"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -187,6 +191,20 @@ def _npm_package_spec(package: str) -> str:
     if "@" in package.lstrip("@"):
         return package
     return f"{package}@latest"
+
+
+def pinned_npm_package(agent: str) -> tuple[str, str]:
+    """Return the built-in ``(package, version)`` pin of a policy-gated ACP agent.
+
+    Reads the constants, not mutable ``AGENTS``: a manifest override must not
+    redefine the version an admission gate verifies.
+    """
+    spec = {
+        "claude-agent-acp": _CLAUDE_AGENT_ACP_PACKAGE,
+        "codex-acp": _CODEX_ACP_PACKAGE,
+    }[agent]
+    package, _, version = spec.rpartition("@")
+    return package, version
 
 
 def _js_agent_install(binary: str, package: str) -> str:
@@ -321,7 +339,12 @@ def _json_settings_merge(path: str, mutator: str) -> str:
         f"{mutator};"
         "p.write_text(json.dumps(d, indent=2) + '\\n')"
     )
-    return f"python3 -c {shlex.quote(py)}"
+    # Name the requirement: a bare "python3: not found" reads as an agent bug.
+    return (
+        "{ command -v python3 >/dev/null 2>&1 || { echo 'BenchFlow agent settings "
+        "setup needs python3 in the task image' >&2; exit 127; }; "
+        f"python3 -c {shlex.quote(py)}; }}"
+    )
 
 
 # OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
@@ -501,6 +524,9 @@ class AgentConfig:
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
+    acp_subagent_transcript: bool = False
+    # Only verified direct harnesses may request the legacy same-session child
+    # transcript extension; this does not advertise native child sessions.
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
@@ -587,10 +613,24 @@ _ANTIGRAVITY_NO_HOSTED_SEARCH_CMD = _json_settings_merge(
     ),
 )
 
+# Immutable built-in command, before manifest/plugin overrides. Policy checks
+# must not confuse a replacement harness with the executable they probed.
+CODEX_ACP_BUILTIN_LAUNCH = (
+    'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
+    'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
+    'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
+    '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+    "fi; exec "
+    + _js_agent_launch(
+        "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+    )
+)
+
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
         name="claude-agent-acp",
+        acp_subagent_transcript=True,
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
@@ -697,9 +737,7 @@ AGENTS: dict[str, AgentConfig] = {
         # config option, but that option rejects ``model[effort]`` ids
         # (-32602), so runtime.py keeps codex on session/set_model — verified
         # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
-        install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@1.6.0"
-        ),
+        install_cmd=_js_agent_install("codex-acp", _CODEX_ACP_PACKAGE),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
         # instead of relying on core's credential_files writer. This makes the
@@ -707,16 +745,7 @@ AGENTS: dict[str, AgentConfig] = {
         # byte-identical to the former credential_files template
         # ({"OPENAI_API_KEY": "<key>"}) and keeps the old 0600 secret mode.
         # `exec` so signals/PID reach codex.
-        launch_cmd=(
-            'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
-            'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
-            'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
-            '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
-            "fi; exec "
-            + _js_agent_launch(
-                "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
-            )
-        ),
+        launch_cmd=CODEX_ACP_BUILTIN_LAUNCH,
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
         api_protocol="openai-responses",
@@ -1313,6 +1342,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         home_dirs=config.home_dirs,
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
+        # acpx forwarding of this extension has not been verified.
+        acp_subagent_transcript=False,
         supports_acp_set_model=config.supports_acp_set_model,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
@@ -1358,6 +1389,19 @@ def _resolve_namespace_shorthand(name: str) -> AgentConfig | None:
         if candidate in AGENTS:
             return AGENTS[candidate]
     return None
+
+
+# Agents BenchFlow runs itself instead of launching an ACP agent: ``oracle``
+# runs the task's own solution (oracle/solve.sh); ``nop`` runs nothing, so the
+# verifier scores the untouched workspace (the empty control run that proves a
+# verifier does not pass on untouched state). Neither needs a model or
+# credentials.
+SCRIPTED_AGENTS = frozenset({"oracle", "nop"})
+
+
+def is_scripted_agent(name: str | None) -> bool:
+    """True for ``oracle`` and ``nop``: no ACP agent, no model, no install."""
+    return name in SCRIPTED_AGENTS
 
 
 def resolve_agent(spec: str) -> AgentConfig:
@@ -1448,6 +1492,10 @@ def resolve_agent_key(spec: str) -> str:
     Unknown agents are returned unchanged so callers can still surface their
     own diagnostics (raw-command fallback).
     """
+    if is_scripted_agent(spec):
+        # A built-in scripted runner (oracle, nop), not a registry agent. Resolving it
+        # would miss and fetch the remote agents source on every oracle run.
+        return spec
     try:
         config = resolve_agent(spec)
     except KeyError:

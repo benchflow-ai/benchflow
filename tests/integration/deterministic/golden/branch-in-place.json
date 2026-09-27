@@ -1,0 +1,273 @@
+{
+  "fork": {
+    "children": [
+      {
+        "label": "pass",
+        "reward": 1.0,
+        "reward_source": "verifier",
+        "status": "scored"
+      },
+      {
+        "label": "wrong",
+        "reward": 0.0,
+        "reward_source": "verifier",
+        "status": "scored"
+      }
+    ],
+    "children_mode": {
+      "child_retries": 1,
+      "concurrency": 1,
+      "continue_after_child_failure": true,
+      "isolated": false,
+      "prewarm": 0
+    },
+    "parent_restore": "restored",
+    "status": "completed",
+    "value": 0.5,
+    "value_stderr": 0.5
+  },
+  "parent": {
+    "acp_trajectory": [
+      {
+        "text": "Write a draft first. [[fake-llm:draft]]",
+        "type": "user_message"
+      },
+      {
+        "text": "Writing a draft.",
+        "type": "agent_message"
+      },
+      {
+        "content": [
+          {
+            "content": {
+              "text": "Write draft.txt",
+              "type": "text"
+            },
+            "type": "content"
+          }
+        ],
+        "kind": "execute",
+        "raw_input": {
+          "command": "printf 'draft\\n' > /app/draft.txt",
+          "description": "Write draft.txt"
+        },
+        "raw_output": "(Bash completed with no output)",
+        "status": "completed",
+        "title": "printf 'draft\\n' > /app/draft.txt",
+        "tool_call_id": "toolu_fake_draft_0",
+        "tool_name": "Bash",
+        "type": "tool_call"
+      },
+      {
+        "text": "Draft written.",
+        "type": "agent_message"
+      },
+      {
+        "text": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:hello-pass]]",
+        "type": "user_message"
+      },
+      {
+        "text": "Writing hello.txt.",
+        "type": "agent_message"
+      },
+      {
+        "content": [
+          {
+            "content": {
+              "text": "Write hello.txt",
+              "type": "text"
+            },
+            "type": "content"
+          }
+        ],
+        "kind": "execute",
+        "raw_input": {
+          "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+          "description": "Write hello.txt"
+        },
+        "raw_output": "(Bash completed with no output)",
+        "status": "completed",
+        "title": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "tool_call_id": "toolu_fake_hello-pass_0",
+        "tool_name": "Bash",
+        "type": "tool_call"
+      },
+      {
+        "text": "Created /app/hello.txt.",
+        "type": "agent_message"
+      }
+    ],
+    "atif": {
+      "agent": {
+        "model_name": "claude-haiku-4-5",
+        "name": "@agentclientprotocol/claude-agent-acp",
+        "version": "unknown"
+      },
+      "final_metrics": {
+        "total_cached_tokens": 0,
+        "total_completion_tokens": 200,
+        "total_prompt_tokens": 4000,
+        "total_steps": 10
+      },
+      "schema_version": "ATIF-v1.7",
+      "steps": [
+        {
+          "message": "Write a draft first. [[fake-llm:draft]]",
+          "source": "user",
+          "step_id": 1
+        },
+        {
+          "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:hello-pass]]",
+          "source": "user",
+          "step_id": 2
+        },
+        {
+          "message": "Write a draft first. [[fake-llm:draft]]",
+          "source": "user",
+          "step_id": 3
+        },
+        {
+          "message": "Writing a draft.",
+          "source": "agent",
+          "step_id": 4
+        },
+        {
+          "message": "",
+          "observation": {
+            "results": [
+              {
+                "content": "Write draft.txt",
+                "source_call_id": "toolu_fake_draft_0"
+              }
+            ]
+          },
+          "source": "agent",
+          "step_id": 5,
+          "tool_calls": [
+            {
+              "arguments": {},
+              "extra": {
+                "status": "completed",
+                "title": "printf 'draft\\n' > /app/draft.txt"
+              },
+              "function_name": "execute",
+              "tool_call_id": "toolu_fake_draft_0"
+            }
+          ]
+        },
+        {
+          "message": "Draft written.",
+          "source": "agent",
+          "step_id": 6
+        },
+        {
+          "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:hello-pass]]",
+          "source": "user",
+          "step_id": 7
+        },
+        {
+          "message": "Writing hello.txt.",
+          "source": "agent",
+          "step_id": 8
+        },
+        {
+          "message": "",
+          "observation": {
+            "results": [
+              {
+                "content": "Write hello.txt",
+                "source_call_id": "toolu_fake_hello-pass_0"
+              }
+            ]
+          },
+          "source": "agent",
+          "step_id": 9,
+          "tool_calls": [
+            {
+              "arguments": {},
+              "extra": {
+                "status": "completed",
+                "title": "printf 'Hello, world!\\n' > /app/hello.txt"
+              },
+              "function_name": "execute",
+              "tool_call_id": "toolu_fake_hello-pass_0"
+            }
+          ]
+        },
+        {
+          "message": "Created /app/hello.txt.",
+          "source": "agent",
+          "step_id": 10
+        }
+      ]
+    },
+    "llm_calls": [],
+    "outcome": {
+      "assessment": "scored",
+      "execution": "completed",
+      "reward": 1.0
+    },
+    "result": {
+      "agent_result": {
+        "cost_usd": null,
+        "n_cache_creation_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_input_tokens": 4000,
+        "n_output_tokens": 200,
+        "n_prompts": 2,
+        "n_skill_invocations": 0,
+        "n_tool_calls": 2,
+        "price_source": null,
+        "total_tokens": 4200,
+        "usage_details": {
+          "thought_tokens": 0
+        },
+        "usage_source": "agent_native_acp"
+      },
+      "agent_timeout": null,
+      "error_category": null,
+      "final_metrics": {
+        "total_cached_tokens": 0,
+        "total_completion_tokens": 200,
+        "total_cost_usd": null,
+        "total_prompt_tokens": 4000
+      },
+      "n_prompts": 2,
+      "n_tool_calls": 2,
+      "rewards": {
+        "reward": 1.0
+      },
+      "timing_keys": [
+        "agent_execution",
+        "agent_setup",
+        "environment_setup",
+        "total",
+        "verifier"
+      ],
+      "trajectory_summary": {
+        "agent_message_steps": 4,
+        "agent_thought_steps": 0,
+        "event_type_counts": {
+          "agent_message": 4,
+          "tool_call": 2,
+          "user_message": 2
+        },
+        "other_steps": 0,
+        "partial_trajectory": false,
+        "steps": 8,
+        "tool_call_status_counts": {
+          "completed": 2
+        },
+        "tool_call_steps": 2,
+        "trajectory_source": "acp",
+        "user_message_steps": 2
+      },
+      "usage_tracking": {
+        "requested": "auto",
+        "status": "enabled",
+        "usage_source": "agent_native_acp"
+      },
+      "verifier_error_category": null
+    }
+  }
+}

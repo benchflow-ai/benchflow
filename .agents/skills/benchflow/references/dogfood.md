@@ -14,19 +14,17 @@ pip install -e .
 
 ```python
 import asyncio
-from benchflow import SDK
+import benchflow as bf
 
 async def main():
-    sdk = SDK()
-    result = await sdk.run(
-        task_path="harbor-framework/terminal-bench-2/log-summary-date-ranges",
+    result = await bf.run(bf.RolloutConfig(
+        task_path=bf.resolve_source("harbor-framework/terminal-bench-2", path="log-summary-date-ranges"),
         agent="claude-agent-acp",
         model="claude-haiku-4-5-20251001",
-        prompts=[None],
         jobs_dir="dogfood/single",
         environment="daytona",
-    )
-    print(f"Reward: {result.rewards}, Tools: {result.n_tool_calls}, Error: {result.error}")
+    ))
+    print(f"Reward: {result.reward}, Tools: {result.n_tool_calls}, Error: {result.error}")
 
 asyncio.run(main())
 ```
@@ -51,13 +49,13 @@ cd ../..
 ```python
 import asyncio, logging
 logging.basicConfig(level=logging.INFO)
-from benchflow import Job, JobConfig, RetryConfig
+from benchflow import Evaluation, EvaluationConfig, RetryConfig
 
 async def main():
-    job = Job(
+    job = Evaluation(
         tasks_dir="dogfood/tb2-subset",
         jobs_dir="dogfood/job-test",
-        config=JobConfig(
+        config=EvaluationConfig(
             agent="claude-agent-acp",
             model="claude-haiku-4-5-20251001",
             environment="daytona",
@@ -72,7 +70,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Note: `Job(tasks_dir=...)` runs ALL tasks in the directory. To run a subset, create a directory with symlinks to just the tasks you want.
+Note: `Evaluation(tasks_dir=...)` runs ALL tasks in the directory. To run a subset, create a directory with symlinks to just the tasks you want.
 
 ## Task 3: Collect and analyze metrics
 

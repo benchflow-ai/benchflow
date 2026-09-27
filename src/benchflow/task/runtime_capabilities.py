@@ -17,19 +17,21 @@ from typing import cast
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
+    ALLOWLIST_UNSUPPORTED_PROVIDERS,
     DENYLIST_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
     SINGLE_CONTAINER_PROVIDERS,
     providers_phrase,
 )
+from benchflow.task.artifacts import ARTIFACT_SANDBOXES, artifact_spec_issue
 from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierSandboxMode,
 )
 from benchflow.task.document import TaskDocument
+from benchflow.task.imports import unhonoured_foreign_key
 from benchflow.task.paths import TaskPaths, local_script_strategy_files
 from benchflow.task.prompts import (
     CompiledUserRuntime,
@@ -37,6 +39,11 @@ from benchflow.task.prompts import (
     compile_task_prompt_plan,
 )
 from benchflow.task.verifier_document import load_verifier_document
+from benchflow.task.verifier_sandbox import (
+    SEPARATE_VERIFIER_SANDBOXES,
+    separate_verifier_requested,
+    verifier_image_issue,
+)
 
 # Back-compat name kept for this module's existing membership check; the
 # canonical set lives in benchflow.sandbox.providers.
@@ -96,7 +103,35 @@ def validate_task_runtime_support(
         _append_document_issues(unsupported, document=document, sandbox=sandbox)
     if task_dir is not None:
         _append_layout_issues(unsupported, task_dir=Path(task_dir), sandbox=sandbox)
+        _append_verifier_image_issue(
+            unsupported, config=config, task_dir=Path(task_dir), sandbox=sandbox
+        )
     return unsupported
+
+
+def _append_verifier_image_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    task_dir: Path,
+    sandbox: str,
+) -> None:
+    if not separate_verifier_requested(config) or any(
+        issue.path == "verifier.sandbox_mode" for issue in unsupported
+    ):
+        return
+    problem = verifier_image_issue(config, task_dir)
+    if problem is not None:
+        _issue(
+            unsupported,
+            path=(
+                "verifier.sandbox"
+                if config.verifier.sandbox is not None
+                else "verifier.sandbox_mode"
+            ),
+            reason=problem,
+            sandbox=sandbox,
+        )
 
 
 def raise_for_task_runtime_support(
@@ -157,13 +192,24 @@ def _append_config_issues(
                     sandbox=sandbox,
                 )
 
-    if config.artifacts:
+    refused: set[str] = set()
+    for path in config.ignored_keys:
+        found = unhonoured_foreign_key(path)
+        if found is not None and found[0] not in refused:
+            refused.add(found[0])
+            _issue(unsupported, path=found[0], reason=found[1], sandbox=sandbox)
+
+    if config.artifacts and sandbox not in ARTIFACT_SANDBOXES:
         _issue(
             unsupported,
             path="artifacts",
-            reason="root artifact collection is parsed but not runtime-gated",
+            reason="root artifact collection is implemented for docker and daytona",
             sandbox=sandbox,
         )
+    for i, item in enumerate(config.artifacts):
+        problem = artifact_spec_issue(item)
+        if problem is not None:
+            _issue(unsupported, path=f"artifacts[{i}]", reason=problem, sandbox=sandbox)
 
     _append_network_issue(
         unsupported,
@@ -171,33 +217,79 @@ def _append_config_issues(
         mode=config.agent.network_mode,
         sandbox=sandbox,
     )
+    if config.agent.network_mode == NetworkMode.ALLOWLIST and (
+        config.sandbox.network_mode in (NetworkMode.NO_NETWORK, NetworkMode.DENYLIST)
+    ):
+        _issue(
+            unsupported,
+            path="agent.network_mode",
+            reason=(
+                "agent.network_mode='allowlist' cannot combine with "
+                f"sandbox.network_mode={config.sandbox.network_mode.value!r}"
+            ),
+            sandbox=sandbox,
+        )
     _append_network_issue(
         unsupported,
         path="sandbox.network_mode",
         mode=config.sandbox.network_mode,
         sandbox=sandbox,
     )
-    _append_network_issue(
-        unsupported,
-        path="verifier.network_mode",
-        mode=config.verifier.network_mode,
-        sandbox=sandbox,
-    )
+    if config.verifier.network_mode == NetworkMode.ALLOWLIST:
+        # The allowlist binds the sandbox user's uid; the verifier runs as
+        # root outside that firewall, so a verifier allowlist is not enforced.
+        _issue(
+            unsupported,
+            path="verifier.network_mode",
+            reason="verifier network allowlists are not enforced (the verifier runs outside the agent uid firewall)",
+            sandbox=sandbox,
+        )
+    else:
+        _append_network_issue(
+            unsupported,
+            path="verifier.network_mode",
+            mode=config.verifier.network_mode,
+            sandbox=sandbox,
+        )
 
-    if config.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE:
-        _issue(
-            unsupported,
-            path="verifier.sandbox_mode",
-            reason="separate verifier sandboxes are parsed but not executed",
-            sandbox=sandbox,
-        )
-    if config.verifier.sandbox is not None:
-        _issue(
-            unsupported,
-            path="verifier.sandbox",
-            reason="verifier-specific sandbox materialization is not implemented",
-            sandbox=sandbox,
-        )
+    if separate_verifier_requested(config):
+        separate_issue = None
+        if sandbox not in SEPARATE_VERIFIER_SANDBOXES:
+            separate_issue = (
+                "separate verifier sandboxes are implemented for docker and daytona"
+            )
+        elif config.verifier.type != "test-script":
+            separate_issue = (
+                "separate verifier sandboxes run test-script verifiers only"
+            )
+        elif config.verifier.service != "main":
+            separate_issue = (
+                "a separate verifier sandbox has no compose services; "
+                "verifier.service must be 'main'"
+            )
+        if separate_issue is not None:
+            _issue(
+                unsupported,
+                path="verifier.sandbox_mode",
+                reason=separate_issue,
+                sandbox=sandbox,
+            )
+        verifier_sandbox = config.verifier.sandbox
+        if verifier_sandbox is not None and verifier_sandbox.network_mode in (
+            NetworkMode.ALLOWLIST,
+            NetworkMode.DENYLIST,
+        ):
+            # Egress filtering binds the agent's uid through the proxy the
+            # agent connection starts; the verifier sandbox has neither.
+            _issue(
+                unsupported,
+                path="verifier.sandbox.network_mode",
+                reason=(
+                    f"network_mode={verifier_sandbox.network_mode.value!r} is not "
+                    "enforced in a separate verifier sandbox"
+                ),
+                sandbox=sandbox,
+            )
     if config.verifier.service != "main" and sandbox != "docker":
         _issue(
             unsupported,
@@ -275,11 +367,11 @@ def _append_network_issue(
             reason=f"network_mode='no-network' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
-    if mode == NetworkMode.ALLOWLIST:
+    if mode == NetworkMode.ALLOWLIST and sandbox in ALLOWLIST_UNSUPPORTED_PROVIDERS:
         _issue(
             unsupported,
             path=path,
-            reason="network allowlists are parsed but not enforced per sandbox",
+            reason=f"network_mode='allowlist' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
     if mode == NetworkMode.DENYLIST and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS:

@@ -145,12 +145,12 @@ fi
 # Run with benchflow
 bench eval run --tasks-dir my-task/ --agent claude-agent-acp --sandbox daytona
 
-# Or with SDK
+# Or from Python
 python -c "
 import asyncio
-from benchflow import SDK
-result = asyncio.run(SDK().run('my-task', agent='claude-agent-acp', environment='daytona'))
-print(f'Reward: {result.rewards}, Error: {result.error}')
+import benchflow as bf
+result = asyncio.run(bf.run(bf.RolloutConfig(task_path='my-task', agent='claude-agent-acp', environment='daytona')))
+print(f'Reward: {result.reward}, Error: {result.error}')
 "
 ```
 

@@ -9,9 +9,11 @@ unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import uuid
 from typing import Any
 
 logger = logging.getLogger("benchflow")
@@ -73,6 +75,38 @@ def _benchflow_owned_labels() -> dict[str, str]:
     return labels
 
 
+# Branch snapshots (``DaytonaSandbox.snapshot``). Daytona snapshots carry no
+# labels, so ownership lives in the name: ``bf-snap-<owner>-<owner hash>-``.
+# The six-hex hash of the exact owner scope keeps owner ``team`` from matching
+# owner ``team-b``'s snapshots by prefix, and keeps owners that differ only in
+# case or ``_``/``-`` apart after the lowercasing below.
+_SNAPSHOT_PREFIX = "bf-snap-"
+_SNAPSHOT_ENV_PART_MAX_LEN = 32
+
+
+def _snapshot_name_part(text: str) -> str:
+    return re.sub(r"[^a-z0-9.-]+", "-", text.lower()).strip(".-")
+
+
+def owner_snapshot_prefix() -> str | None:
+    """Name prefix of this owner's branch snapshots, or None when unscoped."""
+    owner = _benchflow_owner_scope()
+    if owner is None:
+        return None
+    tag = hashlib.sha256(owner.encode()).hexdigest()[:6]
+    return f"{_SNAPSHOT_PREFIX}{_snapshot_name_part(owner)}-{tag}-"
+
+
+def benchflow_snapshot_name(environment_name: str) -> str:
+    """A fresh branch snapshot name, owner-scoped when an owner is set."""
+    prefix = owner_snapshot_prefix() or _SNAPSHOT_PREFIX
+    env_part = (
+        _snapshot_name_part(environment_name)[:_SNAPSHOT_ENV_PART_MAX_LEN].strip(".-")
+        or "sandbox"
+    )
+    return f"{prefix}{env_part}-{uuid.uuid4().hex[:12]}"
+
+
 def _is_benchflow_owned(sb: Any) -> bool:
     """Return whether *sb* carries benchflow's exact ownership label.
 
@@ -93,8 +127,9 @@ def _is_benchflow_label_orphan(sb: Any) -> bool:
 
     True only when the sandbox carries at least one ``benchflow.``-namespaced
     label key yet lacks any valid ownership marker. A sandbox with a scoped
-    ``benchflow.managed=1:<owner>`` value belongs to another BenchFlow operator,
-    so it is foreign rather than orphaned and must be silently skipped.
+    ``benchflow.managed=1:<owner>`` value, or the unscoped ``1`` while this run
+    is scoped, belongs to another BenchFlow operator, so it is foreign rather
+    than orphaned and must be silently skipped.
     Such a sandbox is almost certainly one benchflow created whose ownership
     label was lost — the age-based reaper's scope gate will now skip it forever,
     so it leaks. This is a *detection-only* predicate: the missing/altered label
@@ -108,7 +143,12 @@ def _is_benchflow_label_orphan(sb: Any) -> bool:
     if not isinstance(labels, dict):
         return False
     managed = labels.get(_BENCHFLOW_MANAGED_LABEL)
-    if isinstance(managed, str) and managed.startswith("1:"):
+    # Any valid marker names an owner: unscoped "1" belongs to runs without
+    # BENCHFLOW_DAYTONA_OWNER, "1:<owner>" to that owner. Either is foreign
+    # when it is not ours, never an orphan.
+    if managed == _BENCHFLOW_MANAGED_VALUE or (
+        isinstance(managed, str) and managed.startswith("1:")
+    ):
         return False
     return any(
         isinstance(key, str) and key.startswith(_BENCHFLOW_LABEL_NAMESPACE)
@@ -123,9 +163,12 @@ def _parse_sandbox_timestamp(raw: Any) -> Any | None:
     server that omits the offset doesn't silently leak a stale sandbox. Returns
     ``None`` for a non-string or unparseable value; the caller decides whether
     absence is protective (activity guard) or skip-worthy (created_at).
+    Snapshot DTOs already carry ``datetime`` values; those pass through.
     """
     from datetime import UTC, datetime
 
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=UTC)
     if not isinstance(raw, str):
         return None
     try:
@@ -145,8 +188,17 @@ def reap_stale_sandboxes(
     min_idle_minutes: int = _REAP_MIN_IDLE_MIN,
     dry_run: bool = False,
     on_decision: Any | None = None,
+    ignore_age: bool = False,
+    on_skip: Any | None = None,
 ) -> dict[str, int]:
     """Delete orphaned Daytona sandboxes past their TTL.
+
+    ``ignore_age=True`` deletes every sandbox this operator owns, whatever its
+    age or activity (the ``bench sandbox cleanup --all`` teardown step for
+    CI; the ownership scope still applies). *on_skip* (sandbox, reason) is
+    called for each sandbox left alone, with reason ``foreign`` (not owned),
+    ``no_created_at``, ``young`` (under its TTL) or ``active`` (the activity
+    guard).
 
     Ownership-scoped: only sandboxes benchflow created — those carrying the
     ``benchflow.managed`` label (see :func:`_is_benchflow_owned`) — are ever
@@ -214,9 +266,26 @@ def reap_stale_sandboxes(
                     _benchflow_managed_value(),
                 )
             counts["skipped"] += 1
+            if on_skip is not None:
+                on_skip(sb, "foreign")
+            continue
+        if ignore_age:
+            if on_decision is not None:
+                on_decision(sb, 0.0, True)
+            if dry_run:
+                counts["deleted"] += 1
+                continue
+            try:
+                client.delete(sb)
+                counts["deleted"] += 1
+            except Exception:
+                logger.warning("Failed to delete sandbox %s", getattr(sb, "id", "?"))
+                counts["failed"] += 1
             continue
         if not getattr(sb, "created_at", None):
             counts["skipped"] += 1
+            if on_skip is not None:
+                on_skip(sb, "no_created_at")
             continue
         # Guard the age parse per-sandbox (mirror the delete guard below): one
         # odd timestamp must warn + skip, never abort the sweep and leak every
@@ -236,6 +305,7 @@ def reap_stale_sandboxes(
         is_failed = any(marker in state for marker in _REAP_FAILED_STATE_MARKERS)
         ttl = failed_max_age_minutes if is_failed else max_age_minutes
         will_delete = age_minutes >= ttl
+        skip_reason = None if will_delete else "young"
         # Activity guard (general tier only): protect a genuinely live run whose
         # last activity is within the idle window, even when old by creation.
         # Failed sandboxes ignore the guard so they still reap on the short TTL.
@@ -247,10 +317,13 @@ def reap_stale_sandboxes(
                 idle_minutes = (now - last_activity).total_seconds() / 60
                 if idle_minutes < min_idle_minutes:
                     will_delete = False
+                    skip_reason = "active"
         if on_decision is not None:
             on_decision(sb, age_minutes, will_delete)
         if not will_delete:
             counts["skipped"] += 1
+            if on_skip is not None:
+                on_skip(sb, skip_reason or "young")
             continue
         if dry_run:
             counts["deleted"] += 1
@@ -260,5 +333,81 @@ def reap_stale_sandboxes(
             counts["deleted"] += 1
         except Exception:
             logger.warning("Failed to delete sandbox %s", getattr(sb, "id", "?"))
+            counts["failed"] += 1
+    return counts
+
+
+def reap_stale_snapshots(
+    client: Any | None = None,
+    *,
+    max_age_minutes: int = _REAP_DEFAULT_MAX_AGE_MIN,
+    dry_run: bool = False,
+    on_decision: Any | None = None,
+) -> dict[str, int]:
+    """Delete this owner's branch snapshots older than *max_age_minutes*.
+
+    The branch engine deletes each fork's snapshot when the fork finishes; this
+    is the backstop for a process that died mid-fork. Only snapshots named
+    with this owner's prefix (:func:`owner_snapshot_prefix`) are considered.
+    Without ``BENCHFLOW_DAYTONA_OWNER`` nothing proves a snapshot is ours, so
+    no snapshot is listed or deleted. *on_decision* (snapshot, age_minutes,
+    will_delete) is called per owned snapshot. Returns counts
+    ``{"found", "deleted", "skipped", "failed"}``; ``found`` counts every
+    snapshot listed.
+    """
+    if max_age_minutes < 0:
+        raise ValueError(
+            f"max_age_minutes must be >= 0, got {max_age_minutes}. A negative "
+            "age would select every snapshot, including ones in use."
+        )
+    counts = {"found": 0, "deleted": 0, "skipped": 0, "failed": 0}
+    prefix = owner_snapshot_prefix()
+    if prefix is None:
+        return counts
+
+    from datetime import UTC, datetime
+
+    if client is None:
+        from benchflow.sandbox.daytona import build_sync_client
+
+        client = build_sync_client()
+    now = datetime.now(UTC)
+    # Collect first: deleting while paginating would shift later pages.
+    candidates: list[tuple[Any, float]] = []
+    page = 1
+    while True:
+        result = client.snapshot.list(page=page, limit=100)
+        for snap in result.items:
+            counts["found"] += 1
+            name = getattr(snap, "name", None)
+            created_at = _parse_sandbox_timestamp(getattr(snap, "created_at", None))
+            if not isinstance(name, str) or not name.startswith(prefix):
+                counts["skipped"] += 1
+                continue
+            if created_at is None:
+                logger.warning(
+                    "Daytona snapshot %s has no parseable created_at; skipping", name
+                )
+                counts["skipped"] += 1
+                continue
+            candidates.append((snap, (now - created_at).total_seconds() / 60))
+        if page >= (getattr(result, "total_pages", None) or 1):
+            break
+        page += 1
+    for snap, age_minutes in candidates:
+        will_delete = age_minutes >= max_age_minutes
+        if on_decision is not None:
+            on_decision(snap, age_minutes, will_delete)
+        if not will_delete:
+            counts["skipped"] += 1
+            continue
+        if dry_run:
+            counts["deleted"] += 1
+            continue
+        try:
+            client.snapshot.delete(snap)
+            counts["deleted"] += 1
+        except Exception:
+            logger.warning("Failed to delete snapshot %s", snap.name)
             counts["failed"] += 1
     return counts

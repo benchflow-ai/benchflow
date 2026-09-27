@@ -1,6 +1,7 @@
 """Pure scoring and classification helpers — no external dependencies."""
 
 import math
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
@@ -91,6 +92,38 @@ VERIFIER_INFRA = "verifier_infra"
 VERIFIER_TIMEOUT = "verifier_timeout"
 VERIFIER_DEP_INSTALL = "verifier_dep_install"
 
+# Catalogs for fixed-schema exports; reuse the classifier constants rather
+# than admitting arbitrary saved text as a category.
+OTHER_ERROR = "other"
+VERIFIER_OTHER = "verifier_other"
+ERROR_CATEGORIES = frozenset(
+    {
+        INSTALL_FAILED,
+        PIPE_CLOSED,
+        ACP_ERROR,
+        IDLE_TIMEOUT,
+        INFRA_ERROR,
+        SANDBOX_SETUP,
+        PROVIDER_AUTH,
+        PROVIDER_RATE_LIMIT,
+        PROVIDER_REJECTED,
+        TIMED_OUT,
+        API_ERROR,
+        SUSPECTED_API_ERROR,
+        OTHER_ERROR,
+    }
+)
+VERIFIER_ERROR_CATEGORIES = frozenset(
+    {
+        VERIFIER_FAILED,
+        VERIFIER_INFRA,
+        VERIFIER_TIMEOUT,
+        VERIFIER_DEP_INSTALL,
+        VERIFIER_OTHER,
+        INFRA_ERROR,  # automatic scoring infrastructure errors
+    }
+)
+
 # Canonical dependency-install markers shared by verifier stdout scanning and
 # verifier-error classification. Keep these lower-case; the helper below
 # performs case-insensitive matching.
@@ -108,9 +141,52 @@ VERIFIER_DEP_INSTALL_MARKERS: tuple[str, ...] = (
 ScoreOutcome = Literal["passed", "failed", "errored", "verifier_errored"]
 ResultOutcome = Literal["passed", "failed", "errored", "verifier_errored", "unscored"]
 
+# Outcome assessment for results whose execution and verdict are separate
+# (embodied trials: a completed physical run is scored only after a reviewer
+# has assessed its recorded evidence). Only an assessed result carries a score.
+AssessmentStatus = Literal["pending", "verified", "failed", "unassessable"]
+ASSESSMENT_STATUSES: frozenset[str] = frozenset(
+    {"pending", "verified", "failed", "unassessable"}
+)
+ASSESSED_STATUSES: frozenset[str] = frozenset({"verified", "failed"})
+
+
+def assessment_status(result: Mapping[str, Any]) -> str | None:
+    """The result's outcome-assessment status, or None when it declares none.
+
+    ``assessment`` may be a status string or a mapping with ``status``. A
+    legacy ``benchflow.robotics`` manifest row (``status:
+    "awaiting_assessment"``) is pending. An unrecognised value is reported as
+    ``"unassessable"`` so it can never unlock a score.
+    """
+    assessment = result.get("assessment")
+    if assessment is None:
+        return "pending" if result.get("status") == "awaiting_assessment" else None
+    status = assessment.get("status") if isinstance(assessment, Mapping) else assessment
+    # A list or mapping here is malformed, not a reason to crash a summary.
+    if isinstance(status, str) and status in ASSESSMENT_STATUSES:
+        return status
+    return "unassessable"
+
+
+def assessment_withholds_score(result: Mapping[str, Any]) -> bool:
+    """True when a declared assessment is not complete (pending/unassessable).
+
+    Such a result is unscored: its reward is ignored, it can never count as
+    passed, and it stays out of reward means, whatever else it carries.
+    """
+    status = assessment_status(result)
+    return status is not None and status not in ASSESSED_STATUSES
+
 
 def extract_reward(result: Mapping[str, Any]) -> float | None:
-    """Extract the reward value from a result dict, or None if absent."""
+    """Extract the reward value from a result dict, or None if absent.
+
+    A result whose declared assessment is pending or unassessable has no
+    reward, even if a stale or agent-derived one is present.
+    """
+    if assessment_withholds_score(result):
+        return None
     if result.get("scoring") is not None:
         from benchflow.review.outcome import scoring_from_result
 
@@ -168,7 +244,28 @@ def classify_error(error: str | None) -> str | None:
         return INFRA_ERROR
     if "timed out" in lower:
         return TIMED_OUT
-    return "other"
+    return OTHER_ERROR
+
+
+# Sandbox startup failures that another attempt cannot fix: the task's build
+# context lacks a path the Dockerfile copies. Daytona's SDK checks the context
+# locally ("Path does not exist: <path>"); BuildKit reports a missing COPY
+# source as a cache-key checksum miss ending in '"<path>": not found'. And a
+# Docker daemon that is not running (rollout/_setup.py names it) is still not
+# running seconds later.
+_UNRECOVERABLE_STARTUP_RES = (
+    re.compile(r"path does not exist: "),
+    re.compile(r'failed to calculate checksum of ref \S+ "[^"]+": not found'),
+    re.compile(r"docker daemon unreachable: "),
+)
+
+
+def is_unrecoverable_startup_error(error: str | None) -> bool:
+    """True for a sandbox startup failure that a retry would only repeat."""
+    if not error:
+        return False
+    lower = error.lower()
+    return any(pattern.search(lower) for pattern in _UNRECOVERABLE_STARTUP_RES)
 
 
 def api_error_is_transient(error: str | None) -> bool:
@@ -225,6 +322,12 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     if not verifier_error:
         return None
     lower = verifier_error.lower()
+    if lower.startswith("separate verifier "):
+        # The verifier sandbox never received the agent's outputs (or never
+        # started): nothing was assessed.
+        return VERIFIER_INFRA
+    if "verifier_wedge:" in lower or "verifier recovery " in lower:
+        return VERIFIER_INFRA
     if "verifier crashed" in verifier_error:
         if contains_verifier_dep_install_marker(lower):
             return VERIFIER_DEP_INSTALL
@@ -233,7 +336,7 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
         return VERIFIER_FAILED
     if "verifier timed out" in verifier_error:
         return VERIFIER_TIMEOUT
-    return "verifier_other"
+    return VERIFIER_OTHER
 
 
 def contains_verifier_dep_install_marker(text: str) -> bool:
@@ -298,9 +401,11 @@ def classify_score_outcome(result: Mapping[str, Any]) -> ScoreOutcome:
 
     Integrated review uses its explicit gate verdict. Legacy results keep
     reward/agent-error precedence. Malformed or incomplete scoring is never a
-    capability failure or an accidental pass from a stale reward.
+    capability failure or an accidental pass from a stale reward. A pending or
+    unassessable assessment has no reward, so it lands with the other
+    no-verdict results (never ``passed``, outside ``score_excl_errors``).
     """
-    if result.get("scoring") is not None:
+    if result.get("scoring") is not None and not assessment_withholds_score(result):
         from benchflow.review.outcome import scoring_from_result
 
         try:
@@ -332,7 +437,7 @@ def classify_audit_outcome(result: Mapping[str, Any]) -> ResultOutcome:
     """
     if result.get("verifier_error"):
         return "verifier_errored"
-    if result.get("scoring") is not None:
+    if result.get("scoring") is not None and not assessment_withholds_score(result):
         return classify_score_outcome(result)
     reward = extract_reward(result)
     if reward == 1.0:
@@ -382,22 +487,35 @@ def count_result_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int
     return count_audit_outcomes(results)
 
 
+def finite_reward(value: object) -> float | None:
+    """Return a numeric reward as a finite float, or None when it is not one.
+
+    Bools are not reward magnitudes. Python's ``json`` parses an integer literal
+    such as ``10**1000`` exactly, and ``float()`` rejects it with
+    ``OverflowError``; it is treated like the infinity it would overflow to.
+    """
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def mean_scored_reward(results: Iterable[Mapping[str, Any]]) -> float | None:
     """Mean reward over scored rollouts, or None when nothing scored.
 
     A rollout is scored when ``rewards.reward`` is a finite numeric value.
     Bools are excluded — ``classify_result`` treats a persisted ``true`` as a
     pass (``True == 1``), but a bool is not a reward magnitude — and so are
-    non-finite values, which the resume path can feed in unvalidated (Python's
-    ``json`` round-trips NaN). Errored rollouts (reward None) are excluded,
-    not zeroed: a mean diluted by infra errors would misread as capability.
+    non-finite or float-overflowing values, which the resume path can feed in
+    unvalidated (Python's ``json`` round-trips NaN and huge integers). Errored
+    rollouts (reward None) are excluded, not zeroed: a mean diluted by infra
+    errors would misread as capability.
     """
     scored = [
-        rw
-        for r in results
-        if isinstance(rw := extract_reward(r), (int, float))
-        and not isinstance(rw, bool)
-        and math.isfinite(rw)
+        rw for r in results if (rw := finite_reward(extract_reward(r))) is not None
     ]
     return sum(scored) / len(scored) if scored else None
 
@@ -442,6 +560,7 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         "failed": counts["failed"],
         "errored": counts["errored"],
         "verifier_errored": counts["verifier_errored"],
+        "unscored": counts["unscored"],
         "pass": counts["passed"],
         "fail": counts["failed"],
         "error": counts["errored"],

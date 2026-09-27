@@ -7,6 +7,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.scoring import assessment_status, assessment_withholds_score
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,7 +43,9 @@ def load_task_results(root: Path) -> dict[str, dict[str, Any]]:
 
     Evaluation resume and scoring-only summary refresh must select identical
     records. Malformed files remain logged and skipped as in evaluation resume;
-    a malformed reward envelope remains visible as an errored trial.
+    a malformed reward envelope remains visible as an errored trial. A result
+    that declares an outcome assessment finished executing and is durable even
+    while unscored: resume must never re-run an episode awaiting assessment.
     """
     best: dict[str, tuple[tuple[bool, float, str], dict[str, Any]]] = {}
     for path in iter_task_result_paths(root):
@@ -53,6 +57,7 @@ def load_task_results(root: Path) -> dict[str, dict[str, Any]]:
                 rewards is None
                 and not result.get("verifier_error")
                 and result.get("scoring") is None
+                and assessment_status(result) is None
             ):
                 continue
             if rewards is not None and not isinstance(rewards, dict):
@@ -65,7 +70,8 @@ def load_task_results(root: Path) -> dict[str, dict[str, Any]]:
                     type(rewards).__name__,
                     rewards,
                 )
-            rank = (rewards is not None, path.stat().st_mtime, str(path))
+            scored = rewards is not None and not assessment_withholds_score(result)
+            rank = (scored, path.stat().st_mtime, str(path))
             previous = best.get(task)
             if previous is None or rank >= previous[0]:
                 best[task] = (rank, result)

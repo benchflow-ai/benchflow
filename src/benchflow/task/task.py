@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
-from benchflow.task.config import TaskConfig
 from benchflow.task.document import TaskDocument
+from benchflow.task.imports import load_task_config_toml
 from benchflow.task.paths import TaskPaths
 
 
@@ -51,9 +52,17 @@ class Task:
                     "(native), or legacy task.toml + instruction.md"
                 )
             self.instruction = self.paths.instruction_path.read_text()
-            self.config = TaskConfig.model_validate_toml(
-                self.paths.config_path.read_text()
-            )
+            config_path = self.paths.config_path
+            try:
+                # Lenient: unknown keys (a newer Harbor schema) are ignored
+                # with a warning; unhonourable ones are refused before launch
+                # by the runtime capability check.
+                self.config = load_task_config_toml(
+                    config_path.read_text(), source=str(config_path)
+                )
+            except tomllib.TOMLDecodeError as e:
+                # tomllib names only the line and column, not the file.
+                raise ValueError(f"{config_path}: task.toml parse error: {e}") from e
             self.scenes = []
         if self.config.task is not None:
             self.name = self.config.task.name

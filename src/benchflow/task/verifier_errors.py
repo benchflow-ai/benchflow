@@ -41,6 +41,14 @@ class DownloadVerifierDirError(Exception):
     pass
 
 
+class PluginGuardLoadError(Exception):
+    """Raised when the verifier's pytest could not load the plugin guard.
+
+    pytest aborts before collecting any test, so a reward test.sh wrote from
+    its exit status says nothing about the solution.
+    """
+
+
 class RubricNotFoundError(Exception):
     """Raised when an llm-judge verifier cannot locate its rubric file."""
 

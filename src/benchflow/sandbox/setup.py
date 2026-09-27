@@ -14,9 +14,13 @@ from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
-from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, providers_phrase
+from benchflow.sandbox.providers import (
+    OPTIONAL_SANDBOX_EXTRAS,
+    extra_install_hint,
+    providers_phrase,
+)
 from benchflow.skill_policy import validate_container_mount_path
-from benchflow.task import RolloutPaths, Task
+from benchflow.task import RolloutPaths, SandboxPaths, Task
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +67,7 @@ def _raise_missing_optional_sandbox_dependency(
     extra = OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
     raise RuntimeError(
         f"Missing optional dependency for {sandbox_type!r} sandbox. "
-        f"Install it with `uv sync --extra {extra}` for local development, "
-        f"or `pip install 'benchflow[{extra}]'` for a packaged install."
+        f"Install it with {extra_install_hint(extra)}."
     ) from exc
 
 
@@ -185,8 +188,6 @@ def _create_benchflow_modal_environment_class():
         async def start(self, force_build: bool) -> None:
             """Starts the Modal sandbox, adding Python for plain Linux images."""
             from modal import App, Image, Secret, Volume
-
-            from benchflow.task import SandboxPaths
 
             def noop_cleanup_dockerfile() -> None:
                 return None
@@ -703,7 +704,11 @@ def _create_sandbox_environment(
     persistent env overlay so the values reach the container's entrypoint
     via compose and every subsequent ``sandbox.exec`` call.
     """
-    env_config = task.config.sandbox
+    from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+
+    # An [agent] allowlist override is enforced like a sandbox allowlist, so
+    # the provider sees it (NET_ADMIN overlay, snapshot-restore guard).
+    env_config = agent_network_sandbox_config(task.config)
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir

@@ -52,6 +52,29 @@ try:
         failures.append("reasoning-effort override inactive")
 except Exception as exc:  # noqa: BLE001 - report any import/shape drift
     failures.append(f"bedrock converse transform unavailable: {exc}")
+try:
+    from litellm.llms.bedrock.messages.invoke_transformations.anthropic_claude3_transformation import (
+        AmazonAnthropicClaudeMessagesConfig,
+    )
+
+    normalize = AmazonAnthropicClaudeMessagesConfig._normalize_system_role_messages_for_bedrock
+    if not getattr(normalize, "__benchflow_bedrock_patch__", False):
+        # Without it every turn re-bills the transcript uncached (#1135).
+        failures.append("system-message cache override inactive")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"bedrock invoke messages transform unavailable: {exc}")
+# Upstream models passed as arguments must keep ``output_config.effort``:
+# LiteLLM drops it for Claude ids its model map does not know, unless
+# sitecustomize registered their effort capabilities.
+try:
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+    for model in sys.argv[1:]:
+        bare = model.split("/", 1)[1] if model.startswith("bedrock/") else model
+        if not AnthropicConfig._model_supports_effort_param(bare):
+            failures.append(f"effort capability missing for {model!r}")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"effort capability check unavailable: {exc}")
 if failures:
     print("; ".join(failures))
     sys.exit(1)
@@ -124,14 +147,19 @@ def preflight_host_bedrock_patch(
     *,
     env: dict[str, str],
     litellm_executable: str,
+    effort_models: tuple[str, ...] = (),
 ) -> None:
-    """Fail closed if the Bedrock 4.8+ patch is not active for the host proxy."""
+    """Fail closed if the Bedrock 4.8+ patch is not active for the host proxy.
+
+    ``effort_models`` are upstream ids that must keep ``output_config.effort``.
+    """
     try:
         result = subprocess.run(
             [
                 _host_python_for_litellm(litellm_executable, env=env),
                 "-c",
                 BEDROCK_PATCH_PREFLIGHT_SOURCE,
+                *effort_models,
             ],
             env=env,
             capture_output=True,
@@ -153,12 +181,15 @@ async def preflight_sandbox_bedrock_patch(
     python: str,
     runtime_dir: str,
     preflight_path: str,
+    effort_models: tuple[str, ...] = (),
 ) -> None:
     """Fail closed if the Bedrock 4.8+ patch is not active in a sandbox proxy."""
     command = (
         f"PYTHONPATH={shlex.quote(runtime_dir)} "
         f"{shlex.quote(python)} {shlex.quote(preflight_path)}"
     )
+    if effort_models:
+        command += " " + " ".join(shlex.quote(model) for model in effort_models)
     try:
         result = await sandbox.exec(command, timeout_sec=120)
     except Exception as exc:

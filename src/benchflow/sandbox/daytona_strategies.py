@@ -18,24 +18,31 @@ is unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from benchflow.sandbox._base import ExecResult
+from benchflow.sandbox._snapshot_credentials import (
+    StashedCredential,
+    put_back_credentials,
+    scrub_credentials,
+)
 from benchflow.sandbox.daytona_pty import (
     _exec_failure_output,
     _reject_non_main_service,
     stamp_transient_transport,
 )
-from benchflow.sandbox.daytona_reaper import _benchflow_owned_labels
+from benchflow.sandbox.daytona_reaper import (
+    _benchflow_owned_labels,
+    benchflow_snapshot_name,
+)
 from benchflow.sandbox.protocol import (
     SandboxImage,
     SandboxSnapshotNotSupported,
-    SandboxStartupError,
 )
 from benchflow.task.paths import SandboxPaths
 
@@ -46,6 +53,30 @@ if TYPE_CHECKING:
 # (issue #358), so concrete sandbox params are typed as ``Any`` here — callers
 # build them inside methods that have already called ``_load_daytona_sdk()``.
 _SandboxParams = Any
+
+# Waits (seconds) before each retry of a deferred snapshot delete at stop():
+# sandbox deletion is asynchronous on the provider, so the snapshot can stay
+# "in use" for a few seconds after the sandbox created from it was deleted.
+_DELETE_RETRY_DELAYS = (3, 10)
+
+
+async def _delete_provider_snapshot(ref: str) -> None:
+    """Delete the Daytona snapshot named ``ref``; a missing one is fine."""
+    from benchflow.sandbox import daytona as _sdk
+
+    _sdk._load_daytona_sdk()
+    manager = await _sdk.DaytonaClientManager.get_instance()
+    client = await manager.get_client()
+    try:
+        snapshot = await client.snapshot.get(ref)
+    except Exception as exc:
+        if (
+            isinstance(exc, _sdk.DaytonaNotFoundError)
+            or "not found" in str(exc).lower()
+        ):
+            return
+        raise
+    await client.snapshot.delete(snapshot)
 
 
 class _DaytonaStrategy:
@@ -137,6 +168,12 @@ class _DaytonaStrategy:
             f"{type(self).__name__} does not support container-level restore."
         )
 
+    async def delete_snapshot(self, image: SandboxImage) -> bool:
+        """Delete a provider-level snapshot. Default: not supported."""
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level snapshots."
+        )
+
 
 class _DaytonaDirect(_DaytonaStrategy):
     """Direct sandbox strategy — single-container behavior."""
@@ -144,6 +181,17 @@ class _DaytonaDirect(_DaytonaStrategy):
     # Daytona ships a native sandbox-snapshot API on AsyncSandbox; the direct
     # strategy uses it for the container layer of Branch (#384).
     supports_snapshot: bool = True
+
+    def __init__(self, env: DaytonaSandbox) -> None:
+        super().__init__(env)
+        # Snapshots still in use when their fork finished; stop() deletes them.
+        self._deferred_snapshot_refs: set[str] = set()
+        # Credential files scrubbed out of each snapshot, held in host memory
+        # so restore() can put them back (see _snapshot_credentials).
+        self._snapshot_credentials: dict[str, list[StashedCredential]] = {}
+
+    def _credential_ops(self) -> _DaytonaCredentialOps:
+        return _DaytonaCredentialOps(self._env)
 
     async def start(self, force_build: bool) -> None:
         from benchflow.sandbox import daytona as _sdk
@@ -180,7 +228,18 @@ class _DaytonaDirect(_DaytonaStrategy):
 
         params: _SandboxParams
 
-        if snapshot_exists and snapshot_name:
+        start_ref = getattr(env, "_start_snapshot_ref", None)
+        if start_ref:
+            # A branch child: the checkpoint, never the task image.
+            env.logger.debug(f"Starting from branch snapshot: {start_ref}")
+            params = _sdk.CreateSandboxFromSnapshotParams(
+                auto_delete_interval=env._auto_delete_interval,
+                auto_stop_interval=env._auto_stop_interval,
+                snapshot=start_ref,
+                network_block_all=env._network_block_all,
+                labels=_benchflow_owned_labels(),
+            )
+        elif snapshot_exists and snapshot_name:
             env.logger.debug(f"Using snapshot: {snapshot_name}")
             params = _sdk.CreateSandboxFromSnapshotParams(
                 auto_delete_interval=env._auto_delete_interval,
@@ -211,17 +270,11 @@ class _DaytonaDirect(_DaytonaStrategy):
                 labels=_benchflow_owned_labels(),
             )
 
+        env._create_attempts = 0
         try:
             await env._create_sandbox(params=params)
-        except (TimeoutError, RuntimeError, Exception) as e:
-            sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
-            raise SandboxStartupError(
-                f"Sandbox creation failed after retries: {e}",
-                sandbox_id=sandbox_id,
-                sandbox_state="error",
-                attempts=3,
-                build_timeout_sec=env.task_env_config.build_timeout_sec,
-            ) from e
+        except Exception as e:
+            raise env._startup_failure(e) from e
 
         await env._sandbox_exec(
             f"mkdir -p {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir} && "
@@ -238,18 +291,38 @@ class _DaytonaDirect(_DaytonaStrategy):
 
         try:
             if not env._sandbox:
-                env.logger.warning(
-                    "Sandbox not found. Please build the environment first."
-                )
+                env._log_no_sandbox_to_stop()
             else:
                 try:
                     await env._stop_sandbox()
                 except Exception as e:
-                    env.logger.error(f"Error stopping sandbox {env._sandbox.id}: {e}")
+                    env._log_sandbox_left_behind(e)
                 finally:
                     env._sandbox = None
+            self._snapshot_credentials.clear()
+            await self._delete_deferred_snapshots()
         finally:
             env._client_manager = None
+
+    async def _delete_deferred_snapshots(self) -> None:
+        """Delete snapshots that were in use when their fork finished."""
+        last_error: Exception | None = None
+        for delay in (0, *_DELETE_RETRY_DELAYS):
+            if not self._deferred_snapshot_refs:
+                return
+            await asyncio.sleep(delay)
+            for ref in sorted(self._deferred_snapshot_refs):
+                try:
+                    await _delete_provider_snapshot(ref)
+                except Exception as exc:
+                    last_error = exc
+                    continue
+                self._deferred_snapshot_refs.discard(ref)
+        for ref in sorted(self._deferred_snapshot_refs):
+            self._env.logger.warning(
+                f"Daytona snapshot {ref} could not be deleted ({last_error}); "
+                "`bench sandbox cleanup` removes it once it is stale"
+            )
 
     async def exec(
         self,
@@ -355,16 +428,40 @@ class _DaytonaDirect(_DaytonaStrategy):
                 "DaytonaSandbox.snapshot requires a started sandbox; call "
                 "start() before snapshot()."
             )
-        snap_name = name or f"bf-snap-{env.environment_name}-{uuid4().hex[:12]}"
+        # Default names carry the owner scope so `bench sandbox cleanup` can
+        # find a leaked snapshot (Daytona snapshots have no labels).
+        snap_name = name or benchflow_snapshot_name(env.environment_name)
         # Daytona names: lowercase, dash-separated, ascii — sanitize defensively.
         snap_name = snap_name.lower().replace("_", "-")
-        await env._sandbox._experimental_create_snapshot(snap_name)
-        env.logger.info(f"Snapshot created: {snap_name}")
+        # Agent credential files stay out of the provider snapshot.
+        ops = self._credential_ops()
+        stash = await scrub_credentials(ops)
+        try:
+            await env._sandbox._experimental_create_snapshot(snap_name)
+        finally:
+            if stash:
+                await put_back_credentials(ops, stash)
+        if stash:
+            self._snapshot_credentials[snap_name] = stash
+        env.logger.info(
+            f"Snapshot created: {snap_name}; "
+            f"{len(stash)} credential file(s) kept out of it"
+        )
         return SandboxImage(
             provider="daytona",
             ref=snap_name,
             meta={"sandbox_id": getattr(env._sandbox, "id", "") or ""},
         )
+
+    async def adopt_snapshot(self, image: SandboxImage) -> None:
+        """Remember the live sandbox's credential files for ``image``, a
+        snapshot of this state taken elsewhere (a kept checkpoint), so a
+        restore from it puts them back. The live files are left as they are."""
+        ops = self._credential_ops()
+        stash = await scrub_credentials(ops)
+        if stash:
+            await put_back_credentials(ops, stash)
+            self._snapshot_credentials[image.ref] = stash
 
     async def restore(self, image: SandboxImage) -> None:
         """Replace the current Daytona sandbox with one from ``image``.
@@ -397,4 +494,57 @@ class _DaytonaDirect(_DaytonaStrategy):
             labels=_benchflow_owned_labels(),
         )
         await env._create_sandbox(params=params)
+        stash = self._snapshot_credentials.get(image.ref)
+        if stash:
+            await put_back_credentials(self._credential_ops(), stash)
         env.logger.info(f"Snapshot restored: {image.ref}")
+
+    async def delete_snapshot(self, image: SandboxImage) -> bool:
+        """Delete the Daytona snapshot ``image``; defer it while still in use.
+
+        Returns True when the snapshot is gone (including already gone). When
+        the provider refuses (for example while a sandbox created from it is
+        being replaced), the snapshot is deleted by :meth:`stop` instead.
+        """
+        if image.provider != "daytona":
+            raise SandboxSnapshotNotSupported(
+                f"DaytonaSandbox.delete_snapshot cannot delete a "
+                f"{image.provider!r} snapshot (got ref={image.ref!r})"
+            )
+        self._snapshot_credentials.pop(image.ref, None)
+        try:
+            await _delete_provider_snapshot(image.ref)
+        except Exception as exc:
+            self._deferred_snapshot_refs.add(image.ref)
+            self._env.logger.info(
+                f"Daytona snapshot {image.ref} not deleted yet ({exc}); "
+                "retrying when the sandbox stops"
+            )
+            return False
+        self._deferred_snapshot_refs.discard(image.ref)
+        self._env.logger.info(f"Snapshot deleted: {image.ref}")
+        return True
+
+
+class _DaytonaCredentialOps:
+    """Root access to the live Daytona sandbox for the credential scrub.
+
+    File contents move through the Daytona file API, never through session
+    commands: the Daytona daemon keeps each session command's output on disk
+    inside the sandbox, where the snapshot would capture it.
+    """
+
+    def __init__(self, env: DaytonaSandbox) -> None:
+        self._env = env
+
+    async def run(self, command: str) -> ExecResult:
+        return await self._env._sandbox_exec(
+            command, user="root", timeout_sec=120, cleanup_session=True
+        )
+
+    async def read(self, path: str) -> bytes:
+        content = await self._env._require_sandbox().fs.download_file(path)
+        return bytes(content or b"")
+
+    async def write(self, path: str, content: bytes) -> None:
+        await self._env._require_sandbox().fs.upload_file(content, path)

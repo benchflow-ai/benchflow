@@ -387,6 +387,10 @@ class TestEvalCreateRouting:
         self, tmp_path: Path, monkeypatch
     ):
         """Guards release smokes: .env sandbox credentials reach provider SDKs."""
+        # --sandbox daytona; stay independent of the optional SDK.
+        monkeypatch.setattr(
+            "benchflow.eval_plan.sandbox_sdk_missing", lambda name: False
+        )
         import os
         from types import SimpleNamespace
 

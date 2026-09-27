@@ -1,0 +1,76 @@
+{
+  "hello-pass": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "hello-wrong": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Goodbye, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "draft": [
+    {
+      "text": "Writing a draft.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'draft\\n' > /app/draft.txt",
+        "description": "Write draft.txt"
+      }
+    },
+    {
+      "text": "Draft written."
+    }
+  ],
+  "pass-then-hang": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Waiting.",
+      "tool": "Bash",
+      "input": {
+        "command": "sleep 590",
+        "description": "Wait",
+        "timeout": 600000
+      }
+    },
+    {
+      "text": "Done waiting."
+    }
+  ],
+  "crash": [
+    {
+      "text": "Stopping the agent process.",
+      "tool": "Bash",
+      "input": {
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '[c]laude-agent-acp'; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "description": "Kill the ACP agent process"
+      }
+    },
+    {
+      "text": "Still here."
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "task_path": "hello-world-task",
+  "agent": "claude-agent-acp",
+  "model": "claude-sonnet-4-6",
+  "reasoning_effort": "high",
+  "codex_apps_policy": null,
+  "environment": "daytona",
+  "acp_transport": "pty",
+  "environment_manifest": null,
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "sandbox_user": "agent",
+  "sandbox_locked_paths": [
+    "/oracle",
+    "/solution",
+    "/verifier",
+    "/tests",
+    "/testbed_verify"
+  ],
+  "sandbox_setup_timeout": 120,
+  "skip_install": false,
+  "agent_install_timeout": 900,
+  "context_root": null,
+  "base_image_override": null,
+  "timeout_sec": 300,
+  "concurrency": 1,
+  "agent_idle_timeout_sec": 600,
+  "started_at": "2026-01-01 12:00:25.000000",
+  "agent_env": {
+    "BENCHFLOW_PROVIDER_MODEL": "claude-sonnet-4-6",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "claude-agent-acp",
+          "model": "claude-sonnet-4-6",
+          "reasoning_effort": "high",
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": true
+        },
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "usage_tracking": {
+    "requested": "auto"
+  },
+  "task_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "verifier_recovery": {
+    "eligible": false,
+    "reason": "task must declare a validated workspace_recovery=true or submission_files contract"
+  }
+}

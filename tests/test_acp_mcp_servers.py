@@ -23,8 +23,8 @@ from benchflow.rollout import (
     Role,
     Rollout,
     RolloutConfig,
+    _fastmcp_task_mcp_config,
     _install_native_task_mcp_config,
-    _openhands_mcp_config,
     _task_mcp_specs,
     _task_mcp_specs_for_agent,
 )
@@ -175,7 +175,7 @@ def test_openhands_mcp_config_uses_fastmcp_shape() -> None:
         ),
     )
 
-    assert _openhands_mcp_config(task) == {
+    assert _fastmcp_task_mcp_config(task) == {
         "mcpServers": {
             "atlas": {
                 "url": "http://localhost:18765/mcp",
@@ -349,13 +349,9 @@ async def test_connect_threads_task_mcp_servers_into_connect_acp(tmp_path) -> No
     cfg = RolloutConfig(
         task_path=tmp_path / "task", agent="claude-agent-acp", model="test-model"
     )
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
-    trial._agent_env = {}
     trial._agent_launch = "claude-agent-acp"
     trial._phase = "installed"
     trial._task = _task_with_mcp(
@@ -385,16 +381,12 @@ async def test_connect_threads_task_mcp_servers_into_connect_acp(tmp_path) -> No
 async def test_connect_as_omits_openhands_mcp_servers_from_acp(tmp_path) -> None:
     """Guards the role execution path used by single-shot OpenHands scenes."""
     cfg = RolloutConfig(task_path=tmp_path / "task", agent="openhands", model="qwen")
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._agent_cfg = AGENTS["openhands"]
     trial._agent_launch = "openhands"
     trial._phase = "installed"
-    trial._disallow_web_tools = False
     trial._task = _task_with_mcp(
         MCPServerConfig(name="atlas", transport="streamable-http", url="http://x/mcp")
     )

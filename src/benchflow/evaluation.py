@@ -11,6 +11,7 @@ Backward-compat aliases: ``Job = Evaluation``, ``JobConfig = EvaluationConfig``,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -18,11 +19,11 @@ import re
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
@@ -31,6 +32,7 @@ from benchflow._utils.evaluation_results import (
     phase_timing_summary,
     rollout_result_payload,
     skill_invocation_summary,
+    solve_rate_summary,
     tool_call_summary,
     trajectory_step_summary,
     usage_summary,
@@ -64,6 +66,7 @@ from benchflow._utils.scoring import (
     classify_score_outcome,
     classify_verifier_error,
     count_score_outcomes,
+    is_unrecoverable_startup_error,
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
@@ -71,8 +74,10 @@ from benchflow._utils.scoring import (
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
+from benchflow.budget import Budget, BudgetGuard
+from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
-from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.environment.manifest import EnvironmentManifest, load_manifest
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -99,6 +104,10 @@ from benchflow.usage_tracking import UsageTrackingConfig
 # Backward-compat alias
 RunResult = RolloutResult
 
+if TYPE_CHECKING:
+    from benchflow.checkpoint_retry import RetryPolicy
+    from benchflow.checkpoints import CheckpointPolicy
+
 logger = logging.getLogger(__name__)
 
 # Label applied to every container/network BenchFlow's compose files create.
@@ -121,7 +130,6 @@ def _environment_manifest_from_task_document(
     if not task_md.is_file():
         return None
 
-    from benchflow.environment.manifest import load_manifest
     from benchflow.task.document import TaskDocument
 
     document = TaskDocument.from_path(task_md)
@@ -142,15 +150,34 @@ def _environment_manifest_from_task_document(
     return load_manifest(manifest_path)
 
 
-_SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
-
-
 def _is_task_dir(path: Path) -> bool:
     if not (path / "task.md").exists():
-        return _is_structural_task_dir(path)
+        return _is_structural_task_dir(path) and _task_parse_error(path) is None
     from benchflow._utils.task_authoring import check_task
 
     return check_task(path) == []
+
+
+def _task_parse_error(path: Path) -> tuple[Path, str] | None:
+    """The task file in *path* that exists but fails to parse, and its error.
+
+    ``task.md`` is checked when present, as ``Task`` loads it first; a legacy
+    ``task.toml`` only without one.
+    """
+    from benchflow._utils.task_authoring import (
+        task_config_parse_error,
+        task_document_parse_error,
+    )
+
+    task_md = path / "task.md"
+    if task_md.is_file():
+        error = task_document_parse_error(task_md)
+        return None if error is None else (task_md, error)
+    task_toml = path / "task.toml"
+    if task_toml.is_file():
+        error = task_config_parse_error(task_toml)
+        return None if error is None else (task_toml, error)
+    return None
 
 
 class EmptyTaskSelectionError(ValueError):
@@ -174,7 +201,8 @@ class ResumeMismatchError(ValueError):
 
 
 class MalformedTaskError(ValueError):
-    """A single-task input whose ``task.md`` exists but fails to parse (#3).
+    """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
+    but fails to parse (#3).
 
     Subclasses ``ValueError`` so the CLI's existing run-error handlers surface it
     as a clean red message + exit 1. The message names the offending file —
@@ -270,7 +298,8 @@ class RetryConfig:
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
         if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
-            return True
+            # A missing build-context path fails the same way every time.
+            return not is_unrecoverable_startup_error(error)
         if category == API_ERROR:
             # Transient-only: rate limit / provider 5xx self-heal on backoff;
             # permanent (auth, quota, model_not_found, rejected_request) do not.
@@ -283,7 +312,11 @@ class RetryConfig:
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
         """Check if a verifier error is infrastructure-retryable."""
-        if not self.retry_on_verifier_infra:
+        from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+
+        if not self.retry_on_verifier_infra or (
+            verifier_error and PRESERVED_SOLVER in verifier_error
+        ):
             return False
         return classify_verifier_error(verifier_error) in {
             VERIFIER_INFRA,
@@ -458,7 +491,7 @@ def effective_model(agent: str, model: str | None) -> str | None:
     materializing DEFAULT_MODEL into oracle configs to keep the data honest —
     e.g. result-summary JSON shows model=null instead of a bogus default).
     """
-    if agent == "oracle":
+    if agent in ("oracle", "nop"):
         return None
     if model:
         return model
@@ -492,6 +525,7 @@ class EvaluationConfig:
     retry: RetryConfig = field(default_factory=RetryConfig)
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     skills_dir: str | None = None
+    codex_apps_policy: str | None = field(default=None, kw_only=True)
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -527,8 +561,48 @@ class EvaluationConfig:
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
     # shape) is also accepted at runtime — __post_init__ materializes it.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Opt-in automatic checkpoints (benchflow.checkpoints): "every-prompt" or
+    # "prompt:N,M", and how many retained snapshots each trial keeps.
+    checkpoints: str | None = None
+    checkpoint_keep: int = 3
+    # Freeze each trial's final workspace for later `bench eval regrade`.
+    freeze_workspace: bool = False
+    # Opt-in retry of a failed/timed-out trial from its last checkpoint
+    # (benchflow.checkpoint_retry): "on-failure", "on-timeout" or both.
+    retry_from_checkpoint: str | None = None
+    retry_prompt: str | None = None
+    retry_resume_session: bool = False
+    # Hard per-job budget (benchflow.budget): stop launching and cancel
+    # running trials once USD, sandbox-seconds or tokens reach a cap.
+    budget: Budget | None = None
+
+    def retry_policy(self) -> RetryPolicy | None:
+        """The parsed retry policy, or None when not requested."""
+        from benchflow.checkpoint_retry import parse_retry_policy
+
+        if not self.retry_from_checkpoint:
+            return None
+        if not self.checkpoints:
+            raise ValueError(
+                "--retry-from-checkpoint needs --checkpoints: a trial can only be "
+                "retried from a checkpoint it kept"
+            )
+        return parse_retry_policy(
+            self.retry_from_checkpoint,
+            prompt=self.retry_prompt,
+            resume_session=self.retry_resume_session,
+        )
+
+    def checkpoint_policy(self) -> CheckpointPolicy | None:
+        """The parsed checkpoint policy, or None when not requested."""
+        from benchflow.checkpoints import parse_checkpoint_policy
+
+        if not self.checkpoints:
+            return None
+        return parse_checkpoint_policy(self.checkpoints, keep=self.checkpoint_keep)
 
     def __post_init__(self):
+        self.budget = Budget.coerce(self.budget)
         from benchflow._utils.config import (
             normalize_agent_idle_timeout,
             normalize_agent_name,
@@ -540,7 +614,11 @@ class EvaluationConfig:
         self.agent = normalize_agent_name(self.agent)
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        if self.codex_apps_policy not in (None, "disabled", "inherit"):
+            raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
+        self.checkpoint_policy()  # refuse a bad --checkpoints before any run
+        self.retry_policy()  # and a bad --retry-from-checkpoint
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         self.reviewer = ReviewerConfig.coerce(self.reviewer)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
@@ -570,7 +648,7 @@ class EvaluationConfig:
                 f"unknown job_mode {self.job_mode!r} — "
                 f"expected one of {', '.join(JOB_MODES)}"
             )
-        if self.agent != "oracle" and self.agent not in AGENTS:
+        if self.agent not in ("oracle", "nop") and self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
                 f"Unknown agent {self.agent!r} — not in registry. "
@@ -599,10 +677,15 @@ class TaskFailure:
 
 @dataclass
 class EvaluationResult:
-    """Aggregated results for a job."""
+    """Aggregated results for a job.
+
+    ``results`` maps each task name to its :class:`RolloutResult` (tasks
+    reused on resume are read back from their ``result.json``), and
+    ``job_dir`` is where the job's artifacts and ``summary.json`` live.
+    """
 
     job_name: str
-    config: EvaluationConfig
+    config: EvaluationConfig = field(repr=False)
     total: int = 0
     passed: int = 0
     failed: int = 0
@@ -616,6 +699,34 @@ class EvaluationResult:
     # pass/fail counts describe hard gates, while quality retains partial credit —
     # a 0.3 rubric score and a flat 0 both print as FAIL without this.
     mean_reward: float | None = None
+    # The job's artifact directory (``jobs_dir/job_name``).
+    job_dir: Path | None = None
+    # One typed result per task name: this run's results as returned by the
+    # rollouts, plus resumed tasks read back from their result.json.
+    results: dict[str, RolloutResult] = field(default_factory=dict)
+    # summary.json's ``budget`` block when the job had a Budget (caps, spent,
+    # stopped, reason, cancelled and not-started trials), else None.
+    budget: dict[str, Any] | None = None
+    # Tasks reused from an earlier run of the same job (resume) and tasks that
+    # ran now; ran == 0 with reused > 0 means the results are all earlier ones.
+    reused: int = 0
+    ran: int = 0
+
+    def to_records(self) -> list[dict[str, Any]]:
+        """One flat dict per task, sorted by task name (``RolloutResult.to_record``)."""
+        return [result.to_record() for _, result in sorted(self.results.items())]
+
+    def to_csv(self, path: str | Path) -> Path:
+        """Write one CSV row per task and return the path."""
+        from benchflow.batch import write_csv
+
+        return write_csv((r for _, r in sorted(self.results.items())), path)
+
+    def to_jsonl(self, path: str | Path) -> Path:
+        """Write one JSON line per task and return the path."""
+        from benchflow.batch import write_jsonl
+
+        return write_jsonl((r for _, r in sorted(self.results.items())), path)
 
     @property
     def score(self) -> float:
@@ -628,11 +739,88 @@ class EvaluationResult:
         return pass_rate_excl_errors(passed=self.passed, failed=self.failed)
 
 
+EVALUATION_RECORD = "evaluation.json"
+JOB_LOCK = ".evaluation.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process with this pid exists on this host."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OverflowError:
+        return False
+    return True
+
+
+def _config_to_record(config: EvaluationConfig) -> dict[str, Any]:
+    """Serialize a config for ``evaluation.json``; agent_env values are left out."""
+    import dataclasses
+
+    record: dict[str, Any] = {}
+    for f in dataclasses.fields(config):
+        value = getattr(config, f.name)
+        if f.name == "agent_env":
+            record["agent_env_keys"] = sorted(value)
+        elif f.name == "retry":
+            retry = dataclasses.asdict(value)
+            retry["exclude_categories"] = sorted(retry["exclude_categories"])
+            record["retry"] = retry
+        elif f.name == "reviewer":
+            record["reviewer"] = value.to_config_artifact()
+        elif f.name == "usage_tracking":
+            record["usage_tracking"] = value.to_mapping()
+        elif f.name == "environment_manifest":
+            record[f.name] = None if value is None else value.model_dump(mode="json")
+        elif f.name == "loop_strategy":
+            record[f.name] = None if value is None else value.to_mapping()
+        elif f.name == "budget":
+            record[f.name] = None if value is None else value.to_dict()
+        elif isinstance(value, set):
+            record[f.name] = sorted(value)
+        else:
+            record[f.name] = value
+    return json.loads(json.dumps(record, default=str))
+
+
+def _config_from_record(
+    raw: dict[str, Any], agent_env: dict[str, str] | None
+) -> EvaluationConfig:
+    """Rebuild an EvaluationConfig from ``_config_to_record`` output."""
+    import dataclasses
+
+    known = {f.name for f in dataclasses.fields(EvaluationConfig)}
+    kwargs = {k: v for k, v in raw.items() if k in known}
+    missing = sorted(set(raw.get("agent_env_keys") or []) - set(agent_env or {}))
+    if missing:
+        logger.warning(
+            "Resuming without agent_env %s: their values are not stored in %s. "
+            "Pass agent_env={...} to Evaluation.resume() if the agent needs them.",
+            ", ".join(missing),
+            EVALUATION_RECORD,
+        )
+    kwargs["agent_env"] = dict(agent_env or {})
+    kwargs["retry"] = RetryConfig.from_mapping(raw.get("retry"))
+    reviewer = dict(raw.get("reviewer") or {})
+    reviewer.pop("agent_env_keys", None)
+    kwargs["reviewer"] = ReviewerConfig.coerce(reviewer)
+    if raw.get("environment_manifest") is not None:
+        kwargs["environment_manifest"] = EnvironmentManifest.model_validate(
+            raw["environment_manifest"]
+        )
+    for name in ("exclude_tasks", "include_tasks"):
+        kwargs[name] = set(raw.get(name) or [])
+    return EvaluationConfig(**kwargs)
+
+
 class Evaluation:
     """Run a benchmark job across multiple tasks.
 
     Usage:
-        from benchflow._utils.benchmark_repos import resolve_source
+        from benchflow import resolve_source
 
         evaluation = Evaluation(
             tasks_dir=resolve_source("harbor-framework/terminal-bench-2"),
@@ -668,11 +856,15 @@ class Evaluation:
                 if d.is_dir() and not d.name.startswith(".")
             )
             if len(job_dirs) == 1:
-                logger.info(f"Resuming into existing job directory: {job_dirs[0].name}")
+                logger.warning(
+                    f"Resuming into existing job directory: {job_dirs[0].name} "
+                    "(finished tasks are reused; pass a new job_name, or "
+                    "--fresh on the CLI, for a new run)"
+                )
                 return job_dirs[0].name
             if len(job_dirs) > 1:
                 latest = job_dirs[-1]
-                logger.info(
+                logger.warning(
                     f"Multiple job directories found ({len(job_dirs)}); "
                     f"resuming into most recent: {latest.name}"
                 )
@@ -688,24 +880,33 @@ class Evaluation:
         on_result: Callable[[str, RunResult], None] | None = None,
         on_task_start: Callable[[str], None] | None = None,
         on_plan: Callable[[int, int, int, tuple[int, int, int]], None] | None = None,
+        preflight: bool = True,
+        budget: Budget | dict[str, Any] | None = None,
     ):
         self._tasks_dir = resolve_task_collection_root(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
         self._config = config or EvaluationConfig()
+        if budget is not None:
+            # A hard per-job cap (benchflow.budget); same as config.budget.
+            self._config.budget = Budget.coerce(budget)
+        self._budget_guard: BudgetGuard | None = None
+        # agent_env names a loaded config declared without values; to_dict
+        # keeps listing them so a second save does not forget them.
+        self._declared_env_keys: list[str] = []
         if self._config.source_provenance is None:
             from benchflow._utils.hf_datasets import load_source_sidecar
 
             self._config.source_provenance = load_source_sidecar(self._tasks_dir)
         self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
         self._on_result = on_result
+        # Pre-run checks in run(); the CLI passes False (it runs its own).
+        self._preflight = preflight
+        # The last run's EvaluationResult (set by run(), stream(), run_sync()).
+        self.result: EvaluationResult | None = None
         # UI-progress hooks (the CLI live dashboard; None everywhere else). Fired
         # best-effort via _fire_progress so a display bug never aborts a run.
         self._on_task_start = on_task_start
         self._on_plan = on_plan
-        # Kept for test mocking compat; _run_task prefers Rollout
-        from benchflow.sdk import SDK
-
-        self._sdk = SDK()
         # The persistent learner store for sequential-shared (continual
         # learning) jobs — the one owner. parallel-independent jobs leave it
         # None.
@@ -765,8 +966,85 @@ class Evaluation:
         except OSError as e:
             logger.warning(f"Could not persist LearnerStore: {e}")
 
+    def to_dict(self, *, include_agent_env: bool = False) -> dict[str, Any]:
+        """This job as the native config mapping that ``from_yaml`` and
+        ``bench eval run --config`` read.
+
+        agent_env values (the agent's and the reviewer's) are left out unless
+        ``include_agent_env=True``; their key names are listed under
+        ``agent_env_keys`` so a reader knows what to supply. The job name is
+        not written, so each run of the saved config starts a new job.
+        """
+        cfg = self._config
+        record = _config_to_record(cfg)
+        reviewer = cfg.reviewer.to_dict()
+        if not include_agent_env:
+            reviewer["agent_env"] = {}
+        out: dict[str, Any] = {
+            "tasks_dir": str(self._tasks_dir),
+            "jobs_dir": str(self._jobs_dir),
+            "agent": cfg.agent,
+            "model": cfg.model,
+            "reasoning_effort": cfg.reasoning_effort,
+            "environment": cfg.environment,
+            "concurrency": cfg.concurrency,
+            "build_concurrency": cfg.build_concurrency,
+            "prompts": cfg.prompts,
+            "agent_env": dict(cfg.agent_env) if include_agent_env else {},
+            "agent_env_keys": sorted(set(cfg.agent_env) | set(self._declared_env_keys)),
+            "retry": record["retry"],
+            "reviewer": reviewer,
+            "skills_dir": cfg.skills_dir,
+            "codex_apps_policy": cfg.codex_apps_policy,
+            "sandbox_user": cfg.sandbox_user,
+            "sandbox_locked_paths": cfg.sandbox_locked_paths,
+            "sandbox_setup_timeout": cfg.sandbox_setup_timeout,
+            "skip_install": cfg.skip_agent_install,
+            "agent_idle_timeout_sec": cfg.agent_idle_timeout,
+            "context_root": cfg.context_root,
+            "base_image_override": cfg.base_image_override,
+            "include": sorted(cfg.include_tasks),
+            "exclude": sorted(cfg.exclude_tasks),
+            "skill_mode": cfg.skill_mode,
+            "skill_creator_dir": cfg.skill_creator_dir,
+            "self_gen_no_internet": cfg.self_gen_no_internet,
+            "job_mode": cfg.job_mode,
+            **cfg.usage_tracking.to_mapping(),
+            "environment_manifest": record["environment_manifest"],
+            "config_override": cfg.config_override,
+            "loop_strategy": record["loop_strategy"],
+            "checkpoints": cfg.checkpoints,
+            "checkpoint_keep": cfg.checkpoint_keep,
+            "freeze_workspace": cfg.freeze_workspace,
+            "retry_from_checkpoint": cfg.retry_from_checkpoint,
+            "retry_prompt": cfg.retry_prompt,
+            "retry_resume_session": cfg.retry_resume_session,
+            "budget": None if cfg.budget is None else cfg.budget.to_dict(),
+            "source_provenance": cfg.source_provenance,
+            "dataset_name": cfg.dataset_name,
+            "dataset_version": cfg.dataset_version,
+            "dataset_task_digests": dict(cfg.dataset_task_digests),
+        }
+        return json.loads(json.dumps(out, default=str))
+
+    def to_yaml(self, path: str | Path, *, include_agent_env: bool = False) -> Path:
+        """Write :meth:`to_dict` as YAML (``bench eval run --config`` reads it)."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(
+                self.to_dict(include_agent_env=include_agent_env), sort_keys=False
+            )
+        )
+        return path
+
     @classmethod
-    def from_yaml(cls, path: str | Path, **kwargs) -> Evaluation:
+    def from_dict(cls, raw: dict[str, Any], **kwargs: Any) -> Evaluation:
+        """Build an Evaluation from a native config mapping (``to_dict``'s shape)."""
+        return cls._from_native_yaml(dict(raw), **kwargs)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path, **kwargs: Any) -> Evaluation:
         """Create a Job from a YAML config file.
 
         Supports both benchflow-native and legacy YAML formats.
@@ -883,10 +1161,18 @@ class Evaluation:
         # (#398).
         env_manifest_raw = raw.get("environment_manifest")
         env_manifest: EnvironmentManifest | None = None
-        if env_manifest_raw is not None:
-            from benchflow.environment.manifest import load_manifest
-
+        if isinstance(env_manifest_raw, dict):
+            # Inline manifest, as Evaluation.to_dict() writes it.
+            env_manifest = EnvironmentManifest.model_validate(env_manifest_raw)
+        elif env_manifest_raw is not None:
             env_manifest = load_manifest(env_manifest_raw)
+        missing_env = sorted(set(raw.get("agent_env_keys") or []) - set(agent_env_raw))
+        if missing_env:
+            logger.warning(
+                "The config names agent_env %s without values; pass them in "
+                "agent_env (or the environment) if the agent needs them.",
+                ", ".join(missing_env),
+            )
         config = EvaluationConfig(
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
@@ -897,8 +1183,11 @@ class Evaluation:
             prompts=prompts,
             agent_env=agent_env_raw,
             reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
-            retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
+            retry=RetryConfig.from_mapping(raw["retry"])
+            if isinstance(raw.get("retry"), dict)
+            else RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
+            codex_apps_policy=raw.get("codex_apps_policy"),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -918,13 +1207,31 @@ class Evaluation:
             ),
             self_gen_no_internet=bool(raw.get("self_gen_no_internet", False)),
             job_mode=raw.get("job_mode", DEFAULT_JOB_MODE),
-            source_provenance=source_provenance,
+            source_provenance=source_provenance or raw.get("source_provenance"),
+            dataset_name=raw.get("dataset_name"),
+            dataset_version=raw.get("dataset_version"),
+            dataset_task_digests=raw.get("dataset_task_digests") or {},
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
             config_override=raw.get("config_override"),
             loop_strategy=raw.get("loop_strategy"),
+            checkpoints=raw.get("checkpoints"),
+            checkpoint_keep=raw.get("checkpoint_keep", 3),
+            freeze_workspace=bool(raw.get("freeze_workspace", False)),
+            retry_from_checkpoint=raw.get("retry_from_checkpoint"),
+            retry_prompt=raw.get("retry_prompt"),
+            retry_resume_session=bool(raw.get("retry_resume_session", False)),
+            budget=Budget.coerce(raw.get("budget")),
         )
-        return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
+        evaluation = cls(
+            tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs
+        )
+        declared = raw.get("agent_env_keys")
+        if isinstance(declared, list):
+            evaluation._declared_env_keys = sorted(
+                {k for k in declared if isinstance(k, str)}
+            )
+        return evaluation
 
     @classmethod
     def _from_legacy_yaml(cls, raw: dict, **kwargs) -> Evaluation:
@@ -996,6 +1303,7 @@ class Evaluation:
             reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
+            codex_apps_policy=raw.get("codex_apps_policy"),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -1021,16 +1329,15 @@ class Evaluation:
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories.
 
-        A directory whose ``task.md`` *exists but fails to parse* is a malformed
-        task, not a non-task: in the single-task case that is a hard error (the
-        user named exactly one thing and it is broken); in the batch case it is
-        loudly warned and skipped (a typo must never make a task silently vanish
-        from a 50-task suite, #3) while the healthy tasks still run. A task.md
+        A directory whose ``task.md`` (or, without one, legacy ``task.toml``)
+        *exists but fails to parse* is a malformed task, not a non-task: in the
+        single-task case that is a hard error (the user named exactly one thing
+        and it is broken); in the batch case it is loudly warned and skipped (a
+        typo must never make a task silently vanish from a 50-task suite, #3)
+        while the healthy tasks still run. A task.md
         that PARSES but is structurally incomplete (e.g. a schema-only fixture)
         keeps its existing silent skip.
         """
-        from benchflow._utils.task_authoring import task_document_parse_error
-
         # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
@@ -1058,32 +1365,82 @@ class Evaluation:
             if _is_task_dir(d):
                 selected.append(d)
                 continue
-            task_md = d / "task.md"
-            if task_md.is_file():
-                parse_error = task_document_parse_error(task_md)
-                if parse_error is not None:
-                    logger.warning(
-                        "Skipping malformed task %r: %s", d.name, parse_error
-                    )
+            malformed = _task_parse_error(d)
+            if malformed is not None:
+                logger.warning("Skipping malformed task %r: %s", d.name, malformed[1])
 
-        # A malformed task.md at the tasks-dir ROOT is a hard error ONLY when no
-        # valid child tasks were found — i.e. the root was meant as a single
+        # A malformed task file at the tasks-dir ROOT is a hard error ONLY when
+        # no valid child tasks were found — i.e. the root was meant as a single
         # task and it is broken. If the dir is a batch container that also
-        # happens to carry a stray broken root task.md, warn but still run the
+        # happens to carry a stray broken root task file, warn but still run the
         # healthy children rather than aborting the whole batch.
-        root_task_md = self._tasks_dir / "task.md"
-        if root_task_md.is_file():
-            parse_error = task_document_parse_error(root_task_md)
-            if parse_error is not None:
-                if selected:
-                    logger.warning(
-                        "Ignoring malformed task.md at the tasks-dir root %r: %s",
-                        self._tasks_dir.name,
-                        parse_error,
-                    )
-                else:
-                    raise MalformedTaskError(f"{root_task_md}: {parse_error}")
+        malformed = _task_parse_error(self._tasks_dir)
+        if malformed is not None:
+            task_file, parse_error = malformed
+            if selected:
+                logger.warning(
+                    "Ignoring malformed %s at the tasks-dir root %r: %s",
+                    task_file.name,
+                    self._tasks_dir.name,
+                    parse_error,
+                )
+            else:
+                raise MalformedTaskError(f"{task_file}: {parse_error}")
         return selected
+
+    def _empty_selection_message(self) -> str:
+        """Why no task was selected, naming structural problems when no filter did it.
+
+        Discovery skips a task file that parses but fails ``bench tasks
+        check`` (a schema-only fixture, a task with no environment/), so
+        without filters the only visible symptom would be an empty selection.
+        """
+        cfg = self._config
+        root = self._tasks_dir
+        detail_parts = [f"tasks_dir={root}"]
+        if cfg.include_tasks:
+            detail_parts.append(f"include={sorted(cfg.include_tasks)}")
+        if cfg.exclude_tasks:
+            detail_parts.append(f"exclude={sorted(cfg.exclude_tasks)}")
+        tail = " Refusing to publish an empty 0/0 summary."
+        if cfg.include_tasks or cfg.exclude_tasks:
+            return (
+                "No tasks selected after include/exclude filtering "
+                f"({', '.join(detail_parts)})." + tail
+            )
+        from benchflow._utils.task_authoring import check_task
+
+        def _has_task_file(path: Path) -> bool:
+            return (path / "task.md").is_file() or (path / "task.toml").is_file()
+
+        if _has_task_file(root):
+            issues = check_task(root)
+            if issues:
+                return (
+                    f"No tasks selected: {root} is not a runnable task: "
+                    f"{'; '.join(issues)}. Run `bench tasks check {root}` "
+                    "for details." + tail
+                )
+        unrunnable = (
+            sorted(d for d in root.iterdir() if d.is_dir() and _has_task_file(d))
+            if root.is_dir()
+            else []
+        )
+        if unrunnable:
+            first = unrunnable[0]
+            issues = check_task(first)
+            example = f" (first: {first.name}: {issues[0]})" if issues else ""
+            noun = (
+                "1 subdirectory has a task file but is not a runnable task"
+                if len(unrunnable) == 1
+                else f"{len(unrunnable)} subdirectories have task files but "
+                "are not runnable tasks"
+            )
+            return (
+                f"No tasks selected in {root}: {noun}{example}. Run "
+                f"`bench tasks check <task>` for details." + tail
+            )
+        return f"No tasks selected: no task found in {root}." + tail
 
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.
@@ -1103,6 +1460,16 @@ class Evaluation:
         if not job_dir.exists():
             return {}
         latest = load_task_results(job_dir)
+        # A process may have died after the solver completed but before
+        # capture/cleanup produced a terminal result. Preserve the stage
+        # checkpoint without pretending it is a completed scoring verdict.
+        for checkpoint in job_dir.glob("*/solver-complete.json"):
+            if (checkpoint.parent / "result.json").exists():
+                continue
+            pending = json.loads(checkpoint.read_text())
+            name = pending.get("task_name")
+            if name and name not in latest and pending.get("purpose", "task") == "task":
+                latest[name] = pending
         completed: dict[str, dict] = {}
         # Re-running an errored task is only safe when rollouts are
         # independent. A sequential-shared job advances one persisted learner
@@ -1192,9 +1559,9 @@ class Evaluation:
         ``RolloutResult`` does not carry phase timing, but the rollout writer
         (``rollout.py``) persists it under ``rollout_dir/result.json``. Reading
         it back lets ``phase_timing_summary`` aggregate phase totals for fresh
-        runs (issue #501). Best-effort: legacy SDK paths that mock the writer
-        — or any case where no rollout_name is set — silently leave timing
-        absent rather than crash summary generation.
+        runs (issue #501). Best-effort: a result with no rollout_name or no
+        persisted result.json leaves timing absent rather than crash summary
+        generation.
         """
         if "timing" in payload:
             return
@@ -1275,6 +1642,7 @@ class Evaluation:
             environment_manifest=environment_manifest,
             config_override=cfg.config_override,
             skills_dir=skills_dir,
+            codex_apps_policy=cfg.codex_apps_policy,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
@@ -1292,6 +1660,8 @@ class Evaluation:
             usage_tracking=cfg.usage_tracking,
             loop_strategy=cfg.loop_strategy,
         )
+        rollout_config.checkpoints = cfg.checkpoint_policy()
+        rollout_config.freeze_workspace = cfg.freeze_workspace
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 
@@ -1308,47 +1678,19 @@ class Evaluation:
             # awaits wedged below the phase-level timeouts — see
             # benchflow.rollout._deadline. A trip surfaces here as a normal
             # infra-retryable error result.
-            return await rollout.run()
+            result = await rollout.run()
+            policy = cfg.retry_policy()
+            if policy is not None:
+                try:
+                    await run_checkpoint_retry(rollout, result, policy)
+                except Exception:
+                    # A retry never changes or loses the trial's own result.
+                    logger.warning(
+                        "Checkpoint retry of %s failed", task_dir.name, exc_info=True
+                    )
+            return result
         finally:
             live_activity.unregister(task_dir.name)
-
-    async def _run_single_task_legacy(
-        self, task_dir: Path, cfg: EvaluationConfig
-    ) -> RunResult:
-        """SDK.run() path — used when _sdk is mocked in tests.
-
-        Note: this legacy path does NOT thread the continual-learning skill
-        dirs (``_learner_skills_dir`` / ``_learner_export_dir``), so it
-        cannot materialize or capture evolved skills. It is test-only today;
-        a real continual-learning run must go through ``_run_single_task``.
-        """
-        from benchflow._utils.benchmark_repos import task_source_provenance
-
-        return await self._sdk.run(
-            task_path=task_dir,
-            agent=cfg.agent,
-            model=cfg.model,
-            reasoning_effort=cfg.reasoning_effort,
-            prompts=cfg.prompts,
-            agent_env=cfg.agent_env,
-            reviewer=cfg.reviewer,
-            job_name=self._job_name,
-            jobs_dir=str(self._jobs_dir),
-            concurrency=cfg.concurrency,
-            environment=cfg.environment,
-            skills_dir=cfg.skills_dir,
-            sandbox_user=cfg.sandbox_user,
-            sandbox_locked_paths=cfg.sandbox_locked_paths,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-            agent_idle_timeout=cfg.agent_idle_timeout,
-            context_root=cfg.context_root,
-            base_image_override=cfg.base_image_override,
-            skill_mode=cfg.skill_mode,
-            skill_creator_dir=cfg.skill_creator_dir,
-            self_gen_no_internet=cfg.self_gen_no_internet,
-            source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
-            usage_tracking=cfg.usage_tracking,
-        )
 
     async def _run_task(self, task_dir: Path) -> RunResult:
         """Run a single task with retries."""
@@ -1361,13 +1703,7 @@ class Evaluation:
                 logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
                 await asyncio.sleep(delay)
                 self._prune_docker()
-            # Use legacy SDK path if _sdk has been replaced (test compat)
-            from benchflow.sdk import SDK
-
-            if not isinstance(self._sdk, SDK):
-                result = await self._run_single_task_legacy(task_dir, cfg)
-            else:
-                result = await self._run_single_task(task_dir, cfg)
+            result = await self._run_single_task(task_dir, cfg)
             last_result = result
             if result.scoring is not None:
                 # Once solver evidence is committed, only the scoring stage may
@@ -1440,18 +1776,26 @@ class Evaluation:
         cfg = self._config
         # Console heartbeat auto-gate: interleaved per-task progress lines are
         # noise at high concurrency, so the sessions' heartbeat defaults off
-        # for multi-concurrency jobs. An explicit BENCHFLOW_PROGRESS=on/off
-        # from the operator always wins (checked first in the session layer).
-        os.environ["BENCHFLOW_PROGRESS_AUTO"] = "1" if cfg.concurrency <= 1 else "0"
+        # when several tasks run at once. It counts tasks actually running, not
+        # --concurrency: a job with fewer running tasks than --concurrency
+        # would stay silent long enough for CI to treat it as a hang. An explicit
+        # BENCHFLOW_PROGRESS=on/off from the operator always wins (checked
+        # first in the session layer).
+        running = min(cfg.concurrency, len(remaining))
+        os.environ["BENCHFLOW_PROGRESS_AUTO"] = "1" if running <= 1 else "0"
         # Floor at 1: Semaphore(0) deadlocks on first acquire. eval-create already
         # rejects <1 at plan time, but this guards every other caller (skills eval,
         # SDK) against a silent forever-hang on a bad concurrency.
         sem = asyncio.Semaphore(max(1, cfg.concurrency))
 
         breaker = ApiErrorCircuitBreaker()
+        guard = self._budget_guard
 
-        async def bounded(td: Path) -> tuple[str, RunResult]:
+        async def bounded(td: Path) -> tuple[str, RunResult | None]:
             async with sem:
+                if guard is not None and guard.stopped:
+                    guard.start(td.name)  # records it as not started
+                    return td.name, None
                 if breaker.tripped:
                     result = RunResult(task_name=td.name, error=breaker.skip_error())
                     self._log_and_report(td, result)
@@ -1466,21 +1810,38 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                if guard is not None and not guard.start(
+                    td.name, asyncio.current_task()
+                ):
+                    return td.name, None
                 self._fire_progress(self._on_task_start, td.name)
-                result = await self._run_task(td)
+                result = await self._run_budgeted(td, guard)
+                if result is None:
+                    return td.name, None
                 breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
 
-        results_or_errors = await asyncio.gather(
-            *[bounded(td) for td in remaining],
-            return_exceptions=True,
-        )
+        watcher = asyncio.ensure_future(guard.watch()) if guard is not None else None
+        try:
+            results_or_errors = await asyncio.gather(
+                *[bounded(td) for td in remaining],
+                return_exceptions=True,
+            )
+        finally:
+            if watcher is not None:
+                watcher.cancel()
 
         # Separate successful results from unexpected exceptions
         pairs: list[tuple[str, RunResult]] = []
         for i, r in enumerate(results_or_errors):
             if isinstance(r, BaseException):
+                if (
+                    isinstance(r, asyncio.CancelledError)
+                    and guard is not None
+                    and guard.was_cancelled(remaining[i].name)
+                ):
+                    continue  # the budget cancelled it between awaits
                 if isinstance(r, (asyncio.CancelledError, KeyboardInterrupt)):
                     raise r
                 task_name = remaining[i].name
@@ -1491,9 +1852,40 @@ class Evaluation:
                 # remove it and count it errored.
                 self._fire_progress(self._on_result, task_name, err_result)
                 pairs.append((task_name, err_result))
-            else:
-                pairs.append(r)
+            elif r[1] is not None:
+                pairs.append((r[0], r[1]))
         return pairs
+
+    async def _run_budgeted(
+        self, td: Path, guard: BudgetGuard | None
+    ) -> RunResult | None:
+        """Run one task; None when the budget cancelled it while it ran.
+
+        The cancellation reaches the rollout, whose lifecycle cleans up its
+        sandbox and writes no result.json, so a resume runs the task again.
+        """
+        if guard is None:
+            return await self._run_task(td)
+        try:
+            result = await self._run_task(td)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if guard.was_cancelled(td.name) and current is not None:
+                current.uncancel()
+                # Take it off the live dashboard; it is not a job result.
+                self._fire_progress(
+                    self._on_result,
+                    td.name,
+                    RunResult(task_name=td.name, error=f"cancelled: {guard.reason}"),
+                )
+                logger.info(f"[CANCELLED] {td.name}: {guard.reason}")
+                return None
+            raise
+        except Exception:
+            guard.finish(td.name, None)  # stop counting its sandbox time
+            raise
+        guard.finish(td.name, result)
+        return result
 
     async def _run_sequential_shared(
         self, remaining: list[Path]
@@ -1548,9 +1940,29 @@ class Evaluation:
                 self._learner_skills_dir = skills_dir
                 self._learner_export_dir = export_dir
 
+                guard = self._budget_guard
+                if guard is not None and guard.stopped:
+                    guard.start(td.name)  # records it as not started
+                    self._learner_skills_dir = None
+                    self._learner_export_dir = None
+                    continue
                 self._fire_progress(self._on_task_start, td.name)
                 try:
-                    result = await self._run_task(td)
+                    if guard is None:
+                        result = await self._run_task(td)
+                    else:
+                        # Its own task so the budget can cancel the trial
+                        # without cancelling the job.
+                        trial = asyncio.ensure_future(self._run_budgeted(td, guard))
+                        guard.start(td.name, trial)
+                        watcher = asyncio.ensure_future(guard.watch())
+                        try:
+                            maybe = await trial
+                        finally:
+                            watcher.cancel()
+                        if maybe is None:
+                            continue
+                        result = maybe
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     raise
                 except Exception as e:  # mirror the parallel path's catch
@@ -1715,28 +2127,211 @@ class Evaluation:
                     )
             except Exception as e:
                 logger.debug("Daytona auto-reap skipped: %s", e)
+            try:
+                from benchflow.sandbox.daytona import reap_stale_snapshots
+
+                snaps = reap_stale_snapshots()
+                if snaps["deleted"] or snaps["failed"]:
+                    logger.info(
+                        "Daytona auto-reap: %s stale branch snapshots deleted "
+                        "(%s failed)",
+                        snaps["deleted"],
+                        snaps["failed"],
+                    )
+            except Exception as e:
+                logger.debug("Daytona snapshot auto-reap skipped: %s", e)
 
         threading.Thread(target=_reap, name="daytona-auto-reap", daemon=True).start()
 
+    @classmethod
+    def resume(
+        cls,
+        job_dir: str | Path,
+        *,
+        tasks_dir: str | Path | None = None,
+        agent_env: dict[str, str] | None = None,
+        **config_overrides: Any,
+    ) -> Evaluation:
+        """Rebuild the Evaluation that created ``job_dir``, ready to finish it.
+
+        Reads the ``evaluation.json`` a job writes when it starts (tasks
+        directory and config). Running the returned Evaluation reuses the
+        finished tasks and runs only the rest. agent_env values are never
+        stored, so pass ``agent_env`` again if the agent needs it;
+        ``config_overrides`` replace individual config fields (e.g.
+        ``concurrency=8``). Jobs started before this record existed need
+        ``Evaluation(tasks_dir, jobs_dir=job_dir.parent, config=...,
+        job_name=job_dir.name)`` instead.
+        """
+        import dataclasses
+
+        job_dir = Path(job_dir)
+        record_path = job_dir / EVALUATION_RECORD
+        if not record_path.is_file():
+            raise FileNotFoundError(
+                f"No {EVALUATION_RECORD} in {job_dir} (the job predates it or this "
+                "is not a job directory). Resume it with Evaluation(tasks_dir=..., "
+                f"jobs_dir={str(job_dir.parent)!r}, config=..., "
+                f"job_name={job_dir.name!r})."
+            )
+        record = json.loads(record_path.read_text())
+        config = _config_from_record(record["config"], agent_env)
+        if config_overrides:
+            config = dataclasses.replace(config, **config_overrides)
+        return cls(
+            tasks_dir=tasks_dir or record["tasks_dir"],
+            jobs_dir=job_dir.parent,
+            config=config,
+            job_name=job_dir.name,
+        )
+
+    def _write_evaluation_record(self) -> None:
+        """Record tasks_dir and config so Evaluation.resume(job_dir) can finish the job."""
+        job_dir = self._jobs_dir / self._job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "schema_version": 1,
+            "tasks_dir": str(self._tasks_dir),
+            "job_name": self._job_name,
+            "config": _config_to_record(self._config),
+        }
+        (job_dir / EVALUATION_RECORD).write_text(json.dumps(record, indent=2) + "\n")
+
+    async def stream(self) -> AsyncIterator[tuple[str, RolloutResult]]:
+        """Run the job, yielding ``(task_name, RolloutResult)`` as each task finishes.
+
+        Tasks reused from an earlier run of the same job are not yielded; they
+        are in ``evaluation.result.results`` once the stream ends. Leaving the
+        loop early cancels the job (wrap the stream in
+        ``contextlib.aclosing`` so that happens immediately).
+        """
+        queue: asyncio.Queue[tuple[str, RolloutResult]] = asyncio.Queue()
+        previous = self._on_result
+
+        def _push(name: str, result: RolloutResult) -> None:
+            if previous is not None:
+                previous(name, result)
+            queue.put_nowait((name, result))
+
+        self._on_result = _push
+        runner = asyncio.create_task(self.run())
+        try:
+            while True:
+                getter = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait(
+                    {getter, runner}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if getter in done:
+                    yield getter.result()
+                    continue
+                getter.cancel()
+                while not queue.empty():
+                    yield queue.get_nowait()
+                runner.result()  # re-raise a failed run
+                return
+        finally:
+            self._on_result = previous
+            if not runner.done():
+                runner.cancel()
+                await asyncio.gather(runner, return_exceptions=True)
+
+    def run_sync(self) -> EvaluationResult:
+        """Blocking form of :meth:`run` (also works inside a running event loop)."""
+        from benchflow.batch import run_blocking
+
+        return run_blocking(self.run)
+
     async def run(self) -> EvaluationResult:
-        """Execute the job."""
+        """Execute the job.
+
+        Makes bf.run's pre-run checks first (see ``preflight``), then holds
+        ``<job_dir>/.evaluation.lock`` while it runs, so a second run of
+        the same job (another process, or ``Evaluation.resume`` of a job that
+        is still going) is refused instead of running the same tasks twice.
+        """
+        if self._preflight:
+            self._check_before_run()
+        lock = self._acquire_job_lock()
+        try:
+            return await self._run_unlocked()
+        finally:
+            with contextlib.suppress(OSError):
+                lock.unlink()
+            # A run refused before it wrote anything (e.g. an empty task
+            # selection) leaves no empty job directory behind.
+            with contextlib.suppress(OSError):
+                lock.parent.rmdir()
+
+    def _check_before_run(self) -> None:
+        """The checks bf.run and ``bench eval run`` make before a job exists.
+
+        A misspelt agent or unknown sandbox raises ``ValueError``; Docker not
+        ready for ``environment="docker"`` raises ``RuntimeError`` with
+        ``bench doctor``'s fix; a Claude agent that would fall back to an
+        expired login file gets a ``UserWarning``. ``Evaluation(...,
+        preflight=False)`` skips all of them; ``BENCHFLOW_SKIP_PREFLIGHT=1``
+        skips the host checks (Docker, login file), as for the CLI.
+        """
+        from benchflow.runtime import check_agent_names, check_host, check_sandbox_name
+
+        cfg = self._config
+        check_sandbox_name(cfg.environment)
+        check_agent_names([cfg.agent])
+        check_host([cfg])
+
+    def _acquire_job_lock(self) -> Path:
+        """Create the job lock, refusing a live holder and taking over a dead one."""
+        import socket
+
+        job_dir = self._jobs_dir / self._job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        lock = job_dir / JOB_LOCK
+        me = {
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "started_at": datetime.now().isoformat(),
+        }
+        for _ in range(2):
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                try:
+                    holder = json.loads(lock.read_text())
+                except (OSError, ValueError):
+                    holder = {}
+                pid, host = holder.get("pid"), holder.get("host")
+                if host and host != me["host"]:
+                    raise RuntimeError(
+                        f"Job {job_dir} is already running (or crashed) on host "
+                        f"{host} (pid {pid}); delete {lock} if that run is gone."
+                    ) from None
+                if isinstance(pid, int) and _pid_alive(pid):
+                    raise RuntimeError(
+                        f"Job {job_dir} is already running in process {pid} "
+                        f"(started {holder.get('started_at', '?')}); wait for it "
+                        "to finish or stop it before resuming."
+                    ) from None
+                logger.warning(
+                    "Taking over a stale job lock from process %s, which is gone: %s",
+                    pid,
+                    lock,
+                )
+                with contextlib.suppress(FileNotFoundError):
+                    lock.unlink()
+                continue
+            with os.fdopen(fd, "w") as handle:
+                json.dump(me, handle)
+            return lock
+        raise RuntimeError(f"Could not take the job lock {lock}")
+
+    async def _run_unlocked(self) -> EvaluationResult:
         self._maybe_start_daytona_reap()
         task_dirs = self._get_task_dirs()
         if not task_dirs:
             # Fail fast on an empty selection (#407). Silently writing a
             # 0/0 summary.json would surface as an apparently successful
             # eval in downstream dashboards and release evidence.
-            cfg = self._config
-            detail_parts = [f"tasks_dir={self._tasks_dir}"]
-            if cfg.include_tasks:
-                detail_parts.append(f"include={sorted(cfg.include_tasks)}")
-            if cfg.exclude_tasks:
-                detail_parts.append(f"exclude={sorted(cfg.exclude_tasks)}")
-            raise EmptyTaskSelectionError(
-                "No tasks selected after include/exclude filtering "
-                f"({', '.join(detail_parts)}). Refusing to publish an "
-                "empty 0/0 summary."
-            )
+            raise EmptyTaskSelectionError(self._empty_selection_message())
         from benchflow.review.resume import resume_pending_reviews
 
         await resume_pending_reviews(
@@ -1785,6 +2380,7 @@ class Evaluation:
             _check_resume_mismatch(self._jobs_dir / self._job_name, self._config)
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._write_evaluation_record()
         self._prune_docker()
 
         cfg = self._config
@@ -1821,6 +2417,12 @@ class Evaluation:
 
         start = time.time()
 
+        self._budget_guard = None
+        if cfg.budget is not None:
+            self._budget_guard = BudgetGuard(cfg.budget)
+            # A resumed job has already spent what its finished trials used.
+            self._budget_guard.seed(completed.values())
+
         if cfg.job_mode == "sequential-shared":
             pairs = await self._run_sequential_shared(remaining)
         else:
@@ -1828,10 +2430,18 @@ class Evaluation:
         self._prune_docker()
         elapsed = time.time() - start
 
+        job_dir = self._jobs_dir / self._job_name
         all_results: dict[str, dict] = {}
+        typed_results: dict[str, RolloutResult] = {}
         for task, data in completed.items():
             all_results[task] = data
+            resumed_dir = job_dir / (data.get("rollout_name") or "")
+            typed_results[task] = RolloutResult.from_dict(
+                data,
+                rollout_dir=resumed_dir if data.get("rollout_name") else None,
+            )
         for name, result in pairs:
+            typed_results[name] = result
             payload = rollout_result_payload(
                 result,
                 source_provenance=cfg.source_provenance,
@@ -1868,6 +2478,8 @@ class Evaluation:
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
+            reused=len(completed),
+            ran=len(pairs),
             # Score counts cover one entry per scored rollout. Skill-eval expands
             # a single task into multiple rollouts (baseline/skill x trials), so
             # the denominator must be the number of results, not task dirs, or the
@@ -1882,6 +2494,11 @@ class Evaluation:
             memory_scores=memory_scores,
             task_failures=task_failures,
             mean_reward=mean_scored_reward(all_results.values()),
+            job_dir=job_dir,
+            results=typed_results,
+            budget=(
+                self._budget_guard.summary() if self._budget_guard is not None else None
+            ),
         )
 
         assert (
@@ -1904,8 +2521,14 @@ class Evaluation:
         # Save summary
         summary = {
             "job_name": self._job_name,
-            "reviewer": cfg.reviewer.to_config_artifact(),
+            # The reviewer settings are recorded for every job; "ran" says
+            # whether any trial was actually scored by one.
+            "reviewer": {
+                **cfg.reviewer.to_config_artifact(),
+                "ran": any(r.get("scoring") is not None for r in all_results.values()),
+            },
             "agent": cfg.agent,
+            "codex_apps_policy": cfg.codex_apps_policy,
             "model": cfg.model,
             "environment": cfg.environment,
             "concurrency": cfg.concurrency,
@@ -1923,9 +2546,17 @@ class Evaluation:
             **skill_invocation_summary(all_results),
             **usage_summary(all_results),
             **loop_summary(all_results),
+            **solve_rate_summary(all_results),
             **tool_call_summary(all_results),
+            # Retries from checkpoints, next to (never merged into) the score.
+            **(
+                {"checkpoint_retries": retries}
+                if (retries := retry_summary(list(typed_results.values()))) is not None
+                else {}
+            ),
             **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
+            **({"budget": job_result.budget} if job_result.budget is not None else {}),
             **summary_source_fields(cfg.source_provenance, all_results),
             **(
                 {
@@ -2024,4 +2655,5 @@ class Evaluation:
             f"time={elapsed / 60:.1f}min"
         )
 
+        self.result = job_result
         return job_result

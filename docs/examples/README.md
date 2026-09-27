@@ -36,11 +36,23 @@ bench eval run \
 See [Architecture: skill loading](../architecture.md#skill-loading) for the
 skill loading semantics.
 
+## Python SDK
+
+`python-sdk/` holds small scripts for the Python API, each runnable on Docker or Daytona; its [README](python-sdk/README.md) is the gallery index (what each shows and needs). Start with `python-sdk/quickstart.py`, a tour in `# %%` cells. See the [Python API reference](../reference/python-api.md).
+
+- `python-sdk/run-oracle.py` runs one task with the oracle agent (no model credentials) and prints the typed result: `reward`, `passed`, `score_outcome`, `rollout_dir`.
+- `python-sdk/run-agent.py` runs one task with a real agent (Claude by default, OAuth or API key), then walks the trajectory, prints token usage and reads the rollout back with `RolloutResult.load`.
+- `python-sdk/run-many.py` runs several `AGENT[:MODEL]` combinations on one task with `bf.run_batch` (a plain script, no asyncio), prints each result as it finishes and writes the comparison to CSV and JSONL.
+- `python-sdk/run-batch.py` runs every task under `--tasks-dir` as one `Evaluation`, prints each task as it finishes (`stream()`), exports `results.csv`, and finishes an interrupted job with `--resume <job_dir>`.
+- `python-sdk/run-branch.py` branches a Claude run on the hello-world task into two scored children with one `bf.branch` call (`--concurrency 2` runs the children in their own sandboxes).
+- `python-sdk/run-with-manifest.py` runs a task inside an Environment-plane manifest whose service BenchFlow starts; it writes the task to a temporary directory, so it runs as is.
+
 ## Demos
 
 - `benchflow-grpo-pipeline.md` documents the end-to-end
   BenchFlow-owned TRL GRPO workflow: HF task snapshots, baseline eval, GRPO
   training with `BenchFlowSpec`, final eval, and paired lift reporting.
+- `branch-agent-run.py` branches a real agent run on the bundled hello-world task into two children, each scored by the task's verifier, then finishes the parent. See [Composed checkpoints](../composed-checkpoints.md).
 - `coder-reviewer-demo.py` runs a single-agent baseline and a coder-reviewer
   scene against a task directory.
 - `scene-patterns.md` explains single-agent, self-review, specialist-review,

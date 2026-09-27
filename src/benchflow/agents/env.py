@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.codex_config import apply_codex_provider_config
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, infer_env_key_for_model, is_vertex_model
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,6 @@ def _normalize_openhands_model(model: str) -> str:
         find_provider_for_bare_model,
         strip_provider_prefix,
     )
-    from benchflow.agents.registry import is_vertex_model
 
     if model.startswith(("gemini/", "vertex_ai/", "openhands/")):
         return model
@@ -425,11 +424,8 @@ def uses_native_subscription_auth(
     ):
         if agent_env.get("ANTHROPIC_API_KEY"):
             return False
-        if model is not None:
-            from benchflow.agents.registry import infer_env_key_for_model
-
-            if infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
-                return False
+        if model is not None and infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
+            return False
         return (
             bool(agent_env.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV))
             or bool(agent_env.get(_CLAUDE_OAUTH_TOKEN_ENV))
@@ -443,8 +439,6 @@ def uses_native_subscription_auth(
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
     """Inject ADC credentials and defaults for Vertex AI models."""
-    from benchflow.agents.registry import is_vertex_model
-
     if not is_vertex_model(model):
         return
     adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
@@ -539,8 +533,6 @@ def resolve_provider_env(
         # No registered provider prefix — bridge the model's well-known API key
         # to BENCHFLOW_PROVIDER_API_KEY so env_mapping can translate it to
         # agent-native vars (e.g. GEMINI_API_KEY → LLM_API_KEY for openhands).
-        from benchflow.agents.registry import infer_env_key_for_model
-
         _inferred = infer_env_key_for_model(model)
         if _inferred and _inferred in agent_env:
             agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", agent_env[_inferred])
@@ -638,7 +630,6 @@ def _drop_inherited_generic_provider_overrides(
         return
 
     from benchflow.agents.providers import find_provider
-    from benchflow.agents.registry import infer_env_key_for_model
 
     provider = find_provider(model)
     if provider is None:
@@ -692,7 +683,7 @@ def resolve_agent_env(
     agent_cfg = AGENTS.get(agent)
     # Oracle runs solve.sh and never calls an LLM — model env vars and
     # API-key validation are skipped even if a caller forwards a model.
-    if model and agent != "oracle":
+    if model and agent not in ("oracle", "nop"):
         inject_vertex_credentials(agent_env, model)
         _drop_inherited_generic_provider_overrides(
             agent_env,
@@ -720,8 +711,6 @@ def resolve_agent_env(
                     # explicit agent_env overrides supplied by the caller.
                     agent_env[dst] = agent_env[src]
         # Validate required API key for the chosen model
-        from benchflow.agents.registry import infer_env_key_for_model
-
         required_key = infer_env_key_for_model(model)
         mapped_provider_key = (
             agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_API_KEY")

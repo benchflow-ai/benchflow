@@ -41,6 +41,15 @@ def clean_env(monkeypatch):
     """
     for var in ALL_SMOKE_CRED_VARS:
         monkeypatch.delenv(var, raising=False)
+    # A developer's existing Claude login is also a credential source. Keep
+    # it out of missing-credential tests; the login test opts back in explicitly.
+    credential_path = Path("~/.claude/.credentials.json").expanduser()
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: False if path == credential_path else real_is_file(path),
+    )
     return monkeypatch
 
 

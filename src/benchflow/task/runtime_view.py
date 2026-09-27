@@ -69,7 +69,11 @@ class TaskRuntimeView:
                 scenes=document.scenes,
             )
 
-        config = TaskConfig.model_validate_toml(paths.config_path.read_text())
+        from benchflow.task.imports import load_task_config_toml
+
+        config = load_task_config_toml(
+            paths.config_path.read_text(), source=str(paths.config_path)
+        )
         return cls.from_parsed(
             paths.task_dir,
             document=None,

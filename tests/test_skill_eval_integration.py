@@ -353,4 +353,4 @@ class TestSkillEvalCLI:
         assert "list" in result.output
         # No "install" assertion: `bench skills` exposes only list + eval — there
         # is no install command, and the misleading "installation" wording was
-        # removed from the group help (sweep finding D10).
+        # removed from the group help.

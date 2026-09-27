@@ -30,6 +30,7 @@ from benchflow._utils.config import (
     normalize_sandbox_user,
 )
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.budget import Budget
 from benchflow.evaluation import DEFAULT_AGENT, EvaluationConfig, effective_model
 from benchflow.loop_strategies import (
     SINGLE_SHOT,
@@ -38,9 +39,11 @@ from benchflow.loop_strategies import (
 )
 from benchflow.review.options import ReviewerConfig
 from benchflow.sandbox.providers import (
+    extra_install_hint,
     is_known_provider,
     provider_extra,
     providers_phrase,
+    sandbox_sdk_missing,
 )
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
@@ -91,6 +94,15 @@ class EvalCreateRequest:
     environment_manifest: Path | None = None
     state: str | None = None
     config_override: str | None = None
+    checkpoints: str | None = None
+    checkpoint_keep: int = 3
+    freeze_workspace: bool = False
+    retry_from_checkpoint: str | None = None
+    retry_prompt: str | None = None
+    retry_resume_session: bool = False
+    max_cost_usd: float | None = None
+    max_sandbox_seconds: float | None = None
+    max_tokens: int | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
@@ -99,6 +111,15 @@ class EvalCreateRequest:
     worker_start_stagger_sec: float = 1.0
     agent_idle_timeout: str | None = None
     jobs_dir: str | None = None
+    # A new timestamped job instead of resuming the latest one in jobs_dir,
+    # or an explicit job folder name (new or to resume).
+    fresh: bool = False
+    job_name: str | None = None
+    # CI gates and a machine-readable result.
+    fail_under: float | None = None
+    fail_on: list[str] | None = None
+    summary_out: Path | None = None
+    codex_apps_policy: str | None = field(default=None, kw_only=True)
     sandbox_user: str | None = "agent"
     sandbox_setup_timeout: int = 120
     context_root: Path | None = None
@@ -159,12 +180,27 @@ class EvalPlan:
     usage_tracking_overridden: bool
     sandbox_user: str | None
     output_jobs_dir: str
+    # The job folder to run into: None resumes the latest (the default).
+    job_name: str | None
     eval_env_manifest: EnvironmentManifest | None
     eval_config_override: dict | None
     eval_loop_strategy: LoopStrategySpec | None
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
+
+    @property
+    def eval_budget(self) -> Budget | None:
+        """The hard per-job cap from --max-cost-usd/-sandbox-seconds/-tokens."""
+        req = self.request
+        caps = (req.max_cost_usd, req.max_sandbox_seconds, req.max_tokens)
+        if all(c is None for c in caps):
+            return None
+        return Budget(
+            max_cost_usd=req.max_cost_usd,
+            max_sandbox_seconds=req.max_sandbox_seconds,
+            max_tokens=req.max_tokens,
+        )
 
     def make_eval_config(
         self,
@@ -195,8 +231,16 @@ class EvalPlan:
             build_concurrency=req.build_concurrency,
             prompts=self.eval_prompts,
             agent_idle_timeout=self.eval_agent_idle_timeout,
+            checkpoints=req.checkpoints,
+            checkpoint_keep=req.checkpoint_keep,
+            freeze_workspace=req.freeze_workspace,
+            retry_from_checkpoint=req.retry_from_checkpoint,
+            retry_prompt=req.retry_prompt,
+            retry_resume_session=req.retry_resume_session,
+            budget=self.eval_budget,
             agent_env=self.parsed_env,
             reviewer=ReviewerConfig.coerce(req.reviewer),
+            codex_apps_policy=req.codex_apps_policy,
             sandbox_user=self.sandbox_user,
             sandbox_setup_timeout=req.sandbox_setup_timeout,
             context_root=str(req.context_root) if req.context_root else None,
@@ -233,7 +277,56 @@ def _normalize_eval_agent(agent_spec: str) -> str:
         raise EvalPlanError(f"Unsupported eval agent protocol: {protocol}")
     if protocol == "acpx":
         return f"acpx/{canonical_agent}"
+    _refuse_unknown_bare_agent(canonical_agent)
     return canonical_agent
+
+
+def _refuse_unknown_bare_agent(name: str) -> None:
+    """An unregistered one-word agent name is a usage error.
+
+    It used to fall through to the raw-command path: the run created a job,
+    defaulted the model and failed minutes later (or ran a misspelt name as a
+    command). A command with arguments (``myagent --acp``) is still accepted
+    as a raw ACP command, and namespaced specs (``acp:pi``) resolve as before.
+    """
+    from benchflow.agents.registry import is_scripted_agent, resolve_agent
+    from benchflow.runtime import check_agent_names
+
+    if is_scripted_agent(name) or any(c.isspace() for c in name):
+        return
+    try:
+        # A close misspelling gets the SDK's "did you mean" message.
+        check_agent_names([name])
+    except ValueError as exc:
+        raise EvalPlanError(f"{exc} No job was created.") from None
+    try:
+        resolve_agent(name)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else f"Unknown agent: {name!r}"
+        raise EvalPlanError(
+            f"{message} (`bench agent list` shows the registered agents; to run a "
+            "command as the agent, give it with its arguments, e.g. 'myagent --acp')"
+        ) from None
+
+
+FAIL_ON_CHOICES = ("timeout", "error", "verifier-error")
+
+
+def split_fail_on(values: list[str] | None) -> list[str]:
+    """``--fail-on timeout,error`` and repeated ``--fail-on`` flags, flattened."""
+    return [v.strip() for raw in values or [] for v in raw.split(",") if v.strip()]
+
+
+def _fresh_job_name(jobs_dir: Path) -> str:
+    """A timestamped job name not yet used under ``jobs_dir``."""
+    from datetime import datetime
+
+    base = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+    name, n = base, 1
+    while (jobs_dir / name).exists():
+        n += 1
+        name = f"{base}-{n}"
+    return name
 
 
 def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
@@ -335,6 +428,28 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             "--reviewer-* options require local tasks; --source-env owns its scoring"
         )
+    for flag, value in (
+        ("--max-cost-usd", request.max_cost_usd),
+        ("--max-sandbox-seconds", request.max_sandbox_seconds),
+        ("--max-tokens", request.max_tokens),
+    ):
+        if value is not None and not value > 0:
+            raise EvalPlanError(f"{flag} must be > 0")
+    has_budget = any(
+        v is not None
+        for v in (request.max_cost_usd, request.max_sandbox_seconds, request.max_tokens)
+    )
+    if has_budget and request.worker_concurrency is not None:
+        raise EvalPlanError(
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens cap one job and are "
+            "not supported with --worker-concurrency (each worker would get the "
+            "whole budget)"
+        )
+    if has_budget and request.source_env:
+        raise EvalPlanError(
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens are not supported "
+            "with --source-env (vf-eval runs the rollouts)"
+        )
     if request.worker_retries < 0:
         raise EvalPlanError("--worker-retries must be >= 0")
     if request.worker_start_stagger_sec < 0:
@@ -369,10 +484,25 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             except ModuleNotFoundError as exc:
                 raise EvalPlanError(
                     "Missing optional dependency for 'modal' sandbox. "
-                    f"Install it with `uv sync --extra {provider_extra('modal')}`."
+                    f"Install it with {extra_install_hint(provider_extra('modal') or 'sandbox-modal')}."
                 ) from exc
+        elif sandbox_sdk_missing(eval_environment):
+            # Same fail-fast for the other extra-backed sandboxes: before this,
+            # a missing Daytona SDK created the job, failed every rollout with
+            # a chained traceback and recorded 0/N.
+            extra = provider_extra(eval_environment) or f"sandbox-{eval_environment}"
+            raise EvalPlanError(
+                f"Missing optional dependency for {eval_environment!r} sandbox. "
+                f"Install it with {extra_install_hint(extra)}."
+            )
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
+    if request.codex_apps_policy not in (None, "disabled", "inherit"):
+        raise EvalPlanError("--codex-apps-policy must be disabled or inherit")
+    if request.source_env and request.codex_apps_policy is not None:
+        raise EvalPlanError(
+            "--codex-apps-policy is not supported for hosted source environments"
+        )
     eval_concurrency = request.concurrency if request.concurrency is not None else 4
     if eval_concurrency < 1:
         # A non-positive concurrency builds asyncio.Semaphore(0), which can never
@@ -450,6 +580,23 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
     output_jobs_dir = request.jobs_dir or "jobs"
+    if request.fresh and request.job_name:
+        raise EvalPlanError("give --fresh or --job-name, not both")
+    if (request.fresh or request.job_name) and request.worker_concurrency:
+        raise EvalPlanError(
+            "--fresh and --job-name are not supported with --worker-concurrency"
+        )
+    if request.fail_under is not None and not 0.0 <= request.fail_under <= 1.0:
+        raise EvalPlanError("--fail-under is a pass rate between 0 and 1")
+    unknown_gates = sorted(set(split_fail_on(request.fail_on)) - set(FAIL_ON_CHOICES))
+    if unknown_gates:
+        raise EvalPlanError(
+            f"--fail-on {', '.join(unknown_gates)}: choose from "
+            f"{', '.join(FAIL_ON_CHOICES)}"
+        )
+    job_name = request.job_name
+    if request.fresh:
+        job_name = _fresh_job_name(Path(output_jobs_dir))
 
     # Resolve the optional Environment-plane manifest once and reuse across
     # every source branch (config / source_repo / tasks_dir / source_env).
@@ -499,6 +646,7 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         usage_tracking_overridden=usage_tracking_overridden,
         sandbox_user=sandbox_user,
         output_jobs_dir=output_jobs_dir,
+        job_name=job_name,
         eval_env_manifest=eval_env_manifest,
         eval_config_override=eval_config_override,
         eval_loop_strategy=eval_loop_strategy,

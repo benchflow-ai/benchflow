@@ -136,16 +136,15 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
         ],
         agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
     )
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = SimpleNamespace(
         config=SimpleNamespace(sandbox=SimpleNamespace(allow_internet=False))
     )
+    # What setup() derives from the task's allow_internet=False.
+    trial._disallow_web_tools = True
     planes = _wire_fake_planes(trial)
     captured = {}
 
@@ -214,12 +213,9 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
             )
         ],
     )
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = {}
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._disallow_web_tools = True
     planes = _wire_fake_planes(trial)

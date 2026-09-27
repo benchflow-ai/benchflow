@@ -27,6 +27,34 @@ from benchflow.trajectories.types import redact_trajectory_text
 logger = logging.getLogger(__name__)
 
 
+def is_attributed_child_event(event: dict[str, Any]) -> bool:
+    """Only explicit capture attribution may exclude an event from root exports.
+
+    Excluded events stay in the raw ACP trajectory; each root-only record
+    writer (Verifiers, ADP) declares the omission via
+    :func:`acp_projection_coverage`. ATIF instead embeds them as subagent
+    trajectories (:mod:`benchflow.trajectories.export_atif`).
+    """
+    parent = event.get("parent_tool_call_id")
+    return isinstance(parent, str) and bool(parent)
+
+
+def acp_projection_coverage(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Declare child omission without claiming complete root/child context."""
+    omitted = sum(
+        is_attributed_child_event(event) for event in events if isinstance(event, dict)
+    )
+    if not omitted:
+        return None
+    return {
+        "scope": "root_agent_projection",
+        "excluded_attributed_child_events": omitted,
+        "source_artifact": "trajectory/acp_trajectory.jsonl",
+        "child_transcript_completeness": "unknown",
+        "outcome_and_usage_scope": "rollout_not_partitioned_by_agent",
+    }
+
+
 def content_blocks_to_text(content: Any) -> str:
     """Render ACP tool-call content blocks to plain text.
 

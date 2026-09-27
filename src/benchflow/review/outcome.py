@@ -7,12 +7,12 @@ the arithmetic remains owned by :mod:`benchflow.review.scoring`.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from benchflow._utils.scoring import TIMED_OUT, classify_error, finite_reward
 from benchflow.review.scoring import ReviewScoring
 
 
@@ -122,6 +122,25 @@ def scoring_error(
     )
 
 
+def keeps_verifier_result(source: Mapping[str, Any], scoring: ScoringResult) -> bool:
+    """Whether committed scoring keeps the solver's verifier result (#1134).
+
+    A timed-out solver leaves an incomplete trajectory, so no review of it can
+    ever complete. Its deterministic verifier result is the final evidence for
+    that trial and stays in ``result.json`` beside the scoring error, so
+    downstream can count the timeout. A retryable review failure still
+    withholds the test-only reward until a review completes.
+    """
+    category = source.get("error_category") or classify_error(source.get("error"))
+    return (
+        scoring.status == "error"
+        and category == TIMED_OUT
+        and bool(source.get("partial_trajectory"))
+        and source.get("rewards") is not None
+        and not source.get("verifier_error")
+    )
+
+
 def scoring_from_result(result: Mapping[str, Any]) -> ScoringResult | None:
     """Read a scoring block and reject a stale or inconsistent reward envelope.
 
@@ -146,12 +165,7 @@ def scoring_from_result(result: Mapping[str, Any]) -> ScoringResult | None:
             if key != "reward" and key not in rewards:
                 continue
             actual = rewards.get(key)
-            if (
-                isinstance(actual, bool)
-                or not isinstance(actual, (int, float))
-                or not math.isfinite(actual)
-                or actual != value
-            ):
+            if finite_reward(actual) is None or actual != value:
                 raise ValueError(f"{key} disagrees with the scoring verdict")
     return scoring
 

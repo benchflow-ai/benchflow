@@ -149,6 +149,76 @@ class TestDockerVerifierLogMountProbe:
         assert sandbox.is_mounted is True
         assert not list(sandbox.rollout_paths.verifier_dir.iterdir())
 
+    @staticmethod
+    def _unmounted_sandbox(verifier_dir):
+        from unittest.mock import AsyncMock
+
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.rollout_paths = SimpleNamespace(verifier_dir=verifier_dir)
+        sandbox._logs_are_mounted = True
+        sandbox.logger = docker_module.logger
+        sandbox.exec = AsyncMock(
+            return_value=ExecResult(stdout="", stderr="", return_code=1)
+        )
+        return sandbox
+
+    @pytest.mark.asyncio
+    async def test_colima_gap_outside_home_is_debug_only(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Regression test: on a Mac,
+        Colima shares only $HOME with its VM, so a rollout directory elsewhere
+        (e.g. /tmp) is never visible in the container. That is the expected
+        case, the verifier copies its outputs back, and it must not print a
+        warning on every run."""
+        import logging
+
+        from benchflow.sandbox import docker as docker_module
+
+        monkeypatch.setattr(docker_module, "_DOCKER_RUNS_IN_VM", True)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        sandbox = self._unmounted_sandbox(tmp_path / "jobs" / "verifier")
+
+        with caplog.at_level(logging.DEBUG, logger="benchflow"):
+            await sandbox._probe_verifier_log_mount()
+
+        assert sandbox.is_mounted is False
+        mount_logs = [r for r in caplog.records if "copied back" in r.message]
+        assert [r.levelno for r in mount_logs] == [logging.DEBUG]
+        assert "$HOME" in mount_logs[0].message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("in_vm", [True, False])
+    async def test_unexpected_gap_stays_a_warning(
+        self, tmp_path, monkeypatch, caplog, in_vm
+    ):
+        """Regression test: the gap stays loud where the daemon
+        should see the path (under $HOME on a Mac, or any path on a host
+        without a Docker VM), since it then means a remote daemon or a
+        socket that bypasses path translation (PR #1040)."""
+        import logging
+
+        from benchflow.sandbox import docker as docker_module
+
+        home = tmp_path / "home"
+        monkeypatch.setattr(docker_module, "_DOCKER_RUNS_IN_VM", in_vm)
+        monkeypatch.setenv("HOME", str(home))
+        verifier_dir = (home if in_vm else tmp_path) / "jobs" / "verifier"
+        sandbox = self._unmounted_sandbox(verifier_dir)
+
+        with caplog.at_level(logging.DEBUG, logger="benchflow"):
+            await sandbox._probe_verifier_log_mount()
+
+        assert sandbox.is_mounted is False
+        mount_logs = [r for r in caplog.records if "copied back" in r.message]
+        assert [r.levelno for r in mount_logs] == [logging.WARNING]
+        assert "bind mount is not visible" in mount_logs[0].message
+        assert "DOCKER_HOST" in mount_logs[0].message
+
 
 class TestDockerExecEnvSecrecy:
     """DockerSandbox.exec must not leak env vars via `-e KEY=VALUE` flags.

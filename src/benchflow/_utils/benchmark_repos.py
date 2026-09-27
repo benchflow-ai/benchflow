@@ -136,6 +136,9 @@ def _snapshot_repo_root(
                 str(repo_root),
                 "worktree",
                 "add",
+                # Same reason as the clone's --quiet: "Preparing worktree" and
+                # the "Updating files: n%" checkout progress are console noise.
+                "--quiet",
                 "--detach",
                 str(snapshot),
                 resolved_sha,

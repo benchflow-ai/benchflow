@@ -27,24 +27,9 @@ BenchFlow writes its own native results into those formats — covered under
 
 ## Layer 1 — supported framework → run natively
 
-When a benchmark already speaks a framework BenchFlow supports, BenchFlow runs it
-in that form and converts the output to results. There is no translation step and
-nothing to prove: correctness is inherited from the original format.
+When a benchmark already speaks a format BenchFlow reads, BenchFlow runs it in that form and converts the output to results. For Harbor tasks this is a claim about the file format only; each task still has to pass BenchFlow's runtime checks, and results are not guaranteed to match a Harbor run (different sandboxes, agent adapters and verifier hardening).
 
-The adapters live in [`src/benchflow/adapters/`](../src/benchflow/adapters/) and
-are pure format translators — none of them require the external framework's SDK.
-
-**Inbound (foreign task dir → native runtime).**
-[`detect_adapter()`](../src/benchflow/adapters/inbound.py) sniffs a task
-directory by its signature file and returns the matching adapter:
-
-- A `task.toml` → [`HarborAdapter`](../src/benchflow/adapters/harbor.py). Harbor
-  is the upstream framework BenchFlow's own `TaskConfig` was internalized from, so
-  a Harbor task directory is *already* in native shape; the adapter is a thin
-  normalizer.
-
-The adapter returns an `InboundTask`; the benchmark then runs on BenchFlow's
-native runtime exactly like a first-party task.
+**Harbor task directories.** `bench eval run` loads a Harbor `task.toml` + `instruction.md` directory directly with the task loader; no adapter runs. BenchFlow reads `[task]`, `[metadata]`, `[agent]`, `[verifier]`, `[environment]` (as its `sandbox`) and `[solution.env]`; keys it does not know are ignored with a warning (`task.config.ignored_keys`, and a `bench tasks check` warning); keys it parses but cannot honour are refused before launch: multi-step `steps`, root `artifacts` off Docker and Daytona, a separate verifier environment (`verifier.environment_mode = "separate"`, `[verifier.environment]`) off Docker and Daytona ([Separate verifier sandboxes](./separate-verifier.md)), `[[verifier.collect]]`, verifier network allowlists (agent and environment allowlists run on `docker` and `daytona`, see [sandbox hardening](./sandbox-hardening.md#network-policy-allowlist-egress)), Windows, TPUs and GPUs (see [Running benchmarks](./running-benchmarks.md#running-foreign-benchmarks-harbor-task-directories) for the full list). [`HarborAdapter`](../src/benchflow/adapters/harbor.py) / [`detect_adapter()`](../src/benchflow/adapters/inbound.py) are a Python-only reader that returns an `InboundTask` and keeps unknown keys in `compatibility.config_extra`; they are not on the run path.
 
 **Hosted environments (run on their own native surface).** External
 PrimeIntellect / Verifiers environments are not BenchFlow task directories and do
@@ -59,6 +44,13 @@ bench eval run \
     --source-env-version 0.1.1 \
     --model google/gemini-2.5-flash-lite
 ```
+
+BenchFlow installs the environment package (from Prime's package index, `https://hub.primeintellect.ai/primeintellect/simple/`) into a fresh venv, reads which `vf-eval` the installed verifiers ships, and speaks it:
+
+- **Legacy CLI** (verifiers 0.3.1 and older, the Hub's v0 environments): `--env-args`, `--num-examples`, `--sampling-args`, `--save-results`; the reward is the `reward: avg` line of its summary.
+- **v1 CLI** (the verifiers 0.3.2 dev line, the Hub's v1 tasksets): the taskset id, `-n`/`-r`/`-c`, `--sampling.*`, `--env.taskset.<key>` for each `--source-env-arg`, and always `--no-push` (a v1 run uploads to the Prime platform by default; BenchFlow runs stay local). The reward is the mean over the rollouts of `traces.jsonl`, each the sum of its weighted rewards; episodes that errored are left out and counted, and if every episode errored the run is an error, never a 0 reward. Token counts come from the traces.
+
+A v1 taskset cannot run on the legacy CLI (it has no `load_environment`), and v0 environments were removed from v1, so each environment runs on the verifiers its package requires; `--source-env-verifiers-version` pins that release for reproducibility. Tested against verifiers 0.3.2.dev releases with a stub model endpoint; a run of a real Hub environment needs access to Prime's package index and a model key (`PRIME_API_KEY` for Prime inference, or `--source-env-base-url` / `--source-env-api-key-var` for another OpenAI-compatible endpoint).
 
 **Outbound format seams (native results → other frameworks).** Results also
 round-trip *out* into the frameworks teams already use:

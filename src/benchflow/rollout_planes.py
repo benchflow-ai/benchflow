@@ -8,6 +8,7 @@ implementations.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +38,15 @@ from benchflow.sandbox.egress_denylist import (
     stop_egress_denylist,
 )
 from benchflow.sandbox.lockdown import (
+    VERIFIER_BASELINE_PROBE,
+    _kill_sandbox_user_procs,
+    _prepare_log_dirs,
     _resolve_locked_paths,
     _seed_verifier_workspace,
     _snapshot_build_config,
     cleanup_verifier_python_hooks,
     clear_verifier_output_dir,
+    enforce_sandbox_uid_egress,
     ensure_legacy_app_dir,
     lockdown_paths,
     setup_sandbox_user,
@@ -156,6 +161,31 @@ class DefaultRolloutPlanes:
             env, workspace=workspace, sandbox_user=sandbox_user
         )
 
+    async def probe_snapshot_start(
+        self, env: Any, *, agent_binary: str | None
+    ) -> dict[str, bool]:
+        """What a sandbox started from a branch snapshot already holds: the
+        agent binary (``agent``) and the verifier's pre-agent baseline
+        (``baseline``). One exec; anything unreadable counts as absent."""
+        parts = [": benchflow-snapshot-start"]
+        if agent_binary:
+            quoted = shlex.quote(agent_binary)
+            check = (
+                f"test -x {quoted}"
+                if agent_binary.startswith("/")
+                else f"command -v {quoted} >/dev/null"
+            )
+            parts.append(f"{{ {check} && echo agent; }}")
+        parts.append(f"{{ {VERIFIER_BASELINE_PROBE}; }}")
+        result = await env.exec(
+            "; ".join(parts) + "; true", user="root", timeout_sec=30
+        )
+        found = set((getattr(result, "stdout", "") or "").split())
+        return {"agent": "agent" in found, "baseline": "baseline" in found}
+
+    async def prepare_log_dirs(self, env: Any, *, sandbox_user: str | None) -> None:
+        await _prepare_log_dirs(env, sandbox_user=sandbox_user)
+
     async def deploy_skills(self, *args: Any, **kwargs: Any) -> None:
         await deploy_skills(*args, **kwargs)
 
@@ -200,9 +230,14 @@ class DefaultRolloutPlanes:
         *,
         model_gateway_url: str | None = None,
     ) -> None:
+        if denylist.native_claude_model_only and sandbox_user is None:
+            raise ValueError("Native OAuth transport requires a sandbox user")
         await start_egress_denylist(
             env, sandbox_user, denylist, model_gateway_url=model_gateway_url
         )
+        if denylist.native_claude_model_only:
+            assert sandbox_user is not None
+            await enforce_sandbox_uid_egress(env, sandbox_user)
 
     async def stop_egress_denylist(self, env: Any, rollout_dir: Path) -> None:
         await stop_egress_denylist(env, rollout_dir)
@@ -231,8 +266,6 @@ class DefaultRolloutPlanes:
         return await execute_prompts_session_factory(*args, **kwargs)
 
     async def quiesce_agent(self, env: Any, sandbox_user: str) -> None:
-        from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
-
         await _kill_sandbox_user_procs(env, sandbox_user)
 
     async def harden_before_verify(self, *args: Any, **kwargs: Any) -> None:

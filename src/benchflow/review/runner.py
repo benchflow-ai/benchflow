@@ -415,6 +415,30 @@ def _reviewer_completion_error(leaf: Path) -> str | None:
     return None
 
 
+def _reviewer_transport_loss(leaf: Path) -> str | None:
+    """The transport failure that ended a reviewer run, if a retry could help.
+
+    #1144: a Daytona PTY reset (websocket close 1006/1008, a closed peer) is a
+    transport blip; the solver evidence and verifier output are already on
+    disk, so a fresh reviewer can finish the review. A read timeout means the
+    reviewer was silent past its budget and would be silent again.
+    """
+    result = _read_json(leaf / "result.json")
+    if result is None:
+        return None
+    info = result.get("transport_error_info")
+    if not isinstance(info, dict):
+        return None
+    raw = str(info.get("raw_message") or result.get("error") or "transport closed")
+    if "readline timeout" in raw.lower():
+        return None
+    return raw[:300]
+
+
+# One retry after a lost reviewer transport (#1144).
+_REVIEWER_TRANSPORT_ATTEMPTS = 2
+
+
 # Review orchestration and aggregation
 
 
@@ -513,9 +537,6 @@ async def run_review(
             image=config.image,
             agent_timeout_sec=config.timeout_sec,
             open_network=config.open_network,
-            net_admin_overlay=(
-                config.environment == "docker" and not config.open_network
-            ),
             workspace_bundle=workspace_bundle,
         )
         from benchflow.review.persistence import write_json_atomic
@@ -546,22 +567,39 @@ async def run_review(
                 (workspace_bundle / "manifest.json").read_text()
             )
             hooks.insert(0, partial(install_review_evidence, manifest=manifest))
-        rollout_config = RolloutConfig(
-            task_path=wrapper_dir,
-            agent=config.agent,
-            model=config.model,
-            agent_env=dict(config.agent_env),
-            environment=config.environment,
-            reasoning_effort=config.reasoning_effort,
-            purpose="reviewer",
-            parent_rollout=rollout_dir.name,
-            jobs_dir=runtime_dir,
-            timeout=config.timeout_sec,
-            uploads=uploads,
-            pre_agent_hooks=hooks,
-        )
-        result = await run_rollout(rollout_config)
-        leaf = _reviewer_rollout_leaf(runtime_dir)
+        attempt_dir = runtime_dir
+        for attempt in range(1, _REVIEWER_TRANSPORT_ATTEMPTS + 1):
+            rollout_config = RolloutConfig(
+                task_path=wrapper_dir,
+                agent=config.agent,
+                model=config.model,
+                agent_env=dict(config.agent_env),
+                environment=config.environment,
+                reasoning_effort=config.reasoning_effort,
+                purpose="reviewer",
+                parent_rollout=rollout_dir.name,
+                jobs_dir=attempt_dir,
+                timeout=config.timeout_sec,
+                uploads=uploads,
+                pre_agent_hooks=hooks,
+            )
+            result = await run_rollout(rollout_config)
+            leaf = _reviewer_rollout_leaf(attempt_dir)
+            lost = _reviewer_transport_loss(leaf) if leaf else None
+            if lost is None or leaf is None or _leaf_review_result(leaf) is not None:
+                break
+            trial.notes.append(
+                f"reviewer attempt {attempt} lost its transport before a verdict "
+                f"({lost})"
+                + (
+                    "; retried once with a fresh reviewer sandbox"
+                    if attempt < _REVIEWER_TRANSPORT_ATTEMPTS
+                    else ""
+                )
+            )
+            # A fresh directory keeps the failed attempt's leaf as evidence and
+            # out of the next attempt's single-leaf lookup.
+            attempt_dir = runtime_dir / f"transport-retry-{attempt}"
         trial.reviewer_rollout = str(leaf) if leaf else None
         reward = _leaf_reward(leaf) if leaf else None
         completion_error = _reviewer_completion_error(leaf) if leaf else None

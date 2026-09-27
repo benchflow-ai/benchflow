@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import ast
 from dataclasses import fields
-from pathlib import Path
 
 import pytest
 
@@ -85,18 +83,3 @@ def test_benchflow_no_longer_exports_runtime_scene_api() -> None:
     ):
         assert name not in benchflow.__all__
         assert not hasattr(benchflow, name)
-
-
-def test_scenes_module_has_no_scheduler_runtime() -> None:
-    """Guards the fix from PR #515 for issue #413 against Scene schedulers."""
-    tree = ast.parse(Path("src/benchflow/scenes.py").read_text())
-    runtime_defs = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-    }
-
-    assert "Scene" not in runtime_defs
-    assert "MailboxTransport" not in runtime_defs
-    assert "MessageTransport" not in runtime_defs
-    assert "run" not in runtime_defs

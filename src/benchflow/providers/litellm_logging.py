@@ -8,6 +8,11 @@ from datetime import datetime
 from typing import Any
 
 from benchflow.trajectories.call_purpose import infer_call_purpose
+from benchflow.trajectories.token_capture import (
+    TOKEN_CAPTURE_METADATA_KEY,
+    build_token_capture,
+    strip_captured_token_ids,
+)
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -222,6 +227,101 @@ def _failure_traceback(detail: Any) -> str:
     return tb[-2000:]
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+# Route providers whose OpenAI-compatible servers accept vLLM's
+# ``return_token_ids`` (prompt + completion token ids in the response).
+_TOKEN_ID_PROVIDERS = {"vllm"}
+_RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
+_STREAM_TOKENS_KEY = "benchflow_stream_tokens"
+
+
+def _upstream_api(upstream: str) -> str:
+    head, _, rest = upstream.partition("/")
+    lowered = rest.lower()
+    if head in {"anthropic", "bedrock"} or (
+        head in {"vertex_ai", "azure_ai"} and "claude" in lowered
+    ):
+        return "anthropic-messages"
+    if head in {"gemini", "vertex_ai"}:
+        return "gemini"
+    if head in {"openai", "azure", "deepseek", "hosted_vllm"}:
+        return "openai"
+    return "other"
+
+
+def _token_capture_plan(call_type: Any, model: Any) -> dict[str, Any] | None:
+    # What token data to request for one call; None while capture is off.
+    # ``wire`` is the API the upstream call uses: chat calls, Anthropic
+    # Messages calls LiteLLM bridges to an OpenAI-compatible chat backend, and
+    # Responses calls on the ``-responses-bridge`` aliases all reach the server
+    # as chat completions; other Responses calls reach a native Responses API.
+    if os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower() not in _TRUTHY:
+        return None
+    provider = os.environ.get("BENCHFLOW_LITELLM_ROUTE_PROVIDER", "")
+    upstream_api = _upstream_api(os.environ.get("BENCHFLOW_LITELLM_UPSTREAM_MODEL", ""))
+    call = str(call_type or "")
+    request = None
+    if call in {"completion", "acompletion"}:
+        request = "chat"
+        wire = "openai-chat" if upstream_api in {"openai", "other"} else upstream_api
+    elif call == "anthropic_messages" and upstream_api == "openai":
+        request, wire = "chat", "openai-chat"
+    elif call in {"responses", "aresponses"} and str(model or "").endswith(
+        "-responses-bridge"
+    ):
+        request, wire = "chat", "openai-chat"
+    elif call in {"responses", "aresponses"} and upstream_api == "openai":
+        request, wire = "responses", "openai-responses"
+    else:
+        wire = upstream_api
+    ids_setting = os.environ.get("BENCHFLOW_CAPTURE_TOKEN_IDS", "auto").strip().lower()
+    token_ids = request == "chat" and wire == "openai-chat" and (
+        ids_setting in _TRUTHY
+        or (ids_setting in {"", "auto"} and provider in _TOKEN_ID_PROVIDERS)
+    )
+    try:
+        top_logprobs = int(os.environ.get("BENCHFLOW_CAPTURE_TOP_LOGPROBS", "") or 0)
+    except ValueError:
+        top_logprobs = 0
+    return {
+        "enabled": True,
+        "wire": wire,
+        "provider": provider or None,
+        "request": request,
+        "logprobs": request is not None,
+        "top_logprobs": top_logprobs if request is not None and top_logprobs > 0 else None,
+        "token_ids": token_ids,
+    }
+
+
+def _apply_token_capture(data: dict[str, Any], plan: dict[str, Any] | None) -> dict[str, Any]:
+    # Return ``data`` (copied when changed) with the plan's request fields.
+    if not plan or plan.get("request") is None:
+        return data
+    cleaned = dict(data)
+    top = plan.get("top_logprobs")
+    if plan["request"] == "chat":
+        cleaned["logprobs"] = True
+        if top:
+            cleaned["top_logprobs"] = top
+        if plan.get("token_ids"):
+            # extra_body survives drop_params on openai/ routes and LiteLLM's
+            # Anthropic-Messages and Responses bridges to chat completions.
+            extra = dict(cleaned.get("extra_body") or {})
+            extra["return_token_ids"] = True
+            cleaned["extra_body"] = extra
+    elif cleaned.get("input") is None:
+        return data
+    else:
+        include = list(cleaned.get("include") or [])
+        if _RESPONSES_LOGPROBS_INCLUDE not in include:
+            include.append(_RESPONSES_LOGPROBS_INCLUDE)
+        cleaned["include"] = include
+        if top:
+            cleaned["top_logprobs"] = top
+    return cleaned
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -257,8 +357,25 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = kwargs.get(key)
             if value is not None:
                 request_body[key] = value
+        model_group = metadata.get("model_group") if isinstance(metadata, dict) else None
+        call_type = kwargs.get("call_type") or litellm_params.get("call_type")
+        token_capture = _token_capture_plan(call_type, model_group or kwargs.get("model"))
+        extra_fields: dict[str, Any] = {}
+        if token_capture is not None:
+            # Record what was actually sent upstream for token capture.
+            for key in ("include", "extra_body"):
+                value = optional_params.get(key)
+                if value is None:
+                    value = kwargs.get(key)
+                if value:
+                    request_body[key] = value
+            extra_fields["token_capture"] = token_capture
+            stream_tokens = kwargs.get(_STREAM_TOKENS_KEY)
+            if stream_tokens:
+                extra_fields["stream_tokens"] = stream_tokens
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
+            **extra_fields,
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
@@ -318,7 +435,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         # Forward ``reasoning_effort`` VERBATIM on deepseek routes. LiteLLM's
         # deepseek transform consumes the top-level field (it maps it into its
         # own thinking handling and drops the raw param — even with drop_params
-        # off; verified against a capture upstream 2026-08-08), while
+        # off), while
         # ``extra_body`` fields merge into the wire request untouched. Lifting
         # the param means the upstream receives exactly what the agent sent —
         # the same request a native (gateway-less) run produces. Scoped to
@@ -332,18 +449,15 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             extra.setdefault("reasoning_effort", cleaned.pop("reasoning_effort"))
             cleaned["extra_body"] = extra
 
-        capture_logprobs = (
-            os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
-        if (
-            capture_logprobs
-            and call_type in {"completion", "acompletion"}
-            and cleaned.get("messages") is not None
+        # Opt-in token capture (BENCHFLOW_CAPTURE_TOKEN_LOGPROBS): ask for
+        # sampled-token logprobs, and token ids where the route supports them.
+        plan = _token_capture_plan(call_type, cleaned.get("model"))
+        if plan is not None and (
+            plan.get("request") != "chat"
+            or call_type not in {"completion", "acompletion"}
+            or cleaned.get("messages") is not None
         ):
-            if cleaned is data:
-                cleaned = dict(data)
-            cleaned["logprobs"] = True
+            cleaned = _apply_token_capture(cleaned, plan)
         if cleaned is data:
             return None
         return cleaned
@@ -459,6 +573,9 @@ def _exchange_metadata(
         agent_name=agent_name,
         request_body=request_body,
     )
+    token_capture = build_token_capture(record)
+    if token_capture is not None:
+        metadata[TOKEN_CAPTURE_METADATA_KEY] = token_capture
     return metadata
 
 
@@ -589,6 +706,8 @@ def trajectory_from_litellm_callback_log(
         request_body = request.get("body")
         request_body = request_body if isinstance(request_body, dict) else {}
         response_body = _record_response_body(record)
+        if record.get("token_capture"):
+            response_body = strip_captured_token_ids(response_body)
         if record.get("event") == "success":
             status = 200
         else:

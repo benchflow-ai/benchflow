@@ -4,10 +4,11 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from benchflow.acp.session import ACPSession
+from benchflow.acp.session import ACPSession, _merge_text_receipt, _same_text_stream
 from benchflow.trajectories._snapshot import RedactedJSONLSnapshot
 
 logger = logging.getLogger(__name__)
@@ -48,13 +49,22 @@ def _merge_pending_text(pending: list[dict]) -> list[dict]:
     merged: list[dict] = []
     current = dict(pending[0])
     for event in pending[1:]:
-        if event["type"] == current["type"]:
+        if _same_text_stream(event, current):
             current["text"] += event["text"]
+            _merge_text_receipt(current, event)
         else:
             merged.append(current)
             current = dict(event)
     merged.append(current)
     return merged
+
+
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _iso_from_receipt_ns(observed_ns: str) -> str:
+    """Render a host receipt as ISO-8601 UTC, like ``llm_trajectory``'s ``logged_at``."""
+    return (_UNIX_EPOCH + timedelta(microseconds=int(observed_ns) // 1000)).isoformat()
 
 
 def _events_to_trajectory(events: list[dict]) -> list[dict]:
@@ -64,10 +74,16 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     end-of-run :func:`_capture_session_trajectory` and the non-destructive
     live :func:`_snapshot_session_trajectory`, so streaming-format =
     final-format is a structural invariant rather than a copy/paste
-    discipline (PR #566 review finding #3).
+    discipline.
+
+    Events with a host receipt also get the GH #1033 timing fields the
+    viewer reads: ``ts`` (first observation) on text and timeout events;
+    ``started_at`` (first observation) and, once terminal, ``finished_at``
+    (observation of the terminal status) on tool calls.
     """
     out: list[dict] = []
     for event in events:
+        count = len(out)
         if event["type"] == "tool_call":
             tc = event["record"]
             record = {
@@ -84,9 +100,16 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                 record["raw_input"] = tc.raw_input
             if getattr(tc, "raw_output", None) is not None:
                 record["raw_output"] = tc.raw_output
+            if getattr(tc, "parent_tool_call_id", None) is not None:
+                record["parent_tool_call_id"] = tc.parent_tool_call_id
+            if getattr(tc, "tool_name", None):
+                record["tool_name"] = tc.tool_name
             out.append(record)
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-            out.append({"type": event["type"], "text": event["text"]})
+            record = {"type": event["type"], "text": event["text"]}
+            if "parent_tool_call_id" in event:
+                record["parent_tool_call_id"] = event["parent_tool_call_id"]
+            out.append(record)
         elif event["type"] == "agent_timeout":
             out.append(
                 {
@@ -99,6 +122,17 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                     ],
                 }
             )
+        if len(out) > count and "receipt" in event:
+            receipt = event["receipt"]
+            out[-1]["receipt"] = dict(receipt)
+            first_observed = _iso_from_receipt_ns(receipt["first_observed_ns"])
+            if event["type"] == "tool_call":
+                out[-1]["started_at"] = first_observed
+                finished = getattr(event["record"], "finished_observed_ns", None)
+                if finished is not None:
+                    out[-1]["finished_at"] = _iso_from_receipt_ns(finished)
+            else:
+                out[-1]["ts"] = first_observed
     return out
 
 
@@ -124,8 +158,8 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.
         return _capture_session_trajectory(session)
-    return _events_to_trajectory(session.events) + _merge_pending_text(
-        session._pending_text
+    return _events_to_trajectory(session.events) + _events_to_trajectory(
+        _merge_pending_text(session._pending_text)
     )
 
 
@@ -166,7 +200,8 @@ class TrajectoryWriter:
 
         Skips the disk write if the serialized payload is byte-identical
         to the previous one — keeps a no-op chunk (an unchanged
-        tool_call status poll) from churning the filesystem.
+        tool_call status poll, which does not advance its receipt) from
+        churning the filesystem.
         """
         payload = self._snapshot.serialize(events)
         if payload == self._last_payload:

@@ -1,0 +1,266 @@
+{
+  "acp_trajectory": [
+    {
+      "text": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:pass-then-hang]]",
+      "type": "user_message"
+    },
+    {
+      "text": "Writing hello.txt.",
+      "type": "agent_message"
+    },
+    {
+      "content": [
+        {
+          "content": {
+            "text": "Write hello.txt",
+            "type": "text"
+          },
+          "type": "content"
+        }
+      ],
+      "kind": "execute",
+      "raw_input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      },
+      "raw_output": "(Bash completed with no output)",
+      "status": "completed",
+      "title": "printf 'Hello, world!\\n' > /app/hello.txt",
+      "tool_call_id": "toolu_fake_pass-then-hang_0",
+      "tool_name": "Bash",
+      "type": "tool_call"
+    },
+    {
+      "text": "Waiting.",
+      "type": "agent_message"
+    },
+    {
+      "content": [
+        {
+          "content": {
+            "text": "Wait",
+            "type": "text"
+          },
+          "type": "content"
+        }
+      ],
+      "kind": "execute",
+      "raw_input": {
+        "command": "sleep 590",
+        "description": "Wait",
+        "timeout": 600000
+      },
+      "status": "in_progress",
+      "title": "sleep 590",
+      "tool_call_id": "toolu_fake_pass-then-hang_1",
+      "tool_name": "Bash",
+      "type": "tool_call"
+    },
+    {
+      "pending_tool_call_ids": [
+        "toolu_fake_pass-then-hang_1"
+      ],
+      "reason": "wall_clock_timeout",
+      "terminal_trajectory_complete": false,
+      "timeout_sec": 45.0,
+      "type": "agent_timeout"
+    }
+  ],
+  "atif": {
+    "agent": {
+      "model_name": "claude-haiku-4-5",
+      "name": "@agentclientprotocol/claude-agent-acp",
+      "version": "unknown"
+    },
+    "final_metrics": {
+      "total_cached_tokens": 0,
+      "total_completion_tokens": 100,
+      "total_cost_usd": 0.0025,
+      "total_prompt_tokens": 2000,
+      "total_steps": 6
+    },
+    "schema_version": "ATIF-v1.7",
+    "steps": [
+      {
+        "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:pass-then-hang]]",
+        "source": "user",
+        "step_id": 1
+      },
+      {
+        "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:pass-then-hang]]",
+        "source": "user",
+        "step_id": 2
+      },
+      {
+        "message": "Writing hello.txt.",
+        "source": "agent",
+        "step_id": 3
+      },
+      {
+        "message": "",
+        "observation": {
+          "results": [
+            {
+              "content": "Write hello.txt",
+              "source_call_id": "toolu_fake_pass-then-hang_0"
+            }
+          ]
+        },
+        "source": "agent",
+        "step_id": 4,
+        "tool_calls": [
+          {
+            "arguments": {},
+            "extra": {
+              "status": "completed",
+              "title": "printf 'Hello, world!\\n' > /app/hello.txt"
+            },
+            "function_name": "execute",
+            "tool_call_id": "toolu_fake_pass-then-hang_0"
+          }
+        ]
+      },
+      {
+        "message": "Waiting.",
+        "source": "agent",
+        "step_id": 5
+      },
+      {
+        "message": "",
+        "observation": {
+          "results": [
+            {
+              "content": "Wait",
+              "source_call_id": "toolu_fake_pass-then-hang_1"
+            }
+          ]
+        },
+        "source": "agent",
+        "step_id": 6,
+        "tool_calls": [
+          {
+            "arguments": {},
+            "extra": {
+              "status": "in_progress",
+              "title": "sleep 590"
+            },
+            "function_name": "execute",
+            "tool_call_id": "toolu_fake_pass-then-hang_1"
+          }
+        ]
+      }
+    ]
+  },
+  "llm_calls": [
+    {
+      "finish_reason": "tool_calls",
+      "input_tokens": 1000,
+      "kind": "main",
+      "n_messages": 1,
+      "output_tokens": 50,
+      "text": "Writing hello.txt.",
+      "tool_calls": [
+        {
+          "arguments": {
+            "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+            "description": "Write hello.txt"
+          },
+          "id": "toolu_fake_pass-then-hang_0",
+          "name": "Bash"
+        }
+      ]
+    },
+    {
+      "finish_reason": "tool_calls",
+      "input_tokens": 1000,
+      "kind": "main",
+      "n_messages": 3,
+      "output_tokens": 50,
+      "text": "Waiting.",
+      "tool_calls": [
+        {
+          "arguments": {
+            "command": "sleep 590",
+            "description": "Wait",
+            "timeout": 600000
+          },
+          "id": "toolu_fake_pass-then-hang_1",
+          "name": "Bash"
+        }
+      ]
+    }
+  ],
+  "outcome": {
+    "assessment": "scored",
+    "execution": "timed_out",
+    "reward": 1.0
+  },
+  "result": {
+    "agent_result": {
+      "cost_usd": 0.0025,
+      "n_cache_creation_tokens": 0,
+      "n_cache_read_tokens": 0,
+      "n_input_tokens": 2000,
+      "n_output_tokens": 100,
+      "n_prompts": 1,
+      "n_skill_invocations": 0,
+      "n_tool_calls": 2,
+      "price_source": "litellm",
+      "total_tokens": 2100,
+      "usage_source": "provider_response"
+    },
+    "agent_timeout": {
+      "n_tool_calls": 2,
+      "pending_tool_call_ids": [
+        "toolu_fake_pass-then-hang_1"
+      ],
+      "reason": "wall_clock_timeout",
+      "timeout_sec": 45.0
+    },
+    "error_category": "timeout",
+    "final_metrics": {
+      "total_cached_tokens": 0,
+      "total_completion_tokens": 100,
+      "total_cost_usd": 0.0025,
+      "total_prompt_tokens": 2000
+    },
+    "n_prompts": 1,
+    "n_tool_calls": 2,
+    "rewards": {
+      "reward": 1.0
+    },
+    "timing_keys": [
+      "agent_execution",
+      "agent_setup",
+      "environment_setup",
+      "total",
+      "verifier"
+    ],
+    "trajectory_summary": {
+      "agent_message_steps": 2,
+      "agent_thought_steps": 0,
+      "event_type_counts": {
+        "agent_message": 2,
+        "agent_timeout": 1,
+        "tool_call": 2,
+        "user_message": 1
+      },
+      "other_steps": 1,
+      "partial_trajectory": true,
+      "steps": 6,
+      "tool_call_status_counts": {
+        "completed": 1,
+        "in_progress": 1
+      },
+      "tool_call_steps": 2,
+      "trajectory_source": "partial_acp",
+      "user_message_steps": 1
+    },
+    "usage_tracking": {
+      "requested": "auto",
+      "status": "enabled",
+      "usage_source": "provider_response"
+    },
+    "verifier_error_category": null
+  }
+}

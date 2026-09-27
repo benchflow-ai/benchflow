@@ -18,7 +18,7 @@ from benchflow.sandbox.process._base import (
     _ENV_KEY_RE,
     LiveProcess,
     SubprocessLiveProcess,
-    _timeout_sec_from_env,
+    _readline_timeout_sec,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,10 +30,11 @@ _DAYTONA_SSH_SERVER_ALIVE_INTERVAL_SEC = 30
 _DAYTONA_SSH_SERVER_ALIVE_COUNT_MAX = 12
 
 
-def _daytona_pty_readline_timeout_sec() -> float:
-    return _timeout_sec_from_env(
+def _daytona_pty_readline_timeout_sec(silence_floor: float | None = None) -> float:
+    return _readline_timeout_sec(
         _DAYTONA_PTY_READLINE_TIMEOUT_ENV,
         _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC,
+        silence_floor,
     )
 
 
@@ -402,6 +403,8 @@ class DaytonaPtyProcess(LiveProcess):
 
     _START_MARKER_TIMEOUT_SEC = 120
 
+    _silence_floor_sec: float | None = None
+
     def __init__(self, sandbox: Any, compose_cmd_prefix: str, compose_cmd_base: str):
         self._sandbox = sandbox
         self._compose_cmd_prefix = compose_cmd_prefix
@@ -621,7 +624,7 @@ class DaytonaPtyProcess(LiveProcess):
                     raw_message=msg, transport_diagnosis="pty_error"
                 ),
             )
-        timeout = _daytona_pty_readline_timeout_sec()
+        timeout = _daytona_pty_readline_timeout_sec(self._silence_floor_sec)
         try:
             line = await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
             return line
@@ -641,6 +644,9 @@ class DaytonaPtyProcess(LiveProcess):
                     raw_message=msg[:500], transport_diagnosis="pty_error"
                 ),
             ) from e
+
+    def expect_silence(self, seconds: float) -> None:
+        self._silence_floor_sec = seconds
 
     async def writeline(self, data: str) -> None:
         if not self._pty or self._closed:

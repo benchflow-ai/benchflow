@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from benchflow.task.canary import canary_line, new_guid
 from benchflow.task.document import (
     TaskDocument,
     render_normalized_task_md,
@@ -115,16 +116,22 @@ def scaffold_task(
         raise FileExistsError(f"Task directory already exists: {task_dir}")
 
     task_dir.mkdir(parents=True)
+    # One canary GUID per task, as a comment in files the agent does not see
+    # (benchflow.task.canary): if it appears in training data, the task leaked.
+    canary = f"# {canary_line(new_guid())}\n"
 
     if task_format == "task-md":
-        _write_task_md(task_dir, name)
+        _write_task_md(task_dir, name, canary=canary)
     else:
         _write_legacy_task_files(task_dir, name)
+        _prepend(task_dir / "task.toml", canary)
 
     # environment/
     env_dir = task_dir / "environment"
     env_dir.mkdir()
-    (env_dir / "Dockerfile").write_text("""FROM ubuntu:24.04
+    (env_dir / "Dockerfile").write_text(
+        canary
+        + """FROM ubuntu:24.04
 
 # Install dependencies
 RUN apt-get update -qq && apt-get install -y -qq curl && rm -rf /var/lib/apt/lists/*
@@ -134,7 +141,8 @@ WORKDIR /app
 
 # Log directories
 RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
-""")
+"""
+    )
 
     verifier_dirname = (
         TaskPaths.LEGACY_TESTS_DIRNAME
@@ -153,7 +161,10 @@ RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
     # Verifier defaults to FAILURE (0.0) until the author replaces the
     # placeholder. A scaffold that auto-passes would silently inflate eval
     # results - see #360.
-    (tests_dir / "test.sh").write_text("""#!/bin/bash
+    (tests_dir / "test.sh").write_text(
+        "#!/bin/bash\n"
+        + canary
+        + """\
 # Verifier script - write reward to /logs/verifier/reward.txt (float 0.0-1.0).
 # Exit 0 after writing it; nonzero exit means verifier infrastructure failure.
 
@@ -161,7 +172,8 @@ RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
 # so an unedited task cannot accidentally count as a passing benchmark.]
 echo "[REPLACE: write real verifier logic] - defaulting to failure" >&2
 echo "0.0" > /logs/verifier/reward.txt
-""")
+"""
+    )
     (tests_dir / "test.sh").chmod(0o755)
 
     if not no_pytest:
@@ -189,7 +201,10 @@ def test_placeholder():
     if not no_oracle:
         sol_dir = task_dir / oracle_dirname
         sol_dir.mkdir()
-        (sol_dir / "solve.sh").write_text(f"""#!/bin/bash
+        (sol_dir / "solve.sh").write_text(
+            "#!/bin/bash\n"
+            + canary
+            + f"""\
 # Oracle solution - demonstrates the task is solvable.
 # Used by: bench eval run --agent oracle --tasks-dir tasks/{name}
 
@@ -197,7 +212,8 @@ def test_placeholder():
 # {verifier_dirname}/test.sh so that running solve.sh -> test.sh produces reward 1.0.]
 echo "[REPLACE: implement oracle solution for {name}]" >&2
 exit 1
-""")
+"""
+        )
         (sol_dir / "solve.sh").chmod(0o755)
 
     written = sorted(
@@ -400,9 +416,13 @@ method = "weighted_mean"
 """)
 
 
-def _write_task_md(task_dir: Path, name: str) -> None:
+def _prepend(path: Path, text: str) -> None:
+    path.write_text(text + path.read_text())
+
+
+def _write_task_md(task_dir: Path, name: str, *, canary: str = "") -> None:
     (task_dir / TASK_DOCUMENT_FILE).write_text(f"""---
-schema_version: "1.3"
+{canary}schema_version: "1.3"
 metadata:
   author_name: ""
   difficulty: medium

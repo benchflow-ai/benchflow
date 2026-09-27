@@ -40,11 +40,9 @@ class TestConnectAsEnvMerge:
         cfg = _make_config(
             agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
         )
-        trial = Rollout.__new__(Rollout)
-        trial._config = cfg
+        trial = Rollout(cfg)
         trial._env = {}
         trial._rollout_dir = tmp_path
-        trial._timing = {}
         trial._agent_cwd = None
         trial._agent_cfg = MagicMock(credential_files=[])
         trial._phase = "idle"

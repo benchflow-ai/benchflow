@@ -20,10 +20,12 @@ from typing import Any, Literal, cast
 
 from benchflow._types import Role, Scene
 from benchflow._utils.config import (
+    normalize_agent_idle_timeout,
     normalize_agent_name,
     normalize_reasoning_effort,
     normalize_sandbox_user,
 )
+from benchflow.checkpoints import CheckpointPolicy
 from benchflow.contracts import BaseUser, RolloutPlanes
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.loop_strategies import (
@@ -166,9 +168,20 @@ class RolloutConfig:
     generated_skills_root: str = GENERATED_SKILLS_ROOT
     self_gen_no_internet: bool = False
     skip_verify: bool = False
+    # Freeze the agent's final workspace (and declared artifacts) into the
+    # trial's evidence/ folder before verifier hardening, so ``bench eval
+    # regrade`` can re-run a changed verifier later. Rubric review and
+    # verifier recovery freeze it anyway; this makes any trial regradable.
+    freeze_workspace: bool = False
+    codex_apps_policy: Literal["disabled", "inherit"] | None = field(
+        default=None, kw_only=True
+    )
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     purpose: Literal["task", "reviewer"] = "task"
     parent_rollout: str | None = None
+    # Opt-in automatic checkpoints (benchflow.checkpoints): a retained
+    # sandbox snapshot after the chosen prompts, for later --from-checkpoint.
+    checkpoints: CheckpointPolicy | None = None
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
     # Registry dataset identity: {"name", "version"} — stamped into
@@ -181,9 +194,45 @@ class RolloutConfig:
     task_digest: str | None = None
     planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
-        from benchflow._utils.config import normalize_agent_idle_timeout
+    def to_dict(self, *, include_agent_env: bool = False) -> dict[str, Any]:
+        """This config as the rollout YAML mapping ``from_dict``/``from_yaml`` read.
 
+        agent_env values are written only with ``include_agent_env=True``.
+        Raises ``ValueError`` when ``user``, ``pre_agent_hooks`` or ``planes``
+        (Python objects) are set.
+        """
+        from benchflow._utils.yaml_loader import rollout_config_to_dict
+
+        return rollout_config_to_dict(self, include_agent_env=include_agent_env)
+
+    def to_yaml(self, path: str | Path, *, include_agent_env: bool = False) -> Path:
+        """Write :meth:`to_dict` as YAML and return the path."""
+        import yaml
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(
+                self.to_dict(include_agent_env=include_agent_env), sort_keys=False
+            )
+        )
+        return path
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> RolloutConfig:
+        """Build a config from a rollout YAML mapping (``to_dict``'s shape)."""
+        from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+        return rollout_config_from_dict(raw)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> RolloutConfig:
+        """Read a rollout YAML file (same as ``bf.rollout_config_from_yaml``)."""
+        from benchflow._utils.yaml_loader import rollout_config_from_yaml
+
+        return rollout_config_from_yaml(path)
+
+    def __post_init__(self) -> None:
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
@@ -238,6 +287,8 @@ class RolloutConfig:
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         self.reviewer = ReviewerConfig.coerce(self.reviewer)
+        if self.codex_apps_policy not in {None, "disabled", "inherit"}:
+            raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         if self.purpose not in {"task", "reviewer"}:
             raise ValueError("purpose must be task or reviewer")
         for scene in self.scenes:
@@ -327,7 +378,7 @@ class RolloutConfig:
         skill_creator_dir: str | Path | None = None,
         generated_skills_root: str = GENERATED_SKILLS_ROOT,
         self_gen_no_internet: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
         mode = normalize_skill_mode(skill_mode)
@@ -339,7 +390,7 @@ class RolloutConfig:
         if mode == SKILL_MODE_SELF_GEN:
             scenes = []
         elif document_scenes:
-            if agent == "oracle":
+            if agent in ("oracle", "nop"):
                 # The task.md pins its own scene agents (document_scenes), which
                 # become the primary agent — so an explicit `--agent oracle`
                 # is silently dropped and oracle mode never engages. Warn loudly

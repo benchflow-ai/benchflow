@@ -25,11 +25,13 @@ from benchflow.sandbox._base import ExecResult, _filter_compose_service_names
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
+    COMPOSE_NET_ADMIN_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_UP_RETRY_DELAYS_SEC,
     compose_cp_destination,
     compose_mkdir_p_command,
+    compose_needs_net_admin,
     compose_parent_mkdir_p_command,
     is_compose_up_network_race_error,
 )
@@ -156,6 +158,15 @@ class _DaytonaDinD(_DaytonaStrategy):
         "BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600
     )
     _COMPOSE_DIR = "/benchflow/compose"
+    # Uploaded to ``_COMPOSE_DIR``; every overlay ``_compose_file_flags`` can
+    # reference must be here, or ``docker compose -f`` fails on a missing file.
+    _BENCHFLOW_COMPOSE_FILES = (
+        COMPOSE_BASE_PATH,
+        COMPOSE_BUILD_PATH,
+        COMPOSE_PREBUILT_PATH,
+        COMPOSE_NO_NETWORK_PATH,
+        COMPOSE_NET_ADMIN_PATH,
+    )
     _ENVIRONMENT_DIR = "/benchflow/environment"
     _LOGS_DIR = "/benchflow/logs"
 
@@ -232,9 +243,9 @@ class _DaytonaDinD(_DaytonaStrategy):
             f"{self._ENVIRONMENT_DIR}/docker-compose.yaml",
         ]
         if not self._env.task_env_config.allow_internet:
-            files.append(f"{self._COMPOSE_DIR}/docker-compose-no-network.yaml")
-        if self._env.task_env_config.network_mode == "denylist":
-            files.append(f"{self._COMPOSE_DIR}/docker-compose-net-admin.yaml")
+            files.append(f"{self._COMPOSE_DIR}/{COMPOSE_NO_NETWORK_PATH.name}")
+        if compose_needs_net_admin(self._env.task_env_config):
+            files.append(f"{self._COMPOSE_DIR}/{COMPOSE_NET_ADMIN_PATH.name}")
 
         flags: list[str] = []
         for f in files:
@@ -379,17 +390,11 @@ class _DaytonaDinD(_DaytonaStrategy):
                 labels=_benchflow_owned_labels(),
             )
 
+        env._create_attempts = 0
         try:
             await env._create_sandbox(params=params)
-        except (TimeoutError, RuntimeError, Exception) as e:
-            sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
-            raise SandboxStartupError(
-                f"Sandbox creation failed after retries: {e}",
-                sandbox_id=sandbox_id,
-                sandbox_state="error",
-                attempts=3,
-                build_timeout_sec=env.task_env_config.build_timeout_sec,
-            ) from e
+        except Exception as e:
+            raise env._startup_failure(e) from e
 
         try:
             env.logger.debug("Starting Docker daemon inside DinD sandbox...")
@@ -401,12 +406,7 @@ class _DaytonaDinD(_DaytonaStrategy):
             await self._wait_for_docker_daemon()
 
             # Upload BenchFlow compose files to the sandbox
-            for path in (
-                COMPOSE_BASE_PATH,
-                COMPOSE_BUILD_PATH,
-                COMPOSE_PREBUILT_PATH,
-                COMPOSE_NO_NETWORK_PATH,
-            ):
+            for path in self._BENCHFLOW_COMPOSE_FILES:
                 await env._sdk_upload_file(path, f"{self._COMPOSE_DIR}/{path.name}")
 
             # Upload task environment directory
@@ -464,14 +464,12 @@ class _DaytonaDinD(_DaytonaStrategy):
 
         try:
             if not env._sandbox:
-                env.logger.warning(
-                    "Sandbox not found. Please build the environment first."
-                )
+                env._log_no_sandbox_to_stop()
             else:
                 try:
                     await env._stop_sandbox()
                 except Exception as e:
-                    env.logger.error(f"Error stopping sandbox {env._sandbox.id}: {e}")
+                    env._log_sandbox_left_behind(e)
                 finally:
                     env._sandbox = None
         finally:

@@ -128,7 +128,11 @@ def test_runtime_view_preserves_legacy_split_packages(tmp_path: Path) -> None:
 
 
 def test_validator_reports_allowlist_as_runtime_gap() -> None:
-    """Parsed allowlists are invalid for launch until a sandbox enforces them."""
+    """Parsed allowlists are invalid for launch until a sandbox enforces them.
+
+    Docker and Daytona enforce allowlists
+    (tests/test_network_allowlist.py); modal still refuses.
+    """
     config = TaskConfig.model_validate(
         {
             "agent": {
@@ -142,7 +146,7 @@ def test_validator_reports_allowlist_as_runtime_gap() -> None:
         }
     )
 
-    issues = validate_task_runtime_support(config, sandbox="docker")
+    issues = validate_task_runtime_support(config, sandbox="modal")
 
     assert [issue.path for issue in issues] == [
         "agent.network_mode",

@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 _ARTIFACT_READ_BYTES = 64 * 1024
 # Pytest final summary, decoration stripped: "1 failed, 2 passed in 40.86s".
 _PYTEST_SUMMARY_RE = re.compile(r"\d+ failed\b")
+# The verifier's pytest plugin guard stopping pytest (sandbox/_pytest_plugin_guard.py).
+_GUARD_REFUSAL_MARKER = "Verifier plugin trust rejected: "
 # Metric-breakdown cap: one metric-happy verifier can't flood the line.
 _BREAKDOWN_METRICS = 3
 
@@ -237,13 +239,23 @@ def _reward_json_failure_line(reward_path: Path) -> FailureLine | None:
 def _stdout_tail_failure_line(stdout_path: Path) -> FailureLine | None:
     """Last pytest summary ("N failed, M passed …") — else last ``FAILED …``
     line — from a bounded tail of the verifier's test-stdout capture. No count
-    suffix: the summary line already carries the full counts itself."""
+    suffix: the summary line already carries the full counts itself. A plugin
+    refusal by the verifier's pytest guard, which stops pytest before it runs
+    any test, is reported as such."""
     with stdout_path.open("rb") as fh:
         fh.seek(0, 2)  # SEEK_END
         fh.seek(max(0, fh.tell() - _ARTIFACT_READ_BYTES))
         tail = fh.read(_ARTIFACT_READ_BYTES).decode("utf-8", errors="replace")
     last_failed: str | None = None
     for line in reversed(tail.splitlines()):
+        if _GUARD_REFUSAL_MARKER in line:
+            # pytest stopped before collecting: the 0 is the guard's, not a
+            # test result, and nothing else in the tail explains it.
+            refused = line.split(_GUARD_REFUSAL_MARKER, 1)[1].strip()
+            return FailureLine(
+                "pytest did not run: the verifier guard refused pytest plugin "
+                f"{refused} (see docs/sandbox-hardening.md)"
+            )
         bare = line.strip().strip("=").strip()
         if _PYTEST_SUMMARY_RE.match(bare):
             return FailureLine(bare)

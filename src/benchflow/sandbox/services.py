@@ -70,7 +70,7 @@ def register_service(
     cli_name: str,
     port: int,
     db_path: str,
-    **kwargs,
+    **kwargs: Any,
 ) -> ServiceConfig:
     """Register a custom service at runtime."""
     config = ServiceConfig(

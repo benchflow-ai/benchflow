@@ -92,6 +92,10 @@ For manually driven `Rollout` phases, call `await rollout.finalize()` after the
 terminal verifier; `.result` stays unavailable until required review finishes.
 `bf.run()` and `TaskRuntime.verify()` perform this finalization automatically.
 
+Each reviewer is an ordinary rollout under the host hard deadline, the backstop above all of its phase budgets. That deadline includes the wrapper's setup commands and adds transfer time for the evidence it uploads (at 1 MiB/s), so reviewing a large workspace is not cut off mid-transfer. When evaluation resume cannot finish one trial's review, it logs the failure, keeps that trial's saved result, and continues with the other trials; retry the failed trial with `bench eval score`.
+
+A solver that timed out with an incomplete trajectory is never reviewable, so its review is refused ("Solver trajectory is incomplete") and not worth retrying. When its verifier produced a reward, `result.json` keeps the verifier's `rewards` and the timeout `error` and `error_category` with no `verifier_error`, beside a scoring block whose error records the refusal. Downstream consumers can count it as a timeout with its test result; BenchFlow's own score buckets still report it as errored, because the blocker gate was never judged. A timed-out solver whose trajectory is complete is reviewed normally.
+
 ## The rubric (versionless contracts v0.1 and v0.2)
 
 A rubric is a JSON file with one `criteria` list and no in-file version key.

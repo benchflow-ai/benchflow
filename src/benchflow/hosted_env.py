@@ -182,6 +182,15 @@ class HostedEnvRunConfig:
     sampling_args: dict[str, Any] = field(default_factory=dict)
     python: str = "3.12"
     runner: str = "verifiers"
+    # Pin the verifiers release installed next to the env package (None: the
+    # env package's own requirement decides). verifiers ships several dev
+    # builds a day, so a pin keeps a hosted run reproducible.
+    verifiers_version: str | None = None
+    # Model endpoint for vf-eval (None: verifiers' default, Prime inference
+    # with PRIME_API_KEY). Passed as --api-base-url/--api-key-var to the
+    # legacy CLI and --client.base-url/--client.api-key-var to the v1 CLI.
+    api_base_url: str | None = None
+    api_key_var: str | None = None
 
 
 @dataclass
@@ -200,6 +209,11 @@ class HostedEnvRunResult:
     total_tool_calls: int | None = None
     verifiers_error: str | None = None
     raw_reward: float | None = None
+    # Which vf-eval CLI the installed verifiers ships ("legacy" or "v1") and
+    # the installed verifiers version (None when it could not be read).
+    vf_eval_cli: str = "legacy"
+    verifiers_version: str | None = None
+    v1: V1Traces | None = None
 
     @property
     def error(self) -> str | None:
@@ -236,6 +250,212 @@ def normalize_verifiers_model(model: str) -> str:
     if model.startswith("claude-"):
         return f"anthropic/{model}"
     return model
+
+
+@dataclass(frozen=True)
+class V1Traces:
+    """What a verifiers v1 run's ``traces.jsonl`` says.
+
+    One line is one episode; an episode with ``ok: false`` errored and is
+    left out of the mean (unscored, not a 0). A trace's reward is the sum of
+    its weighted rewards (``Trace.reward`` in verifiers v1); ``reward`` is the
+    mean over the traces of the episodes that did not error.
+    """
+
+    reward: float | None
+    rollouts: int
+    errored: int
+    error: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    prompts: tuple[str, ...] = ()
+
+
+def vf_eval_cli(venv_dir: Path) -> tuple[str, str | None]:
+    """``("v1" | "legacy", verifiers version)`` of the verifiers in ``venv_dir``.
+
+    Read from the installed ``vf-eval`` entry point: verifiers v1 builds point
+    it at ``verifiers.v1.cli…``; 0.3.1 and older point it at the legacy
+    script (which cannot load v1 tasksets). No install found: legacy.
+    """
+    for info in sorted(
+        venv_dir.glob("lib/python*/site-packages/verifiers-*.dist-info")
+    ):
+        version = None
+        try:
+            for line in (info / "METADATA").read_text().splitlines():
+                if line.startswith("Version:"):
+                    version = line.split(":", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+        try:
+            entries = (info / "entry_points.txt").read_text()
+        except OSError:
+            entries = ""
+        match = re.search(r"^vf-eval\s*=\s*(\S+)", entries, re.M)
+        cli = "v1" if match and match.group(1).startswith("verifiers.v1.") else "legacy"
+        return cli, version
+    return "legacy", None
+
+
+def _cli_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+def build_vf_eval_command(
+    config: HostedEnvRunConfig,
+    *,
+    vf_eval: str,
+    output_dir: Path,
+    cli: str,
+) -> list[str]:
+    """The vf-eval command for the installed CLI (``"legacy"`` or ``"v1"``).
+
+    v1 maps ``env_args`` to ``--env.taskset.<key>`` and ``sampling_args`` to
+    ``--sampling.<key>`` (underscores become dashes), writes to
+    ``output_dir/benchflow/traces.jsonl`` and always passes ``--no-push``: a
+    v1 run uploads to the Prime platform by default, and BenchFlow runs are
+    local unless published explicitly.
+    """
+    model = normalize_verifiers_model(config.model)
+    if cli == "v1":
+        command = [
+            vf_eval,
+            config.source_env.verifiers_env_id,
+            "-n",
+            str(config.num_examples),
+            "-r",
+            str(config.rollouts_per_example),
+            "-c",
+            str(config.concurrency),
+            "-m",
+            model,
+            "--sampling.max-tokens",
+            str(config.max_tokens),
+            "--sampling.temperature",
+            str(config.temperature),
+        ]
+        for key, value in sorted(config.sampling_args.items()):
+            command += [f"--sampling.{key.replace('_', '-')}", _cli_value(value)]
+        for key, value in sorted(config.env_args.items()):
+            command += [f"--env.taskset.{key.replace('_', '-')}", _cli_value(value)]
+        if config.api_base_url:
+            command += ["--client.base-url", config.api_base_url]
+        if config.api_key_var:
+            command += ["--client.api-key-var", config.api_key_var]
+        return [
+            *command,
+            "--output-dir",
+            str(output_dir),
+            "--run.dir",
+            "benchflow",
+            "--no-push",
+            "--no-rich",
+        ]
+    command = [
+        vf_eval,
+        config.source_env.verifiers_env_id,
+        "--env-args",
+        json.dumps(config.env_args, sort_keys=True),
+        "--num-examples",
+        str(config.num_examples),
+        "--rollouts-per-example",
+        str(config.rollouts_per_example),
+        "--max-concurrent",
+        str(config.concurrency),
+        "--model",
+        model,
+        "--max-tokens",
+        str(config.max_tokens),
+        "--temperature",
+        str(config.temperature),
+        "--sampling-args",
+        json.dumps(dict(config.sampling_args), sort_keys=True),
+    ]
+    if config.api_base_url:
+        command += ["--api-base-url", config.api_base_url]
+    if config.api_key_var:
+        command += ["--api-key-var", config.api_key_var]
+    return [
+        *command,
+        "--output-dir",
+        str(output_dir),
+        "--save-results",
+        "--disable-tui",
+    ]
+
+
+def read_v1_traces(path: Path) -> V1Traces:
+    """Summarise a verifiers v1 ``traces.jsonl`` (see :class:`V1Traces`)."""
+    rewards: list[float] = []
+    errored = 0
+    first_error: str | None = None
+    tokens = {"num_input_tokens": 0, "num_output_tokens": 0, "num_total_tokens": 0}
+    seen_tokens = False
+    prompts: list[str] = []
+    for raw in path.read_text().splitlines():
+        if not raw.strip():
+            continue
+        try:
+            episode = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(episode, dict):
+            continue
+        prompt = ((episode.get("task") or {}).get("data") or {}).get("prompt")
+        if isinstance(prompt, str) and prompt and prompt not in prompts:
+            prompts.append(prompt)
+        for key in tokens:
+            value = episode.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                tokens[key] += value
+                seen_tokens = True
+        if not episode.get("ok", False):
+            errored += 1
+            if first_error is None:
+                errors = episode.get("errors") or []
+                err = errors[0] if errors and isinstance(errors[0], dict) else {}
+                first_error = (
+                    f"{err.get('type') or 'error'}: {err.get('message') or ''}".strip(
+                        ": "
+                    )
+                )
+            continue
+        for trace in episode.get("traces") or []:
+            total = 0.0
+            for item in ((trace or {}).get("rewards") or {}).values():
+                if isinstance(item, dict):
+                    score = item.get("score")
+                    weight = item.get("weight", 1.0)
+                    if isinstance(score, int | float) and isinstance(
+                        weight, int | float
+                    ):
+                        total += float(score) * float(weight)
+            rewards.append(total)
+    reward = sum(rewards) / len(rewards) if rewards else None
+    error = None
+    if reward is None:
+        error = (
+            f"verifiers v1: all {errored} episode(s) errored ({first_error})"
+            if errored
+            else "verifiers v1: traces.jsonl has no episodes"
+        )
+    return V1Traces(
+        reward=reward,
+        rollouts=len(rewards),
+        errored=errored,
+        error=error,
+        input_tokens=tokens["num_input_tokens"] if seen_tokens else None,
+        output_tokens=tokens["num_output_tokens"] if seen_tokens else None,
+        total_tokens=tokens["num_total_tokens"] if seen_tokens else None,
+        prompts=tuple(prompts),
+    )
 
 
 def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
@@ -277,6 +497,11 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
         _venv_python(venv_dir),
         "--prerelease=allow",
         f"{config.source_env.python_package}=={config.source_env.version}",
+        *(
+            [f"verifiers=={config.verifiers_version}"]
+            if config.verifiers_version
+            else []
+        ),
         "--extra-index-url",
         PRIME_SIMPLE_INDEX,
     ]
@@ -284,31 +509,13 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     _run_checked(install_cmd, cwd=run_dir)
 
     normalized_model = normalize_verifiers_model(config.model)
-    sampling_args = dict(config.sampling_args)
-    command = [
-        str(venv_dir / "bin" / "vf-eval"),
-        config.source_env.verifiers_env_id,
-        "--env-args",
-        json.dumps(config.env_args, sort_keys=True),
-        "--num-examples",
-        str(config.num_examples),
-        "--rollouts-per-example",
-        str(config.rollouts_per_example),
-        "--max-concurrent",
-        str(config.concurrency),
-        "--model",
-        normalized_model,
-        "--max-tokens",
-        str(config.max_tokens),
-        "--temperature",
-        str(config.temperature),
-        "--sampling-args",
-        json.dumps(sampling_args, sort_keys=True),
-        "--output-dir",
-        str(output_dir),
-        "--save-results",
-        "--disable-tui",
-    ]
+    cli, verifiers_version = vf_eval_cli(venv_dir)
+    command = build_vf_eval_command(
+        config,
+        vf_eval=str(venv_dir / "bin" / "vf-eval"),
+        output_dir=output_dir,
+        cli=cli,
+    )
     started_at = datetime.now(UTC)
     proc = subprocess.run(
         command,
@@ -319,8 +526,21 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
         check=False,
     )
     finished_at = datetime.now(UTC)
-    parsed_reward = _extract_metric(proc.stdout, "reward")
-    verifiers_error = _extract_verifiers_error(proc.stdout + "\n" + proc.stderr)
+    v1: V1Traces | None = None
+    if cli == "v1":
+        traces_path = output_dir / "benchflow" / "traces.jsonl"
+        if traces_path.is_file():
+            v1 = read_v1_traces(traces_path)
+            parsed_reward = v1.reward
+            verifiers_error = v1.error
+        else:
+            parsed_reward = None
+            verifiers_error = (
+                "verifiers v1 wrote no traces.jsonl" if proc.returncode == 0 else None
+            )
+    else:
+        parsed_reward = _extract_metric(proc.stdout, "reward")
+        verifiers_error = _extract_verifiers_error(proc.stdout + "\n" + proc.stderr)
     reward = parsed_reward
 
     # Fail closed so hosted evidence stays equivalent to native rollouts:
@@ -354,6 +574,9 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
         total_tool_calls=_extract_int_metric(proc.stdout, "total_tool_calls"),
         verifiers_error=verifiers_error,
         raw_reward=parsed_reward,
+        vf_eval_cli=cli,
+        verifiers_version=verifiers_version,
+        v1=v1,
     )
     _write_run_artifacts(
         result,
@@ -521,6 +744,14 @@ def _write_run_artifacts(
         "command": result.command,
         "install_command": install_cmd,
         "output_dir": str(output_dir),
+        "vf_eval_cli": result.vf_eval_cli,
+        "verifiers_version": result.verifiers_version,
+        "verifiers_version_pinned": config.verifiers_version,
+        **(
+            {"v1_rollouts": result.v1.rollouts, "v1_errored": result.v1.errored}
+            if result.v1 is not None
+            else {}
+        ),
     }
     (hosted_dir / "hosted_run.json").write_text(json.dumps(hosted_payload, indent=2))
 
@@ -528,6 +759,16 @@ def _write_run_artifacts(
     trajectory = _reconstruct_trajectory(output_dir, started_at)
     rewards = _build_rewards_dict(result, output_dir)
     prompts = _collect_prompts(output_dir, config)
+    if result.v1 is not None and result.v1.prompts:
+        # v1 writes traces.jsonl, not results.jsonl: take the task prompts
+        # from it (the full traces stay under output_dir for forensics).
+        prompts = list(result.v1.prompts)
+        if not trajectory:
+            ts = started_at.isoformat()
+            trajectory = [
+                {"type": "user_message", "ts": ts, "example_index": i, "content": text}
+                for i, text in enumerate(prompts)
+            ]
     timing = {"total": round((finished_at - started_at).total_seconds(), 1)}
     task_name = result.source_env.env_uid
     rollout_name = result.run_dir.name
@@ -536,14 +777,15 @@ def _write_run_artifacts(
         runner=config.runner,
         env_args=config.env_args,
     )
+    v1 = result.v1
     agent_result = {
         "n_tool_calls": result.total_tool_calls or 0,
         "n_prompts": len(prompts),
-        "n_input_tokens": None,
-        "n_output_tokens": None,
+        "n_input_tokens": v1.input_tokens if v1 else None,
+        "n_output_tokens": v1.output_tokens if v1 else None,
         "n_cache_read_tokens": None,
         "n_cache_creation_tokens": None,
-        "total_tokens": None,
+        "total_tokens": v1.total_tokens if v1 else None,
         "cost_usd": None,
         "usage_source": "unavailable",
         "price_source": None,

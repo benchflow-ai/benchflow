@@ -158,6 +158,7 @@ markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
     "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
     "browser: drives the viewer template in real Chromium via Playwright (self-skips without playwright/chromium; deselect with -m 'not browser')",
+    "deterministic: real CLI + real sandbox + scripted fake model provider; runs by default when a sandbox is available (Docker, or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona), skips with a reason otherwise (deselect with -m 'not deterministic')",
 ]
 
 [tool.ruff]

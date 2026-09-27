@@ -1,10 +1,11 @@
 """HTTP serving: single-trajectory pages (with --confirm) and browse mode."""
 
 import hmac
+import json
 import secrets
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .catalog import (
     _discover_rollouts,
@@ -18,7 +19,12 @@ from .legacy import (
     render_jsonl_file,
     render_rollout,
 )
-from .payload import _build_acp_payload, _is_acp_rollout_dir, _safe_json
+from .payload import (
+    _build_acp_payload,
+    _build_branch_child_payload,
+    _is_acp_rollout_dir,
+    _safe_json,
+)
 from .render import _render_shell
 from .sources import (
     HfDatasetSource,
@@ -34,6 +40,51 @@ _MAX_DECISION_BYTES = 32
 def _utf8_safe_text(value: str) -> str:
     """Replace lone surrogates so rendered pages are always valid UTF-8."""
     return value.encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _physical_trials_hint(path: Path) -> str | None:
+    """Where to read physical robot trials, which this viewer does not render.
+
+    A trial directory holds ``trial-record.json`` or a robotics
+    ``manifest.json`` (it names a ``trial_id``); look at *path* and two levels
+    below it, as ``physical-trials/<trial>`` usually sits under a run root.
+    """
+
+    def _is_trial(candidate: Path) -> bool:
+        if (candidate / "trial-record.json").is_file():
+            return True
+        try:
+            manifest = json.loads((candidate / "manifest.json").read_text())
+        except (OSError, ValueError):
+            return False
+        return isinstance(manifest, dict) and "trial_id" in manifest
+
+    if not path.is_dir():
+        return None
+    candidates = [path, *path.glob("*/"), *path.glob("*/*/")]
+    trials = [c for c in candidates if c.is_dir() and _is_trial(c)]
+    if not trials:
+        return None
+    return (
+        f"{path} holds {_plural(len(trials), 'physical robot trial')}, "
+        "which this viewer does not "
+        "render yet. Read one with `python -m benchflow.robotics index "
+        f"{trials[0]}`, or list execution and assessment states with "
+        f"`python -m benchflow.robotics report {trials[0].parent}`."
+    )
+
+
+def _plural(count: int, noun: str) -> str:
+    """``1 run``, ``2 runs``: a count with its noun in agreement."""
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def _use_localhost(port: int) -> str:
+    """Body text for a request whose Host is not the printed localhost URL."""
+    return (
+        f"This viewer only answers at http://localhost:{port}/ "
+        "(other host names, including 127.0.0.1, are refused)."
+    )
 
 
 def _matches_local_authority(
@@ -105,7 +156,8 @@ def serve(
             if confirm:
                 print(
                     "--confirm needs a single rollout or session file, but "
-                    f"{path} is a directory of {n_runs}{'+' if capped else ''} runs"
+                    f"{path} is a directory of "
+                    + (f"{n_runs}+ runs" if capped else _plural(n_runs, "run"))
                 )
                 sys.exit(1)
             _serve_browse(path, port, n_runs=n_runs, capped=capped)
@@ -163,6 +215,9 @@ def _serve_single(
         # Don't write a blank trajectory.html into an unrelated directory or
         # start a server for nothing — fail fast like the not-a-directory path.
         print(f"No trajectories found in {path}")
+        hint = _physical_trials_hint(path)
+        if hint:
+            print(hint)
         sys.exit(1)
     html_content = _utf8_safe_text(html_content)
     if write_sidecar:
@@ -213,7 +268,9 @@ def _serve_single(
                 self.send_error(404)
                 return
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             self._send_page(include_body=True)
 
@@ -226,7 +283,9 @@ def _serve_single(
                 self.end_headers()
                 return
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             self._send_page(include_body=False)
 
@@ -317,6 +376,8 @@ def _serve_single(
         print("Waiting for Approve / Not this one in the browser (Ctrl+C to stop)\n")
     else:
         print("Press Ctrl+C to stop\n")
+    # A piped stdout is block-buffered; flush so the URL shows while serving.
+    sys.stdout.flush()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -333,7 +394,6 @@ def _serve_single(
 def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> None:
     """Multi-rollout browser: sidebar shell + JSON API, rescanned per request."""
     from http.server import HTTPServer, SimpleHTTPRequestHandler
-    from urllib.parse import parse_qs
 
     expected_port = port
 
@@ -369,7 +429,9 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
 
         def do_GET(self):
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             parsed = urlsplit(self.path)
             if parsed.path == "/":
@@ -388,7 +450,9 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                     shell.encode("utf-8", errors="replace"),
                 )
             elif parsed.path == "/api/rollout":
-                rid = (parse_qs(parsed.query).get("id") or [None])[0]
+                query = parse_qs(parsed.query)
+                rid = (query.get("id") or [None])[0]
+                branch = (query.get("branch") or [None])[0]
                 rollout_dir = _resolve_browse_rollout(base, rid)
                 if rollout_dir is None:
                     self._send(
@@ -397,7 +461,19 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                         b'{"error": "unknown rollout id"}',
                     )
                     return
-                body = _safe_json(_build_acp_payload(rollout_dir, None).to_payload())
+                if branch is None:
+                    payload = _build_acp_payload(rollout_dir, None)
+                else:
+                    # Resolved only through the rollout's own tree.json.
+                    payload = _build_branch_child_payload(rollout_dir, branch)
+                if payload is None:
+                    self._send(
+                        404,
+                        "application/json; charset=utf-8",
+                        b'{"error": "unknown branch child"}',
+                    )
+                    return
+                body = _safe_json(payload.to_payload())
                 self._send(
                     200,
                     "application/json; charset=utf-8",
@@ -411,7 +487,9 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
             # process cwd, bypassing the rollout-id whitelist — answer only
             # for the shell page and refuse everything else.
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             if urlsplit(self.path).path == "/":
                 self._send(200, "text/html; charset=utf-8", b"")
@@ -425,12 +503,13 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
 
     server = HTTPServer(("localhost", port), Handler)
     expected_port = server.server_port
-    runs_desc = f"{n_runs} runs"
+    runs_desc = _plural(n_runs, "run")
     if capped:
-        runs_desc = f"first {n_runs} runs (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)"
+        runs_desc = f"first {runs_desc} (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)"
     print(f"Trajectory browser: http://localhost:{expected_port}")
     print(f"Scanning: {base} ({runs_desc})")
     print("Press Ctrl+C to stop\n")
+    sys.stdout.flush()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

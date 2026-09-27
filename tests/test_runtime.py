@@ -55,7 +55,9 @@ def test_runtime_config_defaults() -> None:
     assert c.max_rounds == 10
     assert c.snapshot_policy == "none"
     assert c.reward_stream is True
-    assert c.timeout == 900
+    # None = the task's own [agent] timeout_sec; the hidden 900 s default was
+    # retired (see tests/test_python_sdk_timeouts.py).
+    assert c.timeout is None
 
 
 def test_runtime_result_passed() -> None:

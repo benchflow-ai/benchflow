@@ -1,12 +1,14 @@
-"""Dep-install failure scanning for verifier test stdout.
+"""Failure scanning for verifier logs.
 
 Extracted from ``benchflow.task.verifier`` as a pure leaf cluster. Streams the
 verifier ``test-stdout.txt`` off disk to detect dependency-install failures
-without ever returning or persisting the scanned (secret-bearing) text.
+without ever returning or persisting the scanned (secret-bearing) text, and
+detects a pytest that could not load the plugin guard hardening injected.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from benchflow._utils.scoring import (
@@ -45,9 +47,49 @@ def _has_dep_install_failure(path: Path) -> bool:
     tail-only scan would silently drop it (PR #572). Memory stays bounded — at
     most one chunk plus the overlap is held at a time, regardless of file size.
     """
+    return _stream_contains(
+        path,
+        contains_verifier_dep_install_marker,
+        max(len(m) for m in VERIFIER_DEP_INSTALL_MARKERS),
+    )
+
+
+def _has_guard_load_failure(verifier_dir: Path, guard: str) -> bool:
+    """True if a verifier log shows pytest could not load the guard *guard*.
+
+    pytest wraps any import error of a ``-p`` plugin as ``Error importing
+    plugin "<name>"`` (pytest 3 through 9); pluggy names the plugin as
+    ``Plugin '<name>'`` when it refuses its hooks. The guard name carries a
+    random suffix chosen after the solver stopped, so a solution cannot
+    pre-plant these lines. Every top-level file is scanned because test.sh may
+    send pytest output to its own log instead of stdout.
+    """
+    markers = (
+        f'Error importing plugin "{guard}"',
+        f"No module named '{guard}'",
+        f"Plugin '{guard}'",
+    )
+    try:
+        paths = sorted(p for p in verifier_dir.iterdir() if p.is_file())
+    except OSError:
+        return False
+    return any(
+        _stream_contains(
+            path,
+            lambda text: any(marker in text for marker in markers),
+            max(len(m) for m in markers),
+        )
+        for path in paths
+    )
+
+
+def _stream_contains(
+    path: Path, found: Callable[[str], bool], longest_marker: int
+) -> bool:
+    """Stream *path* in bounded chunks until *found* matches a window."""
     # Longest marker minus one byte: enough overlap to catch a marker split
     # across two reads without rescanning whole chunks.
-    overlap = max(len(m) for m in VERIFIER_DEP_INSTALL_MARKERS) - 1
+    overlap = longest_marker - 1
     try:
         with path.open(errors="replace") as f:
             carry = ""
@@ -56,7 +98,7 @@ def _has_dep_install_failure(path: Path) -> bool:
                 if not chunk:
                     return False
                 window = carry + chunk
-                if contains_verifier_dep_install_marker(window):
+                if found(window):
                     return True
                 # Keep the tail of this chunk so a boundary-spanning marker is
                 # found on the next read; bound it to the overlap size.

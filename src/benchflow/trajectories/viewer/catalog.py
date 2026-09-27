@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import RunSummary
-from .payload import _is_acp_rollout_dir, _load_rollout_metadata
+from .payload import _is_acp_rollout_dir, _load_lineage, _load_rollout_metadata
 
 
 def _runs_cap() -> int:
@@ -74,6 +74,7 @@ def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
     """Catalog row for one rollout: identity, verdict, row-level stats."""
     d = base / rel_id
     metadata = _load_rollout_metadata(d)
+    lineage = _load_lineage(d)
     return RunSummary(
         id=rel_id,
         name=d.name,
@@ -87,4 +88,9 @@ def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
         cost_usd=metadata.usage.cost_usd,
         total_tokens=metadata.usage.total_tokens,
         n_tool_calls=metadata.n_tool_calls,
+        status=metadata.status,
+        branch_forks=len(lineage.forks) if lineage is not None else None,
+        branch_children=sum(len(fork.children) for fork in lineage.forks)
+        if lineage is not None
+        else None,
     ).to_payload()

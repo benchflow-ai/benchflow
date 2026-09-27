@@ -22,7 +22,12 @@ from typing import Any
 
 from benchflow._utils.config_redaction import _should_record_env_entry
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
-from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
+from benchflow.evaluation import (
+    EmptyTaskSelectionError,
+    Evaluation,
+    EvaluationConfig,
+    EvaluationResult,
+)
 from benchflow.loop_strategies import LoopStrategySpec
 
 
@@ -128,10 +133,17 @@ def _config_payload(
         "reviewer": config.reviewer.to_dict(),
         "retry": _retry_payload(config),
         "skills_dir": config.skills_dir,
+        "codex_apps_policy": config.codex_apps_policy,
         "sandbox_user": config.sandbox_user,
         "sandbox_locked_paths": config.sandbox_locked_paths,
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
         "agent_idle_timeout": config.agent_idle_timeout,
+        "checkpoints": config.checkpoints,
+        "checkpoint_keep": config.checkpoint_keep,
+        "freeze_workspace": config.freeze_workspace,
+        "retry_from_checkpoint": config.retry_from_checkpoint,
+        "retry_prompt": config.retry_prompt,
+        "retry_resume_session": config.retry_resume_session,
         "context_root": config.context_root,
         "base_image_override": config.base_image_override,
         "exclude_tasks": sorted(config.exclude_tasks),
@@ -361,8 +373,6 @@ async def run_sharded_evaluation(
         worker_concurrency=worker_concurrency,
     )
     if not plan.shards:
-        from benchflow.evaluation import EmptyTaskSelectionError
-
         raise EmptyTaskSelectionError(f"No tasks selected after filtering: {tasks_dir}")
 
     # Check the complete selection before launching any worker; each worker

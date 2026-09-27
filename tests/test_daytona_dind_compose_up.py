@@ -10,6 +10,7 @@ retry, fails CI.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -164,7 +165,9 @@ def test_long_exec_heartbeat_returns_promptly_after_fast_command():
     assert 'kill "$bf_heartbeat_pid"' not in wrapped
     assert ': > "$bf_stop"' in wrapped
     result = subprocess.run(
-        ["bash", "-lc", wrapped],
+        # Test the wrapper itself, independent of developer login profiles.
+        ["bash", "--noprofile", "--norc", "-c", wrapped],
+        env={key: value for key, value in os.environ.items() if key != "BASH_ENV"},
         capture_output=True,
         check=True,
         text=True,

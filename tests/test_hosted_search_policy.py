@@ -489,6 +489,24 @@ async def test_denylist_wiring_does_not_depend_on_harness_or_model(
     try:
         env = _fake_sandbox()
         planes = _fake_planes(env)
+        # The fake sandbox cannot answer Codex Apps probes; stub admission and
+        # check it still precedes every ACP connection.
+        admission_order = []
+
+        async def apps_policy(sandbox, **kwargs):
+            assert sandbox is env
+            assert kwargs["agent"] == agent
+            assert kwargs["policy"] == "disabled"
+            admission_order.append("apps")
+            return kwargs["agent_env"]
+
+        async def connect_acp(**kwargs):
+            admission_order.append("acp")
+            return _fake_acp_connection()
+
+        apps = AsyncMock(side_effect=apps_policy)
+        monkeypatch.setattr("benchflow.rollout.enforce_codex_apps_policy", apps)
+        planes.connect_acp.side_effect = connect_acp
         runtime = SimpleNamespace(agent_base_url="http://127.0.0.1:12345")
         planes.ensure_litellm_runtime.side_effect = lambda **k: (
             k["agent_env"],
@@ -508,6 +526,8 @@ async def test_denylist_wiring_does_not_depend_on_harness_or_model(
         await rollout.connect_as(Role(name="next", agent=agent, model=model))
 
         assert planes.connect_acp.await_count == 2
+        assert apps.await_count == 2
+        assert admission_order == ["apps", "acp", "apps", "acp"]
         for call in planes.ensure_litellm_runtime.await_args_list:
             assert call.kwargs["force_sandbox_local"] is True
             assert (call.kwargs["agent"], call.kwargs["model"]) == (agent, model)
@@ -731,12 +751,9 @@ async def test_connect_as_applies_denylist_to_role_env(tmp_path):
     env = _fake_sandbox()
     planes = _fake_planes(env)
     planes.install_agent.return_value = AGENTS["gemini"]
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = env
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = _denylist_task()
     trial._planes = planes
@@ -774,16 +791,12 @@ async def test_connect_as_applies_denylist_when_primary_is_oracle(tmp_path):
     env = _fake_sandbox()
     planes = _fake_planes(env)
     planes.install_agent.return_value = AGENTS["gemini"]
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = env
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = _denylist_task()
     trial._planes = planes
-    trial._egress_denylist = None
 
     await trial.connect_as(role)
 
@@ -839,12 +852,9 @@ async def test_connect_as_skips_denylist_for_oracle_role(tmp_path):
     cfg = RolloutConfig(task_path=tmp_path / "task", scenes=[Scene(roles=[role])])
     env = _fake_sandbox()
     planes = _fake_planes(env)
-    trial = Rollout.__new__(Rollout)
-    trial._config = cfg
+    trial = Rollout(cfg)
     trial._env = env
     trial._rollout_dir = tmp_path
-    trial._timing = {}
-    trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = _denylist_task()
     trial._planes = planes

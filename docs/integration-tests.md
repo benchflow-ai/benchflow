@@ -2,6 +2,8 @@
 
 On-demand end-to-end tests that validate BenchFlow against real benchmark suites. Not part of CI — invoke manually before trial-ready releases and before large runtime refactors.
 
+The keyless, deterministic end-to-end tier (real CLI and sandbox, scripted fake model, golden trajectories) does run on every PR; see [`tests/integration/README.md`](../tests/integration/README.md).
+
 The core matrix runs 9 SkillsBench tasks across all 9 registered agents on Daytona. Release readiness also requires smoke coverage for the current adapter release set, the current feature release set, hosted environment compatibility, and Terminal-Bench-style tasks so BenchFlow keeps running existing suites even as public API names move to Rollout/Sandbox terminology.
 
 ## Prerequisites

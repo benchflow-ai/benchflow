@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.rollout import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -752,34 +751,20 @@ async def test_rollout_result_falls_back_to_env_sandbox_id_after_start_failure(
             persist_sandbox_info(self, rollout_dir)
             raise RuntimeError("post-create startup failed")
 
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=task,
-        scenes=[Scene.single(agent="oracle")],
-        jobs_dir=tmp_path / "jobs",
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=task,
+            scenes=[Scene.single(agent="oracle")],
+            jobs_dir=tmp_path / "jobs",
+        )
     )
     rollout._rollout_dir = rollout_dir
     rollout._started_at = datetime(2026, 5, 25, 12, 0)
     rollout._rollout_name = "my-rollout"
     rollout._agent_name = "oracle"
     rollout._env = CreatedThenFailingEnv()
-    rollout._env_externally_owned = False
-    rollout._timing = {}
-    rollout._executed_prompts = []
-    rollout._resolved_prompts = []
-    rollout._n_tool_calls = 0
     rollout._error = "post-create startup failed"
-    rollout._verifier_error = None
-    rollout._export_error = None
-    rollout._trajectory = []
-    rollout._partial_trajectory = False
-    rollout._trajectory_source = None
-    rollout._rewards = None
-    rollout._evolved_skills = None
-    rollout._diagnostics = RolloutDiagnostics()
     rollout._usage_metrics = {}
-    rollout._task_skill_policy = None
-    rollout._sandbox_id = None
 
     with pytest.raises(RuntimeError, match="post-create startup failed"):
         await rollout.start()
@@ -938,7 +923,8 @@ def _make_daytona_sandbox(rollout_dir: Path, create_impl):
     ``_client_manager`` (whose ``get_client()`` returns a fake daytona whose
     ``create()`` runs ``create_impl``), ``task_env_config`` (for
     ``build_timeout_sec``), ``rollout_paths`` (a real ``RolloutPaths`` at
-    ``rollout_dir``), a no-op ``logger`` and ``_sandbox=None``.
+    ``rollout_dir``), a no-op ``logger``, ``_sandbox=None`` and the
+    ``_create_attempts`` counter ``start()`` resets.
     """
     from benchflow.sandbox.daytona import DaytonaSandbox
     from benchflow.task import RolloutPaths
@@ -955,6 +941,7 @@ def _make_daytona_sandbox(rollout_dir: Path, create_impl):
 
     env._client_manager = _FakeClientManager()
     env._sandbox = None
+    env._create_attempts = 0
     env.task_env_config = MagicMock(build_timeout_sec=10)
     env.rollout_paths = RolloutPaths(rollout_dir)
     env.logger = MagicMock()

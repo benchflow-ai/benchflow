@@ -102,6 +102,53 @@ class TestPayloadContract:
         assert texts[0] == "flat"
         assert "--- old" in texts[1] and "+++ new" in texts[1] and "a.py" in texts[1]
 
+    def test_provisional_tool_titles_show_the_final_title(self, tmp_path):
+        """Regression test: a Write kept claude-agent-acp's
+        provisional title "Preparing file…". The adapter titles a call before
+        its input arrives and sends the real title in a later update the
+        capture does not keep, so the viewer rebuilds it from the recorded
+        input (or the one diff path)."""
+
+        def call(call_id, kind, title, **extra):
+            return {
+                "type": "tool_call",
+                "tool_call_id": call_id,
+                "kind": kind,
+                "title": title,
+                "status": "completed",
+                **extra,
+            }
+
+        diff = {"type": "diff", "path": "src/a.py", "oldText": "x", "newText": "y"}
+        events = [
+            # The event as claude-agent-acp sends it for a subagent.
+            call(
+                "write",
+                "edit",
+                "Preparing file…",
+                raw_input={"file_path": "/app/hello.txt", "content": "Hello, world!"},
+                content=[{**diff, "path": "/app/hello.txt", "oldText": None}],
+            ),
+            call("edit", "edit", "Edit", content=[diff, diff]),
+            call("read", "read", "Read File", raw_input={"file_path": "/app/c.txt"}),
+            call("read-bare", "read", "Read File"),
+            call("two-files", "edit", "Edit", content=[diff, {**diff, "path": "b"}]),
+            call("final", "edit", "Write notes.md", raw_input={"file_path": "x"}),
+        ]
+        rollout = _write_rollout(tmp_path, events)
+        titles = [
+            step["tool"]["title"]
+            for step in _extract_payload(render_rollout(rollout))["steps"]
+        ]
+        assert titles == [
+            "Write /app/hello.txt",
+            "Edit src/a.py",
+            "Read /app/c.txt",
+            "Read File",  # nothing recorded to rebuild it from
+            "Edit",  # two files: no single path to name
+            "Write notes.md",
+        ]
+
 
 class TestUntrustedContent:
     def test_script_breakout_is_escaped(self, tmp_path):
@@ -892,6 +939,7 @@ class TestTypedContract:
             "steps",
             "verifier",
             "rubric",
+            "lineage",
         }
         assert wire["steps"][0] == {
             "i": 1,

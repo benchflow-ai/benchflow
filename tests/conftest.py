@@ -44,6 +44,16 @@ def skip_update_check(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def skip_eval_preflight(monkeypatch) -> None:
+    """Keep `bench eval run`'s Docker preflight (a real `docker info`) out of unit tests.
+
+    Tests that exercise the preflight delete this variable and fake
+    `benchflow.doctor.check_docker` instead (tests/test_eval_preflight.py).
+    """
+    monkeypatch.setenv("BENCHFLOW_SKIP_PREFLIGHT", "1")
+
+
+@pytest.fixture(autouse=True)
 def skip_traj_wait(monkeypatch) -> None:
     """Keep the post-upload storage-verification poll out of unit tests.
 

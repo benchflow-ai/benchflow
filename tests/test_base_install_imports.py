@@ -74,12 +74,19 @@ def test_rollout_imports_sandbox_startup_error_from_protocol_not_daytona():
     assert "from benchflow.sandbox.daytona import SandboxStartupError" not in text
 
 
-def test_daytona_module_imports_without_tenacity():
+def test_daytona_module_imports_without_tenacity(monkeypatch):
     """Guards the fix from PR #486 for #358: hide ``tenacity`` from
     ``sys.modules`` and pretend the daytona SDK is missing, then re-import
     ``benchflow.sandbox.daytona``. The module must
     load cleanly — the optional deps are only materialized when
-    ``DaytonaSandbox`` is actually instantiated (#358)."""
+    ``DaytonaSandbox`` is actually instantiated (#358).
+
+    The evicted modules come back on teardown: later tests that imported
+    ``benchflow.sandbox.daytona`` at collection must keep seeing the module
+    the strategies resolve, not this SDK-less copy.
+    """
+    import benchflow.sandbox as sandbox_pkg
+    import benchflow.sandbox.daytona  # noqa: F401  (the copy to restore)
 
     real_import = builtins.__import__
     blocked = {"tenacity", "daytona", "daytona._async.snapshot"}
@@ -91,12 +98,14 @@ def test_daytona_module_imports_without_tenacity():
 
     # Drop any cached modules so the import below actually re-executes.
     for mod_name in list(sys.modules):
-        if mod_name == "tenacity" or mod_name.startswith("tenacity."):
-            sys.modules.pop(mod_name)
-        if mod_name == "daytona" or mod_name.startswith("daytona."):
-            sys.modules.pop(mod_name)
-        if mod_name == "benchflow.sandbox.daytona":
-            sys.modules.pop(mod_name)
+        if (
+            mod_name in {"tenacity", "daytona", "benchflow.sandbox.daytona"}
+            or mod_name.startswith("tenacity.")
+            or mod_name.startswith("daytona.")
+        ):
+            monkeypatch.delitem(sys.modules, mod_name)
+    # The re-import rebinds the package attribute too; restore it on teardown.
+    monkeypatch.setattr(sandbox_pkg, "daytona", sandbox_pkg.daytona)
 
     builtins.__import__ = guarded_import
     try:

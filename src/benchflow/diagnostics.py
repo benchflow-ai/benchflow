@@ -24,7 +24,8 @@ exceptions without pulling Daytona/Modal SDKs.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import math
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, ClassVar, Literal
 
 DIAGNOSTIC_REASON_IDLE_TIMEOUT = "idle_timeout"
@@ -38,6 +39,24 @@ DiagnosticReason = Literal[
     "sandbox_startup_failed",
     "transport_closed",
 ]
+
+# Trainer diagnostics projection adapted from PR #1038 by yangziao56
+# (issue #1037).
+ResultsJsonlFieldKind = Literal[
+    "bool",
+    "http_failure_status",
+    "integer",
+    "nonnegative_integer",
+    "nonnegative_number",
+]
+
+
+def _finite_results_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
 
 # Diagnostic value objects
 
@@ -91,10 +110,62 @@ class Diagnostic:
     # Human description for the summary warning ("hit idle timeout",
     # "lost transport (pipe closed / rc=255)" …).
     summary_description: ClassVar[str] = ""
+    # Explicit allowlist of numeric / boolean fields that are safe to copy to
+    # the canonical trainer-facing results.jsonl artifact. Full diagnostic
+    # serialization remains in result.json; arbitrary strings are excluded
+    # here because they may contain provider output, paths, or credentials.
+    results_jsonl_fields: ClassVar[
+        tuple[tuple[str, ResultsJsonlFieldKind], ...] | None
+    ] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for result.json — drops Nones is the caller's choice."""
         return asdict(self)
+
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        """Return the explicitly safe subset for trainer-facing artifacts.
+
+        New diagnostic classes fail closed to an empty details mapping until
+        they explicitly define ``results_jsonl_fields``. Each field declares
+        its value kind so invalid booleans, negative counters, and non-finite
+        values cannot enter the stable trainer schema. Subclasses must
+        normalize any enum or mapping they intentionally expose.
+        """
+        details: dict[str, Any] = {}
+        for name, kind in self.results_jsonl_fields or ():
+            value = getattr(self, name, None)
+            valid = (
+                (kind == "bool" and isinstance(value, bool))
+                or (
+                    kind == "integer"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and _finite_results_number(value)
+                )
+                or (
+                    kind == "nonnegative_integer"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and _finite_results_number(value)
+                    and value >= 0
+                )
+                or (
+                    kind == "nonnegative_number"
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and _finite_results_number(value)
+                    and value >= 0
+                )
+                or (
+                    kind == "http_failure_status"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and 400 <= value <= 599
+                )
+            )
+            if valid:
+                details[name] = value
+        return details
 
     def format_issue(self, task_name: str) -> str:
         """Render the per-task line check_results emits for this diagnostic."""
@@ -115,8 +186,6 @@ class Diagnostic:
     @classmethod
     def _init_fields(cls) -> set[str]:
         """Names of fields the dataclass actually takes — drops legacy/extra keys."""
-        from dataclasses import fields
-
         return {f.name for f in fields(cls)}
 
 
@@ -149,6 +218,14 @@ class IdleTimeoutDiagnostic(Diagnostic):
     field: ClassVar[str] = "idle_timeout_info"
     category: ClassVar[str | None] = "idle_timeout"
     summary_description: ClassVar[str] = "hit idle timeout"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("idle_timeout_sec", "nonnegative_integer"),
+        ("idle_duration_sec", "nonnegative_integer"),
+        ("wall_clock_elapsed_sec", "nonnegative_integer"),
+        ("n_tool_calls", "nonnegative_integer"),
+        ("n_message_chunks", "nonnegative_integer"),
+        ("n_thought_chunks", "nonnegative_integer"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         line = (
@@ -179,6 +256,18 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
     field: ClassVar[str] = "agent_timeout_info"
     category: ClassVar[str | None] = "timeout"
     summary_description: ClassVar[str] = "hit agent wall-clock timeout"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("timeout_sec", "nonnegative_number"),
+        ("n_tool_calls", "nonnegative_integer"),
+        ("terminal_event_recorded", "bool"),
+        ("terminal_trajectory_complete", "bool"),
+    )
+
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        details = super().to_results_jsonl_details()
+        if isinstance(self.pending_tool_call_ids, list):
+            details["pending_tool_call_count"] = len(self.pending_tool_call_ids)
+        return details
 
     def format_issue(self, task_name: str) -> str:
         pending = len(self.pending_tool_call_ids)
@@ -204,6 +293,10 @@ class SandboxStartupDiagnostic(Diagnostic):
     field: ClassVar[str] = "sandbox_startup_info"
     category: ClassVar[str | None] = "sandbox_setup"
     summary_description: ClassVar[str] = "failed during sandbox startup"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("attempts", "nonnegative_integer"),
+        ("build_timeout_sec", "nonnegative_number"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         return (
@@ -240,6 +333,11 @@ class TransportClosedDiagnostic(Diagnostic):
     field: ClassVar[str] = "transport_error_info"
     category: ClassVar[str | None] = "pipe_closed"
     summary_description: ClassVar[str] = "lost transport (pipe closed / rc=255)"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("process_exit_code", "integer"),
+        ("sandbox_reachable", "bool"),
+        ("sandbox_probe_rc", "integer"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         rc = self.process_exit_code if self.process_exit_code is not None else "?"
@@ -275,6 +373,25 @@ class TransportClosedDiagnostic(Diagnostic):
             out[k] = v
         return out
 
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        details = super().to_results_jsonl_details()
+        allowed_diagnoses = {
+            "unknown",
+            "process_exited",
+            "remote_session_killed",
+            "pty_startup_timeout",
+            "pty_error",
+            "acp_initialize_timeout",
+            "acp_session_new_timeout",
+        }
+        details["transport_diagnosis"] = (
+            self.transport_diagnosis
+            if isinstance(self.transport_diagnosis, str)
+            and self.transport_diagnosis in allowed_diagnoses
+            else "unknown"
+        )
+        return details
+
 
 @dataclass
 class VerifierTimeoutDiagnostic(Diagnostic):
@@ -288,6 +405,10 @@ class VerifierTimeoutDiagnostic(Diagnostic):
     category: ClassVar[str | None] = "verifier_timeout"
     channel: ClassVar[str] = "verifier_error"
     summary_description: ClassVar[str] = "had verifier timeouts"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("timeout_budget_sec", "nonnegative_number"),
+        ("elapsed_sec", "nonnegative_number"),
+    )
 
     def format_issue(self, task_name: str) -> str:
         return (
@@ -315,6 +436,49 @@ class ProviderApiErrorDiagnostic(Diagnostic):
     field: ClassVar[str] = "api_error_info"
     category: ClassVar[str | None] = "api_error"
     summary_description: ClassVar[str] = "failed on provider API errors"
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("transient", "bool"),
+        ("dominant_status", "http_failure_status"),
+        ("total_requests", "nonnegative_integer"),
+        ("failed_requests", "nonnegative_integer"),
+    )
+
+    def to_results_jsonl_details(self) -> dict[str, Any]:
+        details = super().to_results_jsonl_details()
+        allowed_subcategories = {
+            "auth",
+            "quota",
+            "model_not_found",
+            "rate_limit",
+            "provider_error",
+            "rejected_request",
+        }
+        details["subcategory"] = (
+            self.subcategory
+            if isinstance(self.subcategory, str)
+            and self.subcategory in allowed_subcategories
+            else "provider_error"
+        )
+        if isinstance(self.status_counts, dict):
+            status_counts: dict[str, int] = {}
+            for status, count in self.status_counts.items():
+                if not isinstance(status, (str, int)) or isinstance(status, bool):
+                    continue
+                try:
+                    status_code = int(status)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if (
+                    400 <= status_code <= 599
+                    and isinstance(count, int)
+                    and not isinstance(count, bool)
+                    and count >= 0
+                    and _finite_results_number(count)
+                ):
+                    status_counts[str(status_code)] = count
+            if status_counts:
+                details["status_counts"] = status_counts
+        return details
 
     def format_issue(self, task_name: str) -> str:
         kind = "transient" if self.transient else "permanent"
@@ -342,6 +506,12 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
     category: ClassVar[str | None] = "suspected_api_error"
     summary_description: ClassVar[str] = (
         "ended with zero model/tool activity (suspected provider api error)"
+    )
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("total_tokens", "nonnegative_integer"),
+        ("n_tool_calls", "nonnegative_integer"),
+        ("total_requests", "nonnegative_integer"),
+        ("failed_requests", "nonnegative_integer"),
     )
 
     def format_issue(self, task_name: str) -> str:
@@ -421,10 +591,12 @@ class RolloutDiagnostics:
 
     def __init__(self) -> None:
         self._events: dict[str, Diagnostic] = {}
+        self._restored_fields: dict[str, set[str]] = {}
 
     def set(self, diagnostic: Diagnostic) -> None:
         """Record a diagnostic, keyed by its result.json field name."""
         self._events[diagnostic.field] = diagnostic
+        self._restored_fields.pop(diagnostic.field, None)
 
     def get(self, field_name: str) -> Diagnostic | None:
         return self._events.get(field_name)
@@ -474,6 +646,90 @@ class RolloutDiagnostics:
             else None
             for d in DIAGNOSTIC_REGISTRY
         }
+
+    def to_results_jsonl_block(
+        self,
+        *,
+        error_category: str | None,
+        verifier_error_category: str | None,
+    ) -> dict[str, Any] | None:
+        """Return a compact, safe diagnostics block for ``results.jsonl``.
+
+        Events are retained observations and may outlive a recovered error.
+        Top-level channel categories describe current status; consumers must
+        not infer an active failure solely from a historical event category.
+        """
+        from benchflow._utils.scoring import ERROR_CATEGORIES, VERIFIER_ERROR_CATEGORIES
+
+        error_category = (
+            error_category
+            if isinstance(error_category, str) and error_category in ERROR_CATEGORIES
+            else None
+        )
+        verifier_error_category = (
+            verifier_error_category
+            if isinstance(verifier_error_category, str)
+            and verifier_error_category in VERIFIER_ERROR_CATEGORIES
+            else None
+        )
+        events: dict[str, dict[str, Any]] = {}
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            diagnostic = self._events.get(diagnostic_cls.field)
+            if diagnostic is None or type(diagnostic) is not diagnostic_cls:
+                continue
+            event: dict[str, Any] = {"channel": diagnostic_cls.channel}
+            if diagnostic_cls.category is not None:
+                event["category"] = diagnostic_cls.category
+            details = diagnostic.to_results_jsonl_details()
+            present = self._restored_fields.get(diagnostic_cls.field)
+            if present is not None:
+                # Dataclass defaults must not manufacture measurements absent
+                # from an older saved result.
+                details = {
+                    key: value
+                    for key, value in details.items()
+                    if key in present
+                    or (
+                        key == "pending_tool_call_count"
+                        and "pending_tool_call_ids" in present
+                    )
+                }
+            if details:
+                event["details"] = details
+            events[diagnostic_cls.field] = event
+
+        if error_category is None and verifier_error_category is None and not events:
+            return None
+
+        block: dict[str, Any] = {"schema_version": 1}
+        if error_category is not None:
+            block["error_category"] = error_category
+        if verifier_error_category is not None:
+            block["verifier_error_category"] = verifier_error_category
+        if events:
+            block["events"] = events
+        return block
+
+    @classmethod
+    def from_result_fields(cls, source: dict[str, Any]) -> RolloutDiagnostics:
+        """Recover registered typed events; unknown fields never become exports."""
+        diagnostics = cls()
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            value = source.get(diagnostic_cls.field)
+            if isinstance(value, dict):
+                diagnostics.set(
+                    diagnostic_cls(
+                        **{
+                            k: v
+                            for k, v in value.items()
+                            if k in diagnostic_cls._init_fields()
+                        }
+                    )
+                )
+                diagnostics._restored_fields[diagnostic_cls.field] = {
+                    key for key in value if isinstance(key, str)
+                }
+        return diagnostics
 
     def category_for_channel(self, channel: str) -> str | None:
         """Return the structured error category for a result channel, if any."""

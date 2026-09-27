@@ -139,9 +139,55 @@ def test_sandbox_cleanup_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
     Guards PR #789 (CLI error-handling hardening).
     reap, reported as a clean no-op rather than an install-nag exit 1."""
     monkeypatch.setitem(sys.modules, "daytona", None)
+    # No Docker host either (bf-snap image cleanup: its own tests).
+    from benchflow.cli import sandbox as sandbox_cli
+
+    monkeypatch.setattr(sandbox_cli, "cleanup_docker_snapshots", lambda **_: None)
 
     result = CliRunner().invoke(app, ["sandbox", "cleanup", "--dry-run"])
 
     assert result.exit_code == 0
     assert "Nothing to clean up" in result.output
     assert "sandbox-daytona" in result.output
+
+
+def test_cleanup_summary_does_not_call_other_owners_sandboxes_young(monkeypatch):
+    """With --max-age 0 and only another owner's
+    sandboxes listed, cleanup printed "0 sandboxes deleted (1 skipped, younger
+    than 0m)"; the skipped sandbox was skipped for its owner, not its age."""
+    sandboxes = [
+        SimpleNamespace(
+            id="foreign-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+            labels={"owner": "someone-else"},
+        ),
+    ]
+    _install_fake_daytona(monkeypatch, sandboxes)
+
+    result = CliRunner().invoke(app, ["environment", "cleanup", "--max-age", "0"])
+
+    assert result.exit_code == 0
+    assert "skipped, younger than" not in result.output
+    assert "another owner's" in " ".join(result.output.split())
+
+
+def test_cleanup_snapshot_summary_reads_as_a_sentence(monkeypatch):
+    """The snapshot line printed "2 bf-snap-me-* snapshots deleted, 0m"."""
+    import benchflow.sandbox.daytona as daytona_mod
+    import benchflow.sandbox.daytona_reaper as reaper
+
+    _install_fake_daytona(monkeypatch, [])
+    monkeypatch.setattr(reaper, "owner_snapshot_prefix", lambda: "bf-snap-me-")
+    monkeypatch.setattr(
+        daytona_mod,
+        "reap_stale_snapshots",
+        lambda client, **_: {"deleted": 2, "failed": 0},
+    )
+
+    result = CliRunner().invoke(app, ["environment", "cleanup", "--max-age", "0"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "deleted, 0m" not in output
+    assert "2 bf-snap-me-* snapshots deleted (older than 0m; 0 failed)" in output

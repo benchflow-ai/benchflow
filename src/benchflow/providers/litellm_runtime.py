@@ -69,6 +69,11 @@ LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 _GEMINI_PATCH_MODULE = "benchflow_litellm_gemini_passthrough_patch"
+_TOKEN_CAPTURE_PATCH_MODULE = "benchflow_litellm_token_capture_patch"
+# Non-secret route facts the proxy callback uses to decide which token-capture
+# fields to request (see ``litellm_logging.callback_module_source``).
+_ROUTE_PROVIDER_ENV = "BENCHFLOW_LITELLM_ROUTE_PROVIDER"
+_UPSTREAM_MODEL_ENV = "BENCHFLOW_LITELLM_UPSTREAM_MODEL"
 
 # The proxy is an internal single-route gateway — it must never register the
 # FastAPI Swagger docs route. litellm's `_get_docs_url()` honours an inherited
@@ -112,7 +117,7 @@ _LIVE_CAPTURE_STALL_WARN_TICKS = 30
 # Agents that cannot make model calls through LiteLLM. ``oracle`` has no model
 # at all. Gemini is routable through LiteLLM's native Google GenerateContent
 # endpoints; keeping it behind the proxy is required for no-web reviewer runs.
-_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle"})
+_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "nop"})
 # Providers whose mandatory LiteLLM proxy runs inside the sandbox. Keeping this
 # placement policy in the canonical provider registry prevents a new backend from
 # accidentally handing an in-sandbox agent a host-loopback endpoint.
@@ -765,6 +770,46 @@ def _agent_endpoint_for_environment(
     )
 
 
+def _route_env(route: LiteLLMRoute) -> dict[str, str]:
+    """Route facts exported to the proxy process for token capture."""
+    return {
+        _ROUTE_PROVIDER_ENV: route.provider_name,
+        _UPSTREAM_MODEL_ENV: route.upstream_model,
+    }
+
+
+def _config_upstream_models(config: dict[str, object]) -> list[str]:
+    """Upstream model ids (``litellm_params.model``) served by one proxy config."""
+    models: list[str] = []
+    model_list = config.get("model_list")
+    for entry in model_list if isinstance(model_list, list) else []:
+        if not isinstance(entry, Mapping):
+            continue
+        params = cast(Mapping[str, Any], entry).get("litellm_params")
+        if not isinstance(params, Mapping):
+            continue
+        model = cast(Mapping[str, Any], params).get("model")
+        if isinstance(model, str) and model and model not in models:
+            models.append(model)
+    return models
+
+
+def _sitecustomize_source(config: dict[str, object]) -> str:
+    """Proxy-process startup: apply the LiteLLM patches for this route.
+
+    Registering the route's Claude effort capabilities here, before LiteLLM
+    parses the config, keeps ``output_config.effort`` on the wire for Claude
+    ids missing from LiteLLM's model map (e.g. ``claude-fable-5-1``).
+    """
+    models = _config_upstream_models(config)
+    return (
+        f"import {_PATCH_MODULE}\n"
+        f"import {_GEMINI_PATCH_MODULE}\n"
+        f"import {_TOKEN_CAPTURE_PATCH_MODULE}\n"
+        f"{_PATCH_MODULE}.register_claude_effort_capabilities({models!r})\n"
+    )
+
+
 def _write_runtime_files(
     runtime_dir: Path,
     *,
@@ -782,9 +827,10 @@ def _write_runtime_files(
     gemini_patch_path.write_text(
         Path(__file__).with_name("litellm_gemini_passthrough_patch.py").read_text()
     )
-    sitecustomize_path.write_text(
-        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n"
+    (runtime_dir / f"{_TOKEN_CAPTURE_PATCH_MODULE}.py").write_text(
+        Path(__file__).with_name("litellm_token_capture_patch.py").read_text()
     )
+    sitecustomize_path.write_text(_sitecustomize_source(config))
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path, callback_path, patch_path
 
@@ -866,6 +912,7 @@ async def _start_host_litellm(
             "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+            **_route_env(route),
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -911,6 +958,7 @@ async def _start_host_litellm(
                 preflight_host_bedrock_patch,
                 env=env,
                 litellm_executable=litellm_executable,
+                effort_models=(route.upstream_model,),
             )
     except BaseException:
         # A proxy that never became healthy still holds provider credentials and
@@ -999,6 +1047,7 @@ async def _upload_runtime_files_to_sandbox(
         "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
         "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
         "gemini_patch": f"{runtime_dir}/{_GEMINI_PATCH_MODULE}.py",
+        "token_capture_patch": f"{runtime_dir}/{_TOKEN_CAPTURE_PATCH_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
         "stdout": f"{runtime_dir}/stdout.log",
@@ -1031,9 +1080,12 @@ async def _upload_runtime_files_to_sandbox(
     )
     await _upload_text(
         sandbox,
-        f"import {_PATCH_MODULE}\nimport {_GEMINI_PATCH_MODULE}\n",
-        paths["sitecustomize"],
+        Path(__file__).with_name("litellm_token_capture_patch.py").read_text(),
+        paths["token_capture_patch"],
         ".py",
+    )
+    await _upload_text(
+        sandbox, _sitecustomize_source(config), paths["sitecustomize"], ".py"
     )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
@@ -1220,6 +1272,7 @@ async def _start_sandbox_litellm(
                 "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
                 "LITELLM_MASTER_KEY": master_key,
                 "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+                **_route_env(route),
                 **_PROXY_DOCS_DISABLE_ENV,
             }
         )
@@ -1270,6 +1323,7 @@ async def _start_sandbox_litellm(
                 python=python,
                 runtime_dir=runtime_dir,
                 preflight_path=paths["preflight"],
+                effort_models=(route.upstream_model,),
             )
     except BaseException:
         # Never leak a half-started proxy (provider keys + master_key on disk).
@@ -1592,6 +1646,18 @@ def _wire_litellm_agent_env(
     return updated
 
 
+def _warn_token_capture_without_gateway(agent_env: dict[str, str], why: str) -> None:
+    """Token capture happens in the gateway; say so when a run skips it."""
+    flag = agent_env.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "")
+    if flag.strip().lower() in {"1", "true", "yes", "on"}:
+        logger.warning(
+            "BENCHFLOW_CAPTURE_TOKEN_LOGPROBS is set but %s, so no token ids or "
+            "logprobs will be recorded (capture runs in the gateway). Use an API "
+            "key route, e.g. a vllm/ model, for token capture.",
+            why,
+        )
+
+
 async def _skip_litellm_runtime(
     agent_env: dict[str, str],
     runtime: Any | None,
@@ -1665,6 +1731,9 @@ async def ensure_litellm_runtime(
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
 
     if uses_native_subscription_auth(agent, model, agent_env):
+        _warn_token_capture_without_gateway(
+            agent_env, "the agent uses subscription (OAuth) auth"
+        )
         return await _skip_litellm_runtime(
             agent_env,
             runtime,
@@ -1672,11 +1741,14 @@ async def ensure_litellm_runtime(
         )
 
     if not needs_litellm_runtime(agent, model):
-        if usage_cfg.mode == "required" and agent != "oracle":
+        if usage_cfg.mode == "required" and agent not in _NATIVE_PROTOCOL_AGENTS:
             raise RuntimeError(
                 "Token usage tracking is required, but agent "
                 f"{agent!r} cannot be routed through LiteLLM."
             )
+        _warn_token_capture_without_gateway(
+            agent_env, f"agent {agent!r} is not routed through the LiteLLM gateway"
+        )
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 

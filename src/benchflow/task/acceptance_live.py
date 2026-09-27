@@ -11,8 +11,8 @@ leaderboard suitability, and reward/flake expectation checks) lives in
 orchestration plane — the latter binds the patched rollout seams
 (``Rollout``, ``default_rollout_planes``, ``_start_env_and_upload``,
 ``_resolve_agent_cwd``, ``_verify_rollout``) so they must resolve through this
-module's namespace. Every name from the submodules is re-exported here so
-``benchflow.task.acceptance_live`` stays the single import surface.
+module's namespace. The submodule names that callers and tests use are
+re-exported here.
 """
 
 from __future__ import annotations
@@ -42,34 +42,16 @@ from benchflow.rollout import (
 )
 
 # --- Façade re-exports -------------------------------------------------------
-# ``acceptance_live.py`` was split: the model block (types, constants,
-# dataclasses) and the report plane (report writing, summaries, leaderboard
-# suitability, reward/flake expectation checks) moved to private submodules.
-# Re-export every moved symbol — including the de-facto public underscore
-# helpers that the test suite imports and accesses — so every name that was
-# importable from ``benchflow.task.acceptance_live`` still resolves unchanged.
-# The redundant ``import x as x`` aliases mark these as intentional re-exports.
-from benchflow.task.acceptance_live_model import _CASE_TYPES as _CASE_TYPES
-from benchflow.task.acceptance_live_model import _DEFAULT_RERUNS as _DEFAULT_RERUNS
-from benchflow.task.acceptance_live_model import (
-    _DEP_INSTALL_FLAKE_HINT as _DEP_INSTALL_FLAKE_HINT,
-)
-from benchflow.task.acceptance_live_model import (
-    _LEADERBOARD_CALIBRATION_TYPES as _LEADERBOARD_CALIBRATION_TYPES,
-)
-from benchflow.task.acceptance_live_model import _MAX_RERUNS as _MAX_RERUNS
+# The model block (types, constants, dataclasses) and the report plane (report
+# writing, summaries, leaderboard suitability, reward/flake expectation checks)
+# live in private submodules. The ``import x as x`` aliases re-export the names
+# callers and tests use from ``benchflow.task.acceptance_live``.
 from benchflow.task.acceptance_live_model import _STAGE_IGNORE as _STAGE_IGNORE
 from benchflow.task.acceptance_live_model import (
     _WORKSPACE_SOURCE_CURRENT_WORKTREE as _WORKSPACE_SOURCE_CURRENT_WORKTREE,
 )
 from benchflow.task.acceptance_live_model import (
     LiveAcceptanceCase as LiveAcceptanceCase,
-)
-from benchflow.task.acceptance_live_model import (
-    LiveAcceptanceCaseSource as LiveAcceptanceCaseSource,
-)
-from benchflow.task.acceptance_live_model import (
-    LiveAcceptanceCaseType as LiveAcceptanceCaseType,
 )
 from benchflow.task.acceptance_live_model import (
     LiveAcceptanceExpectation as LiveAcceptanceExpectation,
@@ -87,78 +69,20 @@ from benchflow.task.acceptance_live_model import (
     LiveAcceptanceWorkspace as LiveAcceptanceWorkspace,
 )
 from benchflow.task.acceptance_live_report import (
-    _benchflow_version as _benchflow_version,
-)
-from benchflow.task.acceptance_live_report import _canonical_sha256 as _canonical_sha256
-from benchflow.task.acceptance_live_report import (
-    _case_failure_hint as _case_failure_hint,
-)
-from benchflow.task.acceptance_live_report import _case_summary as _case_summary
-from benchflow.task.acceptance_live_report import (
     _check_case_flake_expectation as _check_case_flake_expectation,
 )
 from benchflow.task.acceptance_live_report import (
     _check_reward_expectation as _check_reward_expectation,
 )
-from benchflow.task.acceptance_live_report import _expectation_dict as _expectation_dict
-from benchflow.task.acceptance_live_report import _file_sha256 as _file_sha256
 from benchflow.task.acceptance_live_report import (
     _leaderboard_suitability as _leaderboard_suitability,
 )
-from benchflow.task.acceptance_live_report import (
-    _live_report_output_path as _live_report_output_path,
-)
-from benchflow.task.acceptance_live_report import _report_summary as _report_summary
 from benchflow.task.acceptance_live_report import _run_record as _run_record
-from benchflow.task.acceptance_live_report import _spec_sha256 as _spec_sha256
-from benchflow.task.acceptance_live_report import _tree_sha256 as _tree_sha256
 from benchflow.task.acceptance_live_report import (
     _write_live_acceptance_report as _write_live_acceptance_report,
 )
 from benchflow.task.acceptance_live_validation import (
-    _check_duplicate_case_names as _check_duplicate_case_names,
-)
-from benchflow.task.acceptance_live_validation import (
-    _generated_case_from_calibration_report as _generated_case_from_calibration_report,
-)
-from benchflow.task.acceptance_live_validation import (
-    _is_executable_file as _is_executable_file,
-)
-from benchflow.task.acceptance_live_validation import (
     _is_safe_sandbox_dir as _is_safe_sandbox_dir,
-)
-from benchflow.task.acceptance_live_validation import _number_value as _number_value
-from benchflow.task.acceptance_live_validation import (
-    _optional_reward as _optional_reward,
-)
-from benchflow.task.acceptance_live_validation import _parse_case as _parse_case
-from benchflow.task.acceptance_live_validation import _parse_cases as _parse_cases
-from benchflow.task.acceptance_live_validation import (
-    _parse_expectation as _parse_expectation,
-)
-from benchflow.task.acceptance_live_validation import (
-    _parse_generated_calibration_cases as _parse_generated_calibration_cases,
-)
-from benchflow.task.acceptance_live_validation import (
-    _parse_leaderboard as _parse_leaderboard,
-)
-from benchflow.task.acceptance_live_validation import (
-    _parse_report_output_path as _parse_report_output_path,
-)
-from benchflow.task.acceptance_live_validation import (
-    _parse_report_path as _parse_report_path,
-)
-from benchflow.task.acceptance_live_validation import (
-    _parse_workspace as _parse_workspace,
-)
-from benchflow.task.acceptance_live_validation import (
-    _required_probability as _required_probability,
-)
-from benchflow.task.acceptance_live_validation import (
-    _required_probability_range as _required_probability_range,
-)
-from benchflow.task.acceptance_live_validation import (
-    _safe_relative_evidence_path as _safe_relative_evidence_path,
 )
 from benchflow.task.acceptance_live_validation import (
     _safe_relative_file_path as _safe_relative_file_path,

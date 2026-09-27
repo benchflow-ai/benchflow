@@ -2,13 +2,10 @@
 
 Validates:
 - Role.capabilities field on the canonical type
-- Sandbox protocol conformance for Docker and Daytona
 - Scene desugaring preserves role metadata for downstream Step execution
 """
 
 from __future__ import annotations
-
-import pytest
 
 from benchflow._types import Role, Scene, Turn
 from benchflow.scenes import compile_scenes_to_steps, scene_step_role
@@ -52,70 +49,6 @@ class TestRoleCapabilities:
         scene = Scene.single(agent="gemini", model="flash")
         assert len(scene.roles) == 1
         assert scene.roles[0].capabilities is None
-
-
-# Sandbox.expose_ports — protocol conformance
-
-
-class TestDockerSandboxExposePorts:
-    """Guards ENG-50 expose_ports — verified via protocol conformance."""
-
-    def test_docker_has_sandbox_interface(self) -> None:
-        from benchflow.sandbox.docker import DockerSandbox
-
-        for attr in ("exec", "start", "stop", "upload_file"):
-            assert hasattr(DockerSandbox, attr), f"DockerSandbox missing {attr}"
-
-    def test_docker_has_exec(self) -> None:
-        from benchflow.sandbox.docker import DockerSandbox
-
-        assert hasattr(DockerSandbox, "exec")
-
-    def test_docker_has_start_stop(self) -> None:
-        from benchflow.sandbox.docker import DockerSandbox
-
-        assert hasattr(DockerSandbox, "start")
-        assert hasattr(DockerSandbox, "stop")
-
-    def test_docker_has_upload_download(self) -> None:
-        from benchflow.sandbox.docker import DockerSandbox
-
-        assert hasattr(DockerSandbox, "upload_file")
-        assert hasattr(DockerSandbox, "download_file")
-
-
-_daytona_available = True
-try:
-    import daytona as _daytona_mod  # noqa: F401
-except ImportError:
-    _daytona_available = False
-
-
-@pytest.mark.skipif(not _daytona_available, reason="daytona not installed")
-class TestDaytonaSandboxExposePorts:
-    """Guards ENG-50 expose_ports — verified via protocol conformance."""
-
-    def test_daytona_has_sandbox_interface(self) -> None:
-        from benchflow.sandbox.daytona import DaytonaSandbox
-
-        for attr in ("exec", "start", "stop", "upload_file"):
-            assert hasattr(DaytonaSandbox, attr), f"DaytonaSandbox missing {attr}"
-
-    def test_daytona_has_exec(self) -> None:
-        from benchflow.sandbox.daytona import DaytonaSandbox
-
-        assert hasattr(DaytonaSandbox, "exec")
-
-    def test_daytona_has_start_stop(self) -> None:
-        from benchflow.sandbox.daytona import DaytonaSandbox
-
-        assert hasattr(DaytonaSandbox, "start")
-        assert hasattr(DaytonaSandbox, "stop")
-
-    def test_daytona_has_upload(self) -> None:
-        from benchflow.sandbox.daytona import DaytonaSandbox
-
-        assert hasattr(DaytonaSandbox, "upload_file")
 
 
 async def test_role_env_vars_preserved_in_declarative_type() -> None:

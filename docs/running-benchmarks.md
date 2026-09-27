@@ -132,7 +132,7 @@ For single-task runs:
 ```python
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow._utils.benchmark_repos import resolve_source
+from benchflow import resolve_source
 
 task_path = resolve_source("benchflow-ai/skillsbench", path="tasks/edit-pdf")
 
@@ -625,7 +625,9 @@ python3 .agents/skills/benchflow-experiment-review/scripts/extract_harness_skill
 Notes:
 - `--usage-tracking required` records provider-reported token usage into each trajectory.
 - `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
+- On Daytona (PTY) and AgentCore the transport's readline guard follows the idle budget (or, with the watchdog off, the wall budget), so a long silent generation is judged by the watchdog, not by a fixed 900 s read timeout. Set `BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT` only to force a specific value.
 - Opus-4.8 on Bedrock needs the adaptive-thinking patch, which LiteLLM loads into its proxy process (`src/benchflow/providers/litellm_bedrock_patch.py`); see `AGENTS.md`.
+- Claude ids newer than LiteLLM's pinned model map (Fable 5.1, Opus 5 and 5.5, Sonnet 5) get their effort capabilities registered by the same startup patch. Without it, LiteLLM dropped `output_config.effort` for them whenever the proxy could not fetch LiteLLM's upstream model map from GitHub, and the run silently used the provider's default effort. Bedrock routes fail closed at startup if the registration did not take effect; the effort grep above should show the requested value.
 - For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
 
 ---
@@ -667,14 +669,18 @@ for the full manifest schema, both onboarded benchmarks, and the
 
 ---
 
-## Running foreign benchmarks (inbound adapters)
+## Running foreign benchmarks (Harbor task directories)
 
-BenchFlow runs benchmarks authored in other formats without converting them
-first. An **inbound adapter** translates a foreign task directory into
-BenchFlow-native shape; the rollout then runs natively:
+`bench eval run` runs a Harbor-format task directory (`task.toml`, `instruction.md`, `environment/`, `solution/`, `tests/`) directly: the task loader reads `task.toml` itself; no adapter or conversion step runs. What happens to each part of `task.toml`:
 
-| Source format | Signature file | Adapter |
-|---------------|----------------|---------|
+- **Read and honoured:** `[task]`, `[metadata]`, `schema_version` (or Harbor's `version`), `source`, `[agent]` (timeout, user, network mode), `[verifier]` (timeout, env, user, network mode), `[environment]` (read as BenchFlow's `sandbox`: image, cpus, memory, storage, build timeout, env, skills dir, workdir, healthcheck, `allow_internet`, MCP servers) and `[solution.env]`.
+- **Collected:** root `artifacts = [...]` (strings, or `{source, destination, exclude}` tables) on Docker and Daytona, together with everything the agent leaves in `/logs/artifacts`. After the agent stops and before verifier hardening, files land in the trial's `artifacts/` folder (a declared artifact at `artifacts/<destination>`, defaulting to the source's basename; a relative source is resolved against the agent workspace) and `artifacts-manifest.json` records each collection's status (`collected`, `empty`, `missing`, `refused`, `error`, `over_limit`) and each file's size and sha256. A collection is all or nothing: it stops at 1 GiB or 10,000 files in total, refuses a symlink that leaves the collected tree, a declared source that is itself a symlink, a destination that already exists, and any source or destination with `..` (an absolute destination too; `bench tasks check` refuses those before launch). A failed collection is a manifest status, never a failed trial.
+- **Ignored with a warning:** keys BenchFlow does not know (for example from a newer Harbor schema). The run logs `ignored N task.toml key(s) BenchFlow does not know: …`, `task.config.ignored_keys` lists them, and `bench tasks check` prints them as warnings without failing.
+- **Refused before launch** (parsed, but BenchFlow cannot honour them, so the run stops with `Task uses parsed runtime features that BenchFlow cannot execute`): `steps` (multi-step tasks) and step `artifacts`, root `artifacts` on Modal, Apple Container and AgentCore, `verifier.environment_mode = "separate"` and `[verifier.environment]` off Docker and Daytona (or with no verifier image; see [Separate verifier sandboxes](./separate-verifier.md)), `[[verifier.collect]]`, `network_mode = "allowlist"` on `[verifier]` (any backend) or on backends other than `docker` and `daytona`, an `[agent]` allowlist over a `no-network` or `denylist` `[environment]`, `no-network`/`denylist` on backends that cannot enforce them, a non-`main` verifier service off Docker, Windows `os`, TPUs and GPUs. `bench tasks check <dir> --sandbox <backend>` lists the same refusals.
+
+`benchflow.adapters.HarborAdapter` (and `detect_adapter()`) is a separate library function, not used by `bench eval run`: it reads a Harbor directory into an in-memory `InboundTask` (native config, instruction, a derived environment manifest, the file map) and keeps unknown keys in `compatibility.config_extra` instead of dropping them. Use it to inspect or re-emit Harbor tasks from Python.
+
+---------------|----------------|---------|
 | Harbor | `task.toml` | `HarborAdapter` |
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
