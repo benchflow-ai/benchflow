@@ -11,13 +11,14 @@ This module is an adapter, not a second loader. It parses the draft-1 file,
 maps the config block to v0.6 frontmatter data, and hands that data to the
 unchanged v0.6 pipeline (normalization, ``TaskConfig`` validation, roles,
 scenes). Stage, role, and user blocks become v0.6 scene prompts, role prompts,
-and the user persona.
+and the user persona. ``[verifier] mount`` and ``[oracle] mount`` say where
+``verifier/`` and ``oracle/`` appear in the sandbox.
 
 Credit: the block rules are ported from the task.md draft-1 specification
 (``docs/document.md``, ``docs/package.md``) and its reference parser
 (``tools/taskmd.py``). The config mapping is ported from ``config_to_v06`` in
 the spec's ``tools/convert.py``, including its table renames
-(``V06_TABLE_NAMES``, ``V06_VERIFIER_NAMES``).
+(``V06_TABLE_NAMES``, ``V06_VERIFIER_NAMES``), as of task-md commit a497e86.
 
 The adapter fails closed. Every draft-1 setting is handled in one of three ways:
 
@@ -51,6 +52,14 @@ import yaml
 from benchflow.task._document_normalize import TaskDocumentParseError
 
 DRAFT1_SANDBOX_DIRNAME = "sandbox"
+# Where verifier/ and oracle/ appear in the sandbox. The defaults are draft 1's;
+# a Harbor import records /tests and /solution. These four are the paths the
+# runtime locks away from the agent before it starts (sandbox.lockdown), and
+# pytest's conftest cutoff follows the verifier path, so no other path is safe.
+DEFAULT_VERIFIER_MOUNT = "/verifier"
+DEFAULT_ORACLE_MOUNT = "/oracle"
+SUPPORTED_VERIFIER_MOUNTS = (DEFAULT_VERIFIER_MOUNT, "/tests")
+SUPPORTED_ORACLE_MOUNTS = (DEFAULT_ORACLE_MOUNT, "/solution")
 
 # File syntax (tools/taskmd.py) -----------------------------------------------
 
@@ -86,9 +95,9 @@ _CLOSED_KEYS = {
     "agent": {"timeout", "on_timeout", "budget", "user", "network", "system_prompt_append"},
     "verifier": {
         "timeout", "user", "env", "network", "isolation", "sandbox", "snapshot",
-        "combine_stages", "unreached_stages", "judges", "human",
+        "combine_stages", "unreached_stages", "judges", "human", "mount",
     },
-    "oracle": {"env"},
+    "oracle": {"env", "mount"},
     "runs": {"trials", "pinned", "errored", "retries", "disclose", "trajectory"},
 }  # fmt: skip
 _ENUMS = (
@@ -167,7 +176,8 @@ class Draft1Document:
     ``frontmatter`` is the v0.6 frontmatter the config block maps to, before
     v0.6 normalization. ``unsupported`` lists settings the runtime cannot
     honor; the launch gate refuses the task while any remain. ``ignored``
-    lists settings that change nothing the runtime does.
+    lists settings that change nothing the runtime does. ``verifier_mount`` and
+    ``oracle_mount`` are the declared sandbox paths, or the defaults.
     """
 
     instruction: str
@@ -179,6 +189,8 @@ class Draft1Document:
     unsupported: tuple[Draft1Finding, ...] = ()
     ignored: tuple[Draft1Finding, ...] = ()
     canary: str | None = None
+    verifier_mount: str = DEFAULT_VERIFIER_MOUNT
+    oracle_mount: str = DEFAULT_ORACLE_MOUNT
 
 
 @dataclass
@@ -237,14 +249,30 @@ def is_draft1_task_dir(task_dir: str | Path) -> bool:
     return False
 
 
+def draft1_mounts(task_dir: str | Path) -> tuple[str, str] | None:
+    """The (verifier, oracle) sandbox paths of a draft-1 package, or ``None``.
+
+    ``None`` means ``task_dir`` is not a draft-1 package. A malformed draft-1
+    ``task.md`` raises ``TaskDocumentParseError`` rather than falling back to a
+    default path.
+    """
+
+    if not is_draft1_task_dir(task_dir):
+        return None
+    text = (Path(task_dir) / "task.md").read_text(encoding="utf-8")
+    document = read_draft1_task_md(text)
+    return document.verifier_mount, document.oracle_mount
+
+
 def read_draft1_task_md(
     text: str, *, task_dir: str | Path | None = None
 ) -> Draft1Document:
     """Parse a draft-1 ``task.md`` and map it to v0.6 data.
 
     ``task_dir`` enables the package checks: a Harbor ``task.toml`` beside
-    ``task.md`` is an error, and ``verifier/rubric.json`` and
-    ``verifier/behaviors.json`` in task.md's schema are classified.
+    ``task.md`` is an error, ``verifier/rubric.json`` and
+    ``verifier/behaviors.json`` in task.md's schema are classified, and a
+    ``verifier/verifier.md`` strategy is checked against the verifier mount.
     """
 
     root = Path(task_dir) if task_dir is not None else None
@@ -282,6 +310,7 @@ def read_draft1_task_md(
         raise TaskDocumentParseError("task.md draft 1: " + "; ".join(errors))
 
     findings = _Findings()
+    mounts = _mounts(config, findings)
     try:
         frontmatter = _config_to_v06(config, findings)
     except (TypeError, ValueError, AttributeError, KeyError) as e:
@@ -298,6 +327,7 @@ def read_draft1_task_md(
             )
     if root is not None:
         _check_judgment_files(root, findings)
+        _check_verifier_strategy(root, mounts[0], findings)
 
     return Draft1Document(
         instruction=instruction,
@@ -311,7 +341,38 @@ def read_draft1_task_md(
         unsupported=tuple(findings.unsupported),
         ignored=tuple(findings.ignored),
         canary="; ".join(canaries) or None,
+        verifier_mount=mounts[0],
+        oracle_mount=mounts[1],
     )
+
+
+def _mounts(config: dict[str, Any], findings: _Findings) -> tuple[str, str]:
+    """``[verifier] mount`` and ``[oracle] mount``, or the defaults.
+
+    Declared paths outside the supported set are recorded as unsupported, so
+    the launch gate refuses the task; the declared path is still returned, and
+    ``TaskPaths`` refuses to use it.
+    """
+
+    resolved: list[str] = []
+    for table, default, supported in (
+        ("verifier", DEFAULT_VERIFIER_MOUNT, SUPPORTED_VERIFIER_MOUNTS),
+        ("oracle", DEFAULT_ORACLE_MOUNT, SUPPORTED_ORACLE_MOUNTS),
+    ):
+        mount = _table(config, table).get("mount", default)
+        if not isinstance(mount, str):
+            raise TaskDocumentParseError(
+                f"task.md draft 1: [{table}] mount must be a sandbox path"
+            )
+        if mount not in supported:
+            findings.refuse(
+                f"[{table}] mount",
+                f"{mount!r} is not supported; this runtime places {table}/ only "
+                f"at {' or '.join(supported)}, the paths it locks away from the "
+                "agent before the run",
+            )
+        resolved.append(mount)
+    return resolved[0], resolved[1]
 
 
 def undelivered_prompt_findings(
@@ -742,20 +803,26 @@ def _merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
 
 
 def _rename_tables(data: dict[str, Any], *, to_v06: bool) -> None:
-    """Switch Harbor-shaped data between Harbor's names and v0.6's.
+    """Switch Harbor-shaped data between Harbor's names and v0.6's, in steps too.
 
-    Unlike ``_rename_v06`` in the spec's tools, this also renames step
-    verifiers, which the runtime validates with the same model.
+    Steps are a list in config and a table keyed by step name in the settings
+    ``[import.*]`` keeps (``_rename_v06`` in the spec's tools).
     """
 
     for v06, harbor in _V06_TABLE_NAMES:
         old, new = (harbor, v06) if to_v06 else (v06, harbor)
         if old in data:
             data[new] = data.pop(old)
-    verifiers = [data.get("verifier")]
-    steps = data.get("steps")
-    if isinstance(steps, list):
-        verifiers += [step.get("verifier") for step in steps if isinstance(step, dict)]
+    raw_steps: Any = data.get("steps")
+    steps: list[Any] = (
+        list(raw_steps.values())
+        if isinstance(raw_steps, dict)
+        else raw_steps
+        if isinstance(raw_steps, list)
+        else []
+    )
+    verifiers: list[Any] = [data.get("verifier")]
+    verifiers += [step.get("verifier") for step in steps if isinstance(step, dict)]
     for verifier in verifiers:
         if isinstance(verifier, dict):
             for v06, harbor in _V06_VERIFIER_NAMES:
@@ -875,6 +942,15 @@ def _as_table(value: Any, where: str) -> dict[str, Any]:
 def _config_to_v06(cfg: dict[str, Any], findings: _Findings) -> dict[str, Any]:
     """task.md config -> v0.6 frontmatter data (``config_to_v06``)."""
 
+    # Mounts are the runtime's to honor (``_mounts``), not v0.6 config keys.
+    cfg = {
+        key: (
+            {k: v for k, v in value.items() if k != "mount"}
+            if key in ("verifier", "oracle") and isinstance(value, dict)
+            else value
+        )
+        for key, value in cfg.items()
+    }
     mapper = _Mapper(findings)
     out: dict[str, Any] = {}
 
@@ -913,9 +989,10 @@ def _config_to_v06(cfg: dict[str, Any], findings: _Findings) -> dict[str, Any]:
             mapper.unknown(src, _NATIVE[part], part)
     if "combine_stages" in verifier:
         out["multi_step_reward_strategy"] = verifier["combine_stages"]
-    if isinstance(cfg.get("oracle"), dict):
-        out["solution"] = mapper.table(cfg["oracle"], (("env", "env", None),), "oracle")
-        mapper.unknown(cfg["oracle"], _NATIVE["oracle"], "oracle")
+    oracle = _table(cfg, "oracle")
+    if oracle:
+        out["solution"] = mapper.table(oracle, (("env", "env", None),), "oracle")
+        mapper.unknown(oracle, _NATIVE["oracle"], "oracle")
 
     stages = _table(cfg, "stages")
     gated = any("gate" in st for st in stages.values() if isinstance(st, dict))
@@ -1011,12 +1088,13 @@ def _config_to_v06(cfg: dict[str, Any], findings: _Findings) -> dict[str, Any]:
 def _merge_imports(
     cfg: dict[str, Any], out: dict[str, Any], findings: _Findings
 ) -> None:
-    """Restore settings kept under [import.<format>] by an importer.
+    """Restore settings an importer kept under [import.harbor] and [import.v06].
 
-    ``[import.v06]`` is merged back as ``config_to_v06`` does. The spec's tool
-    drops other formats silently; here they are refused, except the Harbor
-    schema version (validated by the runtime as ``schema_version``) and the
-    instruction.md Harbor never shows in multi-step tasks.
+    As ``config_to_v06`` does: v0.6 shares Harbor's config model, so both are
+    merged back (v0.6's over Harbor's) and validated like any v0.6 setting; a
+    key the runtime does not model fails ``TaskConfig`` validation. The spec's
+    tool drops other formats and unknown step names silently; here they are
+    refused. Harbor's multi-step instruction.md is recorded as ignored.
     """
 
     imports = cfg.get("import")
@@ -1024,37 +1102,29 @@ def _merge_imports(
         return
     if not isinstance(imports, dict):
         raise ValueError("[import] must be a table of formats")
-    for stash, kept in imports.items():
-        if stash == "v06":
-            continue
-        if not isinstance(kept, dict):
+    for stash in imports:
+        if stash not in ("harbor", "v06"):
             findings.refuse(
                 f"[import.{stash}]",
-                "settings kept from an imported task are not applied",
+                "settings kept from a task in another format are not applied",
             )
+    kept: dict[str, Any] = {}
+    for stash in ("harbor", "v06"):
+        table = imports.get(stash)
+        if table is None:
             continue
-        for key, value in kept.items():
-            if stash == "harbor" and key in ("schema_version", "version"):
-                out.setdefault("schema_version", value)
-            elif stash == "harbor" and key == "instruction":
-                findings.ignore(
-                    "[import.harbor] instruction",
-                    "Harbor does not show instruction.md in multi-step tasks",
-                )
-            else:
-                findings.refuse(
-                    f"[import.{stash}] {key}",
-                    "settings kept from an imported task are not applied",
-                )
-
-    kept_v06 = imports.get("v06")
-    if not kept_v06:
-        return
-    if not isinstance(kept_v06, dict):
-        raise ValueError("[import.v06] must be a table")
-    kept = copy.deepcopy(kept_v06)
-    _rename_tables(kept, to_v06=False)
-    kept.pop("instruction", None)
+        if not isinstance(table, dict):
+            raise ValueError(f"[import.{stash}] must be a table")
+        table = copy.deepcopy(table)
+        if stash == "v06":
+            _rename_tables(table, to_v06=False)
+        _merge(kept, table)
+    if "instruction" in kept:
+        kept.pop("instruction")
+        findings.ignore(
+            "[import.harbor] instruction",
+            "Harbor does not show instruction.md in multi-step tasks",
+        )
     step_extra = kept.pop("steps", None)
     if isinstance(step_extra, dict) and "steps" in out:
         index = {step["name"]: i for i, step in enumerate(out["steps"])}
@@ -1062,7 +1132,7 @@ def _merge_imports(
             if name in index and isinstance(extra, dict):
                 _merge(out["steps"][index[name]], extra)
             else:
-                findings.refuse(f"[import.v06.steps.{name}]", "no stage of that name")
+                findings.refuse(f"[import] steps.{name}", "no stage of that name")
     elif step_extra is not None:
         kept["steps"] = step_extra
     _merge(out, kept)
@@ -1166,3 +1236,22 @@ def _rubric_gaps(rubric: dict[str, Any]) -> list[str]:
             "pass_threshold), which this runtime does not compute"
         )
     return gaps
+
+
+def _check_verifier_strategy(
+    task_dir: Path, verifier_mount: str, findings: _Findings
+) -> None:
+    """A BenchFlow ``verifier/verifier.md`` strategy in a draft-1 package.
+
+    Draft 1 does not define verifier.md. Its non-script strategies read the
+    verifier folder only at /verifier.
+    """
+
+    if not (task_dir / "verifier" / "verifier.md").is_file():
+        return
+    if verifier_mount != DEFAULT_VERIFIER_MOUNT:
+        findings.refuse(
+            "verifier/verifier.md",
+            f"verifier.md strategies read the verifier folder at "
+            f"{DEFAULT_VERIFIER_MOUNT}, not at [verifier] mount = {verifier_mount!r}",
+        )

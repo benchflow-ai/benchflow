@@ -112,6 +112,45 @@ class TaskPaths:
         return self.verifier_source_dir.exists()
 
     @property
+    def verifier_mount_dir(self) -> PurePosixPath:
+        """Where the verifier folder appears in the sandbox.
+
+        ``/verifier`` for a native ``verifier/`` folder and ``/tests`` for a
+        legacy ``tests/`` folder. A task.md draft-1 package says where with
+        ``[verifier] mount`` (default ``/verifier``); only ``/verifier`` and
+        ``/tests`` are honored, the paths the sandbox lockdown protects.
+        """
+
+        mounts = self._draft1_mounts()
+        if mounts is not None:
+            return _supported_mount("verifier", mounts[0])
+        if self.uses_native_verifier_dir:
+            return SandboxPaths.verifier_code_dir
+        return SandboxPaths.tests_dir
+
+    @property
+    def oracle_mount_dir(self) -> PurePosixPath:
+        """Where the oracle folder appears in the sandbox.
+
+        ``/oracle`` for a native ``oracle/`` folder and ``/solution`` for a
+        legacy ``solution/`` folder. A task.md draft-1 package says where with
+        ``[oracle] mount`` (default ``/oracle``); only ``/oracle`` and
+        ``/solution`` are honored, the paths the sandbox lockdown protects.
+        """
+
+        mounts = self._draft1_mounts()
+        if mounts is not None:
+            return _supported_mount("oracle", mounts[1])
+        if self.uses_native_oracle_dir:
+            return SandboxPaths.oracle_dir
+        return SandboxPaths.solution_dir
+
+    def _draft1_mounts(self) -> tuple[str, str] | None:
+        from benchflow.task._document_draft1 import draft1_mounts
+
+        return draft1_mounts(self.task_dir)
+
+    @property
     def test_path(self) -> Path:
         return self.tests_dir / "test.sh"
 
@@ -213,6 +252,43 @@ class TaskPaths:
             and self.environment_dir.exists()
             and (disable_verification or self.has_verifier_entrypoint())
         )
+
+
+def _supported_mount(folder: str, mount: str) -> PurePosixPath:
+    """A declared draft-1 mount, refused unless the lockdown protects it.
+
+    The launch gate already refuses such a task; this keeps any other caller
+    from placing verifier or oracle files where the agent could read them.
+    """
+
+    from benchflow.task._document_draft1 import (
+        SUPPORTED_ORACLE_MOUNTS,
+        SUPPORTED_VERIFIER_MOUNTS,
+    )
+
+    supported = (
+        SUPPORTED_VERIFIER_MOUNTS if folder == "verifier" else SUPPORTED_ORACLE_MOUNTS
+    )
+    if mount not in supported:
+        raise ValueError(
+            f"[{folder}] mount = {mount!r} is not supported; use "
+            f"{' or '.join(supported)}"
+        )
+    return PurePosixPath(mount)
+
+
+def sandbox_verifier_dir(paths: object) -> PurePosixPath:
+    """Where a task's verifier folder appears in the sandbox.
+
+    ``paths`` is a :class:`TaskPaths`, or a stand-in that only says whether
+    the native ``verifier/`` folder is used.
+    """
+
+    if isinstance(paths, TaskPaths):
+        return paths.verifier_mount_dir
+    if getattr(paths, "uses_native_verifier_dir", False) is True:
+        return SandboxPaths.verifier_code_dir
+    return SandboxPaths.tests_dir
 
 
 def task_environment_dir(task_dir: Path | str) -> Path:

@@ -35,7 +35,7 @@ from benchflow.rewards.validation import (
 )
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
 from benchflow.task.env import resolve_env_vars
-from benchflow.task.paths import RolloutPaths, SandboxPaths
+from benchflow.task.paths import RolloutPaths, SandboxPaths, sandbox_verifier_dir
 from benchflow.task.verifier_document import (
     VerifierDocument,
     VerifierStrategy,
@@ -373,14 +373,7 @@ class Verifier:
                 raise VerifierOutputParseError(str(e)) from e
 
         sandbox_paths = SandboxPaths()
-        uses_native_verifier_dir = (
-            getattr(self._task.paths, "uses_native_verifier_dir", False) is True
-        )
-        verifier_code_dir = (
-            sandbox_paths.verifier_code_dir
-            if uses_native_verifier_dir
-            else sandbox_paths.tests_dir
-        )
+        verifier_code_dir = sandbox_verifier_dir(self._task.paths)
         try:
             await self._sandbox.upload_dir(
                 source_dir=self._task.paths.tests_dir,

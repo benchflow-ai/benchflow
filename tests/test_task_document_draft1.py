@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -378,3 +379,96 @@ def test_no_skill_copy_strips_skills_from_sandbox_folder(tmp_path: Path) -> None
 
     assert not (task_dir / "sandbox" / "skills").exists()
     assert dockerfile.read_text() == "FROM ubuntu:24.04\nWORKDIR /app\n"
+
+
+# Mounts: where verifier/ and oracle/ appear in the sandbox -------------------------
+
+
+def _mount_task(tmp_path: Path, verifier_mount: str, oracle_mount: str) -> Path:
+    task_dir = tmp_path / "mounted"
+    shutil.copytree(FIXTURES / "hello-world", task_dir)
+    text = (task_dir / "task.md").read_text()
+    (task_dir / "task.md").write_text(
+        text.replace(
+            '[agent]\ntimeout = "2m"\n',
+            f'[agent]\ntimeout = "2m"\n\n[verifier]\nmount = "{verifier_mount}"\n\n'
+            f'[oracle]\nmount = "{oracle_mount}"\n',
+        )
+    )
+    return task_dir
+
+
+def test_default_mounts_are_verifier_and_oracle() -> None:
+    paths = TaskPaths(FIXTURES / "hello-world")
+
+    assert (str(paths.verifier_mount_dir), str(paths.oracle_mount_dir)) == (
+        "/verifier",
+        "/oracle",
+    )
+
+
+def test_v06_mounts_are_unchanged() -> None:
+    paths = TaskPaths(V06_TASK)  # legacy tests/ and solution/ folders
+
+    assert (str(paths.verifier_mount_dir), str(paths.oracle_mount_dir)) == (
+        "/tests",
+        "/solution",
+    )
+
+
+async def test_harbor_mounts_are_honored(tmp_path: Path) -> None:
+    """A Harbor import's /tests and /solution: verifier, oracle, and pytest cutoff follow."""
+    from benchflow.rollout._setup import _run_oracle, _start_env_and_upload
+    from benchflow.sandbox.lockdown import _verifier_confcutdir
+    from benchflow.task import RolloutPaths, Verifier
+
+    task_dir = _mount_task(tmp_path, "/tests", "/solution")
+    task = Task(task_dir)
+    assert _launch_issue_paths(task_dir) == set()
+    assert (str(task.paths.verifier_mount_dir), str(task.paths.oracle_mount_dir)) == (
+        "/tests",
+        "/solution",
+    )
+    assert _verifier_confcutdir(task) == "/tests"
+
+    rollout_paths = RolloutPaths(tmp_path / "rollout")
+    rollout_paths.mkdir()
+    sandbox = MagicMock()
+    sandbox.is_mounted = True
+    sandbox.upload_dir = AsyncMock()
+    commands: list[str] = []
+
+    async def fake_exec(*args, **kwargs):
+        command = args[0] if args else kwargs.get("command", "")
+        commands.append(command)
+        if "test-stdout.txt" in command:
+            rollout_paths.reward_text_path.write_text("1\n")
+        return MagicMock(return_code=0)
+
+    sandbox.exec = AsyncMock(side_effect=fake_exec)
+    verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=sandbox)
+    await verifier.verify()
+    assert sandbox.upload_dir.await_args.kwargs["target_dir"] == "/tests"
+    assert any(c.startswith("/tests/test.sh ") for c in commands)
+
+    env = MagicMock()
+    env.start = AsyncMock()
+    env.upload_file = AsyncMock()
+    env.upload_dir = AsyncMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
+    await _start_env_and_upload(env, task_dir, {})
+    env.upload_dir.assert_awaited_once_with(task.paths.solution_dir, "/solution")
+    await _run_oracle(env, task_dir, timeout=60)
+    assert "/solution/solve.sh" in env.exec.await_args_list[0].args[0]
+
+
+def test_unsupported_mount_is_refused_at_launch(tmp_path: Path) -> None:
+    """Only the paths the sandbox lockdown protects are used; any other fails closed."""
+    task_dir = _mount_task(tmp_path, "/grading", "/work/solution")
+    paths = TaskPaths(task_dir)
+
+    assert {"[verifier] mount", "[oracle] mount"} <= _launch_issue_paths(task_dir)
+    with pytest.raises(ValueError, match="mount = '/grading' is not supported"):
+        _ = paths.verifier_mount_dir
+    with pytest.raises(ValueError, match="mount = '/work/solution' is not supported"):
+        _ = paths.oracle_mount_dir

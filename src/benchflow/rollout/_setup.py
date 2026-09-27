@@ -345,17 +345,11 @@ async def _start_env_and_upload(
             await env.upload_file(temp_instruction, "/instruction.md")
         finally:
             temp_instruction.unlink(missing_ok=True)
-    from benchflow.task.paths import SandboxPaths, TaskPaths
+    from benchflow.task.paths import TaskPaths
 
     paths = TaskPaths(task_path)
     if paths.solution_dir.is_dir():
-        sandbox_paths = SandboxPaths()
-        target_dir = (
-            sandbox_paths.oracle_dir
-            if paths.uses_native_oracle_dir
-            else sandbox_paths.solution_dir
-        )
-        await env.upload_dir(paths.solution_dir, str(target_dir))
+        await env.upload_dir(paths.solution_dir, str(paths.oracle_mount_dir))
 
     from benchflow._paths import is_safe_regular_dir, is_safe_regular_file
 
@@ -377,7 +371,6 @@ async def _run_oracle(
 ) -> tuple[list[dict], str]:
     """Run oracle mode (oracle/solve.sh or legacy solution/solve.sh)."""
     from benchflow.task import Task, resolve_env_vars
-    from benchflow.task.paths import SandboxPaths
 
     logger.info("Oracle mode: running oracle solve.sh")
     task = Task(task_path)
@@ -385,12 +378,7 @@ async def _run_oracle(
         raise FileNotFoundError(
             f"Oracle requires oracle/solve.sh or legacy solution/solve.sh: {task_path}"
         )
-    sandbox_paths = SandboxPaths()
-    oracle_dir = (
-        sandbox_paths.oracle_dir
-        if task.paths.uses_native_oracle_dir
-        else sandbox_paths.solution_dir
-    )
+    oracle_dir = task.paths.oracle_mount_dir
     oracle_command_label = (
         "oracle/solve.sh" if task.paths.uses_native_oracle_dir else "solution/solve.sh"
     )

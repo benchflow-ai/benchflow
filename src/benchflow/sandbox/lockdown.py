@@ -497,11 +497,9 @@ def _uses_native_verifier_dir(task: "Task") -> bool:
 
 
 def _verifier_confcutdir(task: "Task") -> str:
-    from benchflow.task.paths import SandboxPaths
+    from benchflow.task.paths import sandbox_verifier_dir
 
-    if _uses_native_verifier_dir(task):
-        return str(SandboxPaths.verifier_code_dir)
-    return str(SandboxPaths.tests_dir)
+    return str(sandbox_verifier_dir(getattr(task, "paths", None)))
 
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
