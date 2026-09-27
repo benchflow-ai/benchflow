@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://benchflow.ai/schemas/benchflow-rollout-stream.v1.schema.json",
+  "title": "One finished rollout from bench train stream / stream_rollouts",
+  "description": "One JSON line per finished rollout. reward is null for an unscored rollout, never 0. calls holds the gateway's token capture (benchflow.token_capture.v1) per model call; sequences (one per conversation) are present only when every call is complete and each prompt extends the previous prompt and sampled tokens of its conversation (token-in/token-out).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job",
+    "rollout",
+    "rollout_path",
+    "task",
+    "agent",
+    "model",
+    "group_id",
+    "group",
+    "reward",
+    "scored",
+    "outcome",
+    "error",
+    "finished_at",
+    "token_capture",
+    "calls",
+    "sequences",
+    "advantage",
+    "group_complete"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "benchflow.rollout-stream.v1"
+    },
+    "job": {
+      "type": "string",
+      "description": "Job folder name."
+    },
+    "rollout": {
+      "type": "string",
+      "description": "Rollout folder name."
+    },
+    "rollout_path": {
+      "type": "string",
+      "description": "Rollout folder relative to the job folder."
+    },
+    "task": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "agent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "group_id": {
+      "type": "string",
+      "description": "Stable id of the group, e.g. 'task=hello|agent=claude-agent-acp|model=vllm/policy'."
+    },
+    "group": {
+      "type": "object",
+      "description": "The grouping key (task, agent, model by default)."
+    },
+    "reward": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "scored": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "errored",
+        "verifier_errored"
+      ]
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "finished_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "token_capture": {
+      "type": "object",
+      "required": [
+        "status",
+        "training_grade",
+        "path"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "captured",
+            "capture_off",
+            "no_gateway_capture"
+          ]
+        },
+        "training_grade": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Route provider(s) of the captured calls, e.g. vllm or sglang."
+        },
+        "reason": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "integer"
+        },
+        "captured_calls": {
+          "type": "integer"
+        },
+        "complete_calls": {
+          "type": "integer"
+        },
+        "unavailable": {
+          "type": "object"
+        },
+        "prefix": {
+          "type": "object"
+        }
+      }
+    },
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "provider",
+          "prompt_token_ids",
+          "completions",
+          "unavailable"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Line of trajectory/llm_trajectory.jsonl."
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_token_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            }
+          },
+          "completions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "index",
+                "token_ids",
+                "logprobs"
+              ],
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "token_ids": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "logprobs": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          },
+          "unavailable": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "sequences": {
+      "type": "array",
+      "description": "One merged token stream per conversation of the rollout (agent loop, helper calls, subagents), only when the rollout is training-grade; empty otherwise.",
+      "items": {
+        "type": "object",
+        "required": [
+          "thread",
+          "kind",
+          "calls",
+          "prompt_ids",
+          "completion_ids",
+          "completion_mask",
+          "completion_logprobs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "thread": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "agent",
+              "helper",
+              "chat"
+            ]
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "The calls merged, by index in calls[].index."
+          },
+          "prompt_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "completion_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "completion_mask": {
+            "type": "array",
+            "items": {
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "description": "1 for sampled tokens, 0 for tokens the environment added (tool results, next user turn)."
+          },
+          "completion_logprobs": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "Sampled-token logprob; 0.0 where the mask is 0."
+          }
+        }
+      }
+    },
+    "advantage": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "GRPO advantage over the group's scored rollouts (group_size only); null otherwise."
+    },
+    "group_complete": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "group_size only: false when the stream ended before the group filled."
+    }
+  }
+}

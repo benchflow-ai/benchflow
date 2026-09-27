@@ -442,11 +442,103 @@ def register_train(app: typer.Typer) -> None:
             else:
                 detail = r["reason"]
             mark = "yes" if r["training_grade"] else "no "
-            typer.echo(f"{mark}  {r['rollout']}: {detail}")
+            route = f" [{r['path']}]" if r.get("path") else ""
+            typer.echo(f"{mark}  {r['rollout']}{route}: {detail}")
         typer.echo(
             f"{report['training_grade_rollouts']} of {report['rollouts']} rollouts "
             "are training-grade (complete token ids and logprobs, token-in/token-out)"
         )
+
+    @train_app.command("stream")
+    def train_stream(
+        job_dir: Annotated[
+            Path,
+            typer.Argument(
+                help="Job folder (or a --jobs-dir holding one job); may not exist yet"
+            ),
+        ],
+        format_name: Annotated[
+            str, typer.Option("--format", help="Output format: jsonl")
+        ] = "jsonl",
+        follow: Annotated[
+            bool,
+            typer.Option(
+                "--follow/--no-follow",
+                help="Keep polling until the job finishes (default), or scan once",
+            ),
+        ] = True,
+        poll_interval: Annotated[
+            float, typer.Option("--poll-interval", help="Seconds between scans")
+        ] = 1.0,
+        timeout: Annotated[
+            float | None,
+            typer.Option("--timeout", help="Stop after this many seconds (exit 3)"),
+        ] = None,
+        group_size: Annotated[
+            int | None,
+            typer.Option(
+                "--group-size",
+                help="Hold rollouts until N of a group finished, then emit them "
+                "with a GRPO advantage",
+            ),
+        ] = None,
+        group_by: Annotated[
+            str | None,
+            typer.Option(
+                "--group-by",
+                help="Grouping key, comma-separated from task, agent, model, "
+                "task_digest (default task,agent,model)",
+            ),
+        ] = None,
+    ) -> None:
+        """Print each finished rollout of a (running) job as one JSON line.
+
+        For a trainer that consumes a job while it runs: every line is a
+        benchflow.rollout-stream.v1 record with the reward, group id and,
+        when the gateway captured them, per-call token ids and logprobs
+        (docs/reference/rollout-stream.md). Status goes to stderr. Exit 0
+        when the job finished, 1 when its process died first, 2 on bad
+        input, 3 on --timeout.
+        """
+        from benchflow.trajectories.rollout_stream import (
+            JobNotFound,
+            JobProcessGone,
+            StreamTimeout,
+            stream_rollouts,
+        )
+        from benchflow.trajectories.training_signal import parse_group_by
+
+        def fail(message: str, code: int) -> typer.Exit:
+            typer.echo(f"bench train stream: {message}", err=True)
+            return typer.Exit(code)
+
+        if format_name != "jsonl":
+            raise fail("--format must be 'jsonl'", 2)
+        if group_size is not None and group_size < 1:
+            raise fail("--group-size must be at least 1", 2)
+        try:
+            group_key = parse_group_by(group_by)
+        except ValueError as exc:
+            raise fail(f"--group-by: {exc}", 2) from None
+        count = 0
+        try:
+            for record in stream_rollouts(
+                job_dir,
+                follow=follow,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                group_by=group_key,
+                group_size=group_size,
+            ):
+                typer.echo(record.to_json())
+                count += 1
+        except JobNotFound as exc:
+            raise fail(str(exc), 2) from None
+        except JobProcessGone as exc:
+            raise fail(f"{exc}; {count} rollouts streamed", 1) from None
+        except StreamTimeout as exc:
+            raise fail(str(exc), 3) from None
+        typer.echo(f"bench train stream: {count} rollouts streamed", err=True)
 
     @train_app.command("validate")
     def train_validate(

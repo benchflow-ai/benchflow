@@ -511,6 +511,7 @@ def test_provider_model_prefixes_unique_and_resolvable():
         ("zai/glm-5", "zai"),
         ("zai-coding/glm-5.4-flash", "zai-coding"),
         ("vllm/local-model", "vllm"),
+        ("sglang/local-model", "sglang"),
         ("kimi/kimi-k2.6", "kimi"),
         ("qwen-dashscope/qwen3.6-max-preview", "qwen-dashscope"),
         ("doubao-seed-2-pro/ep-test", "doubao-seed-2-pro"),

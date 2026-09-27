@@ -4,7 +4,9 @@
 It speaks just enough of the Anthropic Messages API (``POST /v1/messages``,
 streaming SSE and plain JSON, ``/v1/messages/count_tokens``) for Claude Code
 behind the LiteLLM proxy to run a scripted conversation: tool calls, then a
-final message. It needs only the Python standard library, so it runs inside a
+final message. ``POST /v1/chat/completions`` serves the same scripts as a
+self-hosted policy server with token ids and logprobs, shaped like vLLM
+(``/v1/...``) or SGLang (``/sglang/v1/...``); see the section below. It needs only the Python standard library, so it runs inside a
 task image (``python3``) as well as on the host.
 
 The server is stateless. Every reply is a function of the request alone:
@@ -236,6 +238,238 @@ def sse_events(message: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
+# ---------------------------------------------------------------------------
+# OpenAI chat completions with token ids and logprobs (vLLM / SGLang shapes)
+# ---------------------------------------------------------------------------
+#
+# A self-hosted policy server behind the ``vllm/`` or ``sglang/`` route. The
+# scripted reply is the same as on the Messages API; what is added is a
+# deterministic chat template and tokenizer so token ids behave like a real
+# server's: the prompt is ``render(messages) + "<|assistant|>"``, the sampled
+# tokens are the assistant turn as the template renders it (text, then each
+# tool call as ``<tool_call>{json}</tool_call>``, then ``<|end|>``), and one
+# character is one token (id = code point). An agent that resends history
+# unchanged therefore produces prompts that extend the previous prompt and
+# sampled tokens exactly (token-in/token-out), as with a real server.
+
+END = "<|end|>"
+
+
+def _tool_name(tool: dict[str, Any]) -> str:
+    function = tool.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name", ""))
+    return str(tool.get("name", ""))
+
+
+def _canonical_args(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments or "{}")
+        except ValueError:
+            return arguments
+    return json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+
+
+def _render_tool_calls(tool_calls: Any) -> str:
+    out = ""
+    for call in tool_calls or []:
+        function = call.get("function") if isinstance(call, dict) else None
+        if isinstance(function, dict):
+            payload = {
+                "name": function.get("name"),
+                "arguments": json.loads(_canonical_args(function.get("arguments"))),
+            }
+            out += f"<tool_call>{json.dumps(payload, sort_keys=True, separators=(',', ':'))}</tool_call>"
+    return out
+
+
+def render_chat(body: dict[str, Any]) -> str:
+    """The deterministic chat template: tools, then every message, then the turn opener."""
+    names = sorted(
+        _tool_name(t) for t in body.get("tools") or [] if isinstance(t, dict)
+    )
+    text = f"<|tools|>{','.join(names)}{END}" if names else ""
+    for message in body.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "user"))
+        content = "".join(_texts(message.get("content")))
+        text += (
+            f"<|{role}|>{content}{_render_tool_calls(message.get('tool_calls'))}{END}"
+        )
+    return text + "<|assistant|>"
+
+
+def tokenize(text: str) -> list[int]:
+    return [ord(char) for char in text]
+
+
+def chat_logprob(index: int) -> float:
+    return -0.125 * ((index % 8) + 1)
+
+
+def plan_chat_reply(
+    body: dict[str, Any], scripts: dict[str, list[dict[str, Any]]]
+) -> dict[str, Any]:
+    """``{"content", "tool_calls", "finish_reason", "sampled"}`` for one chat request."""
+    tools = body.get("tools") or []
+    anthropic_tools = [{"name": _tool_name(t)} for t in tools if isinstance(t, dict)]
+    plan = plan_reply(
+        {
+            "model": body.get("model"),
+            "tools": anthropic_tools,
+            "messages": body.get("messages") or [],
+        },
+        scripts,
+    )
+    text = "".join(b["text"] for b in plan["content"] if b["type"] == "text")
+    tool_calls = [
+        {
+            "id": b["id"].replace("toolu_", "call_"),
+            "type": "function",
+            "function": {"name": b["name"], "arguments": _canonical_args(b["input"])},
+        }
+        for b in plan["content"]
+        if b["type"] == "tool_use"
+    ]
+    sampled = text + _render_tool_calls(tool_calls) + END
+    return {
+        "content": text or None,
+        "tool_calls": tool_calls,
+        "finish_reason": "tool_calls" if tool_calls else "stop",
+        "sampled": sampled,
+    }
+
+
+def _chat_logprobs(sampled: str, start: int = 0) -> dict[str, Any]:
+    return {
+        "content": [
+            {
+                "token": char,
+                "logprob": chat_logprob(start + i),
+                "bytes": list(char.encode()),
+                "top_logprobs": [],
+            }
+            for i, char in enumerate(sampled)
+        ]
+    }
+
+
+def chat_response(
+    body: dict[str, Any], reply: dict[str, Any], flavor: str
+) -> dict[str, Any]:
+    prompt_ids = tokenize(render_chat(body))
+    sampled_ids = tokenize(reply["sampled"])
+    message: dict[str, Any] = {"role": "assistant", "content": reply["content"]}
+    if reply["tool_calls"]:
+        message["tool_calls"] = reply["tool_calls"]
+    choice: dict[str, Any] = {
+        "index": 0,
+        "message": message,
+        "finish_reason": reply["finish_reason"],
+        "logprobs": _chat_logprobs(reply["sampled"]) if body.get("logprobs") else None,
+    }
+    response: dict[str, Any] = {
+        "id": "chatcmpl-fake",
+        "object": "chat.completion",
+        "created": 1,
+        "model": str(body.get("model") or "fake-model"),
+        "choices": [choice],
+        "usage": {
+            "prompt_tokens": len(prompt_ids),
+            "completion_tokens": len(sampled_ids),
+            "total_tokens": len(prompt_ids) + len(sampled_ids),
+        },
+    }
+    if flavor == "vllm" and body.get("return_token_ids"):
+        response["prompt_token_ids"] = prompt_ids
+        choice["token_ids"] = sampled_ids
+    ext = _sglext(body, prompt_ids, sampled_ids) if flavor == "sglang" else None
+    if ext:
+        response["sglext"] = ext
+    return response
+
+
+def _sglext(
+    body: dict[str, Any], prompt_ids: list[int], sampled_ids: list[int]
+) -> dict[str, Any] | None:
+    ext: dict[str, Any] = {}
+    if body.get("return_input_ids_in_sglext"):
+        ext["input_ids"] = prompt_ids
+    if body.get("return_output_ids_in_sglext"):
+        ext["output_ids"] = [sampled_ids]
+    return ext or None
+
+
+def chat_chunks(
+    body: dict[str, Any], reply: dict[str, Any], flavor: str
+) -> list[dict[str, Any]]:
+    """The streamed form: role, text, tool calls, end marker, finish (+ usage), sglext."""
+    full = chat_response(body, reply, flavor)
+    base = {k: full[k] for k in ("id", "created", "model")} | {
+        "object": "chat.completion.chunk"
+    }
+    vllm_ids = flavor == "vllm" and bool(body.get("return_token_ids"))
+    want_logprobs = bool(body.get("logprobs"))
+    pieces: list[tuple[dict[str, Any], str]] = []
+    if reply["content"]:
+        pieces.append(({"content": reply["content"]}, reply["content"]))
+    for index, call in enumerate(reply["tool_calls"]):
+        pieces.append(
+            (
+                {"tool_calls": [dict(call, index=index)]},
+                _render_tool_calls([call]),
+            )
+        )
+    pieces.append(({}, END))
+    first: dict[str, Any] = {
+        **base,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "content": ""},
+                "logprobs": None,
+                "finish_reason": None,
+            }
+        ],
+    }
+    if vllm_ids:
+        first["prompt_token_ids"] = full["prompt_token_ids"]
+    chunks = [first]
+    position = 0
+    for delta, text in pieces:
+        choice: dict[str, Any] = {
+            "index": 0,
+            "delta": delta,
+            "logprobs": None,
+            "finish_reason": None,
+        }
+        if want_logprobs:
+            choice["logprobs"] = _chat_logprobs(text, position)
+        if vllm_ids:
+            choice["token_ids"] = tokenize(text)
+        position += len(text)
+        chunks.append({**base, "choices": [choice]})
+    chunks.append(
+        {
+            **base,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "logprobs": None,
+                    "finish_reason": reply["finish_reason"],
+                }
+            ],
+            "usage": full["usage"],
+        }
+    )
+    if "sglext" in full:
+        chunks.append({**base, "choices": [], "sglext": full["sglext"]})
+    return chunks
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "FakeLLM/1"
     protocol_version = "HTTP/1.1"
@@ -288,6 +522,9 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path.endswith("/chat/completions"):
+            self._chat(path, body)
+            return
         if path.endswith("/messages/count_tokens"):
             self._log({"path": path, "kind": "count_tokens"})
             self._json(200, {"input_tokens": USAGE["input_tokens"]})
@@ -325,6 +562,51 @@ class _Handler(BaseHTTPRequestHandler):
         for event, data in sse_events(reply):
             self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
             self.wfile.flush()
+        self.close_connection = True
+
+    def _chat(self, path: str, body: dict[str, Any]) -> None:
+        # ``/sglang/v1/...`` answers like SGLang, anything else like vLLM.
+        flavor = "sglang" if "/sglang/" in path else "vllm"
+        if flavor == "sglang" and body.get("stream") and body.get("return_token_ids"):
+            self._log({"path": path, "kind": "chat", "refused": "return_token_ids"})
+            self._json(
+                400,
+                {
+                    "object": "error",
+                    "message": "return_token_ids is not supported with stream=true",
+                    "type": "BadRequestError",
+                    "code": 400,
+                },
+            )
+            return
+        reply = plan_chat_reply(body, self.scripts)
+        self._log(
+            {
+                "path": path,
+                "kind": "chat",
+                "flavor": flavor,
+                "stream": bool(body.get("stream")),
+                "n_messages": len(body.get("messages") or []),
+                "n_tools": len(body.get("tools") or []),
+                "logprobs": bool(body.get("logprobs")),
+                "return_token_ids": bool(body.get("return_token_ids")),
+                "sglext_ids": bool(body.get("return_output_ids_in_sglext")),
+                "finish_reason": reply["finish_reason"],
+            }
+        )
+        if not body.get("stream"):
+            self._json(200, chat_response(body, reply, flavor))
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        for chunk in chat_chunks(body, reply, flavor):
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            self.wfile.flush()
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
         self.close_connection = True
 
 

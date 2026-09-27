@@ -15,6 +15,9 @@ docs/examples/python-sdk/, starting with quickstart.py):
 - Branch a run into scored children: ``branch(task, agent=..., children={...})``.
 - Read and compare finished jobs: ``load_job(path)``, ``load_trial(path)``,
   ``compare(job_a, job_b)``.
+- Train on a job while it runs: ``stream_rollouts(job_dir)`` /
+  ``astream_rollouts`` yield each finished rollout with reward, group id and
+  captured token ids (``bench train stream``).
 - Re-score stored trials with a changed verifier: ``regrade(job, tasks_dir=...)``.
 - Save configs for the CLI: ``Evaluation.to_yaml`` and ``RolloutConfig.to_yaml``
   (``bench eval run --config``); docs/reference/cli-python-parity.md maps every
@@ -195,6 +198,11 @@ from benchflow.task import (
     VerifierResult,
     render_task_md_from_legacy,
 )
+from benchflow.trajectories.rollout_stream import (
+    StreamedRollout,
+    astream_rollouts,
+    stream_rollouts,
+)
 from benchflow.trajectories.types import Trajectory
 
 # Public API surface. Anything not in this list is implementation detail and
@@ -283,6 +291,9 @@ __all__ = [
     "Completed",
     "Results",
     "load_job",
+    "stream_rollouts",
+    "astream_rollouts",
+    "StreamedRollout",
     "load_trial",
     "load_results_jsonl",
     "SettingCheck",

@@ -1,5 +1,6 @@
 """Where each ``bench eval run`` / ``branch`` / ``metrics`` / ``compare`` /
-``regrade`` and ``bench train convert`` flag lives in Python.
+``regrade``, ``bench train convert`` and ``bench train stream`` flag lives in
+Python.
 
 Every CLI flag maps to one :class:`Equivalent`: a target in the public SDK
 (``sdk``), a Python function or field outside the top-level namespace
@@ -291,6 +292,22 @@ TRAIN_CONVERT: dict[str, Equivalent] = {
     ),
 }
 
+_STREAM = "benchflow.stream_rollouts"
+
+TRAIN_STREAM: dict[str, Equivalent] = {
+    "--format": _sdk(
+        "benchflow.StreamedRollout.to_json",
+        "jsonl is the only format; Python yields StreamedRollout objects",
+    ),
+    "--follow": _sdk(f"{_STREAM}(follow)", "--no-follow is follow=False"),
+    "--poll-interval": _sdk(f"{_STREAM}(poll_interval)"),
+    "--timeout": _sdk(f"{_STREAM}(timeout)", "raises StreamTimeout (CLI exit 3)"),
+    "--group-size": _sdk(f"{_STREAM}(group_size)"),
+    "--group-by": _sdk(
+        f"{_STREAM}(group_by)", "comma-separated on the CLI, a tuple in Python"
+    ),
+}
+
 TABLES: dict[str, dict[str, Equivalent]] = {
     "bench eval run": EVAL_RUN,
     "bench eval branch": EVAL_BRANCH,
@@ -298,6 +315,7 @@ TABLES: dict[str, dict[str, Equivalent]] = {
     "bench eval compare": EVAL_COMPARE,
     "bench eval regrade": EVAL_REGRADE,
     "bench train convert": TRAIN_CONVERT,
+    "bench train stream": TRAIN_STREAM,
 }
 
 

@@ -10,6 +10,13 @@ LiteLLM gateway can be tested end to end without a GPU or network:
   ``prompt_token_ids`` and per-choice ``token_ids``. Streaming (SSE) puts
   ``prompt_token_ids`` on the first chunk and per-chunk ``token_ids`` and
   ``logprobs`` on each delta, like vLLM.
+- SGLang mode (``start_server(flavor="sglang")``): token ids follow SGLang's
+  response-level ``sglext`` extension instead. ``return_input_ids_in_sglext``
+  / ``return_output_ids_in_sglext`` add ``sglext.input_ids`` and
+  ``sglext.output_ids`` (one list per choice) to the body, or, when
+  streaming, to one final ``choices: []`` chunk before ``[DONE]``. SGLang's
+  older ``return_token_ids`` is refused on streamed chat (HTTP 400), as SGLang
+  does, and vLLM's field names are never returned.
 - ``POST /v1/responses``: with ``include: ["message.output_text.logprobs"]``
   the ``output_text`` part carries ``logprobs`` (OpenAI Responses shape). The
   Responses API has no token-id field.
@@ -70,7 +77,16 @@ def _logprob_entry(index: int, char: str, top_n: int) -> dict[str, Any]:
     return entry
 
 
-def chat_completion(body: dict[str, Any]) -> dict[str, Any]:
+def _sglext(body: dict[str, Any]) -> dict[str, Any] | None:
+    ext: dict[str, Any] = {}
+    if body.get("return_input_ids_in_sglext"):
+        ext["input_ids"] = prompt_token_ids(body)
+    if body.get("return_output_ids_in_sglext"):
+        ext["output_ids"] = [[token_id(char) for char in REPLY]]
+    return ext or None
+
+
+def chat_completion(body: dict[str, Any], flavor: str = "vllm") -> dict[str, Any]:
     top_n = int(body.get("top_logprobs") or 0)
     choice: dict[str, Any] = {
         "index": 0,
@@ -94,13 +110,22 @@ def chat_completion(body: dict[str, Any]) -> dict[str, Any]:
             "total_tokens": len(prompt_token_ids(body)) + len(REPLY),
         },
     }
-    if body.get("return_token_ids"):
+    if flavor == "sglang":
+        ext = _sglext(body)
+        if ext:
+            response["sglext"] = ext
+        if body.get("return_token_ids"):
+            choice["prompt_token_ids"] = prompt_token_ids(body)
+            choice["token_ids"] = [token_id(char) for char in REPLY]
+    elif body.get("return_token_ids"):
         response["prompt_token_ids"] = prompt_token_ids(body)
         choice["token_ids"] = [token_id(char) for char in REPLY]
     return response
 
 
-def chat_completion_chunks(body: dict[str, Any]) -> list[dict[str, Any]]:
+def chat_completion_chunks(
+    body: dict[str, Any], flavor: str = "vllm"
+) -> list[dict[str, Any]]:
     top_n = int(body.get("top_logprobs") or 0)
     base = {
         "id": "chatcmpl-mock",
@@ -120,7 +145,8 @@ def chat_completion_chunks(body: dict[str, Any]) -> list[dict[str, Any]]:
             }
         ],
     }
-    if body.get("return_token_ids"):
+    vllm_ids = flavor == "vllm" and bool(body.get("return_token_ids"))
+    if vllm_ids:
         first["prompt_token_ids"] = prompt_token_ids(body)
     chunks.append(first)
     for i, char in enumerate(REPLY):
@@ -132,7 +158,7 @@ def chat_completion_chunks(body: dict[str, Any]) -> list[dict[str, Any]]:
         }
         if body.get("logprobs"):
             choice["logprobs"] = {"content": [_logprob_entry(i, char, top_n)]}
-        if body.get("return_token_ids"):
+        if vllm_ids:
             choice["token_ids"] = [token_id(char)]
         chunks.append({**base, "choices": [choice]})
     chunks.append(
@@ -148,6 +174,9 @@ def chat_completion_chunks(body: dict[str, Any]) -> list[dict[str, Any]]:
             },
         }
     )
+    ext = _sglext(body) if flavor == "sglang" else None
+    if ext:
+        chunks.append({**base, "choices": [], "sglext": ext})
     return chunks
 
 
@@ -204,8 +233,11 @@ def anthropic_message(body: dict[str, Any]) -> dict[str, Any]:
 class MockTokenServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int]) -> None:
+    def __init__(self, address: tuple[str, int], flavor: str = "vllm") -> None:
         super().__init__(address, _Handler)
+        if flavor not in {"vllm", "sglang"}:
+            raise ValueError(f"unknown flavor {flavor!r}")
+        self.flavor = flavor
         self.requests: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
@@ -255,11 +287,27 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         path = self.path.split("?", 1)[0].rstrip("/")
         self.server.record(path, body)
+        flavor = self.server.flavor
         if path.endswith("/chat/completions"):
-            if body.get("stream"):
-                self._send_sse(chat_completion_chunks(body))
+            if (
+                flavor == "sglang"
+                and body.get("stream")
+                and body.get("return_token_ids")
+            ):
+                self._send_json(
+                    {
+                        "object": "error",
+                        "message": "return_token_ids is not supported with "
+                        "stream=true for chat completions",
+                        "type": "BadRequestError",
+                        "code": 400,
+                    },
+                    status=400,
+                )
+            elif body.get("stream"):
+                self._send_sse(chat_completion_chunks(body, flavor))
             else:
-                self._send_json(chat_completion(body))
+                self._send_json(chat_completion(body, flavor))
         elif path.endswith("/responses"):
             self._send_json(responses_response(body))
         elif path.endswith("/messages"):
@@ -268,9 +316,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": {"message": "not found"}}, status=404)
 
 
-def start_server(host: str = "127.0.0.1", port: int = 0) -> MockTokenServer:
+def start_server(
+    host: str = "127.0.0.1", port: int = 0, flavor: str = "vllm"
+) -> MockTokenServer:
     """Start the server on a background thread and return it."""
-    server = MockTokenServer((host, port))
+    server = MockTokenServer((host, port), flavor)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -279,8 +329,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--flavor", choices=("vllm", "sglang"), default="vllm")
     args = parser.parse_args()
-    server = MockTokenServer((args.host, args.port))
+    server = MockTokenServer((args.host, args.port), args.flavor)
     print(f"mock token server on {server.base_url}", flush=True)
     server.serve_forever()
 

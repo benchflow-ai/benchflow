@@ -2197,6 +2197,15 @@ class Evaluation:
             job_name=job_dir.name,
         )
 
+    @property
+    def job_dir(self) -> Path:
+        """Where this job writes its rollouts, known before it runs.
+
+        Pass it to :func:`benchflow.astream_rollouts` to train on rollouts
+        while :meth:`run` is still going.
+        """
+        return self._jobs_dir / self._job_name
+
     def _write_evaluation_record(self) -> None:
         """Record tasks_dir and config so Evaluation.resume(job_dir) can finish the job."""
         job_dir = self._jobs_dir / self._job_name

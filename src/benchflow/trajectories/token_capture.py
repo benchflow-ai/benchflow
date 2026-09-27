@@ -41,8 +41,9 @@ listed there with a reason, never silently missing. Reason codes:
 - ``request_failed``: the call failed, so there is no response.
 
 ``tokens``/``logprobs``/``top_logprobs`` are parallel per sampled token; token
-ids come from the server (``return_token_ids`` on vLLM and SGLang) and are
-never re-derived by tokenizing text. ``prompt_token_ids`` is the prompt exactly as the server
+ids come from the server (``return_token_ids`` on vLLM; SGLang's ``sglext``
+extension, ``return_input_ids_in_sglext`` / ``return_output_ids_in_sglext``)
+and are never re-derived by tokenizing text. ``prompt_token_ids`` is the prompt exactly as the server
 tokenized it, including the chat template. Streamed calls are assembled from
 the chunks (see ``providers/litellm_token_capture_patch.py``).
 """
@@ -113,12 +114,28 @@ def _choice_field(choice: dict[str, Any], *names: str) -> list[int] | None:
     return None
 
 
+def _sglext(response: dict[str, Any]) -> dict[str, Any]:
+    """SGLang's response-level extension (non-streamed body)."""
+    return _dict(response.get("sglext"))
+
+
+def _sglext_output_ids(response: dict[str, Any], index: Any) -> list[int] | None:
+    output_ids = _sglext(response).get("output_ids")
+    if not isinstance(output_ids, list) or not isinstance(index, int):
+        return None
+    if 0 <= index < len(output_ids):
+        return _int_list(output_ids[index])
+    return None
+
+
 def _prompt_token_ids(
     response: dict[str, Any], stream: dict[str, Any]
 ) -> list[int] | None:
-    # vLLM: top level (first chunk when streaming); SGLang: on each choice.
+    # vLLM: top level (first chunk when streaming); SGLang: ``sglext.input_ids``
+    # (final chunk when streaming) or, with ``return_token_ids``, on each choice.
     return _first(
         _int_list(response.get("prompt_token_ids")),
+        _int_list(_sglext(response).get("input_ids")),
         _int_list(stream.get("prompt_token_ids")),
         *(
             _choice_field(_dict(choice), "prompt_token_ids")
@@ -139,6 +156,7 @@ def _chat_completions(
         # vLLM ``token_ids``; SGLang ``response_token_ids``.
         token_ids = _first(
             _choice_field(choice, "token_ids", "response_token_ids"),
+            _sglext_output_ids(response, index),
             _int_list(chunk_data.get("token_ids")),
         )
         content = _dict(choice.get("logprobs")).get("content")
@@ -197,8 +215,9 @@ def _missing_reason(
             detail = f"the gateway does not request logprobs on {wire} routes"
         else:
             detail = (
-                f"route provider {provider!r} is not known to accept vLLM's "
-                "return_token_ids; set BENCHFLOW_CAPTURE_TOKEN_IDS=1 to request it"
+                f"route provider {provider!r} is not a vllm or sglang route; "
+                "set BENCHFLOW_CAPTURE_TOKEN_IDS=1 to request vLLM's "
+                "return_token_ids"
             )
         return {"reason": "not_requested", "detail": detail}
     return {
@@ -214,8 +233,9 @@ def _requested(plan: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         isinstance(include, list) and _RESPONSES_LOGPROBS_INCLUDE in include
     )
     extra = _dict(body.get("extra_body"))
-    token_ids = (
-        extra.get("return_token_ids") is True or body.get("return_token_ids") is True
+    token_ids = any(
+        extra.get(flag) is True or body.get(flag) is True
+        for flag in ("return_token_ids", "return_output_ids_in_sglext")
     )
     top = body.get("top_logprobs")
     return {
@@ -296,6 +316,16 @@ def strip_captured_token_ids(body: dict[str, Any]) -> dict[str, Any]:
     logprobs stay in the raw body as before.
     """
     cleaned = _without_token_ids(body)
+    if isinstance(body.get("sglext"), dict):
+        rest = {
+            k: v
+            for k, v in body["sglext"].items()
+            if k not in {"input_ids", "output_ids"}
+        }
+        if rest:
+            cleaned["sglext"] = rest
+        else:
+            cleaned.pop("sglext", None)
     if isinstance(body.get("choices"), list):
         choices = []
         for raw in body["choices"]:
@@ -325,28 +355,88 @@ def _complete(capture: dict[str, Any]) -> bool:
     )
 
 
+def _tool_names(exchange: dict[str, Any]) -> tuple[str, ...]:
+    body = _dict(_dict(exchange.get("request")).get("body"))
+    names = []
+    for tool in body.get("tools") or []:
+        tool = _dict(tool)
+        name = _dict(tool.get("function")).get("name") or tool.get("name")
+        if name:
+            names.append(str(name))
+    return tuple(sorted(names))
+
+
+def conversation_threads(exchanges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split a rollout's captured calls into the conversations they belong to.
+
+    One agent run can hold several conversations: the agent loop, helper
+    calls (Claude Code's short tool-less prompts, e.g. a session title) and
+    subagents with their own tool set. Each is a separate token stream. When
+    any captured call offers tools, calls are grouped by their tool set
+    (``kind: "agent"``) and every tool-less call is its own one-call
+    conversation (``kind: "helper"``). A rollout without any tool-offering
+    call is one conversation (``kind: "chat"``). Returns ``[{"thread",
+    "kind", "calls": [exchange index, ...]}]`` in order of first call.
+    """
+    captured = [
+        (index, _tool_names(exchange))
+        for index, exchange in enumerate(exchanges)
+        if _dict(_dict(exchange.get("metadata")).get(TOKEN_CAPTURE_METADATA_KEY)).get(
+            "schema_version"
+        )
+        == TOKEN_CAPTURE_SCHEMA_VERSION
+    ]
+    agentic = any(tools for _, tools in captured)
+    threads: list[dict[str, Any]] = []
+    members: dict[tuple[str, ...], list[int]] = {}
+    for index, tools in captured:
+        if not agentic or tools:
+            calls = members.get(tools)
+            if calls is None:
+                calls = members[tools] = []
+                threads.append(
+                    {
+                        "thread": len(threads),
+                        "kind": "agent" if agentic else "chat",
+                        "calls": calls,
+                    }
+                )
+            calls.append(index)
+        else:
+            threads.append({"thread": len(threads), "kind": "helper", "calls": [index]})
+    return threads
+
+
 def summarize_token_capture(exchanges: list[dict[str, Any]]) -> dict[str, Any]:
     """Coverage of the ``token_capture`` blocks in one ``llm_trajectory.jsonl``.
 
     ``complete_calls`` have prompt token ids and, for every choice, sampled
     token ids and logprobs. ``prefix`` checks the token-in/token-out property
-    an RL trainer relies on: each complete call's prompt should start with the
-    previous complete call's prompt followed by its sampled tokens. A break
-    means the client re-rendered the history (a chat template, a compaction,
-    another agent's call in between), so the sequence cannot be trained on as
-    one token stream without re-alignment. ``training_grade`` is true only
-    when every call is complete and no pair breaks.
+    an RL trainer relies on, within each conversation (``threads``, see
+    :func:`conversation_threads`): each complete call's prompt should start
+    with the previous complete call's prompt of the same conversation
+    followed by its sampled tokens. A break means the client re-rendered the
+    history (a chat template, a compaction), so the conversation cannot be
+    trained on as one token stream without re-alignment. ``training_grade``
+    is true only when every call is complete and no pair breaks. ``path``
+    names the route provider(s) of the captured calls (``vllm``, ``sglang``,
+    …), or None.
     """
     unavailable: dict[str, int] = {}
+    providers: set[str] = set()
     captured = complete = 0
     pairs = extends = 0
     breaks: list[int] = []
-    previous: tuple[list[int], list[int]] | None = None
+    threads = conversation_threads(exchanges)
+    thread_of = {i: t["thread"] for t in threads for i in t["calls"]}
+    previous: dict[int, tuple[list[int], list[int]]] = {}
     for index, exchange in enumerate(exchanges):
         capture = _dict(_dict(exchange.get("metadata")).get(TOKEN_CAPTURE_METADATA_KEY))
         if capture.get("schema_version") != TOKEN_CAPTURE_SCHEMA_VERSION:
             continue
         captured += 1
+        if capture.get("provider"):
+            providers.add(str(capture["provider"]))
         for field, why in _dict(capture.get("unavailable")).items():
             key = f"{field}:{_dict(why).get('reason', 'unknown')}"
             unavailable[key] = unavailable.get(key, 0) + 1
@@ -355,14 +445,16 @@ def summarize_token_capture(exchanges: list[dict[str, Any]]) -> dict[str, Any]:
         complete += 1
         prompt = _int_list(capture["prompt_token_ids"]) or []
         sampled = _int_list(_dict(capture["completions"][0]).get("token_ids")) or []
-        if previous is not None:
+        thread = thread_of[index]
+        if thread in previous:
             pairs += 1
-            expected = previous[0] + previous[1]
+            before = previous[thread]
+            expected = before[0] + before[1]
             if prompt[: len(expected)] == expected:
                 extends += 1
             else:
                 breaks.append(index)
-        previous = (prompt, sampled)
+        previous[thread] = (prompt, sampled)
     calls = len(exchanges)
     return {
         "calls": calls,
@@ -370,7 +462,9 @@ def summarize_token_capture(exchanges: list[dict[str, Any]]) -> dict[str, Any]:
         "complete_calls": complete,
         "unavailable": dict(sorted(unavailable.items())),
         "prefix": {"pairs": pairs, "extends_previous_call": extends, "breaks": breaks},
+        "threads": threads,
         "training_grade": calls > 0 and complete == calls and not breaks,
+        "path": ",".join(sorted(providers)) or None,
     }
 
 
@@ -391,6 +485,7 @@ def summarize_rollout_token_capture(rollout_dir: Any) -> dict[str, Any]:
         kind = usage.get("endpoint_kind")
         summary.update(
             status="no_gateway_capture",
+            path=None,
             reason=(
                 f"no llm_trajectory.jsonl: the agent's model calls did not go "
                 f"through BenchFlow's gateway (usage_tracking.endpoint_kind="

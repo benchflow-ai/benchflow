@@ -228,9 +228,12 @@ def _failure_traceback(detail: Any) -> str:
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
-# Route providers whose OpenAI-compatible servers accept vLLM's
-# ``return_token_ids`` (prompt + completion token ids in the response).
-_TOKEN_ID_PROVIDERS = {"vllm"}
+# How a route provider's OpenAI-compatible server is asked for token ids:
+# ``vllm``: ``return_token_ids`` (top-level ``prompt_token_ids``, per-choice
+# ``token_ids``); ``sglang``: the ``sglext`` extension flags below, which also
+# work on streamed chat (SGLang refuses ``return_token_ids`` there).
+_TOKEN_ID_PROVIDERS = {"vllm": "vllm", "sglang": "sglang"}
+_SGLANG_ID_FLAGS = ("return_input_ids_in_sglext", "return_output_ids_in_sglext")
 _RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
 _STREAM_TOKENS_KEY = "benchflow_stream_tokens"
 
@@ -279,6 +282,7 @@ def _token_capture_plan(call_type: Any, model: Any) -> dict[str, Any] | None:
         ids_setting in _TRUTHY
         or (ids_setting in {"", "auto"} and provider in _TOKEN_ID_PROVIDERS)
     )
+    token_id_style = _TOKEN_ID_PROVIDERS.get(provider, "vllm") if token_ids else None
     try:
         top_logprobs = int(os.environ.get("BENCHFLOW_CAPTURE_TOP_LOGPROBS", "") or 0)
     except ValueError:
@@ -291,6 +295,7 @@ def _token_capture_plan(call_type: Any, model: Any) -> dict[str, Any] | None:
         "logprobs": request is not None,
         "top_logprobs": top_logprobs if request is not None and top_logprobs > 0 else None,
         "token_ids": token_ids,
+        "token_id_style": token_id_style,
     }
 
 
@@ -308,7 +313,11 @@ def _apply_token_capture(data: dict[str, Any], plan: dict[str, Any] | None) -> d
             # extra_body survives drop_params on openai/ routes and LiteLLM's
             # Anthropic-Messages and Responses bridges to chat completions.
             extra = dict(cleaned.get("extra_body") or {})
-            extra["return_token_ids"] = True
+            if plan.get("token_id_style") == "sglang":
+                for flag in _SGLANG_ID_FLAGS:
+                    extra[flag] = True
+            else:
+                extra["return_token_ids"] = True
             cleaned["extra_body"] = extra
     elif cleaned.get("input") is None:
         return data

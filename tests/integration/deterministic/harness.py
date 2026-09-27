@@ -16,6 +16,10 @@ routes reach it:
   cost. The fake must run where the proxy runs: in the sandbox on Daytona (and
   every ``model_proxy=sandbox`` provider); on Docker the proxy runs on the
   host, so the harness runs the same fake on the host too.
+- ``vllm`` / ``sglang`` (self-hosted policy routes, ``--model vllm/fake-policy``
+  or ``sglang/fake-policy``): like ``proxy``, but the fake answers OpenAI chat
+  completions with token ids and logprobs shaped like vLLM or SGLang, and
+  token capture is on, so ``llm_trajectory.jsonl`` carries per-call ids.
 - ``native`` (subscription route, ``ANTHROPIC_AUTH_TOKEN``): no proxy; Claude
   Code calls ``ANTHROPIC_BASE_URL`` itself, the in-sandbox fake. Branching is
   only allowed without a provider runtime (``rollout_branch``: "Branching an
@@ -241,8 +245,30 @@ def bench_executable() -> str:
     return str(sibling) if sibling.exists() else "bench"
 
 
+# Self-hosted policy routes: the fake answers OpenAI chat completions with
+# token ids and logprobs, shaped like vLLM under /v1 and SGLang under
+# /sglang/v1, and the gateway captures them (BENCHFLOW_CAPTURE_TOKEN_LOGPROBS).
+POLICY_ROUTES = {
+    "vllm": ("vllm/fake-policy", "/v1"),
+    "sglang": ("sglang/fake-policy", "/sglang/v1"),
+}
+
+
+def route_model(route: str) -> str:
+    """The ``--model`` a route runs with."""
+    return POLICY_ROUTES[route][0] if route in POLICY_ROUTES else MODEL
+
+
 def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, str]:
     """The agent env that points ``claude-agent-acp`` at the fake provider."""
+    if route in POLICY_ROUTES:
+        base = IN_SANDBOX_FAKE_URL if proxy_runs_in_sandbox(sandbox) else host_fake_url
+        assert base, "a host LiteLLM proxy needs the host fake provider URL"
+        return {
+            "BENCHFLOW_PROVIDER_BASE_URL": base + POLICY_ROUTES[route][1],
+            "BENCHFLOW_PROVIDER_API_KEY": DUMMY_KEY,
+            "BENCHFLOW_CAPTURE_TOKEN_LOGPROBS": "1",
+        }
     if route == "native":
         return {
             "ANTHROPIC_AUTH_TOKEN": DUMMY_KEY,
@@ -263,11 +289,12 @@ def check_route_is_hermetic(route: str, agent_env: dict[str, str]) -> None:
     """
     from benchflow.agents.env import resolve_agent_env, uses_native_subscription_auth
 
-    resolved = resolve_agent_env(AGENT, MODEL, dict(agent_env))
+    model = route_model(route)
+    resolved = resolve_agent_env(AGENT, model, dict(agent_env))
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in resolved, (
         "would upload host credentials"
     )
-    native = uses_native_subscription_auth(AGENT, MODEL, resolved)
+    native = uses_native_subscription_auth(AGENT, model, resolved)
     assert native == (route == "native"), (route, native)
     if route == "native":
         assert resolved.get("ANTHROPIC_BASE_URL") == IN_SANDBOX_FAKE_URL
@@ -285,7 +312,7 @@ def agent_env_args(agent_env: dict[str, str]) -> list[str]:
     return args
 
 
-def run_bench(
+def bench_command(
     subcommand: Sequence[str],
     *,
     tasks_dir: Path,
@@ -294,8 +321,8 @@ def run_bench(
     host_fake_url: str | None,
     route: str = "proxy",
     extra: Sequence[str] = (),
-    timeout_sec: float = 1500,
-) -> CliRun:
+) -> tuple[list[str], dict[str, str]]:
+    """The ``bench`` argv and process env for one scripted run (checked hermetic)."""
     agent_env = route_env(route, sandbox, host_fake_url)
     args = [
         bench_executable(),
@@ -305,7 +332,7 @@ def run_bench(
         "--agent",
         AGENT,
         "--model",
-        MODEL,
+        route_model(route),
         "--sandbox",
         sandbox,
         "--jobs-dir",
@@ -329,6 +356,29 @@ def run_bench(
     finally:
         os.environ.update(saved)
     jobs_dir.mkdir(parents=True, exist_ok=True)
+    return args, env
+
+
+def run_bench(
+    subcommand: Sequence[str],
+    *,
+    tasks_dir: Path,
+    jobs_dir: Path,
+    sandbox: str,
+    host_fake_url: str | None,
+    route: str = "proxy",
+    extra: Sequence[str] = (),
+    timeout_sec: float = 1500,
+) -> CliRun:
+    args, env = bench_command(
+        subcommand,
+        tasks_dir=tasks_dir,
+        jobs_dir=jobs_dir,
+        sandbox=sandbox,
+        host_fake_url=host_fake_url,
+        route=route,
+        extra=extra,
+    )
     started = time.monotonic()
     proc = subprocess.run(
         args,

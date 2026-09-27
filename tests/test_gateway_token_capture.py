@@ -93,8 +93,10 @@ def _request_body(case: str, alias: str) -> tuple[str, dict[str, str], dict]:
     return path, headers, {**body, **extra}
 
 
-async def _drive_gateway(tmp_path: Path, route_model: str, cases: list[str]):
-    server = start_server()
+async def _drive_gateway(
+    tmp_path: Path, route_model: str, cases: list[str], flavor: str = "vllm"
+):
+    server = start_server(flavor=flavor)
     env = {
         "BENCHFLOW_PROVIDER_BASE_URL": f"{server.base_url}/v1",
         "BENCHFLOW_PROVIDER_API_KEY": "sk-mock",
