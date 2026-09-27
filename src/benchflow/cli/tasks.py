@@ -141,6 +141,15 @@ def register_tasks(app: typer.Typer) -> None:
     ) -> None:
         """Validate a task directory structure."""
         from benchflow._utils.task_authoring import check_task
+        from benchflow.task.formats import detect_task_format, materialize_task_dir
+
+        fmt = detect_task_format(task_dir)
+        if fmt is not None:
+            task_dir = materialize_task_dir(task_dir)
+            console.print(
+                f"{escape(fmt.name)} task format: checking the materialized package "
+                f"{escape(str(task_dir))}"
+            )
 
         issues = check_task(
             task_dir,

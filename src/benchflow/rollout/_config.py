@@ -186,6 +186,10 @@ class RolloutConfig:
 
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
+        # A task in a registered task format runs as its native package.
+        from benchflow.task.formats import materialize_task_dir
+
+        self.task_path = materialize_task_dir(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
         if self.base_image_override is not None:

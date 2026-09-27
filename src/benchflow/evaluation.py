@@ -1030,6 +1030,20 @@ class Evaluation:
         keeps its existing silent skip.
         """
         from benchflow._utils.task_authoring import task_document_parse_error
+        from benchflow.task.formats import detect_task_format, materialize_task_dir
+
+        # A task in a registered task format (benchflow.task.formats) at the
+        # root is a single-task input too; it runs as its materialized package.
+        if detect_task_format(self._tasks_dir) is not None:
+            native = materialize_task_dir(self._tasks_dir)
+            if native.name in self._config.exclude_tasks:
+                return []
+            if (
+                self._config.include_tasks
+                and native.name not in self._config.include_tasks
+            ):
+                return []
+            return [native]
 
         # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
@@ -1054,6 +1068,9 @@ class Evaluation:
             if d.name in self._config.exclude_tasks:
                 continue
             if self._config.include_tasks and d.name not in self._config.include_tasks:
+                continue
+            if detect_task_format(d) is not None:
+                selected.append(materialize_task_dir(d))
                 continue
             if _is_task_dir(d):
                 selected.append(d)

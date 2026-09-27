@@ -22,6 +22,8 @@
 
 ### Added
 
+- **Task formats: foreign task folders run natively.** A package can register a task format through the `benchflow.task_formats` entry point (or `benchflow.task.formats.register_task_format`). When BenchFlow loads a folder the format claims, the format materializes it as an ordinary native package under `~/.cache/benchflow/task-formats/<format>` (override with `BENCHFLOW_TASK_FORMAT_CACHE`), and BenchFlow runs that package. This applies to `bench eval run --tasks-dir`, `bench tasks check` and `RolloutConfig` / `Evaluation` in the Python API. The first user is robouse: `bench eval run --tasks-dir <robouse>/tasks/metaworld --agent codex --sandbox docker` runs robouse's source tasks, with the simulator as a trusted compose sidecar that runs the verifier. See `docs/task-formats.md`.
+
 - **Native Google Antigravity CLI agent (`antigravity`, alias `agy`).** The
   Antigravity CLI replaced the hosted Gemini CLI in mid-2026 but ships no ACP
   mode, so BenchFlow bundles an ACP shim over its headless `stream-json`
