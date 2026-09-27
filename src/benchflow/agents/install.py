@@ -331,7 +331,9 @@ async def deploy_skills(
     # Runtime upload (fallback if not baked into Dockerfile)
     if skills_dir:
         assert target_skills_dir is not None
-        dockerfile = task_path / "environment" / "Dockerfile"
+        from benchflow.task.paths import task_environment_dir
+
+        dockerfile = task_environment_dir(task_path) / "Dockerfile"
         injected_copy = f"COPY _deps/skills {target_skills_dir.rstrip('/')}/"
         already_injected = (
             dockerfile.exists() and injected_copy in dockerfile.read_text()

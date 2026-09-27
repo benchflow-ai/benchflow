@@ -69,7 +69,9 @@ class TaskSkillPolicy:
 
 
 def task_bundled_skills_dir(task_path: Path) -> Path:
-    return task_path / "environment" / "skills"
+    from benchflow.task.paths import task_environment_dir
+
+    return task_environment_dir(task_path) / "skills"
 
 
 def normalize_skill_mode(value: str | None) -> str:
@@ -177,7 +179,7 @@ def strip_task_bundled_skills(task_path: Path) -> None:
     bundled = task_bundled_skills_dir(task_path)
     if bundled.exists():
         shutil.rmtree(bundled)
-    _strip_bundled_skill_copy_lines(task_path / "environment" / "Dockerfile")
+    _strip_bundled_skill_copy_lines(bundled.parent / "Dockerfile")
 
 
 def _strip_bundled_skill_copy_lines(dockerfile: Path) -> None:

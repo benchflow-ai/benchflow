@@ -17,6 +17,7 @@ from benchflow.agents.registry import AGENTS
 from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, providers_phrase
 from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import RolloutPaths, Task
+from benchflow.task.paths import task_environment_dir
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +327,7 @@ def stage_dockerfile_deps(
         task_path: Path to the task directory (contains environment/Dockerfile)
         context_root: Path to the repo root where COPY sources are relative to
     """
-    env_dir = task_path / "environment"
+    env_dir = task_environment_dir(task_path)
     dockerfile_path = env_dir / "Dockerfile"
     if not dockerfile_path.exists():
         return
@@ -353,7 +354,7 @@ def override_dockerfile_base_image(task_path: Path, base_image: str) -> int:
     if not replacement or any(char.isspace() for char in replacement):
         raise ValueError("--base-image-override must be a non-empty image reference")
 
-    dockerfile_path = task_path / "environment" / "Dockerfile"
+    dockerfile_path = task_environment_dir(task_path) / "Dockerfile"
     if not dockerfile_path.exists():
         return 0
 
@@ -535,7 +536,7 @@ def _inject_skills_into_dockerfile(
     lines to the Dockerfile. This is more reliable than runtime upload since
     skills are part of the image.
     """
-    env_dir = task_path / "environment"
+    env_dir = task_environment_dir(task_path)
     sandbox_dir = validate_container_mount_path(sandbox_dir)
     dockerfile_path = env_dir / "Dockerfile"
     if not dockerfile_path.exists() or not skills_dir.is_dir():
@@ -704,7 +705,7 @@ def _create_sandbox_environment(
     via compose and every subsequent ``sandbox.exec`` call.
     """
     env_config = task.config.sandbox
-    environment_dir = task_path / "environment"
+    environment_dir = task_environment_dir(task_path)
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir
     _validate_task_runtime_for_launch(

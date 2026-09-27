@@ -551,12 +551,13 @@ def _append_compose_issue(
     """
     if sandbox not in SINGLE_CONTAINER_PROVIDERS:
         return
-    compose = compose_definition_path(task_dir / "environment")
+    environment_dir = TaskPaths(task_dir).environment_dir
+    compose = compose_definition_path(environment_dir)
     if compose is None:
         return
     _issue(
         unsupported,
-        path=f"environment/{compose.name}",
+        path=f"{environment_dir.name}/{compose.name}",
         reason=(
             f"multi-service compose topologies are not supported by {sandbox}; "
             "use the docker or daytona sandbox"

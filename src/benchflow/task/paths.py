@@ -32,7 +32,7 @@ class TaskPaths:
         ├── task.md              # native unified format, or:
         ├── instruction.md        # legacy split format
         ├── task.toml             # legacy split format
-        ├── environment/
+        ├── environment/         # sandbox/ in a task.md draft-1 package
         │   ├── Dockerfile
         │   └── ...
         ├── oracle/              # native reference/oracle files, or:
@@ -69,7 +69,7 @@ class TaskPaths:
 
     @property
     def environment_dir(self) -> Path:
-        return self.task_dir / "environment"
+        return task_environment_dir(self.task_dir)
 
     @property
     def oracle_dir(self) -> Path:
@@ -213,6 +213,26 @@ class TaskPaths:
             and self.environment_dir.exists()
             and (disable_verification or self.has_verifier_entrypoint())
         )
+
+
+def task_environment_dir(task_dir: Path | str) -> Path:
+    """The folder a task's sandbox image is built from.
+
+    ``environment/`` for v0.6 and legacy split packages. A task.md draft-1
+    package, whose ``task.md`` opens with the instruction instead of YAML
+    frontmatter, keeps it in ``sandbox/``. The path is not resolved, so callers
+    working on a staged copy of a task get a path inside that copy.
+    """
+
+    from benchflow.task._document_draft1 import (
+        DRAFT1_SANDBOX_DIRNAME,
+        is_draft1_task_dir,
+    )
+
+    root = Path(task_dir)
+    if is_draft1_task_dir(root):
+        return root / DRAFT1_SANDBOX_DIRNAME
+    return root / "environment"
 
 
 def local_script_strategy_files(

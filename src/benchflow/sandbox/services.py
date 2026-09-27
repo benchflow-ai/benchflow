@@ -82,7 +82,9 @@ def register_service(
 
 def detect_services_from_dockerfile(task_path: Path | str) -> list[ServiceConfig]:
     """Auto-detect which services a task needs from its Dockerfile."""
-    dockerfile = Path(task_path) / "environment" / "Dockerfile"
+    from benchflow.task.paths import task_environment_dir
+
+    dockerfile = task_environment_dir(task_path) / "Dockerfile"
     if not dockerfile.exists():
         return []
     text = dockerfile.read_text()
