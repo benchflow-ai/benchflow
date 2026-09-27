@@ -1,0 +1,6 @@
+[
+  { "version": "2.1.0", "bump": "minor", "date": "2026-09-27",
+    "reason": "Declared the rules a scored run must follow, and sampled model judges three times per criterion." },
+  { "version": "2.0.0", "bump": "major", "date": "2026-09-27", "ref": "170fe92",
+    "reason": "The instruction now says not to add dependencies, which the no-new-dependency penalty already graded." }
+]

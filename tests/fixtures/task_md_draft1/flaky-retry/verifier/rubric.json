@@ -1,0 +1,58 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.2.0",
+  "extends": ["https://task.md/rubrics/code-change@1"],
+  "scoring": { "method": "points", "gates": "all" },
+  "criteria": [
+    {
+      "id": "retry-tests-pass",
+      "gate": true,
+      "group": "Correctness",
+      "text": "The retry tests pass, including the hidden ones.",
+      "stated": ["Fix the flaky retry logic in `src/http/client.py`", "The failing test is `tests/test_retry.py::test_timeout_retries`"],
+      "judge": "test",
+      "check": "tests/test_retry.py"
+    },
+    {
+      "id": "backoff-with-jitter",
+      "points": 3,
+      "group": "Correctness",
+      "text": "Delays double between attempts and include bounded jitter.",
+      "stated": "exponential backoff (0.5 s, 1 s, 2 s, each with up to 20% jitter)",
+      "judge": "llm",
+      "evidence": ["diff:src/http/client.py"],
+      "levels": {
+        "0": "A fixed delay, or no delay between attempts.",
+        "2": "Delays double, but without jitter or with unbounded jitter.",
+        "3": "Delays double from 0.5 s and each carries jitter of at most 20%."
+      }
+    },
+    {
+      "id": "retry-error-cause",
+      "points": 2,
+      "group": "Correctness",
+      "text": "RetryError carries the last underlying exception as its cause.",
+      "stated": "raise `RetryError` with the last exception attached as its cause",
+      "judge": "test",
+      "check": "test_retry_error_cause"
+    },
+    {
+      "id": "no-new-dependency",
+      "points": -2,
+      "group": "Scope",
+      "text": "Adds a new third-party dependency.",
+      "stated": "do not add new dependencies",
+      "judge": "test",
+      "check": "test_no_new_dependencies"
+    }
+  ],
+  "validation": {
+    "labels": "evidence/rubric-labels.jsonl",
+    "agreement": {
+      "human_human": { "metric": "krippendorff_alpha", "value": null, "n": 0 },
+      "human_judge": { "metric": "cohen_kappa", "value": null, "n": 0 }
+    },
+    "calibration": { "oracle": null, "no_op": null, "known_bad": [] },
+    "status": "not yet measured"
+  }
+}

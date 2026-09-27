@@ -177,6 +177,7 @@ extend-exclude = [
     ".claude/skills/task-review",
     "benchmarks/**/tasks/**/environment/claw-*",
     "tests/fixtures/skillsbench_slice",
+    "tests/fixtures/task_md_draft1",
 ]
 
 [tool.ruff.lint]
