@@ -307,6 +307,21 @@ def _append_document_issues(
                 reason=f"task.md draft 1: {finding.reason}",
                 sandbox=sandbox,
             )
+        # [[sandbox.services]] run through the compose backends, like a
+        # task's own compose file (_append_compose_issue).
+        if (
+            document.draft1.services is not None
+            and sandbox in SINGLE_CONTAINER_PROVIDERS
+        ):
+            _issue(
+                unsupported,
+                path="[sandbox] services",
+                reason=(
+                    "task.md draft 1: services beside the agent's container are "
+                    f"not supported by {sandbox}; use the docker or daytona sandbox"
+                ),
+                sandbox=sandbox,
+            )
     user_runtime = compile_document_user_runtime(document)
     _append_document_user_issues(
         unsupported,

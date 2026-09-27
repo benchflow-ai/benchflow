@@ -8,12 +8,14 @@ import re
 import shlex
 import shutil
 import tempfile
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
+from benchflow.sandbox._compose import stage_compose_context
 from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, providers_phrase
 from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import RolloutPaths, Task
@@ -713,6 +715,11 @@ def _create_sandbox_environment(
         sandbox_type=sandbox_type,
         task_path=task_path,
     )
+    # Past the launch gate, a task with task.md services runs on a compose
+    # backend (docker or daytona), from a copy of its build context.
+    staged_environment_dir = _stage_task_services(task, environment_dir)
+    if staged_environment_dir is not None:
+        environment_dir = staged_environment_dir
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
@@ -743,13 +750,16 @@ def _create_sandbox_environment(
     if sandbox_type == "docker":
         from benchflow.sandbox.docker import DockerSandbox
 
-        return DockerSandbox(
-            environment_dir=environment_dir,
-            environment_name=task_path.name,
-            session_id=rollout_name,
-            rollout_paths=rollout_paths,
-            task_env_config=env_config,
-            persistent_env=manifest_env or None,
+        return _removing_staged_context(
+            DockerSandbox(
+                environment_dir=environment_dir,
+                environment_name=task_path.name,
+                session_id=rollout_name,
+                rollout_paths=rollout_paths,
+                task_env_config=env_config,
+                persistent_env=manifest_env or None,
+            ),
+            staged_environment_dir,
         )
     elif sandbox_type == "daytona":
         try:
@@ -791,15 +801,18 @@ def _create_sandbox_environment(
             )
             env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
 
-        return DaytonaSandbox(
-            environment_dir=environment_dir,
-            environment_name=task_path.name,
-            session_id=rollout_name,
-            rollout_paths=rollout_paths,
-            task_env_config=env_config,
-            auto_stop_interval_mins=1440,
-            auto_delete_interval_mins=1440,
-            persistent_env=manifest_env or None,
+        return _removing_staged_context(
+            DaytonaSandbox(
+                environment_dir=environment_dir,
+                environment_name=task_path.name,
+                session_id=rollout_name,
+                rollout_paths=rollout_paths,
+                task_env_config=env_config,
+                auto_stop_interval_mins=1440,
+                auto_delete_interval_mins=1440,
+                persistent_env=manifest_env or None,
+            ),
+            staged_environment_dir,
         )
     elif sandbox_type == "modal":
         try:
@@ -849,6 +862,33 @@ def _create_sandbox_environment(
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"
         )
+
+
+def _stage_task_services(task: Task, environment_dir: Path) -> Path | None:
+    """A copy of the build context that runs a task.md package's services.
+
+    task.md draft 1 declares containers beside the agent's in
+    ``[[sandbox.services]]``, which the document maps to a Compose file. The
+    compose backends read services only from ``docker-compose.yaml`` in the
+    build context, so the file is written into a copy of it. ``None`` when the
+    task declares no such services.
+    """
+
+    draft1 = getattr(getattr(task, "document", None), "draft1", None)
+    services = getattr(draft1, "services", None)
+    if services is None:
+        return None
+    return stage_compose_context(environment_dir, services)
+
+
+def _removing_staged_context(sandbox: Any, staged_environment_dir: Path | None) -> Any:
+    """Remove a staged build context once the sandbox built from it is released."""
+
+    if staged_environment_dir is not None:
+        weakref.finalize(
+            sandbox, shutil.rmtree, staged_environment_dir.parent, ignore_errors=True
+        )
+    return sandbox
 
 
 def _validate_task_runtime_for_launch(

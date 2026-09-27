@@ -1,8 +1,13 @@
 """Compose helpers for Docker and Daytona DinD backends."""
 
+import json
 import re
 import shlex
+import shutil
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 COMPOSE_DIR = Path(__file__).parent / "_compose_files"
 COMPOSE_BASE_PATH = COMPOSE_DIR / "docker-compose-base.yaml"
@@ -49,6 +54,59 @@ def compose_definition_path(environment_dir: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def stage_compose_context(environment_dir: Path, compose: Mapping[str, Any]) -> Path:
+    """A private copy of *environment_dir* whose docker-compose.yaml is *compose*.
+
+    The compose backends read a task's services only from docker-compose.yaml
+    in its build context, so services a task declares another way (task.md's
+    ``[[sandbox.services]]``) run from a copy, and the task package is never
+    written to. Service ``environment`` values are resolved from the host as
+    ``[sandbox] env`` values are, and every ``$`` is escaped from Compose's
+    interpolation, so containers get values and commands as written. The file
+    is kept out of the build itself, so a Dockerfile that copies its whole
+    context does not put the services' settings in the agent's image. The
+    caller removes the copy's temporary parent directory.
+    """
+    from benchflow.task.env import resolve_env_vars
+
+    services = {
+        name: (
+            {**service, "environment": resolve_env_vars(service["environment"])}
+            if "environment" in service
+            else service
+        )
+        for name, service in compose["services"].items()
+    }
+    text = json.dumps(
+        _escape_interpolation({**compose, "services": services}), indent=2
+    )
+    staged = Path(tempfile.mkdtemp(prefix="benchflow-services-")) / environment_dir.name
+    shutil.copytree(environment_dir, staged, symlinks=True)
+    # JSON is YAML, so Compose reads the file under the name the backends expect.
+    (staged / "docker-compose.yaml").write_text(text + "\n")
+    # BuildKit reads Dockerfile.dockerignore instead of .dockerignore when both exist.
+    for name in (".dockerignore", "Dockerfile.dockerignore"):
+        ignore = staged / name
+        if name != ".dockerignore" and not ignore.exists():
+            continue
+        kept = ignore.read_text() if ignore.exists() else ""
+        ignore.unlink(missing_ok=True)  # never write through a symlink
+        separator = "\n" if kept and not kept.endswith("\n") else ""
+        ignore.write_text(f"{kept}{separator}docker-compose.yaml\n")
+    return staged
+
+
+def _escape_interpolation(value: Any) -> Any:
+    """*value* with each ``$`` in its strings doubled, which Compose reads as ``$``."""
+    if isinstance(value, str):
+        return value.replace("$", "$$")
+    if isinstance(value, Mapping):
+        return {key: _escape_interpolation(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_escape_interpolation(item) for item in value]
+    return value
 
 
 def is_compose_up_network_race_error(message: str) -> bool:

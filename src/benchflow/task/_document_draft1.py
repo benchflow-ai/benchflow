@@ -47,12 +47,13 @@ import re
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
 
 from benchflow.task._document_normalize import TaskDocumentParseError
+from benchflow.task.config import HealthcheckConfig
 from benchflow.task.verifier_rubric import rubric_gaps
 
 DRAFT1_SANDBOX_DIRNAME = "sandbox"
@@ -99,7 +100,7 @@ _CLOSED_KEYS = {
     "sandbox": {
         "image", "os", "cpus", "memory", "disk", "gpus", "gpu_types", "tpu",
         "network", "workdir", "env", "skills", "mcp", "ready", "build_timeout",
-        "outputs", "mounts", "boundary", "compose",
+        "outputs", "mounts", "boundary", "compose", "services",
     },
     "agent": {
         "timeout", "on_timeout", "budget", "user", "network", "network_reason",
@@ -145,6 +146,8 @@ _HARBOR_NAMES = {  # Harbor task.toml spellings -> task.md's
     "environment_mode": "isolation",
     "collect": "snapshot",
 }
+_SERVICE_KEYS = {"name", "image", "build", "command", "env", "ready"}
+_SERVICE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")  # Compose's grammar
 _WORLD_KINDS = {"virtual", "simulated", "physical"}
 _CREDIT_ROLES = (None, "author", "advisor", "domain-reviewer", "technical-reviewer")
 _DURATION_SHAPE = re.compile(
@@ -193,6 +196,8 @@ class Draft1Document:
     ``rubric`` is ``verifier/rubric.json`` when it is task.md's (by
     ``$schema``) and the runtime can grade it; it is read only when the
     package is, so the verifier grades the copy that was checked.
+    ``services`` is the Compose file ``[[sandbox.services]]`` map to, which
+    the runtime writes into a copy of ``sandbox/`` at launch, or ``None``.
     """
 
     instruction: str
@@ -207,6 +212,7 @@ class Draft1Document:
     verifier_mount: str = DEFAULT_VERIFIER_MOUNT
     oracle_mount: str = DEFAULT_ORACLE_MOUNT
     rubric: dict[str, Any] | None = None
+    services: dict[str, Any] | None = None
 
 
 @dataclass
@@ -287,7 +293,8 @@ def read_draft1_task_md(
 
     ``task_dir`` enables the package checks: a Harbor ``task.toml`` beside
     ``task.md`` is an error, ``sandbox/docker-compose.yaml`` is checked against
-    ``[sandbox] compose``, ``verifier/rubric.json`` and
+    ``[sandbox] compose`` and service build folders against the package,
+    ``verifier/rubric.json`` and
     ``verifier/behaviors.json`` in task.md's schema are classified, and a
     ``verifier/verifier.md`` strategy is checked against them.
     """
@@ -331,6 +338,7 @@ def read_draft1_task_md(
     _compose(config, findings)
     try:
         frontmatter = _config_to_v06(config, findings)
+        services = _services(config, findings)
     except (TypeError, ValueError, AttributeError, KeyError) as e:
         raise TaskDocumentParseError(
             f"task.md draft 1: the config block cannot be mapped: {e}"
@@ -345,7 +353,7 @@ def read_draft1_task_md(
             )
     rubric = None
     if root is not None:
-        _check_compose_file(root, config, findings)
+        _check_service_files(root, config, findings)
         rubric = _check_judgment_files(root, findings)
         _check_verifier_strategy(root, rubric, mounts[0], findings)
 
@@ -364,6 +372,7 @@ def read_draft1_task_md(
         verifier_mount=mounts[0],
         oracle_mount=mounts[1],
         rubric=rubric,
+        services=services,
     )
 
 
@@ -412,6 +421,116 @@ def _compose(config: dict[str, Any], findings: _Findings) -> None:
             f"{compose!r} is not supported; this runtime reads a task's Compose "
             f"file only at {DRAFT1_COMPOSE_PATH}",
         )
+
+
+def _services(config: dict[str, Any], findings: _Findings) -> dict[str, Any] | None:
+    """``[[sandbox.services]]`` as the Compose file the runtime runs beside main.
+
+    Each entry becomes the Compose service of its name, which the agent reaches
+    by name, and main starts once each service has started or, with ``ready``,
+    passed its check: a Compose healthcheck with ``[sandbox] ready``'s keys and
+    defaults. ``build`` names a folder in ``sandbox/``, the build context the
+    compose backends receive. Values are kept as written; the runtime resolves
+    ``env`` templates from the host and escapes ``$`` from Compose's
+    interpolation when it writes the file (``sandbox._compose``).
+    """
+
+    sandbox = _table(config, "sandbox")
+    services = sandbox.get("services")
+    if services is None:
+        return None
+    if "compose" in sandbox:
+        findings.refuse(
+            "[sandbox] services",
+            "[[sandbox.services]] and [sandbox] compose both declare services; "
+            "this runtime runs one Compose file, so declare them in one place",
+        )
+    mapper = _Mapper(findings)
+    out: dict[str, Any] = {}
+    waits: dict[str, Any] = {}
+    for service in services:
+        name = service["name"]
+        where = f"sandbox.services.{name}"
+        if not _SERVICE_NAME.match(name):
+            findings.refuse(
+                f"[{where}]",
+                "not a Compose service name: letters, digits, _, ., and -, "
+                "starting with a letter or digit",
+            )
+        entry: dict[str, Any] = {}
+        for key, value in service.items():
+            if key == "name":
+                continue
+            if key.startswith("x-"):
+                findings.refuse(
+                    f"[{where}] {key}",
+                    "an extension for another tool; this runtime reads only "
+                    "[x-benchflow]",
+                )
+            elif key == "ready":
+                ready = _as_table(value, f"{where}.ready")
+                check = HealthcheckConfig.model_validate(
+                    mapper.table(ready, _READY, f"{where}.ready")
+                )
+                mapper.unknown(ready, _NATIVE["ready"], f"{where}.ready")
+                entry["healthcheck"] = _healthcheck(check, ready)
+            elif (mapped := _service_value(key, value)) is not None:
+                entry["environment" if key == "env" else key] = mapped
+            else:
+                findings.refuse(f"[{where}] {key}", _SERVICE_VALUES[key])
+        out[name] = entry
+        waits[name] = {
+            "condition": "service_healthy" if "ready" in service else "service_started"
+        }
+    return {"services": {"main": {"depends_on": waits}, **out}}
+
+
+def _service_value(key: str, value: Any) -> Any:
+    """A service's image, build, command, or env in Compose's form, or None."""
+
+    if key == "image":
+        return value if isinstance(value, str) and value else None
+    if key == "build":
+        path = PurePosixPath(value) if isinstance(value, str) else None
+        if (
+            path is None
+            or path.is_absolute()
+            or ".." in path.parts
+            or path.parts[:1] != (DRAFT1_SANDBOX_DIRNAME,)
+        ):
+            return None
+        return PurePosixPath(*path.parts[1:]).as_posix()  # from sandbox/
+    if key == "command":
+        if isinstance(value, str) or (
+            isinstance(value, list) and value and all(isinstance(x, str) for x in value)
+        ):
+            return value
+        return None
+    if isinstance(value, dict) and all(isinstance(v, str) for v in value.values()):
+        return dict(value)  # env
+    return None
+
+
+def _healthcheck(check: HealthcheckConfig, ready: dict[str, Any]) -> dict[str, Any]:
+    """A service's ready check as a Compose healthcheck, run in its container."""
+
+    out: dict[str, Any] = {
+        "test": ["CMD-SHELL", check.command],
+        "interval": _compose_duration(check.interval_sec),
+        "timeout": _compose_duration(check.timeout_sec),
+        "retries": check.retries,
+    }
+    if check.start_period_sec:
+        out["start_period"] = _compose_duration(check.start_period_sec)
+    # Docker Engine 25 added start_interval; its default is v0.6's, so it is
+    # written only when the task sets it.
+    if "start_interval" in ready:
+        out["start_interval"] = _compose_duration(check.start_interval_sec)
+    return out
+
+
+def _compose_duration(seconds: float) -> str:
+    return f"{round(seconds * 1000)}ms"
 
 
 def undelivered_prompt_findings(
@@ -638,6 +757,31 @@ def _check_config(
     verifier_sandbox = _table(config, "verifier").get("sandbox")
     if isinstance(verifier_sandbox, dict):
         _check_phase(verifier_sandbox, "[verifier.sandbox]", errors)
+    services = _table(config, "sandbox").get("services")
+    if services is not None:
+        names: list[str] = []
+        for service in services if isinstance(services, list) else [None]:
+            if not (
+                isinstance(service, dict)
+                and isinstance(service.get("name"), str)
+                and ("image" in service or "build" in service)
+            ):
+                errors.append(
+                    "each [[sandbox.services]] entry has a name and an image or a "
+                    "build folder"
+                )
+                continue
+            if service["name"] == "main":
+                errors.append(
+                    "the service name main is the agent's own container; name the "
+                    "service something else"
+                )
+            names.append(service["name"])
+            for key in service:
+                if key not in _SERVICE_KEYS and not key.startswith("x-"):
+                    errors.append(f"unknown key {key} in service {service['name']}")
+        for name in sorted({n for n in names if names.count(n) > 1}):
+            errors.append(f"service {name} is declared twice")
     budget = _table(config, "agent").get("budget")
     if budget is not None and not (
         isinstance(budget, dict) and set(budget) <= {"tool_calls", "tokens"}
@@ -790,7 +934,11 @@ _TOP = {
     "sandbox", "agent", "verifier", "oracle", "stages", "provenance", "import",
 }  # fmt: skip
 # Keys the runtime honors itself, outside the v0.6 config model.
-_RUNTIME_KEYS = {"verifier": {"mount"}, "oracle": {"mount"}, "sandbox": {"compose"}}
+_RUNTIME_KEYS = {
+    "verifier": {"mount"},
+    "oracle": {"mount"},
+    "sandbox": {"compose", "services"},
+}
 # v0.6 frontmatter takes Harbor's config model with its own spellings.
 _V06_TABLE_NAMES = (("sandbox", "environment"), ("oracle", "solution"))
 _V06_VERIFIER_NAMES = (("sandbox_mode", "environment_mode"), ("sandbox", "environment"))
@@ -837,6 +985,15 @@ _UNSUPPORTED_KEYS = {
     ("verifier", "snapshot"): "snapshot commands are not run before grading",
     ("verifier", "judges"): "rubric judge models are not configured by this runtime",
     ("verifier", "human"): "human judging is not supported",
+}
+_SERVICE_VALUES = {  # why a [[sandbox.services]] value cannot be run
+    "image": "must be an image reference",
+    "build": (
+        "must be a folder in sandbox/, such as sandbox/db: the compose backends "
+        "receive sandbox/ as the build context and nothing else from the package"
+    ),
+    "command": "must be a command string or a list of arguments",
+    "env": "must be a table of strings",
 }
 
 
@@ -992,8 +1149,8 @@ def _as_table(value: Any, where: str) -> dict[str, Any]:
 def _config_to_v06(cfg: dict[str, Any], findings: _Findings) -> dict[str, Any]:
     """task.md config -> v0.6 frontmatter data (``config_to_v06``)."""
 
-    # Mounts and the Compose file are the runtime's to honor (``_mounts``,
-    # ``_compose``), not v0.6 config keys.
+    # Mounts and services are the runtime's to honor (``_mounts``, ``_compose``,
+    # ``_services``), not v0.6 config keys.
     cfg = {
         key: (
             {k: v for k, v in value.items() if k not in _RUNTIME_KEYS[key]}
@@ -1192,17 +1349,29 @@ def _merge_imports(
 # Prompts and package files ----------------------------------------------------
 
 
-def _check_compose_file(
+def _check_service_files(
     task_dir: Path, config: dict[str, Any], findings: _Findings
 ) -> None:
-    """The Compose file the runtime would run, against the one the task declares.
+    """The Compose file and service builds the runtime would use, against the task.
 
     The compose backends start whatever ``sandbox/docker-compose.yaml`` holds.
     A package that ships one without declaring it would get services it never
-    asked for; one that declares it without shipping it would get none.
+    asked for; one that declares it without shipping it would get none. A
+    service's build folder needs its Dockerfile.
     """
 
-    declared = _table(config, "sandbox").get("compose") == DRAFT1_COMPOSE_PATH
+    sandbox = _table(config, "sandbox")
+    for service in sandbox.get("services") or []:
+        build = _service_value("build", service.get("build"))
+        if (
+            build is not None
+            and not (task_dir / DRAFT1_SANDBOX_DIRNAME / build / "Dockerfile").is_file()
+        ):
+            findings.refuse(
+                f"[sandbox.services.{service['name']}] build",
+                f"{service['build']} has no Dockerfile in the package",
+            )
+    declared = sandbox.get("compose") == DRAFT1_COMPOSE_PATH
     present = (task_dir / DRAFT1_COMPOSE_PATH).is_file()
     if declared and not present:
         findings.refuse(

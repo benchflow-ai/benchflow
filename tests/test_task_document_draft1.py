@@ -991,3 +991,295 @@ def test_compose_file_the_runtime_would_not_run_as_declared_is_refused(
     assert path in findings
     assert reason in findings[path]
     assert path in _launch_issue_paths(task_dir)
+
+
+# Services beside the agent's container: [[sandbox.services]] ------------------------
+
+_SERVICES = """
+[[sandbox.services]]
+name = "db"
+image = "postgres:16"
+env = { POSTGRES_PASSWORD = "${DB_PASSWORD:-secret}", GREETING = "cost $5" }
+ready = { run = "pg_isready -U postgres", interval = "2s", retries = 10 }
+
+[[sandbox.services]]
+name = "web"
+build = "sandbox/web"
+command = ["sh", "-c", "echo $HOME && python -m http.server 8000"]
+"""
+
+
+def _services_task(tmp_path: Path, services: str = _SERVICES) -> Path:
+    """hello-world with a database and a web app built from sandbox/web."""
+    task_dir = tmp_path / "services-task"
+    shutil.copytree(FIXTURES / "hello-world", task_dir)
+    (task_dir / "sandbox" / "web").mkdir()
+    (task_dir / "sandbox" / "web" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    text = (task_dir / "task.md").read_text()
+    (task_dir / "task.md").write_text(
+        text.replace(
+            '[agent]\ntimeout = "2m"\n', f'[agent]\ntimeout = "2m"\n{services}'
+        )
+    )
+    return task_dir
+
+
+def test_services_map_to_a_compose_file_beside_main(tmp_path: Path) -> None:
+    """[[sandbox.services]] (task-md 8e46ce3) become Compose services of their names,
+    which the agent reaches by name. main starts once each has started, or has passed
+    its ready check (a healthcheck with [sandbox] ready's keys and v0.6's defaults).
+    Values stay as written until the runtime writes the file at launch.
+    """
+    task_dir = _services_task(tmp_path)
+
+    document = TaskDocument.from_path(task_dir / "task.md")
+
+    assert document.draft1 is not None
+    assert document.draft1.unsupported == ()
+    assert "sandbox" not in document.frontmatter  # not v0.6 config
+    assert document.draft1.services == {
+        "services": {
+            "main": {
+                "depends_on": {
+                    "db": {"condition": "service_healthy"},
+                    "web": {"condition": "service_started"},
+                }
+            },
+            "db": {
+                "image": "postgres:16",
+                "environment": {
+                    "POSTGRES_PASSWORD": "${DB_PASSWORD:-secret}",
+                    "GREETING": "cost $5",
+                },
+                "healthcheck": {
+                    "test": ["CMD-SHELL", "pg_isready -U postgres"],
+                    "interval": "2000ms",
+                    "timeout": "30000ms",
+                    "retries": 10,
+                },
+            },
+            "web": {
+                "build": "web",
+                "command": ["sh", "-c", "echo $HOME && python -m http.server 8000"],
+            },
+        }
+    }
+    assert _launch_issue_paths(task_dir, "docker") == set()
+    assert _launch_issue_paths(task_dir, "daytona") == set()
+    assert _launch_issue_paths(task_dir, "modal") == {"[sandbox] services"}
+
+
+def test_services_run_from_a_copy_of_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compose backends read services from docker-compose.yaml in the build
+    context, so the runtime writes the file into a copy of sandbox/ and builds from
+    the copy. env templates resolve from the host, as [sandbox] env's do, and $ is
+    escaped from Compose's interpolation. The copy goes when the sandbox does.
+    """
+    import gc
+
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    monkeypatch.setenv("DB_PASSWORD", "pa$s")
+    task_dir = _services_task(tmp_path)
+    (task_dir / "sandbox" / ".dockerignore").write_text("*.log")
+    sandbox = _create_sandbox_environment(
+        "docker",
+        Task(task_dir),
+        task_dir,
+        "services-task",
+        RolloutPaths(tmp_path / "rollout"),
+    )
+    staged = sandbox.environment_dir
+
+    assert staged != task_dir / "sandbox"
+    assert (staged / "Dockerfile").read_text() == (
+        task_dir / "sandbox" / "Dockerfile"
+    ).read_text()
+    assert (staged / "web" / "Dockerfile").is_file()
+    assert not (task_dir / DRAFT1_COMPOSE).exists()  # the package is not written to
+    assert sandbox._uses_compose
+    assert staged / "docker-compose.yaml" in sandbox._docker_compose_paths
+    compose = json.loads((staged / "docker-compose.yaml").read_text())
+    assert compose["services"]["db"]["environment"] == {
+        "POSTGRES_PASSWORD": "pa$$s",
+        "GREETING": "cost $$5",
+    }
+    assert compose["services"]["web"]["command"][-1] == (
+        "echo $$HOME && python -m http.server 8000"
+    )
+    # Kept out of the agent's image, even by a Dockerfile that copies everything.
+    assert (staged / ".dockerignore").read_text() == "*.log\ndocker-compose.yaml\n"
+    assert (task_dir / "sandbox" / ".dockerignore").read_text() == "*.log"
+
+    del sandbox
+    gc.collect()
+    assert not staged.parent.exists()
+
+
+@pytest.mark.parametrize(
+    ("services", "message"),
+    [
+        (
+            '\n[[sandbox.services]]\nname = "db"\n',
+            "each [[sandbox.services]] entry has a name and an image or a build folder",
+        ),
+        (
+            '\n[[sandbox.services]]\nname = "main"\nimage = "redis:7"\n',
+            "the service name main is the agent's own container",
+        ),
+        (
+            '\n[[sandbox.services]]\nname = "db"\nimage = "redis:7"\nports = [6379]\n',
+            "unknown key ports in service db",
+        ),
+        (
+            '\n[[sandbox.services]]\nname = "db"\nimage = "redis:7"\n'
+            '\n[[sandbox.services]]\nname = "db"\nimage = "redis:6"\n',
+            "service db is declared twice",
+        ),
+    ],
+)
+def test_malformed_services_fail_to_parse(
+    tmp_path: Path, services: str, message: str
+) -> None:
+    """The reference parser's errors for [[sandbox.services]] (tools/taskmd.py)."""
+    task_dir = _services_task(tmp_path, services)
+
+    with pytest.raises(TaskDocumentParseError, match=re.escape(message)):
+        TaskDocument.from_path(task_dir / "task.md")
+
+
+@pytest.mark.parametrize(
+    ("services", "path", "reason"),
+    [
+        (
+            'name = "db"\nbuild = "services/db"\n',
+            "[sandbox.services.db] build",
+            "must be a folder in sandbox/",
+        ),
+        (
+            'name = "db"\nbuild = "sandbox/db"\n',
+            "[sandbox.services.db] build",
+            "sandbox/db has no Dockerfile in the package",
+        ),
+        (
+            'name = "my db"\nimage = "redis:7"\n',
+            "[sandbox.services.my db]",
+            "not a Compose service name",
+        ),
+        (
+            'name = "db"\nimage = "redis:7"\nenv = { PORT = 6379 }\n',
+            "[sandbox.services.db] env",
+            "must be a table of strings",
+        ),
+        (
+            'name = "db"\nimage = "redis:7"\nready = { run = "true", window = "db" }\n',
+            "[sandbox.services.db.ready] window",
+            "no v0.6 equivalent",
+        ),
+        (
+            'name = "db"\nimage = "redis:7"\nx-other = { replicas = 2 }\n',
+            "[sandbox.services.db] x-other",
+            "an extension for another tool",
+        ),
+        (
+            'name = "db"\nimage = "redis:7"\n\n[sandbox]\n'
+            'compose = "sandbox/docker-compose.yaml"\n',
+            "[sandbox] services",
+            "both declare services",
+        ),
+    ],
+)
+def test_services_the_runtime_cannot_run_as_declared_are_refused(
+    tmp_path: Path, services: str, path: str, reason: str
+) -> None:
+    task_dir = _services_task(tmp_path, f"\n[[sandbox.services]]\n{services}")
+    if "compose" in services:
+        (task_dir / DRAFT1_COMPOSE).write_text(_COMPOSE_FILE)
+
+    document = TaskDocument.from_path(task_dir / "task.md")
+
+    assert document.draft1 is not None
+    findings = {f.path: f.reason for f in document.draft1.unsupported}
+    assert path in findings
+    assert reason in findings[path]
+    assert path in _launch_issue_paths(task_dir)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("declared", ["compose", "services"])
+async def test_services_are_reachable_by_name_on_docker(
+    tmp_path: Path, declared: str
+) -> None:
+    """On Docker, main reaches a service by name, whether a Compose file declares it
+    ([sandbox] compose) or task.md does ([[sandbox.services]], built from sandbox/web
+    and waited on until ready). A service's env reaches it as written, and the file
+    the runtime writes for task.md's services stays out of main's image.
+    """
+    import subprocess
+    import uuid
+
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    if not shutil.which("docker"):
+        pytest.skip("Docker not installed")
+    if subprocess.run(["docker", "info"], capture_output=True, timeout=15).returncode:
+        pytest.skip("Docker daemon unavailable")
+
+    task_dir = tmp_path / "web-task"
+    (task_dir / "sandbox" / "web").mkdir(parents=True)
+    (task_dir / "sandbox" / "Dockerfile").write_text(
+        "FROM python:3.12-slim\nCOPY . /app\n"
+    )
+    (task_dir / "sandbox" / "web" / "Dockerfile").write_text(
+        "FROM python:3.12-slim\nRUN echo from-web > /srv/index.html\nWORKDIR /srv\n"
+    )
+    serve = '["python", "-m", "http.server", "8000"]'
+    if declared == "compose":
+        (task_dir / DRAFT1_COMPOSE).write_text(
+            "services:\n  web:\n    build: ./web\n"
+            f"    command: {serve}\n    environment:\n      GREETING: cost $$5\n"
+        )
+        config = f'[sandbox]\ncompose = "{DRAFT1_COMPOSE}"\n'
+    else:
+        config = (
+            '[[sandbox.services]]\nname = "web"\nbuild = "sandbox/web"\n'
+            f'command = {serve}\nenv = {{ GREETING = "cost $5" }}\n'
+            "ready = { run = \"python -c 'import urllib.request as u; "
+            'u.urlopen(\\"http://localhost:8000/\\")\'", '
+            'interval = "1s", retries = 30 }\n'
+        )
+    (task_dir / "task.md").write_text(
+        f'Fetch http://web:8000/.\n\n```toml task\nname = "e2e/web"\n\n{config}```\n'
+    )
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+    sandbox = _create_sandbox_environment(
+        "docker",
+        Task(task_dir),
+        task_dir,
+        f"web-{uuid.uuid4().hex[:12]}",
+        RolloutPaths(rollout_dir),
+    )
+    try:
+        await sandbox.start(force_build=False)
+        fetched = await sandbox.exec(
+            'python3 -c "import urllib.request as u; '
+            "print(u.urlopen('http://web:8000/').read().decode())\"",
+            timeout_sec=60,
+        )
+        greeting = await sandbox.exec("printenv GREETING", service="web")
+        copied = await sandbox.exec("ls -A /app")
+    finally:
+        await sandbox.stop(delete=True)
+
+    assert fetched.return_code == 0, fetched.stdout
+    assert (fetched.stdout or "").strip() == "from-web"
+    assert (greeting.stdout or "").strip() == "cost $5"
+    in_image = set((copied.stdout or "").split())
+    assert "web" in in_image
+    if declared == "services":
+        assert "docker-compose.yaml" not in in_image
