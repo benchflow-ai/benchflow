@@ -161,9 +161,11 @@ def test_flaky_retry_maps_config_and_refuses_launch() -> None:
     assert config.task.keywords == ["python", "networking", "bugfix"]
 
     # The v0.6 gate refuses the separate verifier; the draft-1 findings add
-    # everything the v0.6 model cannot carry.
+    # everything the v0.6 model cannot carry, including [agent] network = "none",
+    # which nothing in the runtime would enforce.
     assert _launch_issue_paths(task_dir) == {
         "verifier.sandbox_mode",
+        "[agent] network",
         "[verifier] judges",
         "[runs]",
         "verifier/rubric.json",
@@ -280,6 +282,38 @@ def test_role_and_user_blocks_map_to_v06_prompts(tmp_path: Path) -> None:
     assert document.scenes[0].turns[0].prompt == "Review the patch. Do not edit files."
     assert document.draft1 is not None
     assert document.draft1.unsupported == ()
+
+
+@pytest.mark.parametrize(
+    ("config", "refused"),
+    [
+        ('[agent]\nnetwork = "none"\n', {"[agent] network"}),
+        ('[verifier]\nnetwork = "none"\n', {"[verifier] network"}),
+        (
+            '[sandbox]\nnetwork = "none"\n\n[agent]\nnetwork = "open"\n',
+            {"[agent] network"},
+        ),
+        ('[sandbox]\nnetwork = "none"\n\n[agent]\nnetwork = "none"\n', set()),
+        ('[agent]\nnetwork = "open"\n', set()),
+    ],
+    ids=["agent-none", "verifier-none", "agent-open-in-closed", "same", "open"],
+)
+def test_phase_networks_the_runtime_would_not_enforce_are_refused(
+    tmp_path: Path, config: str, refused: set[str]
+) -> None:
+    """[agent] and [verifier] network override [sandbox] network while the agent
+    works and while grading runs, but the runtime enforces only the sandbox's
+    (v0.6 sandbox.network_mode) and reads nothing from agent.network_mode or
+    verifier.network_mode. A phase network that differs would be silently ignored,
+    so it is refused; one that matches is the sandbox's, which is enforced.
+    """
+    task_dir = _write_task(tmp_path, f"Fix the bug.\n\n```toml task\n{config}```\n")
+
+    document = TaskDocument.from_path(task_dir / "task.md")
+
+    assert document.draft1 is not None
+    assert {f.path for f in document.draft1.unsupported} == refused
+    assert refused <= _launch_issue_paths(task_dir)
 
 
 def test_settings_v06_would_ignore_are_refused(tmp_path: Path) -> None:

@@ -336,6 +336,7 @@ def read_draft1_task_md(
     findings = _Findings()
     mounts = _mounts(config, findings)
     _compose(config, findings)
+    _phase_networks(config, findings)
     try:
         frontmatter = _config_to_v06(config, findings)
         services = _services(config, findings)
@@ -421,6 +422,30 @@ def _compose(config: dict[str, Any], findings: _Findings) -> None:
             f"{compose!r} is not supported; this runtime reads a task's Compose "
             f"file only at {DRAFT1_COMPOSE_PATH}",
         )
+
+
+def _phase_networks(config: dict[str, Any], findings: _Findings) -> None:
+    """``[agent] network`` and ``[verifier] network``, against what the runtime enforces.
+
+    task.md's ``[sandbox] network`` covers the sandbox's whole life, and
+    ``[agent] network`` and ``[verifier] network`` override it while the agent
+    works and while grading runs (``docs/document.md``). This runtime enforces
+    one policy, the sandbox's (v0.6 ``sandbox.network_mode``); nothing reads
+    the v0.6 ``agent.network_mode`` or ``verifier.network_mode`` they map to.
+    A phase network other than the sandbox's would go unenforced, so it is
+    refused. A task that declares no network is open.
+    """
+
+    sandbox_network = _table(config, "sandbox").get("network", "open")
+    for table in ("agent", "verifier"):
+        network = _table(config, table).get("network")
+        if network is not None and network != sandbox_network:
+            findings.refuse(
+                f"[{table}] network",
+                f"{network!r} differs from [sandbox] network ({sandbox_network!r}); "
+                "this runtime enforces only [sandbox] network and no network per "
+                "phase",
+            )
 
 
 def _services(config: dict[str, Any], findings: _Findings) -> dict[str, Any] | None:
