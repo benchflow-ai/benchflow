@@ -148,7 +148,7 @@ async def test_codex_litellm_config_owns_model_selection(tmp_path, reasoning_eff
 
 @pytest.mark.asyncio
 async def test_codex_with_model_option_still_uses_set_model(tmp_path):
-    """codex-acp@1.6.0 advertises a 'model' config option whose values reject
+    """codex-acp 1.6.0 and 1.13.1 advertise a 'model' config option whose values reject
     the ``model[effort]`` ids its own session/set_model requires (-32602
     Invalid params, verified live 2026-08-19), so codex is the documented
     exception to capability-first and stays on session/set_model."""

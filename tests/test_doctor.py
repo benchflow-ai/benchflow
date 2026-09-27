@@ -667,19 +667,18 @@ def test_versions_show_sandbox_pin_and_host_cli(tmp_path):
 def test_versions_flag_a_registry_override_of_a_pinned_agent(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from benchflow.agents.registry import AGENTS
+    from benchflow.agents.registry import AGENTS, pinned_npm_package
 
+    _, pinned = pinned_npm_package("codex-acp")
     cfg = AGENTS["codex-acp"]
-    monkeypatch.setitem(
-        AGENTS,
-        "codex-acp",
-        replace(cfg, install_cmd=cfg.install_cmd.replace("@1.6.0", "@9.9.9")),
-    )
+    overridden = cfg.install_cmd.replace(f"@{pinned}", "@9.9.9")
+    assert overridden != cfg.install_cmd, "override must replace the pinned version"
+    monkeypatch.setitem(AGENTS, "codex-acp", replace(cfg, install_cmd=overridden))
     probes = make_probes(tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN})
     check = by_id(run_doctor(probes=probes, offline=True))["version.codex-acp"]
     assert check.status == "warn"
     assert "codex-acp@9.9.9" in check.summary
-    assert "codex-acp@1.6.0" in check.summary
+    assert f"codex-acp@{pinned}" in check.summary
 
 
 # ── Network ─────────────────────────────────────────────────────────────

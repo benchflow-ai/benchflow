@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from benchflow.providers.litellm_config import safe_model_alias
+from benchflow.providers.litellm_config import safe_model_alias, strip_provider_prefix
 
 CODEX_CONFIG_ENV = "CODEX_CONFIG"
 CODEX_DEFAULT_AUTH_REQUEST_ENV = "DEFAULT_AUTH_REQUEST"
@@ -109,17 +109,19 @@ def apply_codex_launch_config(
     )
     config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=disable_search)
     provider_model = agent_env.get(_PROVIDER_MODEL_ENV)
+    # The launch owns the model when CODEX_CONFIG names either the proxy
+    # alias or the bare slug the provider config hands Codex (#1145).
     owns_model = bool(
         model
         and agent_env.get(_LITELLM_MODEL_VIA_ENV) in {"1", "true", "True"}
         and provider_model
         and provider_model == safe_model_alias(model)
         and config is not None
-        and config.get("model") == provider_model
+        and config.get("model") in {provider_model, strip_provider_prefix(model)}
     )
     if config is not None and (disable_search or (owns_model and reasoning_effort)):
         if disable_search:
-            # codex-acp 1.6.0 ignores CLI -c flags; its supported CODEX_CONFIG
+            # codex-acp (1.6.0 through 1.13.1) ignores CLI -c flags; its CODEX_CONFIG
             # is forwarded to the Codex app-server's thread configuration.
             config["web_search"] = "disabled"
         if owns_model and reasoning_effort:

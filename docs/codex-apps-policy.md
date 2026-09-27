@@ -28,7 +28,7 @@ configuration classifier, not a guarantee that every interactive run uses
 `skip_verify`. It defaults disabled only when `purpose="task"` and
 `skip_verify=False`.
 
-The policy requires the managed Codex ACP launcher at the registry's exact pin (`_CODEX_ACP_PACKAGE` in `agents/registry.py`, currently 1.6.0). The actual native executable version (`codex-acp cli -V`) must satisfy the `@openai/codex` range that the installed adapter declares in its `package.json` (`^0.148.0` for 1.6.0, that is 0.148.x). Only exact and caret ranges are evaluated; any other range form fails closed. A caret range keeps its first nonzero component fixed, as in npm. A pre-release native version, or an adapter `package.json` that declares no `@openai/codex` dependency, is refused as well. Bumping the registry pin retargets this check, so there is no second copy of the version to update; re-run the credential-free adapter fixture below when bumping, because the `features list` override probe is the behavioral check for each admitted build. Manifest/custom launch replacements are rejected when disabled. Other adapter versions, native versions outside the declared range, custom launchers/executable overrides, root agents, malformed `CODEX_CONFIG`, and failed policy setup abort before ACP initialization. Other harnesses and local task MCP servers are unchanged.
+The policy requires the managed Codex ACP launcher at the registry's exact pin (`_CODEX_ACP_PACKAGE` in `agents/registry.py`, currently 1.13.1). The actual native executable version (`codex-acp cli -V`) must satisfy the `@openai/codex` range that the installed adapter declares in its `package.json` (`^0.156.1` for 1.13.1, that is 0.156.1 or a later 0.156.x). Only exact and caret ranges are evaluated; any other range form fails closed. A caret range keeps its first nonzero component fixed, as in npm. A pre-release native version, or an adapter `package.json` that declares no `@openai/codex` dependency, is refused as well. Bumping the registry pin retargets this check, so there is no second copy of the version to update; re-run the credential-free adapter fixture below when bumping, because the `features list` override probe is the behavioral check for each admitted build. Manifest/custom launch replacements are rejected when disabled. Other adapter versions, native versions outside the declared range, custom launchers/executable overrides, root agents, malformed `CODEX_CONFIG`, and failed policy setup abort before ACP initialization. Other harnesses and local task MCP servers are unchanged.
 
 BenchFlow sets `features.apps=false` in the adapter's supported `CODEX_CONFIG`
 and installs a root-owned `/etc/codex/requirements.toml` inside the sandbox.
@@ -50,10 +50,10 @@ authenticated hosted-tool absence still needs a separate controlled native
 conformance test. It does not establish general account, network, or
 cross-harness isolation.
 
-Sources: [adapter 1.6.0 CLI and CODEX_PATH handling](https://github.com/agentclientprotocol/codex-acp/blob/50bd611451c02868cc2b50bd6a7fc61ae5ef9b41/src/index.ts),
-[Codex managed requirements](https://github.com/openai/codex/tree/rust-v0.148.0/codex-rs/config).
+Sources: [adapter 1.13.1 CLI and CODEX_PATH handling](https://github.com/agentclientprotocol/codex-acp/blob/b1b8490cd165c18626dc3fe83836cdacdef94cd3/src/index.ts),
+[Codex managed requirements](https://github.com/openai/codex/tree/rust-v0.156.1/codex-rs/config).
 
-The credential-free adapter fixture exercised the actual managed launcher,
+The credential-free adapter fixture (last run against adapter 1.6.0) exercised the actual managed launcher,
 non-root agent context, user/CLI enable overrides, repeated application,
 conflicting existing requirements, and unsafe symlink/writable policy files.
 It used a disconnected disposable container for all probes and made no model

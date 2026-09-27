@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex gets its real model id, and a codex that knows it (#1145).** Under
+  a BenchFlow provider (LiteLLM proxy) the `codex-acp` thread was started with
+  the proxy alias as the model (`benchflow-azure-foundry-openai-gpt-5.6-luna`).
+  Codex resolves model metadata by slug, warned "Model metadata for `...` not
+  found. Defaulting to fallback metadata", and offered a reduced tool surface
+  on every rollout: eight function tools, no native `apply_patch`, no code
+  mode, no multi-agent tools, where native `codex exec` on the same provider
+  offers all of them. `CODEX_CONFIG.model` now names the bare slug (which the
+  proxy already serves next to the alias), the launch-config writer accepts
+  it when applying the reasoning effort, and the `codex-acp` pin moves to
+  1.13.1 (codex 0.156.1) because 0.148 has no metadata for `gpt-6-astra`
+  even under the bare slug. Verified on hello-world rollouts: bare slug +
+  0.156.1 gives `gpt-6-astra` code mode + `apply_patch` + `spawn_agent` /
+  `wait_agent` / `send_message` / `followup_task`, and `gpt-5.6-luna` code
+  mode + `apply_patch`, matching the native CLI's tool lists for both.
+
 ### Added
 
 - **`--sandbox remote-docker`: tasks on a Docker host you control.** Set `BENCHFLOW_REMOTE_DOCKER_HOST` (or `DOCKER_HOST`) to `ssh://user@host` or to `tcp://host:2376` with `DOCKER_TLS_VERIFY=1` and client certificates; plain TCP and local sockets are refused. It is the local Docker provider with the daemon elsewhere: same compose files, sandbox user and verifier hardening, `no-network`, `allowlist` and `denylist` modes, compose side services, separate verifier sandboxes and snapshots. Nothing on your machine is bind-mounted on the remote host (logs, verifier output and artifacts are copied back), the model proxy runs in the sandbox, every docker call targets the configured host regardless of your docker context, and the ssh user is redacted from messages. `bench eval run`, `bf.Evaluation` and reviewer sandboxes check the host with `docker info` before a job exists: an unreachable host or a task asking for more CPUs or memory than the host reports is refused with the reason, and never retried. Teardown always removes volumes and orphans and then removes anything still labelled with the rollout's compose project; when the host is gone, the warning names the command that cleans up later. See `docs/remote-docker.md`.

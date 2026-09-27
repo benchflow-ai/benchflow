@@ -440,7 +440,7 @@ def _resolve_acp_model_option_id(
     automatically, while a member that does not keeps using
     ``session/set_model``.
 
-    codex-acp is the documented exception: 1.6.0 advertises a "model" config
+    codex-acp is the documented exception: 1.6.0 and 1.13.1 advertise a "model" config
     option whose values reject the ``model[effort]`` ids its own
     ``session/set_model`` requires (-32602 Invalid params, verified live
     2026-08-19), so codex stays on the set_model path.

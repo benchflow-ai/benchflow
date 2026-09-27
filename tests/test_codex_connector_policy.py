@@ -92,8 +92,21 @@ INSTALLED = response(json.dumps({"requirements_sha256": "a" * 64}))
 APPS_OFF = response("apps stable false\n")
 
 
-def admission(adapter="1.6.0", declared="^0.148.0", native="0.148.0"):
-    """Probe replies in order: UID, adapter, installed adapter manifest, native."""
+# The pinned adapter's own npm metadata: codex-acp 1.13.1 declares
+# ``"@openai/codex": "^0.156.1"`` (``npm view @agentclientprotocol/codex-acp@1.13.1
+# dependencies``), and npm resolves that range to codex-cli 0.156.1.
+PINNED_DECLARED = "^0.156.1"
+PINNED_NATIVE = "0.156.1"
+# The previous pin, used where a test needs an adapter the registry does not pin.
+OLD_ADAPTER, OLD_DECLARED, OLD_NATIVE = "1.6.0", "^0.148.0", "0.148.0"
+
+
+def admission(adapter=None, declared=PINNED_DECLARED, native=PINNED_NATIVE):
+    """Probe replies in order: UID, adapter, installed adapter manifest, native.
+
+    The adapter defaults to the registry pin, so the happy path follows a bump.
+    """
+    adapter = adapter or registry.pinned_npm_package("codex-acp")[1]
     manifest = {"name": ADAPTER, "version": adapter, "codex": declared}
     return [
         response("1000"),
@@ -229,7 +242,9 @@ async def test_apps_gate_follows_registry_codex_acp_pin(tmp_path, monkeypatch):
     receipt = json.loads((tmp_path / "codex_apps_policy.json").read_text())
     assert receipt["native_version"] == "0.156.1"
     assert receipt["adapter_version"] == "1.13.1"
-    stale = SimpleNamespace(exec=AsyncMock(side_effect=admission()))
+    stale = SimpleNamespace(
+        exec=AsyncMock(side_effect=admission(OLD_ADAPTER, OLD_DECLARED, OLD_NATIVE))
+    )
     with pytest.raises(RuntimeError, match=r"Codex ACP 1\.13\.1"):
         await enforce_codex_apps_policy(stale, **args(tmp_path))
 
@@ -271,7 +286,7 @@ async def test_native_version_output_must_name_codex_cli(tmp_path):
     """Guards this fix for the Apps-off default for scored Codex tasks (GH #1107): a bare version string is not the
     native Codex identity."""
     replies = admission()
-    replies[3] = response("0.148.0")
+    replies[3] = response(PINNED_NATIVE)
     env = SimpleNamespace(exec=AsyncMock(side_effect=replies))
     with pytest.raises(RuntimeError, match="native Codex"):
         await enforce_codex_apps_policy(env, **args(tmp_path))
@@ -282,9 +297,9 @@ async def test_declared_range_must_come_from_the_pinned_adapter(tmp_path):
     version cannot supply the native range."""
     replies = admission()
     replies[2] = response(
-        json.dumps({"name": ADAPTER, "version": "1.13.1", "codex": "^0.156.1"})
+        json.dumps({"name": ADAPTER, "version": OLD_ADAPTER, "codex": OLD_DECLARED})
     )
-    replies[3] = response("codex-cli 0.156.1")
+    replies[3] = response(f"codex-cli {OLD_NATIVE}")
     env = SimpleNamespace(exec=AsyncMock(side_effect=replies))
     with pytest.raises(RuntimeError, match="native Codex"):
         await enforce_codex_apps_policy(env, **args(tmp_path))
@@ -333,3 +348,13 @@ asyncio.run(main())
         timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_policy_doc_names_the_registry_pin():
+    """Guards the codex-acp 1.13.1 bump (#1145, #1146): the operator
+    doc states the pinned adapter and its declared native range; a bump that
+    leaves it naming the old pin misstates what admission accepts."""
+    doc = (Path(__file__).parents[1] / "docs" / "codex-apps-policy.md").read_text()
+    _, version = registry.pinned_npm_package("codex-acp")
+    assert f"currently {version})" in doc
+    assert f"(`{PINNED_DECLARED}` for {version}" in doc
