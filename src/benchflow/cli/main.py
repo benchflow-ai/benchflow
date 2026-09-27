@@ -1589,8 +1589,14 @@ def eval_list(
             memory_label(data),
         )
 
+    # A root summary.json is either one job's own summary (the folder is a
+    # job) or the backward-compatible copy every job writes to its jobs
+    # folder. When child folders carry their own summaries, list those.
     root_summary = jobs_dir / "summary.json"
-    if root_summary.exists():
+    has_child_jobs = any(
+        (d / "summary.json").is_file() for d in jobs_dir.iterdir() if d.is_dir()
+    )
+    if root_summary.exists() and not has_child_jobs:
         add_summary_row(jobs_dir.name, root_summary)
         console.print(table)
         return

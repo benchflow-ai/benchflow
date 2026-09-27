@@ -451,7 +451,11 @@ async def _recover_verifier(
             await child._env.upload_file(archive, remote + ".tar")
             await child._env.upload_file(bundle / "manifest.json", remote + ".json")
             await install_uploaded_workspace(
-                child._env, remote + ".tar", remote, remote + ".json"
+                child._env,
+                remote + ".tar",
+                remote,
+                remote + ".json",
+                restore_modes=True,
             )
             # Oracle installation performs trusted user/lockdown/build-baseline
             # setup only; no solver command or model is executed.

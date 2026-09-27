@@ -39,6 +39,23 @@ def test_misspelt_agent_is_refused_with_a_suggestion(no_rollouts) -> None:
     assert no_rollouts == []
 
 
+@pytest.mark.parametrize(
+    "typo,meant", [("oracel", "oracle"), ("gemnii", "gemini"), ("orcale", "oracle")]
+)
+def test_transposed_short_agent_name_is_refused(no_rollouts, typo, meant) -> None:
+    """Two swapped letters in a short name are a misspelling too.
+
+    Regression test: ``bf.run_sync(RolloutConfig(agent="oracel",
+    environment="daytona"))`` passed the pre-run check (similarity 0.83, under
+    the 0.85 cutoff), started a sandbox and failed minutes later as an ACP
+    initialize timeout, while ``bench eval run --agent oracel`` is
+    refused before a job exists.
+    """
+    with pytest.raises(ValueError, match=f"did you mean '{meant}'"):
+        bf.run_sync(RolloutConfig(task_path=TASK, agent=typo))
+    assert no_rollouts == []
+
+
 def test_misspelt_agent_in_the_string_form(no_rollouts) -> None:
     with pytest.raises(ValueError, match="did you mean"):
         bf.run_sync("codx-acp", task_path=TASK)
@@ -77,7 +94,9 @@ def test_batch_is_checked_before_anything_starts(no_rollouts) -> None:
     assert no_rollouts == []
 
 
-@pytest.mark.parametrize("agent", ["my-agent --serve", "/opt/agents/run.sh", "dummy"])
+@pytest.mark.parametrize(
+    "agent", ["my-agent --serve", "/opt/agents/run.sh", "dummy", "test-agent"]
+)
 def test_raw_commands_and_unrelated_names_pass(agent: str) -> None:
     from benchflow.runtime import check_rollout_config
 

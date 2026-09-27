@@ -462,6 +462,22 @@ def _suggest(name: str, choices: list[str]) -> str | None:
     return close[0] if close else None
 
 
+def _transposition_of(name: str, choices: list[str]) -> str | None:
+    """The choice that ``name`` equals up to one swap of adjacent letters."""
+    for choice in choices:
+        if len(choice) != len(name) or choice == name:
+            continue
+        diff = [i for i, (a, b) in enumerate(zip(name, choice, strict=True)) if a != b]
+        if (
+            len(diff) == 2
+            and diff[1] == diff[0] + 1
+            and name[diff[0]] == choice[diff[1]]
+            and name[diff[1]] == choice[diff[0]]
+        ):
+            return choice
+    return None
+
+
 def check_sandbox_name(sandbox: str) -> None:
     """Raise ``ValueError`` (with a suggestion) for an unknown sandbox name."""
     from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET, providers_phrase
@@ -487,7 +503,9 @@ def check_agent_names(names: Iterable[str | None]) -> None:
     for name in sorted({n for n in names if n}):
         if name in known or any(c in name for c in " /:\t"):
             continue
-        hint = _suggest(name, known)
+        # Two swapped neighbouring letters in a short name ("oracel") score
+        # under the similarity cutoff, so they are matched exactly.
+        hint = _suggest(name, known) or _transposition_of(name, known)
         if hint is not None:
             raise ValueError(
                 f"Unknown agent {name!r}; did you mean {hint!r}? "

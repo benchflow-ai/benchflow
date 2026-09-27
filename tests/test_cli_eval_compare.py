@@ -212,3 +212,22 @@ def test_inspect_drops_an_empty_cost_column(tmp_path: Path) -> None:
     assert "Cost" not in unpriced.output
     _trial(tmp_path / "k", "t", cost=0.01)
     assert "Cost" in _run("inspect", str(tmp_path / "k")).output
+
+
+def test_default_labels_use_each_sides_own_name(tmp_path: Path) -> None:
+    """A named job compared with a timestamped one keeps its own name.
+
+    Regression test: comparing
+    ``jobs/matrix/fake/trial-01/2026-01-01__12-00-00`` with ``jobs/batch-oracle``
+    labelled the second side ``jobs`` (its parent folder), because one
+    timestamp side sent both sides to their parents.
+    """
+    from benchflow.jobs import _default_labels
+
+    stamped = tmp_path / "trial-01" / "2026-01-01__12-00-00"
+    named = tmp_path / "jobs" / "batch-oracle"
+    assert _default_labels(stamped, named) == ("trial-01", "batch-oracle")
+    assert _default_labels(named, stamped) == ("batch-oracle", "trial-01")
+    # Same names still fall back to the parents, then to A/B.
+    assert _default_labels(tmp_path / "x" / "run", tmp_path / "y" / "run") == ("x", "y")
+    assert _default_labels(tmp_path / "x" / "run", tmp_path / "x" / "run") == ("A", "B")

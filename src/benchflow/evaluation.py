@@ -152,6 +152,10 @@ def _environment_manifest_from_task_document(
 
 
 def _is_task_dir(path: Path) -> bool:
+    from benchflow._utils.task_authoring import task_symlink_issues
+
+    if task_symlink_issues(path):
+        return False
     if not (path / "task.md").exists():
         return _is_structural_task_dir(path) and _task_parse_error(path) is None
     from benchflow._utils.task_authoring import check_task
@@ -1361,6 +1365,8 @@ class Evaluation:
                 return []
             return [self._tasks_dir]
 
+        from benchflow._utils.task_authoring import task_symlink_issues
+
         # Batch input: collect valid child tasks; warn (don't silently drop) on
         # any child whose task.md fails to PARSE. Selection filters are applied
         # first, so excluded dirs are never warned about. A child task.md that
@@ -1380,6 +1386,12 @@ class Evaluation:
             malformed = _task_parse_error(d)
             if malformed is not None:
                 logger.warning("Skipping malformed task %r: %s", d.name, malformed[1])
+                continue
+            linked = task_symlink_issues(d)
+            if linked and ((d / "task.md").is_file() or (d / "task.toml").is_file()):
+                # A task that would run without its linked files must not
+                # vanish silently from a batch.
+                logger.warning("Skipping task %r: %s", d.name, linked[0])
 
         # A malformed task file at the tasks-dir ROOT is a hard error ONLY when
         # no valid child tasks were found — i.e. the root was meant as a single

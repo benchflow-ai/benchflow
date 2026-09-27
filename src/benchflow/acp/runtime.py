@@ -201,6 +201,10 @@ def _codex_reasoning_effort(model_id: str) -> str:
     return model_id.rsplit("[", 1)[1][:-1]
 
 
+class CodexModelNotOffered(ValueError):
+    """The requested model is not among the models the Codex session offers."""
+
+
 def _codex_session_model_id(
     model: str,
     session: object | None,
@@ -240,6 +244,20 @@ def _codex_session_model_id(
         and _codex_model_name(entry["modelId"]) == requested_name
     ]
     if not candidates:
+        offered = sorted(
+            {
+                _codex_model_name(entry["modelId"])
+                for entry in available
+                if isinstance(entry, dict) and isinstance(entry.get("modelId"), str)
+            }
+        )
+        if offered:
+            # Sending the name anyway gets an opaque -32603 from codex-acp,
+            # and the same answer on every retry.
+            raise CodexModelNotOffered(
+                f"codex-acp does not offer model {requested_name!r} for this "
+                f"login; it offers: {', '.join(offered)}"
+            )
         return model
 
     # A requested reasoning effort rides the codex model id: codex-acp

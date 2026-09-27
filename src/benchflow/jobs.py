@@ -1232,9 +1232,13 @@ def _default_labels(a: Path, b: Path) -> tuple[str, str]:
     import re
 
     stamp = re.compile(r"^\d{4}-\d{2}-\d{2}[_T]")
-    for pa, pb in ((a, b), (a.parent, b.parent)):
-        if pa.name != pb.name and not (stamp.match(pa.name) or stamp.match(pb.name)):
-            return pa.name, pb.name
+
+    def own(p: Path) -> str:
+        return p.parent.name if stamp.match(p.name) else p.name
+
+    for la, lb in ((own(a), own(b)), (a.parent.name, b.parent.name)):
+        if la != lb and not (stamp.match(la) or stamp.match(lb)):
+            return la, lb
     return "A", "B"
 
 

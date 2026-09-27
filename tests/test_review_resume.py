@@ -571,3 +571,29 @@ def test_huge_programmatic_diagnostic_numbers_are_omitted(tmp_path):
     # Retained exactly, never float-rounded.
     assert details["idle_duration_sec"] == 2**64
     assert "status_counts" not in events["api_error_info"]["details"]
+
+
+@pytest.mark.asyncio
+async def test_an_expected_resume_refusal_logs_one_line_without_a_traceback(
+    saved_trial, monkeypatch, caplog
+):
+    """Guards the #1134 isolation above: a task edited since the solver ran is
+    an expected refusal (ReviewResumeError), so resuming the job logs one
+    warning naming the reason instead of a full Python traceback."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+
+    async def refuse(path, **_):
+        raise ReviewResumeError("Task digest mismatch: restore the exact solver task")
+
+    monkeypatch.setattr(resume, "resume_review", refuse)
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics"},
+    )
+    [record] = [r for r in caplog.records if rollout.name in r.getMessage()]
+    assert "Task digest mismatch" in record.getMessage()
+    assert record.exc_info is None

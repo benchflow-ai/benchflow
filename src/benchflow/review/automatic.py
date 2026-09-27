@@ -71,9 +71,16 @@ def prepare_review(task_path: Path, reviewer: ReviewerConfig) -> PreparedReview 
             "Add explicit blocker and weight fields to every criterion."
         )
     try:
-        model = effective_model(reviewer.agent, reviewer.model)
+        try:
+            model = effective_model(reviewer.agent, reviewer.model)
+        except ValueError:
+            model = None
         if not model:
-            raise ValueError("specify --reviewer-model for this harness")
+            raise ValueError(
+                f"the reviewer agent {reviewer.agent!r} has no default model; "
+                "pass --reviewer-model (Python: ReviewerConfig(model=...)) "
+                "or choose another --reviewer-agent"
+            )
         resolved_env = resolve_agent_env(reviewer.agent, model, reviewer.agent_env)
     except ValueError as exc:
         raise ValueError(f"Reviewer preflight for {rubric_path}: {exc}") from exc

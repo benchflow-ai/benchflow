@@ -31,8 +31,12 @@ The default pinned reviewer image installs `numpy==2.2.6` and `pypdf==5.9.0`
 during trusted setup, before the agent starts. Its network restrictions remain
 unchanged. Custom reviewer images supply their own artifact-reading tools.
 
-Reviewer defaults are `opencode`, its registered model, Docker, 1800 seconds,
-and concurrency 4. Set reviewer options explicitly when using a different
+Reviewer defaults are `opencode`, Docker, 1800 seconds, and concurrency 4.
+`opencode` has no registered default model, so a task with a rubric is refused
+before the solver starts until you pass `--reviewer-model` (Python:
+`ReviewerConfig(model=...)`) or pick a `--reviewer-agent` that has one. The
+reviewer backend does not follow `--sandbox`: pass `--reviewer-sandbox daytona`
+to review on Daytona. Set reviewer options explicitly when using a different
 provider or backend. API keys and supported native OAuth are resolved through
 normal BenchFlow credential handling; solver environment overrides do not become
 reviewer overrides. Missing reviewer configuration or authentication is rejected

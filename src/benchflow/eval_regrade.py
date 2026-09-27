@@ -58,6 +58,12 @@ _UNSAFE_WORKSPACES = {
 
 Status = Literal["regraded", "failed", "not_regradable"]
 
+UNCHANGED_TASK_FLIP = (
+    "the task is unchanged, so the verifier read state outside the frozen "
+    "workspace (packages installed system-wide, services, files elsewhere) "
+    "that a regrade does not restore, or it is nondeterministic"
+)
+
 
 @dataclass
 class TrialRegrade:
@@ -71,6 +77,7 @@ class TrialRegrade:
     change: str | None = None
     reason: str | None = None
     regrade_id: str | None = None
+    task_changed: bool | None = None
 
     @property
     def changed(self) -> bool:
@@ -146,7 +153,46 @@ def find_trials(path: Path) -> list[Path]:
     trials = sorted(p for p in path.iterdir() if p.is_dir() and _is_trial(p))
     if not trials:
         raise FileNotFoundError(f"No trials under {path}")
-    return trials
+    return _without_replaced_attempts(trials)
+
+
+def _result_or_empty(trial: Path) -> dict[str, Any]:
+    try:
+        result = _read_json(trial / "result.json")
+    except (OSError, ValueError):
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _attempt_key(trial: Path) -> tuple[Any, Any, Any]:
+    result = _result_or_empty(trial)
+    return (
+        result.get("task_name") or trial.name,
+        result.get("agent_name") or result.get("agent"),
+        result.get("model"),
+    )
+
+
+def _without_replaced_attempts(trials: list[Path]) -> list[Path]:
+    """Drop unscored attempts a scored retry of the same task replaced.
+
+    A trial whose sandbox failed to start (or that errored before scoring)
+    and was then retried leaves its own folder; the job's summary, ``inspect``
+    and ``load_job`` count the retry, so regrade must not list the replaced
+    attempt as another trial.
+    """
+    scored = {
+        _attempt_key(t)
+        for t in trials
+        if isinstance(_result_or_empty(t).get("rewards"), dict)
+    }
+    return [
+        t
+        for t in trials
+        if isinstance(_result_or_empty(t).get("rewards"), dict)
+        or (t / "evidence").is_dir()
+        or _attempt_key(t) not in scored
+    ]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -180,6 +226,15 @@ def resolve_task(trial: Path, tasks_dir: Path | None) -> tuple[Path | None, str 
     recorded = Path(str(config.get("task_path") or ""))
     if recorded.is_absolute() and _is_task_dir(recorded):
         return recorded, None
+    # A batch trial records only the task folder's name; the job records the
+    # tasks folder it ran (evaluation.json beside the trials).
+    job_tasks = _read_json(trial.parent / "evaluation.json").get("tasks_dir")
+    if isinstance(job_tasks, str) and job_tasks:
+        job_tasks_dir = Path(job_tasks)
+        if _is_task_dir(job_tasks_dir) and job_tasks_dir.name == name:
+            return job_tasks_dir, None
+        if _is_task_dir(job_tasks_dir / name):
+            return job_tasks_dir / name, None
     return None, f"task folder for {name!r} unknown; pass --tasks-dir"
 
 
@@ -374,7 +429,9 @@ async def _install_bundle(env: Any, bundle: Path, staging: Path, name: str) -> s
     remote = f"/tmp/benchflow-regrade-{name}-" + uuid.uuid4().hex
     await env.upload_file(archive, remote + ".tar")
     await env.upload_file(bundle / "manifest.json", remote + ".json")
-    await install_uploaded_workspace(env, remote + ".tar", remote, remote + ".json")
+    await install_uploaded_workspace(
+        env, remote + ".tar", remote, remote + ".json", restore_modes=True
+    )
     return remote
 
 
@@ -612,10 +669,13 @@ async def _regrade_one(
     _write_block(trial, attempt, block)
     row.regrade_id = regrade_id
     row.new_reward = new_reward
+    row.task_changed = block["task_changed"]
     if error:
         row.status, row.reason = "failed", error
     else:
         row.status, row.change = "regraded", change
+        if change not in (None, "same") and not block["task_changed"]:
+            row.reason = UNCHANGED_TASK_FLIP
     return row
 
 

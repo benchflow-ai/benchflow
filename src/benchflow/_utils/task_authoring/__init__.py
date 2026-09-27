@@ -138,6 +138,24 @@ def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str
     return []
 
 
+def task_symlink_issues(task_dir: Path) -> list[str]:
+    """Sandbox uploads skip symlinks (#411): a linked file or folder never arrives."""
+    links = sorted(
+        p.relative_to(task_dir).as_posix()
+        for p in task_dir.rglob("*")
+        if p.is_symlink()
+    )
+    if not links:
+        return []
+    shown = ", ".join(links[:5]) + (
+        f" (+{len(links) - 5} more)" if len(links) > 5 else ""
+    )
+    return [
+        f"Task uses symlinks, which are not uploaded into the sandbox: {shown}; "
+        "copy the files into the task instead"
+    ]
+
+
 def check_task(
     task_dir: Path,
     *,
@@ -203,6 +221,8 @@ def check_task(
 
     if validation_level == "schema":
         return issues
+
+    issues.extend(task_symlink_issues(task_dir))
 
     for d in REQUIRED_DIRS:
         if not (task_dir / d).is_dir():

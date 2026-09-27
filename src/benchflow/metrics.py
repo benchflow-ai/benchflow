@@ -394,23 +394,29 @@ def collect_metrics(
 ) -> BenchmarkMetrics:
     """Collect metrics from a results directory.
 
-    Reads all result.json files, picks the best result per task
-    (rewards > no rewards, higher reward preferred).
+    Reads all result.json files, picks the best result per task, agent and
+    model (rewards > no rewards, higher reward preferred).
     """
     results_dir = Path(results_dir)
-    best: dict[str, dict] = {}
+    # One result per task, agent and model: a retried task counts once, but a
+    # folder holding several agents' jobs keeps each agent's result.
+    best: dict[tuple[str, str, str], dict] = {}
 
     for rfile in iter_task_result_paths(results_dir):
         try:
             r = _with_integration_failure(json.loads(rfile.read_text()), rfile.parent)
-            task = r["task_name"]
-            if task not in best or _result_rank(r) > _result_rank(best[task]):
-                best[task] = r
+            key = (
+                r["task_name"],
+                str(r.get("agent_name") or r.get("agent") or ""),
+                str(r.get("model") or ""),
+            )
+            if key not in best or _result_rank(r) > _result_rank(best[key]):
+                best[key] = r
         except Exception as e:
             logger.debug(f"Skipping corrupt result file {rfile}: {e}")
 
     tasks = []
-    for task_name, r in sorted(best.items()):
+    for (task_name, _agent, _model), r in sorted(best.items()):
         reward = extract_reward(r)
         # Calculate duration
         duration = 0.0

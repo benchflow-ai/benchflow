@@ -208,6 +208,12 @@ async def resume_pending_reviews(
     async def resume_one(path: Path) -> None:
         try:
             await resume_review(path, tasks_root=tasks_root, reviewer=reviewer)
+        except ReviewResumeError as exc:
+            logger.warning(
+                "Could not resume scoring for %s: %s; its saved result is kept",
+                path.name,
+                exc,
+            )
         except Exception:
             logger.exception(
                 "Could not resume scoring for %s; its saved result is kept", path.name

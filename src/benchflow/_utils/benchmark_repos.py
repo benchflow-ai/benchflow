@@ -418,7 +418,22 @@ def _repo_slug_from_git_root(repo_root: Path) -> str | None:
 
 
 def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
-    """Infer github source provenance for tasks under repo or dataset cache paths."""
+    """Infer github source provenance for tasks under repo or dataset cache paths.
+
+    Best effort: a task whose files cannot be hashed (a symlinked
+    ``environment/`` shared with another task, say) gets no inferred
+    provenance instead of an error that would abort the whole batch.
+    """
+    try:
+        return _infer_task_source_provenance(task_path)
+    except ValueError as exc:
+        if "symlink" not in str(exc):
+            raise
+        logger.warning("No source provenance recorded for %s: %s", task_path, exc)
+        return None
+
+
+def _infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
     try:
         task_resolved = task_path.resolve(strict=True)
     except OSError:

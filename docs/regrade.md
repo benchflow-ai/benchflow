@@ -64,5 +64,6 @@ Regrading the same job against the first verifier again changes nothing (4 of 4 
 ## Limits
 
 - A trial needs a frozen workspace. Runs made before `--freeze-workspace` existed can be regraded only if rubric review or verifier recovery froze them.
-- State outside the workspace, outside declared artifacts and outside `/logs/artifacts` is not restored. That covers services, databases and files the agent wrote elsewhere. A verifier that reads such state sees the fresh image instead.
+- State outside the workspace, outside declared artifacts and outside `/logs/artifacts` is not restored. That covers services, databases and files the agent wrote elsewhere. A verifier that reads such state sees the fresh image instead. When the task did not change but the verdict did, the row carries `task_changed: false` and a reason saying so, and `bench eval regrade` marks it `(task unchanged: …)`: a solver that installed a package system-wide, started a service, or wrote outside the workspace passes in its own sandbox and can fail on the restored copy.
+- File permissions inside the workspace are restored (the manifest records each file's and directory's mode); file owners are not restored.
 - Freezing stores a copy of each workspace (at most 20 GiB and 200,000 entries per trial; credential files and sandbox runtime state are left out and listed in the manifest).

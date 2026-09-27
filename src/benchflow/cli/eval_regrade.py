@@ -77,6 +77,8 @@ def eval_regrade(
         for row in summary.trials:
             if row.status == "regraded":
                 verdict = row.change or "same"
+                if row.changed and row.task_changed is False:
+                    verdict += " (task unchanged: state outside the workspace?)"
             elif row.status == "failed":
                 verdict = f"failed: {row.reason}"
             else:
@@ -96,6 +98,14 @@ def eval_regrade(
             f"{counts['not_regradable']} not regradable. "
             f"Summary: {escape(str(Path(summary.path) / 'regrade-summary.json'))}"
         )
+        flipped = [row for row in summary.changed if row.task_changed is False]
+        if flipped:
+            console.print(
+                f"[yellow]{len(flipped)} changed verdict(s) on an unchanged "
+                "task: the verifier read state a regrade does not restore "
+                "(packages installed system-wide, services, files outside the "
+                "workspace) or is nondeterministic. See docs/regrade.md.[/yellow]"
+            )
     if summary.failed:
         raise typer.Exit(1)
 

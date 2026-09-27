@@ -47,6 +47,10 @@ class EvidenceEntry(BaseModel):
     sha256: str | None = None
     link_target: str | None = None
     original_link_target: str | None = None
+    # Permission bits the solver left (files and directories). The host copy
+    # and the reviewer's copy are normalised to 0644/0755; a restore for
+    # verification (regrade, verifier recovery) puts these back.
+    mode: int | None = Field(default=None, ge=0, le=0o777)
 
 
 class EvidenceExclusion(BaseModel):
@@ -270,6 +274,7 @@ def _extract_archive(
                     original_path=original_path,
                     kind="directory",
                     size=0,
+                    mode=member.mode & 0o777,
                 )
             elif member.issym():
                 target = _link_target(member, workspace)
@@ -295,6 +300,7 @@ def _extract_archive(
                     kind="file",
                     size=member.size,
                     sha256=_digest(path),
+                    mode=member.mode & 0o777,
                 )
             entries.append(entry)
     return tuple(sorted(entries, key=lambda entry: entry.path))
@@ -818,6 +824,12 @@ with tarfile.open(sys.argv[1], "r:") as archive:
             with source, path.open("xb") as output:
                 shutil.copyfileobj(source, output)
             path.chmod(0o755 if member.mode & 0o111 else 0o644)
+if len(sys.argv) > 4 and sys.argv[4] == "restore-modes":
+    # Deepest first, so a restrictive directory mode never blocks its entries.
+    for name in sorted(expected, key=lambda item: -len(pathlib.PurePosixPath(item).parts)):
+        entry = expected[name]
+        if entry.get("mode") is not None and entry["kind"] in ("file", "directory"):
+            (destination / name).chmod(int(entry["mode"]) & 0o777)
 """
 
 
@@ -828,15 +840,19 @@ async def install_uploaded_workspace(
     manifest_path: str,
     *,
     timeout_sec: int = 600,
+    restore_modes: bool = False,
 ) -> None:
     """Restore a packaged workspace, preserving links, then verify every byte.
 
     Call before starting the reviewer, followed by its normal evidence locking.
     The destination must be fresh; a failed installation is never admissible.
+    ``restore_modes`` puts back the permission bits the solver left (for a
+    verifier run on the restored workspace); otherwise files are 0644/0755.
     """
-    command = shlex.join(
-        ["python3", "-c", _UNPACK_SCRIPT, archive_path, workspace, manifest_path]
-    )
+    argv = ["python3", "-c", _UNPACK_SCRIPT, archive_path, workspace, manifest_path]
+    if restore_modes:
+        argv.append("restore-modes")
+    command = shlex.join(argv)
     result = await env.exec(command, user="root", timeout_sec=timeout_sec)
     if result.return_code:
         raise EvidenceError(
