@@ -20,7 +20,7 @@ Credit: the block rules are ported from the task.md draft-1 specification
 (``docs/document.md``, ``docs/package.md``) and its reference parser
 (``tools/taskmd.py``). The config mapping is ported from ``config_to_v06`` in
 the spec's ``tools/convert.py``, including its table renames
-(``V06_TABLE_NAMES``, ``V06_VERIFIER_NAMES``), as of task-md commit a497e86.
+(``V06_TABLE_NAMES``, ``V06_VERIFIER_NAMES``), as of task-md commit 7d46823.
 
 The adapter fails closed. Every draft-1 setting is handled in one of three ways:
 
@@ -1441,8 +1441,9 @@ def _check_judgment_files(task_dir: Path, findings: _Findings) -> dict[str, Any]
         if kind == "behaviors":
             findings.refuse(
                 rel,
-                "watched behaviors are not detected and their consequences "
-                "(fail, invalid, penalties, behavior tags) are not applied",
+                "watched and paired behaviors are not detected, and their "
+                "consequences (fail, invalid, penalties, behavior tags) are not "
+                "applied",
             )
             continue
         gaps = rubric_gaps(data)
