@@ -413,9 +413,16 @@ def register_train(app: typer.Typer) -> None:
         if not path.exists():
             print_error(f"No such path: {path}")
             raise typer.Exit(2)
-        rollouts = sorted(
-            {p.parent for p in path.rglob("result.json") if p.parent.is_dir()}
+        from benchflow._utils.result_paths import iter_task_result_paths
+
+        # Same discovery as bf.load_job: a trial's nested reviewer runs are
+        # not rollouts of the job.
+        result_paths = (
+            [path / "result.json"]
+            if (path / "result.json").is_file()
+            else iter_task_result_paths(path)
         )
+        rollouts = sorted({p.parent for p in result_paths})
         per_rollout = [summarize_rollout_token_capture(r) for r in rollouts]
         report = {
             "rollouts": len(per_rollout),

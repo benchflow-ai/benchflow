@@ -12,6 +12,7 @@ After the prompt, the agent made no tool call, sent no message with text, produc
 |---|---|
 | `agent_auth` | an auth or billing failure in a diagnostic thought or an agent log (`agent/*.txt`): credit balance too low, invalid API key, `authentication_error`, 401, not logged in, expired OAuth token, insufficient quota |
 | `agent_install` | an install or runtime failure: `Node.js vX+ is required`, command not found, Cannot find module, `ModuleNotFoundError`, exec format error, `npm ERR!` |
+| `agent_model` | the agent's `session/new` does not offer the requested model (checked before the prompt for `codex-acp`, whose `session/set_model` otherwise answers only `-32603 Internal error`); the error names the models the session offers |
 | `truncated_trajectory` | the trajectory file has unparseable lines |
 | `empty_trajectory` | no event after the prompt |
 | `immediate_exit` | the agent phase lasted under 10 s |
@@ -23,7 +24,7 @@ At run time the result gets `error_category: "agent_integration"`, an `error` su
 
 Results written before this existed are checked when they are read: `bf.load_job` / `bf.load_trial` (`Trial.integration_failure`, `Trial.execution == "integration_failed"`, `Trial.reward is None`), `bench eval inspect` (a `Cause` column and the headline count) and `bench eval metrics` (an `Integration failures` row, `integration_failures` in `--json`). `summary.json` has `integration_failures: {total, by_cause}`, and the job summary logs one warning line.
 
-A batch stops early when the same `agent_auth` or `agent_install` failure repeats (the API-error circuit breaker, `BENCHFLOW_API_ERROR_BREAKER_THRESHOLD`, default 5); the other causes can be transient and do not trip it. These trials are not retried automatically.
+A batch stops early when the same `agent_auth`, `agent_install` or `agent_model` failure repeats (the API-error circuit breaker, `BENCHFLOW_API_ERROR_BREAKER_THRESHOLD`, default 5); the other causes can be transient and do not trip it. These trials are not retried automatically.
 
 ## Checking an agent before a batch
 

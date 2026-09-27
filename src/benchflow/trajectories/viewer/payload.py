@@ -1147,14 +1147,66 @@ def _rubric_from_report(path: Path, rollout_name: str) -> RubricReview | None:
     return found
 
 
+def _automatic_rubric(rollout_dir: Path) -> RubricReview | None:
+    """The automatic review a task's rubric.json triggered, if any.
+
+    It lives inside the trial: ``result.json`` names the final report
+    (``scoring.revision``, ``scoring/<attempt>.json``), whose
+    ``rubric_snapshot`` holds each criterion's blocker and weight.
+    """
+    result = _load_json(rollout_dir / "result.json")
+    scoring = result.get("scoring") if isinstance(result, dict) else None
+    revision = scoring.get("revision") if isinstance(scoring, dict) else None
+    if not isinstance(revision, str) or not revision:
+        return None
+    path = (rollout_dir / revision).resolve()
+    if not path.is_relative_to(rollout_dir.resolve()):
+        return None
+    report = _load_json(path)
+    if not isinstance(report, dict):
+        return None
+    snapshot = report.get("rubric_snapshot")
+    snapshot_path = (
+        (rollout_dir / snapshot).resolve() if isinstance(snapshot, str) else None
+    )
+    rubric = (
+        _load_json(snapshot_path)
+        if snapshot_path is not None
+        and snapshot_path.is_relative_to(rollout_dir.resolve())
+        else None
+    )
+    criteria = rubric.get("criteria") if isinstance(rubric, dict) else None
+    reviewer = report.get("reviewer")
+    report_scoring = report.get("scoring")
+    return RubricReview(
+        reviewer_model=_optional_text(reviewer.get("model"))
+        if isinstance(reviewer, dict)
+        else None,
+        review_valid=bool(report.get("review_valid")),
+        scoring=dict(report_scoring) if isinstance(report_scoring, dict) else {},
+        summary=_display_text(report.get("summary")),
+        criteria=_criteria(
+            {
+                "checks": report.get("checks"),
+                "criterion_metadata": criteria if isinstance(criteria, list) else [],
+            }
+        ),
+        source=str(path),
+    )
+
+
 def _load_rubric(rollout_dir: Path) -> RubricReview | None:
-    """Find the review of this rollout in the nearest ``review*`` directory.
+    """The trial's automatic review, else the review of this rollout in the
+    nearest ``review*`` directory.
 
     The search walks up ``_REVIEW_SEARCH_DEPTH`` ancestors; at each level every
     ``review*/**/review_report.json`` is read and the last valid entry for
     this rollout in sorted order wins, the rule the leaderboard consumers use.
     An invalid review (no scoring) never shadows a valid one.
     """
+    automatic = _automatic_rubric(rollout_dir)
+    if automatic is not None:
+        return automatic
     name = rollout_dir.name
     ancestor = rollout_dir
     for _ in range(_REVIEW_SEARCH_DEPTH):

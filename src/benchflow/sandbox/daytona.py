@@ -14,6 +14,8 @@ import importlib
 import logging
 import re
 import shlex
+import types
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -229,6 +231,28 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # ``ERROR``). It neither returns nor deletes that sandbox, so this id is the
 # only handle left for cleaning it up.
 _FAILED_START_SANDBOX_ID = re.compile(r"\bSandbox (\S+) failed to start with state\b")
+
+
+_CREATE_ATTEMPT_LABEL = "benchflow.create-attempt"
+
+
+def _tag_create_attempt(params: Any) -> dict[str, str] | None:
+    """Give one create call a unique label so its sandbox can be found when
+    the create fails without returning it; ``None`` when params take none."""
+    labels = getattr(params, "labels", None)
+    if not isinstance(labels, dict):
+        return None
+    tag = {_CREATE_ATTEMPT_LABEL: uuid.uuid4().hex}
+    labels.update(tag)
+    return tag
+
+
+def _labels_query(labels: dict[str, str]) -> Any:
+    try:
+        from daytona import ListSandboxesQuery
+    except ImportError:  # a faked client (tests without the Daytona extra)
+        return types.SimpleNamespace(labels=labels)
+    return ListSandboxesQuery(labels=labels)
 
 
 def _failed_start_sandbox_id(exc: BaseException) -> str | None:
@@ -569,6 +593,7 @@ class DaytonaSandbox(BaseSandbox):
                 self._sandbox = None
 
         daytona = await self._client_manager.get_client()
+        attempt_labels = _tag_create_attempt(params)
         build_timeout = round(self.task_env_config.build_timeout_sec)
         hard_timeout = build_timeout + _STARTUP_HARD_TIMEOUT_BUFFER_SEC
 
@@ -605,11 +630,17 @@ class DaytonaSandbox(BaseSandbox):
                 self._create_outcome_unknown = True
             raise
         except Exception as exc:
-            await self._delete_sandbox_that_failed_to_start(daytona, exc)
+            await self._delete_sandbox_that_failed_to_start(
+                daytona, exc, attempt_labels=attempt_labels
+            )
             raise
 
     async def _delete_sandbox_that_failed_to_start(
-        self, daytona: Any, exc: Exception
+        self,
+        daytona: Any,
+        exc: Exception,
+        *,
+        attempt_labels: dict[str, str] | None = None,
     ) -> None:
         """Delete the sandbox a failed create left behind (e.g. ``BUILD_FAILED``).
 
@@ -619,6 +650,11 @@ class DaytonaSandbox(BaseSandbox):
         """
         sandbox_id = _failed_start_sandbox_id(exc)
         if sandbox_id is None:
+            # The SDK can fail after the sandbox exists without naming it (a
+            # gateway 502 while it waits for the start); find it by the label
+            # this create attempt alone carries.
+            if attempt_labels:
+                await self._delete_sandboxes_labelled(daytona, attempt_labels)
             return
         try:
             leftover = await daytona.get(sandbox_id)
@@ -630,6 +666,27 @@ class DaytonaSandbox(BaseSandbox):
             )
         else:
             self.logger.info(f"Deleted sandbox {sandbox_id} that failed to start")
+
+    async def _delete_sandboxes_labelled(
+        self, daytona: Any, labels: dict[str, str]
+    ) -> None:
+        try:
+            leftovers = [s async for s in daytona.list(_labels_query(labels))]
+        except Exception as list_err:
+            self.logger.warning(
+                f"Could not look up a sandbox the failed create left: {list_err}"
+            )
+            return
+        for leftover in leftovers:
+            try:
+                await leftover.delete()
+            except Exception as cleanup_err:
+                self.logger.warning(
+                    f"Could not delete sandbox {leftover.id} that failed to "
+                    f"start: {cleanup_err}"
+                )
+            else:
+                self.logger.info(f"Deleted sandbox {leftover.id} that failed to start")
 
     def _startup_failure(self, exc: BaseException) -> SandboxStartupError:
         """The startup error for a failed create, with the attempts it made.

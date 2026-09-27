@@ -138,6 +138,19 @@ def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str
     return []
 
 
+def _declares_steps(toml_path: Path) -> bool:
+    """True when a legacy task.toml parses and declares Harbor ``[[steps]]``."""
+    if not toml_path.is_file():
+        return False
+    from benchflow.task.imports import load_task_config_toml
+
+    try:
+        config = load_task_config_toml(toml_path.read_text(), source=str(toml_path))
+    except Exception:
+        return False
+    return bool(config.steps)
+
+
 def task_symlink_issues(task_dir: Path) -> list[str]:
     """Sandbox uploads skip symlinks (#411): a linked file or folder never arrives."""
     links = sorted(
@@ -191,7 +204,12 @@ def check_task(
     if has_task_md:
         issues.extend(_check_task_document(task_md))
     else:
+        multi_step = _declares_steps(task_dir / "task.toml")
         for f in LEGACY_REQUIRED_FILES:
+            if f == "instruction.md" and multi_step:
+                # Harbor multi-step prompts live under steps/<name>/; the
+                # runtime capability check reports the ``steps`` refusal.
+                continue
             if not (task_dir / f).exists():
                 issues.append(f"Missing required file: {f}")
 

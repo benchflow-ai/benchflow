@@ -94,7 +94,9 @@ from benchflow.contracts import (
     default_rollout_planes,
 )
 from benchflow.diagnostics import (
+    AgentModelNotOfferedError,
     AgentPromptTimeoutError,
+    IntegrationFailureDiagnostic,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
@@ -2657,9 +2659,13 @@ class Rollout:
                     user="root",
                     timeout_sec=10,
                 )
+                oracle_started = datetime.now()
                 self._trajectory, self._agent_name = await _run_oracle(
                     self._env, cfg.task_path, self._timeout, sandbox_user=None
                 )
+                self._timing["agent_execution"] = (
+                    datetime.now() - oracle_started
+                ).total_seconds()
                 from benchflow.rollout._verifier_recovery import mark_solver_complete
 
                 mark_solver_complete(self)
@@ -2727,6 +2733,18 @@ class Rollout:
         except SandboxStartupFailure as e:
             self._error = f"Sandbox startup failed: {e}"
             self._diagnostics.set(e.diagnostic)
+            logger.error(self._error)
+        except AgentModelNotOfferedError as e:
+            # Already an agent-integration error text; keep it verbatim so
+            # its category and the batch circuit breaker see the cause.
+            self._error = str(e)
+            self._diagnostics.set(
+                IntegrationFailureDiagnostic(
+                    cause="agent_model",
+                    evidence=str(e).split(": ", 1)[-1],
+                    evidence_source="session/new availableModels",
+                )
+            )
             logger.error(self._error)
         except AgentProtocolError as e:
             # Defer classification until after cleanup(): the provider 401/403

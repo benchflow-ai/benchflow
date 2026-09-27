@@ -233,3 +233,49 @@ async def test_stop_after_an_unfinished_create_still_warns(
     assert len(warnings) == 1
     assert "may still exist" in warnings[0]
     assert "bench sandbox cleanup" in warnings[0]
+
+
+class _GatewayFailureClient:
+    """Create makes the sandbox, then the SDK's start wait gets a 502 whose
+    message carries no sandbox id, which used to leak the sandbox."""
+
+    def __init__(self) -> None:
+        self.made: list[SimpleNamespace] = []
+        self.queries: list[dict[str, str]] = []
+
+    async def create(self, params, timeout):
+        leftover = SimpleNamespace(
+            id="00000000-0000-0000-0000-000000000005",
+            labels=dict(params.labels),
+            delete=AsyncMock(),
+        )
+        self.made.append(leftover)
+        raise _FakeDaytonaError(
+            "Failed to create sandbox: Failure during waiting for sandbox to "
+            "start: Failed to refresh sandbox data: <html><title>502 Bad "
+            "Gateway</title></html>"
+        )
+
+    async def list(self, query=None):
+        wanted = dict(getattr(query, "labels", None) or {})
+        self.queries.append(wanted)
+        for sandbox in self.made:
+            if wanted.items() <= sandbox.labels.items():
+                yield sandbox
+
+
+@pytest.mark.asyncio
+async def test_sandbox_left_by_a_create_error_without_an_id_is_deleted() -> None:
+    """The failed create names no sandbox; find it by its per-attempt label."""
+    client = _GatewayFailureClient()
+    sandbox = _sandbox(client)
+    params = SimpleNamespace(labels={"benchflow.owner": "e2e"})
+
+    with pytest.raises(_FakeDaytonaError, match="502"):
+        await sandbox._create_sandbox(params=params)
+
+    [leftover] = client.made
+    leftover.delete.assert_awaited_once()
+    [query] = client.queries
+    assert query and "benchflow.owner" not in query  # the attempt's own label
+    assert query.items() <= leftover.labels.items()

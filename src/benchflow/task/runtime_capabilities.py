@@ -173,7 +173,7 @@ def _append_config_issues(
         _issue(
             unsupported,
             path="steps",
-            reason="Harbor multi-step execution is parsed but not runtime-gated",
+            reason="Harbor multi-step tasks are not supported (one prompt per task)",
             sandbox=sandbox,
         )
         for i, step in enumerate(config.steps):

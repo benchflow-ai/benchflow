@@ -230,14 +230,19 @@ class BenchmarkMetrics:
         return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
 
     @property
-    def total_cost_usd(self) -> float:
-        return round(sum(t.cost_usd or 0.0 for t in self.telemetry_tasks), 10)
+    def total_cost_usd(self) -> float | None:
+        """USD over trials that reported a cost; None when none did (a
+        subscription login reports none; unknown is not $0)."""
+        costs = [t.cost_usd for t in self.telemetry_tasks if t.cost_usd is not None]
+        return round(sum(costs), 10) if costs else None
 
     @property
     def avg_cost_per_trial_usd(self) -> float | None:
-        if not self.telemetry_tasks:
+        priced = [t for t in self.telemetry_tasks if t.cost_usd is not None]
+        total = self.total_cost_usd
+        if total is None or not priced:
             return None
-        return round(self.total_cost_usd / len(self.telemetry_tasks), 10)
+        return round(total / len(priced), 10)
 
     @property
     def telemetry_coverage(self) -> float:

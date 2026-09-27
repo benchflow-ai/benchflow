@@ -123,10 +123,13 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
     def total(field: str) -> int:
         return sum((r.get("agent_result") or {}).get(field) or 0 for r in covered)
 
-    total_cost = round(
-        sum((r.get("agent_result") or {}).get("cost_usd") or 0.0 for r in covered),
-        10,
-    )
+    # A missing cost is unknown (subscription logins report none), not zero.
+    costs = [
+        cost
+        for r in covered
+        if (cost := (r.get("agent_result") or {}).get("cost_usd")) is not None
+    ]
+    total_cost = round(sum(costs), 10) if costs else None
     return {
         "total_input_tokens": total("n_input_tokens"),
         "total_output_tokens": total("n_output_tokens"),
@@ -135,7 +138,7 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
         "total_tokens": total("total_tokens"),
         "total_cost_usd": total_cost,
         "avg_cost_per_trial_usd": (
-            round(total_cost / len(covered), 10) if covered else None
+            round(total_cost / len(costs), 10) if total_cost is not None else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
     }

@@ -338,9 +338,11 @@ async def setup_sandbox_user(
     logger.info(f"Setting up sandbox user: {sandbox_user}")
     home = f"/home/{sandbox_user}"
     home_dirs = sorted(d for d in get_sandbox_home_dirs() if d != ".local")
-    await env.exec(
+    # busybox images (Alpine) ship adduser but not useradd.
+    result = await env.exec(
         f"id -u {sandbox_user} >/dev/null 2>&1 || "
-        f"useradd -m -s /bin/bash {sandbox_user} && "
+        f"useradd -m -s /bin/bash {sandbox_user} || "
+        f"adduser -D -s /bin/bash {sandbox_user} && "
         f"{_legacy_root_tool_link_cmd('/root/.local/bin', f'{home}/.local/bin')} && "
         f"{_legacy_root_tool_link_cmd('/root/.nvm', f'{home}/.nvm')} && "
         f"for d in {' '.join(home_dirs)}; do "
@@ -354,6 +356,18 @@ async def setup_sandbox_user(
         f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
         timeout_sec=timeout_sec,
     )
+    if _exec_return_code(result) != 0:
+        # A later step (a chown on a read-only mount) may fail once the user
+        # exists, as before; a missing user would only surface much later.
+        exists = await env.exec(f"id -u {sandbox_user} >/dev/null 2>&1", timeout_sec=30)
+        detail = _exec_failure_detail(result)
+        if _exec_return_code(exists) != 0:
+            raise RuntimeError(
+                f"could not create sandbox user {sandbox_user!r}: the image "
+                "has neither a working useradd nor busybox adduser; run as "
+                f"root with --sandbox-user none or add one to the image.{detail}"
+            )
+        logger.warning(f"Sandbox user {sandbox_user} setup step failed.{detail}")
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
 

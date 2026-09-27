@@ -12,6 +12,8 @@ cause:
   agent log (credit balance too low, invalid API key, 401, not logged in).
 - ``agent_install``: an install or runtime failure (``Node.js vX+ is
   required``, command not found, Cannot find module, npm ERR!).
+- ``agent_model``: the agent's session does not offer the requested model
+  (raised before the prompt by :mod:`benchflow.acp.runtime`).
 - ``truncated_trajectory``: the trajectory file has unparseable lines.
 - ``empty_trajectory``: nothing at all after the prompt.
 - ``immediate_exit``: the agent phase lasted under 10 seconds.
@@ -47,6 +49,7 @@ __all__ = [
 IntegrationCause = Literal[
     "agent_auth",
     "agent_install",
+    "agent_model",
     "truncated_trajectory",
     "empty_trajectory",
     "immediate_exit",
@@ -55,6 +58,7 @@ IntegrationCause = Literal[
 CAUSES: tuple[str, ...] = (
     "agent_auth",
     "agent_install",
+    "agent_model",
     "truncated_trajectory",
     "empty_trajectory",
     "immediate_exit",
@@ -62,7 +66,7 @@ CAUSES: tuple[str, ...] = (
 )
 #: Causes that will recur on every trial of the batch (the circuit breaker
 #: counts them); the others can be transient.
-PERMANENT_CAUSES = frozenset({"agent_auth", "agent_install"})
+PERMANENT_CAUSES = frozenset({"agent_auth", "agent_install", "agent_model"})
 IMMEDIATE_EXIT_SEC = 10.0
 _CONTROL_AGENTS = frozenset({"oracle", "nop", "empty"})
 _CONTROL_EVENTS = frozenset({"oracle", "nop"})

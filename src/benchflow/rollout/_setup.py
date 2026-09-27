@@ -82,7 +82,12 @@ def _read_task_instruction(task_path: Path) -> str:
     instruction_path = task_path / "instruction.md"
     if instruction_path.exists():
         return instruction_path.read_text().strip()
-    raise FileNotFoundError(f"Task missing instruction.md or task.md: {task_path}")
+    from benchflow.task import Task
+
+    # Task names the task formats when neither prompt file exists, and loads a
+    # Harbor multi-step task (no root prompt) so the launch gate refuses its
+    # ``steps`` instead of this function failing on a missing file.
+    return Task(task_path).instruction.strip()
 
 
 def _environment_uses_prebuilt_image(
@@ -422,6 +427,21 @@ async def _run_oracle(
         "oracle/solve.sh" if task.paths.uses_native_oracle_dir else "solution/solve.sh"
     )
     oracle_script = shlex.quote(str(oracle_dir / "solve.sh"))
+    # Harbor runs solve.sh as the task's [agent].user in its
+    # [environment].workdir; without either the oracle keeps running as root
+    # in the image's default directory.
+    declared_user = task.config.agent.user
+    # su takes a user name; a numeric [agent].user is left to the image user.
+    if not sandbox_user and isinstance(declared_user, str) and declared_user:
+        sandbox_user = declared_user
+    workdir = _configured_task_workdir(task)
+    if sandbox_user and sandbox_user == declared_user:
+        # The oracle dir is uploaded root-owned; let the declared user run it.
+        await env.exec(
+            f"chmod -R a+rX {shlex.quote(str(oracle_dir))}",
+            user="root",
+            timeout_sec=30,
+        )
     if sandbox_user:
         oracle_cmd = f"DEBIAN_FRONTEND=noninteractive bash {oracle_script}"
         cmd = (
@@ -432,11 +452,11 @@ async def _run_oracle(
     oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
     if task.config.solution.env:
         oracle_env.update(resolve_env_vars(task.config.solution.env))
-    result = await env.exec(
-        f"{cmd} > /logs/agent/oracle.txt 2>&1",
-        env=oracle_env,
-        timeout_sec=timeout,
-    )
+    exec_kwargs: dict[str, Any] = {"env": oracle_env, "timeout_sec": timeout}
+    if workdir is not None:
+        _validate_agent_workdir(workdir)
+        exec_kwargs["cwd"] = workdir
+    result = await env.exec(f"{cmd} > /logs/agent/oracle.txt 2>&1", **exec_kwargs)
     if result.return_code != 0:
         logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
     preview = await env.exec(

@@ -1578,7 +1578,8 @@ class Evaluation:
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult
     ) -> None:
-        """Copy ``timing`` from the rollout's on-disk result.json into payload.
+        """Copy ``timing`` (and the integration-failure record) from the
+        rollout's on-disk result.json into payload.
 
         ``RolloutResult`` does not carry phase timing, but the rollout writer
         (``rollout.py``) persists it under ``rollout_dir/result.json``. Reading
@@ -1587,7 +1588,7 @@ class Evaluation:
         persisted result.json leaves timing absent rather than crash summary
         generation.
         """
-        if "timing" in payload:
+        if "timing" in payload and "integration_failure_info" in payload:
             return
         rollout_name = getattr(result, "rollout_name", "") or ""
         if not rollout_name:
@@ -1601,8 +1602,13 @@ class Evaluation:
             logger.debug("Could not read persisted timing from %s: %s", rfile, e)
             return
         timing = persisted.get("timing")
-        if isinstance(timing, dict):
+        if isinstance(timing, dict) and "timing" not in payload:
             payload["timing"] = timing
+        # The integration-failure record (its cause) exists only in the
+        # persisted result; summary.json counts integration failures by it.
+        integration = persisted.get("integration_failure_info")
+        if isinstance(integration, dict):
+            payload.setdefault("integration_failure_info", integration)
 
     async def _run_single_task(
         self, task_dir: Path, cfg: EvaluationConfig

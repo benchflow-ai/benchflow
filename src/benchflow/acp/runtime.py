@@ -46,6 +46,7 @@ from benchflow.agents.registry import (
     routes_gemini_natively,
 )
 from benchflow.diagnostics import (
+    AgentModelNotOfferedError,
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutError,
@@ -201,8 +202,8 @@ def _codex_reasoning_effort(model_id: str) -> str:
     return model_id.rsplit("[", 1)[1][:-1]
 
 
-class CodexModelNotOffered(ValueError):
-    """The requested model is not among the models the Codex session offers."""
+# The requested model is not among the models the Codex session offers.
+CodexModelNotOffered = AgentModelNotOfferedError
 
 
 def _codex_session_model_id(
@@ -254,10 +255,7 @@ def _codex_session_model_id(
         if offered:
             # Sending the name anyway gets an opaque -32603 from codex-acp,
             # and the same answer on every retry.
-            raise CodexModelNotOffered(
-                f"codex-acp does not offer model {requested_name!r} for this "
-                f"login; it offers: {', '.join(offered)}"
-            )
+            raise AgentModelNotOfferedError("codex-acp", requested_name, offered)
         return model
 
     # A requested reasoning effort rides the codex model id: codex-acp

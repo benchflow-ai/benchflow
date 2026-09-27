@@ -526,6 +526,25 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
 AGENT_INTEGRATION = "agent_integration"
 
 
+class AgentModelNotOfferedError(RuntimeError):
+    """The agent's session does not offer the requested model.
+
+    codex-acp validates ``session/set_model`` against the models its session
+    advertises and answers any other id with an opaque ``-32603``, the same on
+    every retry. The trial is an unscored ``agent_model`` integration failure
+    that is not retried; the message names the offered models.
+    """
+
+    def __init__(self, agent: str, model: str, offered: list[str]) -> None:
+        self.agent = agent
+        self.model = model
+        self.offered = tuple(offered)
+        super().__init__(
+            f"agent integration failure [agent_model]: {agent} does not offer "
+            f"model {model!r} for this login; it offers: {', '.join(offered)}"
+        )
+
+
 @dataclass
 class IntegrationFailureDiagnostic(Diagnostic):
     """The agent did nothing useful because its integration broke.
