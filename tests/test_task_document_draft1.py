@@ -783,6 +783,38 @@ def test_ungradable_rubrics_are_refused_at_launch(
     assert gap in issues[0].reason
 
 
+@pytest.mark.parametrize(
+    ("criterion", "gap"),
+    [
+        (
+            {"id": "hello", "gate": True, "text": "Says hello.", "check": "test_hello"},
+            "criterion 'hello' needs a judge; judge is required: one of agent, human, "
+            "llm, panel, replay, rule, test, vlm, world",
+        ),
+        (
+            {"id": "hello", "gate": True, "judge": "robot", "check": "test_hello"},
+            "criterion 'hello' needs a judge; judge is required",
+        ),
+        (
+            {"id": "old-check", "remove": True},
+            "criterion 'old-check' removes a criterion, which needs extends",
+        ),
+    ],
+    ids=["no-judge", "unknown-judge", "removal"],
+)
+def test_rubric_gaps_name_what_is_missing(criterion: dict, gap: str) -> None:
+    """judge is required (task-md d2a60c1): a criterion without one, or with a role
+    task.md does not define, is refused for that, not as an llm criterion. A
+    removal entry has nothing to judge.
+    """
+    from benchflow.task.verifier_rubric import rubric_gaps
+
+    gaps = rubric_gaps({"$schema": RUBRIC_SCHEMA, "criteria": [criterion]})
+
+    assert len(gaps) == 1
+    assert gaps[0].startswith(gap)
+
+
 async def test_point_rubric_without_headline_scores_partial(tmp_path: Path) -> None:
     """headline defaults to partial (task.md docs/rubrics.md, Scoring)."""
     task_dir = _points_task(tmp_path)

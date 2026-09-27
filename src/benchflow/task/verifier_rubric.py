@@ -45,6 +45,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 REVIEW_SCHEMA = "https://task.md/schema/review-1.json"
+# The judge roles a criterion names (task.md tools/taskmd.py JUDGES); judge is
+# required. This runtime decides only "test".
+JUDGES = frozenset(
+    {"test", "rule", "world", "replay", "llm", "agent", "vlm", "human", "panel"}
+)
 # Where a test-judged verdict's citations point: the report, as the verifier
 # folder names it.
 CTRF_REPORT_REF = "verifier/ctrf.json"
@@ -82,7 +87,9 @@ def rubric_gaps(rubric: dict[str, Any]) -> list[str]:
     if not all(isinstance(c, dict) for c in criteria):
         return [*gaps, "every criterion must be an object"]
 
-    judges = sorted({str(c.get("judge", "llm")) for c in criteria} - {"test"})
+    judges = sorted(
+        {str(c.get("judge")) for c in criteria if c.get("judge") in JUDGES} - {"test"}
+    )
     if judges:
         gaps.append(
             f"criteria judged by {', '.join(judges)} are not graded by this runtime"
@@ -92,15 +99,21 @@ def rubric_gaps(rubric: dict[str, Any]) -> list[str]:
         gaps.append("every criterion needs a unique id")
     for c in criteria:
         where = f"criterion {c.get('id')!r}"
-        if c.get("remove"):
+        if "remove" in c:  # drops a criterion of a shared rubric; nothing to judge
             gaps.append(f"{where} removes a criterion, which needs extends")
+            continue
         is_gate = c.get("gate") is True
         points = c.get("points")
         if is_gate and "points" in c:
             gaps.append(f"{where} is both a gate and a points criterion")
         elif not is_gate and not _is_number(points):
             gaps.append(f"{where} needs gate: true or finite points")
-        if c.get("judge", "llm") == "test":
+        if c.get("judge") not in JUDGES:
+            gaps.append(
+                f"{where} needs a judge; judge is required: one of "
+                f"{', '.join(sorted(JUDGES))}"
+            )
+        if c.get("judge") == "test":
             check = c.get("check")
             if not isinstance(check, str) or not check.strip():
                 gaps.append(f"{where} needs a check naming a test or a test file")
