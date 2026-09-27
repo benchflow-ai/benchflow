@@ -83,7 +83,10 @@ def stage_compose_context(environment_dir: Path, compose: Mapping[str, Any]) -> 
         _escape_interpolation({**compose, "services": services}), indent=2
     )
     staged = Path(tempfile.mkdtemp(prefix="benchflow-services-")) / environment_dir.name
-    shutil.copytree(environment_dir, staged, symlinks=True)
+    if environment_dir.is_dir():
+        shutil.copytree(environment_dir, staged, symlinks=True)
+    else:  # a task on a prebuilt image may have no build context
+        staged.mkdir()
     # JSON is YAML, so Compose reads the file under the name the backends expect.
     (staged / "docker-compose.yaml").write_text(text + "\n")
     # BuildKit reads Dockerfile.dockerignore instead of .dockerignore when both exist.

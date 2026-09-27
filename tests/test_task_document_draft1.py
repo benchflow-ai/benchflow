@@ -1189,6 +1189,37 @@ def test_services_run_from_a_copy_of_sandbox(
     assert not staged.parent.exists()
 
 
+def test_services_beside_a_prebuilt_image_need_no_sandbox_folder(
+    tmp_path: Path,
+) -> None:
+    """Guards a55bca6c, which staged services by copying sandbox/: a task on a
+    prebuilt image ([sandbox] image) may have no sandbox/ folder, and its services
+    still run, from a build context that holds only the Compose file.
+    """
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    task_dir = _write_task(
+        tmp_path,
+        "Count the rows in the orders table.\n\n```toml task\n"
+        '[sandbox]\nimage = "python:3.12-slim"\n\n'
+        '[[sandbox.services]]\nname = "db"\nimage = "postgres:16"\n```\n',
+    )
+
+    sandbox = _create_sandbox_environment(
+        "docker", Task(task_dir), task_dir, "prebuilt", RolloutPaths(tmp_path / "run")
+    )
+
+    staged = sandbox.environment_dir
+    assert sorted(path.name for path in staged.iterdir()) == [
+        ".dockerignore",
+        "docker-compose.yaml",
+    ]
+    compose = json.loads((staged / "docker-compose.yaml").read_text())
+    assert compose["services"]["db"] == {"image": "postgres:16"}
+    assert not (task_dir / "sandbox").exists()
+
+
 @pytest.mark.parametrize(
     ("services", "message"),
     [
