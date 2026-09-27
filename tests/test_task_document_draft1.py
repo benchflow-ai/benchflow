@@ -308,6 +308,28 @@ def test_settings_v06_would_ignore_are_refused(tmp_path: Path) -> None:
     assert "[agent] on_timeout" in {f.path for f in document.draft1.ignored}
 
 
+def test_network_reason_is_documentation(tmp_path: Path) -> None:
+    """[agent] network_reason (task-md d247339) tells reviewers why the task needs
+    open network. The runtime accepts it and runs the task exactly as without it.
+    """
+    task_dir = _write_task(
+        tmp_path,
+        "Sum column B of the 2020 census table.\n\n"
+        "```toml task\n"
+        '[agent]\nnetwork = "open"\n'
+        'network_reason = "The census table is published only online."\n'
+        "```\n",
+    )
+
+    document = TaskDocument.from_path(task_dir / "task.md")
+
+    assert document.config.agent.network_mode == NetworkMode.PUBLIC
+    assert document.draft1 is not None
+    assert document.draft1.unsupported == ()
+    assert {f.path for f in document.draft1.ignored} == {"[agent] network_reason"}
+    assert _launch_issue_paths(task_dir) == set()
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [

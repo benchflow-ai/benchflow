@@ -28,8 +28,9 @@ The adapter fails closed. Every draft-1 setting is handled in one of three ways:
   (``runtime_capabilities``) still refuses v0.6 keys it cannot execute, such as
   ``steps`` or a separate verifier sandbox.
 - ignored: it changes nothing the runtime does. This covers descriptive fields
-  (title, credits, provenance, a canary, notes blocks) and values that restate
-  the runtime's own behavior.
+  (title, credits, provenance, a canary, notes blocks), notes for reviewers
+  (``[agent] network_reason``), and values that restate the runtime's own
+  behavior.
 - unsupported: everything else. The document still loads so it can be
   inspected, but ``validate_task_runtime_support`` reports each setting and the
   runtime refuses to launch the task.
@@ -95,7 +96,10 @@ _CLOSED_KEYS = {
         "network", "workdir", "env", "skills", "mcp", "ready", "build_timeout",
         "outputs", "mounts", "boundary",
     },
-    "agent": {"timeout", "on_timeout", "budget", "user", "network", "system_prompt_append"},
+    "agent": {
+        "timeout", "on_timeout", "budget", "user", "network", "network_reason",
+        "system_prompt_append",
+    },
     "verifier": {
         "timeout", "user", "env", "network", "isolation", "sandbox", "snapshot",
         "combine_stages", "unreached_stages", "judges", "human", "mount",
@@ -775,6 +779,11 @@ _RESTATED_DEFAULTS = {
         "container",
     ): "every sandbox backend isolates at least a container",
 }
+# Keys that explain the task to its reviewers; the runtime reads nothing from
+# them. Keyed by table name, so a stage's [stages.<name>.agent] matches too.
+_DOCUMENTATION_KEYS = {
+    ("agent", "network_reason"): "why the task needs open network, for reviewers",
+}
 _UNSUPPORTED_TABLES = {
     "world": "worlds (desktop, browser, simulator, robot, lab) are not provided",
     "tiers": "sim-to-real tiers are not provided",
@@ -937,6 +946,10 @@ class _Mapper:
             )
             if restated:
                 self.findings.ignore(f"[{where}] {key}", restated)
+                continue
+            documented = _DOCUMENTATION_KEYS.get((where.rsplit(".", 1)[-1], key))
+            if documented:
+                self.findings.ignore(f"[{where}] {key}", documented)
                 continue
             reason = _UNSUPPORTED_KEYS.get((where, key), "no v0.6 equivalent")
             self.findings.refuse(f"[{where}] {key}", reason)
