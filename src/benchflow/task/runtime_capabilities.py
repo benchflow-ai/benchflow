@@ -297,6 +297,16 @@ def _append_document_issues(
     document: TaskDocument,
     sandbox: str,
 ) -> None:
+    if document.draft1 is not None:
+        # Settings a task.md draft-1 file declares that the v0.6 model cannot
+        # carry. The document loads so it can be inspected; it must not run.
+        for finding in document.draft1.unsupported:
+            _issue(
+                unsupported,
+                path=finding.path,
+                reason=f"task.md draft 1: {finding.reason}",
+                sandbox=sandbox,
+            )
     user_runtime = compile_document_user_runtime(document)
     _append_document_user_issues(
         unsupported,

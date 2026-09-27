@@ -3,7 +3,8 @@
 This layer owns the :class:`TaskDocument` model, the render entry points, and
 the parse helpers that turn frontmatter plus a markdown body into a config,
 roles, scenes, turns, and prompt sections. It delegates frontmatter
-normalization to :mod:`benchflow.task._document_normalize`.
+normalization to :mod:`benchflow.task._document_normalize`, and reads task.md
+draft-1 files (no frontmatter) through :mod:`benchflow.task._document_draft1`.
 """
 
 from __future__ import annotations
@@ -13,13 +14,19 @@ import re
 import tomllib
 from collections.abc import Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from benchflow._types import Role, Scene, Turn
+from benchflow.task._document_draft1 import (
+    Draft1Document,
+    is_draft1_task_md,
+    read_draft1_task_md,
+    undelivered_prompt_findings,
+)
 from benchflow.task._document_normalize import (
     TaskDocumentParseError,
     _mapping,
@@ -112,6 +119,10 @@ class TaskDocument:
     blocks for roles, scenes, and simulated users. The markdown body carries
     prompts. ``instruction`` is the prompt text that should be exposed through
     the existing ``/instruction.md`` runtime contract.
+
+    A task.md draft-1 file (no frontmatter) is read into the same model;
+    ``draft1`` then records the source and the settings the runtime cannot
+    honor. It is ``None`` for v0.6 documents.
     """
 
     frontmatter: dict[str, Any]
@@ -126,6 +137,7 @@ class TaskDocument:
     user_persona: str | None
     benchflow: dict[str, Any]
     path: Path | None = None
+    draft1: Draft1Document | None = None
 
     @classmethod
     def from_path(cls, path: str | Path) -> TaskDocument:
@@ -134,6 +146,8 @@ class TaskDocument:
 
     @classmethod
     def from_text(cls, text: str, *, path: str | Path | None = None) -> TaskDocument:
+        if is_draft1_task_md(text):
+            return cls._from_draft1_text(text, path=path)
         frontmatter, body = _split_frontmatter(text)
         doc_path = Path(path) if path is not None else None
         frontmatter = normalize_task_document_frontmatter(
@@ -177,6 +191,56 @@ class TaskDocument:
             user_persona=user_persona,
             benchflow=benchflow,
             path=doc_path,
+        )
+
+    @classmethod
+    def _from_draft1_text(
+        cls, text: str, *, path: str | Path | None = None
+    ) -> TaskDocument:
+        """Read a task.md draft-1 file through the v0.6 pipeline.
+
+        The adapter maps the file to v0.6 frontmatter data and prompt texts;
+        normalization, config validation, roles, and scenes then run exactly
+        as for a v0.6 file. Draft 1 has no ``prompts/`` sidecars: stage, role,
+        and user blocks are the only prompt sources.
+        """
+
+        doc_path = Path(path) if path is not None else None
+        task_dir = doc_path.parent if doc_path is not None else None
+        draft1 = read_draft1_task_md(text, task_dir=task_dir)
+        frontmatter = normalize_task_document_frontmatter(
+            draft1.frontmatter,
+            task_dir=task_dir,
+        )
+        config = _config_from_frontmatter(frontmatter)
+        roles = _parse_roles(frontmatter)
+        scenes = _parse_scenes(
+            frontmatter,
+            roles=roles,
+            instruction=draft1.instruction,
+            role_prompts=draft1.role_prompts,
+            scene_prompts=draft1.scene_prompts,
+        )
+        undelivered = undelivered_prompt_findings(
+            draft1,
+            scene_names={scene.name for scene in scenes},
+            scene_role_names={role.name for scene in scenes for role in scene.roles},
+        )
+        draft1 = replace(draft1, unsupported=draft1.unsupported + undelivered)
+        return cls(
+            frontmatter=frontmatter,
+            body=text,
+            instruction=draft1.instruction,
+            config=config,
+            roles=roles,
+            scenes=scenes,
+            role_prompts=dict(draft1.role_prompts),
+            scene_prompts=dict(draft1.scene_prompts),
+            user=_mapping(frontmatter.get("user"), "user", default={}),
+            user_persona=draft1.user_persona,
+            benchflow=_mapping(frontmatter.get("benchflow"), "benchflow", default={}),
+            path=doc_path,
+            draft1=draft1,
         )
 
 
