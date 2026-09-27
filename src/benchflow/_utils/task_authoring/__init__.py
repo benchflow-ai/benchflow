@@ -109,6 +109,10 @@ _VALIDATION_LEVELS: set[str] = {
     "acceptance",
     "acceptance-live",
 }
+# Root paths a task.md tree hash leaves out (task-md tools/evidence.py
+# EXCLUDED_ROOT_DIRS and EXCLUDED_ROOT_FILES); .git may be a worktree file.
+_TREE_HASH_ROOT_DIRS = frozenset({"evidence", ".git"})
+_TREE_HASH_ROOT_FILES = frozenset({"changes.json", ".git"})
 
 
 def task_digest(task_dir: Path) -> str:
@@ -121,15 +125,30 @@ def task_digest(task_dir: Path) -> str:
     checkout. Must byte-match the reference digests in the skillsbench
     dataset registry (``registry.json`` / ``docs/dataset-versioning.md``,
     skillsbench PR #922).
+
+    A task.md draft-1 package also leaves out three paths at its root, as
+    task.md's tree hash does (``docs/package.md``, "Tree hash"): the
+    ``evidence/`` folder, which records the hash; ``changes.json``, which is
+    written after a release's evidence; and ``.git``. Its digest is then its
+    tree hash, unless it holds a ``.benchflow-source.json``, which is skipped
+    here and counted there. Other packages keep every one of those paths.
     """
     if not task_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {task_dir}")
+    from benchflow.task._document_draft1 import is_draft1_task_dir
+
+    draft1 = is_draft1_task_dir(task_dir)
     files: list[tuple[str, Path]] = []
     # os.walk never descends into symlinked directories (unlike pre-3.13
     # Path.rglob), keeping "symlinks are excluded" true for whole subtrees.
-    for dirpath, _dirnames, filenames in os.walk(task_dir):
+    for index, (dirpath, dirnames, filenames) in enumerate(os.walk(task_dir)):
+        at_root = draft1 and index == 0  # os.walk yields task_dir first
+        if at_root:
+            dirnames[:] = [d for d in dirnames if d not in _TREE_HASH_ROOT_DIRS]
         for filename in filenames:
             if filename == ".benchflow-source.json":
+                continue
+            if at_root and filename in _TREE_HASH_ROOT_FILES:
                 continue
             path = Path(dirpath) / filename
             if path.is_symlink() or not path.is_file():

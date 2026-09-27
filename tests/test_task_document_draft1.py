@@ -1452,3 +1452,122 @@ def test_behaviors_new_in_7d46823_load_and_are_refused(
         )
     ]
     assert _launch_issue_paths(task_dir) == {"verifier/behaviors.json"}
+
+
+# Tree hash: a draft-1 package's task_digest -----------------------------------------
+
+# tools/evidence.py tree_hash of the four fixtures, verbatim copies of the spec's
+# examples (task-md d2a60c1). ising-exponent has evidence/; flaky-retry and
+# stl-mass have changes.json.
+_TREE_HASHES = {
+    "hello-world": "sha256:89939a194dc97ed4304fdc4e53b7cb4c6b2413ca7373955cadd8bb19f0d6274f",
+    "flaky-retry": "sha256:ad3cf6e38f9911b74c11760d5d3f8ed58956d4a7136939a27ee5ff3b7e5e2fb9",
+    "stl-mass": "sha256:270f365049bb4369e8b4a33b4e13288e62d68d5faf30ad335e6051ea5073aed7",
+    "ising-exponent": "sha256:12729c57bec80c7ab4cc883a83a6db6227376a5b5ca5aa3526918a5b2d6bc43d",
+}
+
+
+def _task_md_spec() -> Path | None:
+    """The task.md spec checkout: $TASK_MD_SPEC, or task-md beside this repo."""
+    import os
+
+    configured = os.environ.get("TASK_MD_SPEC")
+    spec = (
+        Path(configured)
+        if configured
+        else Path(__file__).resolve().parents[2] / "task-md"
+    )
+    return spec if (spec / "tools" / "evidence.py").is_file() else None
+
+
+@pytest.mark.parametrize("name", DRAFT1_EXAMPLES)
+def test_draft1_task_digest_is_the_tree_hash(name: str) -> None:
+    """A draft-1 package's task_digest is its task.md tree hash (docs/package.md,
+    "Tree hash"): root evidence/, changes.json, and .git are left out.
+    """
+    from benchflow._utils.task_authoring import task_digest
+
+    assert task_digest(FIXTURES / name) == _TREE_HASHES[name]
+
+
+def test_draft1_task_digest_matches_evidence_py_on_spec_examples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every package in the spec's examples, including those with evidence/ or
+    changes.json at the root, has a task_digest equal to tools/evidence.py's tree
+    hash. Runs where the task.md checkout is at $TASK_MD_SPEC or beside this repo.
+    """
+    import importlib
+
+    from benchflow._utils.task_authoring import task_digest
+
+    spec = _task_md_spec()
+    if spec is None:
+        pytest.skip("no task.md checkout at $TASK_MD_SPEC or ../task-md")
+    monkeypatch.syspath_prepend(str(spec / "tools"))
+    evidence = importlib.import_module("evidence")
+    examples = spec / "examples"
+    packages = sorted(
+        {path for path in examples.iterdir() if path.is_dir()}
+        | {path.parent for path in examples.rglob("task.md")}
+    )
+
+    assert len([p for p in packages if p.parent == examples]) == 16
+    assert {
+        package.relative_to(examples).as_posix(): task_digest(package)
+        for package in packages
+    } == {
+        package.relative_to(examples).as_posix(): evidence.tree_hash(package)
+        for package in packages
+    }
+
+
+def _package_with_every_excluded_path(root: Path, task_md: str | None) -> Path:
+    """A task package holding each path a tree hash or task_digest leaves out."""
+    files = {
+        "instruction.md": "Say hi.\n",
+        "task.toml": 'version = "1.0"\n',
+        "environment/Dockerfile": "FROM ubuntu:24.04\n",
+        "tests/test.sh": "#!/bin/bash\n",
+        "changes.json": '{"version": "1.0.1"}\n',
+        "evidence/runs.json": '{"runs": []}\n',
+        ".git/HEAD": "ref: refs/heads/main\n",
+        "tests/.benchflow-source.json": "{}\n",
+        ".benchflow-source.json": "{}\n",
+    }
+    if task_md is not None:
+        del files["instruction.md"], files["task.toml"]
+        files["task.md"] = task_md
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    return root
+
+
+def test_task_digest_of_other_layouts_is_unchanged(tmp_path: Path) -> None:
+    """Harbor and v0.6 packages keep every file but .benchflow-source.json, byte for
+    byte as before draft-1 support (digests recorded at e985eb8c), so the
+    SkillsBench registry's digests still match. A draft-1 package still skips
+    .benchflow-source.json, which its tree hash counts.
+    """
+    from benchflow._utils.task_authoring import task_digest
+
+    harbor = _package_with_every_excluded_path(tmp_path / "harbor", None)
+    v06 = _package_with_every_excluded_path(
+        tmp_path / "v06", "---\nversion: '1.0'\n---\nSay hi.\n"
+    )
+    draft1 = _package_with_every_excluded_path(tmp_path / "draft1", "Say hi.\n")
+    bare = tmp_path / "bare"
+    shutil.copytree(draft1, bare)
+    for rel in ("changes.json", "evidence", ".git", ".benchflow-source.json"):
+        path = bare / rel
+        shutil.rmtree(path) if path.is_dir() else path.unlink()
+    (bare / "tests" / ".benchflow-source.json").unlink()
+
+    assert task_digest(harbor) == (
+        "sha256:d4495ebbcfc70b55ced333de8740e406ac46669c0fbf6d0d52aec6474a159172"
+    )
+    assert task_digest(v06) == (
+        "sha256:610869088426c2a3b8791da281781cdd95f9c146bcd5f1a7eb068dd640412602"
+    )
+    assert task_digest(draft1) == task_digest(bare)
