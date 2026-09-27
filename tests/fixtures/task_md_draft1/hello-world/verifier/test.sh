@@ -1,3 +1,4 @@
 #!/bin/bash
-if [ "$(cat /app/hello.txt 2>/dev/null)" = "Hello, world!" ]; then r=1; else r=0; fi
-echo "{\"reward\": $r, \"criteria\": {\"test_hello\": $r}}" > /logs/verifier/reward.json
+# Checks /app/hello.txt byte for byte and writes a CTRF test report with one test, test_hello.
+if printf 'Hello, world!' | cmp -s - /app/hello.txt; then status=passed; else status=failed; fi
+printf '{"results": {"tool": {"name": "test.sh"}, "tests": [{"name": "test_hello", "status": "%s"}]}}\n' "$status" > /logs/verifier/ctrf.json

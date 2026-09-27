@@ -12,7 +12,9 @@ maps the config block to v0.6 frontmatter data, and hands that data to the
 unchanged v0.6 pipeline (normalization, ``TaskConfig`` validation, roles,
 scenes). Stage, role, and user blocks become v0.6 scene prompts, role prompts,
 and the user persona. ``[verifier] mount`` and ``[oracle] mount`` say where
-``verifier/`` and ``oracle/`` appear in the sandbox.
+``verifier/`` and ``oracle/`` appear in the sandbox, and a task.md rubric in
+``verifier/rubric.json`` is kept for the verifier, which grades it from the
+test script's CTRF report (``benchflow.task.verifier_rubric``).
 
 Credit: the block rules are ported from the task.md draft-1 specification
 (``docs/document.md``, ``docs/package.md``) and its reference parser
@@ -50,6 +52,7 @@ from typing import Any
 import yaml
 
 from benchflow.task._document_normalize import TaskDocumentParseError
+from benchflow.task.verifier_rubric import rubric_gaps
 
 DRAFT1_SANDBOX_DIRNAME = "sandbox"
 # Where verifier/ and oracle/ appear in the sandbox. The defaults are draft 1's;
@@ -178,6 +181,9 @@ class Draft1Document:
     honor; the launch gate refuses the task while any remain. ``ignored``
     lists settings that change nothing the runtime does. ``verifier_mount`` and
     ``oracle_mount`` are the declared sandbox paths, or the defaults.
+    ``rubric`` is ``verifier/rubric.json`` when it is task.md's (by
+    ``$schema``) and the runtime can grade it; it is read only when the
+    package is, so the verifier grades the copy that was checked.
     """
 
     instruction: str
@@ -191,6 +197,7 @@ class Draft1Document:
     canary: str | None = None
     verifier_mount: str = DEFAULT_VERIFIER_MOUNT
     oracle_mount: str = DEFAULT_ORACLE_MOUNT
+    rubric: dict[str, Any] | None = None
 
 
 @dataclass
@@ -272,7 +279,7 @@ def read_draft1_task_md(
     ``task_dir`` enables the package checks: a Harbor ``task.toml`` beside
     ``task.md`` is an error, ``verifier/rubric.json`` and
     ``verifier/behaviors.json`` in task.md's schema are classified, and a
-    ``verifier/verifier.md`` strategy is checked against the verifier mount.
+    ``verifier/verifier.md`` strategy is checked against them.
     """
 
     root = Path(task_dir) if task_dir is not None else None
@@ -325,9 +332,10 @@ def read_draft1_task_md(
             findings.ignore(
                 "```notes", "author and reviewer notes, never shown to an agent"
             )
+    rubric = None
     if root is not None:
-        _check_judgment_files(root, findings)
-        _check_verifier_strategy(root, mounts[0], findings)
+        rubric = _check_judgment_files(root, findings)
+        _check_verifier_strategy(root, rubric, mounts[0], findings)
 
     return Draft1Document(
         instruction=instruction,
@@ -343,6 +351,7 @@ def read_draft1_task_md(
         canary="; ".join(canaries) or None,
         verifier_mount=mounts[0],
         oracle_mount=mounts[1],
+        rubric=rubric,
     )
 
 
@@ -1165,13 +1174,17 @@ def _check_prompt_settings(config: dict[str, Any], findings: _Findings) -> None:
             )
 
 
-def _check_judgment_files(task_dir: Path, findings: _Findings) -> None:
+def _check_judgment_files(task_dir: Path, findings: _Findings) -> dict[str, Any] | None:
     """``verifier/rubric.json`` and ``verifier/behaviors.json`` in task.md's schema.
 
-    Files without that ``$schema`` belong to the verifier's own scripts and are
-    left alone, as the reference parser does.
+    Returns the rubric when the runtime can grade it from the test script's
+    CTRF report. Files without task.md's ``$schema`` belong to the verifier's
+    own scripts and are left alone, as the reference parser does; a draft-1
+    task without a task.md rubric keeps today's contract, where the script
+    writes reward.txt or reward.json itself.
     """
 
+    rubric: dict[str, Any] | None = None
     for kind in ("rubric", "behaviors"):
         rel = f"verifier/{kind}.json"
         path = task_dir / rel
@@ -1196,59 +1209,42 @@ def _check_judgment_files(task_dir: Path, findings: _Findings) -> None:
                 "(fail, invalid, penalties, behavior tags) are not applied",
             )
             continue
-        gaps = _rubric_gaps(data)
+        gaps = rubric_gaps(data)
         if gaps:
             findings.refuse(rel, "; ".join(gaps))
-        else:
+            continue
+        rubric = data
+        if any("stated" in c or "implicit" in c for c in data["criteria"]) or (
+            "validation" in data
+        ):
             findings.ignore(
-                rel,
-                "gates-only rubric of test criteria: its reward is the "
-                "all-or-nothing reward verifier/test.sh writes; stated quotes "
-                "and validation data are not used at run time",
+                f"{rel} stated, implicit, validation",
+                "authoring checks and evidence; not used to grade a run",
             )
-
-
-def _rubric_gaps(rubric: dict[str, Any]) -> list[str]:
-    """Why the runtime cannot grade a task.md rubric; empty when it can.
-
-    The runtime runs ``verifier/test.sh`` and takes the reward it writes. A
-    rubric whose criteria are all test-judged gates is all-or-nothing, like a
-    Harbor test.sh, so that reward is the rubric's reward. Anything else needs
-    rubric scoring or judges the runtime does not have.
-    """
-
-    gaps: list[str] = []
-    if rubric.get("extends"):
-        gaps.append(
-            "extends pulls in a shared rubric this runtime does not fetch or merge"
-        )
-    criteria = rubric.get("criteria")
-    if not isinstance(criteria, list) or not all(isinstance(c, dict) for c in criteria):
-        return [*gaps, "criteria must be a list of objects"]
-    judges = sorted({str(c.get("judge", "llm")) for c in criteria} - {"test"})
-    if judges:
-        gaps.append(
-            f"criteria judged by {', '.join(judges)} are not graded by this runtime"
-        )
-    if any(c.get("gate") is not True or "points" in c for c in criteria):
-        gaps.append(
-            "point criteria need rubric scoring (points, penalties, "
-            "pass_threshold), which this runtime does not compute"
-        )
-    return gaps
+    return rubric
 
 
 def _check_verifier_strategy(
-    task_dir: Path, verifier_mount: str, findings: _Findings
+    task_dir: Path,
+    rubric: dict[str, Any] | None,
+    verifier_mount: str,
+    findings: _Findings,
 ) -> None:
     """A BenchFlow ``verifier/verifier.md`` strategy in a draft-1 package.
 
-    Draft 1 does not define verifier.md. Its non-script strategies read the
-    verifier folder only at /verifier.
+    Draft 1 does not define verifier.md. The runtime would run its selected
+    strategy instead of test.sh, so it cannot also grade a task.md rubric, and
+    its non-script strategies read the verifier folder only at /verifier.
     """
 
     if not (task_dir / "verifier" / "verifier.md").is_file():
         return
+    if rubric is not None:
+        findings.refuse(
+            "verifier/verifier.md",
+            "a verifier.md strategy and a task.md rubric (verifier/rubric.json) "
+            "both define grading",
+        )
     if verifier_mount != DEFAULT_VERIFIER_MOUNT:
         findings.refuse(
             "verifier/verifier.md",

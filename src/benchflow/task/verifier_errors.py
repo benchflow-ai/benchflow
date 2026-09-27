@@ -49,6 +49,15 @@ class UnsupportedVerifierStrategyError(VerifierOutputParseError):
     """Raised when ``verifier/verifier.md`` selects a non-executable strategy."""
 
 
+class RubricGradingError(VerifierOutputParseError):
+    """A task.md rubric could not be graded: an infrastructure error, never a score.
+
+    Raised when the test script wrote no usable CTRF report, or when a
+    criterion's check names no test in it. The rollout records the error and
+    no reward.
+    """
+
+
 class AgentJudgeInputError(VerifierOutputParseError):
     """Raised when an agent-judge strategy cannot read declared inputs."""
 

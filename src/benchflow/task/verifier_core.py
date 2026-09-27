@@ -48,6 +48,7 @@ from benchflow.task.verifier_errors import (
     ORSEpisodeInputError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
+    RubricGradingError,
     RubricNotFoundError,
     UnsupportedVerifierStrategyError,
     VerifierOutputParseError,
@@ -73,6 +74,7 @@ from benchflow.task.verifier_reward_kit import (
     _reward_kit_runner,
     _safe_strategy_relative_path,
 )
+from benchflow.task.verifier_rubric import ctrf_tests, grade_rubric, review_document
 from benchflow.task.verifier_scan import (
     _DEP_INSTALL_DIAGNOSTIC,
     _has_dep_install_failure,
@@ -84,6 +86,11 @@ from benchflow.task.verifier_script_strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The test script's CTRF report and the runtime's rubric verdicts, both in
+# /logs/verifier (task.md docs/package.md, "What the verifier writes").
+_CTRF_FILENAME = "ctrf.json"
+_REVIEW_FILENAME = "review.json"
 
 
 class Verifier:
@@ -358,6 +365,12 @@ class Verifier:
         DB modifications — instead of only the agent workspace (#248).
         """
         service = self._task.config.verifier.service
+        rubric = self._task_md_rubric()
+        if rubric is not None and strategy is not None:
+            raise UnsupportedVerifierStrategyError(
+                "a task.md rubric (verifier/rubric.json) and a verifier.md "
+                "strategy both define grading"
+            )
         verifier_outputs_are_mounted = service == "main" and getattr(
             self._sandbox, "is_mounted", False
         )
@@ -371,6 +384,11 @@ class Verifier:
                 )
             except RuntimeError as e:
                 raise VerifierOutputParseError(str(e)) from e
+        if rubric is not None:
+            # The rubric is graded from this run's report only: a report left
+            # by an earlier attempt or planted in /logs/verifier never counts.
+            for name in (_CTRF_FILENAME, _REVIEW_FILENAME):
+                (self._rollout_paths.verifier_dir / name).unlink(missing_ok=True)
 
         sandbox_paths = SandboxPaths()
         verifier_code_dir = sandbox_verifier_dir(self._task.paths)
@@ -475,7 +493,7 @@ class Verifier:
                 )
             except Exception as e:
                 if service != "main" or not await self._recover_main_verifier_outputs(
-                    sandbox_paths
+                    sandbox_paths, need_ctrf=rubric is not None
                 ):
                     raise DownloadVerifierDirError(
                         "Failed to download verifier directory from sandbox"
@@ -485,6 +503,9 @@ class Verifier:
                     "verifier output files individually: %s",
                     e,
                 )
+
+        if rubric is not None:
+            return self._grade_task_md_rubric(rubric, test_return_code)
 
         if test_return_code != 0 and (
             self._rollout_paths.reward_text_path.exists()
@@ -532,9 +553,84 @@ class Verifier:
 
         return VerifierResult(rewards=rewards)
 
+    # task.md rubric graded from the test script's CTRF report
+
+    def _task_md_rubric(self) -> dict[str, Any] | None:
+        """The task.md rubric of a draft-1 package, if the runtime grades one."""
+
+        document = getattr(self._task, "document", None)
+        draft1 = getattr(document, "draft1", None)
+        rubric = getattr(draft1, "rubric", None)
+        return rubric if isinstance(rubric, dict) else None
+
+    def _grade_task_md_rubric(
+        self, rubric: dict[str, Any], test_return_code: int | None
+    ) -> VerifierResult:
+        """Decide each criterion from ``ctrf.json`` and write the rubric's results.
+
+        The test script reports; the runtime scores (task.md
+        ``docs/package.md``). A missing or unreadable report, or a check that
+        names no test in it, is an infrastructure error: ``review.json`` still
+        records the verdicts it could reach, but no reward is written.
+        """
+
+        verifier_dir = self._rollout_paths.verifier_dir
+        ctrf_path = verifier_dir / _CTRF_FILENAME
+        if not ctrf_path.is_file():
+            msg = (
+                "task.md rubric: infrastructure error: the test script wrote no "
+                "CTRF report at /logs/verifier/ctrf.json"
+            )
+            if test_return_code:
+                msg += f" (it exited with rc={test_return_code})"
+            if _has_dep_install_failure(self._rollout_paths.test_stdout_path):
+                msg += f"\n{_DEP_INSTALL_DIAGNOSTIC}"
+            raise RubricGradingError(msg)
+        try:
+            tests = ctrf_tests(json.loads(ctrf_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as e:
+            raise RubricGradingError(
+                "task.md rubric: infrastructure error: /logs/verifier/ctrf.json "
+                f"is not a CTRF report: {e}"
+            ) from e
+
+        grade = grade_rubric(rubric, tests)
+        (verifier_dir / _REVIEW_FILENAME).write_text(
+            json.dumps(review_document(rubric, grade), indent=2) + "\n"
+        )
+        if grade.unmatched:
+            named = ", ".join(
+                f"{cid} (check {check!r})" for cid, check in grade.unmatched
+            )
+            raise RubricGradingError(
+                "task.md rubric: infrastructure error: no test in ctrf.json "
+                f"matches the check of {named}; those criteria fail"
+            )
+
+        if (
+            self._rollout_paths.reward_text_path.exists()
+            or self._rollout_paths.reward_json_path.exists()
+        ):
+            self._logger.warning(
+                "The test script wrote its own reward file; a task.md rubric is "
+                "scored by the runtime from ctrf.json, so it is replaced"
+            )
+        rewards = {
+            "reward": grade.reward,
+            "strict": grade.strict,
+            "partial": grade.partial,
+        }
+        self._rollout_paths.reward_json_path.write_text(
+            json.dumps(rewards, indent=2) + "\n"
+        )
+        self._rollout_paths.reward_text_path.write_text(f"{grade.reward}\n")
+        return VerifierResult(rewards=rewards)
+
     async def _recover_main_verifier_outputs(
         self,
         sandbox_paths: SandboxPaths,
+        *,
+        need_ctrf: bool = False,
     ) -> bool:
         candidates = [
             (sandbox_paths.reward_json_path, self._rollout_paths.reward_json_path),
@@ -562,8 +658,8 @@ class Verifier:
                 self._rollout_paths.test_stderr_path,
             ),
             (
-                sandbox_paths.verifier_dir / "ctrf.json",
-                self._rollout_paths.verifier_dir / "ctrf.json",
+                sandbox_paths.verifier_dir / _CTRF_FILENAME,
+                self._rollout_paths.verifier_dir / _CTRF_FILENAME,
             ),
         ]
         recovered: list[Path] = []
@@ -581,6 +677,10 @@ class Verifier:
             if local_path.exists():
                 recovered.append(local_path)
 
+        if need_ctrf:
+            # A task.md rubric is graded from ctrf.json; the script writes no
+            # reward file of its own.
+            return self._rollout_paths.verifier_dir / _CTRF_FILENAME in recovered
         return (
             self._rollout_paths.reward_json_path in recovered
             or self._rollout_paths.reward_text_path in recovered

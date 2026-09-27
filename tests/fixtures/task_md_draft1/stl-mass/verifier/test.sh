@@ -1,5 +1,4 @@
 #!/bin/bash
-# Runs the hidden checks and writes /logs/verifier/reward.json with one result per rubric criterion.
+# Runs the hidden tests and writes a CTRF test report. The runtime decides each test-judged criterion in rubric.json from it.
 set -u
-pytest -q --json-report --json-report-file=/logs/verifier/pytest.json /verifier/tests
-python3 /verifier/score.py /logs/verifier/pytest.json > /logs/verifier/reward.json
+pytest -q --ctrf /logs/verifier/ctrf.json /verifier/tests
