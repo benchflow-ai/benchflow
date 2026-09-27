@@ -521,7 +521,12 @@ def _verifier(task_dir: Path, tmp_path: Path, ctrf: dict | None, *, exit_code: i
 
 
 async def test_rubric_pass_writes_reward_and_review(tmp_path: Path) -> None:
-    """hello-world: the one gate passes, so reward, strict, and partial are 1."""
+    """hello-world: the one gate passes, so reward, strict, and partial are 1.
+
+    review.json has the shape of task.md's review-1.json schema: the verdict repeats
+    the check, marks the gate, names the runner the report names and the rubric
+    version, and cites the matched test in verifier/ctrf.json.
+    """
     verifier, rollout, _, _ = _verifier(
         FIXTURES / "hello-world", tmp_path, _ctrf(("test_hello", "passed"))
     )
@@ -538,11 +543,18 @@ async def test_rubric_pass_writes_reward_and_review(tmp_path: Path) -> None:
         "verdicts": [
             {
                 "id": "hello",
+                "check": "test_hello",
+                "gate": True,
                 "verdict": "pass",
                 "score": 1.0,
-                "judge": {"role": "test"},
+                "judge": {"role": "test", "tool": "pytest", "rubric_version": "1.0.0"},
                 "citations": [
-                    {"source": "ctrf", "ref": "test_hello", "verified": True}
+                    {
+                        "source": "verifier",
+                        "ref": "verifier/ctrf.json",
+                        "quote": "test_hello",
+                        "verified": True,
+                    }
                 ],
                 "rationale": "all 1 matching tests passed",
             }
@@ -589,6 +601,46 @@ async def test_rubric_points_and_penalty(tmp_path: Path) -> None:
         "tidy": ("fail", 0.0),
         "no-new-dependency": ("fail", -2.0),
     }
+
+
+async def test_review_verdicts_mark_gates_and_record_what_is_known(
+    tmp_path: Path,
+) -> None:
+    """A gate's verdict carries gate: true and other verdicts omit it. The judge names
+    the runner only when the report does, and the rubric version only when the
+    rubric has one: an unknown value is left out, never written as null.
+    """
+    task_dir = _points_task(tmp_path)
+    rubric_path = task_dir / "verifier" / "rubric.json"
+    rubric = json.loads(rubric_path.read_text())
+    del rubric["version"]
+    rubric_path.write_text(json.dumps(rubric))
+    ctrf = _points_ctrf()
+    del ctrf["results"]["tool"]
+    verifier, rollout, _, _ = _verifier(task_dir, tmp_path, ctrf)
+
+    await verifier.verify()
+
+    review = json.loads((rollout.verifier_dir / "review.json").read_text())
+    assert "rubric_version" not in review
+    assert [(v["id"], v["check"], v.get("gate")) for v in review["verdicts"]] == [
+        ("builds", "test_builds", True),
+        ("fast", "test_fast", None),
+        ("tidy", "tests/test_style.py", None),
+        ("no-new-dependency", "test_no_new_dependencies", None),
+    ]
+    assert all("gate" not in v for v in review["verdicts"][1:])
+    assert all(v["judge"] == {"role": "test"} for v in review["verdicts"])
+    tidy = review["verdicts"][2]
+    assert tidy["citations"] == [
+        {
+            "source": "verifier",
+            "ref": "verifier/ctrf.json",
+            "quote": name,
+            "verified": True,
+        }
+        for name in ("test_style.py::test_imports", "test_style.py::test_lint")
+    ]
 
 
 async def test_rubric_headline_strict_is_the_reward(tmp_path: Path) -> None:
@@ -784,8 +836,11 @@ async def test_stl_mass_rubric_from_pytest_ctrf(
     assert result.rewards == {"reward": reward, "strict": reward, "partial": reward}
     review = json.loads((rollout.verifier_dir / "review.json").read_text())
     assert review["rubric_version"] == "2.0.0"
+    assert {json.dumps(v["judge"]) for v in review["verdicts"]} == {
+        json.dumps({"role": "test", "tool": "pytest 8.4.1", "rubric_version": "2.0.0"})
+    }
     assert [
-        (v["id"], v["verdict"], v["citations"][0]["ref"]) for v in review["verdicts"]
+        (v["id"], v["verdict"], v["citations"][0]["quote"]) for v in review["verdicts"]
     ] == [
         ("file-exists", "pass", f"{node_file}::TestOutputs::test_file_exists"),
         (

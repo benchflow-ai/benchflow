@@ -28,6 +28,12 @@ A test-judged criterion passes or fails, so it has no ``levels``. A penalty
 criterion names the bad outcome; its test asserts the good behavior, so the
 penalty applies when the test fails.
 
+``review.json`` follows task.md's ``review-1.json`` schema (``docs/rubrics.md``,
+"What the verifier writes"). Each verdict repeats the criterion's ``check``,
+carries ``"gate": true`` for a gate, names its judge (role ``test``, the runner
+the report names, and the rubric's version), and cites each matched test by
+its name in ``verifier/ctrf.json``.
+
 This module is pure: no filesystem or sandbox access.
 """
 
@@ -39,6 +45,9 @@ from pathlib import PurePosixPath
 from typing import Any
 
 REVIEW_SCHEMA = "https://task.md/schema/review-1.json"
+# Where a test-judged verdict's citations point: the report, as the verifier
+# folder names it.
+CTRF_REPORT_REF = "verifier/ctrf.json"
 _HEADLINES = ("strict", "partial")
 _THRESHOLD_TOLERANCE = 1e-9
 
@@ -150,17 +159,42 @@ def _is_test_entry(test: Any) -> bool:
     )
 
 
-def grade_rubric(rubric: dict[str, Any], tests: list[dict[str, Any]]) -> RubricGrade:
+def ctrf_tool(report: Any) -> str | None:
+    """The test runner a CTRF report names, as ``"<name> <version>"``, or None."""
+
+    results = report.get("results") if isinstance(report, dict) else None
+    tool = results.get("tool") if isinstance(results, dict) else None
+    name = tool.get("name") if isinstance(tool, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    version = tool.get("version") if isinstance(tool, dict) else None
+    if isinstance(version, str) and version.strip():
+        return f"{name.strip()} {version.strip()}"
+    return name.strip()
+
+
+def grade_rubric(
+    rubric: dict[str, Any],
+    tests: list[dict[str, Any]],
+    *,
+    tool: str | None = None,
+) -> RubricGrade:
     """Decide every criterion from ``tests`` and score the rubric.
 
     ``rubric`` must be gradable (:func:`rubric_gaps` returns nothing); anything
-    else raises ``ValueError`` rather than producing a score.
+    else raises ``ValueError`` rather than producing a score. ``tool`` is the
+    runner the report names (:func:`ctrf_tool`), recorded on each verdict.
     """
 
     gaps = rubric_gaps(rubric)
     if gaps:
         raise ValueError("rubric cannot be graded: " + "; ".join(gaps))
 
+    judge: dict[str, Any] = {"role": "test"}
+    if tool is not None:
+        judge["tool"] = tool
+    if isinstance(rubric.get("version"), str):
+        judge["rubric_version"] = rubric["version"]
     verdicts: list[dict[str, Any]] = []
     unmatched: list[tuple[str, str]] = []
     gates_pass = True
@@ -193,19 +227,28 @@ def grade_rubric(rubric: dict[str, Any], tests: list[dict[str, Any]]) -> RubricG
             rationale = "not passed: " + ", ".join(
                 f"{t['name']} ({t['status']})" for t in not_passed
             )
-        verdicts.append(
-            {
-                "id": criterion["id"],
-                "verdict": "pass" if passed else "fail",
-                "score": score,
-                "judge": {"role": "test"},
-                "citations": [
-                    {"source": "ctrf", "ref": name, "verified": True}
-                    for name in dict.fromkeys(t["name"] for t in matched)
-                ],
-                "rationale": rationale,
-            }
-        )
+        verdict: dict[str, Any] = {"id": criterion["id"], "check": check}
+        if criterion.get("gate") is True:
+            verdict["gate"] = True
+        verdict |= {
+            "verdict": "pass" if passed else "fail",
+            "score": score,
+            "judge": dict(judge),
+            # One per matched test name: pytest-json-ctrf gives parametrized
+            # cases one name, and a quote from the report is verified by
+            # construction.
+            "citations": [
+                {
+                    "source": "verifier",
+                    "ref": CTRF_REPORT_REF,
+                    "quote": name,
+                    "verified": True,
+                }
+                for name in dict.fromkeys(t["name"] for t in matched)
+            ],
+            "rationale": rationale,
+        }
+        verdicts.append(verdict)
 
     scoring = rubric.get("scoring") or {}
     if not gates_pass:

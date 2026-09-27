@@ -74,7 +74,12 @@ from benchflow.task.verifier_reward_kit import (
     _reward_kit_runner,
     _safe_strategy_relative_path,
 )
-from benchflow.task.verifier_rubric import ctrf_tests, grade_rubric, review_document
+from benchflow.task.verifier_rubric import (
+    ctrf_tests,
+    ctrf_tool,
+    grade_rubric,
+    review_document,
+)
 from benchflow.task.verifier_scan import (
     _DEP_INSTALL_DIAGNOSTIC,
     _has_dep_install_failure,
@@ -587,14 +592,15 @@ class Verifier:
                 msg += f"\n{_DEP_INSTALL_DIAGNOSTIC}"
             raise RubricGradingError(msg)
         try:
-            tests = ctrf_tests(json.loads(ctrf_path.read_text(encoding="utf-8")))
+            report = json.loads(ctrf_path.read_text(encoding="utf-8"))
+            tests = ctrf_tests(report)
         except (OSError, ValueError) as e:
             raise RubricGradingError(
                 "task.md rubric: infrastructure error: /logs/verifier/ctrf.json "
                 f"is not a CTRF report: {e}"
             ) from e
 
-        grade = grade_rubric(rubric, tests)
+        grade = grade_rubric(rubric, tests, tool=ctrf_tool(report))
         (verifier_dir / _REVIEW_FILENAME).write_text(
             json.dumps(review_document(rubric, grade), indent=2) + "\n"
         )
