@@ -180,7 +180,8 @@ def _check_draft1_sandbox(task_dir: Path) -> list[str]:
     except Exception:
         return []
     config = document.draft1.config if document.draft1 is not None else {}
-    sandbox = config.get("sandbox") if isinstance(config.get("sandbox"), dict) else {}
+    table = config.get("sandbox")
+    sandbox = table if isinstance(table, dict) else {}
     compose = sandbox.get("compose")
     if sandbox.get("image") or (
         isinstance(compose, str)
