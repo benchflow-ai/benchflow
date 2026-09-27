@@ -64,6 +64,11 @@ DEFAULT_VERIFIER_MOUNT = "/verifier"
 DEFAULT_ORACLE_MOUNT = "/oracle"
 SUPPORTED_VERIFIER_MOUNTS = (DEFAULT_VERIFIER_MOUNT, "/tests")
 SUPPORTED_ORACLE_MOUNTS = (DEFAULT_ORACLE_MOUNT, "/solution")
+# The one [sandbox] compose path honored. The runtime's compose backends
+# (docker, and daytona's Docker-in-Docker strategy) run a task's services from
+# docker-compose.yaml in its build context, which is sandbox/ here; a Harbor
+# import records environment/docker-compose.yaml as this path.
+DRAFT1_COMPOSE_PATH = "sandbox/docker-compose.yaml"
 
 # File syntax (tools/taskmd.py) -----------------------------------------------
 
@@ -94,7 +99,7 @@ _CLOSED_KEYS = {
     "sandbox": {
         "image", "os", "cpus", "memory", "disk", "gpus", "gpu_types", "tpu",
         "network", "workdir", "env", "skills", "mcp", "ready", "build_timeout",
-        "outputs", "mounts", "boundary",
+        "outputs", "mounts", "boundary", "compose",
     },
     "agent": {
         "timeout", "on_timeout", "budget", "user", "network", "network_reason",
@@ -281,7 +286,8 @@ def read_draft1_task_md(
     """Parse a draft-1 ``task.md`` and map it to v0.6 data.
 
     ``task_dir`` enables the package checks: a Harbor ``task.toml`` beside
-    ``task.md`` is an error, ``verifier/rubric.json`` and
+    ``task.md`` is an error, ``sandbox/docker-compose.yaml`` is checked against
+    ``[sandbox] compose``, ``verifier/rubric.json`` and
     ``verifier/behaviors.json`` in task.md's schema are classified, and a
     ``verifier/verifier.md`` strategy is checked against them.
     """
@@ -322,6 +328,7 @@ def read_draft1_task_md(
 
     findings = _Findings()
     mounts = _mounts(config, findings)
+    _compose(config, findings)
     try:
         frontmatter = _config_to_v06(config, findings)
     except (TypeError, ValueError, AttributeError, KeyError) as e:
@@ -338,6 +345,7 @@ def read_draft1_task_md(
             )
     rubric = None
     if root is not None:
+        _check_compose_file(root, config, findings)
         rubric = _check_judgment_files(root, findings)
         _check_verifier_strategy(root, rubric, mounts[0], findings)
 
@@ -386,6 +394,24 @@ def _mounts(config: dict[str, Any], findings: _Findings) -> tuple[str, str]:
             )
         resolved.append(mount)
     return resolved[0], resolved[1]
+
+
+def _compose(config: dict[str, Any], findings: _Findings) -> None:
+    """``[sandbox] compose``: services from a Compose file, beside the agent's.
+
+    Honored at ``DRAFT1_COMPOSE_PATH`` only: the compose backends find the file
+    there by location, and its service named main is the agent's container, as
+    task.md says. Backends that run one container refuse the task at launch
+    (``runtime_capabilities``), as they refuse a Harbor task with services.
+    """
+
+    compose = _table(config, "sandbox").get("compose")
+    if compose is not None and compose != DRAFT1_COMPOSE_PATH:
+        findings.refuse(
+            "[sandbox] compose",
+            f"{compose!r} is not supported; this runtime reads a task's Compose "
+            f"file only at {DRAFT1_COMPOSE_PATH}",
+        )
 
 
 def undelivered_prompt_findings(
@@ -763,6 +789,8 @@ _TOP = {
     "name", "title", "version", "description", "authors", "keywords", "about",
     "sandbox", "agent", "verifier", "oracle", "stages", "provenance", "import",
 }  # fmt: skip
+# Keys the runtime honors itself, outside the v0.6 config model.
+_RUNTIME_KEYS = {"verifier": {"mount"}, "oracle": {"mount"}, "sandbox": {"compose"}}
 # v0.6 frontmatter takes Harbor's config model with its own spellings.
 _V06_TABLE_NAMES = (("sandbox", "environment"), ("oracle", "solution"))
 _V06_VERIFIER_NAMES = (("sandbox_mode", "environment_mode"), ("sandbox", "environment"))
@@ -964,11 +992,12 @@ def _as_table(value: Any, where: str) -> dict[str, Any]:
 def _config_to_v06(cfg: dict[str, Any], findings: _Findings) -> dict[str, Any]:
     """task.md config -> v0.6 frontmatter data (``config_to_v06``)."""
 
-    # Mounts are the runtime's to honor (``_mounts``), not v0.6 config keys.
+    # Mounts and the Compose file are the runtime's to honor (``_mounts``,
+    # ``_compose``), not v0.6 config keys.
     cfg = {
         key: (
-            {k: v for k, v in value.items() if k != "mount"}
-            if key in ("verifier", "oracle") and isinstance(value, dict)
+            {k: v for k, v in value.items() if k not in _RUNTIME_KEYS[key]}
+            if key in _RUNTIME_KEYS and isinstance(value, dict)
             else value
         )
         for key, value in cfg.items()
@@ -991,7 +1020,7 @@ def _config_to_v06(cfg: dict[str, Any], findings: _Findings) -> dict[str, Any]:
         out["metadata"] = cfg["about"]
 
     sandbox = cfg.get("sandbox")
-    if isinstance(sandbox, dict):
+    if isinstance(sandbox, dict) and sandbox:
         out["environment"] = mapper.sandbox(sandbox, "sandbox")
         if "outputs" in sandbox:
             out["artifacts"] = mapper.table(sandbox, (_STEP[2],), "sandbox")[
@@ -1161,6 +1190,31 @@ def _merge_imports(
 
 
 # Prompts and package files ----------------------------------------------------
+
+
+def _check_compose_file(
+    task_dir: Path, config: dict[str, Any], findings: _Findings
+) -> None:
+    """The Compose file the runtime would run, against the one the task declares.
+
+    The compose backends start whatever ``sandbox/docker-compose.yaml`` holds.
+    A package that ships one without declaring it would get services it never
+    asked for; one that declares it without shipping it would get none.
+    """
+
+    declared = _table(config, "sandbox").get("compose") == DRAFT1_COMPOSE_PATH
+    present = (task_dir / DRAFT1_COMPOSE_PATH).is_file()
+    if declared and not present:
+        findings.refuse(
+            "[sandbox] compose",
+            f"names {DRAFT1_COMPOSE_PATH}, which the package does not have",
+        )
+    elif present and not declared:
+        findings.refuse(
+            DRAFT1_COMPOSE_PATH,
+            "the runtime would start the services in this file beside the "
+            "agent's container, but [sandbox] compose does not declare it",
+        )
 
 
 def _check_prompt_settings(config: dict[str, Any], findings: _Findings) -> None:

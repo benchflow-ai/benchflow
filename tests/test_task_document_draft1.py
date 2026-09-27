@@ -909,3 +909,85 @@ def test_unsupported_mount_is_refused_at_launch(tmp_path: Path) -> None:
         _ = paths.verifier_mount_dir
     with pytest.raises(ValueError, match="mount = '/work/solution' is not supported"):
         _ = paths.oracle_mount_dir
+
+
+# Services beside the agent's container: [sandbox] compose --------------------------
+
+DRAFT1_COMPOSE = "sandbox/docker-compose.yaml"
+_COMPOSE_FILE = (
+    "services:\n  main:\n    depends_on: [db]\n  db:\n    image: postgres:16\n"
+)
+
+
+def _compose_task(
+    tmp_path: Path, compose: str | None, *, ships_file: bool = True
+) -> Path:
+    """hello-world with a database beside the agent's container."""
+    task_dir = tmp_path / "compose-task"
+    shutil.copytree(FIXTURES / "hello-world", task_dir)
+    if ships_file:
+        (task_dir / DRAFT1_COMPOSE).write_text(_COMPOSE_FILE)
+    if compose is not None:
+        text = (task_dir / "task.md").read_text()
+        (task_dir / "task.md").write_text(
+            text.replace(
+                '[agent]\ntimeout = "2m"\n',
+                f'[agent]\ntimeout = "2m"\n\n[sandbox]\ncompose = "{compose}"\n',
+            )
+        )
+    return task_dir
+
+
+def test_compose_file_runs_beside_the_agent(tmp_path: Path) -> None:
+    """[sandbox] compose (task-md 8e46ce3) is honored where the runtime runs Harbor's
+    environment/docker-compose.yaml: the compose backends read it from the build
+    context, sandbox/. Backends that run one container refuse it, as for Harbor.
+    """
+    from benchflow.sandbox.setup import _create_sandbox_environment
+    from benchflow.task import RolloutPaths
+
+    task_dir = _compose_task(tmp_path, DRAFT1_COMPOSE)
+    task = Task(task_dir)
+
+    assert task.document is not None and task.document.draft1 is not None
+    assert task.document.draft1.unsupported == ()
+    assert "sandbox" not in task.document.frontmatter  # not v0.6 config
+    assert _launch_issue_paths(task_dir, "docker") == set()
+    assert _launch_issue_paths(task_dir, "daytona") == set()
+    assert _launch_issue_paths(task_dir, "modal") == {DRAFT1_COMPOSE}
+
+    sandbox = _create_sandbox_environment(
+        "docker", task, task_dir, "compose-task", RolloutPaths(tmp_path / "rollout")
+    )
+
+    assert sandbox._uses_compose
+    assert (task_dir / DRAFT1_COMPOSE).resolve() in {
+        path.resolve() for path in sandbox._docker_compose_paths
+    }
+
+
+@pytest.mark.parametrize(
+    ("compose", "ships_file", "path", "reason"),
+    [
+        (
+            "sandbox/compose.yaml",
+            True,
+            "[sandbox] compose",
+            "only at sandbox/docker-compose.yaml",
+        ),
+        (DRAFT1_COMPOSE, False, "[sandbox] compose", "the package does not have"),
+        (None, True, DRAFT1_COMPOSE, "[sandbox] compose does not declare it"),
+    ],
+)
+def test_compose_file_the_runtime_would_not_run_as_declared_is_refused(
+    tmp_path: Path, compose: str | None, ships_file: bool, path: str, reason: str
+) -> None:
+    task_dir = _compose_task(tmp_path, compose, ships_file=ships_file)
+
+    document = TaskDocument.from_path(task_dir / "task.md")
+
+    assert document.draft1 is not None
+    findings = {f.path: f.reason for f in document.draft1.unsupported}
+    assert path in findings
+    assert reason in findings[path]
+    assert path in _launch_issue_paths(task_dir)
