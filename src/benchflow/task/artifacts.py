@@ -14,7 +14,7 @@ from pathlib import PurePosixPath
 from benchflow.task.config import ArtifactConfig
 
 #: Backends that collect root artifacts (exec + tar download + manifest).
-ARTIFACT_SANDBOXES: frozenset[str] = frozenset({"docker", "daytona"})
+ARTIFACT_SANDBOXES: frozenset[str] = frozenset({"docker", "remote-docker", "daytona"})
 
 
 def as_artifact_config(item: str | ArtifactConfig) -> ArtifactConfig:

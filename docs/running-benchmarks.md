@@ -356,6 +356,7 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Sandbox | Flag | Best for |
 |---------|------|----------|
 | Docker | `--sandbox docker` | Local development, small runs (≤10 tasks) |
+| Remote Docker | `--sandbox remote-docker` | Your own Docker host over SSH or TLS ([remote Docker](./remote-docker.md)) |
 | Apple Container | `--sandbox apple-container` | Local Apple Silicon macOS runs without Docker Desktop |
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |

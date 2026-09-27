@@ -70,6 +70,17 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         enforces_allowlist=True,
     ),
     SandboxProvider(
+        # The local provider on a Docker host the user controls (ssh:// or
+        # tcp:// with TLS). The model proxy runs in the sandbox because the
+        # remote container cannot reach one on the caller's machine.
+        "remote-docker",
+        extra=None,
+        model_proxy=ModelProxyLocation.SANDBOX,
+        supports_compose=True,
+        enforces_denylist=True,
+        enforces_allowlist=True,
+    ),
+    SandboxProvider(
         "daytona",
         extra="sandbox-daytona",
         model_proxy=ModelProxyLocation.SANDBOX,

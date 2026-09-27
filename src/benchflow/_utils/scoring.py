@@ -264,6 +264,8 @@ _UNRECOVERABLE_STARTUP_RES = (
     re.compile(r"path does not exist: "),
     re.compile(r'failed to calculate checksum of ref \S+ "[^"]+": not found'),
     re.compile(r"docker daemon unreachable: "),
+    re.compile(r"remote docker host unreachable: "),
+    re.compile(r"remote docker host lacks resources: "),
 )
 
 

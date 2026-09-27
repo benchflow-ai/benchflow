@@ -518,6 +518,16 @@ class DockerSandbox(BaseSandbox):
             verifier_dir,
         )
 
+    def _docker_client_env(self) -> dict[str, str] | None:
+        """Environment for raw ``docker`` subprocesses; None inherits the caller's.
+
+        The remote provider returns an environment pointed at its host.
+        """
+        return None
+
+    def _is_retryable_build_error(self, message: str) -> bool:
+        return _is_retryable_docker_build_error(message)
+
     @property
     def _dockerfile_path(self) -> Path:
         return self.environment_dir / "Dockerfile"
@@ -701,7 +711,7 @@ class DockerSandbox(BaseSandbox):
                 await self._run_docker_compose_command(["build"])
                 return
             except RuntimeError as exc:
-                if attempt == max_attempts or not _is_retryable_docker_build_error(
+                if attempt == max_attempts or not self._is_retryable_build_error(
                     str(exc)
                 ):
                     raise
@@ -817,10 +827,20 @@ class DockerSandbox(BaseSandbox):
             if build_sem is not None:
                 build_sem.release()
 
+        await self._prepare_log_dirs_after_up()
+
+    async def _prepare_log_dirs_after_up(self) -> None:
+        """Make the mounted log folders writable and check the mount is shared."""
         await self.exec(
             f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
         await self._probe_verifier_log_mount()
+
+    def _down_command(self, delete: bool) -> list[str]:
+        """The ``compose down`` arguments teardown runs (unless containers are kept)."""
+        if delete and self._recovery_baseline is None:
+            return ["down", "--rmi", "all", "--volumes", "--remove-orphans", "-t", "5"]
+        return ["down", "-t", "5"]
 
     async def stop(self, delete: bool) -> None:
         # Bounded chown: a hung agent container will make `docker exec` block
@@ -855,22 +875,10 @@ class DockerSandbox(BaseSandbox):
                 await self._run_docker_compose_command(
                     ["stop", "-t", "5"], timeout_sec=90
                 )
-            elif delete and self._recovery_baseline is None:
-                await self._run_docker_compose_command(
-                    [
-                        "down",
-                        "--rmi",
-                        "all",
-                        "--volumes",
-                        "--remove-orphans",
-                        "-t",
-                        "5",
-                    ],
-                    timeout_sec=120,
-                )
             else:
+                down = self._down_command(delete)
                 await self._run_docker_compose_command(
-                    ["down", "-t", "5"], timeout_sec=90
+                    down, timeout_sec=120 if "--rmi" in down else 90
                 )
         except Exception as e:
             unavailable = _docker_unavailable_reason(e)
@@ -932,6 +940,7 @@ class DockerSandbox(BaseSandbox):
                 label,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=self._docker_client_env(),
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             cids = stdout.decode().split()
@@ -944,6 +953,7 @@ class DockerSandbox(BaseSandbox):
                     cid,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env=self._docker_client_env(),
                 )
                 await asyncio.wait_for(rm_proc.wait(), timeout=10)
             net_proc = await asyncio.create_subprocess_exec(
@@ -955,6 +965,7 @@ class DockerSandbox(BaseSandbox):
                 label,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=self._docker_client_env(),
             )
             await asyncio.wait_for(net_proc.wait(), timeout=10)
         except Exception as e:
@@ -1082,6 +1093,7 @@ class DockerSandbox(BaseSandbox):
                 tag,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._docker_client_env(),
             )
             stdout_bytes, stderr_bytes = await proc.communicate()
         finally:
@@ -1278,6 +1290,7 @@ class DockerSandbox(BaseSandbox):
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._docker_client_env(),
         )
         stdout_bytes, stderr_bytes = await proc.communicate()
         result = ExecResult(
@@ -1402,17 +1415,19 @@ class DockerSandbox(BaseSandbox):
             *compose_file_args,
         ]
 
-        os.execvp(
+        client_env = self._docker_client_env()
+        argv = [
             "bash",
-            [
-                "bash",
-                "-c",
-                f"{variables}; "
-                + " ".join([*compose_base, "exec", "-it", "main", "bash"])
-                + "; "
-                + " ".join([*compose_base, "down"]),
-            ],
-        )
+            "-c",
+            f"{variables}; "
+            + " ".join([*compose_base, "exec", "-it", "main", "bash"])
+            + "; "
+            + " ".join([*compose_base, "down"]),
+        ]
+        if client_env is None:
+            os.execvp("bash", argv)
+        else:
+            os.execvpe("bash", argv, client_env)
 
 
 class _DockerCredentialOps:
@@ -1452,6 +1467,7 @@ class _DockerCredentialOps:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._sandbox._docker_client_env(),
         )
         _, stderr = await proc.communicate(base64.b64encode(content))
         if proc.returncode != 0:

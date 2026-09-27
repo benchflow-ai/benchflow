@@ -200,6 +200,25 @@ def eval_preflight(
                 soft_wrap=True,
             )
             raise typer.Exit(1)
+    if sandbox == "remote-docker":
+        from benchflow.sandbox.remote_docker import (
+            probe_remote_docker,
+            resolve_remote_docker_host,
+        )
+
+        try:
+            probe_remote_docker(resolve_remote_docker_host())
+        except (ValueError, RuntimeError) as exc:
+            print_error(
+                "The remote Docker host is not ready for --sandbox remote-docker; "
+                f"no job was created.\n  {exc}"
+            )
+            err_console.print(
+                f"Set [cyan]{PREFLIGHT_OPT_OUT_ENV}=1[/cyan] to skip this check.",
+                highlight=False,
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
     if sandbox == "daytona":
         # The same live key check doctor makes, before a job exists: a bad key
         # otherwise created the job and retried sandbox creation.

@@ -256,7 +256,8 @@ def _append_config_issues(
         separate_issue = None
         if sandbox not in SEPARATE_VERIFIER_SANDBOXES:
             separate_issue = (
-                "separate verifier sandboxes are implemented for docker and daytona"
+                "separate verifier sandboxes are implemented for docker, "
+                "remote-docker and daytona"
             )
         elif config.verifier.type != "test-script":
             separate_issue = (
@@ -290,7 +291,10 @@ def _append_config_issues(
                 ),
                 sandbox=sandbox,
             )
-    if config.verifier.service != "main" and sandbox != "docker":
+    if config.verifier.service != "main" and sandbox not in (
+        "docker",
+        "remote-docker",
+    ):
         _issue(
             unsupported,
             path="verifier.service",

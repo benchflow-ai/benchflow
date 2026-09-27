@@ -2406,7 +2406,10 @@ class Evaluation:
 
         cfg = self._config
 
-        if cfg.build_concurrency is not None and cfg.environment == "docker":
+        if cfg.build_concurrency is not None and cfg.environment in (
+            "docker",
+            "remote-docker",
+        ):
             from benchflow.sandbox.docker import DockerSandbox
 
             DockerSandbox.set_build_concurrency(cfg.build_concurrency)

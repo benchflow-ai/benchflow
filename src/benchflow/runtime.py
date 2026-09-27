@@ -566,6 +566,20 @@ def check_host(configs: Sequence[Any]) -> None:
                 f"started.\n{lines}\nRun `bench doctor` for the full report, or "
                 "set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check."
             )
+    if any(c.environment == "remote-docker" for c in configs):
+        from benchflow.sandbox.remote_docker import (
+            probe_remote_docker,
+            resolve_remote_docker_host,
+        )
+
+        try:
+            probe_remote_docker(resolve_remote_docker_host())
+        except (ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                "The remote Docker host is not ready for "
+                f"environment='remote-docker'; nothing was started.\n  {exc}\n"
+                "Set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check."
+            ) from exc
     if any(c.environment == "daytona" for c in configs):
         daytona = doctor_mod.check_daytona(probes, required=True, offline=False)
         if daytona.status == "fail":

@@ -755,6 +755,17 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "remote-docker":
+        from benchflow.sandbox.remote_docker import RemoteDockerSandbox
+
+        return RemoteDockerSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     elif sandbox_type == "daytona":
         try:
             from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches

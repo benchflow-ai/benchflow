@@ -13,7 +13,7 @@ from typing import Literal
 from benchflow.task.config import SandboxConfig, TaskConfig, VerifierSandboxMode
 from benchflow.task.paths import TaskPaths
 
-SEPARATE_VERIFIER_SANDBOXES = frozenset({"docker", "daytona"})
+SEPARATE_VERIFIER_SANDBOXES = frozenset({"docker", "remote-docker", "daytona"})
 
 ImageSource = Literal[
     "verifier.sandbox.docker_image",

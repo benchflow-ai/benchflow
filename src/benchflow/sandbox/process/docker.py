@@ -22,11 +22,14 @@ class DockerProcess(SubprocessLiveProcess):
         project_dir: str,
         compose_files: list[str],
         service: str = "main",
+        client_env: dict[str, str] | None = None,
     ):
         self._project_name = project_name
         self._project_dir = project_dir
         self._compose_files = compose_files
         self._service = service
+        # Set for a remote daemon: the exact environment that reaches it.
+        self._client_env = client_env
 
     @classmethod
     def from_sandbox_env(cls, env: Any, service: str = "main") -> DockerProcess:
@@ -40,11 +43,13 @@ class DockerProcess(SubprocessLiveProcess):
         project_name = env.session_id.lower().replace(".", "-")
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
+        client_env = getattr(env, "_docker_client_env", None)
         return cls(
             project_name=project_name,
             project_dir=project_dir,
             compose_files=compose_files,
             service=service,
+            client_env=client_env() if callable(client_env) else None,
         )
 
     def _compose_cmd(self) -> list[str]:
@@ -63,6 +68,8 @@ class DockerProcess(SubprocessLiveProcess):
 
     def _host_env(self) -> dict[str, str]:
         """Host process env with DOCKER_HOST resolved if needed."""
+        if self._client_env is not None:
+            return dict(self._client_env)
         proc_env = os.environ.copy()
         if not proc_env.get("DOCKER_HOST"):
             import subprocess
