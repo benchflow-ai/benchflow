@@ -286,6 +286,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--eval-results-task` | — | Benchmark `task_id`, as defined in the dataset's `eval.yaml` |
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
+| `--seeds` | — | Seeded rollouts: run every task once per seed (`0-4`, `0,3,7`); tasks must be in a task format that writes seeded variants (e.g. embodied tasks). `summary.json` gets `seeded` (pass@k, mean, std per task). See [embodied.md](../embodied.md) |
 
 `--publish-hf`/`--publish-bucket` also write a `README.md` run summary
 (agent, model, per-task reward and any error/verifier issue, deduplicated
@@ -1169,3 +1170,14 @@ bench eval continue-batch path/to/jobs-root --tasks-dir path/to/tasks
 | `--limit` | — | Limit discovered timeout folders |
 | `--strict-divergence` | `false` | Abort a run if replay leaves the original rails |
 | `--proxy-mode` | `auto` | Replay proxy placement: `auto`, `host`, or `sandbox` |
+
+## bench embodied
+
+Embodied rollouts (robots and simulators); see [embodied.md](../embodied.md).
+
+| Command | What it does |
+|---|---|
+| `bench embodied report JOB_DIR [--json]` | Per task: rewards by seed, mean, std, unbiased pass@k, reset reproducibility |
+| `bench embodied export JOB_DIR --out DIR` | Every trial's per-step transitions and episode index as `DIR/steps.jsonl` + `DIR/episodes.jsonl` |
+| `bench embodied check-spec SPEC.json` | Validate an embodiment spec (or a saved `robo info --json` response) |
+| `bench embodied robo-path` | Path of the standalone agent-side `robo` script |

@@ -29,6 +29,14 @@ The entry point may name an instance or a class that takes no arguments. Code ru
 
 `materialize` writes the native package under `out_root`, which is `$BENCHFLOW_TASK_FORMAT_CACHE/<name>` (default `~/.cache/benchflow/task-formats/<name>`), and returns its folder. It must be deterministic and safe to call concurrently. Content-address the output (hash the source task and the generator), write it to a temporary folder and rename it into place. BenchFlow refuses a returned folder that some format still claims, so a format cannot hand back its own input.
 
+## Seeded variants
+
+A format may also implement `materialize_variant(task_dir, out_root, *, seed)`, which writes the package of one seed. `bench eval run --seeds 0-4` (or `0,3,7`) then loads every claimed task once per seed, and `summary.json` gets a `seeded` report (pass@k, mean, standard deviation and reset reproducibility per task). The seeded package's folder name must differ per seed; `benchflow.embodied.sidecar.EmbodiedTaskFormat` names it `<task>--seed-<n>`. `--seeds` refuses native task packages, since BenchFlow cannot pass them a seed.
+
+## Simulator tasks
+
+Formats whose tasks run a simulator next to the agent can subclass `benchflow.embodied.sidecar.EmbodiedTaskFormat`, which writes the agent image, the compose topology with a trusted simulator service, the physical verifier and the seeded and noop variants, and leaves only the simulator image, the episode factory and the reference solutions to the benchmark. See [embodied.md](./embodied.md).
+
 ## What a format may generate
 
 Anything a native package may contain. The robouse format uses:

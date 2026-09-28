@@ -134,6 +134,7 @@ class EvalCreateRequest:
     eval_results_task: str | None = None
     matrix: Path | None = None
     trials: int = 1
+    seeds: str | None = None
 
 
 @dataclass
@@ -165,6 +166,7 @@ class EvalPlan:
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
+    eval_seeds: list[int] | None = None
 
     def make_eval_config(
         self,
@@ -219,6 +221,7 @@ class EvalPlan:
             environment_manifest=self.eval_env_manifest,
             config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
+            seeds=self.eval_seeds,
         )
 
 
@@ -267,6 +270,20 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--matrix currently requires --tasks-dir")
     if request.trials < 1:
         raise EvalPlanError("--trials must be >= 1")
+    eval_seeds: list[int] | None = None
+    if request.seeds is not None:
+        from benchflow.embodied.rollouts import parse_seeds
+
+        try:
+            eval_seeds = parse_seeds(request.seeds)
+        except ValueError as exc:
+            raise EvalPlanError(f"Invalid --seeds {request.seeds!r}: {exc}") from None
+        if not (request.tasks_dir or request.source_repo):
+            raise EvalPlanError("--seeds requires --tasks-dir or --source-repo")
+        if request.matrix is not None:
+            raise EvalPlanError("--seeds cannot be combined with --matrix")
+        if request.worker_concurrency is not None:
+            raise EvalPlanError("--seeds cannot be combined with --worker-concurrency")
     if request.trials > 1 and request.matrix is None:
         # Only the matrix expansion consumes trials; a plain run would silently
         # do one trial per task while the caller believes it ran N. Per-trial
@@ -505,4 +522,5 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         parsed_env=parsed_env,
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,
+        eval_seeds=eval_seeds,
     )

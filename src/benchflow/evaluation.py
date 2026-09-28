@@ -527,6 +527,10 @@ class EvaluationConfig:
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
     # shape) is also accepted at runtime — __post_init__ materializes it.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Seeded rollouts (`--seeds 0-4`): every task whose task format writes seeded
+    # variants runs once per seed; summary.json then carries a `seeded` report
+    # (pass@k, variance, reset reproducibility). See docs/embodied.md.
+    seeds: list[int] | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -1032,21 +1036,32 @@ class Evaluation:
         from benchflow._utils.task_authoring import task_document_parse_error
         from benchflow.task.formats import detect_task_format, materialize_task_dir
 
+        seeds = self._config.seeds
+
+        def materialize(d: Path) -> list[Path]:
+            if not seeds:
+                return [materialize_task_dir(d)]
+            return [materialize_task_dir(d, seed=s) for s in seeds]
+
         # A task in a registered task format (benchflow.task.formats) at the
         # root is a single-task input too; it runs as its materialized package.
         if detect_task_format(self._tasks_dir) is not None:
-            native = materialize_task_dir(self._tasks_dir)
-            if native.name in self._config.exclude_tasks:
+            natives = materialize(self._tasks_dir)
+            # with seeds, filters match the source folder (like child folders below)
+            base = self._tasks_dir.name if seeds else natives[0].name
+            if base in self._config.exclude_tasks:
                 return []
-            if (
-                self._config.include_tasks
-                and native.name not in self._config.include_tasks
-            ):
+            if self._config.include_tasks and base not in self._config.include_tasks:
                 return []
-            return [native]
+            return natives
 
         # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
+            if seeds:
+                raise ValueError(
+                    f"--seeds: {self._tasks_dir.name} is a native task package; seeded rollouts "
+                    "need a task format that writes seeded variants (docs/embodied.md)"
+                )
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
             if (
@@ -1070,9 +1085,14 @@ class Evaluation:
             if self._config.include_tasks and d.name not in self._config.include_tasks:
                 continue
             if detect_task_format(d) is not None:
-                selected.append(materialize_task_dir(d))
+                selected.extend(materialize(d))
                 continue
             if _is_task_dir(d):
+                if seeds:
+                    raise ValueError(
+                        f"--seeds: {d.name} is a native task package; seeded rollouts need "
+                        "a task format that writes seeded variants (docs/embodied.md)"
+                    )
                 selected.append(d)
                 continue
             task_md = d / "task.md"
@@ -1966,6 +1986,15 @@ class Evaluation:
         # Write summary into the job directory so each run is self-contained.
         job_dir = self._jobs_dir / self._job_name
         job_dir.mkdir(parents=True, exist_ok=True)
+        if cfg.seeds:
+            # Seeded rollouts: per base task pass@k, mean/std, reset reproducibility.
+            try:
+                from benchflow.embodied.rollouts import seed_report
+
+                summary["seeds"] = list(cfg.seeds)
+                summary["seeded"] = seed_report(job_dir)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Seeded-rollout report failed: %s", e)
         summary_text = json.dumps(summary, indent=2)
         (job_dir / "summary.json").write_text(summary_text)
         # Backward-compat: also write to jobs_dir root for tooling that

@@ -18,6 +18,9 @@ zero-argument class, with ``name``, ``detect`` and ``materialize``)::
 
 or in-process with :func:`register_task_format`.
 
+A format may also implement ``materialize_variant(task_dir, out_root, *, seed)`` to write one package per seed
+(``bench eval run --seeds``); the returned folder name must differ per seed (e.g. ``<task>--seed-<n>``).
+
 ``materialize`` must be deterministic and idempotent: it writes the native package under ``out_root``
 (``$BENCHFLOW_TASK_FORMAT_CACHE/<format>``, default ``~/.cache/benchflow/task-formats/<format>``) and
 returns its path. The returned folder's name is the task name BenchFlow uses in trial names and results.
@@ -29,7 +32,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -126,19 +129,39 @@ def task_format_cache_root() -> Path:
     )
 
 
-def materialize_task_dir(task_dir: str | Path) -> Path:
+def supports_seeds(fmt: TaskFormat) -> bool:
+    """Whether *fmt* can write one package per seed (``materialize_variant(..., seed=...)``)."""
+    return callable(getattr(fmt, "materialize_variant", None))
+
+
+def materialize_task_dir(task_dir: str | Path, *, seed: int | None = None) -> Path:
     """Return the native task package for *task_dir*.
 
     A folder that no format claims is returned unchanged. A claimed folder is materialized under the
-    format cache and the materialized folder is returned.
+    format cache and the materialized folder is returned. With *seed*, the format writes the package of
+    that seed; a folder whose format cannot (or a native folder) raises ``ValueError``.
     """
     path = task_dir if isinstance(task_dir, Path) else Path(task_dir)
     fmt = detect_task_format(path)
     if fmt is None:
+        if seed is not None:
+            raise ValueError(
+                f"{path}: seeded rollouts need a task format that writes seeded variants; "
+                "this is a native task package"
+            )
         return path  # unchanged, same object
     out_root = task_format_cache_root() / fmt.name
     out_root.mkdir(parents=True, exist_ok=True)
-    native = Path(fmt.materialize(path.resolve(), out_root))
+    if seed is not None:
+        if not supports_seeds(fmt):
+            raise ValueError(
+                f"{path}: task format {fmt.name!r} does not write seeded variants"
+            )
+        # materialize_variant is an optional extension of TaskFormat (checked above)
+        variant = cast(Any, fmt).materialize_variant
+        native = Path(variant(path.resolve(), out_root, seed=int(seed)))
+    else:
+        native = Path(fmt.materialize(path.resolve(), out_root))
     if detect_task_format(native) is not None:
         raise RuntimeError(
             f"task format {fmt.name!r} materialized {path} as {native}, which is still claimed by a task format"

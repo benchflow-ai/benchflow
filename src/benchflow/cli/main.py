@@ -47,6 +47,7 @@ from benchflow.cli._shared import (
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
+from benchflow.cli.embodied import register_embodied
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
 from benchflow.cli.eval_lift import register_eval_lift
@@ -637,6 +638,17 @@ def eval_run(
         int,
         typer.Option("--trials", help="Number of trials for --matrix"),
     ] = 1,
+    seeds: Annotated[
+        str | None,
+        typer.Option(
+            "--seeds",
+            help=(
+                "Seeded rollouts: run every task once per seed, e.g. 0-4 or 0,3,7 "
+                "(tasks in a task format that writes seeded variants, such as "
+                "embodied tasks). summary.json gets pass@k and variance per task."
+            ),
+        ),
+    ] = None,
 ) -> None:
     # The supported --sandbox values are rendered from the provider registry
     # into that option's own help text. This docstring used to hand-copy them
@@ -722,6 +734,7 @@ def eval_run(
         eval_results_task=eval_results_task,
         matrix=matrix,
         trials=trials,
+        seeds=seeds,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
@@ -1365,6 +1378,7 @@ register_review(app)
 register_tasks(app)
 register_traj(app)
 register_train(app)
+register_embodied(app)
 register_hub(app)
 register_agent(app)
 register_adopt_deprecated(app)
