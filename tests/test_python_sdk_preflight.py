@@ -6,7 +6,8 @@ sandbox and failed 60 s later as "ACP initialize timed out" (category
 no category; ``bf.run_sync("<task dir>")`` reported the path as an unknown
 agent; and ``bf.run_batch(["<path>"])`` raised ``AttributeError``. The SDK entry
 points now check these before anything runs. Raw agent commands (with a space
-or a ``/``) are still accepted, as the registry allows.
+or a ``/``) are still accepted, as the registry allows; a one-word name the
+registry and the agents catalog do not know fails closed.
 """
 
 from __future__ import annotations
@@ -94,10 +95,15 @@ def test_batch_is_checked_before_anything_starts(no_rollouts) -> None:
     assert no_rollouts == []
 
 
-@pytest.mark.parametrize(
-    "agent", ["my-agent --serve", "/opt/agents/run.sh", "dummy", "test-agent"]
-)
-def test_raw_commands_and_unrelated_names_pass(agent: str) -> None:
+@pytest.mark.parametrize("agent", ["my-agent --serve", "/opt/agents/run.sh"])
+def test_raw_commands_pass(agent: str) -> None:
     from benchflow.runtime import check_rollout_config
 
     check_rollout_config(RolloutConfig(task_path=TASK, agent=agent))
+
+
+@pytest.mark.parametrize("agent", ["dummy", "test-agent"])
+def test_unrelated_bare_names_fail_closed(agent: str) -> None:
+    """A one-word name no registry or catalog knows is not run as a command."""
+    with pytest.raises(KeyError, match="Unknown agent"):
+        RolloutConfig(task_path=TASK, agent=agent)

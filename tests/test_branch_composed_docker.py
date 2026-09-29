@@ -137,7 +137,8 @@ PYTHON""")
         assert (await env.readiness()).ready
         rollout = Rollout(
             RolloutConfig(
-                task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")]
+                task_path=tmp_path / "task",
+                scenes=[Scene.single(agent="dummy --agent")],
             )
         )
         rollout._environment, rollout._env = env, sandbox

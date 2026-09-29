@@ -50,7 +50,9 @@ class CountingSandbox:
 def _rollout(tmp_path: Path) -> tuple[Rollout, CountingSandbox]:
     sandbox = CountingSandbox()
     rollout = Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
     rollout._env = sandbox
     rollout._rollout_dir = tmp_path / "run"

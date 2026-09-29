@@ -13,9 +13,20 @@ def normalize_agent_name(agent: str) -> str:
     stable runtime key is returned, so the Rollout/Evaluation path resolves
     acpx install/launch commands instead of the literal spec string.
 
-    Unknown specs are returned unchanged.
+    Unknown bare IDs fail closed. Explicit raw commands pass through unchanged.
+    A close misspelling of a registered or scripted agent (``claud-agent-acp``,
+    ``oracel``) raises the pre-run check's ``ValueError`` with a suggestion;
+    any other unknown bare ID raises the registry's ``KeyError``.
     """
-    return resolve_agent_key(agent)
+    try:
+        return resolve_agent_key(agent)
+    except KeyError:
+        # Checked after the lookup, so an agent the catalog provides is never
+        # mistaken for a misspelling of a built-in.
+        from benchflow.runtime import check_agent_names
+
+        check_agent_names([agent])
+        raise
 
 
 def normalize_sandbox_user(sandbox_user: str | None) -> str | None:

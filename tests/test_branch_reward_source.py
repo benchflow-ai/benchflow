@@ -35,7 +35,9 @@ class _Environment:
 
 def _rollout(tmp_path: Path, monkeypatch, verify_result) -> Rollout:
     rollout = Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
     rollout._environment = _Environment()
     rollout._rollout_dir = tmp_path / "run"

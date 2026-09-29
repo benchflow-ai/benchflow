@@ -34,7 +34,9 @@ async def branched_rollout(tmp_path: Path) -> Path:
     """A parent rollout with two forks: labelled 1/0 children, then 1/unscored."""
     run = tmp_path / "jobs" / "job" / "count-files__b1a2c3d4"
     rollout = Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
     rollout._rollout_dir = run
     rollout._rollout_paths = RolloutPaths(run)

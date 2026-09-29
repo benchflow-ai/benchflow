@@ -306,7 +306,11 @@ async def test_declared_range_must_come_from_the_pinned_adapter(tmp_path):
 
 
 def test_manifest_override_cannot_redefine_probed_launcher(tmp_path):
-    """Fresh import exercises the supported override before helper initialization."""
+    """A fresh process activates the supported override before helper initialization.
+
+    The local catalog loads lazily, on first resolution, so the program resolves
+    ``codex-acp`` before it imports the policy helper.
+    """
     manifest = tmp_path / "agents" / "codex"
     manifest.mkdir(parents=True)
     (manifest / "manifest.toml").write_text(
@@ -318,7 +322,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, resolve_agent
+resolve_agent('codex-acp')
 from benchflow.agents.codex_connector_policy import enforce_codex_apps_policy
 async def main():
     assert AGENTS['codex-acp'].launch_cmd == 'custom-codex --acp'
