@@ -135,6 +135,10 @@ class EvalCreateRequest:
     matrix: Path | None = None
     trials: int = 1
     seeds: str | None = None
+    n_tasks: int | None = None
+    sample_seed: int | None = None
+    timeout_multiplier: float | None = None
+    extra_instruction: str | None = None
 
 
 @dataclass
@@ -222,6 +226,10 @@ class EvalPlan:
             config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
             seeds=self.eval_seeds,
+            n_tasks=req.n_tasks,
+            sample_seed=req.sample_seed,
+            timeout_multiplier=req.timeout_multiplier,
+            extra_instruction=req.extra_instruction,
         )
 
 
@@ -270,6 +278,10 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--matrix currently requires --tasks-dir")
     if request.trials < 1:
         raise EvalPlanError("--trials must be >= 1")
+    if request.n_tasks is not None and request.n_tasks < 1:
+        raise EvalPlanError("--n-tasks must be at least 1")
+    if request.timeout_multiplier is not None and request.timeout_multiplier <= 0:
+        raise EvalPlanError("--timeout-multiplier must be positive")
     eval_seeds: list[int] | None = None
     if request.seeds is not None:
         from benchflow.embodied.rollouts import parse_seeds

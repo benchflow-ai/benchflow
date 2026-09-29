@@ -173,6 +173,52 @@ class ResumeMismatchError(ValueError):
     """
 
 
+
+def _budget_overrides(cfg: Any, task_dir: Path) -> dict[str, Any]:
+    """Per-rollout overrides from ``--timeout-multiplier`` and ``--extra-instruction``."""
+    out: dict[str, Any] = {}
+    if cfg.timeout_multiplier and cfg.timeout_multiplier != 1:
+        from benchflow.task import Task
+
+        base = Task(task_dir).config.agent.timeout_sec or 900
+        out["timeout"] = max(1, int(round(float(base) * float(cfg.timeout_multiplier))))
+    if cfg.extra_instruction:
+        out["prompt_suffix"] = cfg.extra_instruction
+    return out
+
+
+def task_name_selected(name: str, include: set[str], exclude: set[str]) -> bool:
+    """``--include`` / ``--exclude`` matching: exact names or fnmatch globs
+    (``libero-10-*``, ``*-hard``). Exclude wins over include."""
+    import fnmatch
+
+    def hit(patterns: set[str]) -> bool:
+        return any(
+            name == p or (any(c in p for c in "*?[") and fnmatch.fnmatchcase(name, p))
+            for p in patterns
+        )
+
+    if exclude and hit(exclude):
+        return False
+    return not include or hit(include)
+
+
+def sample_task_dirs(
+    dirs: list[Path], n_tasks: int | None, seed: int | None, is_task=None
+) -> list[Path]:
+    """``--n-tasks N [--sample-seed S]``: the first N task dirs in sorted order, or a
+    seeded random sample of N (reproducible: same seed, same tasks), kept sorted."""
+    if not n_tasks or n_tasks <= 0:
+        return dirs
+    tasks = [d for d in dirs if is_task is None or is_task(d)]
+    if len(tasks) <= n_tasks:
+        return tasks
+    if seed is None:
+        return tasks[:n_tasks]
+    import random
+
+    return sorted(random.Random(seed).sample(tasks, n_tasks))
+
 class MalformedTaskError(ValueError):
     """A single-task input whose ``task.md`` exists but fails to parse (#3).
 
@@ -501,6 +547,14 @@ class EvaluationConfig:
     base_image_override: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
+    # Sample limit (``--n-tasks``): after include/exclude, run a random sample of
+    # this many tasks, drawn with ``sample_seed`` (sorted order when seed is None).
+    n_tasks: int | None = None
+    sample_seed: int | None = None
+    # Scale every task's agent time budget (``--timeout-multiplier``).
+    timeout_multiplier: float | None = None
+    # Text appended to every task prompt (``--extra-instruction``).
+    extra_instruction: str | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
@@ -1037,6 +1091,10 @@ class Evaluation:
         from benchflow.task.formats import detect_task_format, materialize_task_dir
 
         seeds = self._config.seeds
+        include, exclude = self._config.include_tasks, self._config.exclude_tasks
+
+        def picked(name: str) -> bool:
+            return task_name_selected(name, include, exclude)
 
         def materialize(d: Path) -> list[Path]:
             if not seeds:
@@ -1049,9 +1107,7 @@ class Evaluation:
             natives = materialize(self._tasks_dir)
             # with seeds, filters match the source folder (like child folders below)
             base = self._tasks_dir.name if seeds else natives[0].name
-            if base in self._config.exclude_tasks:
-                return []
-            if self._config.include_tasks and base not in self._config.include_tasks:
+            if not picked(base):
                 return []
             return natives
 
@@ -1062,12 +1118,7 @@ class Evaluation:
                     f"--seeds: {self._tasks_dir.name} is a native task package; seeded rollouts "
                     "need a task format that writes seeded variants (docs/embodied.md)"
                 )
-            if self._tasks_dir.name in self._config.exclude_tasks:
-                return []
-            if (
-                self._config.include_tasks
-                and self._tasks_dir.name not in self._config.include_tasks
-            ):
+            if not picked(self._tasks_dir.name):
                 return []
             return [self._tasks_dir]
 
@@ -1077,13 +1128,15 @@ class Evaluation:
         # PARSES but is structurally incomplete (schema-only fixture) keeps its
         # silent skip.
         selected: list[Path] = []
-        for d in sorted(self._tasks_dir.iterdir()):
-            if not d.is_dir():
-                continue
-            if d.name in self._config.exclude_tasks:
-                continue
-            if self._config.include_tasks and d.name not in self._config.include_tasks:
-                continue
+        children = [
+            d for d in sorted(self._tasks_dir.iterdir()) if d.is_dir() and picked(d.name)
+        ]
+        children = sample_task_dirs(
+            children, self._config.n_tasks, self._config.sample_seed, is_task=lambda d: (
+                detect_task_format(d) is not None or _is_task_dir(d)
+            )
+        )
+        for d in children:
             if detect_task_format(d) is not None:
                 selected.extend(materialize(d))
                 continue
@@ -1328,6 +1381,7 @@ class Evaluation:
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
             loop_strategy=cfg.loop_strategy,
+            **_budget_overrides(cfg, task_dir),
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen

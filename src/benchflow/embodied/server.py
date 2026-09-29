@@ -758,6 +758,7 @@ class EpisodeServer:
             "wall_time_s": round(time.time() - self.t0, 2),
             "protocol": PROTOCOL_VERSION,
             "embodiment": self.embodiment.name,
+            "embodiment_mode": self.embodiment.mode,
             "sim_steps": self.sim_steps,
             "return": round(self.total_reward, 6),
             "initial_state_sha256": self.initial_state_sha256,

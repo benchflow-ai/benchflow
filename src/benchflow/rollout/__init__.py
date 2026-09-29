@@ -998,6 +998,10 @@ class Rollout:
             _resolve_prompts(cfg.task_path, cfg.prompts),
             self._task.config.agent.prompt_prefix,
         )
+        if cfg.prompt_suffix:
+            self._resolved_prompts = [
+                f"{prompt}\n\n{cfg.prompt_suffix}" for prompt in self._resolved_prompts
+            ]
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
             disallow_web_tools=self._disallow_web_tools,

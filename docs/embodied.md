@@ -101,6 +101,17 @@ Examples of backend skills: `base.navigate_to(obj)`, `grasp(obj)`, `place_on_top
 
 `max_steps` (simulator steps, skills included), `max_wall_s` (wall clock from simulator start; on the sidecar it is the agent timeout plus a margin, since the clock starts before the harness is installed), `max_repeat` (the most steps one `act --repeat` may run), `max_skill_steps`, `settle_steps` (steps held still after `robo done` before judging). Budgets are enforced by the episode server, never by the agent. When the step budget runs out the episode ends as `budget_exhausted`, which scores 0 in `final` mode (a `robo done` is required) and scores `success_ever` in `first` mode.
 
+### Sim, real and hardware-in-the-loop
+
+`mode` places an embodiment on the sim/real axis: `sim` (a simulator, the default), `real` (live hardware) or `hil-mock` (a hardware-in-the-loop mock that replays sessions recorded on the real robot behind the vendor SDK). A `real` or `hil-mock` embodiment must declare its `safety` envelope, which the backend enforces on the trusted side and the spec reports: `joint_limits`, `max_joint_speed`, `workspace` (table height and box), `estop` (how the e-stop is engaged), `attended` (a human operator gates arming and scene resets), `operator_channel` and `temp_stop_c`. The episode record carries `embodiment_mode`, and the seed report groups pass rates by it. Robo Use's real-arm backend (Metal, SO-101, Piper) is the reference implementation.
+
+```json
+{"name": "MakerMods Metal arm", "kind": "arm", "mode": "hil-mock",
+ "safety": {"joint_limits": {"low": [-159, -179, 1, -122, -84, -144, 0], "high": [159, -1, 179, 80, 84, 144, 115]},
+            "max_joint_speed": 15, "workspace": {"table_z": -0.0088, "x": [0.05, 0.62], "y_abs_max": 0.35, "z_max": 0.55},
+            "estop": "latched file (robouse estop)", "attended": true, "operator_channel": "script", "temp_stop_c": 65}}
+```
+
 ## 2. The agent protocol and the `robo` command
 
 The agent container holds one file, `robo` (`benchflow/embodied/robo.py`, standard library only). It sends one JSON request per connection to the episode socket (`$ROBO_SOCKET`, or the legacy `$ROBOUSE_SOCKET`).
@@ -170,7 +181,7 @@ Files the episode server writes (the verifier copies them to `verifier/episode/`
 
 **Dense rewards.** `reward` per step is the backend's shaped reward when it has one (`reward.dense: shaped`, e.g. Meta-World, Gymnasium-Robotics, robosuite), otherwise the sparse success indicator (`reward.dense: sparse`), probed every step. The final reward (`reward.txt`) stays the judged success.
 
-**Seeded rollouts.** `bench eval run --seeds 0-4` (or `0,3,7`) runs every task once per seed (`--include` / `--exclude` match the source folder names; `--seeds` cannot be combined with `--matrix` or `--worker-concurrency`). A task format that implements `materialize_variant(task_dir, out_root, seed=...)` writes one package per seed, named `<task>--seed-<n>`; the seed reaches the simulator through the package, so a rollout is reproducible from its folder alone, and `result.json` records `initial_state_sha256` so two rollouts with the same seed can be checked for identical resets. `summary.json` then carries `seeded`: per base task the rewards by seed, mean, standard deviation, and unbiased pass@k for k = 1..n, plus the means over tasks. `bench embodied report JOB_DIR` prints the same table for any job.
+**Seeded rollouts.** `bench eval run --seeds 0-4` (or `0,3,7`) runs every task once per seed (`--include` / `--exclude` match the source folder names; `--seeds` cannot be combined with `--matrix` or `--worker-concurrency`). A task format that implements `materialize_variant(task_dir, out_root, seed=...)` writes one package per seed, named `<task>--seed-<n>`; the seed reaches the simulator through the package, so a rollout is reproducible from its folder alone, and `result.json` records `initial_state_sha256` so two rollouts with the same seed can be checked for identical resets. `summary.json` then carries `seeded`: per base task the rewards by seed, mean, standard deviation, unbiased pass@k for k = 1..n, a 95% Wilson interval on the pass rate and median / max / min reducers; over tasks the mean reward with a 95% bootstrap interval, the pass rate with its Wilson interval, and pass rates by `embodiment_mode` (sim / real / hil-mock). `bench embodied report JOB_DIR` prints the same table for any job.
 
 **Training export.** For every trial with an episode record, BenchFlow writes next to its other trainer artifacts (`trainer/atif.json`, `trainer/verifiers.jsonl`, `trainer/adp.jsonl`):
 

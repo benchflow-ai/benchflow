@@ -41,6 +41,48 @@ def parse_seeds(text: str) -> list[int]:
     return seeds
 
 
+def wilson(k: int, n: int, z: float = 1.959964) -> list[float] | None:
+    """95% Wilson score interval for k passes out of n (well defined at 0% and 100%)."""
+    if n <= 0:
+        return None
+    p = k / n
+    den = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / den
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return [round(max(0.0, c - h), 6), round(min(1.0, c + h), 6)]
+
+
+def bootstrap_ci(values: list[float], n_boot: int = 2000, seed: int = 0) -> list[float] | None:
+    """95% percentile bootstrap interval of the mean (fixed seed: reports are reproducible)."""
+    import random
+
+    if not values:
+        return None
+    if len(values) == 1:
+        return [values[0], values[0]]
+    rng = random.Random(seed)
+    n = len(values)
+    means = sorted(statistics.fmean(rng.choices(values, k=n)) for _ in range(n_boot))
+    return [round(means[int(0.025 * n_boot)], 6), round(means[int(0.975 * n_boot) - 1], 6)]
+
+
+def reduce(values: list[float], how: str) -> float | None:
+    """Epoch reducers: mean, median, max, min, mode."""
+    if not values:
+        return None
+    if how == "mean":
+        return statistics.fmean(values)
+    if how == "median":
+        return statistics.median(values)
+    if how == "max":
+        return max(values)
+    if how == "min":
+        return min(values)
+    if how == "mode":
+        return statistics.mode(values)
+    raise ValueError(f"unknown reducer {how!r} (mean, median, max, min, mode)")
+
+
 def pass_at_k(n: int, c: int, k: int) -> float:
     """Unbiased estimate of P(at least one of k samples passes) from n samples with c passes."""
     if k > n:
@@ -97,6 +139,7 @@ def _trial_rows(job_dir: Path) -> list[dict]:
                 "steps_used": epr.get("steps_used"),
                 "return": epr.get("return"),
                 "initial_state_sha256": epr.get("initial_state_sha256"),
+                "mode": epr.get("embodiment_mode") or epr.get("mode") or "sim",
             }
         )
     return rows
@@ -131,6 +174,9 @@ def seed_report(job_dir: str | Path, rows: list[dict] | None = None) -> dict:
             "pass_at_k": {
                 str(k): round(pass_at_k(n, c, k), 6) for k in range(1, n + 1)
             },
+            "pass_rate_ci95": wilson(c, n),
+            "reducers": {h: reduce(rewards, h) for h in ("median", "max", "min")},
+            "mode": sorted({str(r.get("mode") or "sim") for r in t["trials"]}),
             "mean_return": statistics.fmean(
                 [r["return"] for r in scored if r["return"] is not None]
             )
@@ -169,6 +215,25 @@ def seed_report(job_dir: str | Path, rows: list[dict] | None = None) -> dict:
             for k in ks
         },
     }
+    all_scored = [
+        r for r in rows if r["reward"] is not None and not r["error"]
+    ]
+    passes = sum(1 for r in all_scored if r["reward"] >= 1.0)
+    summary["pass_rate"] = round(passes / len(all_scored), 6) if all_scored else None
+    summary["pass_rate_ci95"] = wilson(passes, len(all_scored))
+    task_means = [e["mean"] for e in out_tasks.values() if e["mean"] is not None]
+    summary["mean_reward_ci95"] = bootstrap_ci(task_means)
+    by_mode: dict[str, list[float]] = {}
+    for r in all_scored:
+        by_mode.setdefault(str(r.get("mode") or "sim"), []).append(r["reward"])
+    summary["by_mode"] = {
+        m: {
+            "trials": len(v),
+            "pass_rate": round(sum(1 for x in v if x >= 1.0) / len(v), 6),
+            "pass_rate_ci95": wilson(sum(1 for x in v if x >= 1.0), len(v)),
+        }
+        for m, v in sorted(by_mode.items())
+    }
     return {"summary": summary, "tasks": out_tasks}
 
 
@@ -195,4 +260,10 @@ def format_report(report: dict) -> str:
         f"{'all tasks':<44} {s['trials']:>3} {'':>4} {mr:>6} {'':>6} "
         + " ".join(f"{v:>6.3f}" for v in s["pass_at_k"].values())
     )
+    if s.get("pass_rate") is not None:
+        ci = s.get("pass_rate_ci95") or [None, None]
+        lines.append(f"pass rate {s['pass_rate']:.3f} (95% Wilson interval {ci[0]:.3f}-{ci[1]:.3f})")
+    for mode, m in (s.get("by_mode") or {}).items():
+        ci = m["pass_rate_ci95"]
+        lines.append(f"  {mode}: {m['trials']} trials, pass rate {m['pass_rate']:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]")
     return "\n".join(lines)

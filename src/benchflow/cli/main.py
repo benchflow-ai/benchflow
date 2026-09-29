@@ -20,7 +20,7 @@ import logging
 import os
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.markup import escape
@@ -204,6 +204,42 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 register_eval_adopt(eval_app)
 register_eval_lift(eval_app)
 register_eval_score(eval_app)
+
+
+def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
+    """``bench eval run --dry-run``: the resolved plan and task selection, nothing runs."""
+    import json as _json
+
+    from benchflow.evaluation import sample_task_dirs, task_name_selected
+
+    req = plan.request
+    out: dict[str, Any] = {
+        "agent": plan.eval_agent,
+        "model": req.model,
+        "environment": plan.eval_environment,
+        "concurrency": plan.eval_concurrency,
+        "seeds": plan.eval_seeds,
+        "include": sorted(plan.include_tasks),
+        "exclude": sorted(plan.exclude_tasks),
+        "n_tasks": req.n_tasks,
+        "sample_seed": req.sample_seed,
+        "timeout_multiplier": req.timeout_multiplier,
+        "extra_instruction": req.extra_instruction,
+        "dataset": req.dataset,
+        "jobs_dir": plan.output_jobs_dir,
+    }
+    if tasks_dir is not None and Path(tasks_dir).is_dir():
+        children = [
+            d
+            for d in sorted(Path(tasks_dir).iterdir())
+            if d.is_dir()
+            and task_name_selected(d.name, plan.include_tasks, plan.exclude_tasks)
+            and ((d / "task.md").is_file() or (d / "task.toml").is_file())
+        ]
+        chosen = sample_task_dirs(children, req.n_tasks, req.sample_seed)
+        out["tasks"] = [d.name for d in chosen]
+        out["rollouts"] = len(chosen) * max(1, len(plan.eval_seeds or [None]))
+    console.print_json(_json.dumps(out, default=str))
 
 
 @eval_app.command("run")
@@ -638,6 +674,39 @@ def eval_run(
         int,
         typer.Option("--trials", help="Number of trials for --matrix"),
     ] = 1,
+    n_tasks: Annotated[
+        int | None,
+        typer.Option(
+            "--n-tasks",
+            help="Run at most N tasks after --include/--exclude: the first N, or a seeded "
+            "random sample with --sample-seed",
+        ),
+    ] = None,
+    sample_seed: Annotated[
+        int | None,
+        typer.Option("--sample-seed", help="Seed for the --n-tasks random sample"),
+    ] = None,
+    timeout_multiplier: Annotated[
+        float | None,
+        typer.Option(
+            "--timeout-multiplier",
+            help="Scale every task's agent time budget (task.md agent.timeout_sec), e.g. 2.0",
+        ),
+    ] = None,
+    extra_instruction: Annotated[
+        str | None,
+        typer.Option(
+            "--extra-instruction",
+            help="Text appended to every task prompt (prompt ablations; recorded per rollout)",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Resolve the plan (agent, model, selected tasks, seeds, budgets) and print it without running",
+        ),
+    ] = False,
     seeds: Annotated[
         str | None,
         typer.Option(
@@ -735,6 +804,10 @@ def eval_run(
         matrix=matrix,
         trials=trials,
         seeds=seeds,
+        n_tasks=n_tasks,
+        sample_seed=sample_seed,
+        timeout_multiplier=timeout_multiplier,
+        extra_instruction=extra_instruction,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
@@ -746,6 +819,9 @@ def eval_run(
     except EvalPlanError as exc:
         print_error(f"{exc}")
         raise typer.Exit(1) from None
+    if dry_run:
+        _print_dry_run(plan, tasks_dir)
+        return
 
     if config_file:
         _run_config_file_eval(plan)
@@ -835,11 +911,13 @@ def eval_run(
         )
         # tasks_dir is the resolved source checkout (a superset); restrict to
         # the dataset's pinned task set, further narrowed by any --include.
-        dataset_include = (
-            resolved_dataset.task_names & plan.include_tasks
-            if plan.include_tasks
-            else resolved_dataset.task_names
-        )
+        from benchflow.evaluation import task_name_selected
+
+        dataset_include = {
+            name
+            for name in resolved_dataset.task_names
+            if task_name_selected(name, plan.include_tasks, set())
+        }
         run_batch_eval(
             plan,
             resolved_dataset.tasks_dir,

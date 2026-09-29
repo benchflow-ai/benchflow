@@ -128,6 +128,9 @@ class RolloutConfig:
     # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
     # budget without editing every task definition (#378).
     timeout: int | None = None
+    # Text appended to every resolved prompt (``bench eval run --extra-instruction``):
+    # prompt ablations without editing tasks. Recorded in the rollout config.
+    prompt_suffix: str | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
 
     # User-driven progressive-disclosure loop

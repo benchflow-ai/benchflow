@@ -134,6 +134,25 @@ class RewardSpec:
     success_mode: str = "final"
 
 
+MODES = ("sim", "real", "hil-mock")
+
+
+@dataclass
+class SafetySpec:
+    """Safety envelope a real (or hardware-in-the-loop) embodiment enforces on the trusted side.
+
+    Every field is optional and descriptive: the backend enforces it, the spec reports it so agents, graders and
+    reports can see the limits. ``attended`` means a human operator gates arming and scene resets."""
+
+    joint_limits: dict | None = None  # {"low": [...], "high": [...]} in the action group's units
+    max_joint_speed: float | None = None  # units per second
+    workspace: dict | None = None  # e.g. {"table_z": 0.0, "x": [0.05, 0.62], "y_abs_max": 0.35, "z_max": 0.55}
+    estop: str | None = None  # how the e-stop is engaged, e.g. "latched file (robouse estop)"
+    attended: bool = False
+    operator_channel: str | None = None  # "tty" | "file" | "script" (mock only)
+    temp_stop_c: float | None = None
+
+
 @dataclass
 class Embodiment:
     name: str
@@ -146,6 +165,10 @@ class Embodiment:
     step_s: float | None = None
     doc: str = ""
     spec_version: str = SPEC_VERSION
+    # The sim/real axis: "sim" (a simulator), "real" (live hardware), "hil-mock" (hardware-in-the-loop mock that
+    # replays recorded sessions behind the vendor SDK). Reports group results by it.
+    mode: str = "sim"
+    safety: SafetySpec | None = None
 
     # ---- structure ----------------------------------------------------------------------------------------
     @property
@@ -266,6 +289,10 @@ class Embodiment:
             step_s=d.get("step_s"),
             doc=d.get("doc", ""),
             spec_version=str(d.get("spec_version", SPEC_VERSION)),
+            mode=str(d.get("mode", "sim")),
+            safety=SafetySpec(**{k: v for k, v in (d.get("safety") or {}).items() if k in SafetySpec.__dataclass_fields__})
+            if d.get("safety")
+            else None,
         )
 
     # ---- validation ---------------------------------------------------------------------------------------
@@ -275,6 +302,10 @@ class Embodiment:
             raise SpecError("embodiment needs a name")
         if self.kind not in KINDS:
             raise SpecError(f"kind {self.kind!r} is not one of {KINDS}")
+        if self.mode not in MODES:
+            raise SpecError(f"mode {self.mode!r} is not one of {MODES}")
+        if self.mode != "sim" and self.safety is None:
+            raise SpecError("a real or hardware-in-the-loop embodiment must declare its safety envelope")
         names: set[str] = set()
         for g in self.action_groups:
             if not g.name or g.name in names:
