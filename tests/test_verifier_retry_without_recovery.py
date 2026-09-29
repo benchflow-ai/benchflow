@@ -31,7 +31,8 @@ from benchflow.rollout import _verifier_recovery as recovery
 from benchflow.rollout._review import prepare_terminal_result
 from benchflow.task import RolloutPaths, Task
 
-CRASH = "verifier crashed: connection reset"
+# #1081 names the exception class, so an argument-less one is never empty.
+CRASH = "verifier crashed: ConnectionResetError: connection reset"
 
 
 @pytest.fixture

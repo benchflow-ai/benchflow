@@ -123,7 +123,7 @@ async def test_a_command_that_never_starts_is_retried_once_then_a_wedge(tmp_path
     assert time.monotonic() - t0 < 10  # not two 60 s budgets
     assert verifier.attempts == 2
     assert rewards is None and diagnostic is None
-    assert error.startswith("verifier crashed: verifier_wedge:")
+    assert error.startswith("verifier crashed: RuntimeError: verifier_wedge:")
     assert "did not start in two attempts" in error
     assert classify_verifier_error(error) == VERIFIER_INFRA
     probed = [
