@@ -49,6 +49,7 @@ skill loading semantics.
 
 ## Demos
 
+- `hillclimb/` hill-climbs a skills folder with a held-out test split, from BenchFlow's public primitives: an optimizer agent, run as a sandboxed rollout that only ever holds the train split, edits the skills once per round, and an edit is kept only if train gains and the test split improves. It follows "Automating eval design and hillclimbing with Claude" and ships a SkillsBench recipe. See [hillclimb/README.md](hillclimb/README.md).
 - `benchflow-grpo-pipeline.md` documents the end-to-end
   BenchFlow-owned TRL GRPO workflow: HF task snapshots, baseline eval, GRPO
   training with `BenchFlowSpec`, final eval, and paired lift reporting.
