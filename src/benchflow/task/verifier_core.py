@@ -16,16 +16,19 @@ The ``Verifier`` class is kept whole here; its self-coupled ``_verify_*`` /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import shlex
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
+from benchflow._utils.text import describe_exception
 from benchflow.rewards.validation import (
     apply_aggregate_policy,
     declared_reward_range,
@@ -98,9 +101,19 @@ from benchflow.task.verifier_script_strategy import (
 
 logger = logging.getLogger(__name__)
 
-# Where the recovery path's test command records that it started (#1136): a
-# BenchFlow-owned directory, never the verifier output dir test.sh inspects.
+# Where the test command records that it started (#1136): a BenchFlow-owned
+# directory, never the verifier output dir test.sh inspects.
 _EXECUTION_RECEIPT_DIR = PurePosixPath("/run/benchflow")
+
+# The verifier's setup commands (clearing the output dir, chmod, the target
+# verifier dir, the reward-kit manifest) run after the agent has finished. On
+# a slow or stalled exec layer (a loaded Docker host, a Daytona API stall) a
+# 10 s exec failed them, and the finished rollout's verification with them;
+# #1043 made the publish-path execs non-fatal for the same reason (#948). Each
+# setup command now gets 60 s, and a failed one two more tries.
+_SETUP_FAILED = "Verifier setup failed:"
+_SETUP_EXEC_TIMEOUT_SEC = 60
+_SETUP_RETRY_DELAYS_SEC = (5.0, 15.0)
 
 
 class Verifier:
@@ -364,6 +377,44 @@ class Verifier:
                 legacy_dir,
             )
 
+    async def _setup_step(self, what: str, run: Callable[[], Awaitable[Any]]) -> None:
+        """Run one setup exec (``run``), retrying a failed or lost one.
+
+        Raises ``Verifier setup failed: ...`` (verifier infrastructure) once
+        every try failed; ``run`` either returns the exec result or raises.
+        """
+        failure = f"{_SETUP_FAILED} {what} did not run"
+        for delay in (0.0, *_SETUP_RETRY_DELAYS_SEC):
+            if delay:
+                self._logger.warning("%s; retrying in %.0fs", failure, delay)
+                await asyncio.sleep(delay)
+            try:
+                result = await run()
+            except Exception as e:
+                text = str(e)
+                failure = (
+                    text
+                    if text.startswith(_SETUP_FAILED)
+                    else f"{_SETUP_FAILED} {what} did not run: {describe_exception(e)}"
+                )
+                continue
+            return_code = _exec_return_code(result)
+            if return_code == 0:
+                return
+            failure = f"{_SETUP_FAILED} {what} exited with rc={return_code}"
+        raise VerifierOutputParseError(failure)
+
+    async def _clear_output_dir(self, service: str) -> None:
+        await self._setup_step(
+            "clearing verifier output directory",
+            lambda: clear_verifier_output_dir(
+                self._sandbox,
+                user="root",
+                service=service,
+                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+            ),
+        )
+
     async def _prepare_execution_receipt(self, service: str) -> str | None:
         """Return a fresh start-receipt path for the test command, if requested.
 
@@ -421,15 +472,7 @@ class Verifier:
             self._sandbox, "is_mounted", False
         )
         if not verifier_outputs_are_mounted:
-            try:
-                await clear_verifier_output_dir(
-                    self._sandbox,
-                    user="root",
-                    service=service,
-                    timeout_sec=10,
-                )
-            except RuntimeError as e:
-                raise VerifierOutputParseError(str(e)) from e
+            await self._clear_output_dir(service)
 
         sandbox_paths = SandboxPaths()
         uses_native_verifier_dir = (
@@ -493,32 +536,27 @@ class Verifier:
             )
         )
         if chmod_command is not None:
-            chmod_result = await self._sandbox.exec(
-                chmod_command,
-                user="root",
-                service=service,
-                timeout_sec=10,
+            await self._setup_step(
+                "chmod",
+                lambda: self._sandbox.exec(
+                    chmod_command,
+                    user="root",
+                    service=service,
+                    timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                ),
             )
-            chmod_return_code = _exec_return_code(chmod_result)
-            if chmod_return_code != 0:
-                raise VerifierOutputParseError(
-                    f"Verifier setup failed: chmod exited with rc={chmod_return_code}"
-                )
 
         if service != "main":
             verifier_dir = shlex.quote(str(sandbox_paths.verifier_dir))
-            mkdir_result = await self._sandbox.exec(
-                f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
-                user="root",
-                service=service,
-                timeout_sec=10,
+            await self._setup_step(
+                "target verifier dir",
+                lambda: self._sandbox.exec(
+                    f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
+                    user="root",
+                    service=service,
+                    timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                ),
             )
-            mkdir_return_code = _exec_return_code(mkdir_result)
-            if mkdir_return_code != 0:
-                raise VerifierOutputParseError(
-                    "Verifier setup failed: target verifier dir exited with "
-                    f"rc={mkdir_return_code}"
-                )
 
         command = f"{{ {test_command}; }} > {test_stdout_path} 2>&1"
         receipt = await self._prepare_execution_receipt(service)
@@ -913,15 +951,7 @@ class Verifier:
             self._sandbox, "is_mounted", False
         )
         if not verifier_outputs_are_mounted:
-            try:
-                await clear_verifier_output_dir(
-                    self._sandbox,
-                    user="root",
-                    service=service,
-                    timeout_sec=10,
-                )
-            except RuntimeError as e:
-                raise VerifierOutputParseError(str(e)) from e
+            await self._clear_output_dir(service)
 
         runner = _reward_kit_runner(strategy, verifier_dir=self._task.paths.tests_dir)
         criteria = _reward_kit_criteria(
@@ -951,18 +981,15 @@ class Verifier:
         self._rollout_paths.test_stdout_path.touch()
         if service != "main":
             verifier_dir = shlex.quote(str(sandbox_paths.verifier_dir))
-            mkdir_result = await self._sandbox.exec(
-                f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
-                user="root",
-                service=service,
-                timeout_sec=10,
+            await self._setup_step(
+                "target verifier dir",
+                lambda: self._sandbox.exec(
+                    f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
+                    user="root",
+                    service=service,
+                    timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                ),
             )
-            mkdir_return_code = _exec_return_code(mkdir_result)
-            if mkdir_return_code != 0:
-                raise VerifierOutputParseError(
-                    "Verifier setup failed: target verifier dir exited with "
-                    f"rc={mkdir_return_code}"
-                )
 
         env = dict(resolve_env_vars(self._task.config.verifier.env))
         root = _reward_kit_root(strategy)
@@ -1010,18 +1037,15 @@ class Verifier:
             self._rollout_paths.reward_kit_manifest_path.write_text(manifest_json)
         else:
             manifest_path = shlex.quote(str(sandbox_paths.reward_kit_manifest_path))
-            write_manifest = await self._sandbox.exec(
-                f"printf %s {shlex.quote(manifest_json)} > {manifest_path}",
-                user="root",
-                service=service,
-                timeout_sec=10,
+            await self._setup_step(
+                "reward-kit manifest write",
+                lambda: self._sandbox.exec(
+                    f"printf %s {shlex.quote(manifest_json)} > {manifest_path}",
+                    user="root",
+                    service=service,
+                    timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                ),
             )
-            manifest_return_code = _exec_return_code(write_manifest)
-            if manifest_return_code != 0:
-                raise VerifierOutputParseError(
-                    "Verifier setup failed: reward-kit manifest write exited with "
-                    f"rc={manifest_return_code}"
-                )
 
         runner_path = verifier_code_dir / _safe_strategy_relative_path(
             runner,
