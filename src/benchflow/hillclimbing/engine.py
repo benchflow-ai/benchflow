@@ -1423,16 +1423,25 @@ def _verdict(
             if d_test.value is not None
             else ""
         )
-        tail = (
-            " The gain exceeds noise: its 95% interval is above zero. Recommend merging."
-            if exceeds
-            else " The gain is within noise: its 95% interval includes zero. "
-            "Recommend against merging."
-        )
+        if exceeds and gated:
+            tail = (
+                " The gain exceeds noise: its 95% interval is above zero. "
+                "Recommend merging."
+            )
+        elif exceeds:
+            tail = (
+                " Its 95% interval is above zero, but the run was not gated on "
+                "noise (--force), so this alone does not justify merging."
+            )
+        else:
+            tail = (
+                " The gain is within noise: its 95% interval includes zero. "
+                "Recommend against merging."
+            )
         return rec.VerdictDoc(
             exceeds_noise=exceeds,
             recommend_merge=exceeds and gated,
-            text=head + delta + "." + tail + ungated,
+            text=head + delta + "." + tail,
         )
     before = stats.score(baseline.values("test", "cost"))
     cut = (
@@ -1446,15 +1455,24 @@ def _verdict(
             f" Test cost per trial fell {cut:.1%} (USD change "
             f"{cost_delta.value:+.4f} {_fmt_ci(cost_delta.ci, signed=True)})."
         )
-    parts.append(
-        " The cut exceeds noise and the score held within noise. Recommend merging."
-        if cheaper and held
-        else " The cut is within noise, or the score did not hold. Recommend against merging."
-    )
+    if cheaper and held and gated:
+        parts.append(
+            " The cut exceeds noise and the score held within noise. Recommend merging."
+        )
+    elif cheaper and held:
+        parts.append(
+            " The cut exceeds noise and the score held, but the run was not gated on "
+            "noise (--force), so this alone does not justify merging."
+        )
+    else:
+        parts.append(
+            " The cut is within noise, or the score did not hold. "
+            "Recommend against merging."
+        )
     return rec.VerdictDoc(
         exceeds_noise=cheaper,
         recommend_merge=cheaper and held and gated,
-        text="".join(parts) + ungated,
+        text="".join(parts),
     )
 
 

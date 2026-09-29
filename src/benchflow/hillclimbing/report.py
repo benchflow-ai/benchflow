@@ -77,7 +77,8 @@ body { margin: 0; background: var(--page); }
   margin-bottom: 8px; }
 .hc .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .hc .chart { position: relative; }
-.hc svg { display: block; width: 100%; height: auto; overflow: visible; }
+.hc .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.hc .legend svg { display: inline-block; flex: none; }
 .hc .tip { position: absolute; pointer-events: none; background: var(--surface);
   border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: none; min-width: 150px; }
@@ -279,6 +280,18 @@ def _chart(
             f'font-size="12" fill="var(--muted)">{_e(label)}</text>'
         )
     colors = {"train": "var(--train)", "test": "var(--test)"}
+    # Candidates first, so the accepted lines stay on top: filled when kept,
+    # hollow when reverted.
+    for c in cands:
+        for split, v in (("train", c.train), ("test", c.test)):
+            if v is None:
+                continue
+            color = colors[split]
+            fill = color if c.kept else "var(--surface)"
+            parts.append(
+                f'<circle cx="{xs[c.x_index]:.1f}" cy="{y(v):.1f}" r="5" fill="{fill}" '
+                f'stroke="{color}" stroke-width="2"/>'
+            )
     ends: list[tuple[float, str, str]] = []
     for split, pts in accepted.items():
         color = colors[split]
@@ -326,17 +339,6 @@ def _chart(
                     "Train" if split == "train" else "Test",
                     fmt(last.value),
                 )
-            )
-    # Candidates: filled when kept, hollow when reverted.
-    for c in cands:
-        for split, v in (("train", c.train), ("test", c.test)):
-            if v is None:
-                continue
-            color = colors[split]
-            fill = color if c.kept else "var(--surface)"
-            parts.append(
-                f'<circle cx="{xs[c.x_index]:.1f}" cy="{y(v):.1f}" r="5" fill="{fill}" '
-                f'stroke="{color}" stroke-width="2"/>'
             )
     # Direct end labels, only when they do not collide.
     if len(ends) == 2 and abs(ends[0][0] - ends[1][0]) < 16:
@@ -526,6 +528,8 @@ def _verdict_section(doc: rec.HillclimbDoc) -> str:
         badge = _badge("good", "Gain exceeds noise")
     elif best.candidate is None:
         badge = _badge("warn", "No patch kept")
+    elif best.verdict.exceeds_noise:
+        badge = _badge("warn", "Ungated run")
     else:
         badge = _badge("warn", "Within noise")
     return (
