@@ -1310,9 +1310,10 @@ class GuardMarker:
 def pytest_plugin_guard_markers_cmd(guard: str) -> str:
     """The sandbox command that prints the guard's markers, one per line.
 
-    Each line is the marker's file name, a tab, and the file's first line.
-    Only regular files are read, and only so many of them, so bytes a
-    solution left there cannot hang or flood the verifier.
+    Each line is the marker's file name, a tab, and the file's content (one
+    line when the guard wrote it). Only regular files are read, at most 64 of
+    them and 64 KiB of each, so what else lands there cannot hang or flood
+    the verifier.
     """
     directory = shlex.quote(pytest_plugin_guard_markers_dir(guard))
     return (
