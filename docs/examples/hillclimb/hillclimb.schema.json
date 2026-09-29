@@ -1,0 +1,844 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hillclimb.json (docs/examples/hillclimb)",
+  "description": "The record the hill-climb demo writes. Unknown fields are allowed, so a newer demo's optional fields do not fail an older reader.",
+  "type": "object",
+  "required": [
+    "analysis",
+    "baseline",
+    "best",
+    "controls",
+    "cost",
+    "created_at",
+    "kind",
+    "noise_gate",
+    "rounds",
+    "schema_version",
+    "settings",
+    "split",
+    "status",
+    "stop",
+    "updated_at",
+    "warnings"
+  ],
+  "properties": {
+    "kind": {
+      "const": "hillclimb-demo"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "running",
+        "finished",
+        "refused",
+        "stopped"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "settings": {
+      "type": "object"
+    },
+    "split": {
+      "type": "object",
+      "required": [
+        "file",
+        "seed",
+        "test",
+        "test_frac",
+        "train"
+      ],
+      "properties": {
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "test_frac": {
+          "type": "number"
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "train": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "test": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "controls": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "excluded",
+            "tasks"
+          ],
+          "properties": {
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "flags",
+                  "nop",
+                  "oracle",
+                  "task"
+                ],
+                "properties": {
+                  "task": {
+                    "type": "string"
+                  },
+                  "oracle": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "nop": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "flags": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "oracle_fails",
+                        "nop_passes"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "excluded": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "baseline": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/evaluation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "noise_gate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "forced",
+            "message",
+            "min_gain",
+            "passed",
+            "splits",
+            "suggestion"
+          ],
+          "properties": {
+            "passed": {
+              "type": "boolean"
+            },
+            "forced": {
+              "type": "boolean"
+            },
+            "min_gain": {
+              "type": "number"
+            },
+            "message": {
+              "type": "string"
+            },
+            "suggestion": {
+              "type": "object"
+            },
+            "splits": {
+              "type": "object",
+              "required": [
+                "test",
+                "train"
+              ],
+              "properties": {
+                "train": {
+                  "type": "object",
+                  "required": [
+                    "noise_95",
+                    "noise_se",
+                    "ok",
+                    "tasks"
+                  ],
+                  "properties": {
+                    "tasks": {
+                      "type": "integer"
+                    },
+                    "noise_se": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "noise_95": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "test": {
+                  "type": "object",
+                  "required": [
+                    "noise_95",
+                    "noise_se",
+                    "ok",
+                    "tasks"
+                  ],
+                  "properties": {
+                    "tasks": {
+                      "type": "integer"
+                    },
+                    "noise_se": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "noise_95": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rounds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/round"
+      }
+    },
+    "analysis": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "counts",
+            "error",
+            "failures",
+            "mounted",
+            "recommendations",
+            "status",
+            "summary"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "ok",
+                "failed"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mounted": {
+              "$ref": "#/$defs/mounted"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failures": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "category",
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "enum": [
+                      "ambiguous_task",
+                      "grader_bug",
+                      "infrastructure",
+                      "capability_gap"
+                    ]
+                  }
+                }
+              }
+            },
+            "counts": {
+              "type": "object",
+              "required": [
+                "ambiguous_task",
+                "capability_gap",
+                "grader_bug",
+                "infrastructure"
+              ],
+              "properties": {
+                "ambiguous_task": {
+                  "type": "integer"
+                },
+                "grader_bug": {
+                  "type": "integer"
+                },
+                "infrastructure": {
+                  "type": "integer"
+                },
+                "capability_gap": {
+                  "type": "integer"
+                }
+              }
+            },
+            "recommendations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "best": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "test",
+            "test_delta",
+            "train",
+            "verdict",
+            "version"
+          ],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "train": {
+              "$ref": "#/$defs/estimate"
+            },
+            "test": {
+              "$ref": "#/$defs/estimate"
+            },
+            "test_delta": {
+              "$ref": "#/$defs/delta"
+            },
+            "verdict": {
+              "type": "object",
+              "required": [
+                "exceeds_noise",
+                "recommend_merge",
+                "text"
+              ],
+              "properties": {
+                "exceeds_noise": {
+                  "type": "boolean"
+                },
+                "recommend_merge": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stop": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "detail",
+            "reason"
+          ],
+          "properties": {
+            "reason": {
+              "enum": [
+                "rounds",
+                "stalled",
+                "budget",
+                "infra",
+                "noise_gate"
+              ]
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "required": [
+        "agent_usd",
+        "max_cost_usd",
+        "proposer_usd",
+        "total_usd"
+      ],
+      "properties": {
+        "agent_usd": {
+          "type": "number"
+        },
+        "proposer_usd": {
+          "type": "number"
+        },
+        "total_usd": {
+          "type": "number"
+        },
+        "max_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "estimate": {
+      "type": "object",
+      "required": [
+        "ci",
+        "se",
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "se": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ci": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "delta": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/estimate"
+        },
+        {
+          "type": "object",
+          "required": [
+            "paired_tasks"
+          ],
+          "properties": {
+            "paired_tasks": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    "split": {
+      "type": "object",
+      "required": [
+        "cost_usd",
+        "infra_categories",
+        "infra_errors",
+        "job_dir",
+        "pass_at_1",
+        "per_task",
+        "score",
+        "tasks",
+        "trials"
+      ],
+      "properties": {
+        "job_dir": {
+          "type": "string"
+        },
+        "score": {
+          "$ref": "#/$defs/estimate"
+        },
+        "pass_at_1": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tasks": {
+          "type": "integer"
+        },
+        "trials": {
+          "type": "integer"
+        },
+        "infra_errors": {
+          "type": "integer"
+        },
+        "infra_categories": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "per_task": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "solved",
+              "task",
+              "trials"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "solved": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "trials": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "required": [
+        "id",
+        "test",
+        "train",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "train": {
+          "$ref": "#/$defs/split"
+        },
+        "test": {
+          "$ref": "#/$defs/split"
+        }
+      }
+    },
+    "mounted": {
+      "type": "object",
+      "required": [
+        "failures",
+        "manifest",
+        "mounts",
+        "network",
+        "test_instructions_in_files",
+        "test_tasks",
+        "test_tasks_in_paths",
+        "train_tasks"
+      ],
+      "properties": {
+        "mounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "bytes",
+              "files",
+              "read_only",
+              "sandbox_path"
+            ],
+            "properties": {
+              "sandbox_path": {
+                "type": "string"
+              },
+              "read_only": {
+                "type": "boolean"
+              },
+              "files": {
+                "type": "integer"
+              },
+              "bytes": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "manifest": {
+          "type": "string"
+        },
+        "network": {
+          "enum": [
+            "none",
+            "open"
+          ]
+        },
+        "train_tasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "test_tasks": {
+          "type": "integer"
+        },
+        "test_tasks_in_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "test_instructions_in_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "error",
+        "id",
+        "mounted",
+        "status",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "failed",
+            "invalid"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rollout_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mounted": {
+          "$ref": "#/$defs/mounted"
+        },
+        "root_cause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "change": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff": {
+          "type": "string"
+        },
+        "pasted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "words"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "round": {
+      "type": "object",
+      "required": [
+        "base_version",
+        "candidate",
+        "decision",
+        "reasons",
+        "round",
+        "test_after",
+        "train_after",
+        "version_after"
+      ],
+      "properties": {
+        "round": {
+          "type": "integer"
+        },
+        "base_version": {
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "decision": {
+          "enum": [
+            "keep",
+            "revert",
+            "invalid"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evaluation": {
+          "$ref": "#/$defs/evaluation"
+        },
+        "train_delta": {
+          "$ref": "#/$defs/delta"
+        },
+        "test_delta": {
+          "$ref": "#/$defs/delta"
+        },
+        "version_after": {
+          "type": "string"
+        },
+        "train_after": {
+          "$ref": "#/$defs/estimate"
+        },
+        "test_after": {
+          "$ref": "#/$defs/estimate"
+        }
+      }
+    }
+  }
+}
