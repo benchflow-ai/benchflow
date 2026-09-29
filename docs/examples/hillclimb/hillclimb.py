@@ -197,34 +197,37 @@ async def evaluate(s: Settings, rec: Record, skills: Path, train: list[str], tes
     await run_jobs(s, [(root / split / f"trial-{k:02d}", config(s, names, **deploy))
                        for split, names in (("train", train), ("test", test))
                        for k in range(1, s.trials + 1)])
-    values, rows, doc = {}, {}, {"id": eval_id, "version": skills.parent.name}
+    values, rows, doc = {}, {}, {"id": eval_id, "version": skills.name}
     for split, names in (("train", train), ("test", test)):
-        job = bf.load_job(root / split)
+        try:
+            job = bf.load_job(root / split)
+        except FileNotFoundError:  # every trial was cancelled (budget)
+            job = None
         rows[split] = trial_rows(job, names, s.trials)
         values[split] = {t: [float(r["passed"]) for r in rows[split] if r["task"] == t and r["reward"] is not None]
                          for t in names}
-        rates = job.solve_rates(ks=[1])
+        rates = job.solve_rates(ks=[1]) if job else None
         errors = [r for r in rows[split] if r["reward"] is None]
         doc[split] = {
             "job_dir": str(root / split),
             "score": bootstrap(values[split], samples=s.bootstrap_samples, seed=s.seed),
-            "pass_at_1": rates.get(1).pass_at_k if rates.get(1) else None,
+            "pass_at_1": rates.get(1).pass_at_k if rates and rates.get(1) else None,
             "tasks": len(names),
             "trials": len(rows[split]),
             "infra_errors": len(errors),
             "infra_categories": {c: sum(1 for r in errors if r["error"] == c)
                                  for c in sorted({r["error"] for r in errors})},
-            "cost_usd": job.cost_usd,
+            "cost_usd": job.cost_usd if job else None,
             "per_task": [{"task": t, "solved": values[split][t], "trials": s.trials} for t in names],
         }
-        rec.spend(agent=job.cost_usd or 0.0)
+        rec.spend(agent=(job.cost_usd if job else None) or 0.0)
     return Scores(eval_id, doc["version"], values, rows, doc)
 
 
-def trial_rows(job: bf.Job, names: list[str], trials: int) -> list[dict]:
+def trial_rows(job: bf.Job | None, names: list[str], trials: int) -> list[dict]:
     """One row per (task, trial): a scored trial, an unscored one, or one that never ran."""
     rows, seen = [], set()
-    for t in job.agents():
+    for t in job.agents() if job else []:
         k = int(t.path.parent.parent.name.split("-")[1])  # .../trial-NN/job/<task>__<id>
         scored = t.assessment == "scored"
         error = None if scored else (t.result.error_category or t.result.verifier_error_category or "unscored")
@@ -485,12 +488,12 @@ class Record:
         if best is baseline:
             text = "No patch was kept; the baseline stands."
         else:
+            interval = f" [{d['ci'][0]:+.3f}, {d['ci'][1]:+.3f}]" if d["ci"] else ""
             text = (f"Best version {best.version}: test {best.doc['test']['score']['value']:.3f} against the "
-                    f"baseline's {baseline.doc['test']['score']['value']:.3f}, a change of {d['value']:+.3f} "
-                    f"[{d['ci'][0]:+.3f}, {d['ci'][1]:+.3f}]. " + (
-                        "The gain exceeds noise: its 95% interval is above zero. Recommend merging." if exceeds and gated
-                        else "Its interval is above zero, but the run was not gated on noise (--force)." if exceeds
-                        else "The gain is within noise: its 95% interval includes zero. Recommend against merging."))
+                    f"baseline's {baseline.doc['test']['score']['value']:.3f}, a change of {d['value']:+.3f}{interval}. "
+                    + ("The gain exceeds noise: its 95% interval is above zero. Recommend merging." if exceeds and gated
+                       else "Its interval is above zero, but the run was not gated on noise (--force)." if exceeds
+                       else "The gain is within noise: its 95% interval includes zero. Recommend against merging."))
         self.doc["best"] = {"version": best.version, "train": best.doc["train"]["score"],
                             "test": best.doc["test"]["score"], "test_delta": d,
                             "verdict": {"exceeds_noise": exceeds, "recommend_merge": exceeds and gated, "text": text}}

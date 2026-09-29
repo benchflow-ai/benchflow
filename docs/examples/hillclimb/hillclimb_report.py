@@ -248,7 +248,7 @@ def write_report(doc: dict, path: Path) -> Path:
         + "<footer>Written by docs/examples/hillclimb from hillclimb.json. The loop follows “Automating eval "
         "design and hillclimbing with Claude” (claude.dev, 2026-09-28); here the test split is kept from the "
         "optimizer by what its sandbox is given.</footer></main></div>"
-        f'<script type="application/json" id="hc-data">{json.dumps(data).replace("</", "<\\\\/")}</script>'
+        f'<script type="application/json" id="hc-data">{json.dumps(data).replace("</", "<\\/")}</script>'
         f"<script>{SCRIPT}</script></body></html>\n"
     )
     path.write_text(page)
