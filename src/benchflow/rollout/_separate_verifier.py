@@ -44,6 +44,7 @@ import copy
 import hashlib
 import json
 import logging
+import posixpath
 import shlex
 import shutil
 import stat
@@ -89,10 +90,36 @@ RECORD_DIR = "verifier-sandbox"
 RECORD_FILE = "verifier-sandbox.json"
 # Collection statuses that mean the bytes did not reach the host intact.
 _FAILED_COLLECTIONS = frozenset({"error", "over_limit", "refused"})
-# Replacing one of these wholesale would wipe the verifier image; the frozen
-# workspace is laid over it instead.
+# The frozen workspace replaces the contents of a dedicated task directory
+# (/app, /testbed, /workspace, /home/agent/project), so what the agent deleted
+# or renamed stays gone. Emptying one of these would wipe the verifier image,
+# so the workspace is laid over it instead.
 _SHARED_DIRS = frozenset(
-    {"/", "/home", "/root", "/etc", "/usr", "/var", "/tmp", "/opt", "/logs", "/srv"}
+    {
+        "/",
+        "/bin",
+        "/boot",
+        "/dev",
+        "/etc",
+        "/home",
+        "/lib",
+        "/lib32",
+        "/lib64",
+        "/libx32",
+        "/logs",
+        "/media",
+        "/mnt",
+        "/opt",
+        "/proc",
+        "/root",
+        "/run",
+        "/sbin",
+        "/srv",
+        "/sys",
+        "/tmp",
+        "/usr",
+        "/var",
+    }
 )
 _STOP_TIMEOUT_SEC = 120
 
@@ -358,14 +385,17 @@ class _Payload:
         info.mtime = int(time.time())
         return info
 
-    def directory(self, target: PurePosixPath) -> None:
-        info = self._info(target, tarfile.DIRTYPE, 0o755)
+    def directory(self, target: PurePosixPath, mode: int | None = None) -> None:
+        info = self._info(target, tarfile.DIRTYPE, 0o755 if mode is None else mode)
         if info is not None:
             self.archive.addfile(info)
 
-    def file(self, target: PurePosixPath, source: Path) -> None:
-        executable = source.stat().st_mode & stat.S_IXUSR
-        info = self._info(target, tarfile.REGTYPE, 0o755 if executable else 0o644)
+    def file(
+        self, target: PurePosixPath, source: Path, mode: int | None = None
+    ) -> None:
+        if mode is None:
+            mode = 0o755 if source.stat().st_mode & stat.S_IXUSR else 0o644
+        info = self._info(target, tarfile.REGTYPE, mode)
         if info is None:
             raise SeparateVerifierError(f"two transfers write {target}")
         info.size = source.stat().st_size
@@ -389,13 +419,16 @@ def _add_bundle(payload: _Payload, bundle: Path, manifest: Any) -> None:
         key=lambda e: (e.kind == "symlink", e.kind == "file", len(e.path)),
     )
     # No member for the root itself: an existing /tmp or /root keeps its
-    # mode, and the install script creates a missing workspace.
+    # mode, and the install script creates a missing workspace. Files and
+    # directories get the permission bits the solver left, as a regrade
+    # restores them (older manifests without modes keep the executable bit).
     for entry in entries:
         target = root / _safe_relative(entry.path)
+        mode = None if entry.mode is None else entry.mode & 0o777
         if entry.kind == "directory":
-            payload.directory(target)
+            payload.directory(target, mode)
         elif entry.kind == "file":
-            payload.file(target, tree / entry.path)
+            payload.file(target, tree / entry.path, mode)
         elif entry.link_target is not None:
             payload.symlink(target, entry.link_target)
 
@@ -515,7 +548,11 @@ def build_transfer_payload(
 # --- sandbox side ------------------------------------------------------------
 
 
-def _install_script(remote: str, workspace: str, sha256: str) -> str:
+def _install_script(remote: str, workspace: str, sha256: str, root: str = "/") -> str:
+    """Unpack the transfer at ``root`` (the sandbox's ``/``; a test's folder).
+
+    Shell and tar only: a verifier image may have no Python.
+    """
     quoted = shlex.quote(remote)
     lines = ["set -e"]
     lines.append(
@@ -523,12 +560,20 @@ def _install_script(remote: str, workspace: str, sha256: str) -> str:
         f"echo {shlex.quote(sha256 + '  ' + remote)} | sha256sum -c - >/dev/null; fi"
     )
     path = PurePosixPath(workspace)
-    if str(path) not in _SHARED_DIRS and len(path.parts) > 2:
-        # A dedicated task directory: the agent's final state replaces
-        # whatever the verifier image put there.
-        lines.append(f"rm -rf -- {shlex.quote(workspace)}")
-    lines.append(f"mkdir -p -- {shlex.quote(workspace)} /logs/artifacts")
-    lines.append(f"tar -xf {quoted} -C /")
+    target = shlex.quote(posixpath.join(root, workspace.lstrip("/")))
+    if str(path) not in _SHARED_DIRS:
+        # A dedicated task directory: the agent's final state replaces what
+        # the verifier image put there. The directory itself stays (a shell
+        # whose cwd it is keeps a valid cwd, as in a regrade); its contents,
+        # dotfiles included, go.
+        lines.append(f"if [ -L {target} ]; then rm -f -- {target}; fi")
+        lines.append(
+            f"if [ -d {target} ]; then rm -rf -- {target}/* {target}/.[!.]* "
+            f"{target}/..?*; else rm -f -- {target}; fi"
+        )
+    logs = shlex.quote(posixpath.join(root, "logs/artifacts"))
+    lines.append(f"mkdir -p -- {target} {logs}")
+    lines.append(f"tar -xf {quoted} -C {shlex.quote(root)}")
     lines.append(f"rm -f -- {quoted}")
     return "\n".join(lines)
 

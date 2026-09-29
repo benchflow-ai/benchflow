@@ -344,6 +344,93 @@ async def test_a_declared_artifact_the_agent_never_wrote_is_not_an_error(
     assert summary["missing_artifacts"] == ["/nowhere/missing.txt"]
 
 
+@pytest.mark.asyncio
+async def test_the_workspace_replaces_the_verifier_images_copy(tmp_path: Path) -> None:
+    """Guards the install in the verifier sandbox, whose image holds its own
+    copy of a workspace such as /app or /testbed. The frozen workspace was
+    laid over that copy, so a file the agent deleted or renamed came back
+    from the image, and every file came out 0644 or 0755. It now replaces
+    the copy's contents (the directory itself stays), and files and folders
+    get the modes the solver left, as a regrade restores them."""
+    import subprocess
+
+    from benchflow.rollout._separate_verifier import _install_script
+
+    workspace = tmp_path / "box" / "app"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src" / "answer.txt").write_text("42\n")
+    (workspace / "new-name.txt").write_text("renamed by the agent\n")
+    (workspace / "new-name.txt").chmod(0o640)
+    (workspace / "run.sh").write_text("#!/bin/sh\necho hi\n")
+    (workspace / "run.sh").chmod(0o755)
+    (workspace / "key.pem").write_text("private\n")
+    (workspace / "key.pem").chmod(0o600)
+    (workspace / "private").mkdir(mode=0o700)
+    (workspace / "private" / "note.txt").write_text("kept\n")
+    trial = tmp_path / "trial"
+    (trial / "artifacts").mkdir(parents=True)
+    env = LocalTransport()
+    await capture_task_evidence(env, str(workspace), trial / "evidence")
+    await collect_artifacts(
+        env,
+        artifacts=[],
+        workspace=str(workspace),
+        artifacts_dir=trial / "artifacts",
+        manifest_path=trial / MANIFEST_NAME,
+        mounted=False,
+        logs_source=str(tmp_path / "box" / "logs" / "artifacts"),
+    )
+    # As if captured from the agent sandbox's /app.
+    manifest_path = trial / "evidence" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["workspace"] = "/app"
+    manifest_path.write_text(json.dumps(manifest))
+    payload = tmp_path / "payload.tar"
+    summary = build_transfer_payload(trial, payload)
+    assert summary["workspace"] == "/app"
+
+    # The verifier image's own copy of /app, from before the agent.
+    root = tmp_path / "verifier-root"
+    image = root / "app"
+    (image / "src").mkdir(parents=True)
+    (image / "src" / "answer.txt").write_text("TODO\n")
+    (image / "deleted.txt").write_text("the agent deleted this\n")
+    (image / "old-name.txt").write_text("renamed by the agent\n")
+    (image / ".image-dotfile").write_text("stale\n")
+    inode = image.stat().st_ino
+
+    script = _install_script(
+        str(payload), summary["workspace"], summary["sha256"], root=str(root)
+    )
+    # The sandbox runs it as root, whose tar ignores the umask.
+    subprocess.run(["sh", "-c", "umask 000\n" + script], check=True)
+
+    assert sorted(p.name for p in image.iterdir()) == [
+        "key.pem",
+        "new-name.txt",
+        "private",
+        "run.sh",
+        "src",
+    ]
+    assert image.stat().st_ino == inode
+    assert (image / "src" / "answer.txt").read_text() == "42\n"
+    modes = {
+        name: (image / name).stat().st_mode & 0o777
+        for name in ("key.pem", "run.sh", "new-name.txt", "private")
+    }
+    assert modes == {
+        "key.pem": 0o600,
+        "run.sh": 0o755,
+        "new-name.txt": 0o640,
+        "private": 0o700,
+    }
+    assert (image / "private" / "note.txt").read_text() == "kept\n"
+    assert not payload.exists()
+    # A shared directory such as /root is still laid over, never emptied.
+    assert "rm -rf" not in _install_script("/tmp/x.tar", "/root", "0" * 64)
+    assert "rm -rf" in _install_script("/tmp/x.tar", "/app", "0" * 64)
+
+
 # --- the solution's own files: its result, not an assessment error ----------
 
 
