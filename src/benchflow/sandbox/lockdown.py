@@ -11,15 +11,18 @@ Does not own:
     - Running the verifier itself — see SDK._verify
 """
 
+import hashlib
+import hmac
 import ipaddress
 import itertools
 import json as _json
 import logging
 import os
 import re
+import secrets
 import shlex
-import stat
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -956,11 +959,13 @@ async def _discover_pytest_plugin_flags(
 #
 # After the run the verifier turns a guard pytest could not load into a verifier
 # error instead of scoring test.sh's 0. A guard pytest imported but never ran
-# (pluggy refused its hooks) leaves its ``loading`` marker in the verifier
-# output directory, which hardening wiped after quiescence; that check needs no
+# (pluggy refused its hooks) leaves its ``loading`` marker; that check needs no
 # output. A guard pytest could not import at all is found only by pytest's
 # message in a top-level verifier log (``verifier_scan._has_guard_load_failure``),
-# so a test.sh that discards pytest's output still scores that run 0. No sound
+# and only when no pytest of this verification registered the guard: a solution
+# the tests run can print that message, but cannot leave a ``registered``
+# marker unregistered. A test.sh that discards pytest's output still scores
+# that run 0. No sound
 # output-independent check exists for it: the failure happens in an interpreter
 # test.sh created itself (uvx, a fresh venv) run with ``-I`` or its own
 # PYTHONPATH, where every file that executes (Python, its site-packages, pytest)
@@ -973,9 +978,35 @@ async def _discover_pytest_plugin_flags(
 _PYTEST_PLUGIN_GUARD_PARENT = "/"
 # The guard module is this prefix plus a random hex suffix chosen at hardening.
 PYTEST_PLUGIN_GUARD_PREFIX = "_benchflow_guard_"
-# Where the guard leaves ``<guard>.<token>.<kind>`` markers: the verifier output
-# directory, which the verifier downloads and hardening empties after quiescence.
-_PYTEST_PLUGIN_GUARD_MARKERS_DIR = "/logs/verifier"
+# The guard leaves ``<guard>.<token>.<kind>`` markers in ``<guard dir>/.markers``
+# (mode 0700, the verifier's user's), not the world-writable /logs/verifier,
+# and signs each with a key in ``<guard dir>/.key`` (mode 0400, the same
+# user's). The key derives from a secret that never leaves this process, so
+# the verifier recomputes it from the guard's name; it is never put in the
+# environment test.sh and everything it runs inherits.
+_PYTEST_PLUGIN_GUARD_MARKER_SECRET = secrets.token_bytes(32)
+PYTEST_PLUGIN_GUARD_MARKER_KINDS = ("loading", "registered", "crashed", "installed")
+# At most this many markers, each at most this big, are read back.
+_GUARD_MARKER_MAX_COUNT = 64
+_GUARD_MARKER_MAX_BYTES = 64 * 1024
+
+
+def pytest_plugin_guard_key(guard: str) -> str:
+    """The key the guard *guard* signs its markers with (hex)."""
+    return hmac.new(
+        _PYTEST_PLUGIN_GUARD_MARKER_SECRET, guard.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def pytest_plugin_guard_markers_dir(guard: str) -> str:
+    """Where the guard *guard* leaves its markers in the sandbox."""
+    return os.path.join(_PYTEST_PLUGIN_GUARD_PARENT, guard, ".markers")
+
+
+def pytest_plugin_guard_key_file(guard: str) -> str:
+    """Where the guard *guard* reads its marker key in the sandbox."""
+    return os.path.join(_PYTEST_PLUGIN_GUARD_PARENT, guard, ".key")
+
 
 _INSTALL_PYTEST_PLUGIN_GUARD_SCRIPT = r"""
 import importlib, importlib.util, os, site, sys, sysconfig
@@ -1057,14 +1088,18 @@ def _pytest_plugin_guard_source(
     *,
     trusted: tuple[str, ...] = (),
     ownership: bool = True,
+    key_file: str | None = None,
 ) -> str:
     """Return the armed guard module *name*: its policy, then its load marker.
 
     *trusted* names directories whose contents the guard trusts by path: the
     verifier's uv and pip state, created after the agent stopped. *ownership*
     False (a separate verifier sandbox) distrusts the *blocked* paths alone.
+    Markers go to *markers_dir* and are signed with the key in *key_file*
+    (by default the guard directory's ``.markers`` and ``.key``).
     """
-    markers_dir = markers_dir or _PYTEST_PLUGIN_GUARD_MARKERS_DIR
+    markers_dir = markers_dir or pytest_plugin_guard_markers_dir(name)
+    key_file = key_file or pytest_plugin_guard_key_file(name)
     return (
         _DISCOVER_PYTEST_PLUGINS_SCRIPT
         + "\n_BENCHFLOW_BLOCKED = "
@@ -1077,7 +1112,9 @@ def _pytest_plugin_guard_source(
         + repr(bool(ownership))
         + "\n_BENCHFLOW_MARKERS = "
         + repr(os.path.join(markers_dir, name))
-        + "\n_mark('loading')\n"
+        + "\n_BENCHFLOW_KEY_FILE = "
+        + repr(key_file)
+        + "\nif _imported_by_pytest():\n    _mark('loading')\n"
     )
 
 
@@ -1091,9 +1128,12 @@ async def _install_pytest_plugin_guard(
     trusted: tuple[str, ...] = (),
     blocked: tuple[str, ...] | None = None,
     ownership: bool = True,
+    verifier_uid: str | None = None,
 ):
     """Create an unguessable protected bootstrap after solver quiescence.
 
+    Also creates the guard's marker directory and key file, handed to
+    *verifier_uid* (the user test.sh runs as) when that is not root.
     Returns the guard directory, the ``-p`` flags with the guard first, and the
     Pythons that took a copy.
     """
@@ -1117,11 +1157,22 @@ async def _install_pytest_plugin_guard(
         .replace("__PATH__", shlex.quote(verifier_path))
         .replace("__SCRIPT__", shlex.quote(_INSTALL_PYTEST_PLUGIN_GUARD_SCRIPT))
     )
+    markers = shlex.quote(pytest_plugin_guard_markers_dir(name))
+    key_file = shlex.quote(pytest_plugin_guard_key_file(name))
+    handover = (
+        f"chown {shlex.quote(verifier_uid)} {markers} {key_file} && "
+        if verifier_uid not in (None, "0")
+        else ""
+    )
     result = await _checked_exec(
         env,
         f"mkdir -m 755 {shlex.quote(directory)} && "
         f"printf %s {shlex.quote(source)} > {shlex.quote(guard)} && "
-        f"chmod 444 {shlex.quote(guard)} && {{\n{install_into_interpreters}\n}}",
+        f"chmod 444 {shlex.quote(guard)} && "
+        f"mkdir -m 700 {markers} && "
+        f"(umask 077 && printf %s {pytest_plugin_guard_key(name)} > {key_file}) && "
+        f"chmod 400 {key_file} && {handover}"
+        f"{{\n{install_into_interpreters}\n}}",
         "Verifier hardening failed: installing protected pytest plugin guard",
         user="root",
         timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
@@ -1239,41 +1290,74 @@ def pytest_plugin_guard_name(pytest_addopts: str | None) -> str | None:
     return None
 
 
-def pytest_plugin_guard_markers(
-    verifier_dir: Path, guard: str, kind: str
-) -> list[Path]:
-    """Return the ``kind`` markers the guard *guard* left in *verifier_dir*.
+@dataclass(frozen=True)
+class GuardMarker:
+    """A marker the plugin guard signed: its file name, kind and detail.
 
     Kinds are named in ``_pytest_plugin_guard.py``: ``loading`` means pytest
-    imported the guard but never registered it; ``crashed`` holds the
-    traceback of a guard hook that failed other than by refusing a plugin;
-    ``installed`` lists the files of a refused plugin the verifier installed
-    itself after the agent stopped.
+    imported the guard but never registered it; ``registered`` that a pytest
+    registered it; ``crashed`` holds the traceback of a guard hook that failed
+    other than by refusing a plugin; ``installed`` lists the files (and why
+    each is untrusted) of a refused plugin the verifier installed itself after
+    the agent stopped.
     """
-    try:
-        return sorted(verifier_dir.glob(f"{guard}.*.{kind}"))
-    except OSError:
-        return []
+
+    name: str
+    kind: str
+    detail: str
 
 
-# More than any traceback or file list a guard marker holds.
-_GUARD_MARKER_MAX_BYTES = 64 * 1024
+def pytest_plugin_guard_markers_cmd(guard: str) -> str:
+    """The sandbox command that prints the guard's markers, one per line.
+
+    Each line is the marker's file name, a tab, and the file's first line.
+    Only regular files are read, and only so many of them, so bytes a
+    solution left there cannot hang or flood the verifier.
+    """
+    directory = shlex.quote(pytest_plugin_guard_markers_dir(guard))
+    return (
+        f"cd {directory} 2>/dev/null || exit 0; n=0; for f in ./*; do "
+        '[ -f "$f" ] && [ ! -h "$f" ] || continue; '
+        f"n=$((n + 1)); [ $n -le {_GUARD_MARKER_MAX_COUNT} ] || break; "
+        'printf "%s\t" "${f#./}"; '
+        f'dd if="$f" bs={_GUARD_MARKER_MAX_BYTES} count=1 2>/dev/null; '
+        "echo; done"
+    )
 
 
-def pytest_plugin_guard_marker_text(marker: Path) -> str:
-    """Read a guard marker's text without following a link or blocking on a FIFO."""
-    try:
-        fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        return ""
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return ""
-        return os.read(fd, _GUARD_MARKER_MAX_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return ""
-    finally:
-        os.close(fd)
+def parse_pytest_plugin_guard_markers(output: str, guard: str) -> list[GuardMarker]:
+    """The markers in *output* (see above) that the guard *guard* really signed.
+
+    A line whose name, signature or body does not check out is dropped: a
+    solution that writes a marker file cannot make its run unscored.
+    """
+    key = pytest_plugin_guard_key(guard).encode()
+    name_re = re.compile(
+        re.escape(guard)
+        + r"\.[0-9]+-[0-9a-f]{8}\.("
+        + "|".join(PYTEST_PLUGIN_GUARD_MARKER_KINDS)
+        + ")"
+    )
+    markers = []
+    for line in output.splitlines():
+        name, _, rest = line.partition("\t")
+        mac, _, body = rest.partition("\t")
+        kind = name_re.fullmatch(name)
+        if kind is None or not mac:
+            continue
+        expected = hmac.new(key, f"{name}\n{body}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, mac):
+            logger.warning(
+                "Ignoring a plugin guard marker with a bad signature: %s", name
+            )
+            continue
+        try:
+            detail = _json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(detail, str):
+            markers.append(GuardMarker(name, kind.group(1), detail))
+    return markers
 
 
 def describe_installed_marker(text: str) -> str:
@@ -1349,6 +1433,22 @@ async def _distro_pip_env(env) -> dict[str, str]:
 _VERIFIER_TOOL_STATE_SCRIPT = Path(_verifier_tool_state.__file__).read_text()
 _VERIFIER_TOOL_STATE_PARENT = "/"
 VERIFIER_TOOL_STATE_PREFIX = "_benchflow_verifier_"
+
+
+async def _verifier_uid(env: Any, user: str | int | None) -> str | None:
+    """The uid test.sh runs as (``None`` means the image's user), if it can be told."""
+    try:
+        result = await env.exec(
+            "id -u", user=user, timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+        )
+    except Exception as exc:
+        logger.debug("Cannot tell the verifier's uid: %s", exc)
+        return None
+    uid = getattr(result, "stdout", None)
+    if _exec_return_code(result) != 0 or not isinstance(uid, str):
+        return None
+    uid = uid.strip()
+    return uid if uid.isdigit() else None
 
 
 def _verifier_runs_as_root(user: str | int | None) -> bool:
@@ -2033,6 +2133,7 @@ async def _build_verifier_env(
             trusted=tool_state,
             blocked=guard_blocked,
             ownership=ownership,
+            verifier_uid=await _verifier_uid(env, task.config.verifier.user),
         )
         # Only a Python without a copy needs the guard on PYTHONPATH; anywhere
         # else a task's preflight may read the entry as injected startup state.

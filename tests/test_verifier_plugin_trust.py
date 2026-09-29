@@ -844,7 +844,10 @@ def test_guard_reads_the_command_line_on_pytest_before_invocation_params(
 def _armed_markers(monkeypatch, tmp_path):
     prefix = tmp_path / "markers" / "_benchflow_guard_test"
     prefix.parent.mkdir()
+    key = tmp_path / "key"
+    key.write_text(lockdown.pytest_plugin_guard_key("_benchflow_guard_test"))
     monkeypatch.setattr(guard, "_BENCHFLOW_MARKERS", str(prefix))
+    monkeypatch.setattr(guard, "_BENCHFLOW_KEY_FILE", str(key))
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
     return prefix.parent
@@ -1148,3 +1151,125 @@ def test_install_evidence_needs_an_untrusted_file(tmp_path, monkeypatch):
         )
         == []
     )
+
+
+def _signed_line(name, detail, key_guard):
+    import hashlib
+    import hmac
+
+    body = json.dumps(detail)
+    key = lockdown.pytest_plugin_guard_key(key_guard).encode()
+    mac = hmac.new(key, f"{name}\n{body}".encode(), hashlib.sha256).hexdigest()
+    return f"{name}\t{mac}\t{body}"
+
+
+def test_verifier_keeps_only_markers_this_guard_signed():
+    """Guards the marker fix (sdk-update review, must-fix 3): a marker must be signed.
+
+    The key derives from a secret that never leaves the host process, per
+    guard name; a line signed for another guard, unsigned, of an unknown kind
+    or with a body that is not a string is dropped.
+    """
+    guard = "_benchflow_guard_" + "a" * 32
+    other = "_benchflow_guard_" + "b" * 32
+    crashed = f"{guard}.12-0123abcd.crashed"
+    output = "\n".join(
+        [
+            _signed_line(crashed, "Traceback: boom", guard),
+            _signed_line(f"{guard}.12-0123abcd.installed", "x", other),
+            _signed_line(f"{guard}.12-0123abcd.forged", "x", guard),
+            _signed_line(f"{other}.12-0123abcd.crashed", "x", guard),
+            f'{guard}.13-0123abcd.loading\t{"0" * 64}\t""',
+            _signed_line(f"{guard}.14-0123abcd.loading", ["not", "a", "string"], guard),
+            "garbage",
+            "",
+        ]
+    )
+
+    assert lockdown.parse_pytest_plugin_guard_markers(output, guard) == [
+        lockdown.GuardMarker(crashed, "crashed", "Traceback: boom")
+    ]
+    assert lockdown.pytest_plugin_guard_key(guard) != lockdown.pytest_plugin_guard_key(
+        other
+    )
+
+
+def test_marker_read_back_skips_links_and_fifos_and_is_bounded(tmp_path, monkeypatch):
+    """Guards the marker read-back against files that could hang or flood it."""
+    monkeypatch.setattr(lockdown, "_PYTEST_PLUGIN_GUARD_PARENT", str(tmp_path))
+    guard = "_benchflow_guard_" + "c" * 32
+    markers = tmp_path / guard / ".markers"
+    markers.mkdir(parents=True)
+    # A marker file holds its signature and body; its name is the file name.
+    genuine = _signed_line(f"{guard}.1-0123abcd.crashed", "boom", guard)
+    content = genuine.split("\t", 1)[1] + "\n"
+    (markers / f"{guard}.1-0123abcd.crashed").write_text(content)
+    os.mkfifo(markers / f"{guard}.2-0123abcd.loading")
+    (tmp_path / "elsewhere").write_text(content)
+    (markers / f"{guard}.3-0123abcd.crashed").symlink_to(tmp_path / "elsewhere")
+    for index in range(100):
+        (markers / f"z{index:03d}").write_text("x" * 200_000)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", lockdown.pytest_plugin_guard_markers_cmd(guard)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    names = [line.split("\t", 1)[0] for line in result.stdout.splitlines() if line]
+    assert f"{guard}.1-0123abcd.crashed" in names
+    assert not any(".2-0123abcd." in name or ".3-0123abcd." in name for name in names)
+    assert len(result.stdout) < 65 * 64 * 1024
+    assert [
+        m.kind for m in lockdown.parse_pytest_plugin_guard_markers(result.stdout, guard)
+    ] == ["crashed"]
+
+
+def test_guard_writes_its_loading_marker_only_under_pytests_plugin_loader(tmp_path):
+    """Guards the marker fix: code that imports the guard by name leaves no marker.
+
+    Otherwise a solution the tests run could ``import <guard>`` in a fresh
+    Python, leave a ``loading`` marker that no pytest ever removes, and make
+    its run unscored.
+    """
+    guard_name = "_benchflow_guard_" + "d" * 32
+    guard_dir = tmp_path / guard_name
+    markers = guard_dir / ".markers"
+    markers.mkdir(parents=True)
+    key = guard_dir / ".key"
+    key.write_text(lockdown.pytest_plugin_guard_key(guard_name))
+    (guard_dir / f"{guard_name}.py").write_text(
+        lockdown._pytest_plugin_guard_source(
+            guard_name, (), [], str(markers), key_file=str(key)
+        )
+    )
+    (tmp_path / "test_pass.py").write_text("def test_pass():\n    assert True\n")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("PYTEST_", "PYTHON"))
+    }
+    env.update(PYTHONPATH=str(guard_dir), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+
+    subprocess.run(
+        [sys.executable, "-c", f"import {guard_name}"], env=env, check=True, timeout=30
+    )
+    assert list(markers.iterdir()) == []
+
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", guard_name, "test_pass.py"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    (marker,) = markers.iterdir()
+    assert marker.name.endswith(".registered")
+    (signed,) = lockdown.parse_pytest_plugin_guard_markers(
+        f"{marker.name}\t{marker.read_text()}", guard_name
+    )
+    assert signed.kind == "registered"

@@ -154,9 +154,6 @@ class Layout:
             lockdown, "_VERIFIER_TOOL_STATE_PARENT", str(self.fs), raising=False
         )
         monkeypatch.setattr(
-            lockdown, "_PYTEST_PLUGIN_GUARD_MARKERS_DIR", str(self.paths.verifier_dir)
-        )
-        monkeypatch.setattr(
             lockdown,
             "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
             modelled(lockdown._DISCOVER_PYTEST_PLUGINS_SCRIPT, GUARD_OWNERSHIP),
@@ -235,6 +232,9 @@ class ScriptSandbox:
 
     async def exec(self, command, env=None, **kwargs):
         if "test-stdout.txt" not in command:
+            if "/.markers" in command:
+                # The verifier reading the guard's markers back.
+                return self.layout.run(command)
             return ExecResult(stdout="", stderr="", return_code=0)
         self.env = dict(env or {})
         tests = self.layout.tmp / "verifier-tests"
@@ -369,6 +369,7 @@ def home_cache_under_umask_0000(env, layout):
 
 
 def markers(layout, kind):
+    """The guard's signed markers of *kind*, as the verifier copied them to the trial."""
     return sorted(layout.paths.verifier_dir.glob(f"_benchflow_guard_*.*.{kind}"))
 
 

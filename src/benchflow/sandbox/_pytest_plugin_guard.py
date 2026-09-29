@@ -11,9 +11,17 @@ import before Python 3.9) and hooks take only arguments pytest 7 passes.
 
 Because test.sh may discard pytest's output, the armed guard also reports to
 the verifier through marker files named ``<prefix>.<token>.<kind>``: a
-``loading`` marker written on import and removed once pytest has registered
-the guard or the guard itself stopped pytest. One left behind means pytest
-imported the guard but never ran it.
+``loading`` marker written when pytest's plugin loader imports it and removed
+once pytest has registered the guard or the guard itself stopped pytest (one
+left behind means pytest imported the guard but never ran it), and a
+``registered`` marker once pytest has registered it. A marker turns a run the
+solution may have failed into an unscored one, so the solution must not be
+able to write one: markers go to a directory only the verifier's user can
+write, not the world-writable ``/logs/verifier``, and each carries an
+HMAC-SHA256, keyed by a secret hardening puts in a file only the verifier's
+user can read, that the verifier checks. The secret is never in the
+environment. Code the verifier itself runs as that user (a solution module a
+test imports) can still read it, as it could rewrite the reward.
 
 The guard stops pytest in two ways. Refusing a plugin raises ``Rejected``: the
 run is scored as test.sh reports it, since that is what agent tampering should
@@ -63,6 +71,9 @@ _BENCHFLOW_TRUSTED = ()  # type: tuple[str, ...]
 _BENCHFLOW_OWNERSHIP = True
 # Marker path prefix for this verification; empty writes no markers.
 _BENCHFLOW_MARKERS = ""
+# The file holding this verification's marker key (hex), readable by the
+# verifier's user alone; markers are not written without it.
+_BENCHFLOW_KEY_FILE = ""
 # Keeps this process's markers apart from other pytest runs of one verifier.
 _TOKEN = str(os.getpid()) + "-" + os.urandom(4).hex()
 
@@ -72,14 +83,49 @@ def _marker(kind):
 
 
 def _mark(kind, detail=""):
-    """Leave a ``kind`` marker for the verifier; never fail pytest doing so."""
-    if not _BENCHFLOW_MARKERS:
+    """Leave a signed ``kind`` marker for the verifier; never fail pytest doing so.
+
+    One line: the HMAC-SHA256 of the marker's name and body, a tab, and the
+    body, *detail* as a JSON string.
+    """
+    if not _BENCHFLOW_MARKERS or not _BENCHFLOW_KEY_FILE:
         return
     try:
-        with open(_marker(kind), "x") as handle:
-            handle.write(detail)
+        import hashlib
+        import hmac
+
+        with open(_BENCHFLOW_KEY_FILE, "rb") as handle:
+            key = handle.read().strip()
+        if not key:
+            return
+        path = _marker(kind)
+        # The verifier reads 64 KiB of a marker; keep a traceback's end.
+        body = json.dumps(detail[-16000:])
+        signed = (os.path.basename(path) + "\n" + body).encode("utf-8")
+        mac = hmac.new(key, signed, hashlib.sha256).hexdigest()
+        with open(path, "x") as handle:
+            handle.write(mac + "\t" + body + "\n")
     except Exception:
         pass
+
+
+def _imported_by_pytest():
+    """Whether pytest's plugin loader (``-p``, ``PYTEST_PLUGINS``) is importing this.
+
+    Any other import, such as code under test importing the guard by the
+    name in ``PYTEST_ADDOPTS``, must not leave a ``loading`` marker behind.
+    """
+    try:
+        frame = sys._getframe(1)
+    except Exception:
+        return False
+    while frame is not None:
+        if frame.f_code.co_name == "import_plugin" and str(
+            frame.f_globals.get("__name__", "")
+        ).startswith("_pytest."):
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _unmark(kind):
@@ -491,6 +537,7 @@ def pytest_plugin_registered(plugin, manager):
             # pytest calls this for the guard itself only after pluggy
             # accepted every one of its hooks.
             _unmark("loading")
+            _mark("registered")
         dependencies = getattr(plugin, "pytest_plugins", ())
         if isinstance(dependencies, str):
             dependencies = dependencies.split(",") if dependencies else ()
