@@ -611,6 +611,22 @@ _SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]
 _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 
+# The file-mode creation mask the verifier's commands run under. A command
+# otherwise inherits the runtime's: ``docker exec`` gives 0022 on Docker's own
+# daemon (29.1.3, runc 1.3.4) but 0000 on Docker-in-Docker (29.8.1, runc
+# 1.5.1). Under 0000 everything test.sh installs, uv's cache or a pip install
+# into site-packages, came out group- and world-writable, the plugin guard
+# refused the verifier's own ctrf, and every ``--ctrf`` task went unscored,
+# the correct oracle included. The mask is set inside the command string, so
+# it holds on every backend (Docker, remote Docker, Daytona, Modal, ...).
+VERIFIER_UMASK = "022"
+
+
+def with_verifier_umask(command: str) -> str:
+    """*command* run under :data:`VERIFIER_UMASK`, whatever the runtime's mask."""
+    return f"umask {VERIFIER_UMASK} && {command}"
+
+
 _DEFAULT_ROOTDIR = "/app"
 _LEGACY_VERIFIER_CONFCUTDIR = "/tests"
 

@@ -39,6 +39,7 @@ from benchflow.sandbox.lockdown import (
     clear_verifier_output_dir,
     pytest_plugin_guard_markers,
     pytest_plugin_guard_name,
+    with_verifier_umask,
 )
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -519,6 +520,9 @@ class Verifier:
         receipt = await self._prepare_execution_receipt(service)
         if receipt is not None:
             command = f"printf started > {shlex.quote(receipt)} && {command}"
+        # Whatever the runtime's mask, test.sh creates files 0644 and
+        # directories 0755, which the plugin guard's ownership rule needs.
+        command = with_verifier_umask(command)
         test_result = await self._sandbox.exec(
             command=command,
             env=env,
@@ -982,7 +986,7 @@ class Verifier:
                 ).as_posix()
             )
         )
-        command = (
+        command = with_verifier_umask(
             f"cd {shlex.quote(str(verifier_code_dir))} && "
             f"python {shlex.quote(str(runner_path.relative_to(verifier_code_dir)))} "
             f"> {test_stdout_path} 2>&1"

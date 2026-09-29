@@ -180,7 +180,7 @@ class TestRewardKitStrategy:
 
         assert result.rewards["reward"] == 0.875
         assert calls["command"] == (
-            "cd /verifier && python reward_kit/reward.py "
+            "umask 022 && cd /verifier && python reward_kit/reward.py "
             "> /logs/verifier/test-stdout.txt 2>&1"
         )
         env = calls["env"]

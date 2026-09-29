@@ -21,7 +21,7 @@ Between the agent's last action and the verifier's first command, `harden_before
 8. **Move the verifier's uv and pip state out of the agent's reach** — uv and pip caches, uv tool environments, uv-managed Pythons and uv/pip configuration that the agent could have written move to a new root-owned directory; see [The verifier's uv and pip state](#the-verifiers-uv-and-pip-state).
 9. **Choose trusted pytest plugins and install the plugin guard** — see the next section.
 
-The verifier then runs against this hardened workspace.
+The verifier then runs against this hardened workspace. Its command (test.sh, a script strategy or a reward-kit runner) starts with `umask 022`, so what it creates is mode 0644 or 0755 on every backend, whatever mask the runtime gives an exec: `docker exec` on Docker's own daemon uses 0022, but on Docker-in-Docker (Docker 29.8.1, runc 1.5.1) it uses 0000, and the uv cache test.sh filled came out group- and world-writable. The separate verifier's unpack runs under the same mask.
 
 ## Pytest plugin guard
 
