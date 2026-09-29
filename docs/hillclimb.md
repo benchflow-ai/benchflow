@@ -43,7 +43,7 @@ result.report               # report.html
 6. **Stall.** After `--stall-rounds` rounds (default 3) with nothing kept, the climb stops, and the optimizer runs once more in analysis mode. It sorts each remaining train failure into `ambiguous_task`, `grader_bug`, `infrastructure` or `capability_gap`, and the analysis goes into the report.
 7. **Report.** The best version is the last one kept; every keep required a higher test score, so it is also the best on test. It is reported against the baseline on the test split with a 95% confidence interval and a verdict: the gain exceeds noise when its interval is above zero, and otherwise the report says it is within noise and recommends against merging.
 
-`--candidates N` asks for N independent patches per round from the same base; each is evaluated, and the one with the largest train gain among those that pass the keep rule is kept. Candidates are evaluated one after another: on Docker, a skills surface is baked into the task's image, so two versions of one task must not build at once.
+`--candidates N` asks for N independent patches per round from the same base; each is evaluated, and the one with the largest train gain among those that pass the keep rule is kept. Candidates are evaluated one after another: on Docker, a skills surface is baked into the task's image, so two versions of one task must not build at once. On Docker the jobs inside one evaluation (one per split and trial) also run one after another, each with the whole `--concurrency`: a BenchFlow job prunes stopped BenchFlow containers when it starts and ends, which would remove a container another job had created but not yet started. On other sandboxes they run at once and share `--concurrency`.
 
 ## Safeguards
 
@@ -120,7 +120,7 @@ Each flag is a field of `bf.HillclimbConfig`; the proposer's are fields of `bf.h
 | `--model` | the agent's default | Its model |
 | `--reasoning-effort` | | Its reasoning effort |
 | `--sandbox` | `docker` | The sandbox for the agent under test and, by default, the optimizer |
-| `--concurrency` | 4 | Rollouts at once, shared by an evaluation's splits and trials (at least one each) |
+| `--concurrency` | 4 | Rollouts at once, shared by an evaluation's splits and trials (at least one each); on Docker each split and trial runs in turn with all of it |
 | `--agent-env` | | `KEY=VALUE` for the agent under test; repeatable |
 | `--sandbox-user` | `agent` | The sandbox user (`none` for root) |
 | `--agent-idle-timeout` | 600 | Idle seconds before a prompt is aborted (`0` or `none` disables) |

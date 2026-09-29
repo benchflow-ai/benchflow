@@ -573,3 +573,48 @@ def test_the_keep_rule_for_cost_holds_the_score_within_noise():
         test_noise=0.05,
     )
     assert not worse.keep and "beyond the noise band" in worse.reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("environment", "peak", "each"), [("docker", 1, 6), ("daytona", 4, 2)]
+)
+def test_docker_runs_an_evaluations_jobs_one_at_a_time(
+    tmp_path, monkeypatch, environment, peak, each
+):
+    """Evaluation prunes stopped BenchFlow containers when a job starts and
+    ends, so on Docker concurrent jobs removed each other's just-created
+    containers ("container is marked for removal"), seen in the Docker
+    scenario of tests/test_hillclimb_deterministic.py."""
+    import asyncio
+
+    from benchflow.hillclimbing import evaluate as ev
+    from benchflow.hillclimbing.surface import SurfaceStore, parse_surface
+
+    tasks, skills, _ = _setup(tmp_path)
+    store = SurfaceStore(tmp_path / "surfaces", [parse_surface(skills)])
+    store.baseline()
+    state = {"active": 0, "peak": 0}
+    given: list[int] = []
+
+    async def fake_run_job(tasks_dir, jobs_dir, job_name, config, preflight):
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        given.append(config.concurrency)
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+
+    monkeypatch.setattr(ev, "_run_job", fake_run_job)
+    asyncio.run(
+        ev.evaluate_version(
+            ev.TaskSet.resolve(tasks),
+            {"train": TRAIN, "test": TEST},
+            version_dir=store.path("v000"),
+            specs=store.specs,
+            settings=ev.EvalSettings(
+                agent="claude-agent-acp", environment=environment, concurrency=6
+            ),
+            out_dir=tmp_path / "evals",
+            trials=2,
+        )
+    )
+    assert state["peak"] == peak and set(given) == {each} and len(given) == 4

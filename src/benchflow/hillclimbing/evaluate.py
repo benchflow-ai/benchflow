@@ -28,6 +28,7 @@ import math
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -261,6 +262,33 @@ class EvalSettings:
         )
 
 
+def sequential_jobs(environment: str) -> bool:
+    """Whether an evaluation's jobs must run one at a time.
+
+    On Docker, ``Evaluation`` prunes stopped BenchFlow containers when it
+    starts and when it ends (``docker container prune --filter
+    label=benchflow.owned=true``). A container that another job in the same
+    process has created but not yet started counts as stopped, so a job that
+    ends while another is starting one removes it ("container is marked for
+    removal"). Other backends do not prune.
+    """
+    return environment == "docker"
+
+
+async def _run_jobs(calls: Sequence[Any], sequential: bool) -> None:
+    if sequential:
+        for call in calls:
+            await call()
+    else:
+        await asyncio.gather(*(call() for call in calls))
+
+
+def _share(concurrency: int, n_jobs: int, sequential: bool) -> int:
+    if sequential:
+        return max(1, concurrency)
+    return max(1, round(concurrency / max(1, n_jobs)))
+
+
 def _job_name(index: int, parent: Path, n_groups: int) -> str:
     return JOB_NAME if n_groups == 1 else f"{JOB_NAME}-{index}-{parent.name}"
 
@@ -367,13 +395,13 @@ async def evaluate_version(
 ) -> dict[SplitName, SplitRun]:
     """Run every split's tasks ``trials`` times with one surface version.
 
-    All the (split, trial, parent folder) jobs run at once, sharing
-    ``settings.concurrency`` between them (at least one rollout each). Two
-    splits never share a task, and every job runs the same surface, so the
-    runs cannot disturb each other's images. Two *different* versions must
-    not run at once on Docker: a skills surface is baked into the task's
-    image (``bf__<task>``), and a second build could retag it between the
-    first build and its container start.
+    The (split, trial, parent folder) jobs run at once, sharing
+    ``settings.concurrency`` between them (at least one rollout each), except
+    on Docker, where they run one after another with the whole concurrency
+    each (:func:`sequential_jobs`). Two *different* versions must not run at
+    once on Docker either: a skills surface is baked into the task's image
+    (``bf__<task>``), and a second build could retag it between the first
+    build and its container start.
     """
     deploy = deploy_settings(version_dir, specs, settings.config_override)
     jobs: list[tuple[Path, Path, str, list[str]]] = []
@@ -389,14 +417,16 @@ async def evaluate_version(
                         group,
                     )
                 )
-    per_job = max(1, round(settings.concurrency / max(1, len(jobs))))
+    sequential = sequential_jobs(settings.environment)
+    per_job = _share(settings.concurrency, len(jobs), sequential)
     # Each job gets the whole remaining budget as its hard cap: splitting it
     # evenly would cut jobs whose tasks cost more than average, and the climb
     # checks the budget between phases anyway.
     budget_each = budget_usd
-    await asyncio.gather(
-        *(
-            _run_job(
+    await _run_jobs(
+        [
+            partial(
+                _run_job,
                 parent,
                 jobs_dir,
                 job_name,
@@ -409,7 +439,8 @@ async def evaluate_version(
                 settings.preflight,
             )
             for parent, jobs_dir, job_name, group in jobs
-        )
+        ],
+        sequential,
     )
     runs: dict[SplitName, SplitRun] = {}
     for split, names in splits.items():
@@ -481,10 +512,12 @@ async def run_controls(
         groups = taskset.groups(group_names)
         for i, (parent, group) in enumerate(sorted(groups.items())):
             jobs.append((agent, parent, group, _job_name(i, parent, len(groups))))
-    per_job = max(1, round(settings.concurrency / max(1, len(jobs))))
-    await asyncio.gather(
-        *(
-            _run_job(
+    sequential = sequential_jobs(settings.environment)
+    per_job = _share(settings.concurrency, len(jobs), sequential)
+    await _run_jobs(
+        [
+            partial(
+                _run_job,
                 parent,
                 out_dir / agent,
                 job_name,
@@ -494,7 +527,8 @@ async def run_controls(
                 settings.preflight,
             )
             for agent, parent, group, job_name in jobs
-        )
+        ],
+        sequential,
     )
     nop = {
         r.task: r
