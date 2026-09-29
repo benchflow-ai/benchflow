@@ -111,8 +111,6 @@ def fake_llm(tmp_path):
         server.server_close()
 
 
-
-
 @pytest.fixture
 def hermetic_env(monkeypatch):
     """A developer's real provider settings must not reach a scripted run."""
@@ -122,6 +120,7 @@ def hermetic_env(monkeypatch):
             "BENCHFLOW_PROVIDER_API_KEY",
         }:
             monkeypatch.delenv(key)
+
 
 def test_the_demo_climbs_on_docker_and_the_optimizer_never_sees_the_test_split(
     tmp_path, fake_llm, hermetic_env
@@ -136,24 +135,44 @@ def test_the_demo_climbs_on_docker_and_the_optimizer_never_sees_the_test_split(
             handle.write(f"\nThis is task {name}.\n")
     skill = root / "skills" / "hello"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: hello\ndescription: Greeting files.\n---\nWrite greeting files in /app.\n")
+    (skill / "SKILL.md").write_text(
+        "---\nname: hello\ndescription: Greeting files.\n---\nWrite greeting files in /app.\n"
+    )
     split = root / "split.json"
     split.write_text(json.dumps({"train": TRAIN, "test": TEST}))
     agent_env = h.route_env("proxy", "docker", fake_llm)
     h.check_route_is_hermetic("proxy", agent_env)
     s = hillclimb.Settings(
-        tasks_dir=tasks, skills=root / "skills", out=root / "run", split_file=split,
-        agent=h.AGENT, model=h.MODEL, agent_env=agent_env, sandbox="docker",
+        tasks_dir=tasks,
+        skills=root / "skills",
+        out=root / "run",
+        split_file=split,
+        agent=h.AGENT,
+        model=h.MODEL,
+        agent_env=agent_env,
+        sandbox="docker",
         concurrency=int(os.environ.get("BENCHFLOW_DETERMINISTIC_CONCURRENCY", "4")),
-        trials=2, rounds=1, min_gain=0.1, retry_attempts=0, bootstrap_samples=200,
-        proposer=ProposerSettings(agent=h.AGENT, model=h.MODEL, agent_env=agent_env, sandbox="docker",
-                                  open_network=True, timeout_sec=600,
-                                  extra_instructions="\n" + h.marker("hc-propose") + "\n"),
+        trials=2,
+        rounds=1,
+        min_gain=0.1,
+        retry_attempts=0,
+        bootstrap_samples=200,
+        proposer=ProposerSettings(
+            agent=h.AGENT,
+            model=h.MODEL,
+            agent_env=agent_env,
+            sandbox="docker",
+            open_network=True,
+            timeout_sec=600,
+            extra_instructions="\n" + h.marker("hc-propose") + "\n",
+        ),
     )
     doc = asyncio.run(hillclimb.climb(s))
 
     assert doc["status"] == "finished", doc["stop"]
-    assert doc["controls"]["excluded"] == []  # the oracle passes, doing nothing does not
+    assert (
+        doc["controls"]["excluded"] == []
+    )  # the oracle passes, doing nothing does not
     for split_name in ("train", "test"):
         assert doc["baseline"][split_name]["infra_errors"] == 0
         assert doc["baseline"][split_name]["score"]["value"] == 0.0
@@ -164,11 +183,21 @@ def test_the_demo_climbs_on_docker_and_the_optimizer_never_sees_the_test_split(
     assert entry["train_delta"]["value"] == 1.0 and entry["test_delta"]["value"] == 1.0
     assert doc["best"]["verdict"]["exceeds_noise"]
     # What the optimizer saw, reported from inside its own sandbox.
-    proposal = json.loads((Path(entry["candidate"]["rollout_dir"]) / "verifier" / "proposal.json").read_text())
-    assert proposal["seen"] and all(p.startswith("/hillclimb/") for p in proposal["seen"])
-    assert any(p.startswith("/hillclimb/train/failures/hc-train-1/") for p in proposal["seen"])
+    proposal = json.loads(
+        (
+            Path(entry["candidate"]["rollout_dir"]) / "verifier" / "proposal.json"
+        ).read_text()
+    )
+    assert proposal["seen"] and all(
+        p.startswith("/hillclimb/") for p in proposal["seen"]
+    )
+    assert any(
+        p.startswith("/hillclimb/train/failures/hc-train-1/") for p in proposal["seen"]
+    )
     assert proposal["test_paths_found"] == [] and proposal["test_text_found"] == []
     seen = entry["candidate"]["mounted"]
-    assert seen["test_tasks_in_paths"] == [] and seen["test_instructions_in_files"] == []
+    assert (
+        seen["test_tasks_in_paths"] == [] and seen["test_instructions_in_files"] == []
+    )
     assert seen["train_tasks"] == TRAIN
     assert "What the optimizer saw" in (s.out / "report.html").read_text()

@@ -6,7 +6,7 @@ In the post, the optimizer is trusted to keep away from the test set. Here the t
 
 ## The loop
 
-`climb()` in [`hillclimb.py`](hillclimb.py) is the whole loop, 42 lines; `decide()`, the keep-or-revert rule, is 24 more.
+`climb()` in [`hillclimb.py`](hillclimb.py) is the whole loop, 30 lines; `one_round()` (propose, evaluate, keep or revert) is 30 more and `decide()`, the keep-or-revert rule, 41.
 
 1. **Split** the tasks at random into train and test, with a seed (`--test-frac`, `--seed`), or read `--split-file`.
 2. **Check the graders.** Each task runs once with its own solution (the oracle) and once with an agent that does nothing (`nop`). A task whose oracle does not pass, or where doing nothing passes, has a grader bug, and is dropped.

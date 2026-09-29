@@ -109,7 +109,9 @@ def rerun_noise(values: Values, *, samples: int = 2000, seed: int = 0) -> float 
     reps = []
     for _ in range(samples):
         drawn = (spread[rng.randrange(n)] for _ in range(n))
-        reps.append(math.fsum(_resample(rng, xs) - _resample(rng, xs) for xs in drawn) / n)
+        reps.append(
+            math.fsum(_resample(rng, xs) - _resample(rng, xs) for xs in drawn) / n
+        )
     return statistics.pstdev(reps)
 
 

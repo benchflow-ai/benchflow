@@ -157,7 +157,9 @@ def write_workspace(
         for row in rows:
             dest = evidence / "train" / kind / row["task"] / f"trial-{row['trial']:02d}"
             dest.mkdir(parents=True)
-            verdict = {k: row[k] for k in ("task", "trial", "reward", "passed", "error")}
+            verdict = {
+                k: row[k] for k in ("task", "trial", "reward", "passed", "error")
+            }
             (dest / "verdict.json").write_text(json.dumps(verdict, indent=2))
             if not row["path"]:  # a trial that never ran has no folder
                 continue
@@ -166,10 +168,19 @@ def write_workspace(
                 trial / "trajectory" / "acp_trajectory.jsonl",
                 dest / "trajectory" / "acp_trajectory.jsonl",
             )
-            for name in ("test-stdout.txt", "test-stderr.txt", "reward.txt", "ctrf.json"):
-                _copy_head_tail(trial / "verifier" / name, dest / "verifier" / name, 200_000)
+            for name in (
+                "test-stdout.txt",
+                "test-stderr.txt",
+                "reward.txt",
+                "ctrf.json",
+            ):
+                _copy_head_tail(
+                    trial / "verifier" / name, dest / "verifier" / name, 200_000
+                )
     for item in history:
-        (evidence / "history" / f"{item['id']}.json").write_text(json.dumps(item, indent=2))
+        (evidence / "history" / f"{item['id']}.json").write_text(
+            json.dumps(item, indent=2)
+        )
     return {str(evidence): EVIDENCE, str(surface): SURFACE}
 
 
@@ -191,7 +202,9 @@ def mounted(
     def squash(text: str) -> str:
         return " ".join(text.split())
 
-    needles = {t: squash(s) for t, s in test_instructions.items() if len(squash(s)) >= 40}
+    needles = {
+        t: squash(s) for t, s in test_instructions.items() if len(squash(s)) >= 40
+    }
     files, mounts, in_paths, in_text = [], [], set(), set()
     for host, target in uploads.items():
         count = size = 0
@@ -203,13 +216,23 @@ def mounted(
             data = path.read_bytes()
             count, size = count + 1, size + len(data)
             files.append(
-                {"mount": target, "path": rel.as_posix(), "bytes": len(data),
-                 "sha256": hashlib.sha256(data).hexdigest()}
+                {
+                    "mount": target,
+                    "path": rel.as_posix(),
+                    "bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
             )
             text = squash(data.decode("utf-8", "replace"))
             in_text.update(t for t, needle in needles.items() if needle in text)
-        mounts.append({"sandbox_path": target, "read_only": target == EVIDENCE,
-                       "files": count, "bytes": size})
+        mounts.append(
+            {
+                "sandbox_path": target,
+                "read_only": target == EVIDENCE,
+                "files": count,
+                "bytes": size,
+            }
+        )
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({"files": files}, indent=2))
     train = Path(next(h for h, t in uploads.items() if t == EVIDENCE)) / "train"
@@ -218,7 +241,9 @@ def mounted(
         "manifest": str(manifest),
         "network": "open" if open_network else "none",
         "train_tasks": sorted(p.name for p in (train / "tasks").glob("*")),
-        "failures": sorted(f"{p.parent.name}/{p.name}" for p in (train / "failures").glob("*/*")),
+        "failures": sorted(
+            f"{p.parent.name}/{p.name}" for p in (train / "failures").glob("*/*")
+        ),
         "test_tasks": len(test_instructions),
         "test_tasks_in_paths": sorted(in_paths),
         "test_instructions_in_files": sorted(in_text),
@@ -234,7 +259,9 @@ def _read_only(root: Path, on: bool) -> None:
 async def _lock_evidence(sandbox) -> None:
     """Pre-agent hook: the evidence becomes root-owned and read-only."""
     result = await sandbox.exec(
-        f"chown -R 0:0 {EVIDENCE} && chmod -R a-w,a+rX {EVIDENCE}", user="root", timeout_sec=120
+        f"chown -R 0:0 {EVIDENCE} && chmod -R a-w,a+rX {EVIDENCE}",
+        user="root",
+        timeout_sec=120,
     )
     if result.return_code != 0:
         raise RuntimeError(f"could not lock {EVIDENCE}: {result.stderr}")
@@ -300,4 +327,10 @@ async def run_optimizer(
     if mode == "propose" and not surface.is_dir():
         out["error"] = "the edited skills folder was not collected"
         return out
-    return {**out, "status": "ok", "error": None, "output": data, "surface": str(surface)}
+    return {
+        **out,
+        "status": "ok",
+        "error": None,
+        "output": data,
+        "surface": str(surface),
+    }

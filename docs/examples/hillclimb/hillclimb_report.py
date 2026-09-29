@@ -69,9 +69,14 @@ def ci(interval, spec: str = "+.3f") -> str:
 
 
 def badge(kind: str, label: str) -> str:
-    color, icon = {"good": ("var(--good)", "✓"), "warn": ("var(--warn)", "!"),
-                   "bad": ("var(--bad)", "✕")}[kind]
-    return f'<span class="badge"><i style="background:{color}">{icon}</i>{e(label)}</span>'
+    color, icon = {
+        "good": ("var(--good)", "✓"),
+        "warn": ("var(--warn)", "!"),
+        "bad": ("var(--bad)", "✕"),
+    }[kind]
+    return (
+        f'<span class="badge"><i style="background:{color}">{icon}</i>{e(label)}</span>'
+    )
 
 
 def chart(doc: dict) -> tuple[str, dict]:
@@ -90,40 +95,68 @@ def chart(doc: dict) -> tuple[str, dict]:
     y = lambda v: mt + (h - mt - mb) * (1 - v)  # noqa: E731 - scores are in [0, 1]
     parts = [f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="score by round">']
     for t in (0, 0.25, 0.5, 0.75, 1):
-        parts.append(f'<line x1="{ml}" x2="{w - mr}" y1="{y(t):.1f}" y2="{y(t):.1f}" stroke="var(--grid)"/>'
-                     f'<text x="{ml - 8}" y="{y(t) + 4:.1f}" text-anchor="end" font-size="12" '
-                     f'fill="var(--muted)">{t:.2f}</text>')
+        parts.append(
+            f'<line x1="{ml}" x2="{w - mr}" y1="{y(t):.1f}" y2="{y(t):.1f}" stroke="var(--grid)"/>'
+            f'<text x="{ml - 8}" y="{y(t) + 4:.1f}" text-anchor="end" font-size="12" '
+            f'fill="var(--muted)">{t:.2f}</text>'
+        )
     for i, (label, _, _) in enumerate(points):
-        parts.append(f'<text x="{xs[i]:.1f}" y="{h - 16}" text-anchor="middle" font-size="12" '
-                     f'fill="var(--muted)">{e(label)}</text>')
+        parts.append(
+            f'<text x="{xs[i]:.1f}" y="{h - 16}" text-anchor="middle" font-size="12" '
+            f'fill="var(--muted)">{e(label)}</text>'
+        )
     for s, color in (("train", "var(--train)"), ("test", "var(--test)")):
         for i, entry in enumerate(p[2] for p in points):
             if entry and entry.get("evaluation"):
                 v = entry["evaluation"][s]["score"]["value"]
                 fill = color if entry["decision"] == "keep" else "var(--surface)"
                 if v is not None:
-                    parts.append(f'<circle cx="{xs[i]:.1f}" cy="{y(v):.1f}" r="5" fill="{fill}" '
-                                 f'stroke="{color}" stroke-width="2"/>')
+                    parts.append(
+                        f'<circle cx="{xs[i]:.1f}" cy="{y(v):.1f}" r="5" fill="{fill}" '
+                        f'stroke="{color}" stroke-width="2"/>'
+                    )
     for s, color in (("train", "var(--train)"), ("test", "var(--test)")):
         est = accepted[s]
         band = [(i, p["ci"]) for i, p in enumerate(est) if p and p.get("ci")]
-        if band:  # the 95% interval as a step area: each value holds until the next round
-            steps = [f"{xs[i]:.1f},{y(c[1]):.1f} {xs[min(i + 1, n - 1)]:.1f},{y(c[1]):.1f}" for i, c in band]
-            lows = [f"{xs[min(i + 1, n - 1)]:.1f},{y(c[0]):.1f} {xs[i]:.1f},{y(c[0]):.1f}" for i, c in reversed(band)]
-            parts.append(f'<polygon points="{" ".join(steps + lows)}" fill="{color}" fill-opacity=".1"/>')
-        line = [(i, p["value"]) for i, p in enumerate(est) if p and p.get("value") is not None]
+        if (
+            band
+        ):  # the 95% interval as a step area: each value holds until the next round
+            steps = [
+                f"{xs[i]:.1f},{y(c[1]):.1f} {xs[min(i + 1, n - 1)]:.1f},{y(c[1]):.1f}"
+                for i, c in band
+            ]
+            lows = [
+                f"{xs[min(i + 1, n - 1)]:.1f},{y(c[0]):.1f} {xs[i]:.1f},{y(c[0]):.1f}"
+                for i, c in reversed(band)
+            ]
+            parts.append(
+                f'<polygon points="{" ".join(steps + lows)}" fill="{color}" fill-opacity=".1"/>'
+            )
+        line = [
+            (i, p["value"])
+            for i, p in enumerate(est)
+            if p and p.get("value") is not None
+        ]
         if line:
             d = f"M{xs[line[0][0]]:.1f},{y(line[0][1]):.1f}" + "".join(
-                f" H{xs[i]:.1f} V{y(v):.1f}" for i, v in line[1:])
-            parts.append(f'<path d="{d}" fill="none" stroke="{color}" stroke-width="2"/>'
-                         f'<circle cx="{xs[line[-1][0]]:.1f}" cy="{y(line[-1][1]):.1f}" r="4" '
-                         f'fill="{color}" stroke="var(--surface)" stroke-width="2"/>')
-    parts.append(f'<line class="cross" x1="0" x2="0" y1="{mt}" y2="{h - mb}" stroke="var(--axis)" '
-                 'style="display:none"/></svg>')
+                f" H{xs[i]:.1f} V{y(v):.1f}" for i, v in line[1:]
+            )
+            parts.append(
+                f'<path d="{d}" fill="none" stroke="{color}" stroke-width="2"/>'
+                f'<circle cx="{xs[line[-1][0]]:.1f}" cy="{y(line[-1][1]):.1f}" r="4" '
+                f'fill="{color}" stroke="var(--surface)" stroke-width="2"/>'
+            )
+    parts.append(
+        f'<line class="cross" x1="0" x2="0" y1="{mt}" y2="{h - mb}" stroke="var(--axis)" '
+        'style="display:none"/></svg>'
+    )
     rows = []
     for i, (label, _, entry) in enumerate(points):
         lines = [("Baseline" if i == 0 else f"Round {label}") + ":"]
-        lines += [f"{s} {num((accepted[s][i] or {}).get('value'), '.2f')} (accepted)" for s in accepted]
+        lines += [
+            f"{s} {num((accepted[s][i] or {}).get('value'), '.2f')} (accepted)"
+            for s in accepted
+        ]
         if entry:
             lines.append(f"{entry['candidate']['id']}: {entry['decision']}")
         rows.append(lines)
@@ -133,28 +166,55 @@ def chart(doc: dict) -> tuple[str, dict]:
 def verdict(doc: dict) -> str:
     best, gate = doc.get("best"), doc.get("noise_gate") or {}
     if doc["status"] == "refused":
-        return (f'<section class="card verdict"><div class="hero">—</div><div>'
-                f'{badge("bad", "Refused by the noise gate")}<p>{e(gate.get("message"))}</p></div></section>')
+        return (
+            f'<section class="card verdict"><div class="hero">—</div><div>'
+            f"{badge('bad', 'Refused by the noise gate')}<p>{e(gate.get('message'))}</p></div></section>"
+        )
     if not best:
         return f'<section class="card verdict"><div class="hero">…</div><div>{e(doc["status"])}</div></section>'
     d, v = best["test_delta"], best["verdict"]
-    kind, label = (("good", "Gain exceeds noise") if v["recommend_merge"] else
-                   ("warn", "Ungated run") if v["exceeds_noise"] else ("warn", "Within noise"))
-    return (f'<section class="card verdict"><div><div class="hero">{num(d["value"], "+.3f")}</div>'
-            f'<div class="hero-label">Test score vs baseline {e(ci(d["ci"]))}</div></div>'
-            f'<div>{badge(kind, label)}<p>{e(v["text"])}</p></div></section>')
+    kind, label = (
+        ("good", "Gain exceeds noise")
+        if v["recommend_merge"]
+        else ("warn", "Ungated run")
+        if v["exceeds_noise"]
+        else ("warn", "Within noise")
+    )
+    return (
+        f'<section class="card verdict"><div><div class="hero">{num(d["value"], "+.3f")}</div>'
+        f'<div class="hero-label">Test score vs baseline {e(ci(d["ci"]))}</div></div>'
+        f"<div>{badge(kind, label)}<p>{e(v['text'])}</p></div></section>"
+    )
 
 
 def isolation(doc: dict) -> str:
     """One line: how much of the test split the optimizer's sandboxes held (none)."""
-    seen = [r["candidate"]["mounted"] for r in doc["rounds"] if r["candidate"].get("mounted")]
-    seen += [doc["analysis"]["mounted"]] if doc.get("analysis") and doc["analysis"].get("mounted") else []
+    seen = [
+        r["candidate"]["mounted"]
+        for r in doc["rounds"]
+        if r["candidate"].get("mounted")
+    ]
+    seen += (
+        [doc["analysis"]["mounted"]]
+        if doc.get("analysis") and doc["analysis"].get("mounted")
+        else []
+    )
     if not seen:
         return ""
-    leaked = sorted({t for m in seen for t in m["test_tasks_in_paths"] + m["test_instructions_in_files"]})
+    leaked = sorted(
+        {
+            t
+            for m in seen
+            for t in m["test_tasks_in_paths"] + m["test_instructions_in_files"]
+        }
+    )
     if leaked:
         return f"<p>{badge('bad', 'Test material found in an optimizer sandbox: ' + ', '.join(leaked))}</p>"
-    net = "none had network access" if all(m["network"] == "none" for m in seen) else "some had network access"
+    net = (
+        "none had network access"
+        if all(m["network"] == "none" for m in seen)
+        else "some had network access"
+    )
     label = f"Test split never mounted: 0 of {seen[0]['test_tasks']} test tasks in {len(seen)} optimizer sandbox(es); {net}"
     return f"<p>{badge('good', label)}</p>"
 
@@ -162,16 +222,36 @@ def isolation(doc: dict) -> str:
 def kpis(doc: dict) -> str:
     base, best, cost = doc.get("baseline"), doc.get("best"), doc["cost"]
     kept = sum(r["decision"] == "keep" for r in doc["rounds"])
-    tiles = [("Baseline test score", num(base["test"]["score"]["value"]) if base else "n/a",
-              ci(base["test"]["score"]["ci"], ".3f") if base else ""),
-             ("Best test score", num(best["test"]["value"]) if best else "n/a",
-              f"{ci(best['test']['ci'], '.3f')} · {best['version']}" if best else ""),
-             ("Rounds", f"{kept} kept of {len(doc['rounds'])}", f"stopped: {(doc.get('stop') or {}).get('reason', '')}"),
-             ("Cost", f"${cost.get('total_usd', 0):,.2f}",
-              f"agent ${cost.get('agent_usd', 0):,.2f} · optimizer ${cost.get('proposer_usd', 0):,.2f}")]
-    return '<div class="kpis">' + "".join(
-        f'<div class="card kpi"><div class="sub">{e(a)}</div><div class="v">{e(b)}</div><div class="n">{e(c)}</div></div>'
-        for a, b, c in tiles) + "</div>"
+    tiles = [
+        (
+            "Baseline test score",
+            num(base["test"]["score"]["value"]) if base else "n/a",
+            ci(base["test"]["score"]["ci"], ".3f") if base else "",
+        ),
+        (
+            "Best test score",
+            num(best["test"]["value"]) if best else "n/a",
+            f"{ci(best['test']['ci'], '.3f')} · {best['version']}" if best else "",
+        ),
+        (
+            "Rounds",
+            f"{kept} kept of {len(doc['rounds'])}",
+            f"stopped: {(doc.get('stop') or {}).get('reason', '')}",
+        ),
+        (
+            "Cost",
+            f"${cost.get('total_usd', 0):,.2f}",
+            f"agent ${cost.get('agent_usd', 0):,.2f} · optimizer ${cost.get('proposer_usd', 0):,.2f}",
+        ),
+    ]
+    return (
+        '<div class="kpis">'
+        + "".join(
+            f'<div class="card kpi"><div class="sub">{e(a)}</div><div class="v">{e(b)}</div><div class="n">{e(c)}</div></div>'
+            for a, b, c in tiles
+        )
+        + "</div>"
+    )
 
 
 def decisions(doc: dict) -> str:
@@ -181,40 +261,72 @@ def decisions(doc: dict) -> str:
         kind = {"keep": "good", "revert": "bad"}.get(r["decision"], "warn")
 
         def delta(d):
-            return "—" if not d or d["value"] is None else f'{d["value"]:+.3f}<span class="ci">{e(ci(d["ci"]))}</span>'
+            return (
+                "—"
+                if not d or d["value"] is None
+                else f'{d["value"]:+.3f}<span class="ci">{e(ci(d["ci"]))}</span>'
+            )
 
-        rows.append(f'<tr><td class="num">{r["round"]}</td><td>{e(c.get("change") or c.get("error"))}'
-                    f'<span class="why">{e(c.get("root_cause"))}</span></td><td class="num">{delta(r.get("train_delta"))}</td>'
-                    f'<td class="num">{delta(r.get("test_delta"))}</td><td>{badge(kind, r["decision"].capitalize())}'
-                    f'<span class="why">{e("; ".join(r["reasons"]))}</span></td></tr>')
-    return ('<table><tr><th>Round</th><th>Change</th><th>Train Δ (95% CI)</th><th>Test Δ (95% CI)</th>'
-            f'<th>Decision</th></tr>{"".join(rows)}</table>') if rows else '<p class="sub">No round ran.</p>'
+        rows.append(
+            f'<tr><td class="num">{r["round"]}</td><td>{e(c.get("change") or c.get("error"))}'
+            f'<span class="why">{e(c.get("root_cause"))}</span></td><td class="num">{delta(r.get("train_delta"))}</td>'
+            f'<td class="num">{delta(r.get("test_delta"))}</td><td>{badge(kind, r["decision"].capitalize())}'
+            f'<span class="why">{e("; ".join(r["reasons"]))}</span></td></tr>'
+        )
+    return (
+        (
+            "<table><tr><th>Round</th><th>Change</th><th>Train Δ (95% CI)</th><th>Test Δ (95% CI)</th>"
+            f"<th>Decision</th></tr>{''.join(rows)}</table>"
+        )
+        if rows
+        else '<p class="sub">No round ran.</p>'
+    )
 
 
 def mounts(doc: dict) -> str:
-    runs = [(r["candidate"]["id"], r["candidate"].get("mounted")) for r in doc["rounds"]]
-    runs += [("analysis", doc["analysis"].get("mounted"))] if doc.get("analysis") else []
+    runs = [
+        (r["candidate"]["id"], r["candidate"].get("mounted")) for r in doc["rounds"]
+    ]
+    runs += (
+        [("analysis", doc["analysis"].get("mounted"))] if doc.get("analysis") else []
+    )
     rows = "".join(
-        f'<tr><td>{e(run)}</td><td>{e(", ".join(f"{x["sandbox_path"]} ({"read-only" if x["read_only"] else "editable"}, {x["files"]} files)" for x in m["mounts"]))}'
+        f"<tr><td>{e(run)}</td><td>{e(', '.join(f'{x["sandbox_path"]} ({"read-only" if x["read_only"] else "editable"}, {x["files"]} files)' for x in m['mounts']))}"
         f'<span class="ci">{e(m["manifest"])}</span></td><td class="num">{len(m["train_tasks"])}</td>'
         f'<td class="num">{len(m["failures"])}</td><td>{badge("bad" if m["test_tasks_in_paths"] or m["test_instructions_in_files"] else "good", str(len(set(m["test_tasks_in_paths"] + m["test_instructions_in_files"]))) + " of " + str(m["test_tasks"]))}</td>'
-        f'<td>{e(m["network"])}</td></tr>' for run, m in runs if m)
-    return ("<h2>What the optimizer saw</h2><div class=card><p class=sub>Each optimizer run is a sandboxed rollout. "
+        f"<td>{e(m['network'])}</td></tr>"
+        for run, m in runs
+        if m
+    )
+    return (
+        (
+            "<h2>What the optimizer saw</h2><div class=card><p class=sub>Each optimizer run is a sandboxed rollout. "
             "These folders were uploaded into it and nothing else; the manifest lists every file with its sha256. "
             "Test results reached it only as aggregate scores. Every upload was checked for each test task's name "
             "and instruction text.</p><table><tr><th>Run</th><th>Mounted</th><th>Train tasks</th><th>Failures shown</th>"
-            f"<th>Test tasks mounted</th><th>Network</th></tr>{rows}</table></div>") if rows else ""
+            f"<th>Test tasks mounted</th><th>Network</th></tr>{rows}</table></div>"
+        )
+        if rows
+        else ""
+    )
 
 
 def analysis(doc: dict) -> str:
     a = doc.get("analysis")
     if not a:
         return ""
-    counts = "".join(f"<tr><td>{e(k.replace('_', ' '))}</td><td class=num>{v}</td></tr>" for k, v in a["counts"].items())
-    items = "".join(f"<tr><td>{e(f['id'])}</td><td>{e(f['category'])}</td><td>{e(f.get('explanation'))}</td></tr>"
-                    for f in a["failures"])
-    return (f"<h2>Stall analysis: remaining train failures by root cause</h2><div class=card><p>{e(a['summary'] or a['error'])}</p>"
-            f"<table>{counts}</table><details><summary>Every failure</summary><table>{items}</table></details></div>")
+    counts = "".join(
+        f"<tr><td>{e(k.replace('_', ' '))}</td><td class=num>{v}</td></tr>"
+        for k, v in a["counts"].items()
+    )
+    items = "".join(
+        f"<tr><td>{e(f['id'])}</td><td>{e(f['category'])}</td><td>{e(f.get('explanation'))}</td></tr>"
+        for f in a["failures"]
+    )
+    return (
+        f"<h2>Stall analysis: remaining train failures by root cause</h2><div class=card><p>{e(a['summary'] or a['error'])}</p>"
+        f"<table>{counts}</table><details><summary>Every failure</summary><table>{items}</table></details></div>"
+    )
 
 
 def diffs(doc: dict) -> str:
@@ -222,29 +334,48 @@ def diffs(doc: dict) -> str:
     for r in doc["rounds"]:
         c = r["candidate"]
         if c.get("diff"):
-            lines = "".join(f'<span class="{"add" if ln.startswith("+") and not ln.startswith("+++") else "del" if ln.startswith("-") and not ln.startswith("---") else ""}">{e(ln) or " "}</span>'
-                            for ln in c["diff"].splitlines())
-            out.append(f'<details{" open" if r["decision"] == "keep" else ""}><summary>{e(c["id"])} {e(r["decision"])}: '
-                       f'{e(c.get("change"))}</summary><pre>{lines}</pre></details>')
+            lines = "".join(
+                f'<span class="{"add" if ln.startswith("+") and not ln.startswith("+++") else "del" if ln.startswith("-") and not ln.startswith("---") else ""}">{e(ln) or " "}</span>'
+                for ln in c["diff"].splitlines()
+            )
+            out.append(
+                f"<details{' open' if r['decision'] == 'keep' else ''}><summary>{e(c['id'])} {e(r['decision'])}: "
+                f"{e(c.get('change'))}</summary><pre>{lines}</pre></details>"
+            )
     return "<h2>Diffs</h2>" + "".join(out) if out else ""
 
 
 def write_report(doc: dict, path: Path) -> Path:
     s = doc["settings"]
     body, data = chart(doc) if doc.get("baseline") else ("", {})
-    legend = ('<div class="legend"><span><svg width="18" height="10"><line x1="1" x2="17" y1="5" y2="5" '
-              'stroke="var(--train)" stroke-width="2"/></svg>Train</span><span><svg width="18" height="10">'
-              '<line x1="1" x2="17" y1="5" y2="5" stroke="var(--test)" stroke-width="2"/></svg>Test</span>'
-              '<span>shaded: 95% interval</span><span>● kept candidate</span><span>○ reverted candidate</span></div>')
+    legend = (
+        '<div class="legend"><span><svg width="18" height="10"><line x1="1" x2="17" y1="5" y2="5" '
+        'stroke="var(--train)" stroke-width="2"/></svg>Train</span><span><svg width="18" height="10">'
+        '<line x1="1" x2="17" y1="5" y2="5" stroke="var(--test)" stroke-width="2"/></svg>Test</span>'
+        "<span>shaded: 95% interval</span><span>● kept candidate</span><span>○ reverted candidate</span></div>"
+    )
     page = (
-        f'<!doctype html><html lang=en><head><meta charset=utf-8><title>Hill-climb {e(path.parent.name)}</title>'
+        f"<!doctype html><html lang=en><head><meta charset=utf-8><title>Hill-climb {e(path.parent.name)}</title>"
         f"<style>{CSS}</style></head><body><div class=hc><main><h1>Hill-climb: {e(path.parent.name)}</h1>"
-        f'<p class=sub>{e(s["agent"])} / {e(s["model"])} · {len(doc["split"]["train"])} train and '
-        f'{len(doc["split"]["test"])} test tasks · {s["trials"]} trials per task</p>'
-        + verdict(doc) + isolation(doc) + kpis(doc)
-        + (f'<h2>Score by round</h2><div class=card>{legend}<div class=chart>{body}<div class=tip></div></div></div>' if body else "")
-        + f"<h2>Decisions</h2><div class=card>{decisions(doc)}</div>" + mounts(doc) + analysis(doc) + diffs(doc)
-        + (f'<h2>Warnings</h2><ul>{"".join(f"<li>{e(w)}</li>" for w in doc["warnings"])}</ul>' if doc["warnings"] else "")
+        f"<p class=sub>{e(s['agent'])} / {e(s['model'])} · {len(doc['split']['train'])} train and "
+        f"{len(doc['split']['test'])} test tasks · {s['trials']} trials per task</p>"
+        + verdict(doc)
+        + isolation(doc)
+        + kpis(doc)
+        + (
+            f"<h2>Score by round</h2><div class=card>{legend}<div class=chart>{body}<div class=tip></div></div></div>"
+            if body
+            else ""
+        )
+        + f"<h2>Decisions</h2><div class=card>{decisions(doc)}</div>"
+        + mounts(doc)
+        + analysis(doc)
+        + diffs(doc)
+        + (
+            f"<h2>Warnings</h2><ul>{''.join(f'<li>{e(w)}</li>' for w in doc['warnings'])}</ul>"
+            if doc["warnings"]
+            else ""
+        )
         + "<footer>Written by docs/examples/hillclimb from hillclimb.json. The loop follows “Automating eval "
         "design and hillclimbing with Claude” (claude.dev, 2026-09-28); here the test split is kept from the "
         "optimizer by what its sandbox is given.</footer></main></div>"
