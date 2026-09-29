@@ -181,11 +181,11 @@ async def run_jobs(s: Settings, configs: list[tuple[Path, bf.EvaluationConfig]])
 
 def config(s: Settings, names: list[str], **overrides) -> bf.EvaluationConfig:
     share = s.concurrency if s.sandbox == "docker" else max(1, s.concurrency // (2 * s.trials))
-    return bf.EvaluationConfig(
-        agent=s.agent, model=s.model, agent_env=dict(s.agent_env), environment=s.sandbox,
-        concurrency=share, include_tasks=set(names),
-        retry=bf.RetryConfig(max_retries=s.retry_attempts), **overrides,
-    )
+    return bf.EvaluationConfig(**{
+        "agent": s.agent, "model": s.model, "agent_env": dict(s.agent_env), "environment": s.sandbox,
+        "concurrency": share, "include_tasks": set(names),
+        "retry": bf.RetryConfig(max_retries=s.retry_attempts), **overrides,
+    })
 
 
 async def evaluate(s: Settings, rec: Record, skills: Path, train: list[str], test: list[str], eval_id: str) -> Scores:
