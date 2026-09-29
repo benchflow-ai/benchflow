@@ -210,8 +210,7 @@ bench traj upload path/to/trial --direct \
 
 Direct mode uses `DefaultAzureCredential` and create-only blob calls. The
 identity needs a custom role with blob create/write data actions on the target
-container. The production deployment creates this as
-`TasksMiner Blob Data Creator`; Azure's broader `Storage Blob Data Contributor`
+container. For example, a custom `Blob Data Creator` role; Azure's broader `Storage Blob Data Contributor`
 role also works but grants more than direct upload needs. For routine community
 contributions, use the default broker mode.
 

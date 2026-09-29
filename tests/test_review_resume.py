@@ -6,6 +6,7 @@ PR #1126: a reviewer failure must never spend on a second solver trajectory.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,11 @@ import pytest
 from typer.testing import CliRunner
 
 from benchflow._utils.task_authoring import task_digest
+from benchflow.diagnostics import (
+    IdleTimeoutDiagnostic,
+    ProviderApiErrorDiagnostic,
+    RolloutDiagnostics,
+)
 from benchflow.review import automatic, persistence
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import ScoringResult, scoring_error
@@ -22,6 +28,10 @@ from benchflow.review.resume import (
     ReviewResumeError,
     resume_pending_reviews,
     resume_review,
+)
+from benchflow.trajectories.results import (
+    _record_to_redacted_json_line,
+    _structured_diagnostics_info,
 )
 
 
@@ -228,6 +238,42 @@ async def test_batch_completed_result_wins_over_incomplete_retry(
     retry.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_batch_isolates_a_failing_resumed_review(
+    saved_trial, monkeypatch, caplog
+):
+    """Guards the #1134 fix on top of PR #1126: one trial's resume failure
+    used to escape the TaskGroup as an ExceptionGroup, cancel every sibling
+    review and abort the evaluation. It is now logged and skipped."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    other = rollout.parent / "chemistry__a"
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(other / "solver.json", {**solver, "task_name": "chemistry"})
+    _write(other / "config.json", json.loads((rollout / "config.json").read_text()))
+    reviewed: list[Path] = []
+
+    async def retry(path, **_):
+        if path == rollout:
+            raise ReviewResumeError(
+                "Task digest mismatch: restore the exact solver task"
+            )
+        await asyncio.sleep(0.05)  # still reviewing when the sibling fails
+        reviewed.append(path)
+
+    monkeypatch.setattr(resume, "resume_review", retry)
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics", "chemistry"},
+    )
+    assert reviewed == [other]
+    assert rollout.name in caplog.text
+    assert "Task digest mismatch" in caplog.text
+
+
 def test_eval_score_cli_uses_shared_reviewer_options(saved_trial, monkeypatch):
     from benchflow.cli import rescore
     from benchflow.cli.main import app
@@ -391,3 +437,163 @@ async def test_concurrent_scoring_is_rejected_before_second_reviewer(
     # Releasing an earlier attempt leaves no stale lock to clean up.
     with persistence.scoring_lock(rollout):
         pass
+
+
+def test_scoring_commit_preserves_safe_diagnostics_from_solver(saved_trial):
+    """Guards PR #1038 adaptation: scoring publication retains typed evidence."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        error="idle timeout",
+        error_category="idle_timeout",
+        verifier_error=None,
+        idle_timeout_info={
+            "idle_timeout_sec": 120,
+            "idle_duration_sec": 121,
+            "last_activity_at": "private timestamp",
+            "future_field": "private future value",
+        },
+        unknown_diagnostic_info={"secret": "private unknown event"},
+    )
+    _write(rollout / "solver.json", source)
+    persistence.commit_scoring_result(rollout, _complete())
+    row = json.loads((rollout / "results.jsonl").read_text())
+    block = row["info"]["diagnostics"]
+    assert block["error_category"] == "idle_timeout"
+    assert "verifier_error_category" not in block
+    assert set(block["events"]) == {"idle_timeout_info"}
+    assert block["events"]["idle_timeout_info"]["details"]["idle_duration_sec"] == 121
+    assert "n_tool_calls" not in block["events"]["idle_timeout_info"]["details"]
+    assert "private" not in json.dumps(block)
+    assert json.loads((rollout / "solver.json").read_text()) == source
+
+
+@pytest.mark.parametrize(
+    "field,details",
+    [
+        (
+            "transport_error_info",
+            {"transport_diagnosis": [], "raw_message": "private secret"},
+        ),
+        ("api_error_info", {"subcategory": {}, "status_counts": {"inf": 2}}),
+        ("verifier_timeout_info", {"elapsed_sec": 10**1000}),
+        ("agent_timeout_info", {"pending_tool_call_ids": None}),
+    ],
+)
+def test_scoring_commit_omits_malformed_saved_diagnostic_details(
+    saved_trial, field, details
+):
+    """Guards PR #1038 adaptation: historical malformed details cannot break scoring."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(verifier_error=None)
+    source[field] = details
+    _write(rollout / "solver.json", source)
+    result = persistence.commit_scoring_result(rollout, _complete())
+    assert result["scoring"]["status"] == "complete"
+    row = json.loads((rollout / "results.jsonl").read_text())
+    block = row["info"].get("diagnostics", {})
+    assert "private secret" not in json.dumps(block)
+    event = block["events"][field]
+    assert "elapsed_sec" not in event.get("details", {})
+    assert "pending_tool_call_count" not in event.get("details", {})
+
+
+def test_completed_verification_clears_category_but_retains_observed_event(saved_trial):
+    """Guards PR #1038 adaptation: recovered status differs from historical evidence."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        rewards=None,
+        verifier_error="verifier timed out",
+        verifier_error_category="verifier_timeout",
+        verifier_timeout_info={"timeout_budget_sec": 60, "elapsed_sec": 61},
+    )
+    _write(rollout / "solver.json", source)
+    attempt = "verifier-recovery/abc123"
+    _write(rollout / "verification.json", {"attempt": attempt})
+    _write(
+        rollout / attempt / "recovery.json",
+        {
+            "task_digest": source["task_digest"],
+            "status": "complete",
+            "rewards": {"reward": 1.0},
+            "timing": {"verifier": 2},
+        },
+    )
+    result = persistence.commit_scoring_result(rollout, _complete())
+    assert result["verifier_error"] is None
+    assert result["verifier_error_category"] is None
+    block = json.loads((rollout / "results.jsonl").read_text())["info"]["diagnostics"]
+    assert "verifier_error_category" not in block
+    event = block["events"]["verifier_timeout_info"]
+    assert event["category"] == "verifier_timeout"
+    assert event["details"]["elapsed_sec"] == 61
+    assert json.loads((rollout / "solver.json").read_text()) == source
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        {"path": "/private/other"},
+        ["private submission"],
+        "private freeform category",
+    ],
+)
+def test_scoring_publication_omits_invalid_saved_categories(saved_trial, category):
+    """Guards PR #1038 review: category fields are fixed labels, not arbitrary data."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        verifier_error=None, error_category=category, verifier_error_category=category
+    )
+    _write(rollout / "solver.json", source)
+    persistence.commit_scoring_result(rollout, _complete())
+    row = json.loads((rollout / "results.jsonl").read_text())
+    assert "diagnostics" not in row["info"]
+
+
+def test_huge_programmatic_diagnostic_numbers_are_omitted(tmp_path):
+    """Guards PR #1038 review: finite interchange bounds avoid JSON integer failure."""
+    diagnostics = RolloutDiagnostics()
+    diagnostics.set(
+        IdleTimeoutDiagnostic(n_tool_calls=10**5000, idle_duration_sec=2**64)
+    )
+    diagnostics.set(ProviderApiErrorDiagnostic(status_counts={"429": 10**5000}))
+    info = _structured_diagnostics_info(
+        error_category="idle_timeout",
+        verifier_error_category=None,
+        diagnostics=diagnostics,
+    )
+    events = json.loads(_record_to_redacted_json_line(info))["diagnostics"]["events"]
+    details = events["idle_timeout_info"]["details"]
+    assert "n_tool_calls" not in details
+    # Retained exactly, never float-rounded.
+    assert details["idle_duration_sec"] == 2**64
+    assert "status_counts" not in events["api_error_info"]["details"]
+
+
+@pytest.mark.asyncio
+async def test_an_expected_resume_refusal_logs_one_line_without_a_traceback(
+    saved_trial, monkeypatch, caplog
+):
+    """Guards the #1134 isolation above: a task edited since the solver ran is
+    an expected refusal (ReviewResumeError), so resuming the job logs one
+    warning naming the reason instead of a full Python traceback."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+
+    async def refuse(path, **_):
+        raise ReviewResumeError("Task digest mismatch: restore the exact solver task")
+
+    monkeypatch.setattr(resume, "resume_review", refuse)
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics"},
+    )
+    [record] = [r for r in caplog.records if rollout.name in r.getMessage()]
+    assert "Task digest mismatch" in record.getMessage()
+    assert record.exc_info is None

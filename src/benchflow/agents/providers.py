@@ -227,6 +227,15 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENAI_API_KEY",  # vLLM uses OpenAI-compatible auth
     ),
+    # SGLang's OpenAI-compatible server. Same contract as vllm; the gateway
+    # asks it for token ids through SGLang's own ``sglext`` extension.
+    "sglang": ProviderConfig(
+        name="sglang",
+        base_url="",  # user-supplied via --agent-env BENCHFLOW_PROVIDER_BASE_URL=...
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",
+    ),
     "litellm": ProviderConfig(
         name="litellm",
         base_url="{base_url}",

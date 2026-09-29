@@ -8,7 +8,9 @@ Only the resolved workspace is captured; links cannot import other VM files.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
+import io
 import json
 import logging
 import os
@@ -45,6 +47,10 @@ class EvidenceEntry(BaseModel):
     sha256: str | None = None
     link_target: str | None = None
     original_link_target: str | None = None
+    # Permission bits the solver left (files and directories). The host copy
+    # and the reviewer's copy are normalised to 0644/0755; a restore for
+    # verification (regrade, verifier recovery) puts these back.
+    mode: int | None = Field(default=None, ge=0, le=0o777)
 
 
 class EvidenceExclusion(BaseModel):
@@ -268,6 +274,7 @@ def _extract_archive(
                     original_path=original_path,
                     kind="directory",
                     size=0,
+                    mode=member.mode & 0o777,
                 )
             elif member.issym():
                 target = _link_target(member, workspace)
@@ -293,6 +300,7 @@ def _extract_archive(
                     kind="file",
                     size=member.size,
                     sha256=_digest(path),
+                    mode=member.mode & 0o777,
                 )
             entries.append(entry)
     return tuple(sorted(entries, key=lambda entry: entry.path))
@@ -328,6 +336,254 @@ def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
             )
         if not valid:
             raise EvidenceError(f"Workspace evidence mismatch: {entry.path}")
+
+
+def python_missing(result: object) -> bool:
+    """Whether a ``python3 ...`` exec failed because there is no python3."""
+    if getattr(result, "return_code", 0) == 127:
+        return True
+    text = f"{getattr(result, 'stderr', '') or ''}{getattr(result, 'stdout', '') or ''}"
+    return "python3" in text and (
+        "not found" in text or "No such file or directory" in text
+    )
+
+
+# Python-free capture for images without python3 (Harbor's ubuntu:24.04
+# examples): the sandbox only runs tar; enumeration, exclusions, limits and
+# link checks happen on the host, on the downloaded archive.
+_TAR_CAPTURE_SCRIPT = r"""
+set -eu
+src=$1
+if [ ! -e "$src" ] && [ ! -L "$src" ]; then echo "no such path: $src" >&2; exit 2; fi
+if [ -d "$src" ]; then
+  root=$(cd "$src" && pwd -P); name=.
+else
+  real=$(readlink -f "$src" 2>/dev/null || echo "$src")
+  root=$(cd "$(dirname "$real")" && pwd -P); name=$(basename "$real")
+fi
+case "$root" in
+  /|/proc|/sys|/dev|/etc|/run|/home)
+    echo "refusing to capture a system directory as evidence" >&2; exit 2;;
+esac
+tmp=/tmp
+case "$root" in /tmp|/tmp/*) tmp=/var/tmp;; esac
+out=$(mktemp "$tmp/benchflow-evidence-XXXXXXXX" 2>/dev/null) || {
+  out="$tmp/benchflow-evidence-$$"; : > "$out"; }
+if ! tar -cf "$out" -C "$root" "$name"; then rm -f "$out"; exit 1; fi
+echo "$out"
+echo "$root"
+if command -v sha256sum >/dev/null 2>&1; then sha256sum "$out" | cut -d' ' -f1; else echo; fi
+"""
+
+_SHELL_ARTIFACT_PROBE = r"""
+root=$1; shift
+for s in "$@"; do
+  case "$s" in /*) p=$s;; *) p=$root/$s;; esac
+  r=$(readlink -f "$p" 2>/dev/null) || r=$p
+  [ -n "$r" ] || r=$p
+  if [ -e "$p" ]; then e=1; else e=0; fi
+  printf '%s\t%s\n' "$e" "$r"
+done
+"""
+
+
+def _component(path: str, rule: str) -> bool:
+    return path.endswith("/" + rule) or "/" + rule + "/" in path
+
+
+ExclusionReason = Literal[
+    "credential", "sandbox_runtime", "special_file", "task_exclude"
+]
+
+
+def _exclusion_reason(
+    absolute: PurePosixPath, relative: PurePosixPath, rules: dict
+) -> ExclusionReason | None:
+    """The capture script's ``excluded()`` rules, applied on the host."""
+    text = absolute.as_posix()
+    if any(_component(text, rule) for rule in rules["credentials"]) or any(
+        absolute == PurePosixPath(rule) or absolute.is_relative_to(rule)
+        for rule in rules["paths"]
+    ):
+        return "credential"
+    if any(
+        _component("/" + relative.as_posix(), rule) for rule in rules["sandbox_runtime"]
+    ):
+        return "sandbox_runtime"
+    if any(
+        fnmatch.fnmatchcase(relative.as_posix(), rule)
+        or fnmatch.fnmatchcase(absolute.name, rule)
+        for rule in rules["exclude"]
+    ):
+        return "task_exclude"
+    return None
+
+
+def _normalize_tar_capture(
+    raw: Path,
+    dest: Path,
+    root: str,
+    rules: dict,
+    *,
+    max_bytes: int,
+    max_entries: int,
+) -> tuple[EvidenceExclusion, ...]:
+    """Rewrite a ``tar -C root .`` archive into capture-script form.
+
+    Drops the root entry and ``./`` prefixes, applies the exclusion rules,
+    records special files, stores hard links as independent regular files and
+    enforces the limits. Links are checked later by :func:`_extract_archive`.
+    """
+    exclusions: list[EvidenceExclusion] = []
+    excluded_dirs: list[str] = []
+    kept = 0
+    total = 0
+
+    def over() -> bool:
+        return total > max_bytes or kept + len(exclusions) > max_entries
+
+    with (
+        tarfile.open(raw, "r:") as source,
+        tarfile.open(dest, "x", format=tarfile.PAX_FORMAT) as archive,
+    ):
+        for member in source.getmembers():
+            name = posixpath.normpath(member.name)
+            if name in (".", ""):
+                continue
+            relative = _relative_path(name)
+            if any(name == d or name.startswith(d + "/") for d in excluded_dirs):
+                continue
+            absolute = PurePosixPath(root) / relative
+            reason: ExclusionReason | None = _exclusion_reason(
+                absolute, relative, rules
+            )
+            if reason is None and not (
+                member.isfile() or member.isdir() or member.issym() or member.islnk()
+            ):
+                reason = "special_file"
+            if reason is not None:
+                exclusions.append(
+                    EvidenceExclusion(original_path=absolute.as_posix(), reason=reason)
+                )
+                if member.isdir():
+                    excluded_dirs.append(name)
+                if over():
+                    raise EvidenceError(
+                        "Workspace evidence exceeds configured capture limits"
+                    )
+                continue
+            copy = tarfile.TarInfo(name)
+            copy.mode, copy.mtime = member.mode, member.mtime
+            if member.isfile() or member.islnk():
+                data = source.extractfile(member)
+                if data is None:
+                    raise EvidenceError(f"Missing archive file: {name}")
+                payload = data.read()
+                copy.type, copy.size = tarfile.REGTYPE, len(payload)
+                total += copy.size
+                kept += 1
+                if over():
+                    raise EvidenceError(
+                        "Workspace evidence exceeds configured capture limits"
+                    )
+                archive.addfile(copy, io.BytesIO(payload))
+                continue
+            if member.issym():
+                copy.type, copy.linkname = tarfile.SYMTYPE, member.linkname
+            else:
+                copy.type = tarfile.DIRTYPE
+            kept += 1
+            if over():
+                raise EvidenceError(
+                    "Workspace evidence exceeds configured capture limits"
+                )
+            archive.addfile(copy)
+    return tuple(exclusions)
+
+
+async def _capture_workspace_with_tar(
+    env: Sandbox,
+    workspace: str,
+    destination: Path,
+    *,
+    python_error: str,
+    rules: dict,
+    max_bytes: int,
+    max_entries: int,
+    timeout_sec: int,
+) -> EvidenceManifest:
+    """:func:`capture_workspace` for sandboxes without ``python3``."""
+    result = await env.exec(
+        shlex.join(["sh", "-c", _TAR_CAPTURE_SCRIPT, "capture", workspace]),
+        user="root",
+        timeout_sec=timeout_sec,
+    )
+    lines = (result.stdout or "").splitlines()
+    if result.return_code != 0 or len(lines) < 2:
+        raise EvidenceError(
+            f"Workspace capture failed: {python_error[-1000:]}; tar fallback: "
+            f"{(result.stderr or result.stdout or '')[-1000:]}"
+        )
+    remote, root = lines[0].strip(), lines[1].strip()
+    remote_sha = lines[2].strip() if len(lines) > 2 else ""
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".evidence-", dir=destination.parent
+        ) as temp:
+            staging = Path(temp)
+            raw = staging / "raw.tar"
+            await env.download_file(remote, raw)
+            digest = _digest(raw)
+            if remote_sha and remote_sha != digest:
+                raise EvidenceError("Workspace archive digest changed during download")
+            archive_path = staging / "workspace.tar"
+            try:
+                exclusions = _normalize_tar_capture(
+                    raw,
+                    archive_path,
+                    root,
+                    rules,
+                    max_bytes=max_bytes,
+                    max_entries=max_entries,
+                )
+            except tarfile.TarError as exc:
+                raise EvidenceError(f"Unreadable workspace archive: {exc}") from exc
+            bundle = staging / "bundle"
+            tree = bundle / "workspace"
+            tree.mkdir(parents=True)
+            entries = _extract_archive(
+                archive_path,
+                tree,
+                root,
+                max_bytes=max_bytes,
+                max_entries=max_entries,
+            )
+            manifest = EvidenceManifest(
+                workspace=root,
+                archive_sha256=digest,
+                entries=entries,
+                exclusions=exclusions,
+            )
+            validate_workspace(tree, manifest)
+            (bundle / "manifest.json").write_text(
+                manifest.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+            bundle.rename(destination)
+            return manifest
+    finally:
+        try:
+            await env.exec(
+                shlex.join(["rm", "-f", "--", remote]), user="root", timeout_sec=30
+            )
+        except Exception:
+            logger.warning(
+                "Could not remove temporary evidence archive %s", remote, exc_info=True
+            )
+
+
+def _shell_artifact_probe(line: str) -> _ArtifactProbe:
+    exists, _, source = line.partition("\t")
+    return _ArtifactProbe(source=source, exists=exists == "1")
 
 
 async def capture_workspace(
@@ -377,6 +633,17 @@ async def capture_workspace(
         ]
     )
     result = await env.exec(command, user="root", timeout_sec=timeout_sec)
+    if result.return_code != 0 and python_missing(result):
+        return await _capture_workspace_with_tar(
+            env,
+            workspace,
+            destination,
+            python_error=(result.stderr or result.stdout or "").strip(),
+            rules=json.loads(rules),
+            max_bytes=max_bytes,
+            max_entries=max_entries,
+            timeout_sec=timeout_sec,
+        )
     if result.return_code != 0:
         raise EvidenceError(
             f"Workspace capture failed: {(result.stderr or result.stdout or '')[-2000:]}"
@@ -557,6 +824,12 @@ with tarfile.open(sys.argv[1], "r:") as archive:
             with source, path.open("xb") as output:
                 shutil.copyfileobj(source, output)
             path.chmod(0o755 if member.mode & 0o111 else 0o644)
+if len(sys.argv) > 4 and sys.argv[4] == "restore-modes":
+    # Deepest first, so a restrictive directory mode never blocks its entries.
+    for name in sorted(expected, key=lambda item: -len(pathlib.PurePosixPath(item).parts)):
+        entry = expected[name]
+        if entry.get("mode") is not None and entry["kind"] in ("file", "directory"):
+            (destination / name).chmod(int(entry["mode"]) & 0o777)
 """
 
 
@@ -567,15 +840,19 @@ async def install_uploaded_workspace(
     manifest_path: str,
     *,
     timeout_sec: int = 600,
+    restore_modes: bool = False,
 ) -> None:
     """Restore a packaged workspace, preserving links, then verify every byte.
 
     Call before starting the reviewer, followed by its normal evidence locking.
     The destination must be fresh; a failed installation is never admissible.
+    ``restore_modes`` puts back the permission bits the solver left (for a
+    verifier run on the restored workspace); otherwise files are 0644/0755.
     """
-    command = shlex.join(
-        ["python3", "-c", _UNPACK_SCRIPT, archive_path, workspace, manifest_path]
-    )
+    argv = ["python3", "-c", _UNPACK_SCRIPT, archive_path, workspace, manifest_path]
+    if restore_modes:
+        argv.append("restore-modes")
+    command = shlex.join(argv)
     result = await env.exec(command, user="root", timeout_sec=timeout_sec)
     if result.return_code:
         raise EvidenceError(
@@ -653,12 +930,32 @@ async def capture_task_evidence(
                 ]
             )
             result = await env.exec(command, user="root", timeout_sec=30)
+            if result.return_code and python_missing(result):
+                result = await env.exec(
+                    shlex.join(
+                        [
+                            "sh",
+                            "-c",
+                            _SHELL_ARTIFACT_PROBE,
+                            "probe",
+                            manifest.workspace,
+                            *(config.source for config in configs),
+                        ]
+                    ),
+                    user="root",
+                    timeout_sec=30,
+                )
+                shell_probe = True
+            else:
+                shell_probe = False
             if result.return_code:
                 raise EvidenceError(
                     f"Declared artifact discovery failed: {(result.stderr or result.stdout or '')[-2000:]}"
                 )
             probes = [
-                _ArtifactProbe.model_validate_json(line)
+                _shell_artifact_probe(line)
+                if shell_probe
+                else _ArtifactProbe.model_validate_json(line)
                 for line in (result.stdout or "").splitlines()
             ]
             if len(probes) != len(configs):

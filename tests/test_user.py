@@ -980,7 +980,7 @@ class TestLoopStrategyEngine:
             except TimeoutError as e:
                 timed_out = True
                 # What Rollout.run()'s except TimeoutError handler does.
-                trial._record_agent_timeout(e)
+                trial._record_agent_timeout(e, agent_phase=True)
         assert timed_out
 
         result = trial._build_result()
@@ -1062,11 +1062,6 @@ class TestRoundTokens:
             "R", (), {"_native_usage_metrics": _zero_native_acp_usage_metrics()}
         )()
         assert _round_tokens(rollout) is None
-
-    def test_returns_none_when_metrics_missing(self):
-        from benchflow.rollout._user_loop import _round_tokens
-
-        assert _round_tokens(type("R", (), {})()) is None
 
     def test_returns_total_when_usage_trusted(self):
         from benchflow.rollout._user_loop import _round_tokens
@@ -1184,7 +1179,7 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {"reward": 0.0}})()
 
         with (
-            patch("benchflow.task.verifier.Verifier") as MockVerifier,
+            patch("benchflow.task.Verifier") as MockVerifier,
             patch(
                 "benchflow.sandbox.lockdown._build_cleanup_cmd",
                 return_value="echo cleanup_sentinel",
@@ -1195,6 +1190,7 @@ class TestSoftVerify:
 
             await trial.soft_verify()
 
+        MockVerifier.assert_called_once()
         # Verify cleanup command was executed
         exec_log = trial._env._exec_log
         assert any("cleanup_sentinel" in cmd for cmd in exec_log)

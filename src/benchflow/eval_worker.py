@@ -63,10 +63,17 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         agent_env=dict(raw.get("agent_env") or {}),
         retry=_retry_config(raw),
         skills_dir=raw.get("skills_dir"),
+        codex_apps_policy=raw.get("codex_apps_policy"),
         sandbox_user=raw.get("sandbox_user", "agent"),
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),
         agent_idle_timeout=raw.get("agent_idle_timeout"),
+        checkpoints=raw.get("checkpoints"),
+        checkpoint_keep=int(raw.get("checkpoint_keep") or 3),
+        freeze_workspace=bool(raw.get("freeze_workspace", False)),
+        retry_from_checkpoint=raw.get("retry_from_checkpoint"),
+        retry_prompt=raw.get("retry_prompt"),
+        retry_resume_session=bool(raw.get("retry_resume_session", False)),
         context_root=raw.get("context_root"),
         base_image_override=raw.get("base_image_override"),
         exclude_tasks=set(raw.get("exclude_tasks") or []),
@@ -108,6 +115,8 @@ async def run_worker(payload_path: Path) -> dict[str, Any]:
         tasks_dir=payload["tasks_dir"],
         jobs_dir=payload["jobs_dir"],
         config=config,
+        # The parent `bench eval run` already made the pre-run checks.
+        preflight=False,
     )
     result = await evaluation.run()
     result_payload = _result_payload(result)

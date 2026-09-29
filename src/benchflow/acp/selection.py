@@ -23,7 +23,7 @@ def daytona_acp_transport() -> str:
 
 def selected_acp_transport(*, agent: str, environment: str) -> str:
     """Return the concrete agent transport selected for artifact provenance."""
-    if environment == "docker":
+    if environment in ("docker", "remote-docker"):
         return "docker-stdio"
     if environment == "daytona":
         return "ssh" if agent == "gemini" else daytona_acp_transport()

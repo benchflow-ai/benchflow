@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow._types import Role
+from benchflow.checkpoints import after_prompt
 from benchflow.contracts import RoundResult
 from benchflow.loop_strategies import LoopStrategyUser
 from benchflow.rollout._results import (
@@ -64,8 +65,8 @@ def _round_tokens(rollout: Rollout) -> int | None:
     trusted-source check keeps uninstrumented paths reporting ``None`` rather
     than a spurious ``0`` — preserving the cost-curve's best-effort contract.
     """
-    metrics = getattr(rollout, "_native_usage_metrics", None)
-    if metrics and is_token_usage_available(metrics):
+    metrics = rollout._native_usage_metrics
+    if is_token_usage_available(metrics):
         return metrics.get("total_tokens")
     return None
 
@@ -177,7 +178,7 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
     """Execute already-compiled rollout Steps in declaration order."""
     current_role_key: tuple[Any, ...] | None = None
     try:
-        for step in steps:
+        for number, step in enumerate(steps, start=1):
             role = scene_step_role(step)
             role_key = (
                 step.data.get("scene_index"),
@@ -202,6 +203,8 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
                 await rollout.connect_as(role)
                 current_role_key = role_key
             await rollout.execute(prompts=[scene_step_prompt(step)])
+            # Opt-in retained snapshot (RolloutConfig.checkpoints).
+            await after_prompt(rollout, number)
     finally:
         if current_role_key is not None:
             await rollout.disconnect()

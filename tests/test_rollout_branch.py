@@ -11,6 +11,7 @@ live e2e is a separate task.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -141,7 +142,7 @@ async def test_branch_checkpoints_forks_and_aggregates(tmp_path: Path):
     assert len(parent.children) == 2
     # each child ran, each restored to the checkpoint first
     assert len(run_order) == 2
-    assert env.restored == [env.snapshots[0], env.snapshots[0]]
+    assert env.restored == [env.snapshots[0]] * 3  # children, then parent
     # returns recorded on the children and aggregated into V(parent)
     assert [c.state["reward"] for c in parent.children] == [0.0, 1.0]
     assert value == 0.5
@@ -362,14 +363,11 @@ async def test_default_runner_uses_fresh_agent_per_child(tmp_path: Path, monkeyp
     assert value == 1.0
 
 
-async def test_default_runner_empty_reward_falls_back_to_zero(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("verify_result", [None, {}, {"other": 1}])
+async def test_default_runner_missing_reward_is_unscored(
+    tmp_path: Path, monkeypatch, verify_result
 ):
-    """SHOULD-FIX 9: the default runner returns 0.0 when verify() yields nothing.
-
-    verify() can return None or an empty dict; the per-child runner must
-    treat both as a 0.0 return rather than crashing.
-    """
+    """PR #1046 custody port: missing observations must not become measured zeros."""
     rollout = _rollout(tmp_path)
     rollout._environment = FakeEnvironment()
 
@@ -382,20 +380,19 @@ async def test_default_runner_empty_reward_falls_back_to_zero(
     async def fake_execute(self, prompts=None, *, node=None):
         return [], 0
 
-    verify_returns = [None, {}]
-
     async def fake_verify(self):
-        return verify_returns.pop(0)
+        return verify_result
 
     monkeypatch.setattr(Rollout, "connect", fake_connect)
     monkeypatch.setattr(Rollout, "disconnect", fake_disconnect)
     monkeypatch.setattr(Rollout, "execute", fake_execute)
     monkeypatch.setattr(Rollout, "verify", fake_verify)
 
-    value = await rollout.branch(2)
-
-    # both children scored 0.0 (None and {} both fall back), V(parent) = 0.0
-    assert value == 0.0
+    with pytest.raises(RuntimeError, match="unscored"):
+        await rollout.branch(2)
+    assert "reward" not in rollout.tree.root.children[0].state
+    assert "value" not in rollout.tree.root.state
+    assert rollout._acp_client is None
 
 
 async def test_linear_rollout_run_never_branches(tmp_path: Path, monkeypatch):
@@ -446,6 +443,364 @@ async def test_branch_drives_manifest_environment_snapshot_restore(tmp_path: Pat
     assert value == 1.0
     # the real snapshot path ran: one SQLite .backup
     assert any(".backup" in c for c in sandbox.exec_calls)
-    # the real restore path ran once per child: cp from the snapshot dir
+    # The real restore path ran for each child and the parent continuation.
     restore_cmds = [c for c in sandbox.exec_calls if c.startswith("cp ")]
-    assert len(restore_cmds) == 2
+    assert len(restore_cmds) == 3
+
+
+class MutableEnvironment(FakeEnvironment):
+    """Stateful fake exposing leaks between branches and parent continuations."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.value = "parent"
+        self.fail_restore = False
+
+    async def restore(self, snap: StateSnapshot) -> None:
+        if self.fail_restore:
+            raise RuntimeError("restore failed")
+        await super().restore(snap)
+        self.value = "parent"
+
+
+async def test_branch_restores_parent_environment(tmp_path: Path):
+    """Guards parent environment leakage present at commit 6b99a10e."""
+    rollout = _rollout(tmp_path)
+    env = MutableEnvironment()
+    rollout._environment = env
+    seen = []
+
+    async def run_child(child):
+        seen.append(env.value)
+        env.value = child.id
+        return 1.0
+
+    assert await rollout.branch(2, run_child=run_child) == 1.0
+    assert seen == ["parent", "parent"]
+    assert env.value == "parent"
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+async def test_branch_failure_restores_parent(tmp_path: Path, error_type):
+    """Guards missing failure/cancellation cleanup at commit 6b99a10e."""
+    rollout = _rollout(tmp_path)
+    env = MutableEnvironment()
+    rollout._environment = env
+    parent = rollout._cursor
+    failure = error_type("child failed")
+
+    async def run_child(child):
+        env.value = "child"
+        rollout._trajectory.append({"role": "agent", "text": "child"})
+        rollout._phase = "executed"
+        raise failure
+
+    with pytest.raises(error_type) as raised:
+        await rollout.branch(2, run_child=run_child)
+    assert raised.value is failure
+    assert env.value == "parent"
+    assert rollout._cursor is parent
+    assert rollout._trajectory == []
+    # branch() intentionally disconnects the parent before capturing state.
+    assert rollout._phase == "installed"
+    assert "value" not in parent.state
+
+
+@pytest.mark.parametrize("child_fails", [False, True])
+async def test_parent_restore_failure_preserves_errors(tmp_path: Path, child_fails):
+    """Guards cleanup failures hiding branch errors at commit 6b99a10e."""
+    rollout = _rollout(tmp_path)
+    env = MutableEnvironment()
+    rollout._environment = env
+    parent = rollout._cursor
+    child_failure = ValueError("child failed")
+    calls = 0
+
+    async def run_child(child):
+        nonlocal calls
+        calls += 1
+        rollout._trajectory.append({"role": "agent", "text": "child"})
+        if child_fails:
+            env.fail_restore = True
+            raise child_failure
+        if calls == 2:
+            env.fail_restore = True
+        return 1.0
+
+    if child_fails:
+        with pytest.raises(ExceptionGroup) as raised:
+            await rollout.branch(2, run_child=run_child)
+        assert raised.value.exceptions[0] is child_failure
+        assert str(raised.value.exceptions[1]) == "restore failed"
+    else:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            await rollout.branch(2, run_child=run_child)
+    assert rollout._cursor is parent
+    assert rollout._trajectory == []
+    assert "value" not in parent.state
+
+
+@pytest.mark.parametrize("failure_stage", ["connect", "execute", "verify", "cancel"])
+async def test_default_runner_quiesces_failed_child_before_restore(
+    tmp_path: Path, monkeypatch, failure_stage
+):
+    """Guards default-runner agent leakage present at commit 6b99a10e."""
+    rollout = _rollout(tmp_path)
+    events = []
+    entered_execute = asyncio.Event()
+    failure = RuntimeError(f"{failure_stage} failed")
+
+    class OrderedEnvironment(MutableEnvironment):
+        async def restore(self, snap):
+            # Real disconnect must clear all live session references first.
+            assert rollout._acp_client is None
+            assert rollout._session is None
+            assert rollout._session_adapter is None
+            events.append("restore")
+            await super().restore(snap)
+
+    class Client:
+        async def close(self):
+            events.append("close")
+
+    env = OrderedEnvironment()
+    rollout._environment = env
+    parent = rollout._cursor
+
+    async def connect(self):
+        self._acp_client = Client()
+        self._session = object()
+        self._session_adapter = object()
+        if failure_stage == "connect":
+            raise failure
+
+    async def execute(self, prompts=None, *, node=None):
+        env.value = "child"
+        if failure_stage == "execute":
+            raise failure
+        if failure_stage == "cancel":
+            entered_execute.set()
+            await asyncio.Event().wait()
+        return [], 0
+
+    async def verify(self):
+        raise failure
+
+    monkeypatch.setattr(Rollout, "connect", connect)
+    monkeypatch.setattr(Rollout, "execute", execute)
+    monkeypatch.setattr(Rollout, "verify", verify)
+    # Exercise the real default runner and real Rollout.disconnect().
+    task = asyncio.create_task(rollout.branch(2))
+    if failure_stage == "cancel":
+        await asyncio.wait_for(entered_execute.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            await task
+        assert raised.value is failure
+    assert events == ["restore", "close", "restore"]
+    assert env.value == "parent"
+    assert rollout._cursor is parent
+    assert rollout._acp_client is None
+    assert rollout._session is None
+    assert rollout._session_adapter is None
+
+
+async def test_default_runner_preserves_execution_and_disconnect_errors(
+    tmp_path: Path, monkeypatch
+):
+    """Guards default-runner cleanup error masking at commit 6b99a10e."""
+    rollout = _rollout(tmp_path)
+    rollout._environment = MutableEnvironment()
+    primary = ValueError("execute failed")
+    cleanup = RuntimeError("disconnect failed")
+    disconnect_calls = 0
+
+    async def connect(self):
+        pass
+
+    async def execute(self, prompts=None, *, node=None):
+        raise primary
+
+    async def disconnect(self):
+        nonlocal disconnect_calls
+        disconnect_calls += 1
+        if disconnect_calls == 2:
+            raise cleanup
+
+    monkeypatch.setattr(Rollout, "connect", connect)
+    monkeypatch.setattr(Rollout, "execute", execute)
+    monkeypatch.setattr(Rollout, "disconnect", disconnect)
+    with pytest.raises(ExceptionGroup) as raised:
+        await rollout.branch(2)
+    assert raised.value.exceptions == (primary, cleanup)
+
+
+async def test_cancelled_child_survives_parent_restore_failure(tmp_path: Path, caplog):
+    """Guards cancellation masking by the parent-restore group from the parent-restore change.
+
+    A cancelled branch must end as a bare ``CancelledError`` so asyncio marks
+    the task cancelled; the restore failure is logged, noted and recorded.
+    """
+    rollout = _rollout(tmp_path)
+    env = MutableEnvironment()
+    rollout._environment = env
+    entered = asyncio.Event()
+
+    async def run_child(child):
+        env.fail_restore = True
+        entered.set()
+        await asyncio.Event().wait()
+        return 1.0
+
+    task = asyncio.create_task(rollout.branch(2, run_child=run_child))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    with (
+        caplog.at_level("WARNING", logger="benchflow.rollout_branch"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await task
+    assert task.cancelled()
+    [fork] = rollout._branch_forks
+    assert fork["status"] == "cancelled"
+    assert fork["parent_restore"] == "failed"
+    assert rollout._branch_world_unsafe is True
+    assert any(
+        record.exc_info and str(record.exc_info[1]) == "restore failed"
+        for record in caplog.records
+    )
+
+
+async def test_direct_child_cancellation_notes_parent_restore_failure(
+    tmp_path: Path,
+):
+    """Guards cancellation masking by the parent-restore group from the parent-restore change."""
+    rollout = _rollout(tmp_path)
+    env = MutableEnvironment()
+    rollout._environment = env
+    cancellation = asyncio.CancelledError("child cancelled")
+
+    async def run_child(child):
+        env.fail_restore = True
+        raise cancellation
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await rollout.branch(2, run_child=run_child)
+    assert raised.value is cancellation
+    assert any("restore failed" in note for note in raised.value.__notes__)
+
+
+async def test_default_runner_cancellation_survives_disconnect_failure(
+    tmp_path: Path, monkeypatch
+):
+    """Guards cancellation masking by the disconnect group from the parent-restore change."""
+    rollout = _rollout(tmp_path)
+    rollout._environment = MutableEnvironment()
+    entered = asyncio.Event()
+    disconnect_calls = 0
+
+    async def connect(self):
+        pass
+
+    async def execute(self, prompts=None, *, node=None):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def disconnect(self):
+        nonlocal disconnect_calls
+        disconnect_calls += 1
+        if disconnect_calls == 2:
+            raise RuntimeError("disconnect failed")
+
+    monkeypatch.setattr(Rollout, "connect", connect)
+    monkeypatch.setattr(Rollout, "execute", execute)
+    monkeypatch.setattr(Rollout, "disconnect", disconnect)
+    task = asyncio.create_task(rollout.branch(2))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    [fork] = rollout._branch_forks
+    assert fork["status"] == "cancelled"
+    assert fork["children"][0]["status"] == "cancelled"
+
+
+async def test_checkpoint_cancellation_survives_lineage_failure(
+    tmp_path: Path, monkeypatch
+):
+    """Guards cancellation masking by the checkpoint group from solver-evidence preservation."""
+    from benchflow.branch_lineage import ForkRecord
+
+    rollout = _rollout(tmp_path)
+    rollout._rollout_dir = tmp_path / "run"
+    cancellation = asyncio.CancelledError("checkpoint cancelled")
+    persists = 0
+
+    class CancelledSnapshotEnvironment(FakeEnvironment):
+        async def snapshot(self) -> StateSnapshot:
+            raise cancellation
+
+    def persist(self):
+        nonlocal persists
+        persists += 1
+        if persists == 2:
+            raise OSError("lineage write failed")
+
+    rollout._environment = CancelledSnapshotEnvironment()
+    monkeypatch.setattr(ForkRecord, "persist", persist)
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await rollout.branch(2, run_child=lambda child: asyncio.sleep(0, 1.0))
+    assert raised.value is cancellation
+    assert any("lineage write failed" in note for note in raised.value.__notes__)
+
+
+async def test_plain_task_branch_error_names_the_sandbox_layer(tmp_path: Path):
+    """Regression test: on a task without an environment
+    manifest, the default layer error told users to write a manifest. For a
+    plain task the fix is snapshot_layers={"sandbox"}; the error must say so
+    and say what that layer captures."""
+    rollout = _rollout(tmp_path)
+
+    async def run_child(child):
+        return 0.0
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await rollout.branch(2, run_child=run_child)
+    message = str(excinfo.value)
+    assert "snapshot_layers={'sandbox'}" in message
+    assert "container filesystem" in message
+
+
+async def test_execute_without_node_fills_the_pending_branch_child(
+    tmp_path: Path, monkeypatch
+):
+    """Regression test: a custom runner that called
+    rollout.execute(prompts) without node=node hung the child's Steps under
+    a grandchild and left the child node pending (step_id null) while
+    tree.json still reported it scored. execute() now fills the pending
+    branch-child cursor itself."""
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+
+    async def fake_execute_prompts(*_a, **_kw):
+        return [{"role": "agent", "text": "child-work"}], 1
+
+    monkeypatch.setattr(rollout._planes, "execute_prompts", fake_execute_prompts)
+    parent = rollout._cursor
+
+    async def run_child(node):
+        rollout._acp_client = object()
+        try:
+            await rollout.execute(["child prompt"])
+        finally:
+            rollout._acp_client = None
+        return 1.0
+
+    await rollout.branch(2, run_child)
+    for child in parent.children:
+        assert child.step_in is not None
+        assert child.children == []

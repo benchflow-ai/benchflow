@@ -225,3 +225,61 @@ def test_hf_sources_fetch_sibling_review_reports(tmp_path: Path, monkeypatch) ->
     assert "jobs/run-1/**/review_report.json" in calls["allow_patterns"]
     rubric = _load_rubric(root / "2026-01-01__00-00-00" / "task__abcd1234")
     assert rubric is not None and rubric.scoring["gated_quality"] == 0.6
+
+
+def _automatic_review(rollout: Path, attempt: str = "a1b2") -> None:
+    """The layout an automatic rubric review (a task shipping rubric.json)
+    leaves inside the trial: the rubric snapshot under reviews/<attempt>/ and
+    the final report under scoring/<attempt>.json, named by result.json."""
+    review = rollout / "reviews" / attempt
+    review.mkdir(parents=True)
+    (review / "rubric.json").write_text(
+        json.dumps(
+            {
+                "criteria": [
+                    {"name": "notes_present", "blocker": 1, "weight": 5},
+                    {"name": "notes_accuracy", "blocker": 0, "weight": 5},
+                ]
+            }
+        )
+    )
+    report = {
+        "attempt": attempt,
+        "reviewer": {"agent": "claude-agent-acp", "model": "reviewer-model"},
+        "rubric_snapshot": f"reviews/{attempt}/rubric.json",
+        "checks": {
+            "notes_present": {"outcome": "pass", "explanation": "NOTES.md exists"},
+            "notes_accuracy": {"score": 2, "explanation": "4 rows, mean"},
+        },
+        "summary": "Correct answer and notes.",
+        "review_valid": True,
+        "scoring": {"passed": True, "rubric_reward": 1.0, "status": "complete"},
+    }
+    (rollout / "scoring").mkdir()
+    (rollout / "scoring" / f"{attempt}.json").write_text(json.dumps(report))
+    (review / "review_report.json").write_text(json.dumps(report))
+    result = json.loads((rollout / "result.json").read_text())
+    result["scoring"] = {"passed": True, "revision": f"scoring/{attempt}.json"}
+    (rollout / "result.json").write_text(json.dumps(result))
+
+
+def test_automatic_review_inside_the_trial_is_shown(tmp_path: Path) -> None:
+    """A job with automatic rubric review showed ``rubric: null`` in the
+    viewer: only detached ``bench review`` reports next to the run were read,
+    never the trial's own ``scoring/`` report."""
+    rollout = _rollout(tmp_path / "jobs", "rv-task__00000001")
+    _automatic_review(rollout)
+
+    rubric = _load_rubric(rollout)
+
+    assert rubric is not None
+    assert rubric.reviewer_model == "reviewer-model"
+    assert rubric.review_valid and rubric.scoring["rubric_reward"] == 1.0
+    assert rubric.summary == "Correct answer and notes."
+    assert [(c.name, c.blocker, c.weight) for c in rubric.criteria] == [
+        ("notes_present", True, 5),
+        ("notes_accuracy", False, 5),
+    ]
+    assert rubric.criteria[0].outcome == "pass"
+    assert rubric.criteria[1].score == 2
+    assert _build_acp_payload(rollout, None).to_payload()["rubric"] is not None

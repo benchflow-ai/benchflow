@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, is_vertex_model
 
 logger = logging.getLogger(__name__)
 
@@ -189,8 +189,6 @@ async def write_gemini_vertex_settings(
     """
     if not model or agent != "gemini":
         return
-    from benchflow.agents.registry import is_vertex_model
-
     if not is_vertex_model(model):
         return
     settings = json.dumps(

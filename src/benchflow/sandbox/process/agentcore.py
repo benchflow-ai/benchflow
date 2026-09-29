@@ -28,7 +28,7 @@ from benchflow.sandbox.process._base import (
     _ANSI_OSC_RE_BYTES,
     _ENV_KEY_RE,
     LiveProcess,
-    _timeout_sec_from_env,
+    _readline_timeout_sec,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,12 +45,16 @@ _READLINE_TIMEOUT_ENV = "BENCHFLOW_AGENTCORE_READLINE_TIMEOUT"
 _READLINE_TIMEOUT_DEFAULT_SEC = 900.0
 
 
-def _readline_timeout_sec() -> float:
-    return _timeout_sec_from_env(_READLINE_TIMEOUT_ENV, _READLINE_TIMEOUT_DEFAULT_SEC)
+def _agentcore_readline_timeout_sec(silence_floor: float | None = None) -> float:
+    return _readline_timeout_sec(
+        _READLINE_TIMEOUT_ENV, _READLINE_TIMEOUT_DEFAULT_SEC, silence_floor
+    )
 
 
 class AgentCoreProcess(LiveProcess):
     """Live stdin/stdout over an AgentCore ``open_shell`` WebSocket terminal."""
+
+    _silence_floor_sec: float | None = None
 
     def __init__(
         self,
@@ -70,6 +74,9 @@ class AgentCoreProcess(LiveProcess):
         self._closed = False
         self._failure: BaseException | None = None
         self._reader_done = False
+
+    def expect_silence(self, seconds: float) -> None:
+        self._silence_floor_sec = seconds
 
     @classmethod
     def from_sandbox_env(cls, env: Any) -> AgentCoreProcess:
@@ -339,7 +346,7 @@ class AgentCoreProcess(LiveProcess):
 
         if self._closed:
             raise _closed("AgentCore shell closed", "pty_error")
-        timeout = _readline_timeout_sec()
+        timeout = _agentcore_readline_timeout_sec(self._silence_floor_sec)
         try:
             line = await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
         except TimeoutError as e:

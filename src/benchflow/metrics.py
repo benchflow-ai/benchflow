@@ -6,6 +6,7 @@ from trial results.
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,8 @@ class TaskMetrics:
     usage_source: UsageSource = "unavailable"
     memory_score: float | None = None
     scoring: dict[str, Any] | None = None
+    # Why the agent did nothing, when its integration broke (unscored).
+    integration_cause: str | None = None
 
     @property
     def outcome(self) -> str:
@@ -227,14 +230,19 @@ class BenchmarkMetrics:
         return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
 
     @property
-    def total_cost_usd(self) -> float:
-        return round(sum(t.cost_usd or 0.0 for t in self.telemetry_tasks), 10)
+    def total_cost_usd(self) -> float | None:
+        """USD over trials that reported a cost; None when none did (a
+        subscription login reports none; unknown is not $0)."""
+        costs = [t.cost_usd for t in self.telemetry_tasks if t.cost_usd is not None]
+        return round(sum(costs), 10) if costs else None
 
     @property
     def avg_cost_per_trial_usd(self) -> float | None:
-        if not self.telemetry_tasks:
+        priced = [t for t in self.telemetry_tasks if t.cost_usd is not None]
+        total = self.total_cost_usd
+        if total is None or not priced:
             return None
-        return round(self.total_cost_usd / len(self.telemetry_tasks), 10)
+        return round(total / len(priced), 10)
 
     @property
     def telemetry_coverage(self) -> float:
@@ -279,6 +287,14 @@ class BenchmarkMetrics:
                 breakdown[category] = breakdown.get(category, 0) + 1
         return breakdown
 
+    @property
+    def integration_failures(self) -> dict[str, Any]:
+        """Trials whose agent integration broke (unscored), by cause."""
+        causes = Counter(
+            t.integration_cause for t in self.tasks if t.integration_cause is not None
+        )
+        return {"total": sum(causes.values()), "by_cause": dict(sorted(causes.items()))}
+
     def summary(self) -> dict[str, Any]:
         """Export as summary dict."""
         return {
@@ -313,6 +329,7 @@ class BenchmarkMetrics:
             "memory_scores": self.memory_scores,
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
+            "integration_failures": self.integration_failures,
             "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
             "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
             "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
@@ -320,6 +337,48 @@ class BenchmarkMetrics:
                 t.task_name for t in self.tasks if t.score_verifier_errored
             ),
         }
+
+
+def _integration_cause(result: dict[str, Any]) -> str | None:
+    info = result.get("integration_failure_info")
+    if isinstance(info, dict):
+        cause = info.get("cause")
+        return cause if isinstance(cause, str) else "unknown"
+    return None
+
+
+def _with_integration_failure(
+    result: dict[str, Any], trial_dir: Path
+) -> dict[str, Any]:
+    """Apply read-time integration-failure detection to an older result.
+
+    A result written before ``integration_failure_info`` existed, whose agent
+    did nothing because its integration broke, is read as the run would
+    record it today: reward withheld, error ``agent integration failure``.
+    """
+    from benchflow.integration_health import diagnose_trial_dir
+
+    if (
+        "integration_failure_info" in result
+        or result.get("n_tool_calls")
+        or extract_reward(result) is None
+        or str(result.get("agent") or "").lower() in ("oracle", "nop", "")
+    ):
+        return result
+    finding = diagnose_trial_dir(trial_dir, result)
+    if finding is None:
+        return result
+    return {
+        **result,
+        "rewards": None,
+        "error": finding.error_text(),
+        "error_category": "agent_integration",
+        "integration_failure_info": {
+            **finding.to_dict(),
+            "reward_withheld": result.get("rewards"),
+            "detected": "on read",
+        },
+    }
 
 
 def _result_rank(result: dict[str, Any]) -> tuple[bool, bool, float]:
@@ -340,23 +399,29 @@ def collect_metrics(
 ) -> BenchmarkMetrics:
     """Collect metrics from a results directory.
 
-    Reads all result.json files, picks the best result per task
-    (rewards > no rewards, higher reward preferred).
+    Reads all result.json files, picks the best result per task, agent and
+    model (rewards > no rewards, higher reward preferred).
     """
     results_dir = Path(results_dir)
-    best: dict[str, dict] = {}
+    # One result per task, agent and model: a retried task counts once, but a
+    # folder holding several agents' jobs keeps each agent's result.
+    best: dict[tuple[str, str, str], dict] = {}
 
     for rfile in iter_task_result_paths(results_dir):
         try:
-            r = json.loads(rfile.read_text())
-            task = r["task_name"]
-            if task not in best or _result_rank(r) > _result_rank(best[task]):
-                best[task] = r
+            r = _with_integration_failure(json.loads(rfile.read_text()), rfile.parent)
+            key = (
+                r["task_name"],
+                str(r.get("agent_name") or r.get("agent") or ""),
+                str(r.get("model") or ""),
+            )
+            if key not in best or _result_rank(r) > _result_rank(best[key]):
+                best[key] = r
         except Exception as e:
             logger.debug(f"Skipping corrupt result file {rfile}: {e}")
 
     tasks = []
-    for task_name, r in sorted(best.items()):
+    for (task_name, _agent, _model), r in sorted(best.items()):
         reward = extract_reward(r)
         # Calculate duration
         duration = 0.0
@@ -401,6 +466,7 @@ def collect_metrics(
                     "usage_source", r.get("usage_source", "unavailable")
                 ),
                 memory_score=memory_score_from_result(r),
+                integration_cause=_integration_cause(r),
             )
         )
 

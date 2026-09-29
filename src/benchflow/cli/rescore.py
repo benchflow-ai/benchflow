@@ -101,6 +101,13 @@ def eval_score(
     except (ValueError, RuntimeError, OSError) as exc:
         console.print(f"[red]Scoring failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
+    if (
+        scoring is None
+        and result.get("rewards") is not None
+        and not result.get("verifier_error")
+    ):
+        console.print(f"Verification complete: rewards={result['rewards']}")
+        return
     if scoring is None or scoring.status != "complete":
         reason = scoring.error if scoring is not None else "No scoring verdict"
         console.print(f"[red]Scoring incomplete: {escape(str(reason))}[/red]")

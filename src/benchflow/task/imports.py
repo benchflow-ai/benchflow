@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import logging
+import re
 import tomllib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
@@ -10,6 +12,35 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from benchflow.task.config import TaskConfig, convert_legacy_environment_keys
+
+logger = logging.getLogger(__name__)
+
+# Foreign task.toml keys BenchFlow does not model and whose semantics it
+# cannot honour: a lenient load keeps them out of the config, and the runtime
+# capability check refuses the task instead of running it without them.
+# Keys are dotted paths with list indices removed.
+UNHONOURED_FOREIGN_KEYS: dict[str, str] = {
+    "verifier.collect": (
+        "Harbor verifier collect hooks (commands run in a service before "
+        "verification) are not executed"
+    ),
+    "steps.verifier.collect": (
+        "Harbor verifier collect hooks (commands run in a service before "
+        "verification) are not executed"
+    ),
+}
+
+
+_WARNED: set[tuple[str, tuple[str, ...]]] = set()
+
+
+def unhonoured_foreign_key(path: str) -> tuple[str, str] | None:
+    """``(key, reason)`` when ``path`` is under an unhonoured foreign key."""
+    plain = re.sub(r"\[\d+\]", "", path)
+    for key, reason in UNHONOURED_FOREIGN_KEYS.items():
+        if plain == key or plain.startswith(key + "."):
+            return key, reason
+    return None
 
 
 @dataclass(frozen=True)
@@ -101,6 +132,35 @@ def import_task_config_toml(
         report=TaskConfigImportReport(source=source, status="strict"),
         declared=raw,
     )
+
+
+def load_task_config_toml(toml_data: str, *, source: str) -> TaskConfig:
+    """Load a task.toml for running it: unknown keys are ignored with a warning.
+
+    The run-path counterpart of :meth:`TaskConfig.model_validate_toml`, which
+    stays strict. Unknown keys are recorded on ``config.ignored_keys``; wrong
+    types and invalid values still raise. Keys in
+    :data:`UNHONOURED_FOREIGN_KEYS` are also recorded, and the runtime
+    capability check refuses the task because of them.
+    """
+
+    imported = import_task_config_toml(toml_data, source=source)
+    config = imported.config
+    config._ignored_keys = imported.report.extra_paths
+    plain = sorted(
+        p for p in imported.report.extra_paths if unhonoured_foreign_key(p) is None
+    )
+    # A run loads the same task several times; say it once per file and keys.
+    key = (source, tuple(plain))
+    if plain and key not in _WARNED:
+        _WARNED.add(key)
+        logger.warning(
+            "%s: ignored %d task.toml key(s) BenchFlow does not know: %s",
+            source,
+            len(plain),
+            ", ".join(plain),
+        )
+    return config
 
 
 def merge_compat_extra(

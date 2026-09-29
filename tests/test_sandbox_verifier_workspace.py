@@ -112,6 +112,18 @@ async def test_harden_restore_fallback_uses_shutil():
     env = _make_env()
     task = MagicMock()
     task.config.verifier.env = {}
+    task.config.verifier.pytest_plugins = []
+
+    def execute(command, **kwargs):
+        # Plugin discovery requires a structured trust receipt (GH1116).
+        stdout = (
+            '{"plugins": [], "rejected": []}'
+            if "from importlib.metadata import entry_points" in command
+            else ""
+        )
+        return MagicMock(stdout=stdout, stderr="", exit_code=0)
+
+    env.exec.side_effect = execute
     with (
         patch("benchflow.sandbox.lockdown._restore_build_config", AsyncMock()),
         patch("benchflow.sandbox.lockdown._refresh_verifier_workspace", AsyncMock()),
@@ -153,7 +165,10 @@ def test_oracle_branch_setup_calls():
 
     source = inspect.getsource(rollout_mod.Rollout.install_agent)
     cwd_source = inspect.getsource(rollout_mod._resolve_agent_cwd)
-    oracle_pos = source.find('primary_agent == "oracle"')
+    # The oracle and nop share this branch (is_scripted_agent).
+    oracle_pos = source.find("is_scripted_agent(cfg.primary_agent)")
+    if oracle_pos == -1:
+        oracle_pos = source.find('primary_agent == "oracle"')
     assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
 

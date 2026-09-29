@@ -136,18 +136,30 @@ def test_adapter_prompt_returns_stop_reason():
     assert asyncio.iscoroutinefunction(ACPClient.prompt)
 
 
-def test_adapter_steps_reflects_acp_session_events():
+def test_adapter_steps_reflects_acp_session_events(monkeypatch):
     """``steps`` surfaces ``ACPSession.events`` — the session's trajectory."""
     from benchflow.acp.client import ACPClient
     from benchflow.acp.session import ACPSession
 
     client = ACPClient.__new__(ACPClient)
+    monkeypatch.setattr("benchflow.acp.session.time.time_ns", lambda: 123456)
     session = ACPSession("s1")
     session.record_user_prompt("first instruction")
     client._session = session
 
     adapter = ACPSessionAdapter(client)
-    assert adapter.steps == [{"type": "user_message", "text": "first instruction"}]
+    assert adapter.steps == [
+        {
+            "type": "user_message",
+            "text": "first instruction",
+            "receipt": {
+                "source": "benchflow_host",
+                "clock": "unix",
+                "first_observed_ns": "123456",
+                "last_observed_ns": "123456",
+            },
+        }
+    ]
 
 
 def test_adapter_steps_empty_without_session():

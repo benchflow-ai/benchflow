@@ -6,6 +6,7 @@ runtime-capability parsing, and the static publication-grade gate.
 """
 
 import re
+import tomllib
 from pathlib import Path
 from typing import Literal
 
@@ -155,6 +156,21 @@ def task_document_parse_error(task_md: Path) -> str | None:
         TaskDocument.from_path(task_md)
     except Exception as e:
         return f"task.md parse error: {e}"
+    return None
+
+
+def task_config_parse_error(task_toml: Path) -> str | None:
+    """Return a human-readable parse error if ``task_toml`` fails to parse, else None.
+
+    The legacy-format counterpart of :func:`task_document_parse_error`, shared
+    the same way by ``check_task`` and eval task-discovery. Only TOML syntax
+    is checked, as ``bench tasks check`` always has (#379).
+    """
+    try:
+        with open(task_toml, "rb") as f:
+            tomllib.load(f)
+    except Exception as e:
+        return f"task.toml parse error: {e}"
     return None
 
 

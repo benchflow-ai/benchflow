@@ -135,8 +135,6 @@ def docker_available() -> bool:
     stopped daemon is the common laptop case, and discovering that only at
     build time would waste the whole image push.
     """
-    import shutil
-
     if not shutil.which("docker"):
         return False
     try:

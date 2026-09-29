@@ -78,8 +78,11 @@ def custom_cost_per_token(model: str) -> tuple[float, float] | None:
     return None
 
 
+# Claude 4.8+ and every 5-family model. Kept in sync with
+# ``litellm_bedrock_patch.BEDROCK_ADAPTIVE_THINKING_RE``.
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
-    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)|fable-5(?!\d))",
+    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)"
+    r"|(?:opus|sonnet|haiku|fable)-(?:[5-9]|[1-9]\d))(?!\d)",
     re.IGNORECASE,
 )
 _BEDROCK_LITELLM_EFFORT_LIMIT_RE = re.compile(

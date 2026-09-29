@@ -359,7 +359,25 @@ def update_continued_metadata(
     HF-compatible artifacts still need the actual live model and token usage.
     The stitched LLM trajectory is authoritative for provider usage.
     """
+    result_path = rollout_dir / "result.json"
+    # A missing response usage field is not evidence of zero usage. Cleanup
+    # may have imported authoritative native/proxy telemetry independently.
+    retained_result = (
+        json.loads(result_path.read_text()) if result_path.is_file() else {}
+    )
+    retained_usage = retained_result.get("agent_result") or {}
+    preserve_usage = (
+        usage.total_tokens == 0 and (retained_usage.get("total_tokens") or 0) > 0
+    )
     config_path = rollout_dir / "config.json"
+    if preserve_usage:
+        if config_path.is_file():
+            config = json.loads(config_path.read_text())
+            config["model"] = live_model
+            config_path.write_text(json.dumps(config, indent=2) + "\n")
+        retained_result["model"] = live_model
+        result_path.write_text(json.dumps(retained_result, indent=2) + "\n")
+        return
     if config_path.is_file():
         config = json.loads(config_path.read_text())
         config["model"] = live_model
@@ -379,7 +397,6 @@ def update_continued_metadata(
         }
         config_path.write_text(json.dumps(config, indent=2) + "\n")
 
-    result_path = rollout_dir / "result.json"
     if not result_path.is_file():
         return
     result = json.loads(result_path.read_text())
@@ -463,8 +480,20 @@ async def _safe_sandbox_continuation_teardown(
     return errors
 
 
-def _result_after_sandbox_teardown(rollout: Any) -> Any | None:
-    """Return a Rollout result, forcing artifact emission after cleanup warnings."""
+def _result_after_sandbox_teardown(
+    rollout: Any, *, usage: ContinuedUsageSummary
+) -> Any | None:
+    """Build the verdict only after cleanup and authoritative usage collection.
+
+    The continuation owns a separate provider runtime, so its stitched response
+    usage must reach classification before the result is built (PR #1131).
+    Missing response usage does not erase telemetry imported by cleanup.
+    """
+    if usage.total_tokens > 0:
+        rollout._usage_metrics = {
+            **(getattr(rollout, "_usage_metrics", None) or {}),
+            **usage.as_agent_result_patch(),
+        }
     result = rollout.result
     if result is not None:
         return result
@@ -611,7 +640,6 @@ async def _continue_run_with_sandbox_proxy(
     rollout = await Rollout.create(config)
     replay_proxy: SandboxReplayProxy | None = None
     provider_runtime: Any | None = None
-    result: Any | None = None
     pending_acp_error: AgentProtocolError | None = None
     agent_timed_out = False
     rollout_dir: Path | None = None
@@ -619,13 +647,12 @@ async def _continue_run_with_sandbox_proxy(
     artifacts_written = False
 
     async def _write_artifacts_before_cleanup() -> None:
-        nonlocal artifacts_written, live_exchanges, result, rollout_dir
-        if artifacts_written:
+        nonlocal artifacts_written, live_exchanges, rollout_dir
+        if artifacts_written or rollout._rollout_dir is None:
             return
-        result = _result_after_sandbox_teardown(rollout)
-        if result is None:
-            return
-        rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
+        # Preserve provider evidence before sandbox teardown without asking
+        # Rollout.result to classify temporarily missing usage (#1131).
+        rollout_dir = Path(rollout._rollout_dir)
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
         stitched_path = write_stitched_trajectory(
             rollout_dir,
@@ -684,10 +711,7 @@ async def _continue_run_with_sandbox_proxy(
                 )
         except TimeoutError as exc:
             agent_timed_out = True
-            detail = str(exc).strip()
-            rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
-            rollout._diagnostics.capture_idle(exc)
-            logger.error(rollout._error)
+            rollout._record_agent_timeout(exc, agent_phase=True)
 
         if not config.skip_verify:
             await rollout.verify()
@@ -700,10 +724,7 @@ async def _continue_run_with_sandbox_proxy(
                 rollout._verifier_error = None
 
     except TimeoutError as exc:
-        detail = str(exc).strip()
-        rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
-        rollout._diagnostics.capture_idle(exc)
-        logger.error(rollout._error)
+        rollout._record_agent_timeout(exc, agent_phase=False)
     except ConnectionError as exc:
         rollout._error = str(exc)
         rollout._diagnostics.capture_transport(exc)
@@ -736,6 +757,20 @@ async def _continue_run_with_sandbox_proxy(
     await _write_artifacts_before_cleanup()
     if rollout_dir is None:
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
+    # Cleanup can write a provider trajectory of its own. Reinstall the retained
+    # stitched trajectory before deriving final usage and publishing one verdict.
+    stitched_path = write_stitched_trajectory(
+        rollout_dir,
+        run.path / "trajectory" / "llm_trajectory.jsonl",
+        live_exchanges,
+    )
+    usage = summarize_llm_trajectory_usage(
+        stitched_path, n_recorded=run.n_recorded_exchanges
+    )
+    result = _result_after_sandbox_teardown(rollout, usage=usage)
+    update_continued_metadata(
+        rollout_dir, live_model=live_model, usage=usage, environment=run.environment
+    )
 
     return ContinueResult(
         rollout_dir=rollout_dir,

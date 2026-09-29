@@ -1,0 +1,643 @@
+{
+  "$defs": {
+    "ComparisonRowExport": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/SettingCheckExport"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "reward_b - reward_a",
+          "title": "Delta"
+        },
+        "group": {
+          "additionalProperties": true,
+          "description": "the row's values of the by keys (1.1)",
+          "title": "Group",
+          "type": "object"
+        },
+        "n_a": {
+          "title": "N A",
+          "type": "integer"
+        },
+        "n_b": {
+          "title": "N B",
+          "type": "integer"
+        },
+        "reward_a": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reward A"
+        },
+        "reward_b": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reward B"
+        },
+        "scored_a": {
+          "title": "Scored A",
+          "type": "integer"
+        },
+        "scored_b": {
+          "title": "Scored B",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "paired",
+            "only_a",
+            "only_b"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task",
+        "status",
+        "n_a",
+        "n_b",
+        "scored_a",
+        "scored_b",
+        "reward_a",
+        "reward_b",
+        "delta",
+        "checks"
+      ],
+      "title": "ComparisonRowExport",
+      "type": "object"
+    },
+    "ComparisonSideExport": {
+      "additionalProperties": false,
+      "properties": {
+        "denominators": {
+          "$ref": "#/$defs/DenominatorsExport"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "solve_rates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SolveRatesExport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "label",
+        "path",
+        "denominators"
+      ],
+      "title": "ComparisonSideExport",
+      "type": "object"
+    },
+    "ComparisonSummaryExport": {
+      "additionalProperties": false,
+      "properties": {
+        "b_higher": {
+          "title": "B Higher",
+          "type": "integer"
+        },
+        "b_lower": {
+          "title": "B Lower",
+          "type": "integer"
+        },
+        "both_scored": {
+          "title": "Both Scored",
+          "type": "integer"
+        },
+        "mean_delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mean Delta"
+        },
+        "one_run_per_side": {
+          "title": "One Run Per Side",
+          "type": "boolean"
+        },
+        "only_a": {
+          "title": "Only A",
+          "type": "integer"
+        },
+        "only_b": {
+          "title": "Only B",
+          "type": "integer"
+        },
+        "paired": {
+          "title": "Paired",
+          "type": "integer"
+        },
+        "same_reward": {
+          "title": "Same Reward",
+          "type": "integer"
+        },
+        "setting_mismatches": {
+          "title": "Setting Mismatches",
+          "type": "integer"
+        },
+        "tasks": {
+          "title": "Tasks",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tasks",
+        "paired",
+        "only_a",
+        "only_b",
+        "both_scored",
+        "same_reward",
+        "b_higher",
+        "b_lower",
+        "mean_delta",
+        "one_run_per_side",
+        "setting_mismatches"
+      ],
+      "title": "ComparisonSummaryExport",
+      "type": "object"
+    },
+    "DenominatorsExport": {
+      "additionalProperties": false,
+      "properties": {
+        "assessment_errors": {
+          "title": "Assessment Errors",
+          "type": "integer"
+        },
+        "attempted": {
+          "title": "Attempted",
+          "type": "integer"
+        },
+        "clean_passed": {
+          "title": "Clean Passed",
+          "type": "integer"
+        },
+        "clean_scored": {
+          "title": "Clean Scored",
+          "type": "integer"
+        },
+        "controls_excluded": {
+          "title": "Controls Excluded",
+          "type": "integer"
+        },
+        "execution_errors": {
+          "title": "Execution Errors",
+          "type": "integer"
+        },
+        "integration_failures": {
+          "default": 0,
+          "description": "attempted runs whose agent integration broke; also counted in unscored and execution_errors (1.2)",
+          "title": "Integration Failures",
+          "type": "integer"
+        },
+        "mean_reward": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mean Reward"
+        },
+        "pass_rate_attempted": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pass Rate Attempted"
+        },
+        "pass_rate_clean": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pass Rate Clean"
+        },
+        "pass_rate_scored": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pass Rate Scored"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "integer"
+        },
+        "scored": {
+          "title": "Scored",
+          "type": "integer"
+        },
+        "unscored": {
+          "title": "Unscored",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempted",
+        "scored",
+        "assessment_errors",
+        "unscored",
+        "execution_errors",
+        "passed",
+        "mean_reward",
+        "pass_rate_scored",
+        "pass_rate_attempted",
+        "clean_scored",
+        "clean_passed",
+        "pass_rate_clean",
+        "controls_excluded"
+      ],
+      "title": "DenominatorsExport",
+      "type": "object"
+    },
+    "SettingCheckExport": {
+      "additionalProperties": false,
+      "properties": {
+        "a": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "A"
+        },
+        "b": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "B"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when neither side recorded it",
+          "title": "Match"
+        },
+        "setting": {
+          "title": "Setting",
+          "type": "string"
+        }
+      },
+      "required": [
+        "setting",
+        "match"
+      ],
+      "title": "SettingCheckExport",
+      "type": "object"
+    },
+    "SettingMismatchExport": {
+      "additionalProperties": false,
+      "properties": {
+        "a": {
+          "items": {},
+          "title": "A",
+          "type": "array"
+        },
+        "b": {
+          "items": {},
+          "title": "B",
+          "type": "array"
+        },
+        "setting": {
+          "title": "Setting",
+          "type": "string"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task",
+        "setting",
+        "a",
+        "b"
+      ],
+      "title": "SettingMismatchExport",
+      "type": "object"
+    },
+    "SolveRatesExport": {
+      "additionalProperties": false,
+      "description": "pass@k, pass^k and the solve rate (``benchflow.pass_at_k``).",
+      "properties": {
+        "caveats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "controls_excluded": {
+          "title": "Controls Excluded",
+          "type": "integer"
+        },
+        "ks": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Ks",
+          "type": "array"
+        },
+        "max_trials_per_task": {
+          "title": "Max Trials Per Task",
+          "type": "integer"
+        },
+        "min_trials_per_task": {
+          "title": "Min Trials Per Task",
+          "type": "integer"
+        },
+        "nonbinary_rewards": {
+          "title": "Nonbinary Rewards",
+          "type": "integer"
+        },
+        "pass_at_k": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Pass At K",
+          "type": "object"
+        },
+        "pass_hat_k": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Pass Hat K",
+          "type": "object"
+        },
+        "solve_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Solve Rate"
+        },
+        "solve_threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null: a trial succeeds when it passed; else reward >= threshold",
+          "title": "Solve Threshold"
+        },
+        "success_rule": {
+          "title": "Success Rule",
+          "type": "string"
+        },
+        "tasks": {
+          "title": "Tasks",
+          "type": "integer"
+        },
+        "tasks_at_k": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Tasks At K",
+          "type": "object"
+        },
+        "tasks_short_at_k": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "tasks with fewer than k scored trials, left out of that k",
+          "title": "Tasks Short At K",
+          "type": "object"
+        },
+        "trials": {
+          "description": "scored trials (the samples)",
+          "title": "Trials",
+          "type": "integer"
+        },
+        "unscored": {
+          "description": "left out of n, not counted as failures",
+          "title": "Unscored",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "success_rule",
+        "solve_threshold",
+        "tasks",
+        "trials",
+        "unscored",
+        "controls_excluded",
+        "min_trials_per_task",
+        "max_trials_per_task",
+        "solve_rate",
+        "nonbinary_rewards",
+        "ks",
+        "pass_at_k",
+        "pass_hat_k",
+        "tasks_at_k",
+        "tasks_short_at_k",
+        "caveats"
+      ],
+      "title": "SolveRatesExport",
+      "type": "object"
+    }
+  },
+  "$id": "https://benchflow.ai/schemas/benchflow-comparison.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "a": {
+      "$ref": "#/$defs/ComparisonSideExport"
+    },
+    "a_paired": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DenominatorsExport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "side A over the tasks both sides ran (1.1)"
+    },
+    "b": {
+      "$ref": "#/$defs/ComparisonSideExport"
+    },
+    "b_paired": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DenominatorsExport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "by": {
+      "description": "extra pairing keys besides task (1.1)",
+      "items": {
+        "type": "string"
+      },
+      "title": "By",
+      "type": "array"
+    },
+    "caveats": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Caveats",
+      "type": "array"
+    },
+    "include_controls": {
+      "title": "Include Controls",
+      "type": "boolean"
+    },
+    "kind": {
+      "const": "benchflow.comparison",
+      "default": "benchflow.comparison",
+      "title": "Kind",
+      "type": "string"
+    },
+    "mismatches": {
+      "items": {
+        "$ref": "#/$defs/SettingMismatchExport"
+      },
+      "title": "Mismatches",
+      "type": "array"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/ComparisonRowExport"
+      },
+      "title": "Rows",
+      "type": "array"
+    },
+    "schema_minor": {
+      "default": 2,
+      "description": "optional fields added within schema_version; see the changelog",
+      "title": "Schema Minor",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "summary": {
+      "$ref": "#/$defs/ComparisonSummaryExport"
+    },
+    "vary": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Vary",
+      "type": "array"
+    }
+  },
+  "required": [
+    "a",
+    "b",
+    "include_controls",
+    "vary",
+    "summary",
+    "rows",
+    "mismatches",
+    "caveats"
+  ],
+  "title": "ComparisonExport",
+  "type": "object"
+}

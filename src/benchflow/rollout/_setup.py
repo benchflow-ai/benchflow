@@ -23,26 +23,33 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import re
 import shlex
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow.contracts import RolloutPlanes, default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
-from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.environment.manifest import EnvironmentManifest, resolve_manifest_image
 from benchflow.rewards.validation import (
     declared_reward_range,
     reward_lenient_from_env,
     validate_reward_map,
 )
 from benchflow.rollout._results import _DIAG_TRUNCATE
-from benchflow.sandbox.egress_denylist import EgressDenylist, egress_denylist_for
+from benchflow.sandbox._compose import docker_daemon_unreachable_reason
+from benchflow.sandbox.egress_denylist import (
+    EgressDenylist,
+    agent_network_sandbox_config,
+    egress_denylist_for,
+)
+from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
@@ -57,8 +64,11 @@ def _task_disallows_internet(task: Any) -> bool:
 
 
 def _task_egress_denylist(task: Any) -> EgressDenylist | None:
-    """Return the egress denylist the task's sandbox config declares, if any."""
-    return egress_denylist_for(getattr(getattr(task, "config", None), "sandbox", None))
+    """Return the egress policy (denylist or allowlist) the task declares, if any."""
+    config = getattr(task, "config", None)
+    if config is None:
+        return None
+    return egress_denylist_for(agent_network_sandbox_config(config))
 
 
 def _read_task_instruction(task_path: Path) -> str:
@@ -72,7 +82,12 @@ def _read_task_instruction(task_path: Path) -> str:
     instruction_path = task_path / "instruction.md"
     if instruction_path.exists():
         return instruction_path.read_text().strip()
-    raise FileNotFoundError(f"Task missing instruction.md or task.md: {task_path}")
+    from benchflow.task import Task
+
+    # Task names the task formats when neither prompt file exists, and loads a
+    # Harbor multi-step task (no root prompt) so the launch gate refuses its
+    # ``steps`` instead of this function failing on a missing file.
+    return Task(task_path).instruction.strip()
 
 
 def _environment_uses_prebuilt_image(
@@ -83,8 +98,6 @@ def _environment_uses_prebuilt_image(
         return True
     if environment_manifest is None:
         return False
-    from benchflow.environment.manifest import resolve_manifest_image
-
     return bool(resolve_manifest_image(environment_manifest))
 
 
@@ -306,10 +319,14 @@ async def _start_env_and_upload(
     timing: dict,
     *,
     skip_start: bool = False,
-    on_started: Callable[[], None] | None = None,
+    on_started: Callable[[], Awaitable[None] | None] | None = None,
     uploads: dict[str, str] | None = None,
+    upload_task_files: bool = True,
 ) -> None:
     """Start environment and upload task files.
+
+    ``upload_task_files=False`` only starts the sandbox: one created from a
+    branch snapshot already holds the instruction, the solution and uploads.
 
     ``skip_start=True`` is used when the sandbox was created and started
     by the caller (Runtime with a live Environment, #388) — we still
@@ -328,10 +345,25 @@ async def _start_env_and_upload(
     else:
         logger.info(f"Starting environment: {task_path.name}")
         t0 = datetime.now()
-        await env.start(force_build=False)
+        try:
+            await env.start(force_build=False)
+        except SandboxStartupError:
+            raise
+        except RuntimeError as exc:
+            reason = docker_daemon_unreachable_reason(str(exc))
+            if reason is None:
+                raise
+            raise SandboxStartupError(
+                f"Docker daemon unreachable: {reason}. Start Docker and re-run; "
+                "`bench doctor` shows the fix."
+            ) from exc
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if on_started is not None:
-        on_started()
+        started = on_started()
+        if inspect.isawaitable(started):
+            await started
+    if not upload_task_files:
+        return
     instruction_path = task_path / "instruction.md"
     if instruction_path.exists() and not (task_path / "task.md").exists():
         await env.upload_file(instruction_path, "/instruction.md")
@@ -395,6 +427,21 @@ async def _run_oracle(
         "oracle/solve.sh" if task.paths.uses_native_oracle_dir else "solution/solve.sh"
     )
     oracle_script = shlex.quote(str(oracle_dir / "solve.sh"))
+    # Harbor runs solve.sh as the task's [agent].user in its
+    # [environment].workdir; without either the oracle keeps running as root
+    # in the image's default directory.
+    declared_user = task.config.agent.user
+    # su takes a user name; a numeric [agent].user is left to the image user.
+    if not sandbox_user and isinstance(declared_user, str) and declared_user:
+        sandbox_user = declared_user
+    workdir = _configured_task_workdir(task)
+    if sandbox_user and sandbox_user == declared_user:
+        # The oracle dir is uploaded root-owned; let the declared user run it.
+        await env.exec(
+            f"chmod -R a+rX {shlex.quote(str(oracle_dir))}",
+            user="root",
+            timeout_sec=30,
+        )
     if sandbox_user:
         oracle_cmd = f"DEBIAN_FRONTEND=noninteractive bash {oracle_script}"
         cmd = (
@@ -405,11 +452,11 @@ async def _run_oracle(
     oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
     if task.config.solution.env:
         oracle_env.update(resolve_env_vars(task.config.solution.env))
-    result = await env.exec(
-        f"{cmd} > /logs/agent/oracle.txt 2>&1",
-        env=oracle_env,
-        timeout_sec=timeout,
-    )
+    exec_kwargs: dict[str, Any] = {"env": oracle_env, "timeout_sec": timeout}
+    if workdir is not None:
+        _validate_agent_workdir(workdir)
+        exec_kwargs["cwd"] = workdir
+    result = await env.exec(f"{cmd} > /logs/agent/oracle.txt 2>&1", **exec_kwargs)
     if result.return_code != 0:
         logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
     preview = await env.exec(
@@ -454,6 +501,69 @@ async def _publish_trajectory_for_verifier(
             os.unlink(tmp_path)
 
 
+_VERIFIER_START_GRACE_SEC = 30.0
+
+
+async def _verifier_started(env: Any, verifier: Any) -> bool | None:
+    """Whether the command wrote its start receipt; ``None`` when unknown."""
+    receipt = getattr(verifier, "execution_receipt", None)
+    if not isinstance(receipt, tuple) or len(receipt) != 2:
+        return None
+    path, service = receipt
+    try:
+        probe = await asyncio.wait_for(
+            env.exec(
+                f"cat {shlex.quote(path)}", service=service, user="root", timeout_sec=10
+            ),
+            timeout=15,
+        )
+        return probe.return_code == 0 and probe.stdout.strip() == "started"
+    except Exception as exc:
+        # A failed probe says nothing about the verifier. Keep waiting and
+        # probe again rather than cancelling a verifier that may be running.
+        logger.warning(f"Verifier start-receipt probe failed; retrying: {exc!r}")
+        return None
+
+
+async def _await_verifier(env: Any, verifier: Any, timeout: float) -> Any:
+    """Bound command startup separately from legitimately quiet execution."""
+    from benchflow.rollout._deadline import _swallow_abandoned_outcome
+
+    running = asyncio.create_task(verifier.verify())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    try:
+        while True:
+            remaining = max(0, deadline - loop.time())
+            done, _ = await asyncio.wait(
+                {running}, timeout=min(remaining, _VERIFIER_START_GRACE_SEC)
+            )
+            if done:
+                return running.result()
+            started = await _verifier_started(env, verifier)
+            if started is False:
+                raise RuntimeError(
+                    "verifier_wedge: execution start could not be confirmed"
+                )
+            if started is True:
+                done, _ = await asyncio.wait(
+                    {running}, timeout=max(0, deadline - loop.time())
+                )
+                if done:
+                    return running.result()
+                raise TimeoutError
+            if loop.time() >= deadline:
+                raise TimeoutError
+    finally:
+        if not running.done():
+            running.cancel()
+            done, _ = await asyncio.wait({running}, timeout=5)
+            if done:
+                _swallow_abandoned_outcome(running)
+            else:
+                running.add_done_callback(_swallow_abandoned_outcome)
+
+
 async def _verify_rollout(
     env: Any,
     task: Any,
@@ -462,50 +572,44 @@ async def _verify_rollout(
     planes: RolloutPlanes,
     sandbox_user: str | None = None,
     workspace: str | None = None,
+    *,
+    recovery_eligible: bool = False,
 ) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
     """Run verifier with pre-verification hardening.
 
     Returns ``(rewards, verifier_error, verifier_timeout_diagnostic)``. The
     diagnostic is non-``None`` only when the verifier exceeded its timeout
     budget — the agent-error channel is unused (issue #503).
+
+    ``recovery_eligible`` tasks (#1136) use command start receipts and leave a
+    lost start to fresh-sandbox recovery; every other task keeps the one-time
+    in-place retry of a zero-output timeout (PR #949).
     """
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     t0 = datetime.now()
     verifier_error = None
     verifier_timeout: VerifierTimeoutDiagnostic | None = None
     timeout_budget = task.config.verifier.timeout_sec
+    verifier = None
     try:
         await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
-        verifier = planes.verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
-        verifier_result = None
-        for attempt in (1, 2):
-            try:
-                verifier_result = await asyncio.wait_for(
-                    verifier.verify(),
-                    timeout=timeout_budget,
-                )
-                break
-            except TimeoutError:
-                # A verifier that times out having produced NO output never
-                # actually started its tests — the exec-layer session wedged
-                # (observed on Daytona 2026-08-07/08: test.sh finishes in
-                # under a second when it runs, yet several rollouts burned the
-                # full verifier budget with an empty test-stdout.txt). That is
-                # an infra wedge, not a slow verifier, and test.sh is a
-                # stateless scoring script over the frozen workspace — so one
-                # retry is safe and turns a lost rollout into a real score. A
-                # timeout WITH output is a genuinely slow/hung verifier and is
-                # never retried.
-                if attempt == 1 and await _verifier_wedged_without_output(env):
-                    logger.warning(
-                        "Verifier timed out with no output — exec-layer wedge "
-                        "suspected; retrying verifier once"
-                    )
-                    await _kill_orphan_verifier(env)
-                    continue
-                raise
-        assert verifier_result is not None
+        verifier_kwargs: dict[str, Any] = {
+            "task": task,
+            "rollout_paths": rollout_paths,
+            "sandbox": env,
+        }
+        if recovery_eligible:
+            # Only _await_verifier reads a start receipt; every other verifier
+            # runs test.sh exactly as it did before receipts existed.
+            verifier_kwargs["execution_receipt"] = True
+        verifier = planes.verifier(**verifier_kwargs)
+        if recovery_eligible:
+            verifier_result = await _await_verifier(env, verifier, timeout_budget)
+        else:
+            verifier_result = await _verify_with_wedge_retry(
+                env, verifier, timeout_budget
+            )
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
         logger.info(f"Rewards: {rewards}")
@@ -526,6 +630,30 @@ async def _verify_rollout(
         rewards = None
         logger.error(verifier_error)
     return rewards, verifier_error, verifier_timeout
+
+
+async def _verify_with_wedge_retry(env: Any, verifier: Any, timeout: float) -> Any:
+    try:
+        return await asyncio.wait_for(verifier.verify(), timeout=timeout)
+    except TimeoutError:
+        # A verifier that times out having produced NO output never
+        # actually started its tests — the exec-layer session wedged
+        # (on Daytona a test.sh that finishes in under a second when it
+        # runs can still burn the full verifier budget with an empty
+        # test-stdout.txt). That is
+        # an infra wedge, not a slow verifier, and test.sh is a
+        # stateless scoring script over the frozen workspace — so one
+        # retry is safe and turns a lost rollout into a real score. A
+        # timeout WITH output is a genuinely slow/hung verifier and is
+        # never retried.
+        if not await _verifier_wedged_without_output(env):
+            raise
+    logger.warning(
+        "Verifier timed out with no output — exec-layer wedge "
+        "suspected; retrying verifier once"
+    )
+    await _kill_orphan_verifier(env)
+    return await asyncio.wait_for(verifier.verify(), timeout=timeout)
 
 
 async def _verifier_wedged_without_output(env: Any) -> bool:

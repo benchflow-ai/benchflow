@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import typer
 from rich.markup import escape
@@ -28,6 +28,7 @@ def _redacted_eval_config(eval_config: EvaluationConfig) -> dict:
         "agent": eval_config.agent,
         "model": eval_config.model,
         "reasoning_effort": eval_config.reasoning_effort,
+        "codex_apps_policy": eval_config.codex_apps_policy,
         "environment": eval_config.environment,
         "concurrency": eval_config.concurrency,
         "build_concurrency": eval_config.build_concurrency,
@@ -269,6 +270,22 @@ def _write_matrix_task_manifest(
     console.print(f"[green]Task manifest:[/green] {escape(str(req.task_manifest_out))}")
 
 
+def matrix_solve_rates(root: Path, aliases: list[str]) -> dict[str, Any]:
+    """pass@k / pass^k per matrix entry, pooling its ``trial-NN`` folders.
+
+    None for an entry with no readable trial.
+    """
+    import benchflow as bf
+
+    out: dict[str, Any] = {}
+    for alias in aliases:
+        try:
+            out[alias] = bf.load_job(root / alias).solve_rates().to_dict()
+        except FileNotFoundError:
+            out[alias] = None
+    return out
+
+
 def run_matrix_eval(
     plan: EvalPlan,
     resolved_tasks_dir: Path,
@@ -345,6 +362,7 @@ def run_matrix_eval(
             "matrix": str(req.matrix),
             "trials": req.trials,
             "runs": matrix_runs,
+            "solve_rates": matrix_solve_rates(root, list(models)),
         },
     )
     console.print(f"[green]Matrix summary:[/green] {escape(str(summary_path))}")

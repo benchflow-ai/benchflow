@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -250,9 +251,10 @@ def test_activity_cell_formats_counters_and_registry_miss():
         ),
         # A lone first call is trivially "constant" but the name is still
         # news; the drop only pays off once repetition makes it redundant.
+        # Singular "call" (it used to read "1 calls").
         (
             SessionCounters(1, "IPython cell", 90_000, 1),
-            "1 calls · 90.0k tok · last: IPython cell",
+            "1 call · 90.0k tok · last: IPython cell",
         ),
     ],
 )
@@ -478,30 +480,20 @@ def test_rollout_disconnect_does_not_rewind_a_terminal_phase():
     # follows, and connect_as() re-marks "connected".
     import asyncio
 
-    from benchflow.rollout import Rollout
+    from benchflow.rollout import Rollout, RolloutConfig
 
-    def _rollout(phase: str) -> SimpleNamespace:
-        return SimpleNamespace(
-            _phase=phase,
-            _is_session_factory=False,
-            _capture_partial_acp_trajectory=lambda: None,
-            _acp_client=None,
-            _session=None,
-            _session_adapter=None,
-            _agent_launch="",
-            _env=None,
-            _active_role=None,
-            _session_tool_count=0,
-            _session_traj_count=0,
-        )
+    def _rollout(phase: str) -> Rollout:
+        rollout = Rollout(RolloutConfig(task_path=Path("task")))
+        rollout._phase = phase
+        return rollout
 
     mid_run = _rollout("executed")
-    asyncio.run(Rollout.disconnect(mid_run))
+    asyncio.run(mid_run.disconnect())
     assert mid_run._phase == "installed"
 
     for terminal in ("verifying", "verified", "cleaned"):
         done = _rollout(terminal)
-        asyncio.run(Rollout.disconnect(done))
+        asyncio.run(done.disconnect())
         assert done._phase == terminal
 
 
@@ -1251,3 +1243,34 @@ def test_fire_progress_swallows_callback_errors():
     Evaluation._fire_progress(boom, "task-x")  # must NOT raise
     Evaluation._fire_progress(None)  # None callback is a no-op
     assert seen == [("task-x",)]
+
+
+def test_failure_reason_names_a_plugin_the_verifier_guard_refused(tmp_path):
+    # The README quickstart task used to print a bare
+    # `✗ citation-check: reward 0.0` although pytest never ran — the guard
+    # refused the ctrf plugin, and test-stdout.txt ended in that refusal.
+    _write_stdout(
+        tmp_path / "citation-check__00000001" / "verifier",
+        "Installed 6 packages in 9ms\n"
+        "Traceback (most recent call last):\n"
+        '  File "/_benchflow_guard_x/_benchflow_guard_x.py", line 251\n'
+        "_benchflow_guard_x.Rejected: Verifier plugin trust rejected: ctrf\n",
+    )
+    out = _reported(
+        _failed_result([_failure("citation-check", "citation-check__00000001")]),
+        tmp_path,
+    )
+    assert (
+        "✗ citation-check: reward 0.0 — pytest did not run: the verifier guard "
+        "refused pytest plugin ctrf"
+    ) in out
+
+
+def test_report_points_at_the_viewer(tmp_path):
+    # After a run the CLI used to name artifact paths but never
+    # the command that renders them; getting-started.md does not mention it.
+    out = _reported(
+        _failed_result([_failure("citation-check", "citation-check__00000001")]),
+        tmp_path,
+    )
+    assert f"bench eval view {tmp_path}" in out

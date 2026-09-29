@@ -24,6 +24,11 @@ _HF_VIEWER_FILES = (
     "prompts.json",
     "trajectory/acp_trajectory.jsonl",
     *(f"verifier/{name}" for name in VERIFIER_SIDECARS),
+    # Small JSON the Lineage tab and the verifier-recovery rows read. Child
+    # archives and recovery receipts live under random ids and are not
+    # fetched; the viewer shows those rows without links or receipt details.
+    "tree.json",
+    "verification.json",
 )
 
 # bench review reports live beside the runs (``jobs/review-<stamp>/``), so a

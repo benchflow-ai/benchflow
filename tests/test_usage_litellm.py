@@ -289,13 +289,8 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
             return None
 
     server = FakeServer()
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(task_path=tmp_path / "task")
-    rollout._trajectory = []
-    rollout._acp_client = None
-    rollout._agent_launch = ""
+    rollout = Rollout(RolloutConfig(task_path=tmp_path / "task"))
     rollout._env = SimpleNamespace(stop=AsyncMock())
-    rollout._environment = None
     rollout._usage_runtime = ProviderRuntime(
         kind="litellm",
         agent_base_url="http://127.0.0.1:4000",
@@ -307,7 +302,6 @@ async def test_rollout_cleanup_extracts_usage_and_writes_llm_trajectory(tmp_path
         extract_usage=extract_usage,
     )
     rollout._rollout_dir = tmp_path
-    rollout._env_externally_owned = False
 
     await rollout.cleanup()
 

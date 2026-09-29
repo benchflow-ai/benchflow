@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://benchflow.ai/schemas/benchflow-training-signal.v1.schema.json",
+  "title": "Training-signal fields of a bench train convert row",
+  "description": "Fields added by --reward-vector and --group-advantage to prime-sft and trl-sft rows. Other row fields are described by the trainer format. Unscored rollouts have a null reward_vector and a null advantage, never 0.",
+  "type": "object",
+  "properties": {
+    "reward_vector": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "source",
+            "names",
+            "kinds",
+            "weights",
+            "values",
+            "formula"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "rubric",
+                "scoring",
+                "verifier"
+              ]
+            },
+            "names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kinds": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "gate",
+                  "blocker",
+                  "scored",
+                  "legacy",
+                  "quality",
+                  "verifier"
+                ]
+              }
+            },
+            "weights": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Component values normalised to 0-1 for rubric criteria; null when the criterion has no verdict."
+            },
+            "formula": {
+              "type": "string"
+            },
+            "revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rubric_sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "advantage": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "advantage_vector": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "id",
+        "by",
+        "key",
+        "normalisation",
+        "formula",
+        "rollouts",
+        "scored",
+        "mean",
+        "std",
+        "std_ddof",
+        "eps"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "by": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "task",
+              "agent",
+              "model",
+              "task_digest"
+            ]
+          }
+        },
+        "key": {
+          "type": "object"
+        },
+        "normalisation": {
+          "enum": [
+            "grpo",
+            "loo"
+          ]
+        },
+        "formula": {
+          "type": "string"
+        },
+        "rollouts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "scored": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mean": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "std": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "std_ddof": {
+          "const": 1
+        },
+        "eps": {
+          "type": "number"
+        },
+        "vector_names_differ": {
+          "type": "boolean"
+        },
+        "excluded": {
+          "enum": [
+            "unscored",
+            "single_scored_rollout"
+          ]
+        }
+      }
+    }
+  }
+}

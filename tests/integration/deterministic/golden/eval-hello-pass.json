@@ -1,0 +1,192 @@
+{
+  "acp_trajectory": [
+    {
+      "text": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:hello-pass]]",
+      "type": "user_message"
+    },
+    {
+      "text": "Writing hello.txt.",
+      "type": "agent_message"
+    },
+    {
+      "content": [
+        {
+          "content": {
+            "text": "Write hello.txt",
+            "type": "text"
+          },
+          "type": "content"
+        }
+      ],
+      "kind": "execute",
+      "raw_input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      },
+      "raw_output": "(Bash completed with no output)",
+      "status": "completed",
+      "title": "printf 'Hello, world!\\n' > /app/hello.txt",
+      "tool_call_id": "toolu_fake_hello-pass_0",
+      "tool_name": "Bash",
+      "type": "tool_call"
+    },
+    {
+      "text": "Created /app/hello.txt.",
+      "type": "agent_message"
+    }
+  ],
+  "atif": {
+    "agent": {
+      "model_name": "claude-haiku-4-5",
+      "name": "@agentclientprotocol/claude-agent-acp",
+      "version": "unknown"
+    },
+    "final_metrics": {
+      "total_cached_tokens": 0,
+      "total_completion_tokens": 100,
+      "total_cost_usd": 0.0025,
+      "total_prompt_tokens": 2000,
+      "total_steps": 5
+    },
+    "schema_version": "ATIF-v1.7",
+    "steps": [
+      {
+        "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:hello-pass]]",
+        "source": "user",
+        "step_id": 1
+      },
+      {
+        "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:hello-pass]]",
+        "source": "user",
+        "step_id": 2
+      },
+      {
+        "message": "Writing hello.txt.",
+        "source": "agent",
+        "step_id": 3
+      },
+      {
+        "message": "",
+        "observation": {
+          "results": [
+            {
+              "content": "Write hello.txt",
+              "source_call_id": "toolu_fake_hello-pass_0"
+            }
+          ]
+        },
+        "source": "agent",
+        "step_id": 4,
+        "tool_calls": [
+          {
+            "arguments": {},
+            "extra": {
+              "status": "completed",
+              "title": "printf 'Hello, world!\\n' > /app/hello.txt"
+            },
+            "function_name": "execute",
+            "tool_call_id": "toolu_fake_hello-pass_0"
+          }
+        ]
+      },
+      {
+        "message": "Created /app/hello.txt.",
+        "source": "agent",
+        "step_id": 5
+      }
+    ]
+  },
+  "llm_calls": [
+    {
+      "finish_reason": "tool_calls",
+      "input_tokens": 1000,
+      "kind": "main",
+      "n_messages": 1,
+      "output_tokens": 50,
+      "text": "Writing hello.txt.",
+      "tool_calls": [
+        {
+          "arguments": {
+            "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+            "description": "Write hello.txt"
+          },
+          "id": "toolu_fake_hello-pass_0",
+          "name": "Bash"
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "input_tokens": 1000,
+      "kind": "main",
+      "n_messages": 3,
+      "output_tokens": 50,
+      "text": "Created /app/hello.txt.",
+      "tool_calls": []
+    }
+  ],
+  "outcome": {
+    "assessment": "scored",
+    "execution": "completed",
+    "reward": 1.0
+  },
+  "result": {
+    "agent_result": {
+      "cost_usd": 0.0025,
+      "n_cache_creation_tokens": 0,
+      "n_cache_read_tokens": 0,
+      "n_input_tokens": 2000,
+      "n_output_tokens": 100,
+      "n_prompts": 1,
+      "n_skill_invocations": 0,
+      "n_tool_calls": 1,
+      "price_source": "litellm",
+      "total_tokens": 2100,
+      "usage_source": "provider_response"
+    },
+    "agent_timeout": null,
+    "error_category": null,
+    "final_metrics": {
+      "total_cached_tokens": 0,
+      "total_completion_tokens": 100,
+      "total_cost_usd": 0.0025,
+      "total_prompt_tokens": 2000
+    },
+    "n_prompts": 1,
+    "n_tool_calls": 1,
+    "rewards": {
+      "reward": 1.0
+    },
+    "timing_keys": [
+      "agent_execution",
+      "agent_setup",
+      "environment_setup",
+      "total",
+      "verifier"
+    ],
+    "trajectory_summary": {
+      "agent_message_steps": 2,
+      "agent_thought_steps": 0,
+      "event_type_counts": {
+        "agent_message": 2,
+        "tool_call": 1,
+        "user_message": 1
+      },
+      "other_steps": 0,
+      "partial_trajectory": false,
+      "steps": 4,
+      "tool_call_status_counts": {
+        "completed": 1
+      },
+      "tool_call_steps": 1,
+      "trajectory_source": "acp",
+      "user_message_steps": 1
+    },
+    "usage_tracking": {
+      "requested": "auto",
+      "status": "enabled",
+      "usage_source": "provider_response"
+    },
+    "verifier_error_category": null
+  }
+}

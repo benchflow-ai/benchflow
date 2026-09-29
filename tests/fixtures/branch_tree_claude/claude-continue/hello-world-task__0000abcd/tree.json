@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "kind": "benchflow-branch-tree",
+  "nodes": [
+    {
+      "id": "root",
+      "parent": null,
+      "step_id": null
+    },
+    {
+      "id": "n1",
+      "parent": "root",
+      "step_id": "step-0-user_message"
+    },
+    {
+      "id": "n2",
+      "parent": "n1",
+      "step_id": "step-1-agent_thought"
+    },
+    {
+      "id": "n3",
+      "parent": "n2",
+      "step_id": "step-2-tool_call"
+    },
+    {
+      "id": "n4",
+      "parent": "n3",
+      "step_id": "step-3-agent_message"
+    },
+    {
+      "id": "n5",
+      "parent": "n4",
+      "step_id": "step-4-user_message"
+    },
+    {
+      "id": "n6",
+      "parent": "n5",
+      "step_id": "step-5-agent_thought"
+    },
+    {
+      "id": "n7",
+      "parent": "n6",
+      "step_id": "step-6-tool_call"
+    },
+    {
+      "id": "n8",
+      "parent": "n7",
+      "step_id": "step-7-agent_message"
+    },
+    {
+      "id": "n9",
+      "parent": "n4",
+      "step_id": "step-4-user_message"
+    },
+    {
+      "id": "n10",
+      "parent": "n9",
+      "step_id": "step-5-agent_thought"
+    },
+    {
+      "id": "n11",
+      "parent": "n10",
+      "step_id": "step-6-tool_call"
+    },
+    {
+      "id": "n12",
+      "parent": "n11",
+      "step_id": "step-7-agent_message"
+    }
+  ],
+  "forks": [
+    {
+      "id": "00000000000000000000000000000002",
+      "parent_node": "n4",
+      "requested_children": 2,
+      "snapshot": {
+        "requested_layers": [
+          "sandbox"
+        ],
+        "captured_layers": [
+          "sandbox"
+        ],
+        "environment": null,
+        "sandbox": {
+          "provider": "daytona",
+          "ref": "bf-snap-demo-000000-hello-world-task-000000000000",
+          "digest": null
+        },
+        "excluded": [
+          "agent_session",
+          "process_memory",
+          "mounted_contents",
+          "external_services",
+          "physical_state"
+        ],
+        "lifetime": "provider_local",
+        "restore_available": false,
+        "retention": "deleted"
+      },
+      "status": "completed",
+      "parent_restore": "restored",
+      "timing_sec": {
+        "checkpoint": 42.0,
+        "child_restore": [
+          16.0,
+          2.0
+        ],
+        "parent_restore": 2.0
+      },
+      "value": 0.5,
+      "error": null,
+      "parent_restore_error": null,
+      "artifact_error": null,
+      "children": [
+        {
+          "index": 0,
+          "node_id": "n5",
+          "status": "scored",
+          "reward": 1.0,
+          "reward_source": "verifier",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": "baseline",
+            "requested": null,
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/00000000000000000000000000000002/children/n5"
+          },
+          "usage": {
+            "n_input_tokens": 4,
+            "n_output_tokens": 100,
+            "n_cache_read_tokens": 30000,
+            "n_cache_creation_tokens": 2000,
+            "total_tokens": 32104
+          },
+          "timing_sec": {
+            "agent_setup": 6.0,
+            "agent_execution": 4.0,
+            "verifier": 30.0
+          }
+        },
+        {
+          "index": 1,
+          "node_id": "n9",
+          "status": "scored",
+          "reward": 0.0,
+          "reward_source": "verifier",
+          "error": null,
+          "cleanup_error": null,
+          "intervention": {
+            "label": "hint-reuse-draft",
+            "requested": null,
+            "execution": "unspecified",
+            "evidence": null
+          },
+          "artifacts": {
+            "status": "available",
+            "path": "branches/00000000000000000000000000000002/children/n9"
+          },
+          "usage": {
+            "n_input_tokens": 4,
+            "n_output_tokens": 200,
+            "n_cache_read_tokens": 30000,
+            "n_cache_creation_tokens": 2000,
+            "total_tokens": 32204
+          },
+          "timing_sec": {
+            "agent_setup": 5.0,
+            "agent_execution": 7.0,
+            "verifier": 33.0
+          }
+        }
+      ]
+    }
+  ]
+}

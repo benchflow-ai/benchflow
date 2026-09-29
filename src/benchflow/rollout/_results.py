@@ -122,6 +122,7 @@ def _write_config(
     agent_env: dict[str, str],
     base_image_override: str | None = None,
     reasoning_effort: str | None = None,
+    codex_apps_policy: str | None = None,
     usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
     agent_idle_timeout: int | None = None,
@@ -133,8 +134,10 @@ def _write_config(
     config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
     review: dict | None = None,
+    verifier_recovery: dict | None = None,
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
+    freeze_workspace: bool = False,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.acp.selection import selected_acp_transport
@@ -154,6 +157,7 @@ def _write_config(
         "agent": agent,
         "model": model,
         "reasoning_effort": reasoning_effort,
+        "codex_apps_policy": codex_apps_policy,
         "environment": environment,
         "acp_transport": selected_acp_transport(
             agent=agent,
@@ -198,8 +202,12 @@ def _write_config(
             "sha256": overlay_hash(config_override),
             "patch": config_override,
         }
+    if verifier_recovery is not None:
+        config_data["verifier_recovery"] = verifier_recovery
     if review is not None:
         config_data["review"] = review
+    if freeze_workspace:
+        config_data["freeze_workspace"] = True
     if purpose != "task":
         config_data.update(purpose=purpose, parent_rollout=parent_rollout)
     write_json_atomic(rollout_dir / "config.json", config_data)
@@ -276,6 +284,7 @@ def _build_rollout_result(
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
     result_filename: str = "result.json",
+    branches: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -336,6 +345,7 @@ def _build_rollout_result(
         source_provenance=source_provenance,
         started_at=started_at,
         finished_at=finished_at,
+        rollout_dir=rollout_dir,
     )
     timing["total"] = (finished_at - started_at).total_seconds()
     timing = {k: round(v, 1) for k, v in timing.items()}
@@ -415,6 +425,8 @@ def _build_rollout_result(
     }
     if scoring is not None:
         result_data["scoring"] = scoring.to_dict()
+    if branches is not None:
+        result_data["branches"] = branches
     if purpose != "task":
         result_data.update(purpose=purpose, parent_rollout=parent_rollout)
     if result_filename != "result.json":
@@ -453,12 +465,16 @@ def _build_rollout_result(
         rewards=rewards,
         error=error,
         verifier_error=verifier_error,
+        error_category=result.error_category,
+        verifier_error_category=result.verifier_error_category,
+        diagnostics=diagnostics,
         export_error=export_error,
         timing=timing,
         agent_result=agent_result,
         scoring=scoring,
         purpose=purpose,
         parent_rollout=parent_rollout,
+        branches=branches,
     )
     write_json_atomic(rollout_dir / "result.json", result_data)
     return result

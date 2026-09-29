@@ -48,10 +48,29 @@ def _manifest_env(manifest: dict[str, bool]):
 
 def _make_env(side_effect=None):
     env = MagicMock()
-    if side_effect:
+    if isinstance(side_effect, list):
         env.exec = AsyncMock(side_effect=side_effect)
-    else:
-        env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+        return env
+
+    def execute(cmd, **kwargs):
+        result = (
+            side_effect(cmd, **kwargs)
+            if side_effect
+            else MagicMock(stdout="", stderr="", exit_code=0)
+        )
+        # GH1116 discovery needs a structured trust receipt. Unless a test
+        # supplies one, model an image without pytest11 plugins (list output
+        # is meant for the PATH-extras probe, which also runs python3 -c).
+        if (
+            "python3 -c" in str(cmd)
+            and "from importlib.metadata import entry_points" in str(cmd)
+            and result.exit_code == 0
+            and (result.stdout == "" or result.stdout.startswith("["))
+        ):
+            result.stdout = json.dumps({"plugins": [], "rejected": []})
+        return result
+
+    env.exec = AsyncMock(side_effect=execute)
     return env
 
 
@@ -61,6 +80,8 @@ def _make_task(user=None):
     task.config.verifier.user = user
     # pytest_plugins is a guaranteed list[str] field on VerifierConfig.
     task.config.verifier.pytest_plugins = []
+    # VerifierConfig.service defaults to the agent container.
+    task.config.verifier.service = "main"
     task.task_dir = None
     # Default to a legacy split layout so --confcutdir resolves to /tests; native
     # task.md packages set this True to bound conftest walk-up at /verifier.
@@ -69,23 +90,19 @@ def _make_task(user=None):
 
 
 def _snapshot_side_effect(present: frozenset = frozenset()) -> list:
-    """Build side_effect list for _snapshot_build_config: mkdir -> per-file probes -> manifest write.
+    """Build side_effect list for _snapshot_build_config: one probe-and-copy
+    exec (a ``<file>=present|absent`` line per file) -> manifest write.
 
-    present: which _BUILD_CONFIG_FILES names exist in the sandbox (rest are absent).
-    Ordering mirrors _BUILD_CONFIG_FILES declaration order — that ordering IS the
-    contract under test, so we iterate _ALL_BUILD_FILES directly.
+    present: which _BUILD_CONFIG_FILES names exist in the sandbox (rest are
+    absent). All files are probed in one exec
+    instead of one exec each; the manifest contract is unchanged.
     """
-    probes = [
-        MagicMock(
-            stdout="present\n" if fname in present else "absent\n",
-            stderr="",
-            exit_code=0,
-        )
+    lines = "\n".join(
+        f"{fname}={'present' if fname in present else 'absent'}"
         for fname in _ALL_BUILD_FILES
-    ]
+    )
     return [
-        MagicMock(stdout="", stderr="", exit_code=0),  # mkdir
-        *probes,
+        MagicMock(stdout=lines + "\n", stderr="", exit_code=0),  # probe + copy
         MagicMock(stdout="", stderr="", exit_code=0),  # manifest write
     ]
 
@@ -119,6 +136,7 @@ class TestHardenSequence:
         task.config.verifier.timeout_sec = 5
         task.config.verifier.env = None
         task.config.verifier.user = None
+        task.config.verifier.service = "main"
         tp = MagicMock()
         tp.verifier_dir = tmp_path / "verifier"
         env = _make_env()
@@ -131,7 +149,7 @@ class TestHardenSequence:
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+        with patch("benchflow.task.Verifier", return_value=mock_v):
             await sdk._verify(
                 env, task, tp, {}, sandbox_user="agent", workspace="/testbed"
             )
@@ -161,7 +179,7 @@ class TestHardenSequence:
         injected = task.config.verifier.env
         assert "--rootdir=/testbed" in injected["PYTEST_ADDOPTS"]
         assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
-        assert injected["PYTHONPATH"] == ""
+        assert injected["PYTHONPATH"].startswith("/_benchflow_guard_")
         assert "PYTHONHOME" not in injected  # breaks Py_Initialize if set to ""
         assert injected["PYTHONDONTWRITEBYTECODE"] == "1"
 
@@ -171,7 +189,7 @@ class TestHardenSequence:
         sdk, env, task, tp = harness
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+        with patch("benchflow.task.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {}, sandbox_user=None)
 
         cmds = [c.args[0] for c in env.exec.call_args_list]
@@ -190,12 +208,14 @@ class TestHardenSequence:
         task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
-        with patch("benchflow.task.verifier.Verifier", return_value=mock_v):
+        with patch("benchflow.task.Verifier", return_value=mock_v):
             await sdk._verify(env, task, tp, {})
         injected = task.config.verifier.env
         assert injected["PATH"] == VERIFIER_ENV["PATH"]
         assert injected["MY_VAR"] == "hello"
-        assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
+        assert injected["PYTHONPATH"].startswith(
+            "/_benchflow_guard_"
+        )  # non-overridden defaults kept
 
 
 # TestVerifierDirWipe
@@ -350,6 +370,24 @@ class TestVerifierDirWipe:
             "CLEANUP_CMD has a -maxdepth limit — conftest.py nested beyond that "
             "depth escapes the sweep"
         )
+
+    def test_conftest_purge_runs_under_gnu_find(self):
+        """The conftest sweep must not pair ``-prune`` with ``-delete``.
+
+        GNU find (Debian, Ubuntu, python:*-slim) refuses that pair: "-delete
+        automatically turns on -depth, but -prune does nothing when -depth is
+        in effect", exit 1, nothing deleted. With stderr discarded, the sweep
+        was a silent no-op: on Daytona (python:3.12-slim) an
+        agent-planted /app/conftest.py survived hardening.
+        """
+        from benchflow.sandbox.lockdown import _build_cleanup_cmd
+
+        sweep = next(
+            part for part in _build_cleanup_cmd().split("; ") if "conftest.py" in part
+        )
+        assert "-prune" in sweep, "the sweep must still skip /proc, /sys and /dev"
+        assert "-delete" not in sweep
+        assert "-exec rm -f -- {} +" in sweep
 
     def test_cleanup_cmd_purges_py_from_tmp(self):
         """CLEANUP_CMD must delete *.py from /tmp and /var/tmp (module-shadow via non-workspace cwd)."""
@@ -936,7 +974,9 @@ class TestVerifierEnv:
         def side_effect(cmd, **kwargs):
             if "_DISCOVER_PYTEST" in str(cmd) or "importlib.metadata" in str(cmd):
                 return MagicMock(
-                    stdout='["benchmark", "xdist"]', stderr="", exit_code=0
+                    stdout='{"plugins": ["benchmark", "xdist"], "rejected": []}',
+                    stderr="",
+                    exit_code=0,
                 )
             return MagicMock(stdout="", stderr="", exit_code=0)
 
@@ -949,10 +989,9 @@ class TestVerifierEnv:
         assert "-p xdist" in addopts
 
     @pytest.mark.asyncio
-    async def test_plugin_discovery_failure_graceful(self):
-        """If container-side discovery fails, hardening proceeds without extra plugins."""
+    async def test_plugin_discovery_failure_closed(self):
+        """GH1116: unavailable trust discovery must stop verifier startup."""
         from benchflow.sandbox.lockdown import (
-            _build_pytest_addopts,
             harden_before_verify,
         )
 
@@ -963,11 +1002,8 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=side_effect)
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None)
-
-        assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
-            workspace=None
-        )
+        with pytest.raises(RuntimeError, match="pytest plugin trust discovery"):
+            await harden_before_verify(env, task, sandbox_user=None)
 
     @pytest.mark.asyncio
     async def test_pythonless_image_hardening_fallbacks_are_quiet(self, caplog):
@@ -988,6 +1024,8 @@ class TestVerifierEnv:
                     stderr="/bin/sh: python3: not found",
                     exit_code=127,
                 )
+            if text.startswith("if command -v python3"):
+                return MagicMock(stdout="", stderr="", exit_code=1)
             return MagicMock(stdout="", stderr="", exit_code=0)
 
         env = _make_env(side_effect=side_effect)
@@ -1088,6 +1126,72 @@ class TestVerifierEnv:
             "/root/.local/bin:/opt/uv/bin:"
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         )
+
+    @pytest.mark.asyncio
+    async def test_guard_copies_follow_the_hardened_verifier_path(self):
+        """Guards the fix for the pytest plugin guard's PYTHONPATH-only delivery.
+
+        The per-interpreter guard copies must cover the PATH test.sh actually
+        gets, including trusted image extras such as a uv or venv bin dir.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            if cmd == "printenv PATH":
+                return MagicMock(
+                    stdout="/opt/venv/bin:/tmp/pwn:/usr/local/bin\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            if cmd.startswith("python3 -c"):
+                return MagicMock(stdout='["/opt/venv/bin"]', stderr="", exit_code=0)
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+
+        injected = task.config.verifier.env
+        guard = injected["PYTHONPATH"].split(":")[0]
+        install = next(
+            call for call in env.exec.call_args_list if "install_guard" in call.args[0]
+        )
+        assert guard.startswith("/_benchflow_guard_")
+        assert f"mkdir -m 755 {guard} " in install.args[0]
+        assert f"verifier_path={shlex.quote(injected['PATH'])}" in install.args[0]
+        assert injected["PATH"].startswith("/opt/venv/bin:")
+        assert install.kwargs["user"] == "root"
+
+    @pytest.mark.asyncio
+    async def test_plugin_discovery_starts_from_the_verifier_python_path(self):
+        """Guards the fix for the pytest plugin guard's discovery in the image WORKDIR.
+
+        Discovery must see what the verifier's interpreter starts from: not the
+        workspace as cwd, not user site-packages, and only the trusted part of
+        the image PYTHONPATH.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            if cmd.startswith("printenv PYTHONPATH"):
+                return MagicMock(stdout="/opt/lib:/tmp/pwn\n", stderr="", exit_code=0)
+            if cmd.startswith("python3 -c") and "/tmp/pwn" in cmd:
+                return MagicMock(stdout='["/opt/lib"]', stderr="", exit_code=0)
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+
+        discovery = next(
+            call.args[0]
+            for call in env.exec.call_args_list
+            if "python3 -c" in call.args[0] and "import entry_points" in call.args[0]
+        )
+        assert discovery.startswith(
+            "cd / && PYTHONPATH=/opt/lib PYTHONNOUSERSITE=1 python3 -c "
+        )
+        assert task.config.verifier.env["PYTHONPATH"].endswith(":/opt/lib")
 
     @pytest.mark.asyncio
     async def test_task_env_path_cannot_override_hardened_path(self):
@@ -1202,7 +1306,9 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None, workspace=None)
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
-            workspace=None
+            workspace=None,
+            plugin_flags="-p "
+            + task.config.verifier.env["PYTHONPATH"].removeprefix("/"),
         )
         assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
 
@@ -1224,7 +1330,9 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None)
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
-            workspace=None
+            workspace=None,
+            plugin_flags="-p "
+            + task.config.verifier.env["PYTHONPATH"].removeprefix("/"),
         )
         assert "-c /dev/null" in task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--confcutdir=/tests" in task.config.verifier.env["PYTEST_ADDOPTS"]
@@ -1265,7 +1373,9 @@ class TestVerifierEnv:
         await harden_before_verify(env, task, sandbox_user=None)
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
-            workspace=None
+            workspace=None,
+            plugin_flags="-p "
+            + task.config.verifier.env["PYTHONPATH"].removeprefix("/"),
         )
 
     @pytest.mark.asyncio
@@ -1788,20 +1898,6 @@ Use task.md as the canonical task entrypoint.
 
 class TestSandboxFailureModes:
     """Recovery paths when untrusted inputs (task.toml, PATH extras) are malformed."""
-
-    @pytest.mark.asyncio
-    async def test_plugin_discovery_bad_json_graceful(self):
-        """Malformed JSON from container plugin discovery falls back gracefully."""
-        from benchflow.sandbox.lockdown import _discover_pytest_plugin_flags
-
-        env = _make_env(
-            side_effect=lambda _cmd, **_kwargs: MagicMock(
-                stdout="not valid json", stderr="", exit_code=0
-            )
-        )
-        task = _make_task()
-        flags = await _discover_pytest_plugin_flags(env, task)
-        assert flags == ""
 
     @pytest.mark.asyncio
     async def test_trusted_path_extras_malformed_json_falls_back(self):

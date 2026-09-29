@@ -461,3 +461,72 @@ def test_empty_sandbox_rejected_not_silently_defaulted(tmp_path: Path):
         build_eval_plan(
             EvalCreateRequest(tasks_dir=task, environment="", agent="gemini")
         )
+
+
+def _hide_daytona_sdk(monkeypatch):
+    import importlib.util as importlib_util
+
+    real_find_spec = importlib_util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "daytona" or name.startswith("daytona."):
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib_util, "find_spec", fake_find_spec)
+
+
+def test_sandbox_daytona_missing_extra_fails_before_the_job(tmp_path, monkeypatch):
+    """Without the extra, --sandbox daytona used to create a job, print two
+    chained tracebacks and record 0/1 with errors=1, with a `pip install` hint
+    that does not work for a `uv tool` install."""
+    _hide_daytona_sdk(monkeypatch)
+    task = _task_dir(tmp_path)
+    with pytest.raises(EvalPlanError) as excinfo:
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task, environment="daytona", agent="oracle")
+        )
+    message = str(excinfo.value)
+    assert "uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'" in (
+        message
+    )
+    assert "uv sync --extra sandbox-daytona --extra dev --locked" in message
+
+    jobs = tmp_path / "jobs"
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(task),
+            "--agent",
+            "oracle",
+            "--sandbox",
+            "daytona",
+            "--jobs-dir",
+            str(jobs),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "sandbox-daytona" in result.stderr
+    assert "Traceback" not in result.output
+    assert not jobs.exists()
+
+
+def test_optional_sandbox_hints_agree():
+    from benchflow.doctor import DoctorProbes, check_daytona
+    from benchflow.sandbox.providers import extra_install_hint
+    from benchflow.sandbox.setup import _raise_missing_optional_sandbox_dependency
+
+    hint = extra_install_hint("sandbox-daytona")
+    with pytest.raises(RuntimeError, match=r"uv tool install") as excinfo:
+        _raise_missing_optional_sandbox_dependency("daytona", ModuleNotFoundError())
+    assert hint in str(excinfo.value)
+    probes = DoctorProbes(
+        environ={"DAYTONA_API_KEY": "x"},
+        origins={},
+        home=Path("/nonexistent"),
+        dist_version=lambda _: None,
+    )
+    assert check_daytona(probes, required=True, offline=True).fix == hint

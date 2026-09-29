@@ -123,10 +123,13 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
     def total(field: str) -> int:
         return sum((r.get("agent_result") or {}).get(field) or 0 for r in covered)
 
-    total_cost = round(
-        sum((r.get("agent_result") or {}).get("cost_usd") or 0.0 for r in covered),
-        10,
-    )
+    # A missing cost is unknown (subscription logins report none), not zero.
+    costs = [
+        cost
+        for r in covered
+        if (cost := (r.get("agent_result") or {}).get("cost_usd")) is not None
+    ]
+    total_cost = round(sum(costs), 10) if costs else None
     return {
         "total_input_tokens": total("n_input_tokens"),
         "total_output_tokens": total("n_output_tokens"),
@@ -135,10 +138,39 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
         "total_tokens": total("total_tokens"),
         "total_cost_usd": total_cost,
         "avg_cost_per_trial_usd": (
-            round(total_cost / len(covered), 10) if covered else None
+            round(total_cost / len(costs), 10) if total_cost is not None else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
     }
+
+
+def solve_rate_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """The ``solve_rates`` block of summary.json (``benchflow.pass_at_k``).
+
+    One Evaluation holds one result per task, so ``n = 1`` and only pass@1
+    is defined here; pool repeated trials with ``bench eval metrics`` over
+    the trial folders, ``bf.load_job(...).solve_rates()`` or the matrix
+    summary. Errored / verifier-errored results are unscored (left out of
+    ``n``); the pass verdict is the shared score classifier's.
+    """
+    from benchflow._utils.scoring import classify_score_outcome, extract_reward
+    from benchflow.pass_at_k import Sample, solve_rates
+
+    samples = []
+    for name, r in results.items():
+        outcome = classify_score_outcome(r)
+        scored = outcome in ("passed", "failed")
+        reward = extract_reward(r) if scored else None
+        if scored and reward is None:  # a gate verdict without a reward value
+            reward = 1.0 if outcome == "passed" else 0.0
+        samples.append(
+            Sample(
+                str(r.get("task_name") or name),
+                reward,
+                outcome == "passed" if scored else None,
+            )
+        )
+    return {"solve_rates": solve_rates(samples).to_dict()}
 
 
 def loop_summary(results: dict[str, dict]) -> dict[str, Any]:

@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "GateExport": {
+      "additionalProperties": false,
+      "properties": {
+        "fail_on": {
+          "description": "--fail-on kinds",
+          "items": {
+            "type": "string"
+          },
+          "title": "Fail On",
+          "type": "array"
+        },
+        "fail_under": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "--fail-under, a pass rate",
+          "title": "Fail Under"
+        },
+        "failed": {
+          "description": "one line per failed gate check",
+          "items": {
+            "type": "string"
+          },
+          "title": "Failed",
+          "type": "array"
+        }
+      },
+      "title": "GateExport",
+      "type": "object"
+    }
+  },
+  "$id": "https://benchflow.ai/schemas/benchflow-run-summary.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The result of one ``bench eval run`` (``--summary-out``), for CI.",
+  "properties": {
+    "budget": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "summary.json's budget block when the job had a budget cap (caps, spent, stopped, reason, cancelled, not_started)",
+      "title": "Budget"
+    },
+    "errored": {
+      "title": "Errored",
+      "type": "integer"
+    },
+    "exit_code": {
+      "description": "the process exit code of the run",
+      "title": "Exit Code",
+      "type": "integer"
+    },
+    "failed": {
+      "title": "Failed",
+      "type": "integer"
+    },
+    "gate": {
+      "$ref": "#/$defs/GateExport"
+    },
+    "job_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Job Dir"
+    },
+    "job_name": {
+      "title": "Job Name",
+      "type": "string"
+    },
+    "kind": {
+      "const": "benchflow.run-summary",
+      "default": "benchflow.run-summary",
+      "title": "Kind",
+      "type": "string"
+    },
+    "mean_reward": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Mean Reward"
+    },
+    "pass_rate": {
+      "description": "passed / total",
+      "title": "Pass Rate",
+      "type": "number"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "integer"
+    },
+    "ran": {
+      "description": "tasks run by this invocation",
+      "title": "Ran",
+      "type": "integer"
+    },
+    "reused": {
+      "description": "finished tasks reused from an earlier run (resume)",
+      "title": "Reused",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "timed_out": {
+      "description": "trials whose agent timed out (scored or not)",
+      "title": "Timed Out",
+      "type": "integer"
+    },
+    "total": {
+      "title": "Total",
+      "type": "integer"
+    },
+    "verifier_errored": {
+      "title": "Verifier Errored",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "job_dir",
+    "job_name",
+    "total",
+    "passed",
+    "failed",
+    "errored",
+    "verifier_errored",
+    "timed_out",
+    "pass_rate",
+    "mean_reward",
+    "reused",
+    "ran",
+    "gate",
+    "exit_code"
+  ],
+  "title": "RunSummaryExport",
+  "type": "object"
+}

@@ -22,10 +22,11 @@ declares a hardened **`network_mode: allowlist`** scoped to exactly the hosts th
   - api.crossref.org          # extract_metadata.py / validate_citations.py (CrossRef metadata)
   ```
 
-- `environment/`, `oracle/`, `verifier/` — **symlinks** to the base
+- `environment/`, `oracle/`, `verifier/` — byte-identical copies of the base
   `../citation-check/` directories. Nothing about the environment build, the
-  oracle, or the verifier changes; this is a pure network-policy overlay, so the
-  supporting bytes are shared (not duplicated).
+  oracle, or the verifier changes; this is a pure network-policy overlay. They
+  are copies, not symlinks, because sandbox uploads skip symlinks and
+  `bench tasks check` refuses a task that relies on them.
 
 ## Why exactly these four hosts
 

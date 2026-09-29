@@ -92,6 +92,15 @@ def _make_malformed_task_md(parent: Path, name: str = "malformed-task-md") -> Pa
     return task
 
 
+def _make_malformed_task_toml(parent: Path, name: str = "malformed-task-toml") -> Path:
+    """Create a legacy task package whose task.toml fails to parse."""
+    task = _make_task_missing_agent(parent, name=name)
+    (task / "task.toml").write_text(
+        'version = "1.0"\n\n[verifier]\ntimeout_sec = 120\nnot toml\n'
+    )
+    return task
+
+
 def test_check_task_accepts_missing_agent(tmp_path):
     """The shared validator must not flag missing [agent] as an issue.
 
@@ -498,3 +507,49 @@ def test_malformed_task_md_cli_exits_with_parse_error(tmp_path):
     # Collapse Rich's line-wrapping before substring-matching the message.
     out = " ".join(result.output.split())
     assert "task.md" in out and "parse error" in out
+
+
+# ── a malformed legacy task.toml is handled like a malformed task.md ─────────
+
+
+def test_malformed_task_toml_single_task_aborts_with_parse_error(tmp_path):
+    # It used to be selected, then fail inside the rollout as a bare
+    # TOMLDecodeError scored 0/1, with no file named.
+    task = _make_malformed_task_toml(tmp_path)
+    ev = Evaluation(
+        tasks_dir=str(task),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+    with pytest.raises(MalformedTaskError) as ei:
+        ev._get_task_dirs()
+    msg = str(ei.value)
+    assert str(task / "task.toml") in msg and "parse error" in msg
+
+
+def test_malformed_task_toml_in_batch_is_warned_and_skipped(tmp_path, caplog):
+    # A broken task.toml in a batch counted as an error in the score's
+    # denominator; like a broken task.md it is now named and skipped.
+    runnable = _make_task_missing_agent(tmp_path, name="runnable-task")
+    _make_malformed_task_toml(tmp_path, name="broken-task")
+    ev = Evaluation(
+        tasks_dir=str(tmp_path),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+    with caplog.at_level(logging.WARNING):
+        dirs = ev._get_task_dirs()
+    assert dirs == [runnable]
+    assert any(
+        "broken-task" in r.message and "task.toml parse error" in r.message
+        for r in caplog.records
+    ), f"no warning naming the malformed task: {[r.message for r in caplog.records]}"
+
+
+def test_task_names_the_task_toml_that_fails_to_parse(tmp_path):
+    from benchflow.task import Task
+
+    task = _make_malformed_task_toml(tmp_path)
+    with pytest.raises(ValueError) as ei:
+        Task(task)
+    assert f"{task / 'task.toml'}: task.toml parse error" in str(ei.value)

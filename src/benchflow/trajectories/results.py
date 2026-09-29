@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
+from benchflow._utils.scoring import finite_reward
+from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
@@ -47,13 +49,42 @@ def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
     return json.dumps(redacted, default=str, allow_nan=False)
 
 
-def _reward_value(rewards: dict[str, Any] | None) -> float:
+def _structured_diagnostics_info(
+    *,
+    error_category: str | None,
+    verifier_error_category: str | None,
+    diagnostics: RolloutDiagnostics | None,
+) -> dict[str, Any]:
+    """Build the optional, redacted trainer-facing diagnostics envelope.
+
+    ``result.json`` remains the full rollout-status artifact. This compact
+    envelope carries the same typed failure evidence into the canonical
+    ``results.jsonl`` row without changing its existing error or stop fields.
+    Callers that do not provide structured diagnostics retain the historical
+    row shape.
+    """
+    block = (diagnostics or RolloutDiagnostics()).to_results_jsonl_block(
+        error_category=error_category,
+        verifier_error_category=verifier_error_category,
+    )
+    if block is None:
+        return {}
+    safe_block = redact_trajectory_obj(scrub_non_finite(block))
+    return {"diagnostics": safe_block}
+
+
+def _reward_value(rewards: dict[str, Any] | None) -> float | None:
+    """Scalar row reward: null when absent or not finite.
+
+    A missing verdict is unscored, never 0: an infrastructure failure written
+    as 0.0 reads as a real failed attempt to anything counting this file.
+    """
     if not isinstance(rewards, dict):
-        return 0.0
+        return None
     reward = rewards.get("reward")
     if isinstance(reward, (int, float)) and not isinstance(reward, bool):
-        return float(reward)
-    return 0.0
+        return finite_reward(reward)
+    return None
 
 
 def _metrics_from_rewards(
@@ -72,12 +103,12 @@ def _metrics_from_rewards(
         if key == "rubric":
             continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            metrics[str(key)] = float(value)
+            metrics[str(key)] = finite_reward(value)
     nested_metrics = rewards.get("metrics")
     if isinstance(nested_metrics, dict):
         for key, value in nested_metrics.items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metrics[str(key)] = float(value)
+                metrics[str(key)] = finite_reward(value)
     rubric = rewards.get("rubric")
     if isinstance(rubric, list):
         for idx, item in enumerate(rubric):
@@ -86,7 +117,7 @@ def _metrics_from_rewards(
             item = cast(dict[str, Any], item)
             score = item.get("score")
             if isinstance(score, (int, float)) and not isinstance(score, bool):
-                metrics[str(item.get("name") or f"rubric_{idx}")] = float(score)
+                metrics[str(item.get("name") or f"rubric_{idx}")] = finite_reward(score)
     return metrics
 
 
@@ -155,7 +186,7 @@ def _stop_condition(
 def _llm_steps_from_trajectory(
     rollout_dir: Path,
     *,
-    reward: float,
+    reward: float | None,
     is_truncated: bool,
     trajectory_id_prefix: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
@@ -169,6 +200,7 @@ def _llm_steps_from_trajectory(
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
     training_success_indices = _training_success_exchange_indices(exchanges)
+    owners = _step_owners(rollout_dir, exchanges, path)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
@@ -212,6 +244,7 @@ def _llm_steps_from_trajectory(
             "source": "llm_trajectory",
             "tracking_source": "litellm_callback",
             "exchange_index": exchange_idx,
+            **owners.get(exchange_idx, {}),
         }
         exchange_metadata = exchange.get("metadata")
         if isinstance(exchange_metadata, dict):
@@ -242,6 +275,61 @@ def _llm_steps_from_trajectory(
             + "; ".join(skipped_successful),
         )
     return steps, tool_defs, None
+
+
+def _step_owners(
+    rollout_dir: Path,
+    exchanges: list[dict[str, Any]],
+    path: Path,
+) -> dict[int, dict[str, Any]]:
+    """Which agent made each successful call, recorded while the capture is whole.
+
+    A results.jsonl row keeps only calls a later request consumed, so a
+    subagent's spawning call can be missing from its steps (a capture that
+    ends inside the subagent) and the row alone cannot attribute them. The
+    tags use the same attribution as converting the rollout directory and are
+    written only when the capture shows subagent activity: ``agent_role`` is
+    ``parent``, ``subagent`` (with ``parent_tool_call_id``),
+    ``helper`` or, when attribution fails, ``unattributed``.
+    """
+    from benchflow.trajectories.sft_subagents import (
+        SubagentAttributionError,
+        attribute_rollout_exchanges,
+        load_acp_parent_links,
+        subagent_row_tags,
+    )
+
+    # The same candidates bench train convert attributes from the rollout
+    # directory: every call the provider answered, consumed later or not.
+    successful = [
+        index
+        for index, exchange in enumerate(exchanges)
+        if isinstance(response := exchange.get("response"), dict)
+        and response.get("status_code") == 200
+    ]
+    try:
+        attribution = attribute_rollout_exchanges(
+            exchanges,
+            successful,
+            acp_parent_links=load_acp_parent_links(rollout_dir),
+            source=str(path),
+        )
+    except SubagentAttributionError:
+        return {index: {"agent_role": "unattributed"} for index in successful}
+    if attribution is None:
+        # No spawn call and no ACP linkage: every call is the parent's, and
+        # the rows stay as they were before attribution existed.
+        return {}
+    owners: dict[int, dict[str, Any]] = {}
+    for index in successful:
+        owner = attribution.by_exchange.get(index)
+        if owner is None:
+            owners[index] = {"agent_role": "unattributed"}
+        elif owner.role == "subagent" and owner.spawn is not None:
+            owners[index] = subagent_row_tags(owner.spawn)
+        else:
+            owners[index] = {"agent_role": owner.role}
+    return owners
 
 
 def _response_is_truncated(response_body: dict[str, Any]) -> bool:
@@ -437,6 +525,9 @@ def build_rollout_results_record(
     rewards: dict[str, Any] | None,
     error: str | None,
     verifier_error: str | None,
+    error_category: str | None = None,
+    verifier_error_category: str | None = None,
+    diagnostics: RolloutDiagnostics | None = None,
     export_error: str | None = None,
     timing: dict[str, Any] | None = None,
     agent_result: dict[str, Any] | None = None,
@@ -444,6 +535,7 @@ def build_rollout_results_record(
     scoring: ScoringResult | None = None,
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
+    branches: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rollout_path = Path(rollout_dir)
     if scoring is not None and scoring.status == "error":
@@ -549,12 +641,20 @@ def build_rollout_results_record(
             "rollout_dir": str(rollout_path),
             "training_ready": training_ready,
             "training_ready_reason": training_ready_reason,
+            **_structured_diagnostics_info(
+                error_category=error_category,
+                verifier_error_category=verifier_error_category,
+                diagnostics=diagnostics,
+            ),
             **(
                 {"reward_details": rewards.get("details")}
                 if isinstance(rewards, dict)
                 and isinstance(rewards.get("details"), dict)
                 else {}
             ),
+            # Branch lineage (result.json's `branches` block): which forks
+            # this rollout made and where each child's archive lives.
+            **({"branches": branches} if branches is not None else {}),
         },
         "reward": reward,
         "error": error_obj,

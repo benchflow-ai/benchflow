@@ -1,0 +1,16 @@
+# Base for the remote-docker provider: docker-compose-base.yaml without the
+# host bind mounts. A remote daemon cannot see the caller's rollout folders;
+# logs, verifier output and artifacts are copied back instead.
+services:
+  main:
+    labels:
+      benchflow.owned: "true"
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPUS}
+          memory: ${MEMORY}
+networks:
+  default:
+    labels:
+      benchflow.owned: "true"

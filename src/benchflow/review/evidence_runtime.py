@@ -32,18 +32,45 @@ python3 -I -c {shlex.quote(_PYTHON_PROBE)}
 """
 
 
-async def ensure_evidence_python(env: Sandbox, *, timeout_sec: int = 600) -> None:
+async def ensure_evidence_python(
+    env: Sandbox, *, timeout_sec: int = 600, allow_install: bool = True
+) -> None:
     """Prepare capture before the solver runs, including shell-only images.
 
     Existing compatible interpreters require no package installation. Failure
     is a setup error, before a solver can spend its budget producing evidence
     that the controller cannot preserve.
     """
+    command = (
+        shlex.join(["sh", "-c", _SETUP_SCRIPT])
+        if allow_install
+        else shlex.join(["python3", "-I", "-c", _PYTHON_PROBE])
+    )
     result = await env.exec(
-        shlex.join(["sh", "-c", _SETUP_SCRIPT]),
+        command,
         user="root",
         timeout_sec=timeout_sec,
     )
     if result.return_code != 0:
         details = (result.stderr or result.stdout or "")[-2000:]
         raise EvidenceError(f"Could not prepare workspace capture Python: {details}")
+
+
+_CAPTURE_TOOLS_PROBE = (
+    f"python3 -I -c {shlex.quote(_PYTHON_PROBE)} >/dev/null 2>&1 "
+    "|| command -v tar >/dev/null 2>&1"
+)
+
+
+async def ensure_capture_tools(env: Sandbox, *, timeout_sec: int = 60) -> None:
+    """Require python3 (3.10+) or tar for capture, without installing either."""
+    result = await env.exec(
+        shlex.join(["sh", "-c", _CAPTURE_TOOLS_PROBE]),
+        user="root",
+        timeout_sec=timeout_sec,
+    )
+    if result.return_code != 0:
+        raise EvidenceError(
+            "Workspace capture needs python3 (3.10+) or tar in the task image; "
+            "it has neither"
+        )

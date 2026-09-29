@@ -182,7 +182,8 @@ def _activity_cell(snap: live_activity.ActivitySnapshot | None) -> str:
     counters = snap.counters
     if counters is None:
         return _PHASE_LABELS.get(snap.phase, _PHASE_FALLBACK)
-    cell = f"{counters.tool_calls} calls"
+    noun = "call" if counters.tool_calls == 1 else "calls"
+    cell = f"{counters.tool_calls} {noun}"
     if counters.total_tokens:
         cell += f" · {_fmt_tokens(counters.total_tokens)} tok"
     # A single-tool agent (prime-agent funnels every call through one IPython

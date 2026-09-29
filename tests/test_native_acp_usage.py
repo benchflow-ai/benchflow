@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -52,25 +53,18 @@ async def test_acp_client_records_prompt_response_usage():
 async def test_disconnect_preserves_native_usage_in_final_metrics():
     """Guards issue #933 against usage loss demonstrated by PR #1051."""
     from benchflow.acp.session import ACPSession
-    from benchflow.rollout import Rollout
+    from benchflow.rollout import Rollout, RolloutConfig
 
     session = ACPSession("timeout-session")
     session.record_prompt_usage(
         SimpleNamespace(input_tokens=10, output_tokens=4, total_tokens=14)
     )
     client = SimpleNamespace(session=session, close=AsyncMock())
-    rollout = Rollout.__new__(Rollout)
+    rollout = Rollout(RolloutConfig(task_path=Path("task")))
     rollout._acp_client = client
     rollout._session = session
-    rollout._session_adapter = None
-    rollout._is_session_factory = False
-    rollout._trajectory = []
-    rollout._session_traj_count = 0
-    rollout._native_usage_checkpoint = None
     rollout._native_usage_metrics = {"total_tokens": 0}
     rollout._usage_metrics = {"usage_source": "unavailable"}
-    rollout._agent_launch = ""
-    rollout._env = None
     rollout._phase = "connected"
 
     await rollout.disconnect()
@@ -83,12 +77,11 @@ async def test_disconnect_preserves_native_usage_in_final_metrics():
 def test_rollout_native_acp_usage_uses_cumulative_deltas():
     """Guards PR #613 follow-up: ACP cumulative usage is not double-counted."""
     from benchflow.acp.session import ACPSession
-    from benchflow.rollout import Rollout
+    from benchflow.rollout import Rollout, RolloutConfig
 
     session = ACPSession("session-1")
-    rollout = Rollout.__new__(Rollout)
+    rollout = Rollout(RolloutConfig(task_path=Path("task")))
     rollout._session = session
-    rollout._native_usage_checkpoint = None
 
     session.record_prompt_usage(
         SimpleNamespace(
@@ -128,9 +121,9 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
 
 def test_rollout_provider_usage_wins_over_native_acp_usage():
     """Guards PR #613 follow-up: LiteLLM provider telemetry remains authoritative."""
-    from benchflow.rollout import Rollout
+    from benchflow.rollout import Rollout, RolloutConfig
 
-    rollout = Rollout.__new__(Rollout)
+    rollout = Rollout(RolloutConfig(task_path=Path("task")))
     rollout._usage_metrics = {
         "n_input_tokens": 100,
         "n_output_tokens": 20,
@@ -164,12 +157,12 @@ def test_required_usage_accepts_native_acp_usage(tmp_path):
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.usage_tracking import UsageTrackingConfig
 
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=tmp_path / "task",
-        usage_tracking=UsageTrackingConfig(mode="required"),
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            usage_tracking=UsageTrackingConfig(mode="required"),
+        )
     )
-    rollout._error = None
     rollout._usage_metrics = {"usage_source": "unavailable"}
     rollout._native_usage_metrics = {
         "n_input_tokens": 10,

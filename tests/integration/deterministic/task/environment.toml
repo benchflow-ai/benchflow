@@ -1,0 +1,17 @@
+# The deterministic fake model provider runs inside the sandbox as a
+# framework-started service, so BenchFlow starts it after sandbox start and
+# restarts it after every branch/checkpoint restore (running processes are not
+# part of a snapshot). The LiteLLM proxy reaches it at http://127.0.0.1:8911.
+[environment]
+name           = "fake-llm"
+base_image     = "ubuntu:24.04"
+owns_lifecycle = false
+isolation      = "per_task"
+
+[environment.readiness]
+timeout_sec = 30
+
+[[environment.services]]
+name    = "fake-llm"
+command = "python3 /opt/fake_llm/fake_llm.py --host 127.0.0.1 --port 8911 --log /tmp/fake_llm.jsonl"
+port    = 8911

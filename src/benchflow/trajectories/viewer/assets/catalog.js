@@ -1,5 +1,5 @@
 BF.catalog = (() => {
-  const { el, fmtDuration, fmtTokens } = BF.core;
+  const { EXECUTION_LABELS, el, fmtDuration, fmtTokens, plural } = BF.core;
   const PAGE_SIZE = 100;
   const GROUPERS = new Map([
     ["task", (run) => run.task_name || "(unknown task)"],
@@ -36,6 +36,28 @@ BF.catalog = (() => {
     return run.reward >= 1 ? "pass" : "fail";
   }
 
+  // Execution vs assessment for the row subtitle; null for the plain
+  // "completed and scored" case so ordinary rows stay unchanged.
+  function statusNote(run) {
+    if (!run.execution || !run.assessment) return null;
+    if (run.execution === "completed") {
+      if (run.assessment === "scored") return null;
+      return "completed but unscored" + (run.assessment_detail ? " (" + run.assessment_detail + ")" : "");
+    }
+    const execution = EXECUTION_LABELS.get(run.execution) || run.execution;
+    return execution + (run.execution_detail ? " (" + run.execution_detail + ")" : "")
+      + (run.assessment === "scored" ? " but scored" : ", unscored");
+  }
+
+  // Forks and children from the run's tree.json; null for unbranched runs.
+  function branchNote(run) {
+    const forks = run.branch_forks;
+    if (typeof forks !== "number" || forks < 1) return null;
+    const children = typeof run.branch_children === "number" ? run.branch_children : 0;
+    return "branched: " + (children ? plural(children, "child", "children") : "no children")
+      + (forks > 1 ? " in " + plural(forks, "fork") : "");
+  }
+
   function fmtCost(value) {
     return typeof value === "number" && Number.isFinite(value) ? "$" + value.toFixed(2) : null;
   }
@@ -54,7 +76,11 @@ BF.catalog = (() => {
     return params.get("run");
   }
 
-  function writeURL(runId, push) {
+  function readBranch() {
+    return new URLSearchParams(location.search).get("branch");
+  }
+
+  function urlFor(runId, branch = null) {
     const params = new URLSearchParams();
     if (state.group !== "task") params.set("group", state.group);
     if (state.sort !== "name") params.set("sort", state.sort);
@@ -63,13 +89,17 @@ BF.catalog = (() => {
       params.set("toggled", [...state.toggled].map(encodeURIComponent).join(","));
     }
     if (runId) params.set("run", runId);
-    const url = location.pathname + (params.toString() ? "?" + params.toString() : "");
-    history[push ? "pushState" : "replaceState"]({}, "", url);
+    if (runId && branch) params.set("branch", branch);
+    return location.pathname + (params.toString() ? "?" + params.toString() : "");
+  }
+
+  function writeURL(runId, push, branch = null) {
+    history[push ? "pushState" : "replaceState"]({}, "", urlFor(runId, branch));
   }
 
   function matchesQuery(run, query) {
     if (!query) return true;
-    return [run.task_name, run.name, run.agent_name, run.model, run.skill_mode, runStatus(run)]
+    return [run.task_name, run.name, run.agent_name, run.model, run.skill_mode, runStatus(run), statusNote(run), branchNote(run)]
       .filter(Boolean)
       .join(" ")
       .toLowerCase()
@@ -152,9 +182,10 @@ BF.catalog = (() => {
     rows.forEach((run) => counts.set(runStatus(run), counts.get(runStatus(run)) + 1));
     const total = el("span");
     total.appendChild(el("b", null, rows.length));
+    // "1 run", "3 runs", or filtered "1 / 3 runs": the noun agrees with the total.
     total.appendChild(document.createTextNode(
       (rows.length === rollouts.length ? "" : " / " + rollouts.length)
-        + " runs"
+        + (rollouts.length === 1 ? " run" : " runs")
         + (capped ? " (capped - raise BENCHFLOW_VIEWER_MAX_RUNS)" : ""),
     ));
     stats.appendChild(total);
@@ -163,6 +194,12 @@ BF.catalog = (() => {
       item.appendChild(el("b", null, counts.get(status)));
       stats.appendChild(item);
     });
+    const completedUnscored = rows.filter((run) => run.execution === "completed" && run.assessment === "unscored").length;
+    if (completedUnscored) {
+      const item = el("span", null, "completed but unscored ");
+      item.appendChild(el("b", null, completedUnscored));
+      stats.appendChild(item);
+    }
   }
 
   function focusGroup(key) {
@@ -214,7 +251,7 @@ BF.catalog = (() => {
         const groupCounts = new Map([["pass", 0], ["fail", 0], ["unscored", 0]]);
         members.forEach((run) => groupCounts.set(runStatus(run), groupCounts.get(runStatus(run)) + 1));
         const summary = el("span", "gstats");
-        summary.appendChild(el("span", null, members.length + " runs"));
+        summary.appendChild(el("span", null, plural(members.length, "run")));
         if (groupCounts.get("pass")) summary.appendChild(el("span", "gpass", groupCounts.get("pass") + " pass"));
         if (groupCounts.get("fail")) summary.appendChild(el("span", "gfail", groupCounts.get("fail") + " fail"));
         if (groupCounts.get("unscored")) summary.appendChild(el("span", null, groupCounts.get("unscored") + " unscored"));
@@ -270,7 +307,11 @@ BF.catalog = (() => {
       if (run.model) subtitle.appendChild(el("span", null, run.model));
     }
     if (run.skill_mode) subtitle.appendChild(el("span", null, run.skill_mode));
-    if (run.has_error) subtitle.appendChild(el("span", null, "error"));
+    const note = statusNote(run);
+    if (note) subtitle.appendChild(el("span", null, note));
+    else if (run.has_error) subtitle.appendChild(el("span", null, "error"));
+    const branches = branchNote(run);
+    if (branches) subtitle.appendChild(el("span", null, branches));
     main.appendChild(subtitle);
     button.appendChild(main);
 
@@ -315,17 +356,19 @@ BF.catalog = (() => {
   }
 
   function unknownRunMessage(runId) {
-    return 'Run "' + runId + '" is not among the ' + rollouts.length + " discovered runs"
+    return 'Run "' + runId + '" is not among the ' + plural(rollouts.length, "discovered run")
       + (capped ? " (list is capped - raise BENCHFLOW_VIEWER_MAX_RUNS)." : ".");
   }
 
   return {
     hasRun,
     init,
+    readBranch,
     readURL,
     rememberScroll,
     show,
     unknownRunMessage,
+    urlFor,
     writeURL,
   };
 })();

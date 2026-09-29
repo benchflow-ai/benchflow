@@ -107,3 +107,21 @@ def test_one_shot_per_process(source_dir, monkeypatch):
     with pytest.raises(KeyError):
         resolve_agent("nope-2")
     assert len(calls) == 1
+
+
+def test_oracle_never_fetches_the_agents_source(source_dir, monkeypatch):
+    """Regression test.
+
+    `oracle` is BenchFlow's built-in solution runner, not a registry agent, so
+    normalizing it missed the registry and cloned benchflow-ai/agents on every
+    oracle run ("Agent manifest auto-load: registered N agent(s) ...").
+    """
+    from benchflow._utils.config import normalize_agent_name
+
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        remote_manifests, "_source_root", lambda spec: fetched.append(spec)
+    )
+
+    assert normalize_agent_name("oracle") == "oracle"
+    assert fetched == []

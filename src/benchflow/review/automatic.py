@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import math
 import shutil
@@ -72,9 +71,16 @@ def prepare_review(task_path: Path, reviewer: ReviewerConfig) -> PreparedReview 
             "Add explicit blocker and weight fields to every criterion."
         )
     try:
-        model = effective_model(reviewer.agent, reviewer.model)
+        try:
+            model = effective_model(reviewer.agent, reviewer.model)
+        except ValueError:
+            model = None
         if not model:
-            raise ValueError("specify --reviewer-model for this harness")
+            raise ValueError(
+                f"the reviewer agent {reviewer.agent!r} has no default model; "
+                "pass --reviewer-model (Python: ReviewerConfig(model=...)) "
+                "or choose another --reviewer-agent"
+            )
         resolved_env = resolve_agent_env(reviewer.agent, model, reviewer.agent_env)
     except ValueError as exc:
         raise ValueError(f"Reviewer preflight for {rubric_path}: {exc}") from exc
@@ -134,16 +140,19 @@ async def finish_review(plan: PreparedReview, rollout_dir: Path) -> ScoringResul
     """Judge immutable solver evidence and retain every attempt's full output."""
     from benchflow.review.evidence import EvidenceManifest, validate_workspace
     from benchflow.review.runner import run_review
+    from benchflow.rollout._verifier_recovery import verification_source
 
-    source = json.loads((rollout_dir / "solver.json").read_text())
+    source = verification_source(rollout_dir)
     raw_reward = (source.get("rewards") or {}).get("reward")
-    verifier_reward = (
-        float(raw_reward)
-        if isinstance(raw_reward, int | float)
-        and not isinstance(raw_reward, bool)
-        and math.isfinite(raw_reward)
-        else None
-    )
+    verifier_reward = None
+    if isinstance(raw_reward, int | float) and not isinstance(raw_reward, bool):
+        try:
+            candidate = float(raw_reward)
+        except OverflowError:
+            pass
+        else:
+            if math.isfinite(candidate):
+                verifier_reward = candidate
     tests_pass = verifier_reward == 1.0 if verifier_reward is not None else None
     attempt = uuid.uuid4().hex
     out_dir = rollout_dir / "reviews" / attempt

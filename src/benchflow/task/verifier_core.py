@@ -24,6 +24,7 @@ import shutil
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from benchflow.rewards.validation import (
     apply_aggregate_policy,
@@ -33,7 +34,12 @@ from benchflow.rewards.validation import (
     reward_range_phrase,
     validate_reward_map,
 )
-from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
+from benchflow.sandbox.lockdown import (
+    _exec_return_code,
+    clear_verifier_output_dir,
+    pytest_plugin_guard_markers,
+    pytest_plugin_guard_name,
+)
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 from benchflow.task.verifier_document import (
@@ -46,6 +52,7 @@ from benchflow.task.verifier_errors import (
     AgentJudgeInputError,
     DownloadVerifierDirError,
     ORSEpisodeInputError,
+    PluginGuardLoadError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
     RubricNotFoundError,
@@ -76,6 +83,7 @@ from benchflow.task.verifier_reward_kit import (
 from benchflow.task.verifier_scan import (
     _DEP_INSTALL_DIAGNOSTIC,
     _has_dep_install_failure,
+    _has_guard_load_failure,
 )
 from benchflow.task.verifier_script_strategy import (
     _has_aggregate_declaration,
@@ -84,6 +92,10 @@ from benchflow.task.verifier_script_strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Where the recovery path's test command records that it started (#1136): a
+# BenchFlow-owned directory, never the verifier output dir test.sh inspects.
+_EXECUTION_RECEIPT_DIR = PurePosixPath("/run/benchflow")
 
 
 class Verifier:
@@ -105,10 +117,16 @@ class Verifier:
         rollout_paths: RolloutPaths,
         sandbox: Any,
         _logger: logging.Logger | None = None,
+        *,
+        execution_receipt: bool = False,
     ) -> None:
         self._task = task
         self._rollout_paths = rollout_paths
         self._sandbox = sandbox
+        # Recovery-eligible rollouts (#1136) ask the test command to prove it
+        # started; ``execution_receipt`` then names the proof for the prober.
+        self._write_execution_receipt = execution_receipt
+        self.execution_receipt: tuple[str, str] | None = None
         self._logger = (_logger or logger).getChild("verifier")
         # Task-declared ``[verifier] reward_range`` (BF-8); None keeps the
         # canonical strict [0, 1]. Applies to the test-script reward contract
@@ -341,6 +359,42 @@ class Verifier:
                 legacy_dir,
             )
 
+    async def _prepare_execution_receipt(self, service: str) -> str | None:
+        """Return a fresh start-receipt path for the test command, if requested.
+
+        An empty stdout file does not prove an exec failed to start: valid
+        verifiers can be quiet for their entire budget, so the recovery path
+        (#1136) has the command itself write a receipt. It lives outside
+        ``/logs/verifier``, which task preflights require to hold only what
+        test.sh writes. A receipt directory BenchFlow cannot create leaves
+        startup unknown, as a failed probe does, rather than failing the run.
+        """
+        self.execution_receipt = None
+        if not self._write_execution_receipt:
+            return None
+        receipt_dir = shlex.quote(str(_EXECUTION_RECEIPT_DIR))
+        try:
+            result = await self._sandbox.exec(
+                f"mkdir -p {receipt_dir} && chmod 1777 {receipt_dir}",
+                user="root",
+                service=service,
+                timeout_sec=10,
+            )
+            return_code = _exec_return_code(result)
+        except Exception as e:
+            return_code = None
+            self._logger.debug("verifier start receipt dir failed: %s", e)
+        if return_code != 0:
+            self._logger.warning(
+                "Cannot create %s for the verifier start receipt; startup of "
+                "this verifier cannot be confirmed",
+                _EXECUTION_RECEIPT_DIR,
+            )
+            return None
+        receipt = str(_EXECUTION_RECEIPT_DIR / f"verifier-started-{uuid4().hex}")
+        self.execution_receipt = (receipt, service)
+        return receipt
+
     # test-script verifier (default — Harbor-compatible)
 
     async def _verify_test_script(
@@ -461,8 +515,12 @@ class Verifier:
                     f"rc={mkdir_return_code}"
                 )
 
+        command = f"{{ {test_command}; }} > {test_stdout_path} 2>&1"
+        receipt = await self._prepare_execution_receipt(service)
+        if receipt is not None:
+            command = f"printf started > {shlex.quote(receipt)} && {command}"
         test_result = await self._sandbox.exec(
-            command=f"{test_command} > {test_stdout_path} 2>&1",
+            command=command,
             env=env,
             user=self._task.config.verifier.user,
             service=service,
@@ -492,6 +550,58 @@ class Verifier:
                     "verifier output files individually: %s",
                     e,
                 )
+
+        guard = pytest_plugin_guard_name((env or {}).get("PYTEST_ADDOPTS"))
+        if guard is not None and (
+            _has_guard_load_failure(self._rollout_paths.verifier_dir, guard)
+            # Left by a guard pytest imported but never registered, whether
+            # or not test.sh kept pytest's output.
+            or pytest_plugin_guard_markers(
+                self._rollout_paths.verifier_dir, guard, "loading"
+            )
+        ):
+            # pytest aborted before running a test, so a reward test.sh derived
+            # from its exit status would score the harness, not the solution.
+            raise PluginGuardLoadError(
+                f"pytest could not load the plugin guard {guard}: the verifier "
+                "ran pytest in a Python that cannot import or register it (for "
+                "example `python -I` or a replaced PYTHONPATH); its reward is "
+                "not scored"
+            )
+        crashed = (
+            pytest_plugin_guard_markers(
+                self._rollout_paths.verifier_dir, guard, "crashed"
+            )
+            if guard is not None
+            else []
+        )
+        if crashed:
+            # The guard failed for its own reasons (a refused plugin raises
+            # without this marker and stays scored), so pytest's exit status
+            # says nothing about the solution.
+            raise PluginGuardLoadError(
+                f"the pytest plugin guard {guard} crashed inside pytest "
+                f"(traceback in verifier/{crashed[0].name}); its reward is not "
+                "scored"
+            )
+        installed = (
+            pytest_plugin_guard_markers(
+                self._rollout_paths.verifier_dir, guard, "installed"
+            )
+            if guard is not None
+            else []
+        )
+        if installed:
+            # The guard refused a plugin the verifier installed after the agent
+            # stopped (a refusal of planted code leaves no marker and stays
+            # scored): BenchFlow's own false positive, not the solution's 0.
+            raise PluginGuardLoadError(
+                f"the pytest plugin guard {guard} refused a plugin the verifier "
+                "installed after the agent stopped, in a directory the agent "
+                "could write (files in verifier/"
+                f"{installed[0].name}); its reward is not scored. Install "
+                "verifier plugins with uvx or into the image's site-packages"
+            )
 
         if test_return_code != 0 and (
             self._rollout_paths.reward_text_path.exists()

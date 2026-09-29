@@ -1,0 +1,96 @@
+{
+  "kind": "branch-child",
+  "node_id": "n5",
+  "lineage": {
+    "parent_rollout": "hello-world-task__0000abcd",
+    "fork_id": "00000000000000000000000000000002",
+    "parent_node": "n4",
+    "index": 0,
+    "label": "baseline"
+  },
+  "reward": 1.0,
+  "error": null,
+  "verifier_error": null,
+  "export_error": null,
+  "timing": {
+    "agent_setup": 6.0,
+    "agent_execution": 4.0,
+    "verifier": 30.0
+  },
+  "native_usage": {
+    "n_input_tokens": 4,
+    "n_output_tokens": 100,
+    "n_cache_read_tokens": 30000,
+    "n_cache_creation_tokens": 2000,
+    "total_tokens": 32104,
+    "cost_usd": null,
+    "usage_source": "agent_native_acp",
+    "price_source": null,
+    "usage_details": {
+      "thought_tokens": 0
+    }
+  },
+  "trajectory": [
+    {
+      "type": "user_message",
+      "text": "Create a file called `hello.txt` in the current directory containing exactly:\n\n```\nHello, world!\n```",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767268949000000000",
+        "last_observed_ns": "1767268949000000000"
+      },
+      "ts": "2026-01-01T12:02:29.000000+00:00"
+    },
+    {
+      "type": "agent_thought",
+      "text": "Write hello.txt with the requested line.",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767268950000000000",
+        "last_observed_ns": "1767268951000000000"
+      },
+      "ts": "2026-01-01T12:02:30.000000+00:00"
+    },
+    {
+      "type": "tool_call",
+      "tool_call_id": "toolu_demo_04",
+      "kind": "edit",
+      "title": "Write hello.txt",
+      "status": "completed",
+      "content": [
+        {
+          "type": "diff",
+          "path": "/app/hello.txt",
+          "oldText": null,
+          "newText": "Hello, world!\n"
+        }
+      ],
+      "raw_input": {
+        "file_path": "/app/hello.txt",
+        "content": "Hello, world!\n"
+      },
+      "raw_output": "File created successfully at: /app/hello.txt",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767268951000000000",
+        "last_observed_ns": "1767268952000000000"
+      },
+      "started_at": "2026-01-01T12:02:31.000000+00:00",
+      "finished_at": "2026-01-01T12:02:32.000000+00:00"
+    },
+    {
+      "type": "agent_message",
+      "text": "Created `/app/hello.txt` with the content `Hello, world!`.",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767268952000000000",
+        "last_observed_ns": "1767268953000000000"
+      },
+      "ts": "2026-01-01T12:02:32.000000+00:00"
+    }
+  ]
+}

@@ -116,6 +116,8 @@ def test_trajectory_emits_raw_fields_only_when_present() -> None:
         {"sessionUpdate": "tool_call", "toolCallId": "t", "title": "t", "kind": "read"}
     )
     assert set(_events_to_trajectory(bare.events)[0]) == {
+        "receipt",
+        "started_at",
         "type",
         "tool_call_id",
         "kind",

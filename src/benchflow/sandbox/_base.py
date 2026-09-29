@@ -85,6 +85,13 @@ def wrap_command_with_env_file(
     even if the decode/source step fails — so a failed ``&&`` chain can never
     leave the env file behind.
 
+    The command follows on its own line, after ``|| exit 1``, rather than as
+    the last link of the ``&&`` chain. A trailing ``&`` in the command (a
+    detached service start, ``nohup CMD </dev/null >log 2>&1 &``) then
+    backgrounds only the command. Chained with ``&&`` it backgrounded the whole
+    list, including a subshell that kept the caller's stdout open, so a Daytona
+    session command never finished.
+
     Only keys that are valid POSIX shell identifiers are emitted as ``export``
     lines. Keys that are not (e.g. containing ``.`` or ``-``) cannot be assigned
     by the shell — emitting them would make ``. {env_path}`` fail and the user
@@ -121,7 +128,7 @@ def wrap_command_with_env_file(
     return (
         f"trap 'rm -f {env_path}' EXIT && "
         f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
-        f"{env_path}) && set -a && . {env_path} && set +a && "
+        f"{env_path}) && set -a && . {env_path} && set +a || exit 1\n"
         f"{command}"
     )
 
@@ -495,4 +502,16 @@ class BaseSandbox(ABC):
             f"{type(self).__name__} does not support container-level restore. "
             "Branch requires a provider whose Sandbox can checkpoint the "
             "container layer; see docs/architecture.md, 'The hard part'."
+        )
+
+    async def delete_snapshot(self, image: SandboxImage) -> bool:
+        """Delete a snapshot this sandbox created.
+
+        Returns True when the snapshot is gone (including already gone) and
+        False when the provider still uses it; the sandbox then deletes it when
+        it stops. Default implementation raises
+        :class:`SandboxSnapshotNotSupported`.
+        """
+        raise SandboxSnapshotNotSupported(
+            f"{type(self).__name__} does not support container-level snapshots."
         )

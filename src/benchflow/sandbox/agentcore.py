@@ -667,8 +667,6 @@ class AgentCoreSandbox(BaseSandbox):
 
     @staticmethod
     def _wait_ready(control: Any, runtime_id: str) -> None:
-        import time
-
         deadline = time.monotonic() + _RUNTIME_READY_TIMEOUT_SEC
         status = "CREATING"
         while time.monotonic() < deadline:

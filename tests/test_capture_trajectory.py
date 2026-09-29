@@ -857,7 +857,12 @@ class TestFlushArrivalOrder:
 
         result = _capture_session_trajectory(session)
         assert len(result) == 1
-        assert result[0] == {"type": "user_message", "text": "Solve it"}
+        timing = ("receipt", "ts")
+        assert {k: v for k, v in result[0].items() if k not in timing} == {
+            "type": "user_message",
+            "text": "Solve it",
+        }
+        assert result[0]["receipt"]["source"] == "benchflow_host"
 
     def test_pending_cleared_between_flushes(self) -> None:
         """Chunks after a flush go into a fresh pending list."""

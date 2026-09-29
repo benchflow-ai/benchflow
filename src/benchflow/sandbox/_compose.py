@@ -1,11 +1,20 @@
 """Compose helpers for Docker and Daytona DinD backends."""
 
+from __future__ import annotations
+
 import re
 import shlex
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+from benchflow.task.config import NetworkMode
+
+if TYPE_CHECKING:
+    from benchflow.task.config import SandboxConfig
 
 COMPOSE_DIR = Path(__file__).parent / "_compose_files"
 COMPOSE_BASE_PATH = COMPOSE_DIR / "docker-compose-base.yaml"
+COMPOSE_REMOTE_BASE_PATH = COMPOSE_DIR / "docker-compose-remote-base.yaml"
 COMPOSE_BUILD_PATH = COMPOSE_DIR / "docker-compose-build.yaml"
 COMPOSE_PREBUILT_PATH = COMPOSE_DIR / "docker-compose-prebuilt.yaml"
 COMPOSE_NO_NETWORK_PATH = COMPOSE_DIR / "docker-compose-no-network.yaml"
@@ -51,9 +60,60 @@ def compose_definition_path(environment_dir: Path) -> Path | None:
     return None
 
 
+def compose_needs_net_admin(config: SandboxConfig) -> bool:
+    """Whether ``main`` needs NET_ADMIN for the sandbox-user iptables firewall.
+
+    Three runs arm that firewall inside ``main``: ``network_mode: denylist``,
+    ``network_mode: allowlist`` (which also needs the nat table for its DNS
+    redirect), and a no-network task whose container stays open for its LLM agent.
+    ``_create_sandbox_environment`` (preserve_agent_network) sets
+    ``allow_internet`` on a copy whose ``network_mode`` stays no-network, a
+    pair task validation never produces; BenchFlow then enforces no-web at the
+    agent layer. Oracle runs keep the container network block and get no
+    capability. Docker and Daytona DinD both stack
+    ``docker-compose-net-admin.yaml`` when this holds.
+    """
+    mode = config.network_mode
+    return mode in (NetworkMode.DENYLIST, NetworkMode.ALLOWLIST) or (
+        mode == NetworkMode.NO_NETWORK and config.allow_internet
+    )
+
+
 def is_compose_up_network_race_error(message: str) -> bool:
     """Return whether *message* is a retryable compose-up network create race."""
     return bool(_COMPOSE_UP_NETWORK_RACE_ERROR.search(message))
+
+
+# What the docker CLI prints when it cannot reach the daemon: current CLIs say
+# "failed to connect to the docker API at ...", older ones "Cannot connect to
+# the Docker daemon at ... Is the docker daemon running?".
+_DOCKER_DAEMON_UNREACHABLE = (
+    "failed to connect to the docker api",
+    "cannot connect to the docker daemon",
+)
+_DAEMON_REASON_LIMIT = 300
+
+
+def docker_daemon_unreachable_reason(message: str) -> str | None:
+    """The docker CLI's "cannot reach the daemon" line in *message*, or None.
+
+    A compose failure with this line is an environment problem (Docker is not
+    running), not a task problem; callers report it as a sandbox startup
+    failure instead of a traceback that embeds the compose command.
+    """
+    for line in message.splitlines():
+        lowered = line.lower()
+        for marker in _DOCKER_DAEMON_UNREACHABLE:
+            start = lowered.find(marker)
+            if start < 0:
+                continue
+            # The CLI line may follow the compose command on the same line
+            # ("... Stdout: failed to connect ..."); keep only the CLI's words.
+            line = line[start:].strip()
+            if len(line) > _DAEMON_REASON_LIMIT:
+                line = line[: _DAEMON_REASON_LIMIT - 3] + "..."
+            return line
+    return None
 
 
 def compose_cp_destination(service: str, container_path: str) -> str:

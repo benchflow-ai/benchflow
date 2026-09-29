@@ -1,0 +1,171 @@
+{
+  "task_name": "hello-world-task",
+  "rollout_name": "hello-world-task__0000abcd",
+  "rewards": {
+    "reward": 1.0
+  },
+  "agent": "claude-agent-acp",
+  "agent_name": "@agentclientprotocol/claude-agent-acp",
+  "model": "claude-sonnet-4-6",
+  "skill_mode": "no-skill",
+  "skill_source": "none",
+  "requested_skills_dir": null,
+  "effective_skills_dir": null,
+  "skills_sandbox_dir": null,
+  "include_task_skills": false,
+  "n_tool_calls": 2,
+  "n_skill_invocations": 0,
+  "n_prompts": 2,
+  "agent_result": {
+    "n_tool_calls": 2,
+    "n_skill_invocations": 0,
+    "n_prompts": 2,
+    "n_input_tokens": 8,
+    "n_output_tokens": 300,
+    "n_cache_read_tokens": 50000,
+    "n_cache_creation_tokens": 20000,
+    "total_tokens": 70308,
+    "cost_usd": null,
+    "usage_source": "agent_native_acp",
+    "price_source": null,
+    "usage_details": {
+      "thought_tokens": 0
+    }
+  },
+  "final_metrics": {
+    "total_prompt_tokens": 8,
+    "total_completion_tokens": 300,
+    "total_cached_tokens": 50000,
+    "total_cost_usd": null
+  },
+  "trajectory_summary": {
+    "steps": 8,
+    "tool_call_steps": 2,
+    "user_message_steps": 2,
+    "agent_message_steps": 2,
+    "agent_thought_steps": 2,
+    "other_steps": 0,
+    "event_type_counts": {
+      "user_message": 2,
+      "agent_thought": 2,
+      "tool_call": 2,
+      "agent_message": 2
+    },
+    "tool_call_status_counts": {
+      "completed": 2
+    },
+    "partial_trajectory": false,
+    "trajectory_source": "acp"
+  },
+  "usage_tracking": {
+    "requested": "auto",
+    "status": "enabled",
+    "environment": "daytona",
+    "endpoint_kind": "agent_native",
+    "usage_source": "agent_native_acp"
+  },
+  "error": null,
+  "error_category": null,
+  "verifier_error": null,
+  "verifier_error_category": null,
+  "export_error": null,
+  "idle_timeout_info": null,
+  "agent_timeout_info": null,
+  "sandbox_startup_info": null,
+  "transport_error_info": null,
+  "verifier_timeout_info": null,
+  "api_error_info": null,
+  "suspected_api_error_info": null,
+  "partial_trajectory": false,
+  "trajectory_source": "acp",
+  "started_at": "2026-01-01 12:00:25.000000",
+  "finished_at": "2026-01-01 12:04:44.000000",
+  "timing": {
+    "environment_setup": 4.0,
+    "agent_setup": 5.0,
+    "agent_execution": 7.0,
+    "verifier": 32.0,
+    "total": 259.0
+  },
+  "scenes": [
+    {
+      "name": "default",
+      "skills_dir": null,
+      "roles": [
+        {
+          "name": "agent",
+          "agent": "claude-agent-acp",
+          "model": "claude-sonnet-4-6",
+          "reasoning_effort": "high",
+          "timeout_sec": null,
+          "idle_timeout_sec": null,
+          "skills_dir": null,
+          "capabilities": null,
+          "env_keys": []
+        }
+      ],
+      "turns": [
+        {
+          "role": "agent",
+          "has_prompt": true
+        },
+        {
+          "role": "agent",
+          "has_prompt": false
+        }
+      ]
+    }
+  ],
+  "loop": {
+    "strategy": "single-shot"
+  },
+  "task_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "sandbox_id": "00000000-0000-0000-0000-000000000000",
+  "branches": {
+    "tree": "tree.json",
+    "forks": [
+      {
+        "id": "00000000000000000000000000000002",
+        "status": "completed",
+        "value": 0.5,
+        "children": 2,
+        "scored": 2,
+        "parent_node": "n4",
+        "parent_restore": "restored",
+        "nodes": [
+          {
+            "index": 0,
+            "node_id": "n5",
+            "label": "baseline",
+            "status": "scored",
+            "reward": 1.0,
+            "reward_source": "verifier",
+            "path": "branches/00000000000000000000000000000002/children/n5"
+          },
+          {
+            "index": 1,
+            "node_id": "n9",
+            "label": "hint-reuse-draft",
+            "status": "scored",
+            "reward": 0.0,
+            "reward_source": "verifier",
+            "path": "branches/00000000000000000000000000000002/children/n9"
+          }
+        ]
+      }
+    ],
+    "children": 2,
+    "child_usage": {
+      "n_input_tokens": 8,
+      "n_output_tokens": 300,
+      "n_cache_read_tokens": 60000,
+      "n_cache_creation_tokens": 4000,
+      "total_tokens": 64308
+    },
+    "child_timing_sec": {
+      "agent_setup": 11.0,
+      "agent_execution": 11.0,
+      "verifier": 63.0
+    }
+  }
+}

@@ -146,6 +146,19 @@ directory. Read the
 [sandbox hardening notes](./sandbox-hardening.md#network-policy-denylist-egress)
 before relying on it: a blocklist hides pages, not knowledge.
 
+`allowlist` is the opposite: the agent reaches only what is listed. Declare it on `sandbox`, or on `agent` over a public sandbox (Harbor's recommended form; BenchFlow treats both the same, because it filters the agent's uid only):
+
+```yaml
+agent:
+  network_mode: allowlist
+  allowed_hosts:
+    - pypi.org
+    - "*.pythonhosted.org"
+    - 10.0.0.0/8
+```
+
+Entries follow Harbor: an exact hostname (no subdomains, no implied `www.`), a leading-wildcard hostname (`*.example.com` matches subdomains at any depth but not `example.com` itself), an IPv4 or IPv6 address, or a strict CIDR range (`10.0.0.0/8`, not `10.0.0.1/8`). The list must be non-empty. Hostname entries are reachable over HTTP(S) through the egress proxy; IP and CIDR entries are also reachable directly, for any protocol. A CIDR entry never admits a name: to reach a compose sibling by name, list both its name and its network range (`sidecar` and `172.16.0.0/12`). The model API stays reachable without listing it (see the [hardening notes](./sandbox-hardening.md#network-policy-allowlist-egress)). `verifier.network_mode: allowlist` is refused, because the verifier runs as root outside the agent's firewall. The mode needs a non-root `sandbox_user`, `python3` and `openssl` in the task image, and runs on `docker` and `daytona`; other backends refuse it at preflight.
+
 ---
 
 ## Prompt body and prompts/ sidecars
@@ -266,6 +279,14 @@ bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker
 
 A correct task scores `1.0` on its oracle run before any model sees it.
 
+The empty control proves the other half: `--agent nop` installs and runs nothing, so the verifier scores the untouched workspace, and a sound verifier gives it `0.0` (well below `1.0` at least). It needs no model or credentials and takes about as long as the verifier:
+
+```bash
+bench eval run --tasks-dir tasks/my-task --agent nop --sandbox docker
+```
+
+`bf.load_job` and `bench eval inspect` count oracle and `nop` runs as control runs, apart from agent runs.
+
 ---
 
 ## Multi-container tasks
@@ -341,6 +362,8 @@ unhardened: a vulhub-style target is *meant* to be vulnerable, the agent never
 has a shell inside it, and hardening it would risk breaking the very
 vulnerability the task exercises. `verifier.service` selects where `test.sh`
 *runs*; it does not move hardening off `main`.
+
+The pytest plugin guard (`-p _benchflow_guard_<hex>`) is part of that hardening and is installed only in `main`, so a `test.sh` running in another service gets main's pytest plugin flags without the guard.
 
 ---
 

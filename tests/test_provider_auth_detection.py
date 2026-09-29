@@ -295,19 +295,13 @@ def _auth_rollout(tmp_path, *, usage_source="unavailable"):
         async def stop(self):
             return None
 
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=tmp_path / "task",
-        usage_tracking=UsageTrackingConfig(mode="required"),
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            usage_tracking=UsageTrackingConfig(mode="required"),
+        )
     )
-    rollout._error = None
-    rollout._trajectory = []
-    rollout._acp_client = None
-    rollout._agent_launch = ""
     rollout._env = SimpleNamespace(stop=AsyncMock())
-    rollout._environment = None
-    rollout._provider_runtime = None
-    rollout._provider_auth_status_cached = None
     rollout._usage_runtime = ProviderRuntime(
         kind="usage-proxy",
         agent_base_url="http://host.docker.internal:32124",

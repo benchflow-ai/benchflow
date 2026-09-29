@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
-from benchflow.task.config import TaskConfig
 from benchflow.task.document import TaskDocument
+from benchflow.task.imports import load_task_config_toml
 from benchflow.task.paths import TaskPaths
 
 
@@ -39,7 +40,29 @@ class Task:
             self.config = self.document.config
             self.scenes = self.document.scenes
         else:
-            if not self.paths.instruction_path.is_file():
+            config_path = self.paths.config_path
+            config = None
+            if config_path.is_file():
+                try:
+                    # Lenient: unknown keys (a newer Harbor schema) are ignored
+                    # with a warning; unhonourable ones are refused before
+                    # launch by the runtime capability check.
+                    config = load_task_config_toml(
+                        config_path.read_text(), source=str(config_path)
+                    )
+                except tomllib.TOMLDecodeError as e:
+                    # tomllib names only the line and column, not the file.
+                    raise ValueError(
+                        f"{config_path}: task.toml parse error: {e}"
+                    ) from e
+            if self.paths.instruction_path.is_file():
+                self.instruction = self.paths.instruction_path.read_text()
+            elif config is not None and config.steps:
+                # A Harbor multi-step task keeps its prompts under
+                # steps/<name>/; the runtime capability check refuses
+                # ``steps`` before launch, so load it far enough to say so.
+                self.instruction = ""
+            else:
                 # Neither task.md (native) nor a legacy instruction.md is present
                 # (is_file, not exists: a directory named instruction.md would
                 # otherwise pass and make read_text() raise IsADirectoryError).
@@ -50,10 +73,9 @@ class Task:
                     f"no task document in {self._task_dir}: expected task.md "
                     "(native), or legacy task.toml + instruction.md"
                 )
-            self.instruction = self.paths.instruction_path.read_text()
-            self.config = TaskConfig.model_validate_toml(
-                self.paths.config_path.read_text()
-            )
+            if config is None:
+                raise FileNotFoundError(f"no task.toml in {self._task_dir}")
+            self.config = config
             self.scenes = []
         if self.config.task is not None:
             self.name = self.config.task.name

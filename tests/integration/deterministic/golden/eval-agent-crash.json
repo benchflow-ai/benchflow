@@ -1,0 +1,169 @@
+{
+  "acp_trajectory": [
+    {
+      "text": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:crash]]",
+      "type": "user_message"
+    },
+    {
+      "text": "Stopping the agent process.",
+      "type": "agent_message"
+    },
+    {
+      "content": [
+        {
+          "content": {
+            "text": "Kill the ACP agent process",
+            "type": "text"
+          },
+          "type": "content"
+        }
+      ],
+      "kind": "execute",
+      "raw_input": {
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '[c]laude-agent-acp'; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "description": "Kill the ACP agent process"
+      },
+      "status": "in_progress",
+      "title": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '[c]laude-agent-acp'; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+      "tool_call_id": "toolu_fake_crash_0",
+      "tool_name": "Bash",
+      "type": "tool_call"
+    }
+  ],
+  "atif": {
+    "agent": {
+      "model_name": "claude-haiku-4-5",
+      "name": "@agentclientprotocol/claude-agent-acp",
+      "version": "unknown"
+    },
+    "final_metrics": {
+      "total_cached_tokens": 0,
+      "total_completion_tokens": 50,
+      "total_cost_usd": 0.00125,
+      "total_prompt_tokens": 1000,
+      "total_steps": 4
+    },
+    "schema_version": "ATIF-v1.7",
+    "steps": [
+      {
+        "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:crash]]",
+        "source": "user",
+        "step_id": 1
+      },
+      {
+        "message": "Create a file called `hello.txt` in `/app` containing exactly `Hello, world!`.\n\n[[fake-llm:crash]]",
+        "source": "user",
+        "step_id": 2
+      },
+      {
+        "message": "Stopping the agent process.",
+        "source": "agent",
+        "step_id": 3
+      },
+      {
+        "message": "",
+        "observation": {
+          "results": [
+            {
+              "content": "Kill the ACP agent process",
+              "source_call_id": "toolu_fake_crash_0"
+            }
+          ]
+        },
+        "source": "agent",
+        "step_id": 4,
+        "tool_calls": [
+          {
+            "arguments": {},
+            "extra": {
+              "status": "in_progress",
+              "title": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '[c]laude-agent-acp'; then kill -9 \"$pid\"; break; fi; done; sleep 30"
+            },
+            "function_name": "execute",
+            "tool_call_id": "toolu_fake_crash_0"
+          }
+        ]
+      }
+    ]
+  },
+  "llm_calls": [
+    {
+      "finish_reason": "tool_calls",
+      "input_tokens": 1000,
+      "kind": "main",
+      "n_messages": 1,
+      "output_tokens": 50,
+      "text": "Stopping the agent process.",
+      "tool_calls": [
+        {
+          "arguments": {
+            "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '[c]laude-agent-acp'; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+            "description": "Kill the ACP agent process"
+          },
+          "id": "toolu_fake_crash_0",
+          "name": "Bash"
+        }
+      ]
+    }
+  ],
+  "outcome": {
+    "assessment": "unscored",
+    "execution": "errored",
+    "reward": null
+  },
+  "result": {
+    "agent_result": {
+      "cost_usd": 0.00125,
+      "n_cache_creation_tokens": 0,
+      "n_cache_read_tokens": 0,
+      "n_input_tokens": 1000,
+      "n_output_tokens": 50,
+      "n_prompts": 1,
+      "n_skill_invocations": 0,
+      "n_tool_calls": 1,
+      "price_source": "litellm",
+      "total_tokens": 1050,
+      "usage_source": "provider_response"
+    },
+    "agent_timeout": null,
+    "error_category": "acp_error",
+    "final_metrics": {
+      "total_cached_tokens": 0,
+      "total_completion_tokens": 50,
+      "total_cost_usd": 0.00125,
+      "total_prompt_tokens": 1000
+    },
+    "n_prompts": 1,
+    "n_tool_calls": 1,
+    "rewards": null,
+    "timing_keys": [
+      "agent_setup",
+      "environment_setup",
+      "total"
+    ],
+    "trajectory_summary": {
+      "agent_message_steps": 1,
+      "agent_thought_steps": 0,
+      "event_type_counts": {
+        "agent_message": 1,
+        "tool_call": 1,
+        "user_message": 1
+      },
+      "other_steps": 0,
+      "partial_trajectory": true,
+      "steps": 3,
+      "tool_call_status_counts": {
+        "in_progress": 1
+      },
+      "tool_call_steps": 1,
+      "trajectory_source": "partial_acp",
+      "user_message_steps": 1
+    },
+    "usage_tracking": {
+      "requested": "auto",
+      "status": "enabled",
+      "usage_source": "provider_response"
+    },
+    "verifier_error_category": null
+  }
+}

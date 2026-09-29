@@ -494,6 +494,8 @@ def test_eval_create_config_prompt_overrides_yaml(monkeypatch, tmp_path):
 
 def test_eval_create_config_applies_identity_overrides(monkeypatch, tmp_path):
     """Guards v0.5 config runs from silently ignoring expensive-run identity flags."""
+    # These run with --sandbox daytona; stay independent of the optional SDK.
+    monkeypatch.setattr("benchflow.eval_plan.sandbox_sdk_missing", lambda name: False)
     tasks_root = tmp_path / "tasks"
     tasks_root.mkdir()
     config = tmp_path / "eval.yaml"
@@ -600,6 +602,8 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
     monkeypatch, tmp_path
 ):
     """Guards v0.5-integration@c30e130 against false per-rollout concurrency evidence."""
+    # These run with --sandbox daytona; stay independent of the optional SDK.
+    monkeypatch.setattr("benchflow.eval_plan.sandbox_sdk_missing", lambda name: False)
     tasks_root = tmp_path / "tasks"
     task_dir = tasks_root / "task-a"
     _write_minimal_task_toml(task_dir)

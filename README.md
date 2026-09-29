@@ -68,8 +68,11 @@ makes it available to the agent inside the sandbox.
 
 ```bash
 uv tool install --python 3.12 --upgrade benchflow
-docker info >/dev/null  # Docker must be running
+bench doctor      # checks Docker, logins and network; prints a fix for each problem
+bench eval smoke  # runs a bundled hello-world task with every agent you are logged in to
 ```
+
+`bench doctor` shows which login each agent would use and when it expires, never the secret itself. `bench eval smoke` runs one agent at a time and prints reward, time and trajectory path for each; see [Run everything](./docs/getting-started.md#run-everything-doctor-smoke-eval).
 
 ### ChatGPT subscription via Codex
 
@@ -102,6 +105,15 @@ bench eval run \
   --model claude-sonnet-4-6 \
   --sandbox docker
 ```
+
+On macOS, `claude auth login` keeps the live login in the Keychain, and BenchFlow reads `~/.claude/.credentials.json`, which that login does not refresh. If `bench doctor` reports that file as expired, use a long-lived token instead:
+
+```bash
+claude setup-token                        # prints a token valid for one year
+export CLAUDE_CODE_OAUTH_TOKEN=<token>
+```
+
+The first `--source-repo` run clones the whole SkillsBench repository once (over 1 GB, about a minute) into `.cache/datasets/`, and later runs reuse it. To download only the one task, use the sparse checkout in [Run your first eval](./docs/getting-started.md#run-your-first-eval) and pass `--tasks-dir`.
 
 The agent may pass or fail the benchmark task; either result means the
 evaluation completed. Each run writes rewards, token usage, and the full
@@ -149,7 +161,9 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
+| Fork a run at a checkpoint into children (compare prompts, parallel or nested children, retry from a checkpoint, branch-tree training data) | [Branching guide](./docs/branching.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
+| Read or score a physical robot trial (`trial-record.json`) | [Physical robot trials](./docs/robotics.md) |
 | Contribute a trajectory capture | [Trajectory upload](./docs/traj-upload.md) |
 | Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
 | Use public vs internal preview SDK releases | [Release channels](./docs/release.md) |

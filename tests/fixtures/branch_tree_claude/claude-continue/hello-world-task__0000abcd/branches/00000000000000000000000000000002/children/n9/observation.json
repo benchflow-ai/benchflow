@@ -1,0 +1,97 @@
+{
+  "kind": "branch-child",
+  "node_id": "n9",
+  "lineage": {
+    "parent_rollout": "hello-world-task__0000abcd",
+    "fork_id": "00000000000000000000000000000002",
+    "parent_node": "n4",
+    "index": 1,
+    "label": "hint-reuse-draft"
+  },
+  "reward": 0.0,
+  "error": null,
+  "verifier_error": null,
+  "export_error": null,
+  "timing": {
+    "agent_setup": 5.0,
+    "agent_execution": 7.0,
+    "verifier": 33.0
+  },
+  "native_usage": {
+    "n_input_tokens": 4,
+    "n_output_tokens": 200,
+    "n_cache_read_tokens": 30000,
+    "n_cache_creation_tokens": 2000,
+    "total_tokens": 32204,
+    "cost_usd": null,
+    "usage_source": "agent_native_acp",
+    "price_source": null,
+    "usage_details": {
+      "thought_tokens": 0
+    }
+  },
+  "trajectory": [
+    {
+      "type": "user_message",
+      "text": "The file draft.txt in the current working directory already holds the final text. Rename draft.txt to hello.txt without changing its contents, then stop.",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767268996000000000",
+        "last_observed_ns": "1767268996000000000"
+      },
+      "ts": "2026-01-01T12:03:16.000000+00:00"
+    },
+    {
+      "type": "agent_thought",
+      "text": "Rename draft.txt to hello.txt with mv.",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767268999000000000",
+        "last_observed_ns": "1767268999000000000"
+      },
+      "ts": "2026-01-01T12:03:19.000000+00:00"
+    },
+    {
+      "type": "tool_call",
+      "tool_call_id": "toolu_demo_03",
+      "kind": "execute",
+      "title": "mv /app/draft.txt /app/hello.txt",
+      "status": "completed",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "Rename draft.txt to hello.txt"
+          }
+        }
+      ],
+      "raw_input": {
+        "command": "mv /app/draft.txt /app/hello.txt",
+        "description": "Rename draft.txt to hello.txt"
+      },
+      "raw_output": "",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767269000000000000",
+        "last_observed_ns": "1767269001000000000"
+      },
+      "started_at": "2026-01-01T12:03:20.000000+00:00",
+      "finished_at": "2026-01-01T12:03:21.000000+00:00"
+    },
+    {
+      "type": "agent_message",
+      "text": "Done. `draft.txt` has been renamed to `hello.txt`.",
+      "receipt": {
+        "source": "benchflow_host",
+        "clock": "unix",
+        "first_observed_ns": "1767269002000000000",
+        "last_observed_ns": "1767269003000000000"
+      },
+      "ts": "2026-01-01T12:03:22.000000+00:00"
+    }
+  ]
+}

@@ -43,7 +43,7 @@ Or via Python SDK:
 import asyncio
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow._utils.benchmark_repos import resolve_source
+from benchflow import resolve_source
 
 async def main():
     config = RolloutConfig(
@@ -57,7 +57,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Note: `resolve_source()` is required for remote repos in the SDK. The CLI
+Note: `bf.resolve_source()` is required for remote repos in the SDK. The CLI
 handles this transparently via `--source-repo` / `--source-path`.
 
 API keys are auto-inherited from `os.environ` into the sandbox.

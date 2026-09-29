@@ -60,7 +60,9 @@ def print_error(message: str) -> None:
     # (e.g. a hosted-env ref ``primeintellect:a:b``). With Rich's default
     # emoji=True, err_console would substitute ``:a:`` with an emoji, corrupting
     # the echoed-back value. escape() neutralizes [..] markup but not shortcodes.
-    err_console.print(f"[red]{escape(str(message))}[/red]", emoji=False)
+    # soft_wrap: never hard-wrap an error at the console width; a path split
+    # across lines cannot be copied or grepped from a CI log.
+    err_console.print(f"[red]{escape(str(message))}[/red]", emoji=False, soft_wrap=True)
 
 
 _DEPRECATION_WARNED: set[str] = set()
@@ -149,6 +151,33 @@ def _failure_reason(failure: TaskFailure, job_dir: Path | None = None) -> Failur
     return FailureLine(f"reward {reward}")
 
 
+def _report_checkpoint_retries(result: object) -> None:
+    """One line for ``--retry-from-checkpoint`` retries, next to the score
+    they never change."""
+    from benchflow.checkpoint_retry import retry_summary
+
+    results = getattr(result, "results", None)
+    if not isinstance(results, dict):
+        return
+    counts = retry_summary(list(results.values()))
+    if not counts:
+        return
+    parts = [f"{counts['passed']}/{counts['attempted']} passed"]
+    if counts.get("no_work"):
+        parts.append(f"{counts['no_work']} made no tool calls")
+    if counts.get("failed_to_run"):
+        parts.append(f"{counts['failed_to_run']} failed to run")
+    if counts.get("no_checkpoint"):
+        parts.append(f"{counts['no_checkpoint']} had no checkpoint")
+    console.print(
+        "Retries from checkpoints: "
+        + ", ".join(parts)
+        + " (the score above is the trials' own; see each result.json retry block)",
+        highlight=False,
+        soft_wrap=True,
+    )
+
+
 def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -> None:
     """Print the Score/errors summary line, colored by outcome, plus artifacts.
 
@@ -165,6 +194,23 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     (the guide repeatedly says "read summary.json" but the CLI never said
     where).
     """
+    reused = int(getattr(result, "reused", 0) or 0)
+    ran = int(getattr(result, "ran", 0) or 0)
+    if reused:
+        where = f" {job_dir}" if job_dir is not None else ""
+        if ran:
+            note = f"{reused} finished task(s) reused, {ran} ran now"
+        else:
+            note = (
+                f"all {reused} task(s) were already finished, so nothing ran and "
+                "these are the earlier results"
+            )
+        err_console.print(
+            f"[yellow]Resumed job{escape(where)}:[/yellow] {note}. Pass --fresh "
+            "(or a new --job-name) for a new run.",
+            highlight=False,
+            soft_wrap=True,
+        )
     errors = int(getattr(result, "errored", 0) or 0)
     verifier_errors = int(getattr(result, "verifier_errored", 0) or 0)
     total_errors = errors + verifier_errors
@@ -193,6 +239,15 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         f"\n[{style}]{mark} Score: {result.passed}/{result.total} "
         f"({result.score:.1%})[/{style}]{mean_part}{err_part}"
     )
+    _report_checkpoint_retries(result)
+    budget = getattr(result, "budget", None)
+    if budget and budget.get("stopped"):
+        console.print(
+            f"[yellow]Budget:[/yellow] {escape(str(budget.get('reason')))}; "
+            f"{len(budget.get('cancelled') or [])} running trial(s) cancelled, "
+            f"{len(budget.get('not_started') or [])} not started (not counted as "
+            "failures; resume the job to run them)"
+        )
     # One dim reason line per FAILED task, so "0/1" doesn't force a dig into
     # summary.json to learn why. getattr(): sharded aggregation and older
     # SimpleNamespace-style callers don't carry task_failures.
@@ -224,16 +279,25 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     # verifier dir exists — artifact-backed or not — so "where do I look next"
     # needs no summary.json dig even when evidence mining came up empty.
     if artifact_pointer is not None:
-        console.print(f"[dim]  (details: {escape(str(artifact_pointer))})[/dim]")
+        # Paths are never wrapped, so they can be copied and grepped from a
+        # pipe or CI log.
+        console.print(
+            f"[dim]  (details: {escape(str(artifact_pointer))})[/dim]", soft_wrap=True
+        )
     if job_dir is not None:
-        console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}")
-        console.print(f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json")
+        console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}", soft_wrap=True)
+        console.print(
+            f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json",
+            soft_wrap=True,
+        )
+        console.print(
+            f"[dim]View:     [/dim] bench eval view {escape(str(job_dir))}",
+            soft_wrap=True,
+        )
 
 
 def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
     """Parse repeated ``KEY=VALUE`` CLI options into a dict."""
-    import typer
-
     parsed: dict[str, str] = {}
     for entry in entries or []:
         if "=" not in entry:

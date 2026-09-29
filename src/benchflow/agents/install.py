@@ -368,6 +368,6 @@ async def deploy_skills(
             sandbox_user,
             expected_skill_names,
         )
-        label = agent_cfg.name if agent_cfg else "oracle"
+        label = agent_cfg.name if agent_cfg else "a scripted agent"
         if count:
             logger.info(f"Skills distributed to {count} paths for {label}")

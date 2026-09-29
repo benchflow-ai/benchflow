@@ -23,6 +23,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.embodiment import (
+    Embodiment,
+    PhysicalRestoreRefused,
+    embodiment_from_metadata,
+    recorded_embodiment,
+    require_action_replay,
+)
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -168,8 +175,32 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
     return exchanges
 
 
+def run_embodiment(path: Path, config: dict[str, Any]) -> Embodiment:
+    """What the original run acted on, from the strongest evidence available.
+
+    An enclosing trial record wins, then the task's own metadata when its
+    directory is available locally. Without either, the run is virtual.
+    """
+    recorded = recorded_embodiment(path)
+    if recorded is not None:
+        return recorded
+    task_path = config.get("task_path")
+    if isinstance(task_path, str) and task_path and Path(task_path).is_dir():
+        from benchflow.task.task import Task
+
+        try:
+            metadata = Task(task_path).config.metadata
+        except (OSError, ValueError):
+            metadata = None
+        return embodiment_from_metadata(metadata)
+    return Embodiment()
+
+
 def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> RunFolder:
     """Load + validate an original run folder.
+
+    Runs on an embodiment that forbids action replay (every physical
+    embodiment) are refused before any other artifact is read.
 
     ``require_timeout`` rejects runs whose recorded status is not a
     timeout/idle-timeout. The default is permissive (warn only): a run with no
@@ -181,6 +212,12 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
         raise RunFolderError(f"not a directory: {path}")
 
     config = _read_json(path / "config.json", required=True)
+    # Record-replay re-executes the agent's recorded actions for real. On a
+    # physical embodiment that would move hardware again from an unreset scene.
+    try:
+        require_action_replay(run_embodiment(path, config), "benchflow continue")
+    except (PhysicalRestoreRefused, ValueError) as exc:
+        raise RunFolderError(str(exc)) from exc
     result = _read_json(path / "result.json", required=False)
     prompts = _load_prompts(path / "prompts.json")
     exchanges = load_llm_exchanges(path / "trajectory" / "llm_trajectory.jsonl")

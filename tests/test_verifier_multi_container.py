@@ -320,7 +320,10 @@ class TestCrossContainerHardeningPolicy:
 
         async def fake_exec(command, service: str = "main", **kwargs) -> ExecResult:
             services_seen.append(service)
-            return ExecResult(stdout="[]", stderr="", return_code=0)
+            stdout = (
+                '{"plugins": [], "rejected": []}' if "entry_points" in command else "[]"
+            )
+            return ExecResult(stdout=stdout, stderr="", return_code=0)
 
         env.exec = AsyncMock(side_effect=fake_exec)
 
@@ -329,3 +332,41 @@ class TestCrossContainerHardeningPolicy:
         # Every hardening command stayed in the agent container.
         assert services_seen, "hardening should issue at least one exec"
         assert set(services_seen) == {"main"}
+
+    @pytest.mark.asyncio
+    async def test_non_main_verifier_service_is_not_given_the_main_only_guard(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards the fix for the reward-0 regression the pytest plugin guard caused in #248 tasks.
+
+        The pytest plugin guard is installed in ``main`` only, because that is
+        the only container hardening touches. Passing ``-p <guard>`` to a
+        test.sh running in a target service made its pytest abort on the
+        missing module, so every target-side verification scored 0.
+        Hardening stays in ``main``, and the target's pytest gets main's
+        plugin flags without the guard, as before.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        env = MagicMock()
+        commands: list[str] = []
+
+        async def fake_exec(command, service: str = "main", **kwargs) -> ExecResult:
+            assert service == "main"
+            commands.append(command)
+            stdout = (
+                '{"plugins": [], "rejected": []}' if "entry_points" in command else "[]"
+            )
+            return ExecResult(stdout=stdout, stderr="", return_code=0)
+
+        env.exec = AsyncMock(side_effect=fake_exec)
+
+        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+
+        injected = task.config.verifier.env
+        assert "_benchflow_guard_" not in injected["PYTEST_ADDOPTS"]
+        assert "_benchflow_guard_" not in injected["PYTHONPATH"]
+        assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
+        assert not any("_benchflow_guard_" in command for command in commands)

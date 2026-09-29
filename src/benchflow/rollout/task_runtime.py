@@ -13,7 +13,7 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult
@@ -28,6 +28,9 @@ class TaskRuntimeConfig:
 
     task_path: str | Path
     environment: str = "docker"
+    codex_apps_policy: Literal["disabled", "inherit"] | None = field(
+        default=None, kw_only=True
+    )
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -60,6 +63,7 @@ class TaskRuntimeConfig:
         return RolloutConfig(
             task_path=Path(self.task_path),
             environment=self.environment,
+            codex_apps_policy=self.codex_apps_policy,
             sandbox_user=self.sandbox_user,
             sandbox_locked_paths=self.sandbox_locked_paths,
             sandbox_setup_timeout=self.sandbox_setup_timeout,
@@ -142,12 +146,11 @@ class TaskRuntime:
 
     @property
     def workspace(self) -> str:
-        rollout = self.rollout
-        return getattr(rollout, "_agent_cwd", None) or "/app"
+        return self.rollout._agent_cwd or "/app"
 
     @property
     def rollout_dir(self) -> Path:
-        rollout_dir = getattr(self.rollout, "_rollout_dir", None)
+        rollout_dir = self.rollout._rollout_dir
         if not isinstance(rollout_dir, Path):
             raise RuntimeError("TaskRuntime.start() did not initialize artifacts")
         return rollout_dir
@@ -162,9 +165,9 @@ class TaskRuntime:
         rollout = await Rollout.create(self.config.to_rollout_config())
         try:
             await rollout.setup()
-            if getattr(rollout, "_egress_denylist", None) is not None:
+            if rollout._egress_denylist is not None:
                 raise RuntimeError(
-                    "network_mode='denylist' requires an ACP agent rollout; "
+                    f"network_mode={rollout._egress_denylist.mode!r} requires an ACP agent rollout; "
                     "the bash primitive runs without the egress proxy"
                 )
             await rollout.start()

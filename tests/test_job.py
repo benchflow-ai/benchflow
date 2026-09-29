@@ -239,16 +239,15 @@ class TestRunTaskLoop:
 
     @pytest.mark.asyncio
     async def test_exhausts_retries(self, job_factory):
-        """SDK called 1 + max_retries times when all attempts fail with retryable error."""
+        """The rollout runs 1 + max_retries times when every attempt fails retryably."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         fail_result = RunResult(
             task_name="task-0", error="Agent install failed (rc=1): boom"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(return_value=fail_result)
+        job._run_single_task = AsyncMock(return_value=fail_result)
 
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 3  # 1 + 2 retries
+        assert job._run_single_task.call_count == 3  # 1 + 2 retries
         assert result.error == "Agent install failed (rc=1): boom"
 
     @pytest.mark.asyncio
@@ -258,11 +257,10 @@ class TestRunTaskLoop:
         timeout_result = RunResult(
             task_name="task-0", error="Agent timed out after 900.0s"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(return_value=timeout_result)
+        job._run_single_task = AsyncMock(return_value=timeout_result)
 
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 1
+        assert job._run_single_task.call_count == 1
         assert result.error == "Agent timed out after 900.0s"
 
     @pytest.mark.asyncio
@@ -275,12 +273,11 @@ class TestRunTaskLoop:
             rewards={"reward": 0.0},
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[idle_result, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[idle_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
 
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
     @pytest.mark.asyncio
@@ -292,27 +289,25 @@ class TestRunTaskLoop:
             verifier_error="verifier timed out after 60s",
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[timeout_result, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[timeout_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
 
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
     @pytest.mark.asyncio
     async def test_succeeds_on_retry(self, job_factory):
-        """SDK fails once then succeeds — returns success result."""
+        """The rollout fails once then succeeds — returns success result."""
         job, tasks_dir = job_factory(n_tasks=1, max_retries=2)
         fail_result = RunResult(
             task_name="task-0", error="Agent install failed (rc=1): boom"
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[fail_result, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[fail_result, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
     @pytest.mark.asyncio
@@ -325,12 +320,11 @@ class TestRunTaskLoop:
             error_category="pipe_closed",
         )
         ok_result = RunResult(task_name="task-0", rewards={"reward": 1.0})
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=[marker_timeout, ok_result])
+        job._run_single_task = AsyncMock(side_effect=[marker_timeout, ok_result])
 
         result = await job._run_task(tasks_dir / "task-0")
 
-        assert job._sdk.run.call_count == 2
+        assert job._run_single_task.call_count == 2
         assert result.rewards == {"reward": 1.0}
 
 
@@ -456,8 +450,7 @@ class TestJobResumeScoped:
         job = Evaluation(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="my-job"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
         )
         # The recorded agent ("old-agent") is named, proving detection is scoped
@@ -545,8 +538,7 @@ class TestSummaryInJobDir:
         job = Evaluation(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=cfg, job_name="test-run"
         )
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(task_name="task-0", rewards={"reward": 1.0})
         )
         await job.run()
@@ -591,7 +583,7 @@ class TestJobRunOrchestration:
         lock = asyncio.Lock()
         enough_in_flight = asyncio.Event()
 
-        async def fake_sdk_run(*args, **kwargs):
+        async def fake_run_single_task(*_args):
             nonlocal counter, max_in_flight
             async with lock:
                 counter += 1
@@ -606,8 +598,7 @@ class TestJobRunOrchestration:
                 counter -= 1
             return RunResult(task_name="task", rewards={"reward": 1.0})
 
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=fake_sdk_run)
+        job._run_single_task = AsyncMock(side_effect=fake_run_single_task)
 
         await job.run()
         assert max_in_flight == concurrency
@@ -620,12 +611,11 @@ class TestJobRunOrchestration:
         catches a non-classified exception, increments ``errored``, and logs.
 
         The synthesized RunResult(error="Unexpected: ...") is built in-Python
-        and never written to result.json (SDK._build_result never runs when
-        SDK.run raises), so we assert via EvaluationResult and caplog, not disk.
+        and never written to result.json (the rollout never builds a result
+        when it raises), so we assert via EvaluationResult and caplog, not disk.
         """
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=RuntimeError("boom"))
+        job._run_single_task = AsyncMock(side_effect=RuntimeError("boom"))
 
         with caplog.at_level(logging.ERROR):
             result = await job.run()
@@ -654,11 +644,10 @@ class TestJobRunOrchestration:
             "task-2": RunResult(task_name="task-2", error="agent crashed"),
         }
 
-        async def fake_run(*, task_path, **kwargs):
+        async def fake_run(task_path, _cfg):
             return outcomes[task_path.name]
 
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=fake_run)
+        job._run_single_task = AsyncMock(side_effect=fake_run)
 
         result = await job.run()
 
@@ -689,11 +678,10 @@ class TestJobRunOrchestration:
             "task-2": RunResult(task_name="task-2", error="agent crashed"),
         }
 
-        async def fake_run(*, task_path, **kwargs):
+        async def fake_run(task_path, _cfg):
             return outcomes[task_path.name]
 
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(side_effect=fake_run)
+        job._run_single_task = AsyncMock(side_effect=fake_run)
 
         with caplog.at_level(logging.INFO, logger="benchflow.evaluation"):
             result = await job.run()
@@ -713,8 +701,7 @@ class TestJobRunOrchestration:
         and the job-complete line must omit the field (a fabricated 0.00 would
         read as a real capability result)."""
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(task_name="task-0", error="agent crashed")
         )
 
@@ -733,8 +720,7 @@ class TestJobRunOrchestration:
         Guards the fix from PR #320 for audit Finding 6.
         """
         job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             return_value=RunResult(
                 task_name="task-0",
                 rewards=None,
@@ -758,8 +744,7 @@ class TestJobRunOrchestration:
     @pytest.mark.asyncio
     async def test_summary_json_includes_usage_aggregation(self, tmp_path):
         job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             side_effect=[
                 RunResult(
                     task_name="task-0",
@@ -901,8 +886,7 @@ class TestJobRunOrchestration:
         while tool-call aggregation still works.
         """
         job = self._make_job(tmp_path, n_tasks=2, concurrency=1)
-        job._sdk = AsyncMock()
-        job._sdk.run = AsyncMock(
+        job._run_single_task = AsyncMock(
             side_effect=[
                 RunResult(
                     task_name="task-0",

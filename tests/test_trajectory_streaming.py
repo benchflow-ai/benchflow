@@ -9,7 +9,7 @@ from typing import Any
 
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import ToolCallStatus
-from benchflow.rollout import Rollout
+from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.trajectories._capture import (
     TrajectoryWriter,
     _capture_session_trajectory,
@@ -315,16 +315,12 @@ def _build_rollout(
     active_session: ACPSession | None,
     session_traj_count: int,
 ) -> Rollout:
-    """Build a Rollout instance bypassing __init__ so we can exercise the
-    pure trajectory-capture logic without dragging the whole config /
-    sandbox tree through the test."""
-    r: Any = Rollout.__new__(Rollout)
+    """Build a Rollout wired only for the trajectory-capture logic."""
+    r: Any = Rollout(RolloutConfig(task_path=Path("task")))
     r._trajectory = list(prior_trajectory)
     r._acp_client = _StubACPClient(active_session)
     r._session_traj_count = session_traj_count
-    r._partial_trajectory = False
     r._trajectory_source = "acp" if prior_trajectory else None
-    r._n_tool_calls = 0
     return r
 
 
@@ -341,17 +337,7 @@ def _build_commit_rollout() -> Rollout:
             self.steps.append(step)
             return object()
 
-    r: Any = Rollout.__new__(Rollout)
-    r._trajectory = []
-    r._session_traj_count = 0
-    r._session_tool_count = 0
-    r._n_tool_calls = 0
-    r._executed_prompts = []
-    r._trajectory_source = None
-    r._partial_trajectory = False
-    r._timing = {}
-    r._session = None
-    r._native_usage_checkpoint = None
+    r: Any = Rollout(RolloutConfig(task_path=Path("task")))
     r._tree = _Tree()
     r._cursor = object()
     return r

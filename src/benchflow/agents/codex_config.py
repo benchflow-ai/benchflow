@@ -121,7 +121,7 @@ def apply_codex_launch_config(
     )
     if config is not None and (disable_search or (owns_model and reasoning_effort)):
         if disable_search:
-            # codex-acp 1.6.0 ignores CLI -c flags; its supported CODEX_CONFIG
+            # codex-acp (1.6.0 through 1.13.1) ignores CLI -c flags; its CODEX_CONFIG
             # is forwarded to the Codex app-server's thread configuration.
             config["web_search"] = "disabled"
         if owns_model and reasoning_effort:
@@ -177,3 +177,14 @@ def _apply_codex_default_auth_request(
             request,
             separators=(",", ":"),
         )
+
+
+def disable_codex_apps(agent_env: dict[str, str]) -> dict[str, str]:
+    """Set only Apps in supported ACP config; managed requirements enforce it."""
+    config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=True)
+    assert config is not None
+    features = config.get("features", {})
+    if not isinstance(features, dict):
+        raise ValueError("CODEX_CONFIG.features must be an object")
+    config["features"] = {**features, "apps": False}
+    return {**agent_env, CODEX_CONFIG_ENV: json.dumps(config, separators=(",", ":"))}

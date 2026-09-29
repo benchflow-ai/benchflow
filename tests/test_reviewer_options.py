@@ -236,10 +236,9 @@ async def test_scoring_failure_never_retries_the_solver(tmp_path: Path) -> None:
         error="Connection reset by peer",
         scoring=ScoringResult(status="error", error="Reviewer provider unavailable"),
     )
-    evaluation._sdk = AsyncMock()
-    evaluation._sdk.run.return_value = result
+    evaluation._run_single_task = AsyncMock(return_value=result)
     assert await evaluation._run_task(task) is result
-    assert evaluation._sdk.run.await_count == 1
+    assert evaluation._run_single_task.await_count == 1
 
 
 def test_runtime_result_pass_uses_explicit_gate_outcome() -> None:

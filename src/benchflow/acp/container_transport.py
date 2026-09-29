@@ -106,6 +106,10 @@ class ContainerTransport(Transport):
         )
         logger.info(f"ContainerTransport: agent started ({self._command})")
 
+    def expect_silence(self, seconds: float) -> None:
+        """Pass the prompt's silence budget to the live process's read guard."""
+        self._cp.expect_silence(seconds)
+
     async def send(self, message: dict[str, Any]) -> None:
         """Send a JSON-RPC message to the agent."""
         data = json.dumps(message)

@@ -677,3 +677,27 @@ def test_eval_view_passes_redaction_summary_through(tmp_path, monkeypatch):
     )
     assert res.exit_code == 0
     assert calls["summary"] == "2 API keys, 1 bearer token"
+
+
+@pytest.mark.parametrize("mode", ["single", "browse"])
+def test_wrong_host_names_the_localhost_url(tmp_path, mode):
+    """Opening http://127.0.0.1:<port> got a bare 403 "Invalid Host header".
+    The DNS-rebinding check stays; the refusal now says
+    which URL works."""
+    if mode == "single":
+        target = _write_session(tmp_path)
+    else:
+        rollout = tmp_path / "jobs" / "task__abcd1234"
+        (rollout / "trajectory").mkdir(parents=True)
+        (rollout / "trajectory" / "acp_trajectory.jsonl").write_text(
+            json.dumps({"type": "agent_message", "text": "hi"}) + "\n"
+        )
+        (rollout / "result.json").write_text(json.dumps({"task_name": "task"}))
+        target = tmp_path / "jobs"
+    port, _thread, _ = _serve_in_thread(target, confirm=False)
+    conn = http.client.HTTPConnection("localhost", port, timeout=5)
+    conn.request("GET", "/", headers={"Host": f"127.0.0.1:{port}"})
+    response = conn.getresponse()
+    body = response.read().decode()
+    assert response.status == 403
+    assert f"http://localhost:{port}/" in body

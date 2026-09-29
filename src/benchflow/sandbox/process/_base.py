@@ -50,6 +50,17 @@ _ANSI_CSI_RE_BYTES = re.compile(_ANSI_CSI_PATTERN.encode())
 _ANSI_OSC_RE_BYTES = re.compile(_ANSI_OSC_PATTERN.encode())
 
 
+def _readline_timeout_sec(
+    env_var: str, default: float, silence_floor: float | None
+) -> float:
+    """The read guard: an explicit *env_var* wins, else the larger of *default*
+    and the silence the running prompt allows (#1143)."""
+    raw = os.environ.get(env_var)
+    if raw is not None and raw.strip():
+        return _timeout_sec_from_env(env_var, default)
+    return max(default, silence_floor or 0.0)
+
+
 def _timeout_sec_from_env(env_var: str, default: float) -> float:
     """Read a positive seconds value from *env_var*, else *default*.
 
@@ -121,6 +132,16 @@ class LiveProcess(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Terminate the process (idempotent — safe to call after death)."""
+
+    def expect_silence(self, seconds: float) -> None:
+        """Let a read wait at least *seconds* for the next line (#1143).
+
+        The prompt's idle watchdog (or its wall budget) owns how long an
+        agent may stay silent; a transport read guard shorter than that would
+        kill a legitimately quiet agent first. Transports without a read
+        guard ignore this.
+        """
+        del seconds
 
     @property
     @abstractmethod

@@ -8,16 +8,22 @@ kernel path is exercised without omnigent/sandbox deps.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from benchflow.acp.runtime import AgentPromptTimeoutError
 from benchflow.acp.types import StopReason
+from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.rollout.session_factory_runtime import (
     _load_session_factory,
     connect_session_factory,
     execute_prompts_session_factory,
 )
+
+
+def _rollout() -> Rollout:
+    return Rollout(RolloutConfig(task_path=Path("task")))
 
 
 class _FakeSession:
@@ -207,20 +213,15 @@ def test_session_factory_on_ask_user_handler_wired():
     reached a session-factory agent. The handler must instead bind onto
     ``self._session.on_ask_user`` for the session-factory path (#825).
     """
-    from benchflow.rollout import Rollout
-
     session = _FakeSession()
-    r = Rollout.__new__(Rollout)  # bypass __init__ (only the method is exercised)
+    r = _rollout()
     r._is_session_factory = True
     r._session = session
-    r._session_adapter = None
-    r._ask_user_handler_set = True
 
     async def handler(request):
         return "ok"
 
-    r._ask_user_handler = handler
-    r._reapply_ask_user_handler()
+    r.on_ask_user(handler)
     assert session.ask_user_handler is handler
 
 
@@ -234,27 +235,15 @@ async def test_session_factory_partial_trajectory_captured_on_disconnect():
     those uncommitted steps into ``self._trajectory`` (marked partial) before it
     tears the session down (#825).
     """
-    from benchflow.rollout import Rollout
-
     session = _FakeSession()
     session._steps = [
         {"type": "user_message", "text": "task"},
         {"type": "agent_message", "text": "partial work"},
     ]
 
-    r = Rollout.__new__(Rollout)
-    r._acp_client = None
+    r = _rollout()
     r._session = session
-    r._session_adapter = None
     r._is_session_factory = True
-    r._agent_launch = ""
-    r._env = None
-    r._active_role = None
-    r._trajectory = []
-    r._session_traj_count = 0
-    r._session_tool_count = 0
-    r._partial_trajectory = False
-    r._trajectory_source = None
     r._phase = "connected"
 
     await r.disconnect()
@@ -288,7 +277,6 @@ def test_session_factory_entrypoint_is_the_dispatch_key():
         AGENTS,
         register_agent,
     )
-    from benchflow.rollout import Rollout
 
     register_agent(
         "fake-sf-agent",
@@ -298,7 +286,7 @@ def test_session_factory_entrypoint_is_the_dispatch_key():
         session_factory="mymod:build_agent",
     )
     try:
-        r = Rollout.__new__(Rollout)  # bypass __init__ (only the method is exercised)
+        r = _rollout()
         assert r._session_factory_entrypoint("fake-sf-agent") == "mymod:build_agent"
         # a real ACP agent → None (stays on the ACP path)
         assert r._session_factory_entrypoint("opencode") is None
@@ -314,15 +302,10 @@ def test_session_factory_entrypoint_is_the_dispatch_key():
 @pytest.mark.asyncio
 async def test_disconnect_clears_session_factory_state():
     """Guards PR #825 against reusing a stale session-factory session after disconnect."""
-    from benchflow.rollout import Rollout
-
-    rollout = Rollout.__new__(Rollout)
-    rollout._acp_client = None
+    rollout = _rollout()
     rollout._session = _FakeSession()
     rollout._session_adapter = object()
     rollout._is_session_factory = True
-    rollout._agent_launch = ""
-    rollout._env = None
     rollout._active_role = object()
     rollout._session_tool_count = 7
     rollout._session_traj_count = 11
@@ -354,7 +337,6 @@ async def test_steps_only_session_trajectory_sink_writes_steps(tmp_path):
     ``acp_trajectory.jsonl`` is never written (#825 BLOCKER 8).
     """
     import json
-    from pathlib import Path
 
     from benchflow.trajectories._capture import (
         TrajectoryWriter,

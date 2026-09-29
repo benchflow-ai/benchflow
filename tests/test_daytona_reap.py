@@ -394,6 +394,22 @@ class TestIsBenchflowLabelOrphan:
         )
 
 
+class TestUnscopedOwnerIsForeignToAScopedRun:
+    def test_unscoped_managed_label_is_not_an_orphan(self, monkeypatch):
+        """With BENCHFLOW_DAYTONA_OWNER set, every live
+        sandbox another operator started without an owner (benchflow.managed=1)
+        was reported as a "possible orphan leak ... remove it manually" at each
+        eval start. It is a valid ownership
+        marker, so it is foreign, like a different scoped owner."""
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
+        assert not _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "1"})
+        )
+        assert _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "0"})
+        )
+
+
 def test_reaper_skips_other_scoped_owner(monkeypatch):
     """Guards PR #921 against cross-operator deletion on a shared API key."""
     monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")

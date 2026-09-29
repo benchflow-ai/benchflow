@@ -152,12 +152,14 @@ only-include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live and not integration'"
+addopts = "-m 'not live and not integration and not e2e'"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
     "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
     "browser: drives the viewer template in real Chromium via Playwright (self-skips without playwright/chromium; deselect with -m 'not browser')",
+    "e2e: end-to-end scenarios per SDK feature: real bench CLI and Python API on real sandboxes (tests/e2e/README.md: BENCHFLOW_E2E_SANDBOX=daytona for the feature tier; Docker or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona for the self-hosted policy scenario); excluded by default, run with -m e2e",
+    "deterministic: real CLI + real sandbox + scripted fake model provider; runs by default when a sandbox is available (Docker, or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona), skips with a reason otherwise (deselect with -m 'not deterministic')",
 ]
 
 [tool.ruff]

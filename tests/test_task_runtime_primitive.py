@@ -363,7 +363,7 @@ async def test_task_runtime_returns_integrated_reward_after_releasing_solver(
     async def deterministic_verifier(self):
         return {"reward": 1.0}
 
-    async def reviewer(rollout):
+    async def reviewer(rollout, *, result=None, lock_held=False):
         assert planes.sandbox.stopped == 1
         return expected
 

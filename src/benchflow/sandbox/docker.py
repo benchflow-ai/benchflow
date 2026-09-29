@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import base64
 import contextlib
 import json
 import logging
@@ -18,7 +19,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
 from pydantic import BaseModel
 
@@ -35,9 +36,26 @@ from benchflow.sandbox._compose import (
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_UP_RETRY_DELAYS_SEC,
+    compose_needs_net_admin,
+    docker_daemon_unreachable_reason,
     is_compose_up_network_race_error,
 )
-from benchflow.sandbox.protocol import SandboxImage
+from benchflow.sandbox._recovery_baseline import (
+    DockerRecoveryBaseline,
+    capture_baseline,
+    validate_baseline,
+)
+from benchflow.sandbox._snapshot_credentials import (
+    CredentialScrubError,
+    StashedCredential,
+    put_back_credentials,
+    scrub_credentials,
+)
+from benchflow.sandbox.protocol import (
+    SandboxImage,
+    SandboxRestoreHostConfigUnavailable,
+    SandboxSnapshotNotSupported,
+)
 from benchflow.task.config import NetworkMode, SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -60,6 +78,38 @@ _DOCKER_BUILD_RETRYABLE_ERRORS = (
 # Compose-up network-race retry config lives in _compose so the host docker
 # path and the Daytona DinD path share the exact same race detection + back-off.
 _COMPOSE_UP_RETRY_DELAYS_SEC = COMPOSE_UP_RETRY_DELAYS_SEC
+
+# On macOS the daemon always runs in a Linux VM (Colima, Docker Desktop, ...).
+_DOCKER_RUNS_IN_VM = sys.platform == "darwin"
+
+
+def _docker_unavailable_reason(exc: BaseException) -> str | None:
+    """Why a docker command could not reach Docker at all, or None.
+
+    Either the ``docker`` CLI is missing or the daemon is unreachable; any
+    other failure (a timeout, a daemon error) returns None.
+    """
+    if isinstance(exc, FileNotFoundError) and exc.filename == "docker":
+        return "docker CLI not found on PATH"
+    return docker_daemon_unreachable_reason(str(exc))
+
+
+def _vm_does_not_share(host_path: Path) -> bool:
+    """Whether the Docker VM is expected not to see ``host_path``.
+
+    A Docker VM sees only the host directories it shares. Colima, and Lima
+    under it, share only ``$HOME`` by default, so a rollout directory elsewhere
+    (for example under ``/tmp``) is bind-mounted as an empty VM-local
+    directory. Under ``$HOME``, or on a host where the daemon runs natively,
+    the daemon should see the path.
+    """
+    if not _DOCKER_RUNS_IN_VM:
+        return False
+    try:
+        host_path.resolve().relative_to(Path.home().resolve())
+    except ValueError:
+        return True
+    return False
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -84,6 +134,179 @@ def _is_retryable_docker_build_error(message: str) -> bool:
 
 def _is_compose_up_network_race_error(message: str) -> bool:
     return is_compose_up_network_race_error(message)
+
+
+# The benchflow.owned label the leak sweeper filters on (evaluation.py).
+_BENCHFLOW_OWNED_LABEL = "benchflow.owned"
+
+# HostConfig keys restore reproduces below. Anything else must hold an unset
+# value, so a setting restore cannot rebuild -- including one a newer Docker
+# adds -- fails closed instead of vanishing (e.g. a gVisor runtime silently
+# restored onto runc).
+_REPLAYED_HOST_CONFIG = frozenset(
+    {
+        "NetworkMode",
+        "Tmpfs",
+        "RestartPolicy",
+        "IpcMode",
+        "CapAdd",
+        "CapDrop",
+        "SecurityOpt",
+        "ReadonlyRootfs",
+        "NanoCpus",
+        "Memory",
+        "MemorySwap",
+        "MemoryReservation",
+        "MemorySwappiness",
+        "PidsLimit",
+        "ShmSize",
+        "Dns",
+        "DnsSearch",
+        "DnsOptions",
+        "Runtime",
+        "Init",
+        "GroupAdd",
+        "OomScoreAdj",
+        "CgroupnsMode",
+        "LogConfig",
+    }
+)
+# Keys with no setting of their own: mounts are replayed from the container's
+# Mounts list, the daemon recomputes masked paths from Privileged/SecurityOpt,
+# and the rest only affect the client that created the container.
+_DERIVED_HOST_CONFIG = frozenset(
+    {
+        "Binds",
+        "Mounts",
+        "MaskedPaths",
+        "ReadonlyPaths",
+        "ContainerIDFile",
+        "ConsoleSize",
+    }
+)
+_UNSET_VALUES: tuple[Any, ...] = (None, False, 0, "", [], {})
+
+
+def _replayed_run_args(container: dict[str, Any], *, default_network: str) -> list[str]:
+    """Replay supported host configuration, rejecting lossy restore before removal.
+
+    Adapted from JeremyJC67's PR #1046. Docker commit preserves
+    image configuration, but not mounts, networking, security or resource caps.
+    Mounted contents and running processes are not captured by this operation.
+    """
+
+    def reject(detail: str) -> NoReturn:
+        raise SandboxRestoreHostConfigUnavailable(
+            f"Docker snapshot restore cannot preserve {detail}; container left intact"
+        )
+
+    host = container.get("HostConfig")
+    mounts = container.get("Mounts")
+    if not isinstance(host, dict) or not isinstance(mounts, list):
+        reject("missing HostConfig or Mounts")
+    for key, value in host.items():
+        if (
+            key not in _REPLAYED_HOST_CONFIG
+            and key not in _DERIVED_HOST_CONFIG
+            and value not in _UNSET_VALUES
+        ):
+            reject(f"HostConfig.{key}")
+    for mount in host.get("Mounts") or []:
+        # Only bind propagation is replayed from the container's Mounts list.
+        options = {
+            **(mount.get("BindOptions") or {}),
+            **(mount.get("VolumeOptions") or {}),
+            **(mount.get("TmpfsOptions") or {}),
+        }
+        options.pop("Propagation", None)
+        if any(value not in _UNSET_VALUES for value in options.values()):
+            reject(f"mount options for {mount.get('Target')!r}")
+    if (host.get("RestartPolicy") or {}).get("Name") not in (None, "", "no"):
+        reject("RestartPolicy")
+    network = host.get("NetworkMode")
+    if (
+        not network
+        or network in {"host", "default", "bridge"}
+        or network.startswith("container:")
+    ):
+        reject(f"network mode {network!r}")
+    networks = (container.get("NetworkSettings") or {}).get("Networks") or {}
+    if len(networks) > 1:
+        reject("multiple network attachments")
+    if network != "none" and network != default_network:
+        reject(f"network {network!r} outside the compose project")
+    args = ["--network", network]
+    for settings in networks.values():
+        if settings.get("IPAMConfig"):
+            reject("static network addressing")
+        for alias in settings.get("Aliases") or []:
+            args += ["--network-alias", alias]
+    # Docker lists --tmpfs mounts only in HostConfig.Tmpfs, not in Mounts.
+    tmpfs = host.get("Tmpfs") or {}
+    for destination, options in tmpfs.items():
+        args += ["--tmpfs", destination + (f":{options}" if options else "")]
+    for mount in mounts:
+        kind, destination = mount.get("Type"), mount.get("Destination")
+        if not destination:
+            reject("a mount without a destination")
+        if kind == "tmpfs":
+            if destination not in tmpfs:
+                reject("tmpfs options absent from HostConfig")
+            continue
+        source = mount.get("Name") if kind == "volume" else mount.get("Source")
+        if kind not in {"bind", "volume"} or not source:
+            reject(f"mount type {kind!r} or missing source")
+        if "," in source or "," in destination:
+            reject("mount paths containing commas")
+        spec = f"type={kind},src={source},dst={destination}"
+        if mount.get("RW") is False:
+            spec += ",readonly"
+        if kind == "bind" and mount.get("Propagation"):
+            spec += f",bind-propagation={mount['Propagation']}"
+        args += ["--mount", spec]
+    for key, flag in (
+        ("CapAdd", "--cap-add"),
+        ("CapDrop", "--cap-drop"),
+        ("SecurityOpt", "--security-opt"),
+        ("GroupAdd", "--group-add"),
+    ):
+        for value in host.get(key) or []:
+            args += [flag, value]
+    if host.get("ReadonlyRootfs"):
+        args += ["--read-only"]
+    if host.get("Init") is not None:
+        args += ["--init" if host["Init"] else "--init=false"]
+    if host.get("NanoCpus"):
+        args += ["--cpus", f"{host['NanoCpus'] / 1_000_000_000:g}"]
+    for key, flag in (
+        ("Runtime", "--runtime"),
+        ("CgroupnsMode", "--cgroupns"),
+        ("OomScoreAdj", "--oom-score-adj"),
+        ("Memory", "--memory"),
+        ("MemorySwap", "--memory-swap"),
+        ("MemoryReservation", "--memory-reservation"),
+        ("PidsLimit", "--pids-limit"),
+        ("ShmSize", "--shm-size"),
+    ):
+        if host.get(key):
+            args += [flag, str(host[key])]
+    if host.get("MemorySwappiness") is not None:
+        args += ["--memory-swappiness", str(host["MemorySwappiness"])]
+    log_config = host.get("LogConfig") or {}
+    if log_config.get("Type"):
+        args += ["--log-driver", log_config["Type"]]
+    for name, value in (log_config.get("Config") or {}).items():
+        args += ["--log-opt", f"{name}={value}"]
+    if host.get("IpcMode") not in (None, "", "private"):
+        reject("non-private IPC")
+    for key, flag in (
+        ("Dns", "--dns"),
+        ("DnsSearch", "--dns-search"),
+        ("DnsOptions", "--dns-option"),
+    ):
+        for value in host.get(key) or []:
+            args += [flag, value]
+    return args
 
 
 class DockerSandboxEnvVars(BaseModel):
@@ -207,6 +430,16 @@ class DockerSandbox(BaseSandbox):
             memory=f"{task_env_config.memory_mb}M",
         )
         self._use_prebuilt = False
+        # Set just before `compose up`: from then on containers may exist and
+        # stop() must tear them down; before it, nothing was started.
+        self._compose_up_attempted = False
+        self._recovery_baseline: DockerRecoveryBaseline | None = None
+        # Branch snapshot images still used by a container when their fork
+        # finished; stop() removes them once the containers are gone.
+        self._deferred_snapshot_refs: set[str] = set()
+        # Credential files scrubbed out of each snapshot image, held in host
+        # memory so restore() can put them back (see _snapshot_credentials).
+        self._snapshot_credentials: dict[str, list[StashedCredential]] = {}
 
         self._compose_task_env: dict[str, str] = {}
         if task_env_config.env and self._uses_compose:
@@ -242,6 +475,10 @@ class DockerSandbox(BaseSandbox):
         translation: Compose still accepts the bind mount, but the container
         and Benchflow then write to different directories.  Treat that case as
         non-mounted so the verifier clears and downloads its remote outputs.
+
+        The gap is logged at debug level where it is expected: a Docker VM
+        that does not share the directory (Colima on a Mac with the job
+        outside ``$HOME``). Anywhere else it stays a warning.
         """
         if self.rollout_paths is None:
             return
@@ -261,11 +498,35 @@ class DockerSandbox(BaseSandbox):
         finally:
             host_probe.unlink(missing_ok=True)
 
-        if not self._logs_are_mounted:
-            self.logger.warning(
-                "Docker verifier-log bind mount is not visible inside the "
-                "container; verifier outputs will be copied back explicitly."
+        if self._logs_are_mounted:
+            return
+        verifier_dir = self.rollout_paths.verifier_dir
+        if _vm_does_not_share(verifier_dir):
+            # Expected (Colima on a Mac, jobs outside $HOME) and harmless.
+            self.logger.debug(
+                "Verifier-log directory %s is outside $HOME, which the Docker VM "
+                "(Colima by default) does not share; verifier outputs will be "
+                "copied back from the container instead.",
+                verifier_dir,
             )
+            return
+        self.logger.warning(
+            "Docker verifier-log bind mount is not visible inside the "
+            "container; verifier outputs will be copied back explicitly. The "
+            "daemon cannot see %s, so it may be remote or reached without path "
+            "translation (check DOCKER_HOST and `docker context ls`).",
+            verifier_dir,
+        )
+
+    def _docker_client_env(self) -> dict[str, str] | None:
+        """Environment for raw ``docker`` subprocesses; None inherits the caller's.
+
+        The remote provider returns an environment pointed at its host.
+        """
+        return None
+
+    def _is_retryable_build_error(self, message: str) -> bool:
+        return _is_retryable_docker_build_error(message)
 
     @property
     def _dockerfile_path(self) -> Path:
@@ -302,7 +563,7 @@ class DockerSandbox(BaseSandbox):
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 
-        if self.task_env_config.network_mode == NetworkMode.DENYLIST:
+        if compose_needs_net_admin(self.task_env_config):
             paths.append(self._DOCKER_COMPOSE_NET_ADMIN_PATH)
 
         return paths
@@ -450,7 +711,7 @@ class DockerSandbox(BaseSandbox):
                 await self._run_docker_compose_command(["build"])
                 return
             except RuntimeError as exc:
-                if attempt == max_attempts or not _is_retryable_docker_build_error(
+                if attempt == max_attempts or not self._is_retryable_build_error(
                     str(exc)
                 ):
                     raise
@@ -491,11 +752,39 @@ class DockerSandbox(BaseSandbox):
                 )
                 await asyncio.sleep(delay)
 
+    async def capture_recovery_baseline(
+        self, task_digest: str, effective_config_digest: str
+    ) -> DockerRecoveryBaseline:
+        return await capture_baseline(self, task_digest, effective_config_digest)
+
+    def use_recovery_baseline(self, baseline: DockerRecoveryBaseline) -> None:
+        if (
+            self._uses_compose
+            or self._mounts_json
+            or self._pre_compose_hook_path.exists()
+        ):
+            raise ValueError(
+                "Custom runtime topology cannot use a recovery image lease"
+            )
+        self._recovery_baseline = baseline
+
     async def start(self, force_build: bool) -> None:
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
 
-        self._use_prebuilt = not force_build and bool(self.task_env_config.docker_image)
+        if self._recovery_baseline is not None:
+            if force_build:
+                raise ValueError("Recovery must never rebuild its original baseline")
+            effective = self.task_env_config.model_copy(deep=True)
+            effective.allow_internet = self._recovery_baseline.effective_allow_internet
+            await validate_baseline(
+                self, self._recovery_baseline, sandbox_config=effective
+            )
+            self.task_env_config = effective
+            self._env_vars.prebuilt_image_name = self._recovery_baseline.image_id
+        self._use_prebuilt = self._recovery_baseline is not None or (
+            not force_build and bool(self.task_env_config.docker_image)
+        )
 
         # Gate the entire startup phase (build + down + up) — not just build.
         # When images are cached, build is a no-op so a build-only semaphore
@@ -505,7 +794,8 @@ class DockerSandbox(BaseSandbox):
         if build_sem is not None:
             await build_sem.acquire()
         try:
-            await self._run_pre_compose_hook()
+            if self._recovery_baseline is None:
+                await self._run_pre_compose_hook()
 
             if not self._use_prebuilt:
                 lock = self._image_build_locks.setdefault(
@@ -517,26 +807,54 @@ class DockerSandbox(BaseSandbox):
             with contextlib.suppress(RuntimeError):
                 await self._run_docker_compose_command(["down", "--remove-orphans"])
 
-            await self._run_docker_compose_up()
+            self._compose_up_attempted = True
+            if self._recovery_baseline is None:
+                await self._run_docker_compose_up()
+            else:
+                await self._run_docker_compose_command(
+                    ["up", "--detach", "--wait", "--no-build", "--pull", "never"]
+                )
+                container_id = await self._main_container_id()
+                if (
+                    not container_id
+                    or (await self._inspect_container(container_id)).get("Image")
+                    != self._recovery_baseline.image_id
+                ):
+                    raise RuntimeError(
+                        "Recovery container did not use the original image"
+                    )
         finally:
             if build_sem is not None:
                 build_sem.release()
 
+        await self._prepare_log_dirs_after_up()
+
+    async def _prepare_log_dirs_after_up(self) -> None:
+        """Make the mounted log folders writable and check the mount is shared."""
         await self.exec(
             f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
         await self._probe_verifier_log_mount()
 
+    def _down_command(self, delete: bool) -> list[str]:
+        """The ``compose down`` arguments teardown runs (unless containers are kept)."""
+        if delete and self._recovery_baseline is None:
+            return ["down", "--rmi", "all", "--volumes", "--remove-orphans", "-t", "5"]
+        return ["down", "-t", "5"]
+
     async def stop(self, delete: bool) -> None:
         # Bounded chown: a hung agent container will make `docker exec` block
         # forever. We don't need the chown to succeed for correctness — it just
         # makes host-side log reading nicer. Time out fast and continue to the
-        # actual teardown.
+        # actual teardown. Before `compose up` there is no container to chown.
         try:
-            await asyncio.wait_for(
-                self._chown_to_host_user(str(SandboxPaths.logs_dir), recursive=True),
-                timeout=30,
-            )
+            if self._compose_up_attempted:
+                await asyncio.wait_for(
+                    self._chown_to_host_user(
+                        str(SandboxPaths.logs_dir), recursive=True
+                    ),
+                    timeout=30,
+                )
         except TimeoutError:
             self.logger.warning("Chown logs directory timed out; continuing teardown.")
         except Exception as e:
@@ -557,28 +875,52 @@ class DockerSandbox(BaseSandbox):
                 await self._run_docker_compose_command(
                     ["stop", "-t", "5"], timeout_sec=90
                 )
-            elif delete:
-                await self._run_docker_compose_command(
-                    [
-                        "down",
-                        "--rmi",
-                        "all",
-                        "--volumes",
-                        "--remove-orphans",
-                        "-t",
-                        "5",
-                    ],
-                    timeout_sec=120,
-                )
             else:
+                down = self._down_command(delete)
                 await self._run_docker_compose_command(
-                    ["down", "-t", "5"], timeout_sec=90
+                    down, timeout_sec=120 if "--rmi" in down else 90
                 )
         except Exception as e:
-            self.logger.warning(
-                f"Docker compose down hung/failed ({e}); force-killing project."
-            )
-            await self._force_kill_project()
+            unavailable = _docker_unavailable_reason(e)
+            if unavailable is not None and not self._compose_up_attempted:
+                # Startup failed because Docker itself is unavailable, and the
+                # rollout already reported that; no container was started.
+                self.logger.debug(
+                    "Skipped teardown of %s: Docker is unavailable (%s) and no "
+                    "container was started.",
+                    _sanitize_docker_compose_project_name(self.session_id),
+                    unavailable,
+                )
+            else:
+                self.logger.warning(
+                    f"Docker compose down hung/failed ({e}); force-killing project."
+                )
+                await self._force_kill_project()
+        self._snapshot_credentials.clear()
+        await self._delete_deferred_snapshots()
+
+    async def _delete_deferred_snapshots(self) -> None:
+        """Remove branch snapshot images that were in use when their fork ended."""
+        for ref in sorted(self._deferred_snapshot_refs):
+            try:
+                gone = await self._remove_snapshot_image(ref)
+            except Exception as e:
+                gone = False
+                self.logger.warning(f"Snapshot image {ref} removal failed: {e}")
+            if gone:
+                self._deferred_snapshot_refs.discard(ref)
+            else:
+                self.logger.warning(
+                    f"Snapshot image {ref} is still in use (kept container?); "
+                    f"remove it with `docker image rm {ref}` when done"
+                )
+
+    async def _remove_snapshot_image(self, ref: str) -> bool:
+        """``docker image rm`` without force; True when the image is gone."""
+        result = await self._docker_cli(["image", "rm", ref], check=False)
+        if result.return_code == 0:
+            return True
+        return "no such image" in f"{result.stderr} {result.stdout}".lower()
 
     async def _force_kill_project(self) -> None:
         """Last-resort cleanup when `compose down` hangs or fails.
@@ -598,6 +940,7 @@ class DockerSandbox(BaseSandbox):
                 label,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=self._docker_client_env(),
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             cids = stdout.decode().split()
@@ -610,6 +953,7 @@ class DockerSandbox(BaseSandbox):
                     cid,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env=self._docker_client_env(),
                 )
                 await asyncio.wait_for(rm_proc.wait(), timeout=10)
             net_proc = await asyncio.create_subprocess_exec(
@@ -621,6 +965,7 @@ class DockerSandbox(BaseSandbox):
                 label,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=self._docker_client_env(),
             )
             await asyncio.wait_for(net_proc.wait(), timeout=10)
         except Exception as e:
@@ -721,8 +1066,6 @@ class DockerSandbox(BaseSandbox):
         committed image tag — pass it back to :meth:`restore` to roll the
         ``main`` container back to this checkpoint.
         """
-        from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
-
         container_id = await self._main_container_id()
         if not container_id:
             raise SandboxSnapshotNotSupported(
@@ -731,22 +1074,43 @@ class DockerSandbox(BaseSandbox):
             )
         suffix = name or uuid.uuid4().hex[:12]
         tag = _sanitize_docker_image_name(f"bf-snap-{self.environment_name}-{suffix}")
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "commit",
-            container_id,
-            tag,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        # Agent credential files stay out of the image (_snapshot_credentials).
+        ops = self._credential_ops(container_id)
+        stash = await scrub_credentials(ops)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "commit",
+                # docker commit copies the container's compose labels; with
+                # them, `compose down --rmi all` at teardown deletes the
+                # snapshot as one of the project's images (Compose 5.5), and
+                # a kept checkpoint is gone before a retry can use it.
+                "--change",
+                "LABEL com.docker.compose.project=",
+                "--change",
+                "LABEL com.docker.compose.service=",
+                container_id,
+                tag,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._docker_client_env(),
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate()
+        finally:
+            if stash:
+                await put_back_credentials(ops, stash)
         if proc.returncode != 0:
             raise RuntimeError(
                 "docker commit failed: "
                 f"{(stderr_bytes or stdout_bytes or b'').decode(errors='replace')}"
             )
         digest = (stdout_bytes or b"").decode(errors="replace").strip()
-        self.logger.info(f"Snapshot created: {tag} ({digest})")
+        if stash:
+            self._snapshot_credentials[tag] = stash
+        self.logger.info(
+            f"Snapshot created: {tag} ({digest}); "
+            f"{len(stash)} credential file(s) kept out of it"
+        )
         return SandboxImage(
             provider="docker",
             ref=tag,
@@ -756,13 +1120,17 @@ class DockerSandbox(BaseSandbox):
     async def restore(self, image: SandboxImage) -> None:
         """Restore the ``main`` container from a previously committed image.
 
-        Stops and removes the current ``main`` container, then ``docker
-        run``s a replacement from ``image.ref``. Sibling compose services
-        are untouched — they keep running as before, matching the
-        documented container-only scope of the Sandbox layer.
-        """
-        from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
+        Inspects the live ``main`` container, stops and removes it, then
+        ``docker run``s a replacement from ``image.ref`` with the inspected host
+        configuration. The bind mounts matter most: without them the rollout's
+        ``verifier``/``agent``/``artifacts`` output stays inside the container
+        and a verifier reward is silently lost. Sibling compose services are
+        untouched, matching the container-only scope of the Sandbox layer.
 
+        Raises :class:`~benchflow.sandbox.protocol.SandboxRestoreHostConfigUnavailable`
+        before removing anything when the live container cannot be resolved or
+        inspected, or its host configuration cannot be replayed.
+        """
         if image.provider != "docker":
             raise SandboxSnapshotNotSupported(
                 f"DockerSandbox.restore cannot consume a {image.provider!r} "
@@ -770,12 +1138,47 @@ class DockerSandbox(BaseSandbox):
                 "across providers."
             )
 
-        container_id = await self._main_container_id()
-        if container_id:
-            await self._docker_cli(["stop", container_id])
-            await self._docker_cli(["rm", "-f", container_id])
-
         project_name = _sanitize_docker_compose_project_name(self.session_id)
+        default_network = f"{project_name}_default"
+
+        container_id = await self._main_container_id()
+        if not container_id:
+            raise SandboxRestoreHostConfigUnavailable(
+                f"DockerSandbox.restore({image.ref!r}) cannot resolve the "
+                f"'main' container of compose project {project_name!r}, so its "
+                "bind mounts, network and resource limits cannot be replayed"
+            )
+        # Inspected *before* removal — the host config only exists while
+        # the container does.
+        try:
+            inspected = await self._inspect_container(container_id)
+        except RuntimeError as exc:
+            raise SandboxRestoreHostConfigUnavailable(
+                f"DockerSandbox.restore({image.ref!r}) cannot read the host "
+                f"config of the 'main' container {container_id!r}, so the "
+                f"replacement cannot be made equivalent to it: {exc}"
+            ) from exc
+        if self.task_env_config.network_mode in (
+            NetworkMode.DENYLIST,
+            NetworkMode.ALLOWLIST,
+        ):
+            raise SandboxRestoreHostConfigUnavailable(
+                "Docker snapshot restore cannot preserve live "
+                f"{self.task_env_config.network_mode.value.upper()} firewall rules; "
+                "container left intact"
+            )
+        replayed = _replayed_run_args(inspected, default_network=default_network)
+        owned = ((inspected.get("Config") or {}).get("Labels") or {}).get(
+            _BENCHFLOW_OWNED_LABEL
+        )
+        owned_label = (
+            ["--label", f"{_BENCHFLOW_OWNED_LABEL}={owned}"]
+            if owned is not None
+            else []
+        )
+        await self._docker_cli(["stop", container_id])
+        await self._docker_cli(["rm", "-f", container_id])
+
         new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
 
         run_cmd = [
@@ -783,25 +1186,91 @@ class DockerSandbox(BaseSandbox):
             "--detach",
             "--name",
             new_name,
-            "--network",
-            f"{project_name}_default",
             "--label",
             f"com.docker.compose.project={project_name}",
             "--label",
             "com.docker.compose.service=main",
+            *owned_label,
+            *replayed,
             image.ref,
             "sleep",
             "infinity",
         ]
-        if self.task_env_config.network_mode == NetworkMode.DENYLIST:
-            run_cmd.insert(1, "--cap-add=NET_ADMIN")
         result = await self._docker_cli(run_cmd, check=False)
         if result.return_code != 0:
             raise RuntimeError(
                 f"docker run from snapshot {image.ref!r} failed: "
                 f"{result.stderr or result.stdout}"
             )
-        self.logger.info(f"Snapshot restored: {image.ref} -> {new_name}")
+        self.logger.info(
+            "Snapshot restored: %s -> %s (replayed host config: %s)",
+            image.ref,
+            new_name,
+            " ".join(replayed) or "none",
+        )
+        stash = self._snapshot_credentials.get(image.ref)
+        if stash:
+            await put_back_credentials(self._credential_ops(new_name), stash)
+
+    async def adopt_snapshot(self, image: SandboxImage) -> None:
+        """Remember the live container's credential files for ``image``, a
+        snapshot of this state taken elsewhere (a kept checkpoint), so a
+        restore from it puts them back. The live files are left as they are."""
+        ops = self._credential_ops(await self._main_container_id())
+        stash = await scrub_credentials(ops)
+        if stash:
+            await put_back_credentials(ops, stash)
+            self._snapshot_credentials[image.ref] = stash
+
+    def _credential_ops(self, container: str) -> _DockerCredentialOps:
+        return _DockerCredentialOps(self, container)
+
+    async def delete_snapshot(self, image: SandboxImage) -> bool:
+        """Remove a committed snapshot image.
+
+        The image a restored container runs from cannot be removed without
+        force (and forcing only untags it, leaving the layers behind), so an
+        image still in use is removed by :meth:`stop` after the containers
+        are gone. Returns True when the image is gone now.
+        """
+        if image.provider != "docker":
+            raise SandboxSnapshotNotSupported(
+                f"DockerSandbox.delete_snapshot cannot delete a {image.provider!r} "
+                f"snapshot (got ref={image.ref!r})"
+            )
+        self._snapshot_credentials.pop(image.ref, None)
+        if await self._remove_snapshot_image(image.ref):
+            self._deferred_snapshot_refs.discard(image.ref)
+            return True
+        self._deferred_snapshot_refs.add(image.ref)
+        self.logger.info(
+            f"Snapshot image {image.ref} is still in use; removing it at stop()"
+        )
+        return False
+
+    async def _inspect_container(self, container_id: str) -> dict[str, Any]:
+        """``docker inspect`` one container as a dict — raises if it cannot."""
+        result = await self._docker_cli(["inspect", container_id], check=False)
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"docker inspect {container_id!r} failed: "
+                f"{result.stderr or result.stdout}"
+            )
+        try:
+            payload = json.loads(result.stdout or "")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"docker inspect {container_id!r} returned unparseable JSON: {exc}"
+            ) from exc
+        if (
+            not isinstance(payload, list)
+            or len(payload) != 1
+            or not isinstance(payload[0], dict)
+        ):
+            raise RuntimeError(
+                f"docker inspect {container_id!r} returned no container object"
+            )
+        return payload[0]
 
     async def _main_container_id(self) -> str | None:
         """Return the container id of the ``main`` compose service, or None."""
@@ -821,6 +1290,7 @@ class DockerSandbox(BaseSandbox):
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._docker_client_env(),
         )
         stdout_bytes, stderr_bytes = await proc.communicate()
         result = ExecResult(
@@ -945,14 +1415,63 @@ class DockerSandbox(BaseSandbox):
             *compose_file_args,
         ]
 
-        os.execvp(
+        client_env = self._docker_client_env()
+        argv = [
             "bash",
-            [
-                "bash",
-                "-c",
-                f"{variables}; "
-                + " ".join([*compose_base, "exec", "-it", "main", "bash"])
-                + "; "
-                + " ".join([*compose_base, "down"]),
-            ],
+            "-c",
+            f"{variables}; "
+            + " ".join([*compose_base, "exec", "-it", "main", "bash"])
+            + "; "
+            + " ".join([*compose_base, "down"]),
+        ]
+        if client_env is None:
+            os.execvp("bash", argv)
+        else:
+            os.execvpe("bash", argv, client_env)
+
+
+class _DockerCredentialOps:
+    """Root access to one container for the snapshot credential scrub.
+
+    File contents travel over ``docker exec`` stdin/stdout as base64, never as
+    command-line arguments; Docker keeps no copy of exec output in the
+    container filesystem.
+    """
+
+    def __init__(self, sandbox: DockerSandbox, container: str) -> None:
+        self._sandbox = sandbox
+        self._container = container
+
+    async def run(self, command: str) -> ExecResult:
+        return await self._sandbox._docker_cli(
+            ["exec", "-u", "0", self._container, "sh", "-c", command], check=False
         )
+
+    async def read(self, path: str) -> bytes:
+        result = await self.run(f"base64 < {shlex.quote(path)}")
+        if result.return_code != 0:
+            raise CredentialScrubError(f"could not read {path} before the snapshot")
+        return base64.b64decode("".join((result.stdout or "").split()))
+
+    async def write(self, path: str, content: bytes) -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-i",
+            "-u",
+            "0",
+            self._container,
+            "sh",
+            "-c",
+            f"umask 077 && base64 -d > {shlex.quote(path)}",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=self._sandbox._docker_client_env(),
+        )
+        _, stderr = await proc.communicate(base64.b64encode(content))
+        if proc.returncode != 0:
+            raise CredentialScrubError(
+                f"could not write {path} back: "
+                f"{(stderr or b'').decode(errors='replace').strip()[:300]}"
+            )

@@ -23,13 +23,14 @@ import logging
 import re as _re
 import shlex
 from pathlib import PurePosixPath
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _SNAP_DIR = "/tmp/.benchflow_snapshots"
 
 
-async def workspace_snapshot(env, name: str, workspace: str = "/app") -> str:
+async def workspace_snapshot(env: Any, name: str, workspace: str = "/app") -> str:
     """Create a named *workspace-only* snapshot — tar of ``workspace``.
 
     Returns a reference string suitable for ``workspace_restore()`` and for
@@ -53,7 +54,7 @@ async def workspace_snapshot(env, name: str, workspace: str = "/app") -> str:
     return ref
 
 
-async def workspace_restore(env, ref: str, workspace: str = "/app") -> None:
+async def workspace_restore(env: Any, ref: str, workspace: str = "/app") -> None:
     """Restore ``workspace`` to a named workspace snapshot.
 
     ref: the string returned by ``workspace_snapshot()`` — format is
@@ -84,7 +85,7 @@ async def workspace_restore(env, ref: str, workspace: str = "/app") -> None:
     logger.info(f"Snapshot restored: {ref}")
 
 
-async def list_workspace_snapshots(env) -> list[str]:
+async def list_workspace_snapshots(env: Any) -> list[str]:
     """List available *workspace* snapshot names."""
     result = await env.exec(f"ls {_SNAP_DIR}/*.tar.gz 2>/dev/null || true")
     if not (result.stdout or "").strip():

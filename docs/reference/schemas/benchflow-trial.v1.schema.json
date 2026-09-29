@@ -1,0 +1,1576 @@
+{
+  "$defs": {
+    "BranchChildExport": {
+      "additionalProperties": false,
+      "properties": {
+        "advantage": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "reward minus the value of the child's fork",
+          "title": "Advantage"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the child's cost record",
+          "title": "Cost"
+        },
+        "fork_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fork Id"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "parent_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the child a nested fork was made from; null at the top",
+          "title": "Parent Label"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "relative to the trial folder",
+          "title": "Path"
+        },
+        "reward": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reward"
+        },
+        "reward_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "verifier or runner_return",
+          "title": "Reward Source"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "status",
+        "reward",
+        "fork_id"
+      ],
+      "title": "BranchChildExport",
+      "type": "object"
+    },
+    "EvidenceRefExport": {
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "description": "the reviewer's /evidence mount: the trial folder, the task, or the solver's final workspace",
+          "enum": [
+            "trial",
+            "task",
+            "workspace"
+          ],
+          "title": "Area",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "path": {
+          "description": "relative to that area",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "area",
+        "path"
+      ],
+      "title": "EvidenceRefExport",
+      "type": "object"
+    },
+    "ForkExport": {
+      "additionalProperties": false,
+      "properties": {
+        "children": {
+          "items": {
+            "$ref": "#/$defs/BranchChildExport"
+          },
+          "title": "Children",
+          "type": "array"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "tokens, usd, usd_known, wall, parent, children, sandbox seconds",
+          "title": "Cost"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "default": "fork",
+          "description": "fork, or retry (a retry from a checkpoint)",
+          "title": "Kind",
+          "type": "string"
+        },
+        "parent_node": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node"
+        },
+        "parent_restore": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parent Restore"
+        },
+        "snapshot": {
+          "additionalProperties": true,
+          "title": "Snapshot",
+          "type": "object"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        },
+        "timing_sec": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timing Sec"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "V(checkpoint): mean child reward",
+          "title": "Value"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "parent_restore",
+        "children"
+      ],
+      "title": "ForkExport",
+      "type": "object"
+    },
+    "ReviewCriterionExport": {
+      "additionalProperties": false,
+      "properties": {
+        "blocker": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Blocker"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Outcome"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Score"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "name",
+        "blocker",
+        "weight",
+        "outcome",
+        "score",
+        "explanation"
+      ],
+      "title": "ReviewCriterionExport",
+      "type": "object"
+    },
+    "ReviewExport": {
+      "additionalProperties": false,
+      "properties": {
+        "criteria": {
+          "items": {
+            "$ref": "#/$defs/ReviewCriterionExport"
+          },
+          "title": "Criteria",
+          "type": "array"
+        },
+        "review_valid": {
+          "title": "Review Valid",
+          "type": "boolean"
+        },
+        "reviewer_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reviewer Model"
+        },
+        "scoring": {
+          "additionalProperties": true,
+          "title": "Scoring",
+          "type": "object"
+        },
+        "source": {
+          "description": "the review_report.json it came from",
+          "title": "Source",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reviewer_model",
+        "review_valid",
+        "scoring",
+        "summary",
+        "criteria",
+        "source"
+      ],
+      "title": "ReviewExport",
+      "type": "object"
+    },
+    "RubricCriterionDefinitionExport": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "null when only the criterion names were recorded",
+          "title": "Description"
+        },
+        "guidance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guidance"
+        },
+        "kind": {
+          "description": "blocker: a pass/fail gate; scored: 0-2 times its weight; legacy: a v0.1 pass/fail/not_applicable criterion",
+          "enum": [
+            "blocker",
+            "scored",
+            "legacy"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "scale": {
+          "description": "the values a verdict can take",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Scale",
+          "type": "array"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "weight",
+        "scale"
+      ],
+      "title": "RubricCriterionDefinitionExport",
+      "type": "object"
+    },
+    "RubricDefinitionExport": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "description": "v0.2 (blockers and weights) or v0.1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "criteria": {
+          "items": {
+            "$ref": "#/$defs/RubricCriterionDefinitionExport"
+          },
+          "title": "Criteria",
+          "type": "array"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the rubric file: relative to the task for revisions",
+          "title": "Path"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "of the rubric file, when recorded",
+          "title": "Sha256"
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the copy the reviewer used, relative to the trial folder",
+          "title": "Snapshot"
+        }
+      },
+      "required": [
+        "contract",
+        "criteria"
+      ],
+      "title": "RubricDefinitionExport",
+      "type": "object"
+    },
+    "RubricReviewRecordExport": {
+      "additionalProperties": false,
+      "properties": {
+        "current": {
+          "description": "the revision result.json's reward comes from",
+          "title": "Current",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "id": {
+          "description": "the scoring attempt, or the audit's report folder",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "description": "revision: automatic scoring (bench eval run with a task rubric, bench eval score), which sets the reward; audit: a detached bench review, which does not",
+          "enum": [
+            "revision",
+            "audit"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recorded At"
+        },
+        "review_valid": {
+          "title": "Review Valid",
+          "type": "boolean"
+        },
+        "reviewer": {
+          "$ref": "#/$defs/RubricReviewerExport"
+        },
+        "reward": {
+          "$ref": "#/$defs/RubricRewardExport"
+        },
+        "rubric": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RubricDefinitionExport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "description": "scoring/<attempt>.json in the trial, or the review_report.json",
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary"
+        },
+        "verdicts": {
+          "items": {
+            "$ref": "#/$defs/RubricVerdictExport"
+          },
+          "title": "Verdicts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "source",
+        "current",
+        "recorded_at",
+        "status",
+        "error",
+        "review_valid",
+        "summary",
+        "reviewer",
+        "rubric",
+        "verdicts",
+        "reward",
+        "notes"
+      ],
+      "title": "RubricReviewRecordExport",
+      "type": "object"
+    },
+    "RubricReviewerExport": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Agent"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Environment"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when not recorded",
+          "title": "Reasoning Effort"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the reviewer's own run folder (its trajectory): relative to the trial folder for revisions, as recorded for audits",
+          "title": "Run"
+        }
+      },
+      "required": [
+        "agent",
+        "model",
+        "reasoning_effort",
+        "environment",
+        "run"
+      ],
+      "title": "RubricReviewerExport",
+      "type": "object"
+    },
+    "RubricRewardExport": {
+      "additionalProperties": false,
+      "properties": {
+        "all_blockers_pass": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "All Blockers Pass"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "publishable / presentable_with_revisions / not_publishable",
+          "title": "Decision"
+        },
+        "failed_blockers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Failed Blockers",
+          "type": "array"
+        },
+        "formula": {
+          "description": "the arithmetic, with this review's numbers",
+          "title": "Formula",
+          "type": "string"
+        },
+        "gated_quality": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "rubric_reward when tests and every blocker pass, else 0",
+          "title": "Gated Quality"
+        },
+        "max_weighted_points": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Weighted Points"
+        },
+        "passed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Passed"
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Policy"
+        },
+        "reward": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the trial reward this review sets; null for audits and incomplete revisions",
+          "title": "Reward"
+        },
+        "rubric_reward": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "weighted_points / max_weighted_points (raw quality)",
+          "title": "Rubric Reward"
+        },
+        "tests_pass": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tests Pass"
+        },
+        "verifier_reward": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the test script's reward",
+          "title": "Verifier Reward"
+        },
+        "weighted_points": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weighted Points"
+        }
+      },
+      "required": [
+        "policy",
+        "tests_pass",
+        "all_blockers_pass",
+        "failed_blockers",
+        "weighted_points",
+        "max_weighted_points",
+        "rubric_reward",
+        "gated_quality",
+        "decision",
+        "verifier_reward",
+        "passed",
+        "reward",
+        "formula"
+      ],
+      "title": "RubricRewardExport",
+      "type": "object"
+    },
+    "RubricVerdictExport": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "description": "the evidence files the explanation cites",
+          "items": {
+            "$ref": "#/$defs/EvidenceRefExport"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "explanation": {
+          "description": "the reviewer's reasoning, in full",
+          "title": "Explanation",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "blocker",
+            "scored",
+            "legacy"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_points": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "2 x weight; null for blockers",
+          "title": "Max Points"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "pass / fail (/ not_applicable)",
+          "title": "Outcome"
+        },
+        "points": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "score x weight; null for blockers",
+          "title": "Points"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "0-2 for scored criteria",
+          "title": "Score"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "weight",
+        "outcome",
+        "score",
+        "points",
+        "max_points",
+        "explanation",
+        "evidence"
+      ],
+      "title": "RubricVerdictExport",
+      "type": "object"
+    },
+    "SandboxExport": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Created At"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "e.g. DaytonaSandbox, DockerSandbox",
+          "title": "Provider"
+        },
+        "sandbox_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sandbox Id"
+        }
+      },
+      "required": [
+        "sandbox_id",
+        "provider",
+        "created_at"
+      ],
+      "title": "SandboxExport",
+      "type": "object"
+    },
+    "UsageExport": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "priced",
+                "subscription",
+                "unpriced",
+                "unavailable"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "why cost_usd is or is not known (1.1): priced; subscription (the agent counted its own tokens on a login, which has no price); unpriced (tokens known, model not in the price table); unavailable (no usage recorded)",
+          "title": "Cost Status"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "n_cache_creation_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Cache Creation Tokens"
+        },
+        "n_cache_read_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Cache Read Tokens"
+        },
+        "n_input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Input Tokens"
+        },
+        "n_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Output Tokens"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        },
+        "usage_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "provider_response, agent_native_acp or unavailable",
+          "title": "Usage Source"
+        }
+      },
+      "title": "UsageExport",
+      "type": "object"
+    },
+    "VerifierExport": {
+      "additionalProperties": false,
+      "properties": {
+        "ctrf": {
+          "default": null,
+          "description": "verifier/ctrf.json (test report)",
+          "title": "Ctrf"
+        },
+        "reward_details": {
+          "default": null,
+          "description": "verifier/reward-details.json, per-check results (1.1)",
+          "title": "Reward Details"
+        },
+        "reward_json": {
+          "default": null,
+          "description": "verifier/reward.json",
+          "title": "Reward Json"
+        },
+        "reward_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "verifier/reward.txt, stripped",
+          "title": "Reward Text"
+        },
+        "stderr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "verifier/test-stderr.txt",
+          "title": "Stderr"
+        },
+        "stdout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "verifier/test-stdout.txt",
+          "title": "Stdout"
+        }
+      },
+      "title": "VerifierExport",
+      "type": "object"
+    }
+  },
+  "$id": "https://benchflow.ai/schemas/benchflow-trial.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "agent_name": {
+      "title": "Agent Name",
+      "type": "string"
+    },
+    "assessment": {
+      "enum": [
+        "scored",
+        "error",
+        "unscored"
+      ],
+      "title": "Assessment",
+      "type": "string"
+    },
+    "checkpoints": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Checkpoints",
+      "type": "array"
+    },
+    "control": {
+      "anyOf": [
+        {
+          "enum": [
+            "oracle",
+            "empty"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "control runs check the task, not an agent",
+      "title": "Control"
+    },
+    "duration_sec": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Duration Sec"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "error_category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Category"
+    },
+    "execution": {
+      "description": "integration_failed (1.2): the agent did nothing because its integration broke; see integration_failure",
+      "enum": [
+        "completed",
+        "errored",
+        "timed_out",
+        "integration_failed"
+      ],
+      "title": "Execution",
+      "type": "string"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finished At"
+    },
+    "forks": {
+      "items": {
+        "$ref": "#/$defs/ForkExport"
+      },
+      "title": "Forks",
+      "type": "array"
+    },
+    "integration_failure": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "why the agent did nothing useful when its integration broke: cause (agent_auth, agent_install, truncated_trajectory, empty_trajectory, immediate_exit, no_activity), evidence, evidence_source, activity counts, reward_withheld; detected: 'on read' for results written before 1.2 (1.2)",
+      "title": "Integration Failure"
+    },
+    "kind": {
+      "const": "benchflow.trial",
+      "default": "benchflow.trial",
+      "title": "Kind",
+      "type": "string"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Model"
+    },
+    "n_prompts": {
+      "title": "N Prompts",
+      "type": "integer"
+    },
+    "n_tool_calls": {
+      "title": "N Tool Calls",
+      "type": "integer"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "path": {
+      "description": "trial folder, or the results.jsonl file",
+      "title": "Path",
+      "type": "string"
+    },
+    "review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewExport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reward": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "rewards.reward; null when unscored",
+      "title": "Reward"
+    },
+    "rewards": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Rewards"
+    },
+    "rollout_name": {
+      "title": "Rollout Name",
+      "type": "string"
+    },
+    "row": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "row index for a results.jsonl trial",
+      "title": "Row"
+    },
+    "rubric_reviews": {
+      "description": "every rubric review of the trial: scoring revisions oldest first, then detached audits (added in 1.1)",
+      "items": {
+        "$ref": "#/$defs/RubricReviewRecordExport"
+      },
+      "title": "Rubric Reviews",
+      "type": "array"
+    },
+    "sandbox": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SandboxExport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "sandbox.json, written when the sandbox was created (1.1)"
+    },
+    "schema_minor": {
+      "default": 2,
+      "description": "optional fields added within schema_version; see the changelog",
+      "title": "Schema Minor",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "score_outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "errored",
+        "verifier_errored"
+      ],
+      "title": "Score Outcome",
+      "type": "string"
+    },
+    "scoring": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "the automatic reviewer's gate verdict",
+      "title": "Scoring"
+    },
+    "settings": {
+      "additionalProperties": true,
+      "description": "what bf.compare checks; see SETTINGS",
+      "title": "Settings",
+      "type": "object"
+    },
+    "source": {
+      "enum": [
+        "result.json",
+        "results.jsonl"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ISO 8601, local time as recorded",
+      "title": "Started At"
+    },
+    "task_name": {
+      "title": "Task Name",
+      "type": "string"
+    },
+    "timing": {
+      "additionalProperties": true,
+      "title": "Timing",
+      "type": "object"
+    },
+    "trajectory": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "ACP events; null when not included in the export",
+      "title": "Trajectory"
+    },
+    "usage": {
+      "$ref": "#/$defs/UsageExport"
+    },
+    "verifier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VerifierExport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "verifier_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Verifier Error"
+    },
+    "verifier_error_category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Verifier Error Category"
+    }
+  },
+  "required": [
+    "source",
+    "path",
+    "task_name",
+    "rollout_name",
+    "agent",
+    "agent_name",
+    "model",
+    "reward",
+    "rewards",
+    "passed",
+    "score_outcome",
+    "execution",
+    "assessment",
+    "control",
+    "error",
+    "error_category",
+    "verifier_error",
+    "verifier_error_category",
+    "n_tool_calls",
+    "n_prompts",
+    "usage",
+    "started_at",
+    "finished_at",
+    "duration_sec",
+    "timing",
+    "settings",
+    "forks",
+    "checkpoints",
+    "verifier",
+    "review"
+  ],
+  "title": "TrialExport",
+  "type": "object"
+}

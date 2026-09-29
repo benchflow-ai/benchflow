@@ -175,7 +175,7 @@ env = { STEP = "scaffold" }
     assert cfg.task is not None
     assert cfg.task.name == "benchflow/harbor-parity"
     # Harbor 1.3 [task] version — informational, recorded verbatim. Its absence
-    # made every govbench/frontier-bench curated task unloadable (2026-08-09).
+    # used to make such tasks unloadable.
     assert cfg.task.version == "1.0.0"
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST

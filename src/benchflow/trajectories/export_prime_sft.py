@@ -11,7 +11,7 @@ exporters.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +20,17 @@ from typing import Any, Literal, cast
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
 from benchflow._utils.result_paths import iter_task_result_paths
 from benchflow._utils.scoring import extract_reward
+from benchflow.trajectories.sft_subagents import (
+    SubagentConversionCounts,
+    reject_results_row_subagent_steps,
+    split_rollout_exchanges,
+    subagent_row_tags,
+)
+from benchflow.trajectories.training_signal import (
+    GroupAdvantage,
+    TrainingSignals,
+    compute_training_signals,
+)
 from benchflow.trajectories.types import redact_trajectory_obj
 
 PrimeSftRowMode = Literal["rollout", "exchange"]
@@ -65,13 +76,26 @@ class PrimeSftExportStats:
     skipped_no_assistant: int = 0
     skipped_missing_tool_defs: int = 0
     skipped_terminal_error: int = 0
+    # Tool-less model calls nested inside a tool (e.g. Claude Code's WebSearch)
+    # in rollouts whose exchanges were attributed; they belong to no agent.
+    skipped_helper_calls: int = 0
     skipped_invalid: int = 0
     tool_call_ids_rewritten: int = 0
     tool_messages_merged: int = 0
+    subagents: SubagentConversionCounts = field(
+        default_factory=SubagentConversionCounts
+    )
     sources: list[str] = field(default_factory=list)
+    # --reward-vector / --group-advantage: options and one entry per group.
+    training_signal: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            **(
+                {"training_signal": self.training_signal}
+                if self.training_signal is not None
+                else {}
+            ),
             "rollouts_seen": self.rollouts_seen,
             "exchanges_seen": self.exchanges_seen,
             "rows_written": self.rows_written,
@@ -84,9 +108,11 @@ class PrimeSftExportStats:
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tool_defs": self.skipped_missing_tool_defs,
             "skipped_terminal_error": self.skipped_terminal_error,
+            "skipped_helper_calls": self.skipped_helper_calls,
             "skipped_invalid": self.skipped_invalid,
             "tool_call_ids_rewritten": self.tool_call_ids_rewritten,
             "tool_messages_merged": self.tool_messages_merged,
+            **self.subagents.as_dict(),
             "sources": self.sources,
         }
 
@@ -1078,6 +1104,10 @@ def _existing_prime_sft_jsonl_stats(
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
             continue
+        if _is_benchflow_results_row(row):
+            reject_results_row_subagent_steps(
+                row.get("trajectory"), where=f"{path}: row {row_num}"
+            )
         messages = _row_messages(row, row_num)
         typed_messages = [m for m in messages if isinstance(m, dict)]
         if _has_tool_calls(typed_messages):
@@ -1182,7 +1212,22 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
     row_mode: PrimeSftRowMode = "rollout",
     canonical_selection: str | Path | None = None,
     redact: bool = True,
+    subagent_rows: bool = False,
+    reward_vector: bool = False,
+    group_advantage: GroupAdvantage | None = None,
+    group_by: str | Sequence[str] | None = None,
 ) -> tuple[list[dict[str, Any]], PrimeSftExportStats]:
+    """Build Prime-SFT rows from each rollout's ``llm_trajectory.jsonl``.
+
+    Rows come from the parent agent's model calls only. Claude subagent calls
+    are attributed by :mod:`benchflow.trajectories.sft_subagents`, excluded and
+    counted; ``subagent_rows=True`` also emits them as separate rows tagged
+    with the spawning tool call, and tags parent rows ``agent_role=parent``.
+
+    ``reward_vector`` and ``group_advantage`` add the fields described in
+    :mod:`benchflow.trajectories.training_signal`; groups are keyed by
+    ``group_by`` and computed before ``min_reward`` filters rows.
+    """
     stats = PrimeSftExportStats()
     rows: list[dict[str, Any]] = []
 
@@ -1191,6 +1236,14 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         if canonical_selection is not None
         else _iter_rollout_dirs(jobs_dir)
     )
+    signals = _training_signals(
+        rollout_dirs,
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
+    )
+    if signals.enabled:
+        stats.training_signal = signals.manifest()
     for rollout_dir in rollout_dirs:
         stats.rollouts_seen += 1
         result = _load_json(rollout_dir / "result.json")
@@ -1221,37 +1274,86 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             stats.skipped_exchanges_provider_error += len(exchanges)
             continue
 
-        candidates = successful if row_mode == "exchange" else [successful[-1]]
-        for idx, exchange in candidates:
-            row, skip_reason = _row_from_exchange(
-                exchange=exchange,
-                rollout_dir=rollout_dir,
-                result=result,
-                reward=reward,
-                exchange_idx=idx,
-                redact=redact,
-            )
-            if skip_reason == "no_assistant":
-                stats.skipped_no_assistant += 1
-                continue
-            if skip_reason == "missing_tool_defs":
-                stats.skipped_missing_tool_defs += 1
-                continue
-            if row is None:
-                stats.skipped_invalid += 1
-                continue
-            try:
-                validate_prime_sft_row(row, len(rows) + 1)
-            except ValueError:
-                stats.skipped_invalid += 1
-                continue
-            rows.append(row)
-            stats.rows_written += 1
-            if _has_tool_calls(row["messages"]):
-                stats.rows_with_tool_calls += 1
-            stats.sources.append(str(trajectory_path))
+        split = split_rollout_exchanges(
+            rollout_dir,
+            exchanges,
+            successful,
+            counts=stats.subagents,
+            subagent_rows=subagent_rows,
+        )
+        stats.skipped_helper_calls += split.helper_calls
+        parent_tags = {"agent_role": "parent"} if subagent_rows else {}
+        groups = [(parent_tags, split.parent)] + [
+            (subagent_row_tags(spawn), group) for spawn, group in split.subagents
+        ]
+        subagent_written = 0
+        for tags, group in groups:
+            candidates = group if row_mode == "exchange" else group[-1:]
+            for idx, exchange in candidates:
+                row, skip_reason = _row_from_exchange(
+                    exchange=exchange,
+                    rollout_dir=rollout_dir,
+                    result=result,
+                    reward=reward,
+                    exchange_idx=idx,
+                    redact=redact,
+                )
+                if skip_reason == "no_assistant":
+                    stats.skipped_no_assistant += 1
+                    continue
+                if skip_reason == "missing_tool_defs":
+                    stats.skipped_missing_tool_defs += 1
+                    continue
+                if row is None:
+                    stats.skipped_invalid += 1
+                    continue
+                try:
+                    validate_prime_sft_row(row, len(rows) + 1)
+                except ValueError:
+                    stats.skipped_invalid += 1
+                    continue
+                row.update(tags)
+                row.update(signals.for_rollout(rollout_dir))
+                rows.append(row)
+                stats.rows_written += 1
+                if tags.get("agent_role") == "subagent":
+                    subagent_written += 1
+                if _has_tool_calls(row["messages"]):
+                    stats.rows_with_tool_calls += 1
+                stats.sources.append(str(trajectory_path))
+        stats.subagents.subagent_rows_written += subagent_written
+        stats.subagents.subagent_exchanges_excluded += (
+            split.subagent_exchanges - subagent_written
+        )
 
     return rows, stats
+
+
+def _training_signals(
+    rollout_dirs: list[Path],
+    *,
+    reward_vector: bool,
+    group_advantage: GroupAdvantage | None,
+    group_by: str | Sequence[str] | None,
+) -> TrainingSignals:
+    return compute_training_signals(
+        ((d, _load_json(d / "result.json")) for d in rollout_dirs)
+        if reward_vector or group_advantage is not None
+        else (),
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
+    )
+
+
+def refuse_training_signal_for_jsonl(
+    *, reward_vector: bool, group_advantage: str | None
+) -> None:
+    if reward_vector or group_advantage is not None:
+        raise ValueError(
+            "--reward-vector/--group-advantage need a rollout or jobs directory "
+            "(the rollouts of a group are read from their result.json files)"
+        )
 
 
 def _result_training_skip_reason(result: dict[str, Any]) -> str | None:
@@ -1276,8 +1378,17 @@ def export_prime_sft_jsonl(
     manifest: str | Path | None = None,
     canonical_selection: str | Path | None = None,
     redact: bool = True,
+    subagent_rows: bool = False,
+    reward_vector: bool = False,
+    group_advantage: GroupAdvantage | None = None,
+    group_by: str | Sequence[str] | None = None,
 ) -> PrimeSftExportStats:
     """Export BenchFlow rollouts to a Prime-RL SFT JSONL file.
+
+    ``reward_vector``, ``group_advantage`` and ``group_by`` add per-criterion
+    rewards and group-relative advantages (see
+    :mod:`benchflow.trajectories.training_signal`); they need a rollout or
+    jobs directory, not an existing JSONL.
 
     When ``expected_rows`` is set, the row-count assertion fires *before* the
     output file (or manifest) is opened — so a mismatch raises ``ValueError`` and
@@ -1291,6 +1402,11 @@ def export_prime_sft_jsonl(
     if source_path.is_file() and source_path.suffix == ".jsonl":
         if source_path.resolve() == out_path.resolve():
             raise ValueError("--out must differ from the source JSONL path")
+        if subagent_rows:
+            raise ValueError("--subagent-rows requires a rollout or jobs directory")
+        refuse_training_signal_for_jsonl(
+            reward_vector=reward_vector, group_advantage=group_advantage
+        )
         stats = _existing_prime_sft_jsonl_stats(
             source_path, min_reward=min_reward, redact=redact
         )
@@ -1317,6 +1433,10 @@ def export_prime_sft_jsonl(
         row_mode=row_mode,
         canonical_selection=canonical_selection,
         redact=redact,
+        subagent_rows=subagent_rows,
+        reward_vector=reward_vector,
+        group_advantage=group_advantage,
+        group_by=group_by,
     )
     if expected_rows is not None and len(rows) != expected_rows:
         raise ValueError(f"row count {len(rows)} != expected {expected_rows}")

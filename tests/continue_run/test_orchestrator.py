@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from benchflow.continue_run.orchestrator import (
     LiteLLMLiveForwarder,
+    _continue_run_with_sandbox_proxy,
     _safe_sandbox_continuation_teardown,
     build_agent_env,
     build_rollout_config,
@@ -20,6 +24,7 @@ from benchflow.continue_run.orchestrator import (
     write_stitched_trajectory,
 )
 from benchflow.continue_run.run_folder import RunFolderError, load_run_folder
+from benchflow.rollout import Rollout
 
 from ._helpers import completion, exchange, write_run_folder
 
@@ -301,3 +306,125 @@ async def test_sandbox_teardown_still_runs_rollout_cleanup_after_sidecar_failure
     assert rollout._error is not None
     assert "proxy unavailable" in rollout._error
     assert "provider refused stop" in rollout._error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage_origin", ["cleanup", "stitched", "none"])
+async def test_bare_timeout_waits_for_continuation_usage(
+    tmp_path, monkeypatch, usage_origin
+):
+    """Guards PR #1131: pre-cleanup capture must not consume the timeout verdict."""
+    original = completion(content="recorded")
+    original.pop("usage")
+    run = load_run_folder(
+        write_run_folder(tmp_path / "source", exchanges=[exchange(original)])
+    )
+    output = tmp_path / "out" / "continued"
+    output.mkdir(parents=True)
+    events = []
+
+    class Trial:
+        _record_agent_timeout = Rollout._record_agent_timeout
+        _maybe_classify_api_error = Rollout._maybe_classify_api_error
+
+        def __init__(self):
+            self._rollout_dir = output
+            self._phase = "installed"
+            self._error = None
+            self._verifier_error = None
+            self._rewards = None
+            self._usage_metrics = {}
+            self._n_tool_calls = 0
+            self._api_failure_summary_cached = None
+            self._executed_prompts = ["p"]
+            self._resolved_prompts = ["p"]
+            self._agent_env = {"BENCHFLOW_PROVIDER_NAME": "litellm"}
+            self._config = SimpleNamespace(agent="openhands", model="test")
+            self._diagnostics = SimpleNamespace(
+                set=lambda d: None, capture_idle=lambda e: None
+            )
+            self._timeout = 14400
+            self._started_at = datetime.now() - timedelta(seconds=303)
+            self._planes = SimpleNamespace(resolve_agent_env=lambda *args: {})
+            self.env = object()
+            self.setup = AsyncMock()
+            self.start = AsyncMock()
+            self.install_agent = AsyncMock()
+            self._run_steps = AsyncMock(side_effect=TimeoutError())
+            (output / "config.json").write_text("{}")
+
+        async def verify(self):
+            self._phase = "verified"
+            self._rewards = {"reward": 0.0}
+
+        async def cleanup(self):
+            # The evidence is durable, but classification has not happened.
+            assert (output / "trajectory/llm_trajectory.jsonl").is_file()
+            assert not (output / "result.json").exists()
+            assert self._bare_timeout is True
+            events.append("cleanup")
+            if usage_origin == "cleanup":
+                self._usage_metrics = {
+                    "total_tokens": 123,
+                    "usage_source": "provider_response",
+                }
+            self._phase = "cleaned"
+
+        @property
+        def result(self):
+            assert events == ["cleanup"]
+            self._maybe_classify_api_error()
+            payload = {
+                "error": self._error,
+                "rewards": self._rewards,
+                "agent_result": dict(self._usage_metrics),
+            }
+            (output / "result.json").write_text(json.dumps(payload))
+            return SimpleNamespace(error=self._error, rewards=self._rewards)
+
+    trial = Trial()
+    monkeypatch.setattr(Rollout, "create", AsyncMock(return_value=trial))
+    monkeypatch.setattr(
+        "benchflow.providers.runtime.ensure_litellm_runtime",
+        AsyncMock(
+            return_value=(
+                {
+                    "LLM_BASE_URL": "http://unused",
+                    "LLM_API_KEY": "dummy",
+                    "LLM_MODEL": "test",
+                },
+                object(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "benchflow.providers.runtime.stop_provider_runtime", AsyncMock()
+    )
+    live = [exchange(completion(content="live"))] if usage_origin == "stitched" else []
+    proxy = SimpleNamespace(stop=AsyncMock(), live_exchanges=live)
+    monkeypatch.setattr(
+        "benchflow.continue_run.orchestrator.SandboxReplayProxy.start",
+        AsyncMock(return_value=proxy),
+    )
+    result = await _continue_run_with_sandbox_proxy(
+        run,
+        task_path=tmp_path / "task",
+        live_model="test-model",
+        timeout=None,
+        output_dir=output.parent,
+        rollout_name=output.name,
+        strict_divergence=False,
+    )
+    persisted = json.loads((output / "result.json").read_text())
+    assert result.error == persisted["error"]
+    assert result.rewards == persisted["rewards"]
+    assert persisted["model"] == "test-model"
+    if usage_origin == "none":
+        assert "suspected provider api error" in result.error
+        assert result.rewards is None
+    else:
+        assert "elapsed in rollout" in result.error
+        assert result.rewards == {"reward": 0.0}
+        assert persisted["agent_result"]["total_tokens"] == (
+            123 if usage_origin == "cleanup" else 2
+        )

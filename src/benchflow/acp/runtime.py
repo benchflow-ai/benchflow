@@ -46,6 +46,7 @@ from benchflow.agents.registry import (
     routes_gemini_natively,
 )
 from benchflow.diagnostics import (
+    AgentModelNotOfferedError,
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutError,
@@ -201,6 +202,10 @@ def _codex_reasoning_effort(model_id: str) -> str:
     return model_id.rsplit("[", 1)[1][:-1]
 
 
+# The requested model is not among the models the Codex session offers.
+CodexModelNotOffered = AgentModelNotOfferedError
+
+
 def _codex_session_model_id(
     model: str,
     session: object | None,
@@ -240,6 +245,17 @@ def _codex_session_model_id(
         and _codex_model_name(entry["modelId"]) == requested_name
     ]
     if not candidates:
+        offered = sorted(
+            {
+                _codex_model_name(entry["modelId"])
+                for entry in available
+                if isinstance(entry, dict) and isinstance(entry.get("modelId"), str)
+            }
+        )
+        if offered:
+            # Sending the name anyway gets an opaque -32603 from codex-acp,
+            # and the same answer on every retry.
+            raise AgentModelNotOfferedError("codex-acp", requested_name, offered)
         return model
 
     # A requested reasoning effort rides the codex model id: codex-acp
@@ -440,7 +456,7 @@ def _resolve_acp_model_option_id(
     automatically, while a member that does not keeps using
     ``session/set_model``.
 
-    codex-acp is the documented exception: 1.6.0 advertises a "model" config
+    codex-acp is the documented exception: 1.6.0 and 1.13.1 advertise a "model" config
     option whose values reject the ``model[effort]`` ids its own
     ``session/set_model`` requires (-32602 Invalid params, verified live
     2026-08-19), so codex stays on the set_model path.
@@ -602,8 +618,14 @@ async def connect_acp(
     agent_cwd: str,
     reasoning_effort: str | None = None,
     mcp_servers: list[McpServerSpec] | None = None,
+    resume_session_id: str | None = None,
 ) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
     """Create ACP transport, connect, init session, and configure model/effort.
+
+    ``resume_session_id`` opens that existing session with ``session/load``
+    (a branch child resuming its parent's conversation, whose transcript the
+    sandbox snapshot captured) instead of ``session/new``. An agent that does
+    not advertise ``loadSession`` is refused.
 
     Returns ``(client, session, session_adapter, agent_name)``. ``session`` is
     the raw :class:`~benchflow.acp.session.ACPSession` (still passed to
@@ -677,7 +699,13 @@ async def connect_acp(
                 cwd=agent_cwd,
                 agent_log_path=agent_log,
             )
-            acp_client = ACPClient(transport)
+            agent_config = AGENTS.get(agent)
+            acp_client = ACPClient(
+                transport,
+                subagent_transcript=bool(
+                    agent_config and agent_config.acp_subagent_transcript
+                ),
+            )
             await acp_client.connect()
 
             init_result = await _wait_for_acp_handshake(
@@ -689,10 +717,31 @@ async def connect_acp(
             )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await _wait_for_acp_handshake(
-                acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
-                phase="session_new",
-            )
+            if resume_session_id is not None:
+                capabilities = getattr(init_result, "agent_capabilities", None)
+                if not getattr(capabilities, "load_session", False):
+                    raise RuntimeError(
+                        f"{agent_name} does not advertise loadSession, so a branch "
+                        "child cannot resume the parent's conversation; branch "
+                        "without resume_session (fresh sessions)"
+                    )
+                session = await _wait_for_acp_handshake(
+                    acp_client.session_load(
+                        resume_session_id, cwd=agent_cwd, mcp_servers=mcp_servers
+                    ),
+                    phase="session_load",
+                )
+                # (events, tool calls) the load replayed: the caller skips
+                # them, as they belong to the resumed conversation's prefix.
+                session.replayed_prefix = (
+                    len(_capture_session_trajectory(session)),
+                    len(session.tool_calls),
+                )
+            else:
+                session = await _wait_for_acp_handshake(
+                    acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
+                    phase="session_new",
+                )
             logger.info(f"Session: {session.session_id}")
             break
         except ConnectionError as e:
@@ -735,6 +784,11 @@ async def connect_acp(
     return acp_client, session, session_adapter, agent_name
 
 
+# One watchdog poll (at most 30 s) plus margin: the watchdog reports silence
+# before the transport guard would.
+_SILENCE_GUARD_SLACK_SEC = 60
+
+
 async def execute_prompts(
     acp_client: ACPClient,
     session,
@@ -749,7 +803,18 @@ async def execute_prompts(
                    this many seconds. Catches agents that hung silently while
                    the agent process is still alive (e.g. gemini-cli not
                    responding). None disables idle detection.
+
+    The transport's read guard is raised to the silence this call allows
+    (the idle budget, else the wall budget) plus one watchdog poll, so the
+    watchdog, not a fixed transport timeout, decides when silence is too
+    long (#1143).
     """
+    expect_silence = getattr(acp_client, "expect_silence", None)
+    if callable(expect_silence):
+        expect_silence(
+            (idle_timeout if idle_timeout is not None else timeout)
+            + _SILENCE_GUARD_SLACK_SEC
+        )
     for i, prompt in enumerate(prompts):
         logger.info(
             f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}..."
@@ -872,10 +937,10 @@ async def _prompt_with_idle_watchdog(
 
     try:
         while not prompt_task.done():
-            await asyncio.sleep(watchdog.poll_interval_sec)
-            # Re-check done() after the sleep — the prompt may have completed
-            # during the poll interval. Without this, we'd cancel an already-
-            # completed task and discard a successful result.
+            # Wake on completion, not only at the next poll: with the default
+            # 600 s idle budget a poll is 30 s, which would otherwise be added
+            # to every prompt's agent time.
+            await asyncio.wait({prompt_task}, timeout=watchdog.poll_interval_sec)
             if prompt_task.done():
                 break
             now = loop.time()

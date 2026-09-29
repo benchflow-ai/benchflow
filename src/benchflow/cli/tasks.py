@@ -22,7 +22,7 @@ from benchflow.sandbox.providers import providers_phrase
 
 def register_tasks(app: typer.Typer) -> None:
     """Attach the ``tasks`` command group to the top-level benchflow app."""
-    tasks_app = typer.Typer(help="Task authoring commands")
+    tasks_app = typer.Typer(help="Task authoring commands.")
     app.add_typer(tasks_app, name="tasks", rich_help_panel="Core")
 
     register_tasks_generate(tasks_app)
@@ -101,12 +101,15 @@ def register_tasks(app: typer.Typer) -> None:
                 "publication-grade",
                 "acceptance",
                 "acceptance-live",
+                "equivalence",
             ],
             typer.Option(
                 "--level",
                 help=(
                     "Validation level: schema, structural, runtime-capability, "
-                    "publication-grade, acceptance, or acceptance-live"
+                    "publication-grade, acceptance, acceptance-live, or "
+                    "equivalence (runs the oracle in --sandbox, then grades "
+                    "wrong and value-equivalent variants of its output)"
                 ),
             ),
         ] = "structural",
@@ -123,7 +126,8 @@ def register_tasks(app: typer.Typer) -> None:
                 "--report-output",
                 help=(
                     "Write the acceptance-live report to this host path instead "
-                    "of the task-declared report path"
+                    "of the task-declared report path; with --level equivalence, "
+                    "write the battery's JSON report here"
                 ),
             ),
         ] = None,
@@ -139,15 +143,26 @@ def register_tasks(app: typer.Typer) -> None:
             ),
         ] = False,
     ) -> None:
-        """Validate a task directory structure."""
-        from benchflow._utils.task_authoring import check_task
+        """Validate a task directory structure.
 
+        Warnings (e.g. task.toml keys BenchFlow does not know) are printed
+        but do not fail the check.
+        """
+        from benchflow._utils.task_authoring import check_task, check_task_warnings
+
+        for warning in check_task_warnings(task_dir) if task_dir.is_dir() else ():
+            console.print(f"  [yellow]warning:[/yellow] {escape(warning)}")
         issues = check_task(
             task_dir,
             sandbox_type=sandbox,
             validation_level=validation_level,
-            acceptance_live_report_output=report_output,
+            acceptance_live_report_output=(
+                None if validation_level == "equivalence" else report_output
+            ),
             acceptance_live_write_report=not no_report_write,
+            equivalence_report_output=(
+                report_output if validation_level == "equivalence" else None
+            ),
         )
         if not issues:
             console.print(

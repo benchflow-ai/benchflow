@@ -4,6 +4,8 @@ This runbook shows the intended end-to-end workflow for training
 `Qwen/Qwen3-4B` on a BenchFlow-compatible task suite with TRL GRPO, then
 measuring held-out lift with BenchFlow eval artifacts.
 
+To train on runs that branched (several children from one checkpoint, with rewards and advantages per child, or preference pairs of siblings), use `bench train convert --format branch-tree` instead; the recipe is in [Training on branch runs](../branching.md#training-on-branch-runs).
+
 The example uses the public data-agent task suites:
 
 - training: `benchflow/data_agent_rl_environment_train`

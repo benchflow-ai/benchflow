@@ -237,24 +237,91 @@ class TestNetworkPosture:
         task_md = (dest / "task.md").read_text(encoding="utf-8")
         assert "allow_internet: false" in task_md
 
-    def test_docker_isolation_ships_net_admin_overlay(self, tmp_path):
-        """The docker egress firewall programs iptables in-container and
-        needs NET_ADMIN; the overlay is docker-only."""
+    @staticmethod
+    def _docker_compose_paths(wrapper: Path, rollout_dir: Path) -> list[Path]:
+        """Compose files the Docker backend stacks for a reviewer rollout."""
+        from benchflow.rollout._setup import _task_disallows_internet
+        from benchflow.sandbox.setup import _create_sandbox_environment
+        from benchflow.task import RolloutPaths, Task
+
+        task = Task(wrapper)
+        sandbox = _create_sandbox_environment(
+            "docker",
+            task,
+            wrapper,
+            "review",
+            RolloutPaths(rollout_dir=rollout_dir),
+            # What Rollout passes for a non-oracle agent on this task.
+            preserve_agent_network=_task_disallows_internet(task),
+        )
+        assert not sandbox._uses_compose
+        return sandbox._docker_compose_paths
+
+    def test_isolated_docker_reviewer_gets_net_admin_from_shared_rule(self, tmp_path):
+        """Guards the removal of the reviewer's own cap_add overlay (PR #942).
+
+        The agent-UID egress firewall programs iptables in ``main`` and needs
+        NET_ADMIN. The Docker backend's no-web rule from the no-web NET_ADMIN change now grants
+        it to the isolated reviewer, as to any no-web agent run.
+        """
+        from benchflow.sandbox._compose import (
+            COMPOSE_NET_ADMIN_PATH,
+            COMPOSE_NO_NETWORK_PATH,
+        )
+
+        rollout = make_rollout(tmp_path)
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+        paths = self._docker_compose_paths(dest, tmp_path / "review-rollout")
+
+        assert COMPOSE_NET_ADMIN_PATH in paths
+        assert COMPOSE_NO_NETWORK_PATH not in paths
+
+    def test_open_network_docker_reviewer_gets_no_net_admin(self, tmp_path):
+        """Guards the removal of the reviewer overlay: open reviewers arm no
+        firewall and never received NET_ADMIN."""
+        from benchflow.sandbox._compose import COMPOSE_NET_ADMIN_PATH
+
         rollout = make_rollout(tmp_path)
         dest, _ = assemble_review_task(
-            rollout, None, RUBRIC, tmp_path / "w", net_admin_overlay=True
+            rollout, None, RUBRIC, tmp_path / "w", open_network=True
         )
-        overlay = (dest / "environment" / "docker-compose.yaml").read_text(
-            encoding="utf-8"
-        )
-        assert "NET_ADMIN" in overlay
+        paths = self._docker_compose_paths(dest, tmp_path / "review-rollout")
 
-    def test_non_docker_wrapper_has_no_compose_file(self, tmp_path):
-        """A task compose file flips other backends into compose strategies;
-        the overlay must never ship unless requested."""
+        assert COMPOSE_NET_ADMIN_PATH not in paths
+
+    def test_wrapper_has_no_compose_file(self, tmp_path):
+        """A task compose file flips Daytona and other backends into compose
+        strategies, so the wrapper never ships one."""
         rollout = make_rollout(tmp_path)
         dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
         assert not (dest / "environment").exists()
+
+    @pytest.mark.asyncio
+    async def test_docker_reviewer_wrapper_ships_no_compose_overlay(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards the removal of the reviewer's Docker-only cap_add overlay.
+
+        PR #942 wrote ``environment/docker-compose.yaml`` for isolated Docker
+        reviewers; the shared no-web rule makes it redundant.
+        """
+        rollout = make_rollout(tmp_path / "jobs")
+        seen: list[tuple[str, bool]] = []
+
+        async def fake_run(config: RolloutConfig):
+            seen.append(
+                (config.environment, (Path(config.task_path) / "environment").exists())
+            )
+
+            class _R:
+                error = "stop"
+
+            return _R()
+
+        monkeypatch.setattr(benchflow, "run", fake_run)
+        await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+
+        assert seen == [("docker", False)]
 
     def test_open_network_is_explicit_opt_in(self, tmp_path):
         rollout = make_rollout(tmp_path)

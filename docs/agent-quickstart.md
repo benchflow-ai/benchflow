@@ -33,8 +33,9 @@ GUARDRAILS (apply to every step):
 STEP 0 — Preflight
 - Check Docker: `docker info > /dev/null 2>&1`. If it fails, ask the user to
   start Docker Desktop / the Docker daemon, then re-check. Do not continue
-  without it: benchflow has no up-front daemon check, so a dead daemon fails
-  the run partway through instead of at startup.
+  without it: `bench eval run` has no up-front daemon check, so a dead daemon
+  fails the run partway through instead of at startup (`bench doctor` in
+  step 1 checks it again).
 - Check uv: `command -v uv`. If missing, install it:
   `curl -LsSf https://astral.sh/uv/install.sh | sh` and ensure it is on PATH.
 - uv will provision the required Python if the install command includes
@@ -60,7 +61,10 @@ benchflow source checkout, run it from INSIDE that project directory, because
 Verify:
     bench --version
     bench agent list
-Show the user the version and the agent list.
+    bench doctor
+Show the user the version and the agent list. `bench doctor` prints one
+PASS/WARN/FAIL line per check (Docker, credentials, network) with a fix; resolve
+every FAIL before continuing. It names credentials but never prints them.
 
 STEP 2 — Fetch one sample task (sparse checkout, not a full clone)
 The skillsbench repo is large; download only one task:

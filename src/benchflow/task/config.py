@@ -22,11 +22,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     field_validator,
     model_validator,
 )
 
 from benchflow.rewards.validation import validate_declared_reward_range
+from benchflow.sandbox._recovery_submission import validate_contract
 
 ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 _NETWORK_HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -206,8 +208,43 @@ def _validate_hostnames(hosts: list[str] | None, field_name: str) -> list[str] |
     return normalized
 
 
+def _allowed_address_entry(entry: str) -> str | None:
+    """Canonical form of an IP or strict CIDR allowlist entry, else None."""
+    if "%" in entry:
+        return None
+    try:
+        if "/" in entry:
+            return ipaddress.ip_network(entry, strict=True).compressed
+        return ipaddress.ip_address(entry).compressed
+    except ValueError:
+        return None
+
+
 def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
-    return _validate_hostnames(hosts, "allowed_hosts")
+    """Harbor's allowlist entry kinds: hostname, ``*.`` wildcard, IP, CIDR."""
+    if hosts is None:
+        return None
+    normalized: list[str] = []
+    for raw_host in hosts:
+        entry = raw_host.strip().lower()
+        address = _allowed_address_entry(entry)
+        if address is not None:
+            normalized.append(address)
+            continue
+        if entry.startswith("*."):
+            suffix = _validate_hostnames([entry[2:]], "allowed_hosts")
+            normalized.append("*." + (suffix or [""])[0])
+            continue
+        if "*" in entry:
+            raise ValueError(
+                "allowed_hosts wildcards must be a single leading '*.' label"
+            )
+        if "/" in entry and "://" not in entry:
+            raise ValueError(
+                f"allowed_hosts entry {raw_host!r} is not a valid CIDR range"
+            )
+        normalized.extend(_validate_hostnames([raw_host], "allowed_hosts") or ())
+    return normalized
 
 
 def _validate_blocked_hosts(hosts: list[str] | None) -> list[str] | None:
@@ -298,9 +335,7 @@ class PackageInfo(TaskConfigModel):
         description=(
             "Package version (Harbor schema 1.3 [task] field). Informational "
             "only — recorded, never interpreted. Absent from this model it was "
-            "extra_forbidden, which made every Harbor-1.3 task authored by the "
-            "govbench/frontier-bench curation pipeline unloadable (2026-08-09: "
-            "all 6 tasks in the local corpus failed on exactly this field)."
+            "extra_forbidden, which made every Harbor-1.3 task that sets it unloadable."
         ),
     )
     description: str = Field(
@@ -447,6 +482,27 @@ class VerifierConfig(TaskConfigModel):
         default="test-script",
         description="Verification method.",
     )
+    submission_files: list[str] = Field(
+        default_factory=list,
+        description="Explicit verifier-recovery contract (submission-files-v1): the "
+        "absolute paths of the task's submission files, at most 8, literal (no globs), "
+        "outside /dev, /logs, /proc, /solution, /sys and /tests. Only these regular "
+        "files are captured and restored; never a whole directory.",
+    )
+
+    @field_validator("submission_files")
+    @classmethod
+    def validate_submission_files(cls, value: list[str]) -> list[str]:
+        if value:
+            return list(validate_contract(value))
+        return value
+
+    workspace_recovery: bool = Field(
+        default=False,
+        description="Allow verifier-only recovery from captured workspace after transport failure. "
+        "The task author guarantees all solver changes needed for scoring are inside the workspace "
+        "and a fresh task image/setup reproduces all other dependencies; no mutable external state.",
+    )
     timeout_sec: float = Field(
         default=600.0,
         gt=0,
@@ -555,6 +611,10 @@ class VerifierConfig(TaskConfigModel):
 
     @model_validator(mode="after")
     def validate_verifier_sandbox(self) -> VerifierConfig:
+        if self.workspace_recovery and self.submission_files:
+            raise ValueError(
+                "Choose either workspace_recovery or explicit submission_files"
+            )
         _reject_role_denylist(self.network_mode, "verifier")
         _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
         if self.sandbox_mode == VerifierSandboxMode.SHARED and self.sandbox is not None:
@@ -1115,6 +1175,17 @@ class TaskConfig(TaskConfigModel):
         # accepts only 'sandbox'.
         toml_dict = convert_legacy_environment_keys(tomllib.loads(toml_data))
         return cls.model_validate(toml_dict)
+
+    # Keys a lenient task.toml load ignored (dotted paths, sorted); set by
+    # benchflow.task.imports.load_task_config_toml. Never serialized.
+    _ignored_keys: tuple[str, ...] = PrivateAttr(default=())
+
+    @property
+    def ignored_keys(self) -> tuple[str, ...]:
+        """task.toml keys this config does not model and a lenient load
+        ignored (empty for strict loads). Keys BenchFlow knows it cannot honour
+        are refused by the runtime capability check instead of being run."""
+        return self._ignored_keys
 
     @property
     def expected_skills(self) -> list[str] | None:

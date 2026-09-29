@@ -47,6 +47,10 @@ class SandboxProvider:
     #: Whether the backend can enforce ``network_mode = "denylist"`` (a
     #: root-owned loopback proxy behind the uid firewall).
     enforces_denylist: bool = False
+    #: Whether the backend can enforce ``network_mode = "allowlist"`` (the same
+    #: proxy in allow mode, plus the DNS filter and CIDR rules on the uid
+    #: firewall). Set only for backends validated by a live check.
+    enforces_allowlist: bool = False
 
     @property
     def off_box_model(self) -> bool:
@@ -63,6 +67,18 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         model_proxy=ModelProxyLocation.HOST,
         supports_compose=True,
         enforces_denylist=True,
+        enforces_allowlist=True,
+    ),
+    SandboxProvider(
+        # The local provider on a Docker host the user controls (ssh:// or
+        # tcp:// with TLS). The model proxy runs in the sandbox because the
+        # remote container cannot reach one on the caller's machine.
+        "remote-docker",
+        extra=None,
+        model_proxy=ModelProxyLocation.SANDBOX,
+        supports_compose=True,
+        enforces_denylist=True,
+        enforces_allowlist=True,
     ),
     SandboxProvider(
         "daytona",
@@ -71,6 +87,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         # The DinD strategy runs compose inside the sandbox VM.
         supports_compose=True,
         enforces_denylist=True,
+        enforces_allowlist=True,
     ),
     SandboxProvider(
         "modal",
@@ -125,6 +142,11 @@ DENYLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_denylist
 )
 
+#: Providers that cannot enforce ``network_mode = "allowlist"``.
+ALLOWLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if not p.enforces_allowlist
+)
+
 
 def is_known_provider(name: str) -> bool:
     """True if ``name`` is a registered sandbox provider."""
@@ -135,6 +157,42 @@ def provider_extra(name: str) -> str | None:
     """The optional-dependency extra for ``name`` (None if absent/unknown)."""
     p = PROVIDERS_BY_NAME.get(name)
     return p.extra if p else None
+
+
+def extra_install_hint(extra: str) -> str:
+    """How to add an optional extra, for a ``uv tool`` install and a checkout.
+
+    The checkout form keeps ``dev``: ``uv sync`` removes every extra it is not
+    given, so ``uv sync --extra <extra>`` alone would uninstall the test tools.
+    """
+    return (
+        f"uv tool install --python 3.12 --upgrade 'benchflow[{extra}]' "
+        f"(source checkout: uv sync --extra {extra} --extra dev --locked)"
+    )
+
+
+# Top-level module each extra-backed provider's SDK installs.
+_SANDBOX_SDK_MODULES: dict[str, str] = {
+    "daytona": "daytona",
+    "agentcore": "bedrock_agentcore",
+}
+
+
+def sandbox_sdk_missing(name: str) -> bool:
+    """True when ``name`` needs an SDK from an extra that is not installed.
+
+    Uses ``find_spec`` so nothing is imported; Modal keeps its own import
+    check in ``eval_plan``.
+    """
+    module = _SANDBOX_SDK_MODULES.get(name)
+    if module is None:
+        return False
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module) is None
+    except (ImportError, ValueError):
+        return True
 
 
 def providers_phrase(*, quote: bool = False) -> str:

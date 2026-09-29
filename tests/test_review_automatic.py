@@ -220,7 +220,9 @@ async def test_finish_review_and_commit_preserve_all_components(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("raw_reward", [None, True, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "raw_reward", [None, True, float("nan"), float("inf"), 10**1000]
+)
 async def test_invalid_verifier_reward_becomes_unscored_error(
     prepared, saved, monkeypatch, raw_reward
 ):
@@ -296,12 +298,17 @@ async def test_workspace_freezes_before_capture_and_keeps_actual_cwd(
         order.append("capture")
 
     rollout = SimpleNamespace(
+        _branch_child_active=False,
         _review_plan=object(),
         _config=SimpleNamespace(purpose="task", sandbox_user="agent"),
         _env=object(),
         _agent_env={},
         _planes=SimpleNamespace(quiesce_agent=stop),
-        _task=SimpleNamespace(config=SimpleNamespace(artifacts=[])),
+        _task=SimpleNamespace(
+            config=SimpleNamespace(
+                artifacts=[], verifier=SimpleNamespace(submission_files=[])
+            )
+        ),
         _agent_cwd="/research/work",
         disconnect=disconnect,
         _require_rollout_dir=lambda: tmp_path,
@@ -331,12 +338,17 @@ async def test_daytona_session_fifos_keep_terminal_evidence_scorable(tmp_path):
         return None
 
     rollout = SimpleNamespace(
+        _branch_child_active=False,
         _review_plan=object(),
         _config=SimpleNamespace(purpose="task", sandbox_user=None),
         _env=LocalTransport(),
         _agent_env={},
         _planes=SimpleNamespace(quiesce_agent=idle),
-        _task=SimpleNamespace(config=SimpleNamespace(artifacts=[])),
+        _task=SimpleNamespace(
+            config=SimpleNamespace(
+                artifacts=[], verifier=SimpleNamespace(submission_files=[])
+            )
+        ),
         _agent_cwd=str(workspace),
         disconnect=idle,
         _require_rollout_dir=lambda: rollout_dir,
@@ -378,3 +390,47 @@ def test_commit_failure_never_publishes_partial_parent(saved, monkeypatch):
         persistence.commit_scoring_result(saved, _score())
     assert not (saved / "result.json").exists()
     assert (saved / "solver.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_refused_review_keeps_timed_out_solver_verifier_result(
+    prepared, saved, monkeypatch
+):
+    """Guards the #1134 fix on top of PR #1126: a timed-out solver's partial
+    trajectory refuses review, yet result.json keeps the verifier result and
+    the timeout instead of replacing them with a scoring infra error."""
+    from benchflow.models import RolloutResult
+    from benchflow.rollout import Rollout, RolloutConfig
+
+    reviewer = AsyncMock(side_effect=AssertionError("reviewer must not run"))
+    monkeypatch.setattr("benchflow.review.runner.run_review", reviewer)
+    timeout = "Agent timed out after 3600s elapsed in rollout (budget 3600s)"
+    _edit_solver(
+        saved,
+        error=timeout,
+        error_category="timeout",
+        partial_trajectory=True,
+        rewards={"reward": 0.25},
+    )
+    rollout = Rollout(RolloutConfig(task_path=prepared.task_path))
+    rollout._rollout_dir = saved
+    rollout._review_plan = prepared
+    result = await _review.finish_terminal_review(
+        rollout, result=RolloutResult("physics", rollout_name=saved.name)
+    )
+
+    committed = json.loads((saved / "result.json").read_text())
+    assert committed["scoring"]["status"] == "error"
+    assert "trajectory is incomplete" in committed["scoring"]["error"]
+    assert committed["scoring"]["verifier_reward"] == 0.25
+    assert committed["rewards"] == {"reward": 0.25}
+    assert committed["verifier_error"] is None
+    assert committed.get("verifier_error_category") is None
+    assert committed["error"] == timeout
+    assert committed["error_category"] == "timeout"
+    # The blocker gate was never judged: BenchFlow's own buckets stay unscored.
+    assert classify_score_outcome(committed) == "errored"
+    assert result.scoring.status == "error"
+    assert result.rewards == {"reward": 0.25}
+    assert result.verifier_error is None
+    reviewer.assert_not_awaited()

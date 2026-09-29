@@ -31,8 +31,12 @@ The default pinned reviewer image installs `numpy==2.2.6` and `pypdf==5.9.0`
 during trusted setup, before the agent starts. Its network restrictions remain
 unchanged. Custom reviewer images supply their own artifact-reading tools.
 
-Reviewer defaults are `opencode`, its registered model, Docker, 1800 seconds,
-and concurrency 4. Set reviewer options explicitly when using a different
+Reviewer defaults are `opencode`, Docker, 1800 seconds, and concurrency 4.
+`opencode` has no registered default model, so a task with a rubric is refused
+before the solver starts until you pass `--reviewer-model` (Python:
+`ReviewerConfig(model=...)`) or pick a `--reviewer-agent` that has one. The
+reviewer backend does not follow `--sandbox`: pass `--reviewer-sandbox daytona`
+to review on Daytona. Set reviewer options explicitly when using a different
 provider or backend. API keys and supported native OAuth are resolved through
 normal BenchFlow credential handling; solver environment overrides do not become
 reviewer overrides. Missing reviewer configuration or authentication is rejected
@@ -91,6 +95,10 @@ not retried automatically. Publication failures are separate from scoring failur
 For manually driven `Rollout` phases, call `await rollout.finalize()` after the
 terminal verifier; `.result` stays unavailable until required review finishes.
 `bf.run()` and `TaskRuntime.verify()` perform this finalization automatically.
+
+Each reviewer is an ordinary rollout under the host hard deadline, the backstop above all of its phase budgets. That deadline includes the wrapper's setup commands and adds transfer time for the evidence it uploads (at 1 MiB/s), so reviewing a large workspace is not cut off mid-transfer. When evaluation resume cannot finish one trial's review, it logs the failure, keeps that trial's saved result, and continues with the other trials; retry the failed trial with `bench eval score`.
+
+A solver that timed out with an incomplete trajectory is never reviewable, so its review is refused ("Solver trajectory is incomplete") and not worth retrying. When its verifier produced a reward, `result.json` keeps the verifier's `rewards` and the timeout `error` and `error_category` with no `verifier_error`, beside a scoring block whose error records the refusal. Downstream consumers can count it as a timeout with its test result; BenchFlow's own score buckets still report it as errored, because the blocker gate was never judged. A timed-out solver whose trajectory is complete is reviewed normally.
 
 ## The rubric (versionless contracts v0.1 and v0.2)
 

@@ -31,7 +31,7 @@ from benchflow.acp.client import ACPClient
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason
 from benchflow.agents.protocol import ACPSessionAdapter, AskUserRequest
-from benchflow.rollout import Rollout
+from benchflow.rollout import Rollout, RolloutConfig
 
 # Re-uses the existing mock agent that emits ``session/request_permission``
 # mid-prompt — the same one ``test_acp.py`` drives for the interleaved
@@ -42,19 +42,8 @@ MOCK_AGENT_INTERLEAVED = str(
 
 
 def _bare_rollout() -> Rollout:
-    """Build a ``Rollout`` instance without going through ``__init__``.
-
-    The real ``__init__`` requires a sandbox config and resolves agent
-    launchers — none of which the on_ask_user wiring touches. ``__new__``
-    plus the handful of fields the wiring reads keeps the test focused.
-    """
-    rollout = Rollout.__new__(Rollout)
-    rollout._acp_client = None
-    rollout._session = None
-    rollout._session_adapter = None
-    rollout._ask_user_handler = None
-    rollout._ask_user_handler_set = False
-    return rollout
+    """A ``Rollout`` before connect(): no client, session or adapter yet."""
+    return Rollout(RolloutConfig(task_path=Path("task")))
 
 
 @pytest.mark.asyncio

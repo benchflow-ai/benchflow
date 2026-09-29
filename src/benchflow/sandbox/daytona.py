@@ -12,7 +12,10 @@ import atexit
 import contextlib
 import importlib
 import logging
+import re
 import shlex
+import types
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -79,6 +82,7 @@ from benchflow.sandbox.daytona_reaper import (
     _is_benchflow_label_orphan,  # noqa: F401
     _is_benchflow_owned,  # noqa: F401
     reap_stale_sandboxes,  # noqa: F401
+    reap_stale_snapshots,  # noqa: F401
 )
 from benchflow.sandbox.daytona_strategies import _DaytonaDirect, _DaytonaStrategy
 from benchflow.sandbox.metadata import persist_sandbox_info
@@ -167,9 +171,11 @@ def _load_daytona_sdk() -> None:
         _daytona = importlib.import_module("daytona")
         _snapshot = importlib.import_module("daytona._async.snapshot")
     except ImportError as e:
+        from benchflow.sandbox.providers import extra_install_hint
+
         raise ImportError(
             "The Daytona sandbox requires the 'sandbox-daytona' extra. "
-            "Install it with: pip install 'benchflow[sandbox-daytona]'"
+            f"Install it with: {extra_install_hint('sandbox-daytona')}"
         ) from e
 
     AsyncDaytona = _daytona.AsyncDaytona
@@ -221,6 +227,38 @@ logger = logging.getLogger("benchflow")
 _SandboxParams = Any
 _DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
 _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
+# The SDK's error once a new sandbox reaches an error state (``BUILD_FAILED``,
+# ``ERROR``). It neither returns nor deletes that sandbox, so this id is the
+# only handle left for cleaning it up.
+_FAILED_START_SANDBOX_ID = re.compile(r"\bSandbox (\S+) failed to start with state\b")
+
+
+_CREATE_ATTEMPT_LABEL = "benchflow.create-attempt"
+
+
+def _tag_create_attempt(params: Any) -> dict[str, str] | None:
+    """Give one create call a unique label so its sandbox can be found when
+    the create fails without returning it; ``None`` when params take none."""
+    labels = getattr(params, "labels", None)
+    if not isinstance(labels, dict):
+        return None
+    tag = {_CREATE_ATTEMPT_LABEL: uuid.uuid4().hex}
+    labels.update(tag)
+    return tag
+
+
+def _labels_query(labels: dict[str, str]) -> Any:
+    try:
+        from daytona import ListSandboxesQuery
+    except ImportError:  # a faked client (tests without the Daytona extra)
+        return types.SimpleNamespace(labels=labels)
+    return ListSandboxesQuery(labels=labels)
+
+
+def _failed_start_sandbox_id(exc: BaseException) -> str | None:
+    match = _FAILED_START_SANDBOX_ID.search(str(exc))
+    return match.group(1) if match else None
+
 
 # Safety-net ceiling for ``_poll_response`` when the caller passes no
 # ``timeout_sec``. A Daytona *session* command only reports its ``exit_code``
@@ -243,6 +281,71 @@ _DAYTONA_TRANSIENT_RETRY: Any = retry_if_exception(_is_daytona_transient_retry_e
 # sandbox creation (#532). ``_stop_sandbox`` deliberately uses a smaller budget.
 _DAYTONA_RETRY_ATTEMPTS = 3
 _DAYTONA_STOP_RETRY_ATTEMPTS = 2
+# A delete that Daytona's API gateway failed (HTTP 502, 503 or 504) gets more
+# attempts. The gateway answers at once, so four attempts cost about 7 s of
+# backoff, while a timed-out delete keeps the short budget above (each attempt
+# can take the SDK's 60 s delete timeout). A sandbox whose only delete got
+# "502 Bad Gateway" was otherwise leaked.
+_DAYTONA_STOP_GATEWAY_RETRY_ATTEMPTS = 4
+_DAYTONA_GATEWAY_STATUS_CODES = frozenset({502, 503, 504})
+_GATEWAY_ERROR_TEXT = re.compile(
+    r"\b50[234] (?:bad gateway|service (?:temporarily )?unavailable"
+    r"|gateway time-?out)\b",
+    re.IGNORECASE,
+)
+_HTML_TITLE = re.compile(r"<title>\s*(.*?)\s*</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _daytona_status(exc: BaseException) -> int | None:
+    """The HTTP status of a Daytona SDK error, when it carries one."""
+    if not type(exc).__module__.startswith("daytona."):
+        return None
+    status = getattr(exc, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_daytona_gateway_error(exc: BaseException) -> bool:
+    """Daytona's API gateway failed the request (HTTP 502, 503 or 504)."""
+    if not type(exc).__module__.startswith("daytona."):
+        return False
+    status = _daytona_status(exc)
+    if status is not None:
+        return status in _DAYTONA_GATEWAY_STATUS_CODES
+    return bool(_GATEWAY_ERROR_TEXT.search(str(exc)))
+
+
+def _is_daytona_delete_retry_error(exc: BaseException) -> bool:
+    """Whether to repeat a sandbox delete: transient and gateway errors.
+
+    Only a delete is repeated on a gateway error. Repeating it is safe (a
+    sandbox that is already gone counts as deleted), unlike a create, which
+    could leave a second sandbox behind.
+    """
+    return _is_daytona_transient_retry_error(exc) or _is_daytona_gateway_error(exc)
+
+
+def _stop_retries_exhausted(retry_state: Any) -> bool:
+    """Tenacity stop rule for ``_stop_sandbox``: a gateway error gets more tries."""
+    outcome = retry_state.outcome
+    error = outcome.exception() if outcome is not None else None
+    budget = (
+        _DAYTONA_STOP_GATEWAY_RETRY_ATTEMPTS
+        if error is not None and _is_daytona_gateway_error(error)
+        else _DAYTONA_STOP_RETRY_ATTEMPTS
+    )
+    return retry_state.attempt_number >= budget
+
+
+def _one_line_error(exc: BaseException) -> str:
+    """An error for a log line: an HTML error page shrinks to its title."""
+    text = str(exc)
+    start = text.lower().find("<html")
+    if start >= 0:
+        title = _HTML_TITLE.search(text, start)
+        text = text[:start] + (title.group(1) if title else "(HTML error page)")
+    text = " ".join(text.split())
+    return text if len(text) <= 300 else text[:297] + "..."
+
 
 # Shared tenacity policy for the idempotent Daytona SDK calls — session-command
 # polling and filesystem up/download. Three attempts with exponential backoff,
@@ -267,6 +370,7 @@ class DaytonaClientManager:
 
     def __init__(self) -> None:
         self._client: AsyncDaytona | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
         self._client_lock = asyncio.Lock()
         self._logger = logger.getChild("DaytonaClientManager")
         self._cleanup_registered = False
@@ -281,10 +385,22 @@ class DaytonaClientManager:
         return cls._instance
 
     async def get_client(self) -> AsyncDaytona:
+        # The SDK loads lazily; a helper script can ask for a client before any
+        # DaytonaSandbox exists.
+        _load_daytona_sdk()
+        loop = asyncio.get_running_loop()
+        if self._client is not None and self._client_loop is not loop:
+            # The client (and a lock it may have bound) belongs to another,
+            # usually closed, event loop, e.g. an earlier asyncio.run(); it can
+            # be neither used nor closed from this loop. Start over.
+            self._logger.debug("Event loop changed; creating a new AsyncDaytona client")
+            self._client = None
+            self._client_lock = asyncio.Lock()
         async with self._client_lock:
             if self._client is None:
                 self._logger.debug("Creating new AsyncDaytona client")
                 self._client = AsyncDaytona()
+                self._client_loop = loop
                 if not self._cleanup_registered:
                     atexit.register(self._cleanup_sync)
                     self._cleanup_registered = True
@@ -316,6 +432,11 @@ class DaytonaClientManager:
 
 
 class DaytonaSandbox(BaseSandbox):
+    # True once a create request did not finish (it timed out, or was cancelled
+    # before it returned): Daytona may still create a sandbox this process has
+    # no handle for. A class default so stop() can read it on any instance.
+    _create_outcome_unknown = False
+
     @classmethod
     def preflight(cls) -> None:
         _daytona_preflight()
@@ -354,6 +475,9 @@ class DaytonaSandbox(BaseSandbox):
         self._auto_stop_interval = auto_stop_interval_mins
         self._auto_delete_interval = auto_delete_interval_mins
         self._snapshot_template_name = snapshot_template_name
+        # Set by start_from_snapshot(): start() creates the sandbox from this
+        # branch snapshot, with no fallback to the task image.
+        self._start_snapshot_ref: str | None = None
         if network_block_all is not None:
             self._network_block_all = network_block_all
             expected = not task_env_config.allow_internet
@@ -367,6 +491,8 @@ class DaytonaSandbox(BaseSandbox):
 
         self._sandbox: AsyncSandbox | None = None  # pyright: ignore[reportInvalidTypeForm]
         self._client_manager: DaytonaClientManager | None = None
+        # Calls of _create_sandbox in the current start(), retries included.
+        self._create_attempts = 0
 
         self._strategy: _DaytonaStrategy = (
             _DaytonaDinD(self) if self._compose_mode else _DaytonaDirect(self)
@@ -454,6 +580,7 @@ class DaytonaSandbox(BaseSandbox):
             raise RuntimeError(
                 "Client manager not initialized. This should never happen."
             )
+        self._create_attempts += 1
 
         # Clean up any previous failed sandbox before retry
         if self._sandbox is not None:
@@ -466,6 +593,7 @@ class DaytonaSandbox(BaseSandbox):
                 self._sandbox = None
 
         daytona = await self._client_manager.get_client()
+        attempt_labels = _tag_create_attempt(params)
         build_timeout = round(self.task_env_config.build_timeout_sec)
         hard_timeout = build_timeout + _STARTUP_HARD_TIMEOUT_BUFFER_SEC
 
@@ -489,6 +617,7 @@ class DaytonaSandbox(BaseSandbox):
                 f"(build_timeout={build_timeout}s + buffer={_STARTUP_HARD_TIMEOUT_BUFFER_SEC}s)"
             )
             create_task.cancel()
+            self._create_outcome_unknown = True
             raise
         except asyncio.CancelledError:
             try:
@@ -498,17 +627,136 @@ class DaytonaSandbox(BaseSandbox):
                 self._on_sandbox_created()
             except (TimeoutError, asyncio.CancelledError, Exception):
                 create_task.cancel()
+                self._create_outcome_unknown = True
+            raise
+        except Exception as exc:
+            await self._delete_sandbox_that_failed_to_start(
+                daytona, exc, attempt_labels=attempt_labels
+            )
             raise
 
+    async def _delete_sandbox_that_failed_to_start(
+        self,
+        daytona: Any,
+        exc: Exception,
+        *,
+        attempt_labels: dict[str, str] | None = None,
+    ) -> None:
+        """Delete the sandbox a failed create left behind (e.g. ``BUILD_FAILED``).
+
+        Otherwise every failed build or start leaves a sandbox holding quota
+        until the eval-start reaper's failed-state TTL. Best effort: a cleanup
+        failure is logged and the create error is what the caller sees.
+        """
+        sandbox_id = _failed_start_sandbox_id(exc)
+        if sandbox_id is None:
+            # The SDK can fail after the sandbox exists without naming it (a
+            # gateway 502 while it waits for the start); find it by the label
+            # this create attempt alone carries.
+            if attempt_labels:
+                await self._delete_sandboxes_labelled(daytona, attempt_labels)
+            return
+        try:
+            leftover = await daytona.get(sandbox_id)
+            await leftover.delete()
+        except Exception as cleanup_err:
+            self.logger.warning(
+                f"Could not delete sandbox {sandbox_id} that failed to start: "
+                f"{cleanup_err}"
+            )
+        else:
+            self.logger.info(f"Deleted sandbox {sandbox_id} that failed to start")
+
+    async def _delete_sandboxes_labelled(
+        self, daytona: Any, labels: dict[str, str]
+    ) -> None:
+        try:
+            leftovers = [s async for s in daytona.list(_labels_query(labels))]
+        except Exception as list_err:
+            self.logger.warning(
+                f"Could not look up a sandbox the failed create left: {list_err}"
+            )
+            return
+        for leftover in leftovers:
+            try:
+                await leftover.delete()
+            except Exception as cleanup_err:
+                self.logger.warning(
+                    f"Could not delete sandbox {leftover.id} that failed to "
+                    f"start: {cleanup_err}"
+                )
+            else:
+                self.logger.info(f"Deleted sandbox {leftover.id} that failed to start")
+
+    def _startup_failure(self, exc: BaseException) -> SandboxStartupError:
+        """The startup error for a failed create, with the attempts it made.
+
+        Only transient SDK errors are retried, so a build failure is one
+        attempt; the id comes from the SDK error when create returned nothing.
+        """
+        sandbox_id = getattr(self._sandbox, "id", None) if self._sandbox else None
+        attempts = self._create_attempts
+        return SandboxStartupError(
+            f"Sandbox creation failed after {attempts} "
+            f"attempt{'' if attempts == 1 else 's'}: {exc}",
+            sandbox_id=sandbox_id or _failed_start_sandbox_id(exc),
+            sandbox_state="error",
+            attempts=attempts,
+            build_timeout_sec=self.task_env_config.build_timeout_sec,
+        )
+
+    def _log_no_sandbox_to_stop(self) -> None:
+        """stop() found no sandbox handle; warn only if one may still exist.
+
+        Normally there is nothing to delete: the create failed before a
+        sandbox existed (a failed build's leftover is deleted at once), or an
+        earlier stop() already deleted it. Only a create that never finished
+        can leave a sandbox on Daytona that this process cannot delete.
+        """
+        if self._create_outcome_unknown:
+            self.logger.warning(
+                "No Daytona sandbox handle to delete, but a create request did "
+                "not finish, so a sandbox may still exist on Daytona; `bench "
+                "sandbox cleanup --dry-run` lists it and `bench sandbox cleanup` "
+                "deletes it once it is stale."
+            )
+        else:
+            self.logger.debug(
+                "No Daytona sandbox to delete: none was created, or it is "
+                "already deleted."
+            )
+
+    def _log_sandbox_left_behind(self, exc: BaseException) -> None:
+        """The delete failed for good: name the sandbox so it can be cleaned up."""
+        self.logger.error(
+            f"Could not delete Daytona sandbox {self.sandbox_id}: "
+            f"{_one_line_error(exc)}. It is left running; `bench sandbox "
+            "cleanup` (or the reaper at the next eval start) deletes it once "
+            "it is stale."
+        )
+
     @retry(
-        stop=stop_after_attempt(_DAYTONA_STOP_RETRY_ATTEMPTS),
+        stop=_stop_retries_exhausted,
         wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=_DAYTONA_TRANSIENT_RETRY,
+        retry=retry_if_exception(_is_daytona_delete_retry_error),
         reraise=True,
     )
     async def _stop_sandbox(self) -> None:
-        if self._sandbox:
+        if not self._sandbox:
+            return
+        try:
             await self._sandbox.delete()
+        except Exception as exc:
+            if _daytona_status(exc) != 404 and type(exc).__name__ != (
+                "DaytonaNotFoundError"
+            ):
+                raise
+            # Already gone: an earlier attempt's delete went through behind a
+            # failed gateway response, or Daytona deleted it on its own.
+            self.logger.debug(
+                f"Daytona sandbox {self._sandbox.id} is already deleted: "
+                f"{_one_line_error(exc)}"
+            )
 
     @stamp_transient_transport
     @_SDK_RETRY
@@ -967,3 +1215,24 @@ class DaytonaSandbox(BaseSandbox):
 
     async def restore(self, image: SandboxImage) -> None:
         return await self._strategy.restore(image)
+
+    async def adopt_snapshot(self, image: SandboxImage) -> None:
+        """Associate the live credential files with ``image`` for restores."""
+        adopt = getattr(self._strategy, "adopt_snapshot", None)
+        if adopt is not None:
+            await adopt(image)
+
+    def start_from_snapshot(self, image: SandboxImage) -> bool:
+        """Make the next ``start()`` create the sandbox from ``image``.
+
+        Used for isolated branch children. Returns False when this sandbox
+        cannot (another provider's snapshot, or a strategy without snapshot
+        support); the caller then starts normally and restores ``image``.
+        """
+        if image.provider != "daytona" or not self._strategy.supports_snapshot:
+            return False
+        self._start_snapshot_ref = image.ref
+        return True
+
+    async def delete_snapshot(self, image: SandboxImage) -> bool:
+        return await self._strategy.delete_snapshot(image)
