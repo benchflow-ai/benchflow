@@ -218,6 +218,14 @@ def prepare_terminal_result(rollout: Rollout) -> RolloutResult:
 
     Only review and verifier recovery read solver.json; a task with neither
     keeps the single result.json and its ordinary retries.
+
+    A trial with a review plan publishes solver.json alone, as on main: its
+    result.json is written once, by ``commit_scoring_result``, when the
+    review's scoring commits. Written here, it would carry the unreviewed
+    verifier reward, which ``bench train stream`` emits once and never
+    rereads, and which a review cut off by a crash or a budget stop would
+    leave as the trial's final score. Verifier recovery without a review
+    keeps result.json beside solver.json.
     """
     from benchflow.rollout._verifier_recovery import recovery_ineligible_reason
 
@@ -226,9 +234,13 @@ def prepare_terminal_result(rollout: Rollout) -> RolloutResult:
         admitted = read_admitted_result(rollout)
         if admitted is not None:
             return admitted
-        if (
-            rollout._review_plan is not None
-            or recovery_ineligible_reason(rollout) is None
-        ) and not (root / "solver.json").is_file():
+        solver_saved = (root / "solver.json").is_file()
+        if rollout._review_plan is not None:
+            # solver.json is immutable once written: it keeps the original
+            # verifier verdict that recovery and resume start from.
+            if solver_saved:
+                return rollout._build_result(result_filename=None)
+            return rollout._build_result(result_filename="solver.json")
+        if recovery_ineligible_reason(rollout) is None and not solver_saved:
             rollout._build_result(result_filename="solver.json")
         return rollout._build_result()

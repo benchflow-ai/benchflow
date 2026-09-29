@@ -1494,6 +1494,28 @@ class Evaluation:
             name = pending.get("task_name")
             if name and name not in latest and pending.get("purpose", "task") == "task":
                 latest[name] = pending
+        # Likewise a solver.json without result.json: a reviewed trial whose
+        # scoring never committed and that resume_pending_reviews above could
+        # not finish. Its solver is kept, never replayed, and it stays
+        # unscored until `bench eval score` commits its review. solver.json's
+        # own reward is the unreviewed verifier reward, so it is withheld.
+        from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+
+        for snapshot in job_dir.glob("*/solver.json"):
+            if (snapshot.parent / "result.json").exists():
+                continue
+            pending = json.loads(snapshot.read_text())
+            name = pending.get("task_name")
+            if name and name not in latest and pending.get("purpose", "task") == "task":
+                latest[name] = {
+                    **pending,
+                    "rewards": None,
+                    "verifier_error": (
+                        f"{PRESERVED_SOLVER} scoring did not commit; "
+                        "finish it with bench eval score"
+                    ),
+                    "verifier_error_category": VERIFIER_INFRA,
+                }
         completed: dict[str, dict] = {}
         # Re-running an errored task is only safe when rollouts are
         # independent. A sequential-shared job advances one persisted learner

@@ -238,6 +238,31 @@ async def test_batch_completed_result_wins_over_incomplete_retry(
     retry.assert_not_awaited()
 
 
+def test_pending_review_keeps_its_solver_when_resume_cannot_finish_it(saved_trial):
+    """Guards #1134's "a dead review must not cost the solver result" now that
+    a reviewed trial has no result.json until its scoring commits. A review
+    that resume_pending_reviews could not finish leaves solver.json alone;
+    evaluation resume keeps that solver, unscored, instead of replaying it."""
+    from benchflow._utils.scoring import classify_score_outcome
+    from benchflow.evaluation import Evaluation, RetryConfig
+    from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+
+    rollout, task = saved_trial
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+
+    kept = job._get_completed_tasks()["physics"]
+    assert kept["rewards"] is None
+    assert PRESERVED_SOLVER in kept["verifier_error"]
+    assert not RetryConfig().should_retry_verifier_error(kept["verifier_error"])
+    assert classify_score_outcome(kept) == "verifier_errored"
+    assert kept["agent_result"] == {"total_tokens": 123}
+    assert not (rollout / "result.json").exists()
+
+
 @pytest.mark.asyncio
 async def test_batch_isolates_a_failing_resumed_review(
     saved_trial, monkeypatch, caplog

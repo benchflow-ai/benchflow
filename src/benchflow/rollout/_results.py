@@ -283,7 +283,7 @@ def _build_rollout_result(
     scoring: ScoringResult | None = None,
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
-    result_filename: str = "result.json",
+    result_filename: str | None = "result.json",
     branches: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
@@ -291,6 +291,8 @@ def _build_rollout_result(
     Diagnostics flow through the :class:`RolloutDiagnostics` collector
     (issue #503). Callers that previously passed per-field ``*_info``
     dicts should construct a collector and ``set()`` typed diagnostics.
+    ``result_filename=None`` builds the result without writing any result
+    file: a reviewed trial publishes nothing until its scoring commits.
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
@@ -429,6 +431,8 @@ def _build_rollout_result(
         result_data["branches"] = branches
     if purpose != "task":
         result_data.update(purpose=purpose, parent_rollout=parent_rollout)
+    if result_filename is None:
+        return result
     if result_filename != "result.json":
         write_json_atomic(rollout_dir / result_filename, result_data)
         write_json_atomic(rollout_dir / "prompts.json", prompts)
