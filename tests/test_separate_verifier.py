@@ -300,6 +300,69 @@ async def test_payload_holds_only_workspace_declared_artifacts_and_logs_artifact
 
 
 @pytest.mark.asyncio
+async def test_agent_paths_cover_every_path_the_transfer_writes(tmp_path: Path) -> None:
+    """Guards the separate-mode trust rule (sdk-update review, must-fix 3).
+
+    The verifier sandbox's plugin guard distrusts only ``agent_paths`` (and
+    /logs): no agent process ever ran there. So every member the transfer
+    unpacks must lie under one of them, declared artifacts outside the
+    workspace included.
+    """
+    box, workspace, trial = await _agent_trial(
+        tmp_path, artifacts=[str(tmp_path / "box" / "tmp" / "configured.txt")]
+    )
+
+    summary = build_transfer_payload(trial, tmp_path / "payload.tar")
+
+    agent_paths = summary["agent_paths"]
+    # A declared file is captured with its directory as the bundle's root,
+    # so that whole directory counts as the agent's: conservative, and what
+    # the shared sandbox blocks for /tmp anyway.
+    assert agent_paths == [str(workspace), str(box / "tmp"), "/logs/artifacts"]
+    for name in _members(tmp_path / "payload.tar"):
+        path = "/" + name
+        assert any(
+            path == root or path.startswith(root + "/") for root in agent_paths
+        ) or any(root.startswith(path + "/") for root in agent_paths), name
+
+
+@pytest.mark.asyncio
+async def test_default_verify_hardens_with_the_transferred_paths(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Guards the separate-mode trust rule: hardening is told the sandbox is fresh."""
+    from benchflow.rollout import _separate_verifier, _setup
+
+    calls = []
+
+    async def fake_verify_rollout(*args, **kwargs):
+        calls.append(kwargs)
+        return {"reward": 1.0}, None, None
+
+    async def fake_publish(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(_setup, "_verify_rollout", fake_verify_rollout)
+    monkeypatch.setattr(_setup, "_publish_trajectory_for_verifier", fake_publish)
+    rollout = SimpleNamespace(_trajectory=[], _planes=SimpleNamespace())
+    verify = _separate_verifier._default_verify(rollout)
+
+    await verify(
+        object(),
+        object(),
+        SimpleNamespace(agent_dir=tmp_path),
+        {},
+        workspace="/app",
+        agent_paths=("/app", "/out/report.txt", "/logs/artifacts"),
+    )
+
+    (kwargs,) = calls
+    assert kwargs["sandbox_user"] is None
+    assert kwargs["workspace"] == "/app"
+    assert set(kwargs["agent_paths"]) == {"/app", "/out/report.txt", "/logs/artifacts"}
+
+
+@pytest.mark.asyncio
 async def test_missing_frozen_workspace_is_a_transfer_error(tmp_path: Path) -> None:
     _, _, trial = await _agent_trial(tmp_path)
     shutil.rmtree(trial / "evidence")
@@ -810,7 +873,9 @@ async def test_rewards_come_from_the_verifier_sandbox_with_timing_and_record(
         created.append((vtask, context_path, vpaths))
         return box
 
-    async def verify(env, vtask, vpaths, timing, *, workspace):
+    async def verify(env, vtask, vpaths, timing, *, workspace, agent_paths):
+        # Hardening learns what the transfer wrote: only that is the agent's.
+        assert workspace in agent_paths and "/logs/artifacts" in agent_paths
         # The verifier sees the agent's work at the same absolute path, and
         # nothing planted elsewhere in the agent sandbox.
         root = verifier_root / workspace.lstrip("/")

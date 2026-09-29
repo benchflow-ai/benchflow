@@ -1,8 +1,11 @@
 """Unit checks for the uv-state fix: the uv/pip state probe and refusal classification.
 
 Guards the fix for the pytest plugin guard refusing plugins test.sh installs
-with uvx under WORKDIR /root. The end-to-end
-scenarios live in test_verifier_uv_state.py.
+with uvx under WORKDIR /root, and the later fix that moves the state always,
+into a directory the guard trusts by path, because ``/root/.cache/uv`` itself
+came out world-writable on a runtime whose exec mask is 0000 (review of
+sdk-update-2026-09-27 at c5b75fcc, must-fix 3). The end-to-end scenarios live
+in test_verifier_uv_state.py.
 """
 
 import os
@@ -63,6 +66,18 @@ def _probe(tmp_path, env, blocked=(), monkeypatch=None, *, lexical=False):
     return tool_state.overrides(env, blocked, str(tmp_path / "fresh"), lexical=lexical)
 
 
+MOVED_ALWAYS = {
+    "UV_CACHE_DIR": "uv-cache",
+    "UV_TOOL_DIR": "uv-tools",
+    "UV_PYTHON_INSTALL_DIR": "uv-python",
+    "PIP_CACHE_DIR": "pip-cache",
+}
+
+
+def _moved(tmp_path):
+    return {key: str(tmp_path / "fresh" / entry) for key, entry in MOVED_ALWAYS.items()}
+
+
 def test_image_cache_in_a_runtime_directory_moves_with_the_uv_config(
     tmp_path, monkeypatch
 ):
@@ -75,10 +90,48 @@ def test_image_cache_in_a_runtime_directory_moves_with_the_uv_config(
         (str(runtime),),
     )
     assert found == {
-        "UV_CACHE_DIR": str(tmp_path / "fresh/uv-cache"),
+        **_moved(tmp_path),
         # Workspace configuration must not decide what lands in the new cache.
         "UV_CONFIG_FILE": str(tmp_path / "fresh/uv.toml"),
     }
+
+
+def test_every_location_moves_where_the_agent_could_not_write(tmp_path, monkeypatch):
+    """A root-only $HOME moves too, so the guard need not judge its modes.
+
+    With ``WORKDIR /app``, ``/root/.cache/uv`` was left in place and trusted by
+    ownership and mode, and on Docker-in-Docker (exec mask 0000) uv created it
+    world-writable: the guard refused the verifier's own ctrf.
+    """
+    monkeypatch.setattr(tool_state, "owned_safely", lambda st: True)
+    found = _probe(tmp_path, {"HOME": str(tmp_path / "root")}, (str(tmp_path / "app"),))
+    assert found == {
+        **_moved(tmp_path),
+        "UV_CONFIG_FILE": str(tmp_path / "fresh/uv.toml"),
+    }
+
+
+def test_safe_user_uv_config_is_kept_and_workspace_config_is_not(tmp_path, monkeypatch):
+    """A mirror in root's own ~/.config/uv/uv.toml still reaches uv; the workspace's cannot.
+
+    uv reads only ``UV_CONFIG_FILE`` when it is set, which keeps the project
+    configuration in the working directory (the workspace) from choosing
+    packages that land in the trusted directory.
+    """
+    monkeypatch.setattr(tool_state, "owned_safely", lambda st: True)
+    home = tmp_path / "root"
+    (home / ".config/uv").mkdir(parents=True)
+    (home / ".config/uv/uv.toml").write_text('index-url = "https://mirror"\n')
+    system = tmp_path / "etc-xdg"
+    (system / "uv").mkdir(parents=True)
+    (system / "uv/uv.toml").write_text('index-url = "https://system"\n')
+    env = {"HOME": str(home), "XDG_CONFIG_DIRS": str(system)}
+
+    found = _probe(tmp_path, env, (str(tmp_path / "app"),))
+    assert found["UV_CONFIG_FILE"] == str(home / ".config/uv/uv.toml")
+    # Under WORKDIR /root the user file is the agent's: the system one is used.
+    found = _probe(tmp_path, env, (str(home),))
+    assert found["UV_CONFIG_FILE"] == str(system / "uv/uv.toml")
 
 
 def test_trusted_system_uv_config_and_explicit_choices_are_kept(tmp_path, monkeypatch):
@@ -102,7 +155,7 @@ def test_trusted_system_uv_config_and_explicit_choices_are_kept(tmp_path, monkey
 def test_agent_writable_config_home_alone_neutralises_configuration(
     tmp_path, monkeypatch
 ):
-    """``XDG_CONFIG_HOME`` in the workspace: caches stay, configuration moves."""
+    """``XDG_CONFIG_HOME`` in the workspace: uv and pip read an empty configuration."""
     monkeypatch.setattr(tool_state, "owned_safely", lambda st: True)
     workspace = tmp_path / "app"
     found = _probe(
@@ -110,7 +163,11 @@ def test_agent_writable_config_home_alone_neutralises_configuration(
         {"HOME": str(tmp_path / "root"), "XDG_CONFIG_HOME": str(workspace / ".config")},
         (str(workspace),),
     )
-    assert set(found) == {"UV_CONFIG_FILE", "PIP_CONFIG_FILE"}
+    assert found == {
+        **_moved(tmp_path),
+        "UV_CONFIG_FILE": str(tmp_path / "fresh/uv.toml"),
+        "PIP_CONFIG_FILE": str(tmp_path / "fresh/pip.conf"),
+    }
 
 
 def test_group_writable_ancestor_is_not_safe(tmp_path, monkeypatch):
@@ -181,8 +238,14 @@ async def test_shell_only_image_decides_from_paths_and_creates_in_sh(
         ExecResult(stdout='{"LD_PRELOAD": "/x"}', stderr="", return_code=0),
         ExecResult(stdout='{"UV_CACHE_DIR": "relative"}', stderr="", return_code=0),
         ExecResult(stdout="not json", stderr="", return_code=0),
+        # The guard trusts the new directory by path: a location elsewhere,
+        # or one left out, is not what hardening asked for.
+        ExecResult(
+            stdout='{"UV_CACHE_DIR": "/root/.cache/uv"}', stderr="", return_code=0
+        ),
+        ExecResult(stdout="{}", stderr="", return_code=0),
     ],
-    ids=["failed", "foreign-key", "relative", "garbage"],
+    ids=["failed", "foreign-key", "relative", "garbage", "elsewhere", "nothing"],
 )
 async def test_failed_probe_moves_nothing(tmp_path, monkeypatch, result):
     """A probe that fails or answers oddly sets nothing; the guard still refuses."""

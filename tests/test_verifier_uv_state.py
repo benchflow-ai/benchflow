@@ -33,6 +33,7 @@ import pytest
 
 from benchflow._utils.scoring import VERIFIER_FAILED, classify_verifier_error
 from benchflow.rollout._setup import _verify_rollout
+from benchflow.sandbox import _pytest_plugin_guard as guard_module
 from benchflow.sandbox import lockdown
 from benchflow.sandbox._base import ExecResult
 from benchflow.task import RolloutPaths, Verifier
@@ -153,9 +154,6 @@ class Layout:
             lockdown, "_VERIFIER_TOOL_STATE_PARENT", str(self.fs), raising=False
         )
         monkeypatch.setattr(
-            lockdown, "_PYTEST_PLUGIN_GUARD_MARKERS_DIR", str(self.paths.verifier_dir)
-        )
-        monkeypatch.setattr(
             lockdown,
             "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
             modelled(lockdown._DISCOVER_PYTEST_PLUGINS_SCRIPT, GUARD_OWNERSHIP),
@@ -234,6 +232,9 @@ class ScriptSandbox:
 
     async def exec(self, command, env=None, **kwargs):
         if "test-stdout.txt" not in command:
+            if "/.markers" in command:
+                # The verifier reading the guard's markers back.
+                return self.layout.run(command)
             return ExecResult(stdout="", stderr="", return_code=0)
         self.env = dict(env or {})
         tests = self.layout.tmp / "verifier-tests"
@@ -292,14 +293,40 @@ def uvx(env, layout):
     return [site]
 
 
-async def score(tmp_path, monkeypatch, solution, place=uvx, *, before=None, env=None):
-    """Harden a WORKDIR /root image, run test.sh, and score it."""
-    layout = Layout(tmp_path, monkeypatch)
+async def score(
+    tmp_path,
+    monkeypatch,
+    solution,
+    place=uvx,
+    *,
+    before=None,
+    env=None,
+    workspace_name="root",
+    guard_model=None,
+    agent_paths=None,
+):
+    """Harden a WORKDIR /root image (or *workspace_name*), run test.sh, and score it.
+
+    *agent_paths* hardens a separate verifier sandbox that received those paths.
+    """
+    layout = Layout(tmp_path, monkeypatch, workspace_name=workspace_name)
+    if guard_model is not None:
+        monkeypatch.setattr(
+            lockdown,
+            "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
+            modelled(Path(guard_module.__file__).read_text(), guard_model),
+        )
     if before is not None:
         before(layout)
     task = make_task(layout, env=env)
+    if agent_paths is not None:
+        agent_paths = tuple(p.format(workspace=layout.workspace) for p in agent_paths)
     task.config.verifier.env = await lockdown._build_verifier_env(
-        layout, task, "agent", str(layout.workspace)
+        layout,
+        task,
+        "agent" if agent_paths is None else None,
+        str(layout.workspace),
+        agent_paths=agent_paths,
     )
     sandbox = ScriptSandbox(layout, solution, place)
     planes = SimpleNamespace(harden_before_verify=AsyncMock(), verifier=Verifier)
@@ -307,7 +334,42 @@ async def score(tmp_path, monkeypatch, solution, place=uvx, *, before=None, env=
     return layout, sandbox.env, rewards, error
 
 
+def mode_ownership(tmp_path: Path) -> str:
+    """The guard's owner and mode rule with real mode bits, for a Layout's tree.
+
+    Nothing here runs as root, so owners are modelled as root's; a file or
+    directory below the stand-ins for ``/`` and ``/root`` that others can
+    write is refused, as it is in the sandbox. Those stand-ins and everything
+    outside them are the image's own (root-owned 0755), whatever mask the
+    test process has.
+    """
+    roots = [str(tmp_path / "fs") + "/", str(tmp_path / "root") + "/"]
+    return (
+        "def ownership_problem(path, st):\n"
+        f"    if not path.startswith(tuple({roots!r})):\n"
+        "        return None\n"
+        "    if st.st_mode & 0o022:\n"
+        "        return path + ' is group- or world-writable'\n"
+        "    return None\n"
+    )
+
+
+def uvx_under_umask_0000(env, layout):
+    """``uvx`` where ``docker exec`` runs with umask 0000 (Docker-in-Docker)."""
+    previous = os.umask(0)
+    try:
+        return uvx(env, layout)
+    finally:
+        os.umask(previous)
+
+
+def home_cache_under_umask_0000(env, layout):
+    """The same install in ``$HOME/.cache/uv``, where c5b75fcc left uv's cache."""
+    return uvx_under_umask_0000({**env, "UV_CACHE_DIR": ""}, layout)
+
+
 def markers(layout, kind):
+    """The guard's signed markers of *kind*, as the verifier copied them to the trial."""
     return sorted(layout.paths.verifier_dir.glob(f"_benchflow_guard_*.*.{kind}"))
 
 
@@ -332,6 +394,164 @@ async def test_uvx_plugin_under_workdir_root_is_scored(
     cache = Path(env["UV_CACHE_DIR"])
     assert not cache.is_relative_to(layout.workspace)
     assert cache.parent.parent == layout.fs
+
+
+async def test_verifier_install_under_a_umask_0000_runtime_is_scored(
+    tmp_path, monkeypatch
+):
+    """Terminal-Bench 2's regex-log oracle was unscored on Docker-in-Docker.
+
+    Guards the fix for the plugin guard's umask dependence (review of
+    sdk-update-2026-09-27 at c5b75fcc, must-fix 3). The image has WORKDIR
+    /app, so c5b75fcc left uv's cache in /root/.cache/uv; ``docker exec``
+    there runs with umask 0000, uv created the cache 0777/0666, the guard
+    refused the verifier's own ctrf and the correct oracle's trial was
+    unscored. The cache now always moves into the directory hardening made
+    after the agent stopped, which the guard trusts by path, so the same
+    world-writable install is scored.
+    """
+    layout, env, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        PASSING,
+        uvx_under_umask_0000,
+        workspace_name="app",
+        guard_model=mode_ownership(tmp_path),
+    )
+
+    stdout = layout.paths.test_stdout_path.read_text()
+    assert "Verifier plugin trust rejected" not in stdout, stdout
+    assert error is None
+    assert rewards == {"reward": 1.0}
+    (site,) = Path(env["UV_CACHE_DIR"]).glob("archive-v0/*/site-packages")
+    assert (site / "ctrf_model.py").stat().st_mode & 0o777 == 0o666
+
+
+async def test_same_install_outside_the_trusted_directory_is_still_judged_by_mode(
+    tmp_path, monkeypatch
+):
+    """Guards the trust-by-path rule against widening beyond its directory.
+
+    The world-writable install in $HOME/.cache/uv (where c5b75fcc left it) is
+    refused, and, being newer than the guard, reported as the verifier's own
+    install: unscored, as every --ctrf task was on Docker-in-Docker.
+    """
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        PASSING,
+        home_cache_under_umask_0000,
+        workspace_name="app",
+        guard_model=mode_ownership(tmp_path),
+    )
+
+    assert "Verifier plugin trust rejected: ctrf" in (
+        layout.paths.test_stdout_path.read_text()
+    )
+    assert rewards is None
+    assert error is not None and "installed after the agent stopped" in error
+
+
+def image_plugin_others_can_write(layout):
+    """An image plugin in a world-writable venv (``chmod -R 777 /opt/venv``)."""
+    previous = os.umask(0)
+    try:
+        install_plugin(layout.home / "opt-venv/site-packages", CTRF_PLUGIN)
+    finally:
+        os.umask(previous)
+
+
+def image_venv(env, layout):
+    return [layout.home / "opt-venv/site-packages"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "reward"), [("separate", 1.0), ("shared", 0.0)], ids=["separate", "shared"]
+)
+async def test_separate_verifier_distrusts_only_what_the_transfer_wrote(
+    tmp_path, monkeypatch, mode, reward
+):
+    """Guards the separate-mode trust rule (review of sdk-update-2026-09-27, must-fix 3).
+
+    The separate verifier passed ``sandbox_user=None`` but kept the owner and
+    mode rule meant for the agent's own sandbox, although no agent process
+    ever ran in the fresh one. There only the transferred paths (and /logs)
+    are the agent's, so an image plugin others could write is the image's
+    own. In the agent's sandbox the same plugin could have been rewritten by
+    the agent, and refusing it stays scored.
+    """
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        PASSING,
+        image_venv,
+        before=image_plugin_others_can_write,
+        workspace_name="app",
+        guard_model=mode_ownership(tmp_path),
+        agent_paths=("{workspace}", "/logs/artifacts") if mode == "separate" else None,
+    )
+
+    stdout = layout.paths.test_stdout_path.read_text()
+    assert error is None
+    assert rewards == {"reward": reward}
+    assert ("Verifier plugin trust rejected: ctrf" in stdout) == (mode == "shared")
+
+
+async def test_separate_verifier_still_refuses_a_plugin_planted_in_the_workspace(
+    tmp_path, monkeypatch
+):
+    """Guards #1116 in separate mode: the transferred workspace is still the agent's.
+
+    A hostile ctrf the agent left in its workspace venv crosses with the
+    workspace. The verifier's pytest sees it first, the guard refuses it, and
+    the failing solution scores 0: the planted hook never runs.
+    """
+    proof = tmp_path / "hostile-imported"
+    site_path = Path(".venv/lib/python3.12/site-packages")
+
+    def plant(layout):
+        install_plugin(layout.workspace / site_path, hostile_ctrf(proof))
+
+    def loads_planted(env, layout):
+        return [layout.workspace / site_path, *uvx(env, layout)]
+
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        FAILING,
+        loads_planted,
+        before=plant,
+        workspace_name="app",
+        guard_model=mode_ownership(tmp_path),
+        agent_paths=("{workspace}", "/logs/artifacts"),
+    )
+
+    stdout = layout.paths.test_stdout_path.read_text()
+    assert "Verifier plugin trust rejected: ctrf" in stdout, stdout
+    assert rewards == {"reward": 0.0} and error is None
+    assert markers(layout, "installed") == []
+    assert not proof.exists()
+
+
+async def test_separate_verifier_guard_blocks_the_transfer_not_the_runtime_dirs(
+    tmp_path, monkeypatch
+):
+    """The armed guard in a separate verifier sandbox blocks the transfer's paths."""
+    layout = Layout(tmp_path, monkeypatch, workspace_name="app")
+    task = make_task(layout)
+    await lockdown._build_verifier_env(
+        layout,
+        task,
+        None,
+        str(layout.workspace),
+        agent_paths=(str(layout.workspace), "/out/report.txt", "/logs/artifacts"),
+    )
+
+    (guard,) = layout.fs.glob("_benchflow_guard_*/_benchflow_guard_*.py")
+    source = guard.read_text()
+    blocked = (str(layout.workspace), "/out/report.txt", "/logs/artifacts", "/logs")
+    assert f"_BENCHFLOW_BLOCKED = {blocked!r}" in source
+    assert "_BENCHFLOW_OWNERSHIP = False" in source
 
 
 async def test_workdir_root_state_moves_to_one_fresh_root_directory(
@@ -364,11 +584,19 @@ async def test_workdir_root_state_moves_to_one_fresh_root_directory(
         assert (directory / name).stat().st_mode & 0o777 == 0o644
 
 
-async def test_home_outside_the_workspace_keeps_its_state(tmp_path, monkeypatch):
-    """A $HOME the agent cannot write keeps main's uv and pip behaviour.
+async def test_home_outside_the_workspace_moves_too_and_keeps_pip_config(
+    tmp_path, monkeypatch
+):
+    """A $HOME the agent cannot write still gets a fresh directory the guard trusts.
 
-    Guards the uv-state fix against moving trusted image state (a warm cache, a
-    mirror in ~/.config/pip/pip.conf) for tasks whose WORKDIR is not $HOME.
+    Guards the fix for the plugin guard's umask dependence (review of
+    sdk-update-2026-09-27 at c5b75fcc, must-fix 3). With WORKDIR /app the uv
+    cache stayed in /root/.cache/uv and was judged by its modes; on
+    Docker-in-Docker, whose exec mask is 0000, uv created it world-writable
+    and the guard refused Terminal-Bench 2's own ctrf. Caches, tools and
+    managed Pythons now always move. pip configuration in a safe $HOME (a
+    mirror in ~/.config/pip/pip.conf) is still read: pip installs outside the
+    trusted directory, and reads no workspace configuration.
     """
     layout = Layout(tmp_path, monkeypatch, workspace_name="app")
     task = make_task(layout)
@@ -376,8 +604,18 @@ async def test_home_outside_the_workspace_keeps_its_state(tmp_path, monkeypatch)
         layout, task, "agent", str(layout.workspace)
     )
 
-    assert not set(MOVED_KEYS) & set(env)
-    assert list(layout.fs.glob("_benchflow_verifier_*")) == []
+    (directory,) = layout.fs.glob("_benchflow_verifier_*")
+    assert {key: env.get(key) for key in MOVED_KEYS} == {
+        "UV_CACHE_DIR": str(directory / "uv-cache"),
+        "UV_TOOL_DIR": str(directory / "uv-tools"),
+        "UV_PYTHON_INSTALL_DIR": str(directory / "uv-python"),
+        "PIP_CACHE_DIR": str(directory / "pip-cache"),
+        "UV_CONFIG_FILE": str(directory / "uv.toml"),
+        "PIP_CONFIG_FILE": None,
+    }
+    # The armed guard trusts exactly that directory by path.
+    (guard,) = layout.fs.glob("_benchflow_guard_*/_benchflow_guard_*.py")
+    assert f"_BENCHFLOW_TRUSTED = {(str(directory),)!r}" in guard.read_text()
 
 
 # Attacks: what the agent can plant must still never pass the task.
@@ -579,6 +817,11 @@ async def test_refused_plugin_the_verifier_installed_is_a_verifier_error(
     )
     assert rewards is None
     assert error is not None and "installed after the agent stopped" in error
+    # It names a refused file and why it was untrusted, not "the agent could
+    # write" in general.
+    venv = layout.workspace / ".venv/lib/python3.12/site-packages"
+    assert f"{venv}/ctrf_model-0.3.5.dist-info (" in error
+    assert f"is under {layout.workspace}, which the agent could write)" in error
     assert classify_verifier_error(error) == VERIFIER_FAILED
     (marker,) = markers(layout, "installed")
     assert ".venv/lib/python3.12/site-packages" in marker.read_text()

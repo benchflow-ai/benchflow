@@ -35,10 +35,15 @@ from benchflow.rewards.validation import (
     validate_reward_map,
 )
 from benchflow.sandbox.lockdown import (
+    GuardMarker,
     _exec_return_code,
     clear_verifier_output_dir,
-    pytest_plugin_guard_markers,
+    describe_installed_marker,
+    parse_pytest_plugin_guard_markers,
+    pytest_plugin_guard_markers_cmd,
+    pytest_plugin_guard_markers_dir,
     pytest_plugin_guard_name,
+    with_verifier_umask,
 )
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
@@ -519,6 +524,14 @@ class Verifier:
         receipt = await self._prepare_execution_receipt(service)
         if receipt is not None:
             command = f"printf started > {shlex.quote(receipt)} && {command}"
+        guard = pytest_plugin_guard_name((env or {}).get("PYTEST_ADDOPTS"))
+        if guard is not None:
+            # A previous attempt's markers are not this run's.
+            markers_dir = shlex.quote(pytest_plugin_guard_markers_dir(guard))
+            command = f"rm -f {markers_dir}/* 2>/dev/null; {command}"
+        # Whatever the runtime's mask, test.sh creates files 0644 and
+        # directories 0755, which the plugin guard's ownership rule needs.
+        command = with_verifier_umask(command)
         test_result = await self._sandbox.exec(
             command=command,
             env=env,
@@ -551,13 +564,21 @@ class Verifier:
                     e,
                 )
 
-        guard = pytest_plugin_guard_name((env or {}).get("PYTEST_ADDOPTS"))
+        markers = (
+            await self._plugin_guard_markers(guard, service)
+            if guard is not None
+            else {}
+        )
         if guard is not None and (
-            _has_guard_load_failure(self._rollout_paths.verifier_dir, guard)
             # Left by a guard pytest imported but never registered, whether
             # or not test.sh kept pytest's output.
-            or pytest_plugin_guard_markers(
-                self._rollout_paths.verifier_dir, guard, "loading"
+            markers.get("loading")
+            # pytest's message for a guard it could not import. Code the
+            # tests run can print it too, so it counts only when no pytest
+            # of this run registered the guard.
+            or (
+                not markers.get("registered")
+                and _has_guard_load_failure(self._rollout_paths.verifier_dir, guard)
             )
         ):
             # pytest aborted before running a test, so a reward test.sh derived
@@ -568,39 +589,32 @@ class Verifier:
                 "example `python -I` or a replaced PYTHONPATH); its reward is "
                 "not scored"
             )
-        crashed = (
-            pytest_plugin_guard_markers(
-                self._rollout_paths.verifier_dir, guard, "crashed"
-            )
-            if guard is not None
-            else []
-        )
+        crashed = markers.get("crashed", [])
         if crashed:
             # The guard failed for its own reasons (a refused plugin raises
             # without this marker and stays scored), so pytest's exit status
             # says nothing about the solution.
+            lines = crashed[0].detail.strip().splitlines()
             raise PluginGuardLoadError(
-                f"the pytest plugin guard {guard} crashed inside pytest "
-                f"(traceback in verifier/{crashed[0].name}); its reward is not "
+                f"the pytest plugin guard {guard} crashed inside pytest"
+                + (f" ({lines[-1].strip()[:300]})" if lines else "")
+                + f"; traceback in verifier/{crashed[0].name}; its reward is not "
                 "scored"
             )
-        installed = (
-            pytest_plugin_guard_markers(
-                self._rollout_paths.verifier_dir, guard, "installed"
-            )
-            if guard is not None
-            else []
-        )
+        installed = markers.get("installed", [])
         if installed:
             # The guard refused a plugin the verifier installed after the agent
             # stopped (a refusal of planted code leaves no marker and stays
             # scored): BenchFlow's own false positive, not the solution's 0.
+            files = describe_installed_marker(installed[0].detail)
             raise PluginGuardLoadError(
-                f"the pytest plugin guard {guard} refused a plugin the verifier "
-                "installed after the agent stopped, in a directory the agent "
-                "could write (files in verifier/"
-                f"{installed[0].name}); its reward is not scored. Install "
-                "verifier plugins with uvx or into the image's site-packages"
+                f"the pytest plugin guard {guard} refused a pytest plugin the "
+                f"verifier installed after the agent stopped: {files} (listed "
+                f"in verifier/{installed[0].name}); its reward is not scored. "
+                "Install verifier plugins with uvx, whose cache BenchFlow moves "
+                "to a directory the guard trusts, or into the image; the guard "
+                "refuses plugin code in the workspace, /tmp or a venv test.sh "
+                "makes there"
             )
 
         if test_return_code != 0 and (
@@ -648,6 +662,46 @@ class Verifier:
             raise RewardFileNotFoundError(msg)
 
         return VerifierResult(rewards=rewards)
+
+    async def _plugin_guard_markers(
+        self, guard: str, service: str
+    ) -> dict[str, list[GuardMarker]]:
+        """The markers the plugin guard *guard* signed during this run, by kind.
+
+        They are read from the guard's own directory in the sandbox, and
+        copied to the trial's ``verifier/`` for reference. Markers that cannot
+        be read leave the run scored as test.sh reports it, as before markers
+        existed.
+        """
+        try:
+            result = await self._sandbox.exec(
+                pytest_plugin_guard_markers_cmd(guard),
+                user="root",
+                service=service,
+                timeout_sec=30,
+            )
+        except Exception as e:
+            self._logger.warning("Cannot read the plugin guard's markers: %s", e)
+            return {}
+        if _exec_return_code(result) != 0:
+            self._logger.warning(
+                "Cannot read the plugin guard's markers (exit %s)",
+                _exec_return_code(result),
+            )
+            return {}
+        by_kind: dict[str, list[GuardMarker]] = {}
+        for marker in parse_pytest_plugin_guard_markers(result.stdout or "", guard):
+            by_kind.setdefault(marker.kind, []).append(marker)
+            if marker.kind != "registered":
+                try:
+                    (self._rollout_paths.verifier_dir / marker.name).write_text(
+                        marker.detail
+                    )
+                except OSError as e:
+                    self._logger.debug(
+                        "Cannot copy guard marker %s: %s", marker.name, e
+                    )
+        return by_kind
 
     async def _recover_main_verifier_outputs(
         self,
@@ -982,7 +1036,7 @@ class Verifier:
                 ).as_posix()
             )
         )
-        command = (
+        command = with_verifier_umask(
             f"cd {shlex.quote(str(verifier_code_dir))} && "
             f"python {shlex.quote(str(runner_path.relative_to(verifier_code_dir)))} "
             f"> {test_stdout_path} 2>&1"

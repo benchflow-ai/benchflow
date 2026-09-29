@@ -735,6 +735,13 @@ async def test_workspace_registration_cannot_drop_or_veto_an_image_plugin(
     image_pythonpath = os.pathsep.join(
         [str(workspace), str(image)] if workspace_on_image_pythonpath else [str(image)]
     )
+    # The sandbox's runtime prefixes (/tmp, /logs, ...) stand in here: this
+    # image lives under pytest's tmp_path, which is under /tmp on Linux, and a
+    # blocked /tmp would refuse the image plugin itself instead of the planted
+    # workspace file this test is about.
+    monkeypatch.setattr(
+        lockdown, "_RUNTIME_PATH_PREFIXES", (str(tmp_path / "sandbox-tmp"),)
+    )
     monkeypatch.setattr(
         lockdown,
         "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
@@ -837,7 +844,10 @@ def test_guard_reads_the_command_line_on_pytest_before_invocation_params(
 def _armed_markers(monkeypatch, tmp_path):
     prefix = tmp_path / "markers" / "_benchflow_guard_test"
     prefix.parent.mkdir()
+    key = tmp_path / "key"
+    key.write_text(lockdown.pytest_plugin_guard_key("_benchflow_guard_test"))
     monkeypatch.setattr(guard, "_BENCHFLOW_MARKERS", str(prefix))
+    monkeypatch.setattr(guard, "_BENCHFLOW_KEY_FILE", str(key))
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
     return prefix.parent
@@ -880,3 +890,386 @@ def test_unreadable_plugin_metadata_is_a_scored_rejection(monkeypatch, tmp_path)
         guard.pytest_addhooks(SimpleNamespace(get_plugin=lambda name: config))
 
     assert list(markers.iterdir()) == []
+
+
+def _stat_model(monkeypatch, root_only):
+    """Model an image where only *root_only* paths are root's alone.
+
+    Every other path reports uid 1000 and mode 0777, as uv's cache did on a
+    runtime whose exec mask is 0000 (plus an owner a non-root test can have).
+    """
+    original_stat = os.stat
+    root_only = {str(p) for p in root_only}
+
+    def model(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        fields = list(result)
+        if str(path) in root_only:
+            fields[4] = 0
+            fields[0] = (fields[0] & ~0o7777) | 0o755
+        else:
+            fields[4] = 1000
+            fields[0] = (fields[0] & ~0o7777) | 0o777
+        return os.stat_result(fields, {"st_ctime_ns": result.st_ctime_ns})
+
+    monkeypatch.setattr(os, "stat", model)
+
+
+def _ancestors(path):
+    path = str(path)
+    found = [path]
+    while os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+        found.append(path)
+    return found
+
+
+def test_code_below_the_verifier_tool_state_directory_is_trusted_by_path(
+    tmp_path, monkeypatch
+):
+    """Guards the fix for the plugin guard's umask dependence (sdk-update review, must-fix 3).
+
+    Hardening creates the verifier's uv and pip directory root-owned 0755
+    after the agent stopped, so what uv writes inside is the verifier's own
+    whatever modes the runtime's mask gave it. The same files anywhere else
+    are still judged by owner and mode.
+    """
+    state = tmp_path / "_benchflow_verifier_x"
+    site = state / "uv-cache/archive-v0/env/lib/python3.13/site-packages"
+    site.mkdir(parents=True)
+    (site / "ctrf").mkdir()
+    (site / "ctrf/__init__.py").write_text("# the verifier's ctrf\n")
+    elsewhere = tmp_path / "root/.cache/uv/site-packages/ctrf"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "__init__.py").write_text("# same files, no trusted directory\n")
+    _stat_model(monkeypatch, _ancestors(state))
+    monkeypatch.setattr(guard, "_BENCHFLOW_TRUSTED", (str(state),))
+
+    assert guard.trusted(str(site / "ctrf/__init__.py"), ())
+    assert guard.untrusted_reason(str(elsewhere / "__init__.py"), ()) == (
+        str(elsewhere / "__init__.py") + " is owned by uid 1000, not root"
+    )
+    # Blocked prefixes still win inside it.
+    assert not guard.trusted(str(site / "ctrf/__init__.py"), (str(site),))
+
+
+@pytest.mark.parametrize("flaw", ["writable", "foreign", "parent"])
+def test_trusted_directory_itself_must_be_roots_alone(tmp_path, monkeypatch, flaw):
+    """Guards the trust-by-path rule: it covers what is below the directory only.
+
+    A directory other users could write, or one below such a parent, could
+    have been filled by someone other than the verifier.
+    """
+    state = tmp_path / "state"
+    (state / "pkg").mkdir(parents=True)
+    (state / "pkg/plugin.py").write_text("# plugin\n")
+    root_only = set(_ancestors(state))
+    root_only.discard(str(state if flaw != "parent" else tmp_path))
+    _stat_model(monkeypatch, root_only)
+    if flaw == "foreign":
+        original = os.stat
+
+        def foreign(path, *args, **kwargs):
+            result = original(path, *args, **kwargs)
+            fields = list(result)
+            if str(path) == str(state):
+                fields[0] = (fields[0] & ~0o7777) | 0o755
+            return os.stat_result(fields, {"st_ctime_ns": result.st_ctime_ns})
+
+        monkeypatch.setattr(os, "stat", foreign)
+    monkeypatch.setattr(guard, "_BENCHFLOW_TRUSTED", (str(state),))
+
+    assert not guard.trusted(str(state / "pkg/plugin.py"), ())
+
+
+def test_symlink_out_of_the_trusted_directory_is_judged_where_it_points(
+    tmp_path, monkeypatch
+):
+    """Guards the trust-by-path rule against a link that leaves the directory.
+
+    The resolved path is checked on its own merits, so a link to the
+    workspace is refused however trusted the directory holding it.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "plugin.py").write_text("# agent code\n")
+    (state / "plugin.py").symlink_to(workspace / "plugin.py")
+    _stat_model(monkeypatch, [*_ancestors(state), *_ancestors(workspace / "plugin.py")])
+    monkeypatch.setattr(guard, "_BENCHFLOW_TRUSTED", (str(state),))
+
+    assert guard.trusted(str(workspace / "plugin.py"), ())
+    assert not guard.trusted(str(state / "plugin.py"), (str(workspace),))
+
+
+def test_separate_sandbox_distrusts_only_the_transferred_paths(tmp_path, monkeypatch):
+    """Guards the separate-mode trust rule (sdk-update review, must-fix 3).
+
+    No agent process ever ran in a separate verifier sandbox, so owners and
+    modes say nothing about the agent there: only the paths the transfer
+    wrote are refused, and the refusal says why.
+    """
+    workspace = tmp_path / "app"
+    image = tmp_path / "image"
+    workspace.mkdir()
+    image.mkdir()
+    (workspace / "plugin.py").write_text("# transferred from the agent\n")
+    (image / "plugin.py").write_text("# the verifier image's own\n")
+    _stat_model(monkeypatch, ())  # nothing is root's alone
+    monkeypatch.setattr(guard, "_BENCHFLOW_OWNERSHIP", False)
+    blocked = (str(workspace),)
+
+    assert guard.trusted(str(image / "plugin.py"), blocked)
+    assert guard.untrusted_reason(str(workspace / "plugin.py"), blocked) == (
+        f"{workspace}/plugin.py is under {workspace}, which holds files copied "
+        "from the agent's sandbox"
+    )
+    # In the agent's own sandbox the same image file is not root's alone.
+    monkeypatch.setattr(guard, "_BENCHFLOW_OWNERSHIP", True)
+    assert not guard.trusted(str(image / "plugin.py"), blocked)
+    assert guard.untrusted_reason(str(workspace / "plugin.py"), blocked).endswith(
+        "which the agent could write"
+    )
+
+
+def test_separate_sandbox_discovery_proposes_image_plugins_by_path_alone(tmp_path):
+    """Guards the separate-mode trust rule in discovery, with real files and Python.
+
+    The files here belong to the test's user, as an image's might not be
+    root's alone; discovery told the sandbox is separate still proposes the
+    image plugin, and never the one registered in the transferred workspace.
+    """
+    image = tmp_path / "image"
+    workspace = tmp_path / "app"
+    registration(image, "imagepkg", "image_plugin", "image_module")
+    (image / "image_module.py").write_text("# image plugin\n")
+    registration(workspace, "planted", "agent_plugin", "agent_module")
+    (workspace / "agent_module.py").write_text("# agent plugin\n")
+    command = lockdown._discover_pytest_plugins_cmd(
+        (str(workspace),), pythonpath=f"{image}:{workspace}", ownership=False
+    )
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", command.replace("python3 -c", f"{sys.executable} -c", 1)],
+        env={"PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    plugins = json.loads(result.stdout)["plugins"]
+    assert "image_plugin" in plugins and "agent_plugin" not in plugins
+
+
+def _root_owned_everywhere(monkeypatch):
+    """Every path is root's alone, as an image's own files are."""
+    original_stat = os.stat
+
+    def model(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        fields = list(result)
+        fields[4] = 0
+        fields[0] &= ~(stat.S_IWGRP | stat.S_IWOTH)
+        return os.stat_result(fields, {"st_ctime_ns": result.st_ctime_ns})
+
+    monkeypatch.setattr(os, "stat", model)
+
+
+def test_refusal_names_each_plugin_and_what_the_guard_could_not_trust(
+    tmp_path, monkeypatch
+):
+    """Guards the refusal message fix (review of sdk-update-2026-09-27, must-fix 3).
+
+    "Where the agent could write" appeared even when nothing was
+    agent-writable. The message now gives each refused plugin its reason: the
+    untrusted path and why, a name registered twice, or a plugin installed
+    nowhere.
+    """
+    workspace = tmp_path / "workspace"
+    image = tmp_path / "image"
+    info = registration(workspace, "planted", "agent_plugin", "agent_module")
+    (workspace / "agent_module.py").write_text("# agent\n")
+    registration(image, "one", "twice", "mod_one")
+    registration(image, "two", "twice", "mod_two")
+    (image / "mod_one.py").write_text("# one\n")
+    (image / "mod_two.py").write_text("# two\n")
+    monkeypatch.setattr(sys, "path", [str(workspace), str(image), *sys.path])
+    _root_owned_everywhere(monkeypatch)
+    monkeypatch.setattr(guard, "_BENCHFLOW_BLOCKED", (str(workspace),))
+    monkeypatch.setattr(guard, "_BENCHFLOW_MARKERS", "")
+
+    with pytest.raises(guard.Rejected) as refused:
+        guard._validate(["agent_plugin", "twice", "missing_plugin"])
+
+    message = str(refused.value)
+    assert message.startswith(
+        "Verifier plugin trust rejected: agent_plugin, missing_plugin, twice ("
+    )
+    assert (
+        f"agent_plugin: {info} is under {workspace}, which the agent could write"
+        in message
+    )
+    assert "twice: registered 2 times" in message
+    assert "missing_plugin: not installed where this pytest looks" in message
+    # Nothing untrusted explains "twice" or "missing_plugin": not an install.
+    assert "not scored" not in message
+
+
+def test_install_evidence_needs_an_untrusted_file(tmp_path, monkeypatch):
+    """Guards the "installed" evidence fix (sdk-update review, must-fix 3).
+
+    A refusal counted as the verifier's own install, and so unscored, even
+    when no file behind it was untrusted: two trusted registrations of one
+    name, all newer than the guard, were "installed where the agent could
+    write". Now only untrusted, newer files are evidence.
+    """
+    image = tmp_path / "image"
+    workspace = tmp_path / "workspace"
+    registration(image, "one", "twice", "mod_one")
+    registration(image, "two", "twice", "mod_two")
+    (image / "mod_one.py").write_text("# one\n")
+    (image / "mod_two.py").write_text("# two\n")
+    info = registration(workspace, "venv", "venv_plugin", "venv_module")
+    (workspace / "venv_module.py").write_text("# the verifier's install\n")
+    monkeypatch.setattr(sys, "path", [str(image), str(workspace), *sys.path])
+    _root_owned_everywhere(monkeypatch)
+    monkeypatch.setattr(guard, "_armed_ns", lambda: 0)  # every file is newer
+    blocked = (str(workspace),)
+
+    assert guard._installed_during_verification(["twice"], True, blocked, ()) == []
+    assert guard._installed_during_verification(["venv_plugin"], True, blocked, ()) == [
+        str(info),
+        str(info / "entry_points.txt"),
+        str(workspace / "venv_module.py"),
+    ]
+    # One refused name without untrusted evidence keeps the whole refusal scored.
+    assert (
+        guard._installed_during_verification(
+            ["twice", "venv_plugin"], True, blocked, ()
+        )
+        == []
+    )
+
+
+def _signed_line(name, detail, key_guard):
+    import hashlib
+    import hmac
+
+    body = json.dumps(detail)
+    key = lockdown.pytest_plugin_guard_key(key_guard).encode()
+    mac = hmac.new(key, f"{name}\n{body}".encode(), hashlib.sha256).hexdigest()
+    return f"{name}\t{mac}\t{body}"
+
+
+def test_verifier_keeps_only_markers_this_guard_signed():
+    """Guards the marker fix (sdk-update review, must-fix 3): a marker must be signed.
+
+    The key derives from a secret that never leaves the host process, per
+    guard name; a line signed for another guard, unsigned, of an unknown kind
+    or with a body that is not a string is dropped.
+    """
+    guard = "_benchflow_guard_" + "a" * 32
+    other = "_benchflow_guard_" + "b" * 32
+    crashed = f"{guard}.12-0123abcd.crashed"
+    output = "\n".join(
+        [
+            _signed_line(crashed, "Traceback: boom", guard),
+            _signed_line(f"{guard}.12-0123abcd.installed", "x", other),
+            _signed_line(f"{guard}.12-0123abcd.forged", "x", guard),
+            _signed_line(f"{other}.12-0123abcd.crashed", "x", guard),
+            f'{guard}.13-0123abcd.loading\t{"0" * 64}\t""',
+            _signed_line(f"{guard}.14-0123abcd.loading", ["not", "a", "string"], guard),
+            "garbage",
+            "",
+        ]
+    )
+
+    assert lockdown.parse_pytest_plugin_guard_markers(output, guard) == [
+        lockdown.GuardMarker(crashed, "crashed", "Traceback: boom")
+    ]
+    assert lockdown.pytest_plugin_guard_key(guard) != lockdown.pytest_plugin_guard_key(
+        other
+    )
+
+
+def test_marker_read_back_skips_links_and_fifos_and_is_bounded(tmp_path, monkeypatch):
+    """Guards the marker read-back against files that could hang or flood it."""
+    monkeypatch.setattr(lockdown, "_PYTEST_PLUGIN_GUARD_PARENT", str(tmp_path))
+    guard = "_benchflow_guard_" + "c" * 32
+    markers = tmp_path / guard / ".markers"
+    markers.mkdir(parents=True)
+    # A marker file holds its signature and body; its name is the file name.
+    genuine = _signed_line(f"{guard}.1-0123abcd.crashed", "boom", guard)
+    content = genuine.split("\t", 1)[1] + "\n"
+    (markers / f"{guard}.1-0123abcd.crashed").write_text(content)
+    os.mkfifo(markers / f"{guard}.2-0123abcd.loading")
+    (tmp_path / "elsewhere").write_text(content)
+    (markers / f"{guard}.3-0123abcd.crashed").symlink_to(tmp_path / "elsewhere")
+    for index in range(100):
+        (markers / f"z{index:03d}").write_text("x" * 200_000)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", lockdown.pytest_plugin_guard_markers_cmd(guard)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    names = [line.split("\t", 1)[0] for line in result.stdout.splitlines() if line]
+    assert f"{guard}.1-0123abcd.crashed" in names
+    assert not any(".2-0123abcd." in name or ".3-0123abcd." in name for name in names)
+    assert len(result.stdout) < 65 * 64 * 1024
+    assert [
+        m.kind for m in lockdown.parse_pytest_plugin_guard_markers(result.stdout, guard)
+    ] == ["crashed"]
+
+
+def test_guard_writes_its_loading_marker_only_under_pytests_plugin_loader(tmp_path):
+    """Guards the marker fix: code that imports the guard by name leaves no marker.
+
+    Otherwise a solution the tests run could ``import <guard>`` in a fresh
+    Python, leave a ``loading`` marker that no pytest ever removes, and make
+    its run unscored.
+    """
+    guard_name = "_benchflow_guard_" + "d" * 32
+    guard_dir = tmp_path / guard_name
+    markers = guard_dir / ".markers"
+    markers.mkdir(parents=True)
+    key = guard_dir / ".key"
+    key.write_text(lockdown.pytest_plugin_guard_key(guard_name))
+    (guard_dir / f"{guard_name}.py").write_text(
+        lockdown._pytest_plugin_guard_source(
+            guard_name, (), [], str(markers), key_file=str(key)
+        )
+    )
+    (tmp_path / "test_pass.py").write_text("def test_pass():\n    assert True\n")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("PYTEST_", "PYTHON"))
+    }
+    env.update(PYTHONPATH=str(guard_dir), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+
+    subprocess.run(
+        [sys.executable, "-c", f"import {guard_name}"], env=env, check=True, timeout=30
+    )
+    assert list(markers.iterdir()) == []
+
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", guard_name, "test_pass.py"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    (marker,) = markers.iterdir()
+    assert marker.name.endswith(".registered")
+    (signed,) = lockdown.parse_pytest_plugin_guard_markers(
+        f"{marker.name}\t{marker.read_text()}", guard_name
+    )
+    assert signed.kind == "registered"

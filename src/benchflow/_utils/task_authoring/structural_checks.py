@@ -2,10 +2,12 @@
 
 Inspects an on-disk task directory and reports issues without mutating it:
 verifier placeholders, CTRF output paths, compatibility alias drift, task.md /
-runtime-capability parsing, and the static publication-grade gate.
+runtime-capability parsing, the static publication-grade gate, and verifier
+scripts that install pytest plugins where the plugin guard refuses them.
 """
 
 import re
+import shlex
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -75,6 +77,166 @@ def _check_ctrf_path(test_sh: Path) -> list[str]:
             f"(expected '{_CTRF_STANDARD_PATH}')"
         ]
     return []
+
+
+# Workspace plugin installs. The verifier's pytest plugin guard
+# (sandbox/_pytest_plugin_guard.py) refuses plugin code in the agent's
+# workspace and in /tmp: the agent could have planted or shadowed it there. A
+# verifier script that builds its own Python environment in the working
+# directory (the image WORKDIR, normally the workspace) and installs a pytest
+# plugin into it therefore has that plugin refused every time, and because
+# test.sh installed it after the agent stopped, every trial ends unscored
+# (Terminal-Bench 2's mailman: ``uv venv .tb`` then ``uv pip install
+# pytest-json-ctrf``; SkillsBench's powerlifting-coef-calc: ``uv init`` and
+# ``uv add pytest-json-ctrf``).
+_SCRIPT_COMMENT_RE = re.compile(r"^\s*#(?!!).*$|\s#.*$", re.MULTILINE)
+_SCRIPT_COMMAND_SPLIT_RE = re.compile(r"\n|;|&&|\|\||\|")
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_PYTEST_PLUGIN_RE = re.compile(r"^pytest[-_][A-Za-z0-9][A-Za-z0-9_.-]*")
+# Absolute places the guard also refuses in the agent's sandbox.
+_GUARD_REFUSED_PREFIXES = ("/tmp", "/var/tmp")
+# Options of the environment-making commands that take a value.
+_VENV_VALUE_OPTIONS = frozenset(
+    {"-p", "--python", "--prompt", "--index-url", "--seed", "--relocatable"}
+)
+_TARGET_OPTIONS = ("--target", "-t", "--prefix")
+
+
+def _guard_refuses_path(path: str) -> bool:
+    """A path the plugin guard refuses code from: relative (the workspace) or /tmp."""
+    if not path or path.startswith(("$HOME", "${HOME}", "~")):
+        return False
+    if path.startswith("/"):
+        return any(
+            path == prefix or path.startswith(prefix + "/")
+            for prefix in _GUARD_REFUSED_PREFIXES
+        )
+    return not path.startswith("$")
+
+
+def _command_words(command: str) -> list[str]:
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    while words and (_ASSIGNMENT_RE.match(words[0]) or words[0] in {"env", "exec"}):
+        words = words[1:]
+    return words
+
+
+def _first_argument(words: list[str]) -> str | None:
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif word.startswith("-"):
+            skip = "=" not in word and word in _VENV_VALUE_OPTIONS
+        else:
+            return word
+    return None
+
+
+def _install_target(words: list[str]) -> str | None:
+    for option in _TARGET_OPTIONS:
+        if option in words[:-1]:
+            target = words[words.index(option) + 1]
+            if _guard_refuses_path(target):
+                return f"--target {target}" if option == "-t" else f"{option} {target}"
+    return None
+
+
+def workspace_plugin_installs(text: str) -> tuple[list[str], list[str]]:
+    """What in a verifier script puts pytest plugins where the plugin guard refuses them.
+
+    Returns the commands that make or fill a Python environment in the working
+    directory or /tmp, and the pytest plugins the script installs with
+    anything but ``uvx`` (uv's cache, which BenchFlow moves to a directory
+    the guard trusts). A script needs both to be flagged.
+    """
+    text = _SCRIPT_COMMENT_RE.sub("", text.replace("\\\n", " "))
+    places: list[str] = []
+    plugins: list[str] = []
+    for command in _SCRIPT_COMMAND_SPLIT_RE.split(text):
+        words = _command_words(command.strip())
+        if not words:
+            continue
+        program = words[0].rsplit("/", 1)[-1]
+        if program == "uv" and len(words) > 1:
+            subcommand, rest = words[1], words[2:]
+            if subcommand == "venv":
+                target = _first_argument(rest) or ".venv"
+                if _guard_refuses_path(target):
+                    places.append(f"uv venv {target}")
+            elif subcommand in {"init", "add", "sync"}:
+                if not any(w.startswith(("--project", "--directory")) for w in rest):
+                    places.append(f"uv {subcommand}")
+                if subcommand == "add":
+                    plugins += [w for w in rest if _PYTEST_PLUGIN_RE.match(w)]
+            elif subcommand == "pip" and rest[:1] == ["install"]:
+                plugins += [w for w in rest[1:] if _PYTEST_PLUGIN_RE.match(w)]
+                if target := _install_target(rest):
+                    places.append(f"uv pip install {target}")
+        elif program.startswith("pip") or (
+            program.startswith("python") and words[1:3] == ["-m", "pip"]
+        ):
+            rest = words[1:] if program.startswith("pip") else words[3:]
+            if rest[:1] == ["install"]:
+                plugins += [w for w in rest[1:] if _PYTEST_PLUGIN_RE.match(w)]
+                if target := _install_target(rest):
+                    places.append(f"pip install {target}")
+                if "/" in words[0] and _guard_refuses_path(words[0]):
+                    places.append(words[0])
+        elif program.startswith("python") and words[1:3] == ["-m", "venv"]:
+            target = _first_argument(words[3:])
+            if target and _guard_refuses_path(target):
+                places.append(f"python -m venv {target}")
+        elif program == "virtualenv":
+            target = _first_argument(words[1:])
+            if target and _guard_refuses_path(target):
+                places.append(f"virtualenv {target}")
+    return list(dict.fromkeys(places)), list(dict.fromkeys(plugins))
+
+
+# ``unset PYTEST_ADDOPTS`` or a fresh ``PYTEST_ADDOPTS=...``: drops the guard.
+_CLEARS_PYTEST_ADDOPTS_RE = re.compile(
+    r"\bunset\s+(?:-v\s+)?PYTEST_ADDOPTS\b"
+    r"|(?<![\w$])PYTEST_ADDOPTS=(?![^\n;&|]*\$\{?PYTEST_ADDOPTS\b)"
+)
+
+
+def _check_workspace_plugin_installs(verifier_dir: Path, *, label: str) -> list[str]:
+    """Warn when a verifier script installs pytest plugins into the workspace."""
+    warnings = []
+    for script in sorted(verifier_dir.glob("*.sh")):
+        try:
+            text = script.read_text(errors="replace")
+        except OSError:
+            continue
+        places, plugins = workspace_plugin_installs(text)
+        if not (places and plugins):
+            continue
+        if _CLEARS_PYTEST_ADDOPTS_RE.search(_SCRIPT_COMMENT_RE.sub("", text)):
+            # The guard never runs, so nothing is refused: the plugin loads
+            # unchecked from an environment the agent's workspace can seed.
+            effect = (
+                ", and clears PYTEST_ADDOPTS, so BenchFlow's pytest plugin "
+                "guard never checks that code, which comes from a directory "
+                "the agent could have prepared"
+            )
+        else:
+            effect = (
+                ": the verifier's pytest plugin guard refuses plugin code "
+                "there, so every trial ends unscored"
+            )
+        warnings.append(
+            f"{label}/{script.name} installs pytest plugins "
+            f"({', '.join(plugins)}) into a Python environment in the workspace "
+            f"or /tmp ({', '.join(places)}){effect}. Install them with uvx "
+            "into uv's default cache, which BenchFlow moves to a directory the "
+            f"guard trusts (for example `uvx --with {plugins[0]} pytest ...`), "
+            "or into the image"
+        )
+    return warnings
 
 
 def _logical_dir_label(paths: TaskPaths, *, kind: Literal["verifier", "oracle"]) -> str:

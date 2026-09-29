@@ -1,18 +1,22 @@
-"""Give the verifier's uv and pip state the agent could have written a fresh home.
+"""Give the verifier's uv and pip state a fresh home the plugin guard trusts by path.
 
 Runs in the sandbox as root after the agent has stopped (``python3 -c``). It
-resolves where the verifier's uv and pip would keep their caches, tool
-environments, managed Pythons and configuration, and moves every location the
-agent could have written into one new root-owned directory that did not exist
-while the agent ran. The pytest plugin guard trusts code only outside
-agent-writable trees, so a plugin a test.sh installs with ``uvx`` under a
-``WORKDIR /root`` image (``$HOME/.cache/uv`` inside the workspace) was refused
-although the agent never touched it. Moved, the install lands where the agent
-could not have planted anything, and the guard trusts it on its usual rules.
+moves the verifier's uv cache, uv tool environments, uv-managed Pythons and
+pip cache into one new root-owned directory that did not exist while the agent
+ran, whether or not the agent could have written their usual places. The
+pytest plugin guard trusts code in that directory by its path, so a plugin a
+test.sh installs with ``uvx`` is trusted whatever modes the runtime's
+file-mode mask gave it. Before, the guard judged the verifier's own install by
+ownership and mode bits: under ``WORKDIR /root`` uv's cache was in the
+workspace and refused, and on a runtime whose ``docker exec`` mask is 0000
+(Docker-in-Docker) ``/root/.cache/uv`` came out world-writable and refused.
 
-The configuration is moved with the caches: uv and pip read index URLs from
-it, so an agent-written ``uv.toml`` or ``pip.conf`` could otherwise send the
-verifier's installs to its own index and have them land in a trusted place.
+Because the guard trusts whatever lands in the directory, uv must not read
+configuration the agent could have written: ``UV_CONFIG_FILE`` names a safe
+user or system file, or an empty one, so the workspace's ``uv.toml`` or
+``[tool.uv]`` cannot send the verifier's installs to the agent's own index.
+pip's configuration is replaced only when its user files are unsafe, since
+pip reads no workspace configuration and installs outside this directory.
 
 Like the plugin guard, this must run on any Python 3 a task image ships, so it
 uses no annotations and no f-strings.
@@ -20,10 +24,9 @@ uses no annotations and no f-strings.
 argv[1]: JSON object with the variables BenchFlow sets for the verifier; they
 override the image environment this process inherits.
 argv[2]: JSON list of agent-writable path prefixes.
-argv[3]: the directory to create when anything moves.
+argv[3]: the directory to create.
 
-Prints a JSON object of variables to set for the verifier (empty when nothing
-the verifier's uv and pip use is agent-writable).
+Prints a JSON object of variables to set for the verifier.
 """
 
 import json
@@ -144,42 +147,34 @@ def uv_system_configs(env):
 
 
 def overrides(env, blocked, directory, lexical=False):
-    """Return the variables that move agent-writable uv and pip state into *directory*.
+    """Return the variables that move the verifier's uv and pip state into *directory*.
 
-    uv reads configuration from ``UV_CONFIG_FILE`` alone when it is set; else,
-    unless ``UV_NO_CONFIG``, from the working directory's project (the
-    workspace), the user file under ``$XDG_CONFIG_HOME`` or ``$HOME`` and the
-    first system file. Once any uv location moves into the trusted directory,
-    configuration from the workspace would decide what lands there, so uv then
-    reads only a trusted system file or an empty one. pip reads the user files
-    unless ``PIP_CONFIG_FILE`` names an existing file; an empty file in the new
-    directory replaces them and keeps the image's global configuration.
+    Every uv and pip location moves. uv reads configuration from
+    ``UV_CONFIG_FILE`` alone when it is set; else, unless ``UV_NO_CONFIG``, from
+    the working directory's project (the workspace), the user file under
+    ``$XDG_CONFIG_HOME`` or ``$HOME`` and the system files. Whatever uv installs
+    lands in the trusted directory, so configuration from the workspace must not
+    decide what that is: uv reads a safe ``UV_CONFIG_FILE`` the verifier already
+    names, else the safe user file, else the first safe system file, else an
+    empty one. pip reads the user files unless ``PIP_CONFIG_FILE`` names an
+    existing file; an empty file in the new directory replaces them when they
+    are unsafe and keeps the image's global configuration.
     """
     isfile = (lambda p: False) if lexical else os.path.isfile
-    result = {}
-    for key, entry in MOVED:
-        if not safe(locations(env)[key], blocked, lexical):
-            result[key] = os.path.join(directory, entry)
-    uv_moved = any(key.startswith("UV_") for key in result)
+    result = dict((key, os.path.join(directory, entry)) for key, entry in MOVED)
 
     config_home = _base(env, "XDG_CONFIG_HOME", ".config")
-    if env.get("UV_CONFIG_FILE"):
-        uv_unsafe = not safe(env["UV_CONFIG_FILE"], blocked, lexical)
-    elif truthy(env.get("UV_NO_CONFIG")):
-        uv_unsafe = False
+    explicit = env.get("UV_CONFIG_FILE")
+    if explicit:
+        keep = safe(explicit, blocked, lexical)
     else:
-        system = [p for p in uv_system_configs(env) if isfile(p)]
-        uv_unsafe = (
-            uv_moved
-            or not safe(os.path.join(config_home, "uv", "uv.toml"), blocked, lexical)
-            or bool(system and not safe(system[0], blocked, lexical))
-        )
-    if uv_unsafe:
-        trusted_system = [
-            p for p in uv_system_configs(env) if isfile(p) and safe(p, blocked, lexical)
-        ]
+        keep = truthy(env.get("UV_NO_CONFIG"))
+    if not keep:
+        candidates = [os.path.join(config_home, "uv", "uv.toml")]
+        candidates += uv_system_configs(env)
+        chosen = [p for p in candidates if isfile(p) and safe(p, blocked, lexical)]
         result["UV_CONFIG_FILE"] = (
-            trusted_system[0] if trusted_system else os.path.join(directory, UV_CONFIG)
+            chosen[0] if chosen else os.path.join(directory, UV_CONFIG)
         )
 
     pip_file = env.get("PIP_CONFIG_FILE") or ""
@@ -218,6 +213,5 @@ if __name__ == "__main__":
         for candidate in (os.path.abspath(prefix), os.path.realpath(prefix))
     )
     found = overrides(environment, blocked, sys.argv[3])
-    if found:
-        create(sys.argv[3])
+    create(sys.argv[3])
     print(json.dumps(found))

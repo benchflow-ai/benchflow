@@ -11,14 +11,18 @@ Does not own:
     - Running the verifier itself — see SDK._verify
 """
 
+import hashlib
+import hmac
 import ipaddress
 import itertools
 import json as _json
 import logging
 import os
 import re
+import secrets
 import shlex
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -611,6 +615,22 @@ _SAFE_VERIFIER_PATH = VERIFIER_ENV["PATH"]
 _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 
+# The file-mode creation mask the verifier's commands run under. A command
+# otherwise inherits the runtime's: ``docker exec`` gives 0022 on Docker's own
+# daemon (29.1.3, runc 1.3.4) but 0000 on Docker-in-Docker (29.8.1, runc
+# 1.5.1). Under 0000 everything test.sh installs, uv's cache or a pip install
+# into site-packages, came out group- and world-writable, the plugin guard
+# refused the verifier's own ctrf, and every ``--ctrf`` task went unscored,
+# the correct oracle included. The mask is set inside the command string, so
+# it holds on every backend (Docker, remote Docker, Daytona, Modal, ...).
+VERIFIER_UMASK = "022"
+
+
+def with_verifier_umask(command: str) -> str:
+    """*command* run under :data:`VERIFIER_UMASK`, whatever the runtime's mask."""
+    return f"umask {VERIFIER_UMASK} && {command}"
+
+
 _DEFAULT_ROOTDIR = "/app"
 _LEGACY_VERIFIER_CONFCUTDIR = "/tests"
 
@@ -714,6 +734,20 @@ def _blocked_verifier_path_prefixes(
     return tuple(dict.fromkeys(prefixes))
 
 
+# A separate verifier sandbox never ran the agent. What came from the agent's
+# run is what the transfer wrote (the frozen workspace and declared artifacts,
+# ``agent_paths``) and what lands under /logs (the collected /logs/artifacts,
+# the published trajectory). The plugin guard distrusts exactly those there.
+_SEPARATE_VERIFIER_AGENT_PREFIXES = ("/logs",)
+
+
+def _separate_verifier_blocked_prefixes(
+    agent_paths: "tuple[str, ...] | list[str]",
+) -> tuple[str, ...]:
+    """The plugin guard's blocked prefixes in a separate verifier sandbox."""
+    return tuple(dict.fromkeys([*agent_paths, *_SEPARATE_VERIFIER_AGENT_PREFIXES]))
+
+
 def _blocked_verifier_pythonpath_prefixes(
     sandbox_user: str | None,
 ) -> tuple[str, ...]:
@@ -798,22 +832,30 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
 
 
 def _discover_pytest_plugins_cmd(
-    blocked_prefixes: tuple[str, ...], pythonpath: str | None = None
+    blocked_prefixes: tuple[str, ...],
+    pythonpath: str | None = None,
+    *,
+    ownership: bool = True,
 ) -> str:
     """Build the container-side pytest plugin discovery command.
 
     Runs from ``/`` so the image WORKDIR (usually the agent-writable workspace)
     is not on ``sys.path``, without user site-packages, and, when given, with
     the verifier's trusted PYTHONPATH instead of the image's raw one: the same
-    locations the verifier's own interpreter starts from.
+    locations the verifier's own interpreter starts from. *ownership* is the
+    guard's rule for code outside the blocked prefixes (see
+    ``_BENCHFLOW_OWNERSHIP`` in ``_pytest_plugin_guard.py``).
     """
     env = "PYTHONNOUSERSITE=1 "
     if pythonpath is not None:
         env = f"PYTHONPATH={shlex.quote(pythonpath)} " + env
-    return (
+    command = (
         f"cd / && {env}python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)} "
         f"{shlex.quote(_json.dumps(blocked_prefixes))}"
     )
+    if not ownership:
+        command += f" '[]' {shlex.quote(_json.dumps({'ownership': False}))}"
+    return command
 
 
 async def _discover_pytest_plugin_flags(
@@ -822,12 +864,19 @@ async def _discover_pytest_plugin_flags(
     sandbox_user: str | None = None,
     workspace: str | None = None,
     pythonpath: str | None = None,
+    *,
+    blocked: tuple[str, ...] | None = None,
+    ownership: bool = True,
 ) -> str:
     """Only enable plugins whose current registration and code are trusted.
 
     Missing aliases are deferred to the protected guard in the final pytest
     interpreter, allowing trusted verifier scripts to install plugins with uvx.
+    *blocked* and *ownership* default to the agent's own sandbox; a separate
+    verifier sandbox passes its transferred paths and no ownership rule.
     """
+    if blocked is None:
+        blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
     requested = list(
         dict.fromkeys(
             [
@@ -842,9 +891,7 @@ async def _discover_pytest_plugin_flags(
     )
     try:
         result = await env.exec(
-            _discover_pytest_plugins_cmd(
-                _blocked_verifier_path_prefixes(sandbox_user, workspace), pythonpath
-            ),
+            _discover_pytest_plugins_cmd(blocked, pythonpath, ownership=ownership),
             user="root",
             timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
@@ -912,11 +959,13 @@ async def _discover_pytest_plugin_flags(
 #
 # After the run the verifier turns a guard pytest could not load into a verifier
 # error instead of scoring test.sh's 0. A guard pytest imported but never ran
-# (pluggy refused its hooks) leaves its ``loading`` marker in the verifier
-# output directory, which hardening wiped after quiescence; that check needs no
+# (pluggy refused its hooks) leaves its ``loading`` marker; that check needs no
 # output. A guard pytest could not import at all is found only by pytest's
 # message in a top-level verifier log (``verifier_scan._has_guard_load_failure``),
-# so a test.sh that discards pytest's output still scores that run 0. No sound
+# and only when no pytest of this verification registered the guard: a solution
+# the tests run can print that message, but cannot leave a ``registered``
+# marker unregistered. A test.sh that discards pytest's output still scores
+# that run 0. No sound
 # output-independent check exists for it: the failure happens in an interpreter
 # test.sh created itself (uvx, a fresh venv) run with ``-I`` or its own
 # PYTHONPATH, where every file that executes (Python, its site-packages, pytest)
@@ -929,9 +978,35 @@ async def _discover_pytest_plugin_flags(
 _PYTEST_PLUGIN_GUARD_PARENT = "/"
 # The guard module is this prefix plus a random hex suffix chosen at hardening.
 PYTEST_PLUGIN_GUARD_PREFIX = "_benchflow_guard_"
-# Where the guard leaves ``<guard>.<token>.<kind>`` markers: the verifier output
-# directory, which the verifier downloads and hardening empties after quiescence.
-_PYTEST_PLUGIN_GUARD_MARKERS_DIR = "/logs/verifier"
+# The guard leaves ``<guard>.<token>.<kind>`` markers in ``<guard dir>/.markers``
+# (mode 0700, the verifier's user's), not the world-writable /logs/verifier,
+# and signs each with a key in ``<guard dir>/.key`` (mode 0400, the same
+# user's). The key derives from a secret that never leaves this process, so
+# the verifier recomputes it from the guard's name; it is never put in the
+# environment test.sh and everything it runs inherits.
+_PYTEST_PLUGIN_GUARD_MARKER_SECRET = secrets.token_bytes(32)
+PYTEST_PLUGIN_GUARD_MARKER_KINDS = ("loading", "registered", "crashed", "installed")
+# At most this many markers, each at most this big, are read back.
+_GUARD_MARKER_MAX_COUNT = 64
+_GUARD_MARKER_MAX_BYTES = 64 * 1024
+
+
+def pytest_plugin_guard_key(guard: str) -> str:
+    """The key the guard *guard* signs its markers with (hex)."""
+    return hmac.new(
+        _PYTEST_PLUGIN_GUARD_MARKER_SECRET, guard.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def pytest_plugin_guard_markers_dir(guard: str) -> str:
+    """Where the guard *guard* leaves its markers in the sandbox."""
+    return os.path.join(_PYTEST_PLUGIN_GUARD_PARENT, guard, ".markers")
+
+
+def pytest_plugin_guard_key_file(guard: str) -> str:
+    """Where the guard *guard* reads its marker key in the sandbox."""
+    return os.path.join(_PYTEST_PLUGIN_GUARD_PARENT, guard, ".key")
+
 
 _INSTALL_PYTEST_PLUGIN_GUARD_SCRIPT = r"""
 import importlib, importlib.util, os, site, sys, sysconfig
@@ -1010,36 +1085,69 @@ def _pytest_plugin_guard_source(
     blocked: tuple[str, ...],
     requested: list[str],
     markers_dir: str | None = None,
+    *,
+    trusted: tuple[str, ...] = (),
+    ownership: bool = True,
+    key_file: str | None = None,
 ) -> str:
-    """Return the armed guard module *name*: its policy, then its load marker."""
-    markers_dir = markers_dir or _PYTEST_PLUGIN_GUARD_MARKERS_DIR
+    """Return the armed guard module *name*: its policy, then its load marker.
+
+    *trusted* names directories whose contents the guard trusts by path: the
+    verifier's uv and pip state, created after the agent stopped. *ownership*
+    False (a separate verifier sandbox) distrusts the *blocked* paths alone.
+    Markers go to *markers_dir* and are signed with the key in *key_file*
+    (by default the guard directory's ``.markers`` and ``.key``).
+    """
+    markers_dir = markers_dir or pytest_plugin_guard_markers_dir(name)
+    key_file = key_file or pytest_plugin_guard_key_file(name)
     return (
         _DISCOVER_PYTEST_PLUGINS_SCRIPT
         + "\n_BENCHFLOW_BLOCKED = "
         + repr(blocked)
         + "\n_BENCHFLOW_REQUESTED = "
         + repr(requested)
+        + "\n_BENCHFLOW_TRUSTED = "
+        + repr(tuple(trusted))
+        + "\n_BENCHFLOW_OWNERSHIP = "
+        + repr(bool(ownership))
         + "\n_BENCHFLOW_MARKERS = "
         + repr(os.path.join(markers_dir, name))
-        + "\n_mark('loading')\n"
+        + "\n_BENCHFLOW_KEY_FILE = "
+        + repr(key_file)
+        + "\nif _imported_by_pytest():\n    _mark('loading')\n"
     )
 
 
 async def _install_pytest_plugin_guard(
-    env, sandbox_user, workspace, plugin_flags, verifier_path=_SAFE_VERIFIER_PATH
+    env,
+    sandbox_user,
+    workspace,
+    plugin_flags,
+    verifier_path=_SAFE_VERIFIER_PATH,
+    *,
+    trusted: tuple[str, ...] = (),
+    blocked: tuple[str, ...] | None = None,
+    ownership: bool = True,
+    verifier_uid: str | None = None,
 ):
     """Create an unguessable protected bootstrap after solver quiescence.
 
+    Also creates the guard's marker directory and key file, handed to
+    *verifier_uid* (the user test.sh runs as) when that is not root.
     Returns the guard directory, the ``-p`` flags with the guard first, and the
     Pythons that took a copy.
     """
     name = PYTEST_PLUGIN_GUARD_PREFIX + uuid.uuid4().hex
     directory = os.path.join(_PYTEST_PLUGIN_GUARD_PARENT, name)
     guard = os.path.join(directory, name + ".py")
+    if blocked is None:
+        blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
     source = _pytest_plugin_guard_source(
         name,
-        _blocked_verifier_path_prefixes(sandbox_user, workspace),
+        blocked,
         shlex.split(plugin_flags)[1::2],
+        trusted=trusted,
+        ownership=ownership,
     )
     install_into_interpreters = (
         _INSTALL_PYTEST_PLUGIN_GUARD_CMD_TEMPLATE.replace(
@@ -1049,11 +1157,22 @@ async def _install_pytest_plugin_guard(
         .replace("__PATH__", shlex.quote(verifier_path))
         .replace("__SCRIPT__", shlex.quote(_INSTALL_PYTEST_PLUGIN_GUARD_SCRIPT))
     )
+    markers = shlex.quote(pytest_plugin_guard_markers_dir(name))
+    key_file = shlex.quote(pytest_plugin_guard_key_file(name))
+    handover = (
+        f"chown {shlex.quote(verifier_uid)} {markers} {key_file} && "
+        if verifier_uid not in (None, "0")
+        else ""
+    )
     result = await _checked_exec(
         env,
         f"mkdir -m 755 {shlex.quote(directory)} && "
         f"printf %s {shlex.quote(source)} > {shlex.quote(guard)} && "
-        f"chmod 444 {shlex.quote(guard)} && {{\n{install_into_interpreters}\n}}",
+        f"chmod 444 {shlex.quote(guard)} && "
+        f"mkdir -m 700 {markers} && "
+        f"(umask 077 && printf %s {pytest_plugin_guard_key(name)} > {key_file}) && "
+        f"chmod 400 {key_file} && {handover}"
+        f"{{\n{install_into_interpreters}\n}}",
         "Verifier hardening failed: installing protected pytest plugin guard",
         user="root",
         timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
@@ -1171,21 +1290,86 @@ def pytest_plugin_guard_name(pytest_addopts: str | None) -> str | None:
     return None
 
 
-def pytest_plugin_guard_markers(
-    verifier_dir: Path, guard: str, kind: str
-) -> list[Path]:
-    """Return the ``kind`` markers the guard *guard* left in *verifier_dir*.
+@dataclass(frozen=True)
+class GuardMarker:
+    """A marker the plugin guard signed: its file name, kind and detail.
 
     Kinds are named in ``_pytest_plugin_guard.py``: ``loading`` means pytest
-    imported the guard but never registered it; ``crashed`` holds the
-    traceback of a guard hook that failed other than by refusing a plugin;
-    ``installed`` lists the files of a refused plugin the verifier installed
-    itself after the agent stopped.
+    imported the guard but never registered it; ``registered`` that a pytest
+    registered it; ``crashed`` holds the traceback of a guard hook that failed
+    other than by refusing a plugin; ``installed`` lists the files (and why
+    each is untrusted) of a refused plugin the verifier installed itself after
+    the agent stopped.
     """
-    try:
-        return sorted(verifier_dir.glob(f"{guard}.*.{kind}"))
-    except OSError:
-        return []
+
+    name: str
+    kind: str
+    detail: str
+
+
+def pytest_plugin_guard_markers_cmd(guard: str) -> str:
+    """The sandbox command that prints the guard's markers, one per line.
+
+    Each line is the marker's file name, a tab, and the file's content (one
+    line when the guard wrote it). Only regular files are read, at most 64 of
+    them and 64 KiB of each, so what else lands there cannot hang or flood
+    the verifier.
+    """
+    directory = shlex.quote(pytest_plugin_guard_markers_dir(guard))
+    return (
+        f"cd {directory} 2>/dev/null || exit 0; n=0; for f in ./*; do "
+        '[ -f "$f" ] && [ ! -h "$f" ] || continue; '
+        f"n=$((n + 1)); [ $n -le {_GUARD_MARKER_MAX_COUNT} ] || break; "
+        'printf "%s\t" "${f#./}"; '
+        f'dd if="$f" bs={_GUARD_MARKER_MAX_BYTES} count=1 2>/dev/null; '
+        "echo; done"
+    )
+
+
+def parse_pytest_plugin_guard_markers(output: str, guard: str) -> list[GuardMarker]:
+    """The markers in *output* (see above) that the guard *guard* really signed.
+
+    A line whose name, signature or body does not check out is dropped: a
+    solution that writes a marker file cannot make its run unscored.
+    """
+    key = pytest_plugin_guard_key(guard).encode()
+    name_re = re.compile(
+        re.escape(guard)
+        + r"\.[0-9]+-[0-9a-f]{8}\.("
+        + "|".join(PYTEST_PLUGIN_GUARD_MARKER_KINDS)
+        + ")"
+    )
+    markers = []
+    for line in output.splitlines():
+        name, _, rest = line.partition("\t")
+        mac, _, body = rest.partition("\t")
+        kind = name_re.fullmatch(name)
+        if kind is None or not mac:
+            continue
+        expected = hmac.new(key, f"{name}\n{body}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, mac):
+            logger.warning(
+                "Ignoring a plugin guard marker with a bad signature: %s", name
+            )
+            continue
+        try:
+            detail = _json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(detail, str):
+            markers.append(GuardMarker(name, kind.group(1), detail))
+    return markers
+
+
+def describe_installed_marker(text: str) -> str:
+    """Summarise an ``installed`` marker: its first refused file, why, and the count."""
+    entries = [line.split("\t", 1) for line in text.splitlines() if line.strip()]
+    if not entries:
+        return "files the guard could not trust"
+    path, *why = entries[0]
+    first = f"{path} ({why[0]})" if why and why[0] else path
+    more = len(entries) - 1
+    return first + (f" and {more} more file{'s' if more > 1 else ''}" if more else "")
 
 
 def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:
@@ -1242,14 +1426,30 @@ async def _distro_pip_env(env) -> dict[str, str]:
     return {}
 
 
-# Where the verifier's uv and pip keep state the agent could have written moves
-# to, see ``_verifier_tool_state.py``: a new root-owned directory named with this
-# prefix and a random suffix, created after the agent stopped. It sits at ``/``
-# for the reason the guard does: every other place may be inside some task's
-# workspace.
+# Where the verifier's uv and pip state moves to, see
+# ``_verifier_tool_state.py``: a new root-owned directory named with this prefix
+# and a random suffix, created after the agent stopped, which the plugin guard
+# trusts by path. It sits at ``/`` for the reason the guard does: every other
+# place may be inside some task's workspace.
 _VERIFIER_TOOL_STATE_SCRIPT = Path(_verifier_tool_state.__file__).read_text()
 _VERIFIER_TOOL_STATE_PARENT = "/"
 VERIFIER_TOOL_STATE_PREFIX = "_benchflow_verifier_"
+
+
+async def _verifier_uid(env: Any, user: str | int | None) -> str | None:
+    """The uid test.sh runs as (``None`` means the image's user), if it can be told."""
+    try:
+        result = await env.exec(
+            "id -u", user=user, timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+        )
+    except Exception as exc:
+        logger.debug("Cannot tell the verifier's uid: %s", exc)
+        return None
+    uid = getattr(result, "stdout", None)
+    if _exec_return_code(result) != 0 or not isinstance(uid, str):
+        return None
+    uid = uid.strip()
+    return uid if uid.isdigit() else None
 
 
 def _verifier_runs_as_root(user: str | int | None) -> bool:
@@ -1263,27 +1463,32 @@ async def _isolate_verifier_tool_state(
     verifier_env: dict[str, str],
     sandbox_user: str | None,
     workspace: str | None,
+    *,
+    blocked: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
-    """Move uv and pip state the agent could have written to a fresh directory.
+    """Move the verifier's uv and pip state to a fresh directory.
 
-    Returns the variables to add to the verifier environment. The plugin guard
-    refuses code under agent-writable trees, so a ``WORKDIR /root`` image,
-    whose ``$HOME/.cache/uv`` is in the workspace, had every plugin its test.sh
-    installed with ``uvx`` refused (some SkillsBench tasks scored 0). The
-    new directory holds only what the verifier itself installs, and uv and pip
-    stop reading configuration the agent could have written, so the guard can
-    trust plugins there on its usual rules.
+    Returns the variables to add to the verifier environment; the directory
+    is the parent of their ``UV_CACHE_DIR``. The plugin guard refused code
+    test.sh installed with ``uvx`` wherever uv's default cache was not root's
+    alone: in the workspace under a ``WORKDIR /root`` image (some SkillsBench
+    tasks scored 0), and in ``/root/.cache/uv`` itself on a runtime whose exec
+    mask is 0000 (every Terminal-Bench 2 ``--ctrf`` task unscored on
+    Docker-in-Docker). Every location now moves into one directory created
+    after the agent stopped, which the guard trusts by path, and uv and pip
+    stop reading configuration the agent could have written.
 
     Only a root verifier in ``main`` gets this: hardening runs there alone
     (#248), and a non-root verifier could not write a root-owned directory. A
-    probe that fails leaves the state where it was; the guard still refuses
-    anything there, so this can cost a verifier error but never trust.
+    probe that fails leaves the state where it was; the guard then judges it
+    by ownership and mode, so this can cost a verifier error but never trust.
     """
     if task.config.verifier.service != "main" or not _verifier_runs_as_root(
         task.config.verifier.user
     ):
         return {}
-    blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
+    if blocked is None:
+        blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
     directory = os.path.join(
         _VERIFIER_TOOL_STATE_PARENT, VERIFIER_TOOL_STATE_PREFIX + uuid.uuid4().hex
     )
@@ -1306,23 +1511,22 @@ async def _isolate_verifier_tool_state(
         found = _verifier_tool_state.overrides(
             overlay, blocked, directory, lexical=True
         )
-        if found:
-            quoted = shlex.quote(directory)
-            files = " ".join(
-                shlex.quote(os.path.join(directory, name))
-                for name in (
-                    _verifier_tool_state.UV_CONFIG,
-                    _verifier_tool_state.PIP_CONFIG,
-                )
+        quoted = shlex.quote(directory)
+        files = " ".join(
+            shlex.quote(os.path.join(directory, name))
+            for name in (
+                _verifier_tool_state.UV_CONFIG,
+                _verifier_tool_state.PIP_CONFIG,
             )
-            await _checked_exec(
-                env,
-                f"mkdir -m 755 {quoted} && for f in {files}; do "
-                ': > "$f" && chmod 644 "$f" || exit 1; done',
-                "Verifier hardening failed: creating the verifier's uv and pip state",
-                user="root",
-                timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
-            )
+        )
+        await _checked_exec(
+            env,
+            f"mkdir -m 755 {quoted} && for f in {files}; do "
+            ': > "$f" && chmod 644 "$f" || exit 1; done',
+            "Verifier hardening failed: creating the verifier's uv and pip state",
+            user="root",
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        )
         return found
     try:
         if return_code != 0:
@@ -1331,11 +1535,20 @@ async def _isolate_verifier_tool_state(
             )
         stdout = (getattr(result, "stdout", "") or "").strip()
         found = _json.loads(stdout) if stdout else {}
-        if not isinstance(found, dict) or any(
-            key not in _verifier_tool_state.OUTPUT_KEYS
-            or not isinstance(value, str)
-            or not value.startswith("/")
-            for key, value in found.items()
+        if (
+            not isinstance(found, dict)
+            or any(
+                key not in _verifier_tool_state.OUTPUT_KEYS
+                or not isinstance(value, str)
+                or not value.startswith("/")
+                for key, value in found.items()
+            )
+            # The guard trusts this directory by path, so every location must
+            # be the one asked for.
+            or any(
+                found.get(key) != os.path.join(directory, entry)
+                for key, entry in _verifier_tool_state.MOVED
+            )
         ):
             raise ValueError(f"invalid probe response {stdout[:200]!r}")
     except (ValueError, _json.JSONDecodeError) as exc:
@@ -1846,7 +2059,12 @@ async def _freeze_workspace(env, workspace: str) -> None:
 
 
 async def _build_verifier_env(
-    env, task: "Task", sandbox_user: str | None, workspace: str | None
+    env,
+    task: "Task",
+    sandbox_user: str | None,
+    workspace: str | None,
+    *,
+    agent_paths: "tuple[str, ...] | None" = None,
 ) -> dict[str, str]:
     """Assemble the hardened verifier env, re-pinning security invariants.
 
@@ -1854,7 +2072,17 @@ async def _build_verifier_env(
     invariants are re-pinned so a task cannot replace PATH, strip
     -c /dev/null / --confcutdir, re-enable entry-point plugin loading, or
     inject code via breakpoint()/coverage/Django/Celery startup hooks.
+
+    *agent_paths* marks a separate verifier sandbox and lists what its
+    transfer wrote: the plugin guard distrusts those (and /logs) alone there,
+    instead of every agent-writable tree and anything not root's alone.
     """
+    if agent_paths is None:
+        guard_blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
+        ownership = True
+    else:
+        guard_blocked = _separate_verifier_blocked_prefixes(agent_paths)
+        ownership = False
     hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
     hardened_pythonpath = await _trusted_verifier_pythonpath(env, sandbox_user)
     distro_env = await _distro_pip_env(env)
@@ -1872,24 +2100,41 @@ async def _build_verifier_env(
     verifier_env["COVERAGE_PROCESS_START"] = ""
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
-    # uv and pip state the agent could have written (a WORKDIR /root image's
-    # ~/.cache/uv, ~/.config/uv/uv.toml, ...) moves to a fresh root-owned
-    # directory, so what test.sh installs there is the verifier's own.
-    verifier_env.update(
-        await _isolate_verifier_tool_state(
-            env, task, verifier_env, sandbox_user, workspace
-        )
+    # The verifier's uv and pip state moves to a fresh root-owned directory,
+    # away from what the agent could have written (a WORKDIR /root image's
+    # ~/.cache/uv, ~/.config/uv/uv.toml, ...); the guard trusts it by path, so
+    # what test.sh installs there loads whatever the runtime's mask.
+    moved = await _isolate_verifier_tool_state(
+        env, task, verifier_env, sandbox_user, workspace, blocked=guard_blocked
+    )
+    verifier_env.update(moved)
+    tool_state = (
+        (os.path.dirname(moved["UV_CACHE_DIR"]),) if "UV_CACHE_DIR" in moved else ()
     )
     # Auto-discover pytest plugins that resolve to root-owned system code, plus
     # task config declarations. Appends -p flags to the hardened base.
     flags = await _discover_pytest_plugin_flags(
-        env, task, sandbox_user, workspace, pythonpath=hardened_pythonpath
+        env,
+        task,
+        sandbox_user,
+        workspace,
+        pythonpath=hardened_pythonpath,
+        blocked=guard_blocked,
+        ownership=ownership,
     )
     # Hardening, and so the guard, lives in ``main`` only (#248). A test.sh in
     # another service could not import a ``-p`` guard and would score 0.
     if task.config.verifier.service == "main":
         guard_directory, flags, guarded = await _install_pytest_plugin_guard(
-            env, sandbox_user, workspace, flags, verifier_path=hardened_path
+            env,
+            sandbox_user,
+            workspace,
+            flags,
+            verifier_path=hardened_path,
+            trusted=tool_state,
+            blocked=guard_blocked,
+            ownership=ownership,
+            verifier_uid=await _verifier_uid(env, task.config.verifier.user),
         )
         # Only a Python without a copy needs the guard on PYTHONPATH; anywhere
         # else a task's preflight may read the entry as injected startup state.
@@ -1915,6 +2160,8 @@ async def harden_before_verify(
     # contract, e.g. task config [verifier] restore_workspace = true after an
     # oracle/diff audit proves the answer is not stored in the workspace.
     restore_workspace: bool = False,
+    *,
+    agent_paths: "tuple[str, ...] | None" = None,
 ) -> None:
     """Neutralize agent tampering before running the verifier.
 
@@ -1928,6 +2175,10 @@ async def harden_before_verify(
        to root (belt-and-suspenders against zombie sandbox writes).
     6. Remove injected conftest.py, sitecustomize.py, .pth files.
     7. Merge trusted env vars into task.config.verifier.env.
+
+    *agent_paths* marks a separate verifier sandbox, where no agent process
+    ever ran, and lists the paths its transfer wrote (see
+    ``_build_verifier_env``).
 
     Cross-container hardening policy (#248): every step here runs against the
     ``main`` (agent) container only — ``env.exec`` is never passed a
@@ -1975,5 +2226,5 @@ async def harden_before_verify(
     )
     # 7. Merge trusted env vars into task.config.verifier.env.
     task.config.verifier.env = await _build_verifier_env(
-        env, task, sandbox_user, workspace
+        env, task, sandbox_user, workspace, agent_paths=agent_paths
     )

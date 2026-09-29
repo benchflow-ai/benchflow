@@ -11,9 +11,17 @@ import before Python 3.9) and hooks take only arguments pytest 7 passes.
 
 Because test.sh may discard pytest's output, the armed guard also reports to
 the verifier through marker files named ``<prefix>.<token>.<kind>``: a
-``loading`` marker written on import and removed once pytest has registered
-the guard or the guard itself stopped pytest. One left behind means pytest
-imported the guard but never ran it.
+``loading`` marker written when pytest's plugin loader imports it and removed
+once pytest has registered the guard or the guard itself stopped pytest (one
+left behind means pytest imported the guard but never ran it), and a
+``registered`` marker once pytest has registered it. A marker turns a run the
+solution may have failed into an unscored one, so the solution must not be
+able to write one: markers go to a directory only the verifier's user can
+write, not the world-writable ``/logs/verifier``, and each carries an
+HMAC-SHA256, keyed by a secret hardening puts in a file only the verifier's
+user can read, that the verifier checks. The secret is never in the
+environment. Code the verifier itself runs as that user (a solution module a
+test imports) can still read it, as it could rewrite the reward.
 
 The guard stops pytest in two ways. Refusing a plugin raises ``Rejected``: the
 run is scored as test.sh reports it, since that is what agent tampering should
@@ -31,9 +39,13 @@ the plugin after hardening, into a place the guard cannot trust (a venv in the
 workspace, say). Hardening wrote this module after the agent was stopped and
 the workspace frozen, and only the kernel sets a file's change time, so a
 plugin file changed after this module was written came from the verifier. When
-no untrusted file behind the refusal is older than this module and at least one
-is newer, the guard leaves an ``installed`` marker listing them and still
-stops pytest; the verifier reports an error instead of a score.
+every refused plugin has at least one untrusted file behind it and none of
+those is older than this module, the guard leaves an ``installed`` marker
+listing them, each with why it is untrusted, and still stops pytest; the
+verifier reports an error instead of a score. A refusal no untrusted file
+explains (a name two trusted distributions register, a plugin installed
+nowhere) stays scored. Every refusal message names each refused plugin and
+what about it the guard could not trust.
 """
 
 import json
@@ -48,8 +60,20 @@ from importlib.machinery import PathFinder
 # Reassigned by lines appended to this source for the protected runtime plugin.
 _BENCHFLOW_BLOCKED = ()  # type: tuple[str, ...]
 _BENCHFLOW_REQUESTED = []  # type: list[str]
+# Directories hardening created after the agent stopped, for the verifier's uv
+# and pip state. Code below them is trusted by path, whatever modes the
+# runtime's file-mode mask gave it; the directories and their parents are not.
+_BENCHFLOW_TRUSTED = ()  # type: tuple[str, ...]
+# In the agent's own sandbox code must also be root's alone (root-owned, not
+# group- or world-writable, parents included). A separate verifier sandbox
+# never ran the agent: only the blocked paths, which the transfer wrote, are
+# the agent's, and everything else is the verifier image's own.
+_BENCHFLOW_OWNERSHIP = True
 # Marker path prefix for this verification; empty writes no markers.
 _BENCHFLOW_MARKERS = ""
+# The file holding this verification's marker key (hex), readable by the
+# verifier's user alone; markers are not written without it.
+_BENCHFLOW_KEY_FILE = ""
 # Keeps this process's markers apart from other pytest runs of one verifier.
 _TOKEN = str(os.getpid()) + "-" + os.urandom(4).hex()
 
@@ -59,14 +83,49 @@ def _marker(kind):
 
 
 def _mark(kind, detail=""):
-    """Leave a ``kind`` marker for the verifier; never fail pytest doing so."""
-    if not _BENCHFLOW_MARKERS:
+    """Leave a signed ``kind`` marker for the verifier; never fail pytest doing so.
+
+    One line: the HMAC-SHA256 of the marker's name and body, a tab, and the
+    body, *detail* as a JSON string.
+    """
+    if not _BENCHFLOW_MARKERS or not _BENCHFLOW_KEY_FILE:
         return
     try:
-        with open(_marker(kind), "x") as handle:
-            handle.write(detail)
+        import hashlib
+        import hmac
+
+        with open(_BENCHFLOW_KEY_FILE, "rb") as handle:
+            key = handle.read().strip()
+        if not key:
+            return
+        path = _marker(kind)
+        # The verifier reads 64 KiB of a marker; keep a traceback's end.
+        body = json.dumps(detail[-16000:])
+        signed = (os.path.basename(path) + "\n" + body).encode("utf-8")
+        mac = hmac.new(key, signed, hashlib.sha256).hexdigest()
+        with open(path, "x") as handle:
+            handle.write(mac + "\t" + body + "\n")
     except Exception:
         pass
+
+
+def _imported_by_pytest():
+    """Whether pytest's plugin loader (``-p``, ``PYTEST_PLUGINS``) is importing this.
+
+    Any other import, such as code under test importing the guard by the
+    name in ``PYTEST_ADDOPTS``, must not leave a ``loading`` marker behind.
+    """
+    try:
+        frame = sys._getframe(1)
+    except Exception:
+        return False
+    while frame is not None:
+        if frame.f_code.co_name == "import_plugin" and str(
+            frame.f_globals.get("__name__", "")
+        ).startswith("_pytest."):
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _unmark(kind):
@@ -94,27 +153,69 @@ def under(path, prefix):
     return path == prefix or path.startswith(prefix + "/")
 
 
-def trusted(path, blocked):
+def _trusted_root(path):
+    """The directory in ``_BENCHFLOW_TRUSTED`` that holds *path*, if any."""
+    for root in _BENCHFLOW_TRUSTED:
+        for form in (os.path.abspath(root), os.path.realpath(root)):
+            if under(path, form):
+                return form
+    return None
+
+
+def _blocked_why():
+    if _BENCHFLOW_OWNERSHIP:
+        return "which the agent could write"
+    return "which holds files copied from the agent's sandbox"
+
+
+def ownership_problem(path, st):
+    """Why the inode at *path* (stat *st*) is not root's alone, or None."""
+    if st.st_uid != 0:
+        return path + " is owned by uid " + str(st.st_uid) + ", not root"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        mode = format(stat.S_IMODE(st.st_mode), "04o")
+        return path + " is group- or world-writable (mode " + mode + ")"
+    return None
+
+
+def untrusted_reason(path, blocked):
+    """Why pytest must not load code from *path*, or None when it may."""
     if not path or not path.startswith("/"):
-        return False
+        return repr(path) + " is not an absolute path"
     for candidate in (os.path.abspath(path), os.path.realpath(path)):
-        if any(under(candidate, prefix) for prefix in blocked):
-            return False
+        for prefix in blocked:
+            if under(candidate, prefix):
+                return candidate + " is under " + prefix + ", " + _blocked_why()
+        try:
+            os.stat(candidate)
+        except OSError as exc:
+            return candidate + " cannot be read (" + type(exc).__name__ + ")"
+        if not _BENCHFLOW_OWNERSHIP:
+            continue
+        # Below a trusted directory only the directory and its parents are
+        # checked: hardening made it root-owned 0755 after the agent stopped,
+        # so only the verifier wrote what is inside, in whatever modes.
+        candidate = _trusted_root(candidate) or candidate
         # A protected file is replaceable when any containing directory is
         # writable. Check both lexical and resolved paths, including symlink
         # parents, rather than trusting the final inode alone.
         while True:
             try:
                 st = os.stat(candidate)
-            except OSError:
-                return False
-            if st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-                return False
+            except OSError as exc:
+                return candidate + " cannot be read (" + type(exc).__name__ + ")"
+            problem = ownership_problem(candidate, st)
+            if problem:
+                return problem
             parent = os.path.dirname(candidate)
             if parent == candidate:
                 break
             candidate = parent
-    return True
+    return None
+
+
+def trusted(path, blocked):
+    return untrusted_reason(path, blocked) is None
 
 
 def trusted_module(module, blocked):
@@ -266,30 +367,56 @@ def _armed_ns():
 
 
 def _installed_during_verification(names, entry_points, blocked, builtin_names):
-    """Return the files showing the verifier itself installed the refused *names*.
+    """Return the untrusted files showing the verifier itself installed the refused *names*.
 
-    Every refused name needs a file changed after the guard was written, and no
-    untrusted file behind any of them may be older: an older one existed while
-    the agent ran. Returns an empty list, a scored refusal, when that does not
+    Every refused name needs an untrusted file behind it that changed after
+    the guard was written, and no untrusted file behind any of them may be
+    older: an older one existed while the agent ran. A refusal that no
+    untrusted file explains (a name two trusted distributions register, a
+    plugin installed nowhere) is not the verifier installing where the guard
+    cannot trust. Returns an empty list, a scored refusal, when that does not
     hold or anything cannot be read.
     """
     try:
         armed = _armed_ns()
         evidence = []
         for name in names:
-            newer = []
-            for path in _plugin_paths(name, entry_points, builtin_names):
-                if os.stat(path).st_ctime_ns >= armed:
-                    newer.append(path)
-                elif not trusted(path, blocked):
-                    return []
-            if not newer:
+            untrusted = [
+                path
+                for path in _plugin_paths(name, entry_points, builtin_names)
+                if not trusted(path, blocked)
+            ]
+            if not untrusted or any(
+                os.stat(path).st_ctime_ns < armed for path in untrusted
+            ):
                 return []
-            evidence.extend(p for p in newer if not trusted(p, blocked))
-            evidence.extend(p for p in newer if trusted(p, blocked))
+            evidence.extend(untrusted)
         return evidence
     except Exception:
         return []
+
+
+def _why_refused(name, entry_points, blocked, builtin_names):
+    """Say what made the guard refuse *name*; never raise."""
+    try:
+        if entry_points:
+            found = [reg for ep, reg in registrations() if ep.name == name]
+            if len(found) > 1:
+                return (
+                    "registered " + str(len(found)) + " times, so the name does "
+                    "not say which code pytest loads"
+                )
+            if found and found[0] is None:
+                return "registered by a distribution whose files cannot be checked"
+        paths = _plugin_paths(name, entry_points, builtin_names)
+        if not paths:
+            return "not installed where this pytest looks"
+        for path in paths:
+            if not trusted(path, blocked):
+                return untrusted_reason(path, blocked) or path + " is not trusted"
+        return "not trusted"
+    except Exception as exc:
+        return "cannot inspect: " + type(exc).__name__
 
 
 def _validate(names, *, entry_points=True):
@@ -328,16 +455,35 @@ def _validate(names, *, entry_points=True):
             + ")"
         ) from exc
     if refused:
-        message = "Verifier plugin trust rejected: " + ", ".join(sorted(refused))
+        refused = sorted(refused)
+        reasons = [
+            name + ": " + _why_refused(name, entry_points, blocked, builtin_plugins)
+            for name in refused
+        ]
+        message = (
+            "Verifier plugin trust rejected: "
+            + ", ".join(refused)
+            + " ("
+            + "; ".join(reasons)
+            + ")"
+        )
         installed = _installed_during_verification(
-            sorted(refused), entry_points, blocked, builtin_plugins
+            refused, entry_points, blocked, builtin_plugins
         )
         if installed:
-            _mark("installed", "\n".join(installed) + "\n")
+            _mark(
+                "installed",
+                "".join(
+                    path
+                    + "\t"
+                    + (untrusted_reason(path, blocked) or "untrusted")
+                    + "\n"
+                    for path in installed
+                ),
+            )
             message += (
-                " (installed during verification where the agent could write: "
-                + ", ".join(installed[:3])
-                + "; not scored)"
+                "; the verifier installed it after the agent stopped, "
+                "so the run is not scored"
             )
         raise Rejected(message)
 
@@ -391,6 +537,7 @@ def pytest_plugin_registered(plugin, manager):
             # pytest calls this for the guard itself only after pluggy
             # accepted every one of its hooks.
             _unmark("loading")
+            _mark("registered")
         dependencies = getattr(plugin, "pytest_plugins", ())
         if isinstance(dependencies, str):
             dependencies = dependencies.split(",") if dependencies else ()
@@ -410,6 +557,10 @@ if __name__ == "__main__":
     )
     try:
         requested = json.loads(sys.argv[2]) if len(sys.argv) > 2 else []
+        # argv[3]: the policy the armed guard gets from hardening.
+        policy = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
+        _BENCHFLOW_TRUSTED = tuple(policy.get("trusted", ()))
+        _BENCHFLOW_OWNERSHIP = bool(policy.get("ownership", True))
         print(
             json.dumps(discover(blocked, requested, ignore_blocked_registrations=True))
         )

@@ -533,6 +533,15 @@ def build_transfer_payload(
         sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     return {
         "workspace": manifest.workspace,
+        # The roots this transfer writes under in the verifier sandbox (a
+        # declared file's bundle root is its directory). There the plugin guard
+        # distrusts these alone (with /logs): nothing else in that sandbox came
+        # from the agent's run.
+        "agent_paths": [
+            manifest.workspace,
+            *(sub_manifest.workspace for _, sub_manifest in subs),
+            LOGS_ARTIFACTS,
+        ],
         "files": payload.files,
         "bytes": payload.bytes,
         "declared_artifacts": len(subs),
@@ -554,7 +563,10 @@ def _install_script(remote: str, workspace: str, sha256: str, root: str = "/") -
     Shell and tar only: a verifier image may have no Python.
     """
     quoted = shlex.quote(remote)
-    lines = ["set -e"]
+    # Directories this creates (a missing workspace, /logs/artifacts) get the
+    # verifier's modes whatever the runtime's mask; tar restores its own. The
+    # mask is lockdown.VERIFIER_UMASK, which the rollout kernel must not import.
+    lines = ["set -e", "umask 022"]
     lines.append(
         "if command -v sha256sum >/dev/null 2>&1; then "
         f"echo {shlex.quote(sha256 + '  ' + remote)} | sha256sum -c - >/dev/null; fi"
@@ -659,7 +671,13 @@ def _default_create(rollout: Any) -> CreateEnvironment:
 
 def _default_verify(rollout: Any) -> Verify:
     async def verify(
-        env: Any, task: Any, paths: RolloutPaths, timing: dict, *, workspace: str
+        env: Any,
+        task: Any,
+        paths: RolloutPaths,
+        timing: dict,
+        *,
+        workspace: str,
+        agent_paths: tuple[str, ...] = (),
     ) -> tuple[dict | None, str | None]:
         from benchflow.rollout._setup import (
             _publish_trajectory_for_verifier,
@@ -675,9 +693,11 @@ def _default_verify(rollout: Any) -> Verify:
             paths,
             timing,
             rollout._planes,
-            # No agent user exists here and no agent process ever ran.
+            # No agent user exists here and no agent process ever ran: only
+            # what the transfer wrote came from the agent.
             sandbox_user=None,
             workspace=workspace,
+            agent_paths=(workspace, *agent_paths),
         )
         diagnostics = getattr(rollout, "_diagnostics", None)
         if timeout_diag is not None and diagnostics is not None:
@@ -781,7 +801,12 @@ async def run_separate_verifier(
             timing["verifier_transfer"] = time.monotonic() - t0
         run = verify or _default_verify(rollout)
         rewards, error = await run(
-            env, vtask, paths, timing, workspace=summary["workspace"]
+            env,
+            vtask,
+            paths,
+            timing,
+            workspace=summary["workspace"],
+            agent_paths=tuple(summary["agent_paths"]),
         )
         _publish_verifier_outputs(
             paths.verifier_dir, rollout._rollout_paths.verifier_dir

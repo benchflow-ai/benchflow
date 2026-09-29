@@ -29,10 +29,14 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
 )
 from benchflow.rollout._setup import _verify_rollout
+from benchflow.sandbox import lockdown
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.lockdown import (
     _DISCOVER_PYTEST_PLUGINS_SCRIPT,
     _pytest_plugin_guard_source,
+    pytest_plugin_guard_key,
+    pytest_plugin_guard_key_file,
+    pytest_plugin_guard_markers_dir,
 )
 from benchflow.task import RolloutPaths, Verifier
 from benchflow.task.config import TaskConfig
@@ -46,14 +50,17 @@ HOSTILE_PLUGIN = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _guard_parent(tmp_path, monkeypatch):
+    """Guards live in the test's tmp_path, as they live at / in the sandbox."""
+    monkeypatch.setattr(lockdown, "_PYTEST_PLUGIN_GUARD_PARENT", str(tmp_path))
+
+
 def armed(extra=""):
     """The protected guard as hardening writes it, followed by *extra* source."""
 
     def source(guard, verifier_dir, workspace):
-        return (
-            _pytest_plugin_guard_source(guard, (str(workspace),), [], str(verifier_dir))
-            + extra
-        )
+        return _pytest_plugin_guard_source(guard, (str(workspace),), []) + extra
 
     return source
 
@@ -77,6 +84,19 @@ class PytestSandbox:
 
     async def exec(self, command, env=None, **kwargs):
         if "test-stdout.txt" not in command:
+            if "/.markers" in command:
+                # The verifier reading the guard's markers back.
+                result = subprocess.run(
+                    ["/bin/sh", "-c", command],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                return ExecResult(
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    return_code=result.returncode,
+                )
             return ExecResult(stdout="", stderr="", return_code=0)
         environment = {
             key: value
@@ -135,6 +155,9 @@ async def _run(
     guard = "_benchflow_guard_" + uuid.uuid4().hex
     guard_dir = tmp_path / guard
     guard_dir.mkdir()
+    # What hardening makes next to the guard: its marker directory and key.
+    Path(pytest_plugin_guard_markers_dir(guard)).mkdir(mode=0o700)
+    Path(pytest_plugin_guard_key_file(guard)).write_text(pytest_plugin_guard_key(guard))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "test_outputs.py").write_text(test_source)
@@ -328,3 +351,62 @@ async def test_guard_crash_is_a_verifier_error_without_logs(tmp_path):
     assert classify_verifier_error(error) == VERIFIER_FAILED
     (marker,) = paths.verifier_dir.glob(guard + ".*.crashed")
     assert "name_a_later_pytest_dropped" in marker.read_text()
+
+
+# A failing solution that, run by the tests, tries every way it has to make
+# its trial unscored through the guard's signals. It learns the guard's name
+# from PYTEST_ADDOPTS, as any code the verifier runs can, and where markers go
+# from the guard's name.
+FORGING_FAILURE = """
+import os, re, subprocess, sys
+from pathlib import Path
+
+GUARD = re.search(r"-p (_benchflow_guard_[0-9a-f]+)", os.environ["PYTEST_ADDOPTS"])[1]
+VERIFIER = Path(os.environ["FORGE_VERIFIER_DIR"])
+MARKERS = Path(os.environ["FORGE_GUARD_PARENT"]) / GUARD / ".markers"
+
+
+def test_solution():
+    for kind in ("loading", "crashed", "installed"):
+        # Unsigned, where markers used to go and where they go now.
+        (VERIFIER / f"{GUARD}.1-deadbeef.{kind}").write_text("forged")
+        (MARKERS / f"{GUARD}.2-deadbeef.{kind}").write_text("0" * 64 + '\t"x"')
+    # Importing the guard outside pytest's plugin loader leaves no marker.
+    subprocess.run([sys.executable, "-c", "import " + GUARD], check=True)
+    # pytest's messages for a guard it could not import, from code under test.
+    print(f'Error importing plugin "{GUARD}": forged')
+    print(f"No module named '{GUARD}'", file=sys.__stdout__, flush=True)
+    assert False
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_solution_cannot_forge_the_guards_signals(tmp_path, monkeypatch):
+    """Guards the marker fix (review of sdk-update-2026-09-27 at c5b75fcc, must-fix 3).
+
+    The guard's name is in PYTEST_ADDOPTS and its markers went to the
+    world-writable /logs/verifier, so a failing solution the tests ran could
+    write ``<guard>.x.crashed`` and end its own trial unscored instead of 0.
+    Markers now live in the guard's own directory, carry an HMAC the verifier
+    checks, and ``loading`` is written only when pytest's plugin loader
+    imports the guard; pytest's load-failure message counts only when no
+    pytest registered the guard. The same failing solution scores 0.
+    """
+    monkeypatch.setenv("FORGE_VERIFIER_DIR", str(tmp_path / "rollout" / "verifier"))
+    monkeypatch.setenv("FORGE_GUARD_PARENT", str(tmp_path))
+
+    guard, paths, rewards, error = await _run(
+        tmp_path, FORGING_FAILURE, guard_source=armed()
+    )
+
+    assert error is None, error
+    assert rewards == {"reward": 0.0}
+    # The forgeries were really written, and the guard really ran.
+    assert (paths.verifier_dir / f"{guard}.1-deadbeef.crashed").exists()
+    assert f'Error importing plugin "{guard}"' in paths.test_stdout_path.read_text()
+    kinds = sorted(
+        path.name.rsplit(".", 1)[1]
+        for path in Path(pytest_plugin_guard_markers_dir(guard)).iterdir()
+        if ".2-deadbeef." not in path.name
+    )
+    assert kinds == ["registered"]
