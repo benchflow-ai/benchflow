@@ -25,7 +25,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from benchflow.agents.registry import AgentConfig, resolve_agent
+from benchflow.agents.registry import (
+    AgentConfig,
+    is_explicit_raw_agent_command,
+    resolve_agent,
+)
 from benchflow.models import RolloutResult
 from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
@@ -198,7 +202,9 @@ class Agent:
     def launch_cmd(self) -> str:
         config = self.config
         if config is None:
-            return self.name
+            if is_explicit_raw_agent_command(self.name):
+                return self.name
+            raise KeyError(f"Unknown agent: {self.name!r}")
         return config.launch_cmd
 
     def __repr__(self) -> str:

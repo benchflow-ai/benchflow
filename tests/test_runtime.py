@@ -37,10 +37,18 @@ def test_agent_alias_resolves_config_and_launch() -> None:
     assert a.launch_cmd != "codex"
 
 
-def test_agent_unknown() -> None:
+def test_agent_unknown_bare_launch_fails_closed() -> None:
+    """Guards PR #1090 runtime launch bypass."""
     a = Agent(name="nonexistent-agent", model="some-model")
     assert a.config is None
-    assert a.launch_cmd == "nonexistent-agent"
+    with pytest.raises(KeyError, match="Unknown agent"):
+        _ = a.launch_cmd
+
+
+def test_agent_explicit_raw_command_launches() -> None:
+    """Guards PR #1090 explicit runtime command compatibility."""
+    command = "python agent.py"
+    assert Agent(name=command, model="some-model").launch_cmd == command
 
 
 def test_agent_env_default_empty() -> None:

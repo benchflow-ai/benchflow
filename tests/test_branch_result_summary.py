@@ -28,7 +28,9 @@ class _Environment:
 
 async def test_result_json_summarises_branch_children(tmp_path: Path):
     rollout = Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
     rollout._environment = _Environment()
     rollout._rollout_dir = tmp_path / "run"
@@ -102,6 +104,8 @@ async def test_result_json_summarises_branch_children(tmp_path: Path):
 
 def test_unbranched_rollout_has_no_branches_key(tmp_path: Path):
     rollout = Rollout(
-        RolloutConfig(task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")])
+        RolloutConfig(
+            task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy --agent")]
+        )
     )
     assert rollout._branch_summary() is None

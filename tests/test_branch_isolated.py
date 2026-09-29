@@ -153,7 +153,7 @@ async def _root(tmp_path: Path) -> IsoRollout:
     rollout = IsoRollout(
         RolloutConfig(
             task_path=tmp_path / "task",
-            agent="dummy",
+            agent="dummy --agent",
             jobs_dir=tmp_path / "jobs",
             job_name="job",
             rollout_name="task__root",

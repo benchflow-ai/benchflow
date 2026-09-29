@@ -19,6 +19,7 @@ from benchflow.agents.env import (
     resolve_provider_env,
     validate_aws_bedrock_env,
 )
+from benchflow.agents.registry import AGENTS, AgentConfig
 
 # auto_inherit_env
 
@@ -412,14 +413,15 @@ class TestResolveProviderEnv:
         assert env["LLM_API_KEY"] == "dk-test"
         assert env["LLM_MODEL"] == "openai/deepseek-v4-pro"
 
-    def test_bare_deepseek_sets_provider_name_for_openclaw(self):
-        """Guards the harness-provider-resolution fix: openclaw must see
-        BENCHFLOW_PROVIDER_NAME=deepseek for a bare id, else its shim defaults the
-        provider to anthropic ('FailoverError: Unknown model:
-        anthropic/deepseek-v4-pro').
-        """
+    def test_bare_deepseek_sets_provider_name_for_generic_agent(self, monkeypatch):
+        """Guards PR #1090 generic bare-model provider resolution."""
+        monkeypatch.setitem(
+            AGENTS,
+            "provider-probe",
+            AgentConfig("provider-probe", "true", "true"),
+        )
         env = {"DEEPSEEK_API_KEY": "dk-test"}
-        resolve_provider_env(env, "deepseek-v4-pro", "openclaw")
+        resolve_provider_env(env, "deepseek-v4-pro", "provider-probe")
         assert env["BENCHFLOW_PROVIDER_NAME"] == "deepseek"
         assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.deepseek.com/v1"
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "dk-test"
@@ -479,9 +481,12 @@ class TestCheckSubscriptionAuth:
             check_subscription_auth("nonexistent-agent", "ANTHROPIC_API_KEY") is False
         )
 
-    def test_returns_false_when_no_subscription_auth(self):
-        """Agents without subscription_auth (e.g. openclaw) return False."""
-        assert check_subscription_auth("openclaw", "ANTHROPIC_API_KEY") is False
+    def test_returns_false_when_no_subscription_auth(self, monkeypatch):
+        """Agents without subscription_auth return False."""
+        monkeypatch.setitem(
+            AGENTS, "auth-probe", AgentConfig("auth-probe", "true", "true")
+        )
+        assert check_subscription_auth("auth-probe", "ANTHROPIC_API_KEY") is False
 
     def test_codex_auth(self, monkeypatch, tmp_path):
         codex_dir = tmp_path / ".codex"
@@ -630,7 +635,10 @@ class TestResolveAgentEnvNoModel:
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
     def test_no_model_empty_requires_env(self, monkeypatch, tmp_path):
-        """Agent with empty requires_env (e.g. openclaw) needs no auth."""
+        """Agent with empty requires_env needs no auth."""
+        monkeypatch.setitem(
+            AGENTS, "auth-probe", AgentConfig("auth-probe", "true", "true")
+        )
         for k in (
             "ANTHROPIC_API_KEY",
             "CODEX_ACCESS_TOKEN",
@@ -639,7 +647,7 @@ class TestResolveAgentEnvNoModel:
         ):
             monkeypatch.delenv(k, raising=False)
         self._patch_expanduser(monkeypatch, tmp_path)
-        result = self._resolve(agent="openclaw", agent_env={})
+        result = self._resolve(agent="auth-probe", agent_env={})
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
 

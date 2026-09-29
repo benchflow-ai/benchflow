@@ -26,13 +26,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchflow.agents import registry
+from benchflow.agents import registry, remote_manifests
 
 
 @pytest.fixture(autouse=True)
 def _clean_failed_plugins(monkeypatch):
     """Isolate FAILED_AGENT_PLUGINS per test (module-global breadcrumb dict)."""
     monkeypatch.setattr(registry, "FAILED_AGENT_PLUGINS", {})
+    monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, "off")
+    remote_manifests._reset_for_tests()
+    yield
+    remote_manifests._reset_for_tests()
 
 
 def test_callable_entry_point_is_invoked(monkeypatch):

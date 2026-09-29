@@ -671,13 +671,13 @@ class ACPSession:
                 self._record_text(text, "agent_message", update, receipt)
 
         elif update_type == "text_update":
-            # Used by openclaw shim — full text (not chunked)
+            # Some ACP agents send full text rather than chunks.
             text = update.get("text", "")
             if text:
                 self._record_text(text, "agent_message", update, receipt)
 
         elif update_type == "agent_thought":
-            # Used by openclaw shim — full thought (not chunked)
+            # Some ACP agents send full thoughts rather than chunks.
             text = update.get("text", "")
             if text:
                 self._record_text(text, "agent_thought", update, receipt)

@@ -87,7 +87,8 @@ async def test_live_bind_mounts_preserve_parent_and_archive_children(
         await checked("echo parent > /state")
         rollout = Rollout(
             RolloutConfig(
-                task_path=tmp_path / "task", scenes=[Scene.single(agent="dummy")]
+                task_path=tmp_path / "task",
+                scenes=[Scene.single(agent="dummy --agent")],
             )
         )
         rollout._env = sandbox

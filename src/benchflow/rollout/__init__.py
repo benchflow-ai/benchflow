@@ -1096,12 +1096,17 @@ class Rollout:
 
             cfg.task_digest = task_digest(cfg.task_path)
 
-        self._disallow_web_tools = (
+        # Scripted runners (oracle, nop) and the task runtime launch no agent:
+        # no launch-command lookup, and no agent-only web or egress policy.
+        has_agent_launch = not (
+            is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
+        )
+        self._disallow_web_tools = has_agent_launch and (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
-        ) and not is_scripted_agent(cfg.primary_agent)
+        )
         self._egress_denylist = (
             None
-            if self._disallow_web_tools or is_scripted_agent(cfg.primary_agent)
+            if self._disallow_web_tools or not has_agent_launch
             else _task_egress_denylist(self._task)
         )
         if self._egress_denylist is not None and not cfg.sandbox_user:
@@ -1127,11 +1132,12 @@ class Rollout:
             _resolve_prompts(cfg.task_path, cfg.prompts),
             self._task.config.agent.prompt_prefix,
         )
-        self._agent_launch = self._planes.agent_launch(
-            cfg.primary_agent,
-            disallow_web_tools=self._disallow_web_tools,
-            disallow_hosted_search=self._disallow_hosted_search,
-        )
+        if has_agent_launch:
+            self._agent_launch = self._planes.agent_launch(
+                cfg.primary_agent,
+                disallow_web_tools=self._disallow_web_tools,
+                disallow_hosted_search=self._disallow_hosted_search,
+            )
 
         # Copy task dir to temp when Dockerfile mutations are needed
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
