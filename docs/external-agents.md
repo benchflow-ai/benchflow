@@ -8,11 +8,7 @@ first one is all there is to know.
 
 ## 1. Zero-config remote autoload (the default)
 
-Using an agent name BenchFlow doesn't recognize triggers a one-shot fetch of
-the declarative manifests from `benchflow-ai/agents@main`. Nothing to install
-or configure. End to end, from an empty directory to a scored rollout
-(verified as written: skillsbench `edit-pdf`, reward 1.0, ~23 min, a few
-cents on `deepseek-v4-flash` — rates approximate):
+Using an agent name BenchFlow doesn't recognize triggers a one-shot fetch of the declarative manifests from the `benchflow-ai/agents` commit that this BenchFlow release pins (`DEFAULT_AGENTS_SOURCE` in `src/benchflow/agents/remote_manifests.py`), so a release keeps loading the manifests it was tested with. OpenClaw loads this way too. Nothing to install or configure. End to end, from an empty directory to a scored rollout (verified as written: skillsbench `edit-pdf`, reward 1.0, ~23 min, a few cents on `deepseek-v4-flash` — rates approximate):
 
 ```bash
 # Install. `uv tool install --python 3.12 'benchflow[sandbox-daytona]'` (the
@@ -54,16 +50,14 @@ Details worth knowing:
 - The fetch happens **at most once per process**, only on a resolution miss,
   and only fills gaps — it never shadows a built-in or already-registered
   agent name.
-- Availability of a name depends on it being merged to the agents repo's
-  `main`. What exists is listed in that repo's `acp/` directory and, for the
-  ACP-registry tier, its generated `acp-registry/AGENTS.md`.
+- A name is available when the pinned commit has its manifest. For an agent merged to the agents repo's `main` after that commit, set `BENCHFLOW_AGENTS_SOURCE=benchflow-ai/agents@main` (next section). What exists is listed in that repo's `acp/` directory and, for the ACP-registry tier, its generated `acp-registry/AGENTS.md`.
 
 ## 2. Pin the source: `BENCHFLOW_AGENTS_SOURCE`
 
-Override where the autoload fetches from — a branch/ref, another repo, a local
-directory, or off entirely:
+Override the pinned default: follow a branch such as `main`, pin another ref or repo, use a local directory, or turn autoload off:
 
 ```bash
+export BENCHFLOW_AGENTS_SOURCE="benchflow-ai/agents@main"        # follow main, unpinned
 export BENCHFLOW_AGENTS_SOURCE="benchflow-ai/agents@my-branch"   # owner/repo[@ref]
 export BENCHFLOW_AGENTS_SOURCE="benchflow-ai/agents@0123456789abcdef0123456789abcdef01234567" # reproducible
 export BENCHFLOW_AGENTS_SOURCE="/path/to/agents-checkout"        # local dir

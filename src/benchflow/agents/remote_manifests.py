@@ -21,7 +21,14 @@ from benchflow.agents.manifest import (
 
 AGENTS_DIR_ENV = "BENCHFLOW_AGENTS_DIR"
 AGENTS_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
-DEFAULT_AGENTS_SOURCE = "benchflow-ai/agents@main"
+# The catalog a release loads when nothing overrides it: a commit, never a
+# branch, so a release keeps resolving the manifests it was tested with
+# (openclaw among them since #1093). This is benchflow-ai/agents#73's head:
+# agents main af39feb5 plus the OpenClaw shim that #72 moves there and #73's
+# prompt streaming. Move it to the agents main commit once #71-#73 merge.
+# BENCHFLOW_AGENTS_SOURCE overrides it (any ref, `benchflow-ai/agents@main`,
+# a directory, or `off`); a nonblank BENCHFLOW_AGENTS_DIR overrides both.
+DEFAULT_AGENTS_SOURCE = "benchflow-ai/agents@279aa61538a3d494bb6dfc1affa40c5696c001c7"
 _OFF_VALUES = frozenset({"off", "0", "none", "disabled", "false"})
 
 
