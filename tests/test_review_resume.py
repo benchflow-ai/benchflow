@@ -326,6 +326,101 @@ def test_pending_review_keeps_its_solver_when_resume_cannot_finish_it(saved_tria
     assert not (rollout / "result.json").exists()
 
 
+INFRA_FAILURE = "Sandbox startup failed: daytona returned 503"
+
+
+@pytest.mark.parametrize(
+    ("error", "verifier_reward", "rerun"),
+    [
+        (INFRA_FAILURE, None, True),
+        # The verifier judged the output: the scoring error is the verdict.
+        (INFRA_FAILURE, 1.0, False),
+        # A solver error that is not retryable infrastructure.
+        ("the agent gave up", None, False),
+    ],
+)
+def test_resume_reruns_a_rubric_solver_that_failed_on_infrastructure(
+    saved_trial, error, verifier_reward, rerun
+):
+    """Guards #1059 for rubric tasks. A rubric trial commits a scoring block
+    even when its sandbox or transport failed (a scoring error with no
+    verifier reward), and any result with a scoring block was reused on
+    resume, so a solver that failed on infrastructure never ran again."""
+    from benchflow.evaluation import Evaluation, EvaluationConfig
+
+    rollout, task = saved_trial
+    result = _parent(
+        rollout,
+        scoring_error(
+            "Deterministic verifier produced no reward",
+            tests_pass=None if verifier_reward is None else True,
+            verifier_reward=verifier_reward,
+        ),
+    )
+    result.update(error=error, rewards=None)
+    _write(rollout / "result.json", result)
+
+    def completed(**config):
+        return Evaluation(
+            tasks_dir=task.parent,
+            jobs_dir=rollout.parent.parent,
+            job_name=rollout.parent.name,
+            config=EvaluationConfig(**config),
+        )._get_completed_tasks()
+
+    assert ("physics" not in completed()) is rerun
+    # A sequential-shared job reuses errored results, as before.
+    assert "physics" in completed(job_mode="sequential-shared")
+
+
+def test_a_pending_review_whose_solver_failed_on_infrastructure_reruns(saved_trial):
+    """The solver.json-only case of the test above: nothing to review."""
+    from benchflow.evaluation import Evaluation
+
+    rollout, task = saved_trial
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(rollout / "solver.json", {**solver, "rewards": None, "error": INFRA_FAILURE})
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()
+
+
+@pytest.mark.asyncio
+async def test_in_run_retry_reruns_a_rubric_solver_that_failed_on_infrastructure(
+    job_factory,
+):
+    """The in-run half of #1059 for rubric tasks: a scoring block stopped the
+    retry loop even when the solver failed on infrastructure unjudged."""
+    from benchflow.models import RolloutResult
+
+    job, tasks_dir = job_factory(n_tasks=1, max_retries=1)
+    job._config.retry.min_wait_sec = 0.0
+    job._prune_docker = lambda: None  # never touch a real Docker daemon
+    unjudged = RolloutResult(
+        task_name="task-0",
+        rollout_name="task-0__a",
+        error=INFRA_FAILURE,
+        scoring=scoring_error("Deterministic verifier produced no reward"),
+    )
+    judged = RolloutResult(
+        task_name="task-0",
+        rollout_name="task-0__a",
+        error=INFRA_FAILURE,
+        scoring=scoring_error(
+            "reviewer timed out", tests_pass=True, verifier_reward=1.0
+        ),
+    )
+    ok = RolloutResult(task_name="task-0", rewards={"reward": 1.0})
+
+    job._run_single_task = AsyncMock(side_effect=[unjudged, ok])
+    assert await job._run_task(tasks_dir / "task-0") is ok
+    job._run_single_task = AsyncMock(side_effect=[judged, ok])
+    assert await job._run_task(tasks_dir / "task-0") is judged
+
+
 @pytest.mark.asyncio
 async def test_batch_isolates_a_failing_resumed_review(
     saved_trial, monkeypatch, caplog
