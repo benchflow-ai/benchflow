@@ -6,11 +6,14 @@ too. Files land in ``<trial>/artifacts/`` and ``<trial>/artifacts-manifest.json`
 records every collection (status, reason) and every file (size, sha256).
 
 Transfers reuse the evidence tarball (``benchflow.review.evidence``): the
-sandbox enumerates files without following links, refuses symlinks that leave
-the collected tree, and stops at the byte and file limits, so a collection is
-all or nothing. Unsafe destinations (absolute, ``..``) and destination
-collisions are refused. Collection never fails the rollout: every problem is a
-manifest status, not an exception.
+sandbox enumerates files without following links, leaves out symlinks that
+leave the collected tree (listed in the collection's ``exclusions``), and
+stops at the byte and file limits, so a collection is all or nothing. Unsafe
+destinations (absolute, ``..``) and destination collisions are refused.
+Collection never fails the rollout: every problem is a manifest status, not
+an exception. A failed collection whose own files caused it records a
+``cause`` (``limits``, ``symlink``, ``clash``), which lets a separate
+verifier score it as the solution's result.
 """
 
 from __future__ import annotations
@@ -26,7 +29,12 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from benchflow.review.evidence import EvidenceError, capture_workspace, python_missing
+from benchflow.review.evidence import (
+    EvidenceError,
+    EvidenceLimitError,
+    capture_workspace,
+    python_missing,
+)
 from benchflow.review.persistence import write_json_atomic
 from benchflow.task.artifacts import (
     artifact_destination,
@@ -160,6 +168,13 @@ def _entries(
     return files
 
 
+def _over_limits(max_files: int, max_bytes: int) -> str:
+    return (
+        f"the collected files exceed the collection limits ({max_files} files, "
+        f"{max_bytes} bytes in all)"
+    )
+
+
 def _budget(files: list[dict[str, Any]]) -> tuple[int, int]:
     regular = [f for f in files if f["kind"] == "file"]
     return sum(f["size"] for f in regular), len(files)
@@ -234,6 +249,7 @@ async def collect_artifacts(
         if size > max_bytes or count > max_files:
             record.update(
                 status="over_limit",
+                cause="limits",
                 reason="bind-mounted files exceed the collection limits; they stay "
                 "in place but count against no further collection",
             )
@@ -247,7 +263,7 @@ async def collect_artifacts(
         record["status"] = "empty"
     else:
         try:
-            captured = await _capture(
+            captured, excluded = await _capture(
                 env,
                 logs_source,
                 artifacts_dir,
@@ -262,8 +278,12 @@ async def collect_artifacts(
             )
             files.extend(captured)
             record["status"] = "collected"
+            if excluded:
+                record["exclusions"] = excluded
         except (EvidenceError, OSError, ValueError) as exc:
             record.update(status="error", reason=str(exc)[-500:])
+            if isinstance(exc, EvidenceLimitError):
+                record.update(cause="limits", reason=_over_limits(max_files, max_bytes))
     collections.append(record)
 
     # 2. Declared artifacts, each at artifacts/<destination or basename>.
@@ -294,7 +314,9 @@ async def collect_artifacts(
             continue
         if probe["link"]:
             record.update(
-                status="refused", reason="declared source is a symlink; not followed"
+                status="refused",
+                cause="symlink",
+                reason="declared source is a symlink; not followed",
             )
             continue
         if target.exists() or target.is_symlink():
@@ -302,13 +324,25 @@ async def collect_artifacts(
                 status="refused",
                 reason=f"destination {destination} already exists in artifacts/",
             )
+            name = str(destination)
+            if any(
+                f["collection"] == 0
+                and (f["path"] == name or f["path"].startswith(name + "/"))
+                for f in files
+            ):
+                # A file the agent left in /logs/artifacts took the place.
+                record["cause"] = "clash"
             continue
         size, count = used()
         if size >= max_bytes or count >= max_files:
-            record.update(status="error", reason="collection limits already reached")
+            record.update(
+                status="error",
+                cause="limits",
+                reason="collection limits already reached",
+            )
             continue
         try:
-            captured = await _capture(
+            captured, excluded = await _capture(
                 env,
                 probe["source"],
                 target,
@@ -323,8 +357,12 @@ async def collect_artifacts(
             )
             files.extend(captured)
             record["status"] = "collected"
+            if excluded:
+                record["exclusions"] = excluded
         except (EvidenceError, OSError, ValueError) as exc:
             record.update(status="error", reason=str(exc)[-500:])
+            if isinstance(exc, EvidenceLimitError):
+                record.update(cause="limits", reason=_over_limits(max_files, max_bytes))
 
     total_bytes, _ = used()
     manifest = {
@@ -352,11 +390,12 @@ async def _capture(
     excluded_paths: Sequence[str],
     timeout_sec: int,
     single: str | None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Tar ``source`` out of the sandbox, then publish it at ``target``.
 
     ``target`` is the folder to fill (logs: the existing artifacts/ root) or
     the path to create (declared artifact). Nothing is published on failure.
+    Returns the collected files and the capture's exclusions.
     """
     parent = target.parent if prefix is not None else target
     parent.mkdir(parents=True, exist_ok=True)
@@ -384,7 +423,8 @@ async def _capture(
             shutil.move(str(tree / single), target)
         else:
             tree.rename(target)
-    return _entries(manifest, prefix, index, single)
+    exclusions = [x.model_dump(exclude_none=True) for x in manifest.exclusions]
+    return _entries(manifest, prefix, index, single), exclusions
 
 
 async def collect_rollout_artifacts(rollout: Any) -> None:

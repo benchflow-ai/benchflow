@@ -219,7 +219,13 @@ async def test_evaluation_passes_reviewer_to_rollout(tmp_path: Path) -> None:
 
 
 async def test_scoring_failure_never_retries_the_solver(tmp_path: Path) -> None:
-    """Automatic-review failures retry the committed scoring stage, not PR #902's solver."""
+    """Automatic-review failures retry the committed scoring stage, not PR #902's solver.
+
+    A reviewer only runs after the verifier scored, so its failure records the
+    verifier's reward. A scoring error without one means the solver failed
+    before anything was judged, which reruns like other infrastructure
+    failures (#1059; tests/test_review_resume.py).
+    """
     from unittest.mock import AsyncMock
 
     from benchflow.evaluation import RetryConfig
@@ -234,7 +240,12 @@ async def test_scoring_failure_never_retries_the_solver(tmp_path: Path) -> None:
     result = RolloutResult(
         task_name="task",
         error="Connection reset by peer",
-        scoring=ScoringResult(status="error", error="Reviewer provider unavailable"),
+        scoring=ScoringResult(
+            status="error",
+            error="Reviewer provider unavailable",
+            tests_pass=True,
+            verifier_reward=1.0,
+        ),
     )
     evaluation._run_single_task = AsyncMock(return_value=result)
     assert await evaluation._run_task(task) is result

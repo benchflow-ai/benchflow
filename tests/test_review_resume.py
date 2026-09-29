@@ -239,6 +239,189 @@ async def test_batch_completed_result_wins_over_incomplete_retry(
 
 
 @pytest.mark.asyncio
+async def test_batch_resumes_a_reviewed_trial_whose_result_has_no_scoring(
+    saved_trial, monkeypatch
+):
+    """Guards main's completeness rule for reviewed trials: a result.json with
+    rewards but no scoring block holds the unreviewed verifier reward (earlier
+    builds wrote one before the review ran), so the review is still pending."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    _write(rollout / "result.json", json.loads((rollout / "solver.json").read_text()))
+    retry = AsyncMock()
+    monkeypatch.setattr(resume, "resume_review", retry)
+
+    config = ReviewerConfig()
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=config,
+        task_names={"physics"},
+    )
+    retry.assert_awaited_once_with(rollout, tasks_root=task.parent, reviewer=config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verifier_error", "resumed"),
+    [(None, False), ("verifier_wedge: no receipt", True)],
+)
+async def test_batch_keeps_a_recovery_verdict_without_review_as_final(
+    saved_trial, monkeypatch, verifier_error, resumed
+):
+    """Guards verifier recovery without a review, which commits no scoring
+    block: its result.json is final once it has rewards and no verifier error,
+    and a verifier error that needs recovery is still resumed."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    config = json.loads((rollout / "config.json").read_text())
+    del config["review"]
+    config["verifier_recovery"] = {"eligible": True, "reason": None}
+    _write(rollout / "config.json", config)
+    source = json.loads((rollout / "solver.json").read_text())
+    _write(
+        rollout / "result.json",
+        {
+            **source,
+            "rewards": None if verifier_error else source["rewards"],
+            "verifier_error": verifier_error,
+        },
+    )
+    retry = AsyncMock()
+    monkeypatch.setattr(resume, "resume_review", retry)
+
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics"},
+    )
+    assert retry.await_count == int(resumed)
+
+
+def test_pending_review_keeps_its_solver_when_resume_cannot_finish_it(saved_trial):
+    """Guards #1134's "a dead review must not cost the solver result" now that
+    a reviewed trial has no result.json until its scoring commits. A review
+    that resume_pending_reviews could not finish leaves solver.json alone;
+    evaluation resume keeps that solver, unscored, instead of replaying it."""
+    from benchflow._utils.scoring import classify_score_outcome
+    from benchflow.evaluation import Evaluation, RetryConfig
+    from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+
+    rollout, task = saved_trial
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+
+    kept = job._get_completed_tasks()["physics"]
+    assert kept["rewards"] is None
+    assert PRESERVED_SOLVER in kept["verifier_error"]
+    assert not RetryConfig().should_retry_verifier_error(kept["verifier_error"])
+    assert classify_score_outcome(kept) == "verifier_errored"
+    assert kept["agent_result"] == {"total_tokens": 123}
+    assert not (rollout / "result.json").exists()
+
+
+INFRA_FAILURE = "Sandbox startup failed: daytona returned 503"
+
+
+@pytest.mark.parametrize(
+    ("error", "verifier_reward", "rerun"),
+    [
+        (INFRA_FAILURE, None, True),
+        # The verifier judged the output: the scoring error is the verdict.
+        (INFRA_FAILURE, 1.0, False),
+        # A solver error that is not retryable infrastructure.
+        ("the agent gave up", None, False),
+    ],
+)
+def test_resume_reruns_a_rubric_solver_that_failed_on_infrastructure(
+    saved_trial, error, verifier_reward, rerun
+):
+    """Guards #1059 for rubric tasks. A rubric trial commits a scoring block
+    even when its sandbox or transport failed (a scoring error with no
+    verifier reward), and any result with a scoring block was reused on
+    resume, so a solver that failed on infrastructure never ran again."""
+    from benchflow.evaluation import Evaluation, EvaluationConfig
+
+    rollout, task = saved_trial
+    result = _parent(
+        rollout,
+        scoring_error(
+            "Deterministic verifier produced no reward",
+            tests_pass=None if verifier_reward is None else True,
+            verifier_reward=verifier_reward,
+        ),
+    )
+    result.update(error=error, rewards=None)
+    _write(rollout / "result.json", result)
+
+    def completed(**config):
+        return Evaluation(
+            tasks_dir=task.parent,
+            jobs_dir=rollout.parent.parent,
+            job_name=rollout.parent.name,
+            config=EvaluationConfig(**config),
+        )._get_completed_tasks()
+
+    assert ("physics" not in completed()) is rerun
+    # A sequential-shared job reuses errored results, as before.
+    assert "physics" in completed(job_mode="sequential-shared")
+
+
+def test_a_pending_review_whose_solver_failed_on_infrastructure_reruns(saved_trial):
+    """The solver.json-only case of the test above: nothing to review."""
+    from benchflow.evaluation import Evaluation
+
+    rollout, task = saved_trial
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(rollout / "solver.json", {**solver, "rewards": None, "error": INFRA_FAILURE})
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()
+
+
+@pytest.mark.asyncio
+async def test_in_run_retry_reruns_a_rubric_solver_that_failed_on_infrastructure(
+    job_factory,
+):
+    """The in-run half of #1059 for rubric tasks: a scoring block stopped the
+    retry loop even when the solver failed on infrastructure unjudged."""
+    from benchflow.models import RolloutResult
+
+    job, tasks_dir = job_factory(n_tasks=1, max_retries=1)
+    job._config.retry.min_wait_sec = 0.0
+    job._prune_docker = lambda: None  # never touch a real Docker daemon
+    unjudged = RolloutResult(
+        task_name="task-0",
+        rollout_name="task-0__a",
+        error=INFRA_FAILURE,
+        scoring=scoring_error("Deterministic verifier produced no reward"),
+    )
+    judged = RolloutResult(
+        task_name="task-0",
+        rollout_name="task-0__a",
+        error=INFRA_FAILURE,
+        scoring=scoring_error(
+            "reviewer timed out", tests_pass=True, verifier_reward=1.0
+        ),
+    )
+    ok = RolloutResult(task_name="task-0", rewards={"reward": 1.0})
+
+    job._run_single_task = AsyncMock(side_effect=[unjudged, ok])
+    assert await job._run_task(tasks_dir / "task-0") is ok
+    job._run_single_task = AsyncMock(side_effect=[judged, ok])
+    assert await job._run_task(tasks_dir / "task-0") is judged
+
+
+@pytest.mark.asyncio
 async def test_batch_isolates_a_failing_resumed_review(
     saved_trial, monkeypatch, caplog
 ):

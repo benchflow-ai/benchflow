@@ -185,8 +185,9 @@ async def resume_pending_reviews(
             continue
         config_path = snapshot.parent / "config.json"
         config = _read_object(config_path) if config_path.is_file() else {}
+        reviewed = "review" in config
         if (
-            "review" not in config
+            not reviewed
             and recorded_recovery_ineligible_reason(snapshot.parent) is not None
         ):
             # Neither review nor recovery owns this trial; its original result
@@ -195,11 +196,15 @@ async def resume_pending_reviews(
         result_path = snapshot.parent / "result.json"
         result_payload = _read_object(result_path) if result_path.is_file() else {}
         scoring = scoring_from_result(result_payload)
-        complete = (scoring is not None and scoring.status == "complete") or (
-            scoring is None
-            and result_payload.get("rewards") is not None
-            and not result_payload.get("verifier_error")
-        )
+        complete = scoring is not None and scoring.status == "complete"
+        if not reviewed and scoring is None:
+            # Verifier recovery without a review commits no scoring block: a
+            # reward with no verifier error is its final verdict. A reviewed
+            # trial is complete only once its review is: a result without
+            # scoring would carry the unreviewed verifier reward.
+            complete = result_payload.get("rewards") is not None and not (
+                result_payload.get("verifier_error")
+            )
         rank = (complete, snapshot.stat().st_mtime, str(snapshot))
         previous = best.get(task_name)
         if previous is None or rank > previous[0]:

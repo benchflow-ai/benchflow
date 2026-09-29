@@ -277,7 +277,10 @@ def _interrupted_solver_result_locked(rollout: Any, detail: str) -> Any:
         )
         if not (root / "solver.json").exists():
             write_json_atomic(root / "solver.json", source)
-        write_json_atomic(root / "result.json", source)
+        # A reviewed trial's result.json is written only when its scoring
+        # commits (see prepare_terminal_result).
+        if getattr(rollout, "_review_plan", None) is None:
+            write_json_atomic(root / "result.json", source)
     return result
 
 

@@ -193,22 +193,33 @@ async def test_declared_artifacts_honour_destination_exclude_and_missing(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_escaping_symlink_is_refused_and_nothing_is_written(tmp_path):
+async def test_escaping_symlink_is_listed_and_its_target_never_copied(tmp_path):
+    """Since #1130, capture leaves out a symlink that points out of the
+    collected tree instead of failing on it. The collection keeps the rest,
+    lists the link in its exclusions, and copies no outside byte."""
     logs, workspace, trial = _layout(tmp_path)
     secret = tmp_path / "host-secret"
     secret.write_text("do not copy\n")
     evil = workspace / "evil"
     evil.mkdir()
     (evil / "link").symlink_to(secret)
+    (evil / "kept.txt").write_text("kept\n")
 
     manifest = await _collect(
         LocalTransport(), logs, workspace, trial, artifacts=["evil"]
     )
 
     record = manifest["collections"][1]
-    assert record["status"] == "error"
-    assert "escapes" in record["reason"]
-    assert not (trial / "artifacts" / "evil").exists()
+    assert record["status"] == "collected"
+    assert record["exclusions"] == [
+        {
+            "original_path": str(evil / "link"),
+            "reason": "symlink_escape",
+            "link_target": str(secret),
+        }
+    ]
+    assert (trial / "artifacts" / "evil" / "kept.txt").read_text() == "kept\n"
+    assert not (trial / "artifacts" / "evil" / "link").is_symlink()
     assert all(
         "do not copy" not in p.read_text()
         for p in trial.rglob("*")

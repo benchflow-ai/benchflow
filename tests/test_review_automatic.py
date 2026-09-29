@@ -17,8 +17,9 @@ from benchflow._utils.scoring import classify_score_outcome
 from benchflow.review import automatic, persistence
 from benchflow.review.evidence import EvidenceManifest
 from benchflow.review.options import ReviewerConfig
-from benchflow.rollout import _review
+from benchflow.rollout import Rollout, RolloutConfig, _review
 from benchflow.rollout._results import _build_rollout_result
+from benchflow.trajectories.rollout_stream import stream_rollouts
 from tests.test_review_evidence import LocalTransport
 from tests.test_review_runtime import (
     WEIGHTED_RUBRIC,
@@ -168,6 +169,47 @@ def test_solver_checkpoint_is_not_published_as_a_completed_trial(saved):
     assert not (saved / "rewards.jsonl").exists()
     assert not (saved / "trajectory/trajectory.json").exists()
     assert iter_task_result_paths(saved.parent) == []
+
+
+def test_terminal_result_of_a_reviewed_trial_publishes_only_its_solver(
+    tmp_path, prepared
+):
+    """Guards the checkpoint separation above through prepare_terminal_result.
+
+    prepare_terminal_result used to write result.json, with the unreviewed
+    verifier reward and no scoring block, beside solver.json before the
+    review ran: bench train stream emitted that reward, and a review cut off
+    by a crash left it as the final score. The ``saved`` fixture builds
+    solver.json directly, so the test above could not see it.
+    """
+    job = tmp_path / "jobs" / "job"
+    rollout = Rollout(
+        RolloutConfig(task_path=prepared.task_path, task_digest=prepared.task_digest)
+    )
+    rollout._rollout_dir = root = job / "physics__trial"
+    root.mkdir(parents=True)
+    rollout._rollout_name = root.name
+    rollout._started_at = datetime.now()
+    rollout._review_plan = prepared
+    rollout._rewards = {"reward": 1.0}
+
+    result = _review.prepare_terminal_result(rollout)
+
+    assert result.rewards == {"reward": 1.0}
+    assert result.scoring is None
+    solver = (root / "solver.json").read_bytes()
+    assert json.loads(solver)["rewards"] == {"reward": 1.0}
+    for name in ("result.json", "results.jsonl", "rewards.jsonl", "trainer"):
+        assert not (root / name).exists(), name
+    assert iter_task_result_paths(job) == []
+    assert list(stream_rollouts(job, follow=False)) == []
+
+    # A later call (finalize after an interrupted scoring) neither publishes
+    # nor rewrites the solver record that recovery and resume start from.
+    rollout._rewards = {"reward": 0.0}
+    assert _review.prepare_terminal_result(rollout).rewards == {"reward": 0.0}
+    assert (root / "solver.json").read_bytes() == solver
+    assert not (root / "result.json").exists()
 
 
 @pytest.mark.asyncio
@@ -366,6 +408,60 @@ async def test_daytona_session_fifos_keep_terminal_evidence_scorable(tmp_path):
     assert (
         rollout_dir / "evidence" / "workspace" / "paper.pdf"
     ).read_bytes() == b"%PDF-1.7 solver paper"
+
+
+@pytest.mark.asyncio
+async def test_agent_helper_link_outside_workspace_keeps_terminal_evidence_scorable(
+    tmp_path,
+):
+    """Guards terminal capture after PR #1126 against the escaping-link abort.
+
+    On FrontierPhysics PR #192 codex-acp left /app/apply_patch linked to its
+    helper outside /app. Capture raised "workspace symlink escapes evidence",
+    which set _export_error, and finish_review then ended the trial in a
+    scoring error with rewards null although the verifier had run.
+    """
+    helper = tmp_path / "codex-home" / "apply_patch"
+    helper.parent.mkdir()
+    helper.write_text("#!/bin/sh\n")
+    workspace = tmp_path / "app"
+    workspace.mkdir()
+    (workspace / "apply_patch").symlink_to(helper)
+    (workspace / "paper.pdf").write_bytes(b"%PDF-1.7 solver paper")
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+
+    async def idle(*_args):
+        return None
+
+    rollout = SimpleNamespace(
+        _branch_child_active=False,
+        _review_plan=object(),
+        _config=SimpleNamespace(purpose="task", sandbox_user=None),
+        _env=LocalTransport(),
+        _agent_env={},
+        _planes=SimpleNamespace(quiesce_agent=idle),
+        _task=SimpleNamespace(
+            config=SimpleNamespace(
+                artifacts=[], verifier=SimpleNamespace(submission_files=[])
+            )
+        ),
+        _agent_cwd=str(workspace),
+        disconnect=idle,
+        _require_rollout_dir=lambda: rollout_dir,
+    )
+
+    await _review.capture_terminal_workspace(rollout)
+
+    assert getattr(rollout, "_export_error", None) is None
+    manifest = EvidenceManifest.model_validate_json(
+        (rollout_dir / "evidence" / "manifest.json").read_text()
+    )
+    assert [
+        (exclusion.original_path, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [(str(workspace / "apply_patch"), "symlink_escape", str(helper))]
+    assert [entry.path for entry in manifest.entries] == ["paper.pdf"]
 
 
 def test_reviewer_child_never_recursively_preflights(monkeypatch):

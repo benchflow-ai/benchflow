@@ -887,6 +887,11 @@ class Rollout:
         # an export-time infra failure ("connection lost") as the agent's own
         # infra_failure category in dashboards.
         self._export_error: str | None = None
+        # A separate verifier's clean control: the paths capture reads,
+        # measured before the agent runs, and whether workspace capture then
+        # hit its limits (see rollout._separate_verifier).
+        self._pristine_outputs: dict[str, Any] | None = None
+        self._capture_over_limit = False
         # Single bag for the four parallel diagnostic fields the old code
         # carried as separate attrs (issue #503). Each callsite that used
         # to assign to one of those slots now calls ``self._diagnostics.set(...)``
@@ -2554,6 +2559,10 @@ class Rollout:
         )
 
         rollout_dir = self._require_rollout_dir()
+        # A reviewed trial's result.json is written only when its scoring
+        # commits; until then solver.json, plus verification.json after a
+        # recovery, is its only record.
+        publish = None if self._review_plan is not None else "result.json"
         # Another scorer may have finished while this caller waited to
         # enter finalization. Never replace its complete verdict with a
         # stale failed-attempt result.
@@ -2575,7 +2584,7 @@ class Rollout:
             current = verification_source(rollout_dir)
             if current.get("rewards") is not None and not current.get("verifier_error"):
                 self._rewards, self._verifier_error = current["rewards"], None
-                result = self._build_result()
+                result = self._build_result(result_filename=publish)
         if (
             result.rollout_name
             and self._phase == "cleaned"
@@ -2593,7 +2602,7 @@ class Rollout:
                 self._verifier_error = (
                     f"[solver-preserved] verifier recovery unavailable: {exc}"
                 )
-            result = self._build_result()
+            result = self._build_result(result_filename=publish)
         else:
             await release_recovery_lease(self)
         # Scoring queues own no solver VM and may legitimately outlive its
@@ -3298,7 +3307,9 @@ class Rollout:
             error=self._error,
         )
 
-    def _build_result(self, *, result_filename: str = "result.json") -> RolloutResult:
+    def _build_result(
+        self, *, result_filename: str | None = "result.json"
+    ) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         # Provider telemetry is imported during cleanup; a pre-cleanup stage
         # checkpoint must not classify its temporarily missing usage as failure.

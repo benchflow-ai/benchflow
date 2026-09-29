@@ -37,6 +37,18 @@ class EvidenceError(RuntimeError):
     """Required evidence could not be captured or verified completely."""
 
 
+class EvidenceLimitError(EvidenceError):
+    """The captured files exceed the configured byte or entry limits."""
+
+
+# Default limits for one workspace capture (--freeze-workspace, automatic
+# review, separate verifier sandboxes).
+WORKSPACE_MAX_BYTES = 20 * 1024**3
+WORKSPACE_MAX_ENTRIES = 200_000
+# The capture script's exit status when the limits are exceeded.
+_LIMIT_EXIT = 3
+
+
 class EvidenceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -57,7 +69,21 @@ class EvidenceExclusion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     original_path: str
-    reason: Literal["credential", "sandbox_runtime", "special_file", "task_exclude"]
+    reason: Literal[
+        "credential",
+        "sandbox_runtime",
+        "special_file",
+        "symlink_escape",
+        "task_exclude",
+    ]
+    # The link's own text, recorded for a symlink the bundle cannot keep.
+    link_target: str | None = None
+
+    @model_validator(mode="after")
+    def _link_target_names_escaping_links(self) -> Self:
+        if (self.reason == "symlink_escape") != (self.link_target is not None):
+            raise ValueError("Only a symlink_escape exclusion records a link target")
+        return self
 
 
 class ArtifactEvidence(BaseModel):
@@ -101,11 +127,16 @@ class _CaptureReceipt(BaseModel):
 
 # Runs in both Docker and Daytona without requiring BenchFlow in the image.
 # Enumeration is explicit so nothing is silently omitted by a tar command.
-# Sockets, devices and FIFOs hold no bytes to preserve, and provider runtime
-# state is harness-owned, so both are recorded as manifest exclusions; quota
-# overflows, escaping links and concurrent changes still fail the capture.
+# Sockets, devices and FIFOs hold no bytes to preserve, provider runtime state
+# is harness-owned, and a symlink leaving the workspace (an agent CLI's helper
+# link, say) would import another VM file, so each is recorded as a manifest
+# exclusion, a link with its target text. A link is kept only when both its
+# resolution and its text stay inside the root, the rule the host extraction,
+# validate_workspace and the reviewer's admission check apply to it; a link
+# loop has no target to keep. Quota overflows (exit status 3) and concurrent
+# changes still fail the capture.
 _CAPTURE_SCRIPT = r"""
-import fnmatch, hashlib, json, os, pathlib, stat, sys, tarfile, tempfile
+import fnmatch, hashlib, json, os, pathlib, posixpath, stat, sys, tarfile, tempfile
 source = pathlib.Path(sys.argv[1]).resolve()
 system_roots = {pathlib.Path(path).resolve() for path in ("/", "/proc", "/sys", "/dev", "/etc", "/run", "/home")}
 if source in system_roots:
@@ -115,10 +146,29 @@ root = source if source.is_dir() else source.parent
 max_bytes, max_entries = map(int, sys.argv[2:4])
 rules = json.loads(sys.argv[4])
 paths, exclusions, total = [], [], 0
-def record(path, reason):
-    exclusions.append({"original_path": path.as_posix(), "reason": reason})
+def over_limit():
+    sys.stderr.write("workspace evidence exceeds configured capture limits\n")
+    raise SystemExit(3)
+def record(path, reason, **details):
+    exclusions.append({"original_path": path.as_posix(), "reason": reason, **details})
     if len(paths) + len(exclusions) > max_entries:
-        raise ValueError("workspace evidence exceeds configured capture limits")
+        over_limit()
+def kept_link(path, target):
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return False
+    if not path.resolve().is_relative_to(root):
+        return False
+    if target.startswith("/"):
+        try:
+            return ".." not in pathlib.PurePosixPath(target).relative_to(root).parts
+        except ValueError:
+            return False
+    parent = posixpath.dirname(path.relative_to(root).as_posix())
+    return ".." not in posixpath.normpath(posixpath.join(parent, target)).split("/")
 def component(path, rule):
     return path.endswith("/" + rule) or "/" + rule + "/" in path
 def excluded(path):
@@ -150,16 +200,18 @@ for directory, dirs, files in walk:
                 dirs.remove(name)
             continue
         info = path.lstat()
-        if not any(check(info.st_mode) for check in
-                   (stat.S_ISREG, stat.S_ISDIR, stat.S_ISLNK)):
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(path)
+            if not kept_link(path, target):
+                record(path, "symlink_escape", link_target=target)
+                continue
+        elif not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
             record(path, "special_file")
             continue
-        if path.is_symlink() and not path.resolve().is_relative_to(root):
-            raise ValueError("workspace symlink escapes evidence: " + str(path))
         total += info.st_size if stat.S_ISREG(info.st_mode) else 0
         paths.append((path, info))
         if total > max_bytes or len(paths) + len(exclusions) > max_entries:
-            raise ValueError("workspace evidence exceeds configured capture limits")
+            over_limit()
 temp_root = next((p for p in ("/tmp", "/var/tmp")
                   if not pathlib.Path(p).resolve().is_relative_to(root)), None)
 if temp_root is None:
@@ -242,7 +294,7 @@ def _extract_archive(
             members.append(member)
             total += member.size
             if member.size < 0 or len(members) > max_entries or total > max_bytes:
-                raise EvidenceError(
+                raise EvidenceLimitError(
                     "Workspace evidence exceeds configured capture limits"
                 )
         names: set[PurePosixPath] = set()
@@ -308,6 +360,9 @@ def _extract_archive(
 
 def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
     """Verify exact inventory, file bytes and links against a trusted manifest."""
+    excluded = {exclusion.original_path for exclusion in manifest.exclusions}
+    if any(entry.original_path in excluded for entry in manifest.entries):
+        raise EvidenceError("Evidence manifest both captures and excludes a path")
     root = workspace.resolve(strict=True)
     actual = {path.relative_to(root).as_posix(): path for path in root.rglob("*")}
     expected = {entry.path for entry in manifest.entries}
@@ -392,8 +447,57 @@ def _component(path: str, rule: str) -> bool:
 
 
 ExclusionReason = Literal[
-    "credential", "sandbox_runtime", "special_file", "task_exclude"
+    "credential", "sandbox_runtime", "special_file", "symlink_escape", "task_exclude"
 ]
+
+# Linux's limit on symlinks followed while resolving one path (ELOOP).
+_MAX_LINK_HOPS = 40
+
+
+def _kept_tar_link(name: str, target: str, links: dict[str, str], root: str) -> bool:
+    """The capture script's ``kept_link`` rule, applied to a tar listing.
+
+    A link is kept only when its target text and its resolution both stay
+    inside the root. The resolution follows the archive's own links, as
+    ``os.path.realpath`` would in the sandbox; a loop is not kept.
+    """
+    if target.startswith("/"):
+        try:
+            if ".." in PurePosixPath(target).relative_to(root).parts:
+                return False
+        except ValueError:
+            return False
+    else:
+        joined = posixpath.join(posixpath.dirname(name), target)
+        if ".." in posixpath.normpath(joined).split("/"):
+            return False
+    pending = list(PurePosixPath(name).parts)
+    resolved: list[str] = []
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part == "..":
+            if not resolved:
+                return False
+            resolved.pop()
+            continue
+        link = links.get("/".join([*resolved, part]))
+        if link is None:
+            resolved.append(part)
+            continue
+        hops += 1
+        if hops > _MAX_LINK_HOPS:
+            return False
+        if link.startswith("/"):
+            try:
+                inside = PurePosixPath(link).relative_to(root)
+            except ValueError:
+                return False
+            resolved = []
+            pending = [*inside.parts, *pending]
+        else:
+            pending = [*PurePosixPath(link).parts, *pending]
+    return True
 
 
 def _exclusion_reason(
@@ -431,8 +535,9 @@ def _normalize_tar_capture(
     """Rewrite a ``tar -C root .`` archive into capture-script form.
 
     Drops the root entry and ``./`` prefixes, applies the exclusion rules,
-    records special files, stores hard links as independent regular files and
-    enforces the limits. Links are checked later by :func:`_extract_archive`.
+    records special files and links the capture script would not keep
+    (``symlink_escape``, with their target text), stores hard links as
+    independent regular files and enforces the limits.
     """
     exclusions: list[EvidenceExclusion] = []
     excluded_dirs: list[str] = []
@@ -446,7 +551,13 @@ def _normalize_tar_capture(
         tarfile.open(raw, "r:") as source,
         tarfile.open(dest, "x", format=tarfile.PAX_FORMAT) as archive,
     ):
-        for member in source.getmembers():
+        members = source.getmembers()
+        links = {
+            posixpath.normpath(member.name): member.linkname
+            for member in members
+            if member.issym()
+        }
+        for member in members:
             name = posixpath.normpath(member.name)
             if name in (".", ""):
                 continue
@@ -457,18 +568,29 @@ def _normalize_tar_capture(
             reason: ExclusionReason | None = _exclusion_reason(
                 absolute, relative, rules
             )
+            link_target = None
+            if (
+                reason is None
+                and member.issym()
+                and not _kept_tar_link(name, member.linkname, links, root)
+            ):
+                reason, link_target = "symlink_escape", member.linkname
             if reason is None and not (
                 member.isfile() or member.isdir() or member.issym() or member.islnk()
             ):
                 reason = "special_file"
             if reason is not None:
                 exclusions.append(
-                    EvidenceExclusion(original_path=absolute.as_posix(), reason=reason)
+                    EvidenceExclusion(
+                        original_path=absolute.as_posix(),
+                        reason=reason,
+                        link_target=link_target,
+                    )
                 )
                 if member.isdir():
                     excluded_dirs.append(name)
                 if over():
-                    raise EvidenceError(
+                    raise EvidenceLimitError(
                         "Workspace evidence exceeds configured capture limits"
                     )
                 continue
@@ -483,7 +605,7 @@ def _normalize_tar_capture(
                 total += copy.size
                 kept += 1
                 if over():
-                    raise EvidenceError(
+                    raise EvidenceLimitError(
                         "Workspace evidence exceeds configured capture limits"
                     )
                 archive.addfile(copy, io.BytesIO(payload))
@@ -494,7 +616,7 @@ def _normalize_tar_capture(
                 copy.type = tarfile.DIRTYPE
             kept += 1
             if over():
-                raise EvidenceError(
+                raise EvidenceLimitError(
                     "Workspace evidence exceeds configured capture limits"
                 )
             archive.addfile(copy)
@@ -591,8 +713,8 @@ async def capture_workspace(
     workspace: str,
     destination: Path,
     *,
-    max_bytes: int = 20 * 1024**3,
-    max_entries: int = 200_000,
+    max_bytes: int = WORKSPACE_MAX_BYTES,
+    max_entries: int = WORKSPACE_MAX_ENTRIES,
     timeout_sec: int = 600,
     exclude: Sequence[str] = (),
     excluded_paths: Sequence[str] = (),
@@ -644,6 +766,8 @@ async def capture_workspace(
             max_entries=max_entries,
             timeout_sec=timeout_sec,
         )
+    if result.return_code == _LIMIT_EXIT:
+        raise EvidenceLimitError("Workspace evidence exceeds configured capture limits")
     if result.return_code != 0:
         raise EvidenceError(
             f"Workspace capture failed: {(result.stderr or result.stdout or '')[-2000:]}"
@@ -708,12 +832,20 @@ async def capture_workspace(
 
 # The receiving sandbox may not have BenchFlow/Pydantic. This stdlib-only
 # admission check verifies the same public manifest after upload, before any
-# reviewer sees evidence. It intentionally does not inspect solver paths.
+# reviewer sees evidence, with validate_workspace's rules: excluded paths
+# (special files, runtime state, escaping links) are never manifest entries,
+# and every kept link resolves inside the snapshot. It intentionally does not
+# inspect solver paths.
 _ADMISSION_SCRIPT = r"""
 import hashlib, json, os, pathlib, stat, sys
 root = pathlib.Path(sys.argv[1]).resolve(strict=True)
 manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())
 entries = manifest["entries"]
+exclusions = manifest.get("exclusions", [])
+if any((e["reason"] == "symlink_escape") != (e.get("link_target") is not None) for e in exclusions):
+    raise ValueError("only a symlink_escape exclusion records a link target")
+if {e["original_path"] for e in entries} & {e["original_path"] for e in exclusions}:
+    raise ValueError("manifest both captures and excludes a path")
 actual = {p.relative_to(root).as_posix(): p for p in root.rglob("*")}
 expected = {e["path"] for e in entries}
 if len(expected) != len(entries) or actual.keys() != expected:
@@ -886,8 +1018,8 @@ async def capture_task_evidence(
     *,
     artifacts: Sequence[str | ArtifactConfig] = (),
     excluded_paths: Sequence[str] = (),
-    max_bytes: int = 20 * 1024**3,
-    max_entries: int = 200_000,
+    max_bytes: int = WORKSPACE_MAX_BYTES,
+    max_entries: int = WORKSPACE_MAX_ENTRIES,
     timeout_sec: int = 600,
 ) -> EvidenceManifest:
     """Commit workspace and declared external artifacts as one evidence bundle.
@@ -970,7 +1102,7 @@ async def capture_task_evidence(
                     status = "in_workspace"
                 else:
                     if min(remaining_bytes, remaining_entries) <= 0:
-                        raise EvidenceError(
+                        raise EvidenceLimitError(
                             "Task evidence exceeds configured capture limits"
                         )
                     status = "captured"

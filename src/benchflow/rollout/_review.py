@@ -12,7 +12,7 @@ from benchflow._utils.text import describe_exception
 from benchflow.agents.credentials import credential_evidence_overrides
 from benchflow.models import RolloutResult
 from benchflow.review.automatic import finish_review, prepare_review
-from benchflow.review.evidence import capture_task_evidence
+from benchflow.review.evidence import EvidenceLimitError, capture_task_evidence
 from benchflow.review.evidence_runtime import (
     ensure_capture_tools,
     ensure_evidence_python,
@@ -74,6 +74,12 @@ async def prepare_capture_runtime(rollout: Rollout) -> None:
         await ensure_capture_tools(
             rollout._env, timeout_sec=rollout._config.sandbox_setup_timeout
         )
+    if separate_verifier_requested(getattr(rollout._task, "config", None)):
+        from benchflow.rollout._separate_verifier import record_pristine_outputs
+
+        # The clean control: what capture will read, measured before the
+        # agent, so only a failure the solution caused is scored as its own.
+        await record_pristine_outputs(rollout)
 
 
 async def capture_terminal_workspace(rollout: Rollout) -> None:
@@ -119,6 +125,8 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
         # Tests may still provide useful diagnostics. A capture error prevents
         # final rubric scoring and must not become a solver capability error.
         rollout._export_error = f"Workspace evidence capture failed: {exc}"
+        # A separate verifier can blame the solution for this one alone.
+        rollout._capture_over_limit = isinstance(exc, EvidenceLimitError)
         logger.exception("Workspace evidence capture failed")
 
 
@@ -218,6 +226,14 @@ def prepare_terminal_result(rollout: Rollout) -> RolloutResult:
 
     Only review and verifier recovery read solver.json; a task with neither
     keeps the single result.json and its ordinary retries.
+
+    A trial with a review plan publishes solver.json alone, as on main: its
+    result.json is written once, by ``commit_scoring_result``, when the
+    review's scoring commits. Written here, it would carry the unreviewed
+    verifier reward, which ``bench train stream`` emits once and never
+    rereads, and which a review cut off by a crash or a budget stop would
+    leave as the trial's final score. Verifier recovery without a review
+    keeps result.json beside solver.json.
     """
     from benchflow.rollout._verifier_recovery import recovery_ineligible_reason
 
@@ -226,9 +242,13 @@ def prepare_terminal_result(rollout: Rollout) -> RolloutResult:
         admitted = read_admitted_result(rollout)
         if admitted is not None:
             return admitted
-        if (
-            rollout._review_plan is not None
-            or recovery_ineligible_reason(rollout) is None
-        ) and not (root / "solver.json").is_file():
+        solver_saved = (root / "solver.json").is_file()
+        if rollout._review_plan is not None:
+            # solver.json is immutable once written: it keeps the original
+            # verifier verdict that recovery and resume start from.
+            if solver_saved:
+                return rollout._build_result(result_filename=None)
+            return rollout._build_result(result_filename="solver.json")
+        if recovery_ineligible_reason(rollout) is None and not solver_saved:
             rollout._build_result(result_filename="solver.json")
         return rollout._build_result()

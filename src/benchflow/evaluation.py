@@ -108,6 +108,7 @@ RunResult = RolloutResult
 if TYPE_CHECKING:
     from benchflow.checkpoint_retry import RetryPolicy
     from benchflow.checkpoints import CheckpointPolicy
+    from benchflow.review.outcome import ScoringResult
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,27 @@ class RetryConfig:
             return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
+    def reruns_unjudged_solver(
+        self,
+        scoring: ScoringResult | None,
+        error: str | None,
+        *,
+        category: str | None = None,
+    ) -> bool:
+        """Whether a rubric trial's solver runs again despite its scoring block.
+
+        A rubric trial commits a scoring block even when its solver failed on
+        the sandbox or transport and nothing was judged: a scoring error with
+        no verifier reward. That is a retryable infrastructure failure like
+        any other (#1059), not a verdict that pins the trial.
+        """
+        return (
+            scoring is not None
+            and scoring.status == "error"
+            and scoring.verifier_reward is None
+            and self.should_retry(error, category=category)
+        )
+
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
         """Check if a verifier error is infrastructure-retryable."""
         from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
@@ -469,6 +491,16 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
             f"completed tasks used loop_strategy={prev_loop}. "
             f"Use a different jobs_dir to avoid mixing results."
         )
+
+
+def _scoring_block(result: dict[str, Any]) -> ScoringResult | None:
+    """A persisted result's scoring block; None when absent or malformed."""
+    from benchflow.review.outcome import scoring_from_result
+
+    try:
+        return scoring_from_result(result)
+    except ValueError:
+        return None
 
 
 def _classify_completed_outcomes(
@@ -1494,17 +1526,58 @@ class Evaluation:
             name = pending.get("task_name")
             if name and name not in latest and pending.get("purpose", "task") == "task":
                 latest[name] = pending
-        completed: dict[str, dict] = {}
+        # Likewise a solver.json without result.json: a reviewed trial whose
+        # scoring never committed and that resume_pending_reviews above could
+        # not finish. Its solver is kept, never replayed, and it stays
+        # unscored until `bench eval score` commits its review. solver.json's
+        # own reward is the unreviewed verifier reward, so it is withheld.
+        from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+
         # Re-running an errored task is only safe when rollouts are
         # independent. A sequential-shared job advances one persisted learner
         # state in task order, so replaying an earlier task after later tasks
         # committed their skills would corrupt the learning curve; there the
         # errored result stays reused, matching the pre-existing behavior.
         rerun_ok = self._config.job_mode != "sequential-shared"
+        for snapshot in job_dir.glob("*/solver.json"):
+            if (snapshot.parent / "result.json").exists():
+                continue
+            pending = json.loads(snapshot.read_text())
+            name = pending.get("task_name")
+            if name and name not in latest and pending.get("purpose", "task") == "task":
+                if (
+                    rerun_ok
+                    and pending.get("rewards") is None
+                    and self._config.retry.should_retry(
+                        pending.get("error"), category=pending.get("error_category")
+                    )
+                ):
+                    # Its solver failed on infrastructure: nothing to review.
+                    continue
+                latest[name] = {
+                    **pending,
+                    "rewards": None,
+                    "verifier_error": (
+                        f"{PRESERVED_SOLVER} scoring did not commit; "
+                        "finish it with bench eval score"
+                    ),
+                    "verifier_error_category": VERIFIER_INFRA,
+                }
+        completed: dict[str, dict] = {}
         for task, r in latest.items():
             # A durable solver snapshot makes rubric retries independent of the
-            # solver. Even an unsuccessful retry must never replay that solver.
+            # solver. Even an unsuccessful retry must never replay that solver,
+            # unless the solver failed on infrastructure and nothing was judged.
             if r.get("scoring") is not None:
+                if rerun_ok and self._config.retry.reruns_unjudged_solver(
+                    _scoring_block(r), r.get("error"), category=r.get("error_category")
+                ):
+                    logger.info(
+                        f"Re-running task whose solver failed on infrastructure "
+                        f"before anything was judged: {task} "
+                        f"({truncate_end(r.get('error') or '', 80)})"
+                    )
+                    continue
                 completed[task] = r
                 continue
             if r.get("verifier_error"):
@@ -1735,9 +1808,12 @@ class Evaluation:
                 self._prune_docker()
             result = await self._run_single_task(task_dir, cfg)
             last_result = result
-            if result.scoring is not None:
+            if result.scoring is not None and not cfg.retry.reruns_unjudged_solver(
+                result.scoring, result.error, category=result.error_category
+            ):
                 # Once solver evidence is committed, only the scoring stage may
-                # be retried. Replaying the solver would change the trial.
+                # be retried. Replaying the solver would change the trial. A
+                # solver that failed on infrastructure left nothing judged.
                 return result
 
             retryable_agent_error = cfg.retry.should_retry(
