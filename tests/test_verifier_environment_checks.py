@@ -661,13 +661,12 @@ async def test_unwritable_receipt_dir_leaves_start_unknown(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("recovery_eligible", [False, True])
-async def test_only_the_recovery_path_asks_for_a_start_receipt(
-    tmp_path, recovery_eligible
-):
-    """Guards against the start-receipt regression introduced by solver-evidence preservation.
-
-    ``_verifier_started`` reads the receipt only for recovery-eligible tasks;
-    every other verifier runs test.sh exactly as before.
+async def test_every_verifier_asks_for_a_start_receipt(tmp_path, recovery_eligible):
+    """#1136: every script verifier's command writes a start receipt, so a
+    command the exec layer lost is found in 30 s instead of a whole budget
+    (tests/test_verifier_start_receipts.py). The regression solver-evidence
+    preservation introduced, a receipt in ``/logs/verifier``, stays guarded
+    by test_recovery_start_receipt_lives_outside_the_output_dir.
     """
     requested: dict = {}
 
@@ -694,6 +693,4 @@ async def test_only_the_recovery_path_asks_for_a_start_receipt(
     )
 
     assert error is None and rewards == {"reward": 1.0}
-    assert ("execution_receipt" in requested) is recovery_eligible
-    if recovery_eligible:
-        assert requested["execution_receipt"] is True
+    assert requested["execution_receipt"] is True

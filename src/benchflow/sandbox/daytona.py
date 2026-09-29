@@ -226,6 +226,14 @@ logger = logging.getLogger("benchflow")
 # called ``_load_daytona_sdk()``.
 _SandboxParams = Any
 _DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
+# One request of a command poll (status, then logs). A request on a connection
+# that died silently (an Azure SNAT drop, a Daytona proxy restart) otherwise
+# waits forever: the SDK sets no read timeout, and the retry below only
+# retries a call that raises, so a verifier whose command had finished waited
+# out its whole budget (#1136). A timed-out request raises TimeoutError, which
+# _SDK_RETRY retries on a new connection; both requests are idempotent reads.
+_DAYTONA_POLL_STATUS_TIMEOUT_SEC = 30.0
+_DAYTONA_POLL_LOGS_TIMEOUT_SEC = 120.0
 _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # The SDK's error once a new sandbox reaches an error state (``BUILD_FAILED``,
 # ``ERROR``). It neither returns nor deletes that sandbox, so this id is the
@@ -764,7 +772,10 @@ class DaytonaSandbox(BaseSandbox):
         self, session_id: str, command_id: str
     ) -> object:
         sandbox = self._require_sandbox()
-        return await sandbox.process.get_session_command(session_id, command_id)
+        return await asyncio.wait_for(
+            sandbox.process.get_session_command(session_id, command_id),
+            timeout=_DAYTONA_POLL_STATUS_TIMEOUT_SEC,
+        )
 
     @stamp_transient_transport
     @_SDK_RETRY
@@ -772,7 +783,10 @@ class DaytonaSandbox(BaseSandbox):
         self, session_id: str, command_id: str
     ) -> object:
         sandbox = self._require_sandbox()
-        return await sandbox.process.get_session_command_logs(session_id, command_id)
+        return await asyncio.wait_for(
+            sandbox.process.get_session_command_logs(session_id, command_id),
+            timeout=_DAYTONA_POLL_LOGS_TIMEOUT_SEC,
+        )
 
     @staticmethod
     def _poll_timeout_error(
