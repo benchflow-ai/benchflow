@@ -1010,3 +1010,16 @@ def test_hold_value_policy() -> None:
             "vehicle",
             [ActionGroup("p", ["a"], [0.0], [1.0], "pedals", hold="value")],
         ).validate()
+
+
+def test_camera_names_with_slashes_make_flat_image_files(tmp_path) -> None:
+    class Cams(PointArm):
+        def embodiment(self) -> Embodiment:
+            emb = super().embodiment()
+            emb.sensors.cameras = [Camera("robot/head", mount="head", calibrated=False)]
+            return emb
+
+    ep = _server(tmp_path, Cams())
+    ep.config.cameras = ["robot/head"]
+    r = ep.handle({"op": "observe", "image": True, "camera": "robot/head"})
+    assert r["ok"] and r["result"]["image_path"].endswith("_robot_head.png")

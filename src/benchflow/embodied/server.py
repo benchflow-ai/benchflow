@@ -489,8 +489,9 @@ class EpisodeServer:
             for cam in cams:
                 self._obs_count += 1
                 img = self.backend.render(cam)
+                safe = str(cam).replace("/", "_").replace(os.sep, "_") if cam else ""
                 name = (
-                    f"obs_{self._obs_count:03d}" + (f"_{cam}" if cam else "") + ".png"
+                    f"obs_{self._obs_count:03d}" + (f"_{safe}" if cam else "") + ".png"
                 )
                 (self.run_dir / "observations").mkdir(exist_ok=True)
                 save_png(self.run_dir / "observations" / name, img)
