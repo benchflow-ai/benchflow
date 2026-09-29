@@ -2,17 +2,49 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Sized
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
 from benchflow.diagnostics import IdleTimeoutDiagnostic, IdleTimeoutError
 
+logger = logging.getLogger(__name__)
+
 # A pending tool call defers the idle watchdog for at most this many idle
 # budgets while staying silent. Streaming updates restart the grace for their
-# own pending call; unrelated or terminal updates do not.
+# own pending call; unrelated or terminal updates do not. A newer tool call
+# restarts it for every call already pending (#1141): an agent that starts a
+# new call is not waiting on the older one, whose terminal update may simply
+# have been lost (a sequential agent cannot start a call while another runs,
+# and a parallel batch cannot start its next step before all of it returns).
+# Without that restart, one lost update killed a session that completed a
+# tool call every 30 s, three idle budgets after the lost call started.
 PENDING_GRACE_MULTIPLIER = 3
+# Seconds of pending-call grace, replacing the multiplier (integer >= 1).
+PENDING_GRACE_ENV = "BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC"
+
+
+def pending_grace_from_env() -> int | None:
+    """The operator's pending-tool grace in seconds, or None for the default."""
+    raw = os.environ.get(PENDING_GRACE_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        logger.warning(
+            "Ignoring %s=%r: expected whole seconds >= 1; using %dx the idle timeout",
+            PENDING_GRACE_ENV,
+            raw,
+            PENDING_GRACE_MULTIPLIER,
+        )
+        return None
+    return value
 
 
 class WatchdogSession(Protocol):
@@ -48,6 +80,12 @@ class IdleWatchdog:
     pending_last_progress_at: dict[str, float]
     pending_last_update_at: dict[str, datetime]
     pending_set_last_changed_at: datetime | None
+    pending_grace_sec: int
+    # Tool calls recorded at the last poll; growth means a newer call started.
+    tool_call_count: int = 0
+    # Per pending call, tool calls that started after its last update: the
+    # evidence that its terminal update was lost rather than still coming.
+    pending_newer_calls: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def start(
@@ -58,10 +96,17 @@ class IdleWatchdog:
         wall_timeout_sec: int,
         now: float,
         wall_now: datetime | None = None,
+        pending_grace_sec: int | None = None,
     ) -> IdleWatchdog:
-        """Create a watchdog snapshot at prompt start."""
+        """Create a watchdog snapshot at prompt start.
+
+        ``pending_grace_sec`` defaults to BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC,
+        else ``PENDING_GRACE_MULTIPLIER`` idle budgets.
+        """
         observed_at = wall_now or datetime.now(UTC)
         pending_state = session.pending_tool_call_state()
+        if pending_grace_sec is None:
+            pending_grace_sec = pending_grace_from_env()
         return cls(
             idle_timeout_sec=idle_timeout_sec,
             wall_timeout_sec=wall_timeout_sec,
@@ -73,11 +118,14 @@ class IdleWatchdog:
             pending_last_progress_at={call_id: now for call_id, _ in pending_state},
             pending_last_update_at={},
             pending_set_last_changed_at=observed_at if pending_state else None,
+            pending_grace_sec=(
+                pending_grace_sec
+                if pending_grace_sec is not None
+                else idle_timeout_sec * PENDING_GRACE_MULTIPLIER
+            ),
+            tool_call_count=len(session.tool_calls),
+            pending_newer_calls={call_id: 0 for call_id, _ in pending_state},
         )
-
-    @property
-    def pending_grace_sec(self) -> int:
-        return self.idle_timeout_sec * PENDING_GRACE_MULTIPLIER
 
     @property
     def poll_interval_sec(self) -> int:
@@ -117,13 +165,24 @@ class IdleWatchdog:
 
         if current_ids != self.pending_ids:
             self.pending_set_last_changed_at = observed_at
+        newer_calls = max(0, len(session.tool_calls) - self.tool_call_count)
+        self.tool_call_count = len(session.tool_calls)
 
         for call_id, version in current_state:
             if call_id not in previous_versions:
                 self.pending_last_progress_at[call_id] = now
+                self.pending_newer_calls[call_id] = 0
+            elif newer_calls:
+                # Every call recorded since the last poll started after this
+                # one: the agent moved on, so restart this call's grace.
+                self.pending_last_progress_at[call_id] = now
+                self.pending_newer_calls[call_id] = (
+                    self.pending_newer_calls.get(call_id, 0) + newer_calls
+                )
             if version > previous_versions.get(call_id, 0):
                 self.pending_last_progress_at[call_id] = now
                 self.pending_last_update_at[call_id] = observed_at
+                self.pending_newer_calls[call_id] = 0
 
         current_id_set = set(current_ids)
         self.pending_last_progress_at = {
@@ -134,6 +193,11 @@ class IdleWatchdog:
         self.pending_last_update_at = {
             call_id: update_at
             for call_id, update_at in self.pending_last_update_at.items()
+            if call_id in current_id_set
+        }
+        self.pending_newer_calls = {
+            call_id: count
+            for call_id, count in self.pending_newer_calls.items()
             if call_id in current_id_set
         }
 
@@ -155,6 +219,15 @@ class IdleWatchdog:
             call_id
             for call_id in self.pending_ids
             if now - self.pending_last_progress_at[call_id] >= self.pending_grace_sec
+        )
+
+    @property
+    def lost_update_ids(self) -> tuple[str, ...]:
+        """Pending calls with no update since a newer tool call started."""
+        return tuple(
+            call_id
+            for call_id in self.pending_ids
+            if self.pending_newer_calls.get(call_id, 0) > 0
         )
 
     def idle_expired(self, now: float) -> bool:
@@ -220,7 +293,9 @@ class IdleWatchdog:
             n_tool_call_updates=session.tool_call_update_count,
             n_pending_tool_call_updates=self.n_pending_tool_updates,
             n_expired_pending_tool_call_updates=n_expired_pending_updates,
+            lost_update_tool_call_ids=list(self.lost_update_ids),
         )
+        lost = _lost_update_note(self.lost_update_ids, self.pending_newer_calls)
         if expired_pending_ids:
             set_age = _age(fired_at, self.pending_set_last_changed_at)
             update_age = _age(fired_at, last_expired_update_at)
@@ -231,16 +306,29 @@ class IdleWatchdog:
                 f"({', '.join(expired_pending_ids)}; pending set last changed "
                 f"{set_age}, last pending-call update {update_age}, "
                 f"{n_expired_pending_updates} relevant updates seen, "
-                f"{len(session.tool_calls)} tool calls so far)",
+                f"{len(session.tool_calls)} tool calls so far){lost}",
                 diagnostic,
             )
         return IdleTimeoutError(
             f"Agent idle for {self.idle_timeout_sec}s with no new tool call, "
             f"message, or thought "
             f"(last activity {int(now - self.last_progress_at)}s ago, "
-            f"{len(session.tool_calls)} tool calls so far)",
+            f"{len(session.tool_calls)} tool calls so far){lost}",
             diagnostic,
         )
+
+
+def _lost_update_note(lost_ids: tuple[str, ...], newer: dict[str, int]) -> str:
+    """Name pending calls whose terminal update looks lost, not still coming."""
+    if not lost_ids:
+        return ""
+    calls = ", ".join(
+        f"{call_id} ({newer.get(call_id, 0)} later)" for call_id in lost_ids
+    )
+    return (
+        f"; lost update: {len(lost_ids)} pending tool call(s) got no update after "
+        f"later tool calls started: {calls}"
+    )
 
 
 def _age(now: datetime, then: datetime | None) -> str:

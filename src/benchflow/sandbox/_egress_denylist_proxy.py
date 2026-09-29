@@ -32,7 +32,13 @@ from typing import Any, cast
 
 HEAD_LIMIT = 64 * 1024
 HEAD_TIMEOUT = 30
+# A relayed connection closes after this long with no byte in either
+# direction. A streaming model response is silent on the client side for its
+# whole length, so neither side's silence alone may close it.
 IDLE_TIMEOUT = 900
+# Longest single socket wait inside a relay before it rechecks the
+# connection's idleness; bounds how late an idle connection is closed.
+RELAY_POLL = 30
 BLOCK_BODY = "Blocked by the task network policy: {url}\n"
 CERT_MINT_TIMEOUT = 15
 MODEL_BODY_LIMIT = 32 * 1024 * 1024  # Anthropic Messages API request-size ceiling
@@ -848,14 +854,62 @@ def _response(status: str, body: str, extra: str = "") -> bytes:
     return head.encode("latin-1") + data
 
 
-def _pump(src: socket.socket, dst: socket.socket) -> None:
+class _Idle:
+    """When a byte last moved, either way, on one relayed connection."""
+
+    def __init__(self) -> None:
+        self.timeout = IDLE_TIMEOUT
+        self.last = time.monotonic()
+
+    def moved(self) -> None:
+        self.last = time.monotonic()
+
+    def expired(self) -> bool:
+        return time.monotonic() - self.last >= self.timeout
+
+    def arm(self, *socks: socket.socket) -> None:
+        """Make each socket wait at most one poll, so a relay rechecks idleness."""
+        for sock in socks:
+            sock.settimeout(min(RELAY_POLL, self.timeout))
+
+
+def _recv(sock: socket.socket, idle: _Idle) -> bytes:
+    """Read, waiting as long as the connection moves bytes in either direction."""
+    while True:
+        try:
+            data = sock.recv(65536)
+        # socket.timeout, not TimeoutError: this runs on the task image's
+        # python3, which may predate 3.10, where they became one class.
+        except socket.timeout:  # noqa: UP041
+            if idle.expired():
+                raise
+            continue
+        idle.moved()
+        return data
+
+
+def _send(sock: socket.socket, data: bytes, idle: _Idle) -> None:
+    """Send all of ``data``; a peer that stops reading counts as idle, not as an error."""
+    view = memoryview(data)
+    while view:
+        try:
+            sent = sock.send(view)
+        except socket.timeout:  # noqa: UP041 (see _recv)
+            if idle.expired():
+                raise
+            continue  # the same buffer again, as a TLS write retry requires
+        idle.moved()
+        view = view[sent:]
+
+
+def _pump(src: socket.socket, dst: socket.socket, idle: _Idle) -> None:
     """Copy until EOF, then half-close the destination so the other direction can finish."""
     try:
         while True:
-            data = src.recv(65536)
+            data = _recv(src, idle)
             if not data:
                 break
-            dst.sendall(data)
+            _send(dst, data, idle)
     except OSError:
         with contextlib.suppress(OSError):
             dst.shutdown(socket.SHUT_RDWR)
@@ -865,11 +919,11 @@ def _pump(src: socket.socket, dst: socket.socket) -> None:
 
 
 def _relay(client: socket.socket, upstream: socket.socket) -> None:
-    client.settimeout(IDLE_TIMEOUT)
-    upstream.settimeout(IDLE_TIMEOUT)
-    t = threading.Thread(target=_pump, args=(upstream, client), daemon=True)
+    idle = _Idle()
+    idle.arm(client, upstream)
+    t = threading.Thread(target=_pump, args=(upstream, client, idle), daemon=True)
     t.start()
-    _pump(client, upstream)
+    _pump(client, upstream, idle)
     t.join()
     with contextlib.suppress(OSError):
         upstream.close()
@@ -877,10 +931,12 @@ def _relay(client: socket.socket, upstream: socket.socket) -> None:
 
 def _relay_response(client: socket.socket, upstream: socket.socket) -> None:
     """Relay the response and propagate client EOF without forwarding more requests."""
+    idle = _Idle()
+    idle.arm(client, upstream)
 
     def discard_client_bytes() -> None:
         try:
-            while client.recv(65536):
+            while _recv(client, idle):
                 pass
         except OSError:
             with contextlib.suppress(OSError):
@@ -894,7 +950,7 @@ def _relay_response(client: socket.socket, upstream: socket.socket) -> None:
     watcher = threading.Thread(target=discard_client_bytes, daemon=True)
     watcher.start()
     try:
-        _pump(upstream, client)
+        _pump(upstream, client, idle)
     finally:
         with contextlib.suppress(OSError):
             socket.socket.shutdown(client, socket.SHUT_RD)

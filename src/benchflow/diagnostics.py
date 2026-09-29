@@ -214,6 +214,9 @@ class IdleTimeoutDiagnostic(Diagnostic):
     n_tool_call_updates: int = 0
     n_pending_tool_call_updates: int = 0
     n_expired_pending_tool_call_updates: int = 0
+    # Pending calls that got no update after later tool calls started: their
+    # terminal update was probably lost rather than still coming (#1141).
+    lost_update_tool_call_ids: list[str] = field(default_factory=list)
 
     field: ClassVar[str] = "idle_timeout_info"
     category: ClassVar[str | None] = "idle_timeout"
@@ -238,6 +241,11 @@ class IdleTimeoutDiagnostic(Diagnostic):
             line += (
                 f" — {len(self.pending_tool_call_ids)} pending tool call(s) "
                 f"exceeded the {self.pending_grace_sec}s pending grace"
+            )
+        if self.lost_update_tool_call_ids:
+            line += (
+                f" (lost update: {len(self.lost_update_tool_call_ids)} of them "
+                f"got no update after later tool calls started)"
             )
         return line
 

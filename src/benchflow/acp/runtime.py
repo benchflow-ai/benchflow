@@ -795,6 +795,7 @@ async def execute_prompts(
     prompts: list[str],
     timeout: int,
     idle_timeout: int | None = None,
+    pending_tool_grace: int | None = None,
 ) -> tuple[list[dict], int]:
     """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls).
 
@@ -803,6 +804,9 @@ async def execute_prompts(
                    this many seconds. Catches agents that hung silently while
                    the agent process is still alive (e.g. gemini-cli not
                    responding). None disables idle detection.
+    pending_tool_grace — seconds a silent pending tool call may defer the
+                   idle abort; None reads BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC,
+                   else 3x idle_timeout (IdleWatchdog).
 
     The transport's read guard is raised to the silence this call allows
     (the idle budget, else the wall budget) plus one watchdog poll, so the
@@ -831,7 +835,12 @@ async def execute_prompts(
         else:
             try:
                 prompt_result = await _prompt_with_idle_watchdog(
-                    acp_client, session, prompt, timeout, idle_timeout
+                    acp_client,
+                    session,
+                    prompt,
+                    timeout,
+                    idle_timeout,
+                    pending_tool_grace=pending_tool_grace,
                 )
             except AgentPromptTimeoutError as e:
                 e.executed_prompts = prompts[: i + 1]
@@ -923,6 +932,8 @@ async def _prompt_with_idle_watchdog(
     prompt: str,
     timeout: int,
     idle_timeout: int,
+    *,
+    pending_tool_grace: int | None = None,
 ):
     """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(_timed_prompt(acp_client, prompt))
@@ -933,6 +944,7 @@ async def _prompt_with_idle_watchdog(
         idle_timeout_sec=idle_timeout,
         wall_timeout_sec=timeout,
         now=loop.time(),
+        pending_grace_sec=pending_tool_grace,
     )
 
     try:

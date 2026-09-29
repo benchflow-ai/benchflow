@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from benchflow.agents import registry
+from benchflow.agents.registry import (
+    CLAUDE_AGENT_ACP_LAUNCHER,
+    CLAUDE_CODE_EXECUTABLE_PATH,
+)
 from benchflow.providers.litellm_runtime import ensure_litellm_runtime
 from benchflow.rollout import Role, Rollout, RolloutConfig
 from benchflow.rollout_planes import DefaultRolloutPlanes
@@ -26,15 +30,22 @@ from tests.test_egress_denylist import stack as _tls_stack
 
 stack = _tls_stack
 
-# In-sandbox metadata: ACP version, the SDK it pins, installed SDK, the Claude
-# Code release that SDK bundles, and the native binary's own --version.
+# In-sandbox metadata: ACP version, the SDK it pins, installed SDK, the
+# separately pinned Claude Code package, the --version of the binary the
+# launcher hands the adapter, and the launcher itself.
 VERSIONS = {
-    "acp": "0.73.0",
-    "acp_sdk": "0.3.257",
-    "sdk": "0.3.257",
-    "sdk_native": "2.1.257",
-    "native": "2.1.257 (Claude Code)",
+    "acp": "0.81.2",
+    "acp_sdk": "0.3.280",
+    "sdk": "0.3.280",
+    "cli": "2.1.280",
+    "native": "2.1.280 (Claude Code)",
+    "launcher": CLAUDE_AGENT_ACP_LAUNCHER,
 }
+# The launcher before the CLI pin: the adapter ran its SDK's bundled binary.
+BUNDLED_CLI_LAUNCHER = (
+    "#!/bin/sh\n"
+    'exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/claude-agent-acp "$@"\n'
+)
 LAUNCHER = "/opt/benchflow/bin/claude-agent-acp"
 TOKEN_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": "fake-oauth"}
 
@@ -133,32 +144,48 @@ def _client_env(versions):
 
 
 @pytest.mark.asyncio
-async def test_native_client_gate_follows_registry_claude_pin(monkeypatch):
+async def test_native_client_gate_admits_the_registry_pins():
+    """The adapter pin plus the separate Claude Code CLI pin (#1137)."""
+    admission = await validate_native_oauth_transport(
+        _client_env(VERSIONS), "agent", LAUNCHER
+    )
+    assert admission["versions"] == {
+        "acp": "0.81.2",
+        "sdk": "0.3.280",
+        "native": "2.1.280 (Claude Code)",
+    }
+
+
+@pytest.mark.asyncio
+async def test_native_client_gate_follows_registry_claude_pins(monkeypatch):
     """Guards this fix against the duplicated pins from the native Claude OAuth reviewer transport.
 
-    The no-web transport hard-coded ACP 0.73.0 / SDK 0.3.257 / Claude 2.1.257
-    beside the registry pin, so PR #1139's bump to claude-agent-acp 0.81.0 left
-    every test green and refused every native Claude no-web run.
+    The no-web transport once hard-coded ACP 0.73.0 / SDK 0.3.257 / Claude
+    2.1.257 beside the registry pin, so PR #1139's bump to claude-agent-acp
+    0.81.0 left every test green and refused every native Claude no-web run.
+    The Claude Code CLI now has its own pin, and the gate follows both.
     """
     monkeypatch.setattr(
         registry,
         "_CLAUDE_AGENT_ACP_PACKAGE",
-        "@agentclientprotocol/claude-agent-acp@0.81.0",
+        "@agentclientprotocol/claude-agent-acp@0.81.3",
+    )
+    monkeypatch.setattr(
+        registry, "_CLAUDE_CODE_PACKAGE", "@anthropic-ai/claude-code@2.1.290"
     )
     bumped = {
-        "acp": "0.81.0",
-        "acp_sdk": "0.3.280",
-        "sdk": "0.3.280",
-        "sdk_native": "2.1.280",
-        "native": "2.1.280 (Claude Code)",
+        **VERSIONS,
+        "acp": "0.81.3",
+        "cli": "2.1.290",
+        "native": "2.1.290 (Claude Code)",
     }
     admission = await validate_native_oauth_transport(
         _client_env(bumped), "agent", LAUNCHER
     )
     assert admission["versions"] == {
-        "acp": "0.81.0",
+        "acp": "0.81.3",
         "sdk": "0.3.280",
-        "native": "2.1.280 (Claude Code)",
+        "native": "2.1.290 (Claude Code)",
     }
     with pytest.raises(ValueError, match="not verified"):
         await validate_native_oauth_transport(_client_env(VERSIONS), "agent", LAUNCHER)
@@ -168,16 +195,26 @@ async def test_native_client_gate_follows_registry_claude_pin(monkeypatch):
 @pytest.mark.parametrize(
     "change",
     [
-        {"sdk": "0.3.258"},
-        {"acp_sdk": "^0.3.257"},
-        {"native": "2.1.258 (Claude Code)"},
-        {"sdk_native": None},
+        {"sdk": "0.3.281"},
+        {"acp_sdk": "^0.3.280"},
+        {"cli": "2.1.281"},
+        {"cli": None},
+        {"native": "2.1.281 (Claude Code)"},
+        # The SDK's bundled CLI, which the pinned launcher never runs.
+        {"launcher": BUNDLED_CLI_LAUNCHER},
+        {
+            "launcher": CLAUDE_AGENT_ACP_LAUNCHER.replace(
+                CLAUDE_CODE_EXECUTABLE_PATH, "/tmp/claude"
+            )
+        },
+        {"launcher": None},
         {"acp": None},
     ],
 )
 async def test_native_client_must_match_what_the_pinned_acp_installs(change):
-    """Guards this fix for the native Claude OAuth reviewer transport: SDK and native versions are derived from the
-    pinned ACP's exact SDK dependency and that SDK's bundled Claude Code release."""
+    """Guards this fix for the native Claude OAuth reviewer transport: the SDK is the pinned ACP's exact
+    dependency, the CLI package and binary are the separate Claude Code pin, and the launcher hands
+    exactly that binary to the adapter."""
     with pytest.raises(ValueError, match="not verified"):
         await validate_native_oauth_transport(
             _client_env({**VERSIONS, **change}), "agent", LAUNCHER

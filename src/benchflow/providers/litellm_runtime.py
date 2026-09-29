@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,8 @@ logger = logging.getLogger(__name__)
 LITELLM_VERSION_SPEC = "litellm[proxy]==1.91.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
+# Read by the callback's model gate (litellm_logging.callback_module_source).
+_SERVED_MODELS_ENV = "BENCHFLOW_LITELLM_SERVED_MODELS"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 _GEMINI_PATCH_MODULE = "benchflow_litellm_gemini_passthrough_patch"
 _TOKEN_CAPTURE_PATCH_MODULE = "benchflow_litellm_token_capture_patch"
@@ -151,6 +154,21 @@ class _CallbackChunk:
 
     data: bytes
     size: int | None = None
+
+
+def _warn_refused_requests(trajectory: Trajectory) -> None:
+    """Say which models the gateway refused, from its callback log's records."""
+    refused = trajectory.metadata.get("refused_requests") or []
+    counts = Counter(
+        str(entry.get("request_model")) for entry in refused if isinstance(entry, dict)
+    )
+    if counts:
+        logger.warning(
+            "LiteLLM gateway refused %d request(s) for model(s) this run does not "
+            "serve: %s",
+            sum(counts.values()),
+            ", ".join(f"{model} x{n}" for model, n in sorted(counts.items())),
+        )
 
 
 class LiteLLMProcess:
@@ -483,6 +501,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
             session_id=self.session_id,
             agent_name=self.agent_name,
         )
+        _warn_refused_requests(self.trajectory)
 
     def log_tail(self) -> str:
         chunks: list[str] = []
@@ -639,6 +658,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             session_id=self.session_id,
             agent_name=self.agent_name,
         )
+        _warn_refused_requests(self.trajectory)
 
     async def log_tail(self) -> str:
         chunks: list[str] = []
@@ -778,6 +798,24 @@ def _route_env(route: LiteLLMRoute) -> dict[str, str]:
     }
 
 
+def _served_models_env(config: dict[str, object]) -> dict[str, str]:
+    """Every model name one proxy config routes, for the callback's model gate.
+
+    Read from the final config, so a model another layer registers (a
+    companion served next to the run's model) is served too.
+    """
+    names: list[str] = []
+    model_list = config.get("model_list")
+    for entry in model_list if isinstance(model_list, list) else []:
+        if not isinstance(entry, Mapping):
+            continue
+        name = cast(Mapping[str, Any], entry).get("model_name")
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    names += [m for m in _config_upstream_models(config) if m not in names]
+    return {_SERVED_MODELS_ENV: json.dumps(names)}
+
+
 def _config_upstream_models(config: dict[str, object]) -> list[str]:
     """Upstream model ids (``litellm_params.model``) served by one proxy config."""
     models: list[str] = []
@@ -913,6 +951,7 @@ async def _start_host_litellm(
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
             **_route_env(route),
+            **_served_models_env(config),
             **_PROXY_DOCS_DISABLE_ENV,
         }
     )
@@ -1273,6 +1312,7 @@ async def _start_sandbox_litellm(
                 "LITELLM_MASTER_KEY": master_key,
                 "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
                 **_route_env(route),
+                **_served_models_env(config),
                 **_PROXY_DOCS_DISABLE_ENV,
             }
         )

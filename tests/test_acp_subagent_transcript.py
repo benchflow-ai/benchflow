@@ -1,4 +1,4 @@
-"""Transcript regressions grounded in claude-agent-acp 0.73.0.
+"""Transcript regressions grounded in claude-agent-acp 0.73.0 (unchanged in 0.81.2).
 
 The legacy transcript extension uses one ACP session and explicit
 _meta.claudeCode.parentToolUseId. It does not enable native child sessions.

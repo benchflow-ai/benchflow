@@ -11,6 +11,7 @@ import socket
 import ssl
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -200,6 +201,17 @@ def _free_port() -> int:
 
 class _Upstream(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/slow/"):
+            # /slow/<chunks>/<seconds between chunks>: a streaming response
+            # (HTTP/1.0, ends at close) while the client only reads.
+            _, _, chunks, gap = self.path.split("/")
+            self.send_response(200)
+            self.end_headers()
+            for i in range(int(chunks)):
+                time.sleep(float(gap))
+                self.wfile.write(f"chunk {i}\n".encode())
+                self.wfile.flush()
+            return
         body = f"hello {self.path}".encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))

@@ -1107,6 +1107,9 @@ _VERSION_AGENTS = (
     ("gemini", "gemini"),
 )
 _PIN_RE = re.compile(r"npm install -g --prefix \S+ (\S+@\d[\w.\-]*)")
+# Pinned packages an agent's install carries besides its own: claude-agent-acp
+# runs the separately pinned Claude Code CLI, which the no-web gate verifies.
+_COMPANION_PINS = {"claude-agent-acp": ("claude-code",)}
 
 
 def _installed_pin(agent: str) -> str | None:
@@ -1115,18 +1118,20 @@ def _installed_pin(agent: str) -> str | None:
     cfg = AGENTS.get(agent)
     if cfg is None:
         return None
-    match = _PIN_RE.search(cfg.install_cmd)
-    return match.group(1) if match else None
+    return " + ".join(_PIN_RE.findall(cfg.install_cmd)) or None
 
 
 def _builtin_pin(agent: str) -> str | None:
     from benchflow.agents.registry import pinned_npm_package
 
     try:
-        package, version = pinned_npm_package(agent)
+        pins = [
+            pinned_npm_package(name)
+            for name in (agent, *_COMPANION_PINS.get(agent, ()))
+        ]
     except KeyError:
         return None
-    return f"{package}@{version}"
+    return " + ".join(f"{package}@{version}" for package, version in pins)
 
 
 def check_agent_versions(probes: DoctorProbes) -> list[Check]:
