@@ -238,6 +238,69 @@ async def test_batch_completed_result_wins_over_incomplete_retry(
     retry.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_batch_resumes_a_reviewed_trial_whose_result_has_no_scoring(
+    saved_trial, monkeypatch
+):
+    """Guards main's completeness rule for reviewed trials: a result.json with
+    rewards but no scoring block holds the unreviewed verifier reward (earlier
+    builds wrote one before the review ran), so the review is still pending."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    _write(rollout / "result.json", json.loads((rollout / "solver.json").read_text()))
+    retry = AsyncMock()
+    monkeypatch.setattr(resume, "resume_review", retry)
+
+    config = ReviewerConfig()
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=config,
+        task_names={"physics"},
+    )
+    retry.assert_awaited_once_with(rollout, tasks_root=task.parent, reviewer=config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verifier_error", "resumed"),
+    [(None, False), ("verifier_wedge: no receipt", True)],
+)
+async def test_batch_keeps_a_recovery_verdict_without_review_as_final(
+    saved_trial, monkeypatch, verifier_error, resumed
+):
+    """Guards verifier recovery without a review, which commits no scoring
+    block: its result.json is final once it has rewards and no verifier error,
+    and a verifier error that needs recovery is still resumed."""
+    from benchflow.review import resume
+
+    rollout, task = saved_trial
+    config = json.loads((rollout / "config.json").read_text())
+    del config["review"]
+    config["verifier_recovery"] = {"eligible": True, "reason": None}
+    _write(rollout / "config.json", config)
+    source = json.loads((rollout / "solver.json").read_text())
+    _write(
+        rollout / "result.json",
+        {
+            **source,
+            "rewards": None if verifier_error else source["rewards"],
+            "verifier_error": verifier_error,
+        },
+    )
+    retry = AsyncMock()
+    monkeypatch.setattr(resume, "resume_review", retry)
+
+    await resume_pending_reviews(
+        rollout.parent,
+        tasks_root=task.parent,
+        reviewer=ReviewerConfig(),
+        task_names={"physics"},
+    )
+    assert retry.await_count == int(resumed)
+
+
 def test_pending_review_keeps_its_solver_when_resume_cannot_finish_it(saved_trial):
     """Guards #1134's "a dead review must not cost the solver result" now that
     a reviewed trial has no result.json until its scoring commits. A review
