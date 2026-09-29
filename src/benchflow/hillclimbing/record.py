@@ -113,6 +113,36 @@ class EvaluationDoc(_Model):
     test: SplitResultDoc
 
 
+class MountDoc(_Model):
+    sandbox_path: str = Field(description="where the folder appeared in the sandbox")
+    read_only: bool
+    files: int
+    bytes: int
+
+
+class ExposureDoc(_Model):
+    """What one optimizer sandbox received, checked against the test split."""
+
+    mounts: list[MountDoc] = Field(
+        description="every folder uploaded into the sandbox; nothing else was"
+    )
+    network: Literal["none", "open"] = Field(
+        description="none: no egress except the model provider"
+    )
+    manifest: str = Field(description="every uploaded file with its size and sha256")
+    train_tasks: list[str] = Field(description="train tasks whose instructions it held")
+    failures: list[str] = Field(description="failed train trials it held (task/trial-NN)")
+    infra_errors: list[str] = Field(default_factory=list)
+    test_tasks: int = Field(description="tasks in the test split")
+    test_tasks_in_paths: list[str] = Field(
+        description="test task names found in any uploaded path (none expected)"
+    )
+    test_instructions_in_files: list[str] = Field(
+        description="test tasks whose instruction text was found in an uploaded file "
+        "(none expected; a hit means a train task duplicates a test task)"
+    )
+
+
 class ProposerDoc(_Model):
     status: Literal["ok", "failed"]
     error: str | None = None
@@ -123,6 +153,7 @@ class ProposerDoc(_Model):
         None,
         description="exactly what was uploaded into the proposer sandbox, for audit",
     )
+    exposure: ExposureDoc | None = None
     reward: float | None = Field(
         None, description="1 when the proposer left a well-formed proposal"
     )
@@ -266,6 +297,7 @@ class AnalysisDoc(_Model):
     error: str | None = None
     rollout_dir: str | None = None
     workspace_dir: str | None = None
+    exposure: ExposureDoc | None = None
     summary: str | None = None
     failures: list[AnalysisFailureDoc] = Field(default_factory=list)
     counts: dict[str, int] = Field(default_factory=dict)

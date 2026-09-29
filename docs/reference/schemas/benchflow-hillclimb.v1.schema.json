@@ -33,6 +33,17 @@
           "default": null,
           "title": "Error"
         },
+        "exposure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExposureDoc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "failures": {
           "items": {
             "$ref": "#/$defs/AnalysisFailureDoc"
@@ -997,6 +1008,89 @@
       "title": "EvaluationDoc",
       "type": "object"
     },
+    "ExposureDoc": {
+      "description": "What one optimizer sandbox received, checked against the test split.",
+      "properties": {
+        "failures": {
+          "description": "failed train trials it held (task/trial-NN)",
+          "items": {
+            "type": "string"
+          },
+          "title": "Failures",
+          "type": "array"
+        },
+        "infra_errors": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Infra Errors",
+          "type": "array"
+        },
+        "manifest": {
+          "description": "every uploaded file with its size and sha256",
+          "title": "Manifest",
+          "type": "string"
+        },
+        "mounts": {
+          "description": "every folder uploaded into the sandbox; nothing else was",
+          "items": {
+            "$ref": "#/$defs/MountDoc"
+          },
+          "title": "Mounts",
+          "type": "array"
+        },
+        "network": {
+          "description": "none: no egress except the model provider",
+          "enum": [
+            "none",
+            "open"
+          ],
+          "title": "Network",
+          "type": "string"
+        },
+        "test_instructions_in_files": {
+          "description": "test tasks whose instruction text was found in an uploaded file (none expected; a hit means a train task duplicates a test task)",
+          "items": {
+            "type": "string"
+          },
+          "title": "Test Instructions In Files",
+          "type": "array"
+        },
+        "test_tasks": {
+          "description": "tasks in the test split",
+          "title": "Test Tasks",
+          "type": "integer"
+        },
+        "test_tasks_in_paths": {
+          "description": "test task names found in any uploaded path (none expected)",
+          "items": {
+            "type": "string"
+          },
+          "title": "Test Tasks In Paths",
+          "type": "array"
+        },
+        "train_tasks": {
+          "description": "train tasks whose instructions it held",
+          "items": {
+            "type": "string"
+          },
+          "title": "Train Tasks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mounts",
+        "network",
+        "manifest",
+        "train_tasks",
+        "failures",
+        "test_tasks",
+        "test_tasks_in_paths",
+        "test_instructions_in_files"
+      ],
+      "title": "ExposureDoc",
+      "type": "object"
+    },
     "GateSplitDoc": {
       "properties": {
         "min_trials": {
@@ -1159,6 +1253,35 @@
         "status"
       ],
       "title": "LeakCheckDoc",
+      "type": "object"
+    },
+    "MountDoc": {
+      "properties": {
+        "bytes": {
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "files": {
+          "title": "Files",
+          "type": "integer"
+        },
+        "read_only": {
+          "title": "Read Only",
+          "type": "boolean"
+        },
+        "sandbox_path": {
+          "description": "where the folder appeared in the sandbox",
+          "title": "Sandbox Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sandbox_path",
+        "read_only",
+        "files",
+        "bytes"
+      ],
+      "title": "MountDoc",
       "type": "object"
     },
     "NoiseGateDoc": {
@@ -1343,6 +1466,17 @@
           ],
           "default": null,
           "title": "Error"
+        },
+        "exposure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExposureDoc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "reward": {
           "anyOf": [
