@@ -94,7 +94,19 @@ class TaskSet:
             dirs[name] = path.resolve()
         missing = sorted(include - set(dirs))
         if missing:
-            raise TaskSetError(f"--include names unknown tasks: {', '.join(missing)}")
+            roots = {p.parent for p in found} or (
+                {Path(tasks).expanduser()} if isinstance(tasks, str | Path) else set()
+            )
+            broken = [m for m in missing if any((r / m).is_dir() for r in roots)]
+            hint = (
+                f" ({', '.join(broken)} exist but are not runnable tasks: "
+                "run `bench tasks check` on them)"
+                if broken
+                else ""
+            )
+            raise TaskSetError(
+                f"--include names unknown tasks: {', '.join(missing)}{hint}"
+            )
         if not dirs:
             raise TaskSetError(f"no runnable task found in {tasks}")
         return cls(dict(sorted(dirs.items())))
