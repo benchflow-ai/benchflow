@@ -48,6 +48,10 @@ from importlib.machinery import PathFinder
 # Reassigned by lines appended to this source for the protected runtime plugin.
 _BENCHFLOW_BLOCKED = ()  # type: tuple[str, ...]
 _BENCHFLOW_REQUESTED = []  # type: list[str]
+# Directories hardening created after the agent stopped, for the verifier's uv
+# and pip state. Code below them is trusted by path, whatever modes the
+# runtime's file-mode mask gave it; the directories and their parents are not.
+_BENCHFLOW_TRUSTED = ()  # type: tuple[str, ...]
 # Marker path prefix for this verification; empty writes no markers.
 _BENCHFLOW_MARKERS = ""
 # Keeps this process's markers apart from other pytest runs of one verifier.
@@ -94,27 +98,63 @@ def under(path, prefix):
     return path == prefix or path.startswith(prefix + "/")
 
 
-def trusted(path, blocked):
+def _trusted_root(path):
+    """The directory in ``_BENCHFLOW_TRUSTED`` that holds *path*, if any."""
+    for root in _BENCHFLOW_TRUSTED:
+        for form in (os.path.abspath(root), os.path.realpath(root)):
+            if under(path, form):
+                return form
+    return None
+
+
+def ownership_problem(path, st):
+    """Why the inode at *path* (stat *st*) is not root's alone, or None."""
+    if st.st_uid != 0:
+        return path + " is owned by uid " + str(st.st_uid) + ", not root"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        mode = format(stat.S_IMODE(st.st_mode), "04o")
+        return path + " is group- or world-writable (mode " + mode + ")"
+    return None
+
+
+def untrusted_reason(path, blocked):
+    """Why pytest must not load code from *path*, or None when it may."""
     if not path or not path.startswith("/"):
-        return False
+        return repr(path) + " is not an absolute path"
     for candidate in (os.path.abspath(path), os.path.realpath(path)):
-        if any(under(candidate, prefix) for prefix in blocked):
-            return False
+        for prefix in blocked:
+            if under(candidate, prefix):
+                return (
+                    candidate + " is under " + prefix + ", which the agent could write"
+                )
+        try:
+            os.stat(candidate)
+        except OSError as exc:
+            return candidate + " cannot be read (" + type(exc).__name__ + ")"
+        # Below a trusted directory only the directory and its parents are
+        # checked: hardening made it root-owned 0755 after the agent stopped,
+        # so only the verifier wrote what is inside, in whatever modes.
+        candidate = _trusted_root(candidate) or candidate
         # A protected file is replaceable when any containing directory is
         # writable. Check both lexical and resolved paths, including symlink
         # parents, rather than trusting the final inode alone.
         while True:
             try:
                 st = os.stat(candidate)
-            except OSError:
-                return False
-            if st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-                return False
+            except OSError as exc:
+                return candidate + " cannot be read (" + type(exc).__name__ + ")"
+            problem = ownership_problem(candidate, st)
+            if problem:
+                return problem
             parent = os.path.dirname(candidate)
             if parent == candidate:
                 break
             candidate = parent
-    return True
+    return None
+
+
+def trusted(path, blocked):
+    return untrusted_reason(path, blocked) is None
 
 
 def trusted_module(module, blocked):
@@ -410,6 +450,9 @@ if __name__ == "__main__":
     )
     try:
         requested = json.loads(sys.argv[2]) if len(sys.argv) > 2 else []
+        # argv[3]: the policy the armed guard gets from hardening.
+        policy = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
+        _BENCHFLOW_TRUSTED = tuple(policy.get("trusted", ()))
         print(
             json.dumps(discover(blocked, requested, ignore_blocked_registrations=True))
         )

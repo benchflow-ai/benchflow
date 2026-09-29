@@ -887,3 +887,114 @@ def test_unreadable_plugin_metadata_is_a_scored_rejection(monkeypatch, tmp_path)
         guard.pytest_addhooks(SimpleNamespace(get_plugin=lambda name: config))
 
     assert list(markers.iterdir()) == []
+
+
+def _stat_model(monkeypatch, root_only):
+    """Model an image where only *root_only* paths are root's alone.
+
+    Every other path reports uid 1000 and mode 0777, as uv's cache did on a
+    runtime whose exec mask is 0000 (plus an owner a non-root test can have).
+    """
+    original_stat = os.stat
+    root_only = {str(p) for p in root_only}
+
+    def model(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        fields = list(result)
+        if str(path) in root_only:
+            fields[4] = 0
+            fields[0] = (fields[0] & ~0o7777) | 0o755
+        else:
+            fields[4] = 1000
+            fields[0] = (fields[0] & ~0o7777) | 0o777
+        return os.stat_result(fields, {"st_ctime_ns": result.st_ctime_ns})
+
+    monkeypatch.setattr(os, "stat", model)
+
+
+def _ancestors(path):
+    path = str(path)
+    found = [path]
+    while os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+        found.append(path)
+    return found
+
+
+def test_code_below_the_verifier_tool_state_directory_is_trusted_by_path(
+    tmp_path, monkeypatch
+):
+    """Guards the fix for the plugin guard's umask dependence (sdk-update review, must-fix 3).
+
+    Hardening creates the verifier's uv and pip directory root-owned 0755
+    after the agent stopped, so what uv writes inside is the verifier's own
+    whatever modes the runtime's mask gave it. The same files anywhere else
+    are still judged by owner and mode.
+    """
+    state = tmp_path / "_benchflow_verifier_x"
+    site = state / "uv-cache/archive-v0/env/lib/python3.13/site-packages"
+    site.mkdir(parents=True)
+    (site / "ctrf").mkdir()
+    (site / "ctrf/__init__.py").write_text("# the verifier's ctrf\n")
+    elsewhere = tmp_path / "root/.cache/uv/site-packages/ctrf"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "__init__.py").write_text("# same files, no trusted directory\n")
+    _stat_model(monkeypatch, _ancestors(state))
+    monkeypatch.setattr(guard, "_BENCHFLOW_TRUSTED", (str(state),))
+
+    assert guard.trusted(str(site / "ctrf/__init__.py"), ())
+    assert guard.untrusted_reason(str(elsewhere / "__init__.py"), ()) == (
+        str(elsewhere / "__init__.py") + " is owned by uid 1000, not root"
+    )
+    # Blocked prefixes still win inside it.
+    assert not guard.trusted(str(site / "ctrf/__init__.py"), (str(site),))
+
+
+@pytest.mark.parametrize("flaw", ["writable", "foreign", "parent"])
+def test_trusted_directory_itself_must_be_roots_alone(tmp_path, monkeypatch, flaw):
+    """Guards the trust-by-path rule: it covers what is below the directory only.
+
+    A directory other users could write, or one below such a parent, could
+    have been filled by someone other than the verifier.
+    """
+    state = tmp_path / "state"
+    (state / "pkg").mkdir(parents=True)
+    (state / "pkg/plugin.py").write_text("# plugin\n")
+    root_only = set(_ancestors(state))
+    root_only.discard(str(state if flaw != "parent" else tmp_path))
+    _stat_model(monkeypatch, root_only)
+    if flaw == "foreign":
+        original = os.stat
+
+        def foreign(path, *args, **kwargs):
+            result = original(path, *args, **kwargs)
+            fields = list(result)
+            if str(path) == str(state):
+                fields[0] = (fields[0] & ~0o7777) | 0o755
+            return os.stat_result(fields, {"st_ctime_ns": result.st_ctime_ns})
+
+        monkeypatch.setattr(os, "stat", foreign)
+    monkeypatch.setattr(guard, "_BENCHFLOW_TRUSTED", (str(state),))
+
+    assert not guard.trusted(str(state / "pkg/plugin.py"), ())
+
+
+def test_symlink_out_of_the_trusted_directory_is_judged_where_it_points(
+    tmp_path, monkeypatch
+):
+    """Guards the trust-by-path rule against a link that leaves the directory.
+
+    The resolved path is checked on its own merits, so a link to the
+    workspace is refused however trusted the directory holding it.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "plugin.py").write_text("# agent code\n")
+    (state / "plugin.py").symlink_to(workspace / "plugin.py")
+    _stat_model(monkeypatch, [*_ancestors(state), *_ancestors(workspace / "plugin.py")])
+    monkeypatch.setattr(guard, "_BENCHFLOW_TRUSTED", (str(state),))
+
+    assert guard.trusted(str(workspace / "plugin.py"), ())
+    assert not guard.trusted(str(state / "plugin.py"), (str(workspace),))

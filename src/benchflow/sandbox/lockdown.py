@@ -1026,8 +1026,14 @@ def _pytest_plugin_guard_source(
     blocked: tuple[str, ...],
     requested: list[str],
     markers_dir: str | None = None,
+    *,
+    trusted: tuple[str, ...] = (),
 ) -> str:
-    """Return the armed guard module *name*: its policy, then its load marker."""
+    """Return the armed guard module *name*: its policy, then its load marker.
+
+    *trusted* names directories whose contents the guard trusts by path: the
+    verifier's uv and pip state, created after the agent stopped.
+    """
     markers_dir = markers_dir or _PYTEST_PLUGIN_GUARD_MARKERS_DIR
     return (
         _DISCOVER_PYTEST_PLUGINS_SCRIPT
@@ -1035,6 +1041,8 @@ def _pytest_plugin_guard_source(
         + repr(blocked)
         + "\n_BENCHFLOW_REQUESTED = "
         + repr(requested)
+        + "\n_BENCHFLOW_TRUSTED = "
+        + repr(tuple(trusted))
         + "\n_BENCHFLOW_MARKERS = "
         + repr(os.path.join(markers_dir, name))
         + "\n_mark('loading')\n"
@@ -1042,7 +1050,13 @@ def _pytest_plugin_guard_source(
 
 
 async def _install_pytest_plugin_guard(
-    env, sandbox_user, workspace, plugin_flags, verifier_path=_SAFE_VERIFIER_PATH
+    env,
+    sandbox_user,
+    workspace,
+    plugin_flags,
+    verifier_path=_SAFE_VERIFIER_PATH,
+    *,
+    trusted: tuple[str, ...] = (),
 ):
     """Create an unguessable protected bootstrap after solver quiescence.
 
@@ -1056,6 +1070,7 @@ async def _install_pytest_plugin_guard(
         name,
         _blocked_verifier_path_prefixes(sandbox_user, workspace),
         shlex.split(plugin_flags)[1::2],
+        trusted=trusted,
     )
     install_into_interpreters = (
         _INSTALL_PYTEST_PLUGIN_GUARD_CMD_TEMPLATE.replace(
@@ -1258,11 +1273,11 @@ async def _distro_pip_env(env) -> dict[str, str]:
     return {}
 
 
-# Where the verifier's uv and pip keep state the agent could have written moves
-# to, see ``_verifier_tool_state.py``: a new root-owned directory named with this
-# prefix and a random suffix, created after the agent stopped. It sits at ``/``
-# for the reason the guard does: every other place may be inside some task's
-# workspace.
+# Where the verifier's uv and pip state moves to, see
+# ``_verifier_tool_state.py``: a new root-owned directory named with this prefix
+# and a random suffix, created after the agent stopped, which the plugin guard
+# trusts by path. It sits at ``/`` for the reason the guard does: every other
+# place may be inside some task's workspace.
 _VERIFIER_TOOL_STATE_SCRIPT = Path(_verifier_tool_state.__file__).read_text()
 _VERIFIER_TOOL_STATE_PARENT = "/"
 VERIFIER_TOOL_STATE_PREFIX = "_benchflow_verifier_"
@@ -1280,20 +1295,22 @@ async def _isolate_verifier_tool_state(
     sandbox_user: str | None,
     workspace: str | None,
 ) -> dict[str, str]:
-    """Move uv and pip state the agent could have written to a fresh directory.
+    """Move the verifier's uv and pip state to a fresh directory.
 
-    Returns the variables to add to the verifier environment. The plugin guard
-    refuses code under agent-writable trees, so a ``WORKDIR /root`` image,
-    whose ``$HOME/.cache/uv`` is in the workspace, had every plugin its test.sh
-    installed with ``uvx`` refused (some SkillsBench tasks scored 0). The
-    new directory holds only what the verifier itself installs, and uv and pip
-    stop reading configuration the agent could have written, so the guard can
-    trust plugins there on its usual rules.
+    Returns the variables to add to the verifier environment; the directory
+    is the parent of their ``UV_CACHE_DIR``. The plugin guard refused code
+    test.sh installed with ``uvx`` wherever uv's default cache was not root's
+    alone: in the workspace under a ``WORKDIR /root`` image (some SkillsBench
+    tasks scored 0), and in ``/root/.cache/uv`` itself on a runtime whose exec
+    mask is 0000 (every Terminal-Bench 2 ``--ctrf`` task unscored on
+    Docker-in-Docker). Every location now moves into one directory created
+    after the agent stopped, which the guard trusts by path, and uv and pip
+    stop reading configuration the agent could have written.
 
     Only a root verifier in ``main`` gets this: hardening runs there alone
     (#248), and a non-root verifier could not write a root-owned directory. A
-    probe that fails leaves the state where it was; the guard still refuses
-    anything there, so this can cost a verifier error but never trust.
+    probe that fails leaves the state where it was; the guard then judges it
+    by ownership and mode, so this can cost a verifier error but never trust.
     """
     if task.config.verifier.service != "main" or not _verifier_runs_as_root(
         task.config.verifier.user
@@ -1322,23 +1339,22 @@ async def _isolate_verifier_tool_state(
         found = _verifier_tool_state.overrides(
             overlay, blocked, directory, lexical=True
         )
-        if found:
-            quoted = shlex.quote(directory)
-            files = " ".join(
-                shlex.quote(os.path.join(directory, name))
-                for name in (
-                    _verifier_tool_state.UV_CONFIG,
-                    _verifier_tool_state.PIP_CONFIG,
-                )
+        quoted = shlex.quote(directory)
+        files = " ".join(
+            shlex.quote(os.path.join(directory, name))
+            for name in (
+                _verifier_tool_state.UV_CONFIG,
+                _verifier_tool_state.PIP_CONFIG,
             )
-            await _checked_exec(
-                env,
-                f"mkdir -m 755 {quoted} && for f in {files}; do "
-                ': > "$f" && chmod 644 "$f" || exit 1; done',
-                "Verifier hardening failed: creating the verifier's uv and pip state",
-                user="root",
-                timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
-            )
+        )
+        await _checked_exec(
+            env,
+            f"mkdir -m 755 {quoted} && for f in {files}; do "
+            ': > "$f" && chmod 644 "$f" || exit 1; done',
+            "Verifier hardening failed: creating the verifier's uv and pip state",
+            user="root",
+            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        )
         return found
     try:
         if return_code != 0:
@@ -1347,11 +1363,20 @@ async def _isolate_verifier_tool_state(
             )
         stdout = (getattr(result, "stdout", "") or "").strip()
         found = _json.loads(stdout) if stdout else {}
-        if not isinstance(found, dict) or any(
-            key not in _verifier_tool_state.OUTPUT_KEYS
-            or not isinstance(value, str)
-            or not value.startswith("/")
-            for key, value in found.items()
+        if (
+            not isinstance(found, dict)
+            or any(
+                key not in _verifier_tool_state.OUTPUT_KEYS
+                or not isinstance(value, str)
+                or not value.startswith("/")
+                for key, value in found.items()
+            )
+            # The guard trusts this directory by path, so every location must
+            # be the one asked for.
+            or any(
+                found.get(key) != os.path.join(directory, entry)
+                for key, entry in _verifier_tool_state.MOVED
+            )
         ):
             raise ValueError(f"invalid probe response {stdout[:200]!r}")
     except (ValueError, _json.JSONDecodeError) as exc:
@@ -1888,13 +1913,16 @@ async def _build_verifier_env(
     verifier_env["COVERAGE_PROCESS_START"] = ""
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
-    # uv and pip state the agent could have written (a WORKDIR /root image's
-    # ~/.cache/uv, ~/.config/uv/uv.toml, ...) moves to a fresh root-owned
-    # directory, so what test.sh installs there is the verifier's own.
-    verifier_env.update(
-        await _isolate_verifier_tool_state(
-            env, task, verifier_env, sandbox_user, workspace
-        )
+    # The verifier's uv and pip state moves to a fresh root-owned directory,
+    # away from what the agent could have written (a WORKDIR /root image's
+    # ~/.cache/uv, ~/.config/uv/uv.toml, ...); the guard trusts it by path, so
+    # what test.sh installs there loads whatever the runtime's mask.
+    moved = await _isolate_verifier_tool_state(
+        env, task, verifier_env, sandbox_user, workspace
+    )
+    verifier_env.update(moved)
+    tool_state = (
+        (os.path.dirname(moved["UV_CACHE_DIR"]),) if "UV_CACHE_DIR" in moved else ()
     )
     # Auto-discover pytest plugins that resolve to root-owned system code, plus
     # task config declarations. Appends -p flags to the hardened base.
@@ -1905,7 +1933,12 @@ async def _build_verifier_env(
     # another service could not import a ``-p`` guard and would score 0.
     if task.config.verifier.service == "main":
         guard_directory, flags, guarded = await _install_pytest_plugin_guard(
-            env, sandbox_user, workspace, flags, verifier_path=hardened_path
+            env,
+            sandbox_user,
+            workspace,
+            flags,
+            verifier_path=hardened_path,
+            trusted=tool_state,
         )
         # Only a Python without a copy needs the guard on PYTHONPATH; anywhere
         # else a task's preflight may read the entry as injected startup state.
