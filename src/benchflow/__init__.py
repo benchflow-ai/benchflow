@@ -19,9 +19,6 @@ docs/examples/python-sdk/, starting with quickstart.py):
   ``astream_rollouts`` yield each finished rollout with reward, group id and
   captured token ids (``bench train stream``).
 - Re-score stored trials with a changed verifier: ``regrade(job, tasks_dir=...)``.
-- Hill-climb a skills folder or prompt against a held-out test split:
-  ``hillclimb(tasks=..., surface=..., out=...)`` (``bench hillclimb``,
-  docs/hillclimb.md).
 - Save configs for the CLI: ``Evaluation.to_yaml`` and ``RolloutConfig.to_yaml``
   (``bench eval run --config``); docs/reference/cli-python-parity.md maps every
   ``bench eval run`` / ``bench eval branch`` flag to Python.
@@ -89,12 +86,6 @@ from benchflow.evaluation import (
     EvaluationConfig,
     EvaluationResult,
     RetryConfig,
-)
-from benchflow.hillclimbing import (
-    HillclimbConfig,
-    HillclimbResult,
-    ahillclimb,
-    hillclimb,
 )
 from benchflow.jobs import (
     Comparison,
@@ -312,10 +303,6 @@ __all__ = [
     "regrade",
     "aregrade",
     "RegradeSummary",
-    "hillclimb",
-    "ahillclimb",
-    "HillclimbConfig",
-    "HillclimbResult",
     "Job",
     "Trial",
     "Fork",

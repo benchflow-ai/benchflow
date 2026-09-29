@@ -749,16 +749,6 @@ bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
 bench eval view session.jsonl --confirm --redaction-summary "2 API keys, 1 bearer token"
 ```
 
-## bench hillclimb
-
-Hill-climb a skills folder or a prompt against a held-out test split: an optimizer agent edits the surface from the train split's failures, and a patch is kept only if train gains at least `--min-gain` and the test score improves. The optimizer's sandbox never holds the test split. Writes `hillclimb.json`, `report.html`, `surface-history/` and every evaluation as normal jobs under `--out`. Every flag, the keep rule, the noise gate and the outputs are in [hillclimb.md](../hillclimb.md); the Python form is `bf.hillclimb(...)`.
-
-```bash
-bench hillclimb --tasks-dir tasks/ --surface skills/ --out jobs/hillclimb/demo \
-  --agent claude-agent-acp --model claude-haiku-4-5 --sandbox daytona \
-  --trials 3 --min-gain 0.1 --rounds 5 --max-cost-usd 150
-```
-
 ## bench train
 
 Convert scored BenchFlow rollouts into trainer-ready datasets and validate
