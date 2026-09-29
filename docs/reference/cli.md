@@ -302,7 +302,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |
 | `--worker-retries` | `1` | Retry a crashed worker shard this many times, resuming its jobs dir |
 | `--worker-start-stagger-sec` | `1.0` | Seconds to stagger worker starts to avoid Daytona connection storms |
-| `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
+| `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection. A silent pending tool call defers the abort for up to 3x this budget (set `BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC` to name the grace in seconds); a newer tool call restarts that grace, and a timeout that follows names calls whose terminal update looks lost |
 | `--checkpoints` | off | Keep a sandbox snapshot after these prompts (`every-prompt` or `prompt:N[,M]`) so `bench eval branch --from-checkpoint <trial>` can fork from it later; recorded in the trial's `checkpoints.json`. Docker or Daytona direct; see [Composed checkpoints](../composed-checkpoints.md) for cost and cleanup |
 | `--checkpoint-keep` | `3` | Keep at most this many checkpoints per trial; the oldest is deleted when a newer one is taken |
 | `--freeze-workspace` | off | Save each trial's final workspace and declared artifacts (`evidence/`, with a manifest) before the verifier runs, so `bench eval regrade` can re-score it with a changed verifier |
