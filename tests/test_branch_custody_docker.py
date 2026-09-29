@@ -38,6 +38,8 @@ async def test_live_bind_mounts_preserve_parent_and_archive_children(
         rollout_paths=paths,
         task_env_config=SandboxConfig(),
     )
+    # The containers below are made by hand under this exact project name.
+    sandbox._compose_project = project
     images = []
     original_snapshot = sandbox.snapshot
 

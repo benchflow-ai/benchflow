@@ -40,7 +40,11 @@ class DockerProcess(SubprocessLiveProcess):
         may run the agent in a dedicated attacker container — e.g. a Kali
         service — while keeping target containers separate (#248).
         """
-        project_name = env.session_id.lower().replace(".", "-")
+        # The sandbox's own project (DockerSandbox.compose_project_name);
+        # an environment without one names its project after the session.
+        project_name = getattr(env, "compose_project_name", None)
+        if not isinstance(project_name, str) or not project_name:
+            project_name = env.session_id.lower().replace(".", "-")
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
         client_env = getattr(env, "_docker_client_env", None)

@@ -1,7 +1,11 @@
 services:
   main:
     labels:
-      benchflow.owned: "true"
+      # "process": the leftover sweep removes it only once the BenchFlow
+      # process named below is gone (_docker_sweep.py). Not "true", which
+      # BenchFlow before 0.8 prunes daemon-wide, live containers included.
+      benchflow.owned: "process"
+      benchflow.process: "${BENCHFLOW_PROCESS:-}"
     volumes:
       - ${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}
       - ${HOST_AGENT_LOGS_PATH}:${ENV_AGENT_LOGS_PATH}
@@ -14,4 +18,5 @@ services:
 networks:
   default:
     labels:
-      benchflow.owned: "true"
+      benchflow.owned: "process"
+      benchflow.process: "${BENCHFLOW_PROCESS:-}"

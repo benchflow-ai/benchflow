@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -113,15 +112,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Label applied to every container/network BenchFlow's compose files create.
-# Used to scope Docker prune calls so we only delete our own resources and never
-# touch unrelated containers/networks on shared developer or CI hosts.
-BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
+# The leftover sweep lists only resources carrying it, so it never touches
+# unrelated containers/networks on shared developer or CI hosts. Its value was
+# "true" before the sweep replaced the daemon-wide prune; a new value keeps an
+# older BenchFlow's prune on the same daemon off this version's containers.
+BENCHFLOW_OWNED_LABEL = "benchflow.owned=process"
 
-# Serialize docker prune across concurrent _run_task retries. When --concurrency
-# is high (e.g. 60) and tasks retry in lockstep, parallel `docker container
-# prune` calls each block on the daemon and time out at 30s, cascading into
-# false install_failure errors. Non-blocking acquire: if a prune is already in
-# flight, skip — there's nothing new to clean since the in-flight one started.
+# Serialize the leftover sweep across concurrent _run_task retries. When
+# --concurrency is high (e.g. 60) and tasks retry in lockstep, parallel sweeps
+# each block on the daemon, cascading into false install_failure errors.
+# Non-blocking acquire: if a sweep is already in flight, skip — there's nothing
+# new to clean since the in-flight one started.
 _PRUNE_LOCK = threading.Lock()
 
 
@@ -1601,52 +1602,43 @@ class Evaluation:
         return completed
 
     def _prune_docker(self):
-        """Clean up Docker resources owned by BenchFlow.
+        """Remove leftover Docker containers and networks of finished rollouts.
 
-        Scoped via ``--filter label=benchflow.owned=true`` so we only remove
-        containers/networks our own compose files created. Unrelated Docker
-        workloads on the same host are left untouched. The label is applied in
-        ``sandbox/_compose_files/docker-compose-base.yaml``.
+        Only resources labelled ``benchflow.owned=process`` (applied in
+        ``sandbox/_compose_files/docker-compose-base.yaml``) are listed, so
+        unrelated Docker workloads on the same host are left untouched. Of
+        those, only the ones whose BenchFlow process is gone, or whose sandbox
+        in this process is torn down, are removed
+        (:func:`benchflow.sandbox._docker_sweep.sweep_leftovers`): a daemon-wide
+        ``docker container prune`` / ``docker network prune`` deleted other
+        live rollouts' just-created containers and networks, whether they
+        belonged to this job, another job in this process, or another process.
 
         Serialized via ``_PRUNE_LOCK``: parallel retries from high-concurrency
-        batches would otherwise each kick off a 30s-timeout docker CLI call,
-        all blocking on the same daemon. Non-blocking acquire — if another
-        prune is in flight we just skip, since it will catch the same garbage.
+        batches would otherwise each kick off docker CLI calls, all blocking
+        on the same daemon. Non-blocking acquire — if another sweep is in
+        flight we just skip, since it will catch the same garbage. Blocking;
+        async callers run it in a thread (:meth:`_sweep_docker`).
         """
         if self._config.environment != "docker":
             return
         if not _PRUNE_LOCK.acquire(blocking=False):
             return
-        label_filter = f"label={BENCHFLOW_OWNED_LABEL}"
         try:
-            subprocess.run(
-                [
-                    "docker",
-                    "container",
-                    "prune",
-                    "-f",
-                    "--filter",
-                    label_filter,
-                ],
-                capture_output=True,
-                timeout=30,
-            )
-            subprocess.run(
-                [
-                    "docker",
-                    "network",
-                    "prune",
-                    "-f",
-                    "--filter",
-                    label_filter,
-                ],
-                capture_output=True,
-                timeout=30,
-            )
+            from benchflow.sandbox._docker_sweep import sweep_leftovers
+
+            sweep_leftovers()
         except Exception as e:
-            logger.warning(f"Docker prune failed: {e}")
+            logger.warning(f"Docker leftover sweep failed: {e}")
         finally:
             _PRUNE_LOCK.release()
+
+    async def _sweep_docker(self) -> None:
+        """:meth:`_prune_docker` off the event loop, so live rollouts keep
+        streaming while the docker CLI calls wait on the daemon."""
+        if self._config.environment != "docker":
+            return
+        await asyncio.to_thread(self._prune_docker)
 
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult
@@ -1805,7 +1797,7 @@ class Evaluation:
                 delay = cfg.retry.backoff_delay(attempt - 1)
                 logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
                 await asyncio.sleep(delay)
-                self._prune_docker()
+                await self._sweep_docker()
             result = await self._run_single_task(task_dir, cfg)
             last_result = result
             if result.scoring is not None and not cfg.retry.reruns_unjudged_solver(
@@ -2496,7 +2488,7 @@ class Evaluation:
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._write_evaluation_record()
-        self._prune_docker()
+        await self._sweep_docker()
 
         cfg = self._config
 
@@ -2545,7 +2537,7 @@ class Evaluation:
             pairs = await self._run_sequential_shared(remaining)
         else:
             pairs = await self._run_parallel_independent(remaining)
-        self._prune_docker()
+        await self._sweep_docker()
         elapsed = time.time() - start
 
         job_dir = self._jobs_dir / self._job_name

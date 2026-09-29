@@ -25,13 +25,17 @@ def sandbox(tmp_path):
     (environment / "Dockerfile").write_text("FROM alpine:3.20\n")
     paths = RolloutPaths(rollout_dir=tmp_path / "run")
     paths.mkdir()
-    return DockerSandbox(
+    sandbox = DockerSandbox(
         environment_dir=environment,
         environment_name="snapshot-contract",
         session_id="bf-snapshot-contract",
         rollout_paths=paths,
         task_env_config=SandboxConfig(),
     )
+    # Pin the Compose project (normally the session id plus a random suffix)
+    # so the container fixture below can name its network.
+    sandbox._compose_project = "bf-snapshot-contract"
+    return sandbox
 
 
 @pytest.fixture
@@ -83,7 +87,9 @@ async def test_restore_keeps_binds_limits_and_security(sandbox, container):
     )
     await sandbox.restore(SandboxImage(provider="docker", ref="snapshot"))
     commands = [call.args[0] for call in sandbox._docker_cli.call_args_list]
-    assert [cmd[0] for cmd in commands] == ["inspect", "stop", "rm", "run"]
+    # rm -f straight from running: no stopped window (and no 10 s stop grace).
+    assert [cmd[0] for cmd in commands] == ["inspect", "rm", "run"]
+    assert commands[1] == ["rm", "-f", "old"]
     run = commands[-1]
     assert "type=bind,src=/host/verifier,dst=/logs/verifier" in run
     assert "type=bind,src=/host/fixtures,dst=/fixtures,readonly" in run
@@ -340,6 +346,64 @@ async def test_restore_keeps_benchflow_owned_label(sandbox, container):
     assert "benchflow.owned=true" in _flag_values(run, "--label")
 
 
+async def test_restore_labels_the_replacement_with_this_process(sandbox, container):
+    """The leftover sweep keeps a container while the process named by its
+    ``benchflow.process`` label lives; the replacement is this process's,
+    whatever the snapshot image carried over (tests/test_docker_sweep.py)."""
+    from benchflow.sandbox._docker_sweep import process_token
+
+    container["Config"] = {
+        "Labels": {"benchflow.owned": "true", "benchflow.process": "other:1::"}
+    }
+    sandbox._main_container_id = AsyncMock(return_value="old")
+    sandbox._inspect_container = AsyncMock(return_value=container)
+    sandbox._docker_cli = AsyncMock(
+        return_value=ExecResult(return_code=0, stdout="", stderr="")
+    )
+    await sandbox.restore(SandboxImage(provider="docker", ref="snapshot"))
+    run = sandbox._docker_cli.call_args_list[-1].args[0]
+    assert f"benchflow.process={process_token()}" in _flag_values(run, "--label")
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Error response from daemon: removal of container old is already in progress",
+        "Error response from daemon: No such container: old",
+    ],
+)
+async def test_restore_goes_on_when_the_old_container_is_already_going(
+    sandbox, container, stderr
+):
+    """An older BenchFlow's daemon-wide prune on the same daemon may already
+    be removing the replaced container: the restore still makes the new one
+    (test_branch_two_children_in_place failed here on a shared daemon)."""
+    sandbox._main_container_id = AsyncMock(return_value="old")
+    sandbox._inspect_container = AsyncMock(return_value=container)
+
+    async def cli(args, check=True):
+        if args[0] == "rm":
+            return ExecResult(return_code=1, stdout="", stderr=stderr)
+        return ExecResult(return_code=0, stdout="", stderr="")
+
+    sandbox._docker_cli = AsyncMock(side_effect=cli)
+    await sandbox.restore(SandboxImage(provider="docker", ref="snapshot"))
+    assert sandbox._docker_cli.call_args_list[-1].args[0][0] == "run"
+
+
+async def test_restore_stops_when_the_old_container_cannot_be_removed(
+    sandbox, container
+):
+    sandbox._main_container_id = AsyncMock(return_value="old")
+    sandbox._inspect_container = AsyncMock(return_value=container)
+    sandbox._docker_cli = AsyncMock(
+        return_value=ExecResult(return_code=1, stdout="", stderr="daemon hung up")
+    )
+    with pytest.raises(RuntimeError, match="daemon hung up"):
+        await sandbox.restore(SandboxImage(provider="docker", ref="snapshot"))
+    assert [c.args[0][0] for c in sandbox._docker_cli.call_args_list] == ["rm"]
+
+
 @pytest.mark.live
 async def test_local_docker_snapshot_retains_mounts_and_rolls_back_files(
     sandbox, tmp_path
@@ -349,6 +413,7 @@ async def test_local_docker_snapshot_retains_mounts_and_rolls_back_files(
         pytest.skip("set BENCHFLOW_DOCKER_SNAPSHOT_PROOF=1 for the local Docker proof")
     project = "bf-snapshot-proof-" + uuid.uuid4().hex[:12]
     sandbox.session_id = project
+    sandbox._compose_project = project
     sandbox.environment_name = project
     host_dir = tmp_path / "mounted"
     host_dir.mkdir()
@@ -436,6 +501,7 @@ async def test_local_docker_restore_keeps_runtime_init_groups_and_owner(sandbox)
         pytest.skip("set BENCHFLOW_DOCKER_SNAPSHOT_PROOF=1 for the local Docker proof")
     project = "bf-snapshot-proof-" + uuid.uuid4().hex[:12]
     sandbox.session_id = project
+    sandbox._compose_project = project
     sandbox.environment_name = project
     image = None
 
@@ -515,6 +581,7 @@ async def test_local_docker_snapshot_keeps_credentials_out_and_is_deleted(sandbo
         pytest.skip("set BENCHFLOW_DOCKER_SNAPSHOT_PROOF=1 for the local Docker proof")
     project = "bf-snapshot-proof-" + uuid.uuid4().hex[:12]
     sandbox.session_id = project
+    sandbox._compose_project = project
     sandbox.environment_name = project
     sentinel = "bf-scrub-sentinel-" + uuid.uuid4().hex
     image = None
