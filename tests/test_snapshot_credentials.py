@@ -13,6 +13,9 @@ Unit tests over an in-memory filesystem; no Docker, Daytona or credentials.
 
 from __future__ import annotations
 
+import json
+import shlex
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -60,12 +63,30 @@ class FakeFs:
 
 
 class FakeOps:
+    """In-memory stand-in that models the symlink-safe put-back flow.
+
+    ``put_back_credentials`` now stages each file in a fresh root-only dir and
+    runs the ``python3`` write-back that creates the destination without
+    following links (``benchflow.sandbox._credential_writeback``). This fake
+    reproduces the observable contract: a destination that reappeared as a
+    symlink (content ``None``) is refused; a plain regular file is overwritten
+    (the scrub-rollback case); an absent destination is created.
+    """
+
+    _STAGE = "/tmp/bf-credstage"
+
     def __init__(self, fs: FakeFs):
         self.fs = fs
         self.commands: list[str] = []
+        self._staging: dict[str, bytes] = {}
 
     async def run(self, command: str) -> ExecResult:
         self.commands.append(command)
+        if "mktemp -d" in command:
+            return ExecResult(0, self._STAGE, "")
+        if command.startswith("rm -rf"):
+            self._staging.clear()
+            return ExecResult(0, "", "")
         if command.startswith("rm -f"):
             if self.fs.fail_rm:
                 return ExecResult(1, "", "read-only file system")
@@ -73,21 +94,33 @@ class FakeOps:
                 if f"'{path}'" in command or f" {path}" in command:
                     del self.fs.files[path]
             return ExecResult(0, "", "")
-        if command.startswith("chown"):
-            _, owner, _, _, mode, path = command.replace("&&", "").split()
-            uid, gid = owner.split(":")
-            content = self.fs.files[path.strip("'")][0]
-            self.fs.files[path.strip("'")] = (content, uid, gid, mode)
-            return ExecResult(0, "", "")
-        if command.startswith("mkdir"):
-            return ExecResult(0, "", "")
+        tokens = shlex.split(command)
+        if tokens[:3] == ["python3", "-I", "-c"]:
+            return self._writeback(json.loads(tokens[-1]))
         return ExecResult(0, self.fs.listing(), "")
+
+    def _writeback(self, manifest: list[dict]) -> ExecResult:
+        refused: list[str] = []
+        for entry in manifest:
+            dest = entry["path"]
+            existing = self.fs.files.get(dest)
+            if existing is not None and existing[0] is None:
+                # A symlink where a credential file was scrubbed: the swap.
+                refused.append(dest)
+                continue
+            content = self._staging[entry["staged"]]
+            self.fs.files[dest] = (content, entry["uid"], entry["gid"], entry["mode"])
+        if refused:
+            return ExecResult(3, "", "REFUSED: " + ", ".join(refused))
+        return ExecResult(0, "", "")
 
     async def read(self, path: str) -> bytes:
         return self.fs.files[path][0]
 
     async def write(self, path: str, content: bytes) -> None:
-        self.fs.files[path] = (content, "0", "0", "644")
+        # Content is staged into the fresh root-only dir, never the destination.
+        assert path.startswith(self._STAGE + "/"), path
+        self._staging[path] = content
 
 
 def _fs() -> FakeFs:
@@ -141,6 +174,75 @@ async def test_failed_removal_puts_files_back_and_refuses():
     with pytest.raises(CredentialScrubError, match="could not remove"):
         await scrub_credentials(FakeOps(fs))
     assert fs.files["/root/.codex/auth.json"][0] == SECRET
+
+
+async def test_put_back_refuses_a_credential_swapped_for_a_symlink():
+    """The attack: after the scrub removes ~/.codex/auth.json, the still-alive
+    agent plants a symlink there (to site-packages). The put-back must refuse
+    it, not write through the link, and record why."""
+    fs = _fs()
+    ops = FakeOps(fs)
+    stash = await scrub_credentials(ops)
+    assert "/root/.codex/auth.json" not in fs.files
+    # Agent re-creates the scrubbed path as a symlink (content None).
+    fs.files["/root/.codex/auth.json"] = (None, "0", "0", "777")
+    with pytest.raises(CredentialScrubError, match="without following a link"):
+        await put_back_credentials(ops, stash)
+    # The link is left as it was — its target was never written through.
+    assert fs.files["/root/.codex/auth.json"] == (None, "0", "0", "777")
+
+
+def test_credential_writeback_refuses_symlink_swap_on_a_real_filesystem(tmp_path):
+    """The syscall-level guard, exercised end to end on a real filesystem.
+
+    A credential path is swapped for a symlink to a victim file; the write-back
+    must refuse it (exit 3) and leave the victim untouched, while a sibling
+    non-symlinked path is written with the requested mode and owner.
+    """
+    import os
+
+    from benchflow.sandbox import _credential_writeback
+
+    root = Path(os.path.realpath(tmp_path))  # a symlink-free parent chain
+    victim = root / "victim.py"
+    victim.write_text("# original, must not change\n")
+
+    codex = root / "home" / ".codex"
+    codex.mkdir(parents=True)
+    swapped = codex / "auth.json"
+    swapped.symlink_to(victim)  # the attacker's redirect
+
+    staged_bad = root / "stage-bad"
+    staged_bad.write_bytes(b'{"secret": "x"}')
+    staged_ok = root / "stage-ok"
+    staged_ok.write_bytes(SECRET)
+    ok_dest = root / "home" / ".claude" / ".credentials.json"
+
+    manifest = [
+        {
+            "staged": str(staged_bad),
+            "path": str(swapped),
+            "uid": str(os.getuid()),
+            "gid": str(os.getgid()),
+            "mode": "600",
+        },
+        {
+            "staged": str(staged_ok),
+            "path": str(ok_dest),
+            "uid": str(os.getuid()),
+            "gid": str(os.getgid()),
+            "mode": "600",
+        },
+    ]
+    rc = _credential_writeback.main(["_credential_writeback.py", json.dumps(manifest)])
+    assert rc == 3  # a link appeared -> refused
+    # The victim was not written through the link, and the link still points at it.
+    assert victim.read_text() == "# original, must not change\n"
+    assert swapped.is_symlink()
+    # The clean sibling was still written safely, owner/mode set on the fd.
+    assert ok_dest.read_bytes() == SECRET
+    assert not ok_dest.is_symlink()
+    assert oct(ok_dest.stat().st_mode)[-3:] == "600"
 
 
 @pytest.fixture

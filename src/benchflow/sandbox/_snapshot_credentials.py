@@ -23,14 +23,19 @@ elsewhere are not covered.
 
 from __future__ import annotations
 
-import posixpath
+import json
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
+from benchflow.sandbox import _credential_writeback
 from benchflow.sandbox.protocol import ExecResult
 
 CREDENTIAL_HOMES = ("/root", "/home/*")
+
+# Source of the in-sandbox, symlink-safe write-back, shipped with ``-I -c``.
+_WRITEBACK_SOURCE = Path(_credential_writeback.__file__).read_text()
 
 
 class CredentialScrubError(RuntimeError):
@@ -130,19 +135,64 @@ async def scrub_credentials(ops: CredentialOps) -> list[StashedCredential]:
     return stash
 
 
+async def _staging_dir(ops: CredentialOps) -> str:
+    """Create a fresh root-owned 0700 directory the agent uid cannot enter.
+
+    Credential content is staged here before the symlink-safe write-back copies
+    it into the agent-controlled destination. Because the directory is created
+    by ``mktemp -d`` as root at mode 0700, the agent cannot pre-plant a symlink
+    inside it, so staging the bytes is itself safe.
+    """
+    result = await ops.run('umask 077 && d="$(mktemp -d)" && printf %s "$d"')
+    path = (result.stdout or "").strip()
+    if result.return_code != 0 or not path.startswith("/"):
+        raise CredentialScrubError(
+            "could not create a staging directory for the credential put-back: "
+            f"{(result.stderr or '').strip()[:300]}"
+        )
+    return path
+
+
 async def put_back_credentials(
     ops: CredentialOps, stash: list[StashedCredential]
 ) -> None:
-    """Write stashed credential files back with their owner and mode."""
-    for item in stash:
-        path = shlex.quote(item.path)
-        await ops.run(f"mkdir -p {shlex.quote(posixpath.dirname(item.path))}")
-        await ops.write(item.path, item.content)
-        result = await ops.run(
-            f"chown {item.uid}:{item.gid} {path} && chmod {item.mode} {path}"
-        )
-        if result.return_code != 0:
-            raise CredentialScrubError(
-                f"could not restore owner/mode of {item.path}: "
-                f"{(result.stderr or '').strip()[:300]}"
+    """Write stashed credential files back, following no symlinks.
+
+    Each file is staged in a fresh root-only directory, then created at its
+    destination with ``O_NOFOLLOW`` + ``O_CREAT | O_EXCL`` and its owner and
+    mode set on the open descriptor (see
+    :mod:`benchflow.sandbox._credential_writeback`). An agent that swaps a
+    credential path — or a directory above it — for a symlink while its
+    processes are alive cannot make root write through the link: the write is
+    refused and named. Requires ``python3`` in the sandbox (the agent images
+    that carry credentials ship it); a missing interpreter fails closed.
+    """
+    if not stash:
+        return
+    staging = await _staging_dir(ops)
+    try:
+        manifest = []
+        for index, item in enumerate(stash):
+            staged = f"{staging}/{index}"
+            await ops.write(staged, item.content)
+            manifest.append(
+                {
+                    "staged": staged,
+                    "path": item.path,
+                    "uid": item.uid,
+                    "gid": item.gid,
+                    "mode": item.mode,
+                }
             )
+        command = shlex.join(
+            ["python3", "-I", "-c", _WRITEBACK_SOURCE, json.dumps(manifest)]
+        )
+        result = await ops.run(command)
+        if result.return_code != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:300]
+            raise CredentialScrubError(
+                "could not restore credential files without following a link "
+                f"(refused a symlink swap, or python3 is missing): {detail}"
+            )
+    finally:
+        await ops.run(f"rm -rf -- {shlex.quote(staging)}")
