@@ -374,7 +374,7 @@ async def put_back_credentials(
         )
         if result.return_code != 0:
             reason = result.stderr.strip()[:200] or f"exit {result.return_code}"
-            logger.warning("Credential put-back of %s refused: %s", item.path, reason)
+            logger.warning("Credential put-back of %s not done: %s", item.path, reason)
             refused.append(f"{item.path} ({reason})")
     if refused:
         raise CredentialScrubError(
