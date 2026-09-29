@@ -198,7 +198,7 @@ def test_the_optimizer_never_sees_the_test_split(tmp_path, monkeypatch):
     assert (
         seen["test_tasks_in_paths"] == [] and seen["test_instructions_in_files"] == []
     )
-    assert len(json.loads(Path(seen["manifest"]).read_text())["files"]) == sum(
+    assert len(json.loads((s.out / seen["manifest"]).read_text())["files"]) == sum(
         m["files"] for m in seen["mounts"]
     )
     assert (

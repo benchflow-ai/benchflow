@@ -541,6 +541,7 @@ def check_mounts(
         open_network=s.proposer.open_network,
         manifest=work / "mounted.json",
     )
+    seen["manifest"] = (work / "mounted.json").relative_to(s.out).as_posix()
     if seen["test_tasks_in_paths"]:
         raise RuntimeError(
             f"test tasks in the optimizer's uploads: {seen['test_tasks_in_paths']}"
