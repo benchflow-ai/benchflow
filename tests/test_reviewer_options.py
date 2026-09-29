@@ -139,6 +139,53 @@ def test_eval_cli_reviewer_flags_reach_evaluation(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(("flag", "idle"), [("3600", 3600), ("none", 0), ("0", 0)])
+def test_eval_cli_reviewer_idle_timeout_reaches_evaluation(
+    tmp_path: Path, flag: str, idle: int
+) -> None:
+    """#1143: --reviewer-idle-timeout sets the reviewer's idle watchdog (0 or
+    'none' disables it); before, reviewers always ran with 600 s."""
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('version = "1.0"\n')
+    captured = []
+
+    async def capture(self):
+        captured.append(self._config.reviewer)
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    with patch.object(Evaluation, "run", new=capture):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--reviewer-idle-timeout",
+                flag,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert captured == [ReviewerConfig(idle_timeout_sec=idle)]
+
+
+def test_reviewer_idle_timeout_rejects_non_seconds() -> None:
+    import typer
+
+    from benchflow.cli.reviewer_options import reviewer_idle_timeout
+
+    assert reviewer_idle_timeout(None) is None
+    with pytest.raises(typer.BadParameter, match="whole seconds"):
+        reviewer_idle_timeout("ten")
+    with pytest.raises(ValueError):
+        ReviewerConfig(idle_timeout_sec=-1)
+
+
 def test_cli_partial_reviewer_override_preserves_yaml_fields(tmp_path: Path) -> None:
     task = tmp_path / "task"
     task.mkdir()

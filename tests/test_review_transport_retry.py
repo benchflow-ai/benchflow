@@ -169,3 +169,30 @@ async def test_a_reviewer_that_keeps_losing_its_transport_is_categorized(
     monkeypatch.setattr(benchflow, "run", fake)
     assert (await _review(tmp_path / "ordinary")).error_category is None
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("idle", "expected"), [(None, 600), (3600, 3600), (0, None)])
+async def test_the_reviewer_rollout_gets_the_reviewer_idle_timeout(
+    tmp_path, monkeypatch, idle, expected
+):
+    """#1143: the reviewer inherited the rollout's 600 s idle budget with no
+    way to change it; --reviewer-idle-timeout (ReviewerConfig.idle_timeout_sec)
+    now sets it, 0 disabling the watchdog."""
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(benchflow, "run", fake)
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    rubric_path = task / "verifier/rubric.json"
+    config = ReviewerConfig(agent="codex-acp", model="azure/gpt-5.6-sol")
+    if idle is not None:
+        config = config.model_copy(update={"idle_timeout_sec": idle})
+    await run_review(
+        source,
+        task,
+        load_rubric(rubric_path),
+        rubric_path,
+        config,
+        tmp_path / "review-output",
+        deterministic_pass=True,
+    )
+    assert fake.configs[0].agent_idle_timeout == expected

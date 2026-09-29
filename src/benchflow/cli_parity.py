@@ -129,6 +129,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--reviewer-reasoning-effort": _sdk(f"{_RC}.reasoning_effort"),
     "--reviewer-sandbox": _sdk(f"{_RC}.environment"),
     "--reviewer-timeout-sec": _sdk(f"{_RC}.timeout_sec"),
+    "--reviewer-idle-timeout": _sdk(f"{_RC}.idle_timeout_sec"),
     "--reviewer-concurrency": _sdk(f"{_RC}.concurrency"),
     "--reviewer-image": _sdk(f"{_RC}.image"),
     "--reviewer-agent-env": _sdk(f"{_RC}.agent_env"),

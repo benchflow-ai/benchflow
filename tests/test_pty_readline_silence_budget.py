@@ -129,3 +129,31 @@ async def test_execute_prompts_hands_the_silence_budget_to_the_transport(
     )
     assert proc.silence
     assert min(proc.silence) >= expected_floor
+
+
+@pytest.mark.parametrize(
+    ("idle_timeout", "timeout", "guard"),
+    [(600, 1800, 3 * 600 + 60), (7200, 86400, 3 * 7200 + 60), (None, 3600, 3660)],
+)
+@pytest.mark.asyncio
+async def test_the_read_guard_covers_the_pending_tool_grace(
+    idle_timeout, timeout, guard
+):
+    """#1143: the idle watchdog lets a pending tool call stay silent for three
+    idle budgets, so the transport must not cut it at idle + 60 s (a reviewer
+    with the default 600 s idle budget was cut at 900 s)."""
+    from benchflow.acp.runtime import transport_silence_budget
+    from benchflow.acp.watchdog import PENDING_GRACE_MULTIPLIER
+
+    assert PENDING_GRACE_MULTIPLIER == 3
+    assert transport_silence_budget(timeout, idle_timeout) == guard
+    proc = _RecordingProcess()
+    client = _InstantClient(ContainerTransport(proc, command="agent"))
+    await execute_prompts(
+        client,
+        ACPSession("grace"),
+        ["solve"],
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+    )
+    assert proc.silence == [guard]

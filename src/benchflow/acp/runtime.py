@@ -31,7 +31,7 @@ from benchflow.acp.timeout_cleanup import (
     cancel_prompt_after_timeout,
 )
 from benchflow.acp.types import McpServerSpec, PromptResult
-from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.acp.watchdog import PENDING_GRACE_MULTIPLIER, IdleWatchdog
 from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
@@ -789,6 +789,21 @@ async def connect_acp(
 _SILENCE_GUARD_SLACK_SEC = 60
 
 
+def transport_silence_budget(timeout: int, idle_timeout: int | None) -> int:
+    """The longest silence a prompt allows its transport, plus one poll.
+
+    With the idle watchdog on, a pending tool call defers the idle abort for
+    up to ``PENDING_GRACE_MULTIPLIER`` idle budgets (acp/watchdog.py), so a
+    silent tool call may legitimately run that long: the read guard must not
+    cut it first (#1143). Without the watchdog the wall budget decides. A
+    long guard is safe because a closed Daytona websocket fails the read at
+    once (DaytonaPtyProcess), not at the guard.
+    """
+    if idle_timeout is None:
+        return timeout + _SILENCE_GUARD_SLACK_SEC
+    return PENDING_GRACE_MULTIPLIER * idle_timeout + _SILENCE_GUARD_SLACK_SEC
+
+
 async def execute_prompts(
     acp_client: ACPClient,
     session,
@@ -805,16 +820,13 @@ async def execute_prompts(
                    responding). None disables idle detection.
 
     The transport's read guard is raised to the silence this call allows
-    (the idle budget, else the wall budget) plus one watchdog poll, so the
-    watchdog, not a fixed transport timeout, decides when silence is too
-    long (#1143).
+    plus one watchdog poll, so the watchdog, not a fixed transport timeout,
+    decides when silence is too long (#1143): see
+    :func:`transport_silence_budget`.
     """
     expect_silence = getattr(acp_client, "expect_silence", None)
     if callable(expect_silence):
-        expect_silence(
-            (idle_timeout if idle_timeout is not None else timeout)
-            + _SILENCE_GUARD_SLACK_SEC
-        )
+        expect_silence(transport_silence_budget(timeout, idle_timeout))
     for i, prompt in enumerate(prompts):
         logger.info(
             f"Prompt {i + 1}/{len(prompts)}: {(prompt or '<instruction.md>')[:80]}..."

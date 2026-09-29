@@ -589,6 +589,9 @@ async def run_review(
                 parent_rollout=rollout_dir.name,
                 jobs_dir=attempt_dir,
                 timeout=config.timeout_sec,
+                # 0 disables the watchdog; the transport's read guard follows
+                # the idle budget (acp/runtime.py, #1143).
+                agent_idle_timeout=config.idle_timeout_sec,
                 uploads=uploads,
                 pre_agent_hooks=hooks,
             )

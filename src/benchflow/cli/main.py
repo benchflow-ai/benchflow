@@ -64,12 +64,14 @@ from benchflow.cli.reviewer_options import (
     ReviewerConcurrencyOption,
     ReviewerEffortOption,
     ReviewerEnvOption,
+    ReviewerIdleTimeoutOption,
     ReviewerImageOption,
     ReviewerModelOption,
     ReviewerNetworkOption,
     ReviewerSandboxOption,
     ReviewerTimeoutOption,
     reviewer_from_cli,
+    reviewer_idle_timeout,
 )
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
@@ -732,6 +734,7 @@ def eval_run(
     reviewer_reasoning_effort: ReviewerEffortOption = None,
     reviewer_sandbox: ReviewerSandboxOption = None,
     reviewer_timeout_sec: ReviewerTimeoutOption = None,
+    reviewer_idle_timeout_sec: ReviewerIdleTimeoutOption = None,
     reviewer_concurrency: ReviewerConcurrencyOption = None,
     reviewer_image: ReviewerImageOption = None,
     reviewer_agent_env: ReviewerEnvOption = None,
@@ -955,6 +958,7 @@ def eval_run(
             reasoning_effort=reviewer_reasoning_effort,
             environment=reviewer_sandbox,
             timeout_sec=reviewer_timeout_sec,
+            idle_timeout_sec=reviewer_idle_timeout(reviewer_idle_timeout_sec),
             concurrency=reviewer_concurrency,
             image=reviewer_image,
             agent_env=(
