@@ -312,9 +312,16 @@ def redact(text: str, secrets: Iterable[str]) -> str:
     return text
 
 
-def _first_line(text: str, limit: int = 200) -> str:
+def _first_line(text: str, limit: int = 200, *, secrets: Iterable[str] = ()) -> str:
+    """First non-blank line, redacted *before* it is shortened to ``limit``.
+
+    Redaction runs on the whole line first: shortening a line that still holds
+    a secret can keep a prefix of the secret that :func:`redact` no longer
+    matches, leaking part of a key (a reviewer reproduced 14- and 31-character
+    leaks). Pass ``secrets`` at every site whose text may carry credentials.
+    """
     for line in text.splitlines():
-        line = line.strip()
+        line = redact(line.strip(), secrets)
         if line:
             return line if len(line) <= limit else line[: limit - 3] + "..."
     return ""
@@ -451,7 +458,12 @@ class _ColimaState:
 def _docker_context(probes: DoctorProbes) -> str | None:
     host = probes.get("DOCKER_HOST")
     if host:
-        return f"DOCKER_HOST={host}"
+        # A remote ssh:// DOCKER_HOST carries an ssh user that is often an
+        # access token; redact it the way remote_docker does before it reaches
+        # a summary line or the details JSON.
+        from benchflow.sandbox.remote_docker import _safe as _redact_docker_host
+
+        return f"DOCKER_HOST={_redact_docker_host(host)}"
     result = probes.run(["docker", "context", "show"], PROBE_TIMEOUT_SEC)
     if result.returncode != 0:
         return None
@@ -556,8 +568,10 @@ def check_docker(probes: DoctorProbes, *, required: bool) -> list[Check]:
     info: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
     via = context or "default"
     if result.returncode != 0 or not info.get("ServerVersion"):
-        reason = _first_line(result.stderr) or "no response from `docker info`"
-        reason = redact(reason, secret_values(probes.environ))
+        reason = (
+            _first_line(result.stderr, secrets=secret_values(probes.environ))
+            or "no response from `docker info`"
+        )
         start = (
             f"colima start {colima.profile}"
             if colima
@@ -663,8 +677,9 @@ def check_daytona(probes: DoctorProbes, *, required: bool, offline: bool) -> Che
     try:
         probes.daytona_check(probes.environ, 15.0)
     except Exception as exc:
-        reason = _first_line(f"{type(exc).__name__}: {exc}")
-        reason = redact(reason, secret_values(probes.environ))
+        reason = _first_line(
+            f"{type(exc).__name__}: {exc}", secrets=secret_values(probes.environ)
+        )
         fix = "Check the key at https://app.daytona.io/dashboard/keys"
         if probes.get("DAYTONA_API_URL"):
             fix += " and DAYTONA_API_URL"
@@ -1169,7 +1184,7 @@ def check_network(
             return (
                 url,
                 None,
-                redact(_first_line(f"{type(exc).__name__}: {exc}"), secrets),
+                _first_line(f"{type(exc).__name__}: {exc}", secrets=secrets),
             )
 
     with ThreadPoolExecutor(max_workers=max(1, min(8, len(urls)))) as pool:

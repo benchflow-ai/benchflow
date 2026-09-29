@@ -235,6 +235,35 @@ def test_read_outcome_agent_error_is_an_error_with_redacted_reason(tmp_path):
     assert "second line" not in outcome.reason
 
 
+# Long enough that a 240-char cut lands inside it (the pre-fix leak was 31 chars).
+LONG_TOKEN = "sk-ant-oat01-" + "T" * 70  # 83 chars
+
+
+def test_read_outcome_redacts_a_token_that_straddles_the_240_char_cut(tmp_path):
+    job = _job(tmp_path)
+    error = "ACP error: " + "x" * 210 + LONG_TOKEN + " tail"
+    assert error.index(LONG_TOKEN) + len(LONG_TOKEN) > 240  # straddles the cut
+    _write_result(job, rewards=None, error=error, error_category="agent_error")
+    outcome = read_outcome(
+        job, seconds=1.0, exit_code=1, environ={"CLAUDE_CODE_OAUTH_TOKEN": LONG_TOKEN}
+    )
+    assert outcome.status == "error"
+    assert LONG_TOKEN not in outcome.reason
+    for n in range(8, len(LONG_TOKEN)):
+        assert LONG_TOKEN[:n] not in outcome.reason
+
+
+def test_log_hint_redacts_each_line_before_truncating(tmp_path):
+    token = "sk-proj-" + "L" * 70  # 78 chars
+    log = tmp_path / "run.log"
+    log.write_text("startup ok\n" + "ERROR bearer " + "y" * 220 + token + " end\n")
+    hint = doctor_smoke._log_hint(log, [token])
+    assert hint.startswith("ERROR")
+    assert token not in hint
+    for n in range(8, len(token)):
+        assert token[:n] not in hint
+
+
 def test_read_outcome_verifier_error(tmp_path):
     job = _job(tmp_path)
     _write_result(
