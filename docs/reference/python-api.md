@@ -187,6 +187,29 @@ Counting follows the viewer. `execution` is `completed`, `errored` or `timed_out
 
 `job.solve_rates(ks=None, solve_threshold=None)` gives pass@k, pass^k and the solve rate over repeated trials (a task's trials in separate job folders are separate samples; unscored trials and controls are left out; a task with fewer than k scored trials is left out of that k and named in the caveats); `compare(..., ks=, solve_threshold=)` computes them for both sides (`report.solve_rates_a`, `report.solve_rates_b`). See [pass@k, pass^k and solve rates](./pass-at-k.md).
 
+## Hill-climbing a skill or prompt
+
+`bf.hillclimb` (the CLI's `bench hillclimb`) has an optimizer agent improve a skills folder or a prompt one patch at a time, keeping a patch only if the train split gains at least `min_gain` and a held-out test split improves. The optimizer's sandbox never holds the test split. See [hillclimb.md](../hillclimb.md).
+
+```python
+result = bf.hillclimb(
+    tasks="tasks/",
+    surface="skills/",                  # a skills folder; a file is a prompt
+    out="jobs/hillclimb/run1",
+    model="claude-haiku-4-5",
+    environment="daytona",
+    trials=3,
+    min_gain=0.1,
+    proposer=bf.hillclimbing.ProposerSettings(model="claude-opus-4-8"),
+)
+result.status          # finished, refused (the noise gate), or stopped
+result.verdict         # the best version against the baseline on the test split
+result.best_surface    # the folder of the best version
+result.record          # hillclimb.json, typed
+```
+
+`bf.ahillclimb` is the async form; `bf.HillclimbConfig` holds the same settings.
+
 ## Saving configs
 
 A job or rollout built in Python can be saved for the CLI and read back:

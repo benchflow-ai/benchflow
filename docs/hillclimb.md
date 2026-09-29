@@ -8,10 +8,11 @@ The loop follows Lance Martin's post [Automating eval design and hillclimbing wi
 bench hillclimb \
   --tasks-dir tasks/ --surface skills/ --out jobs/hillclimb/demo \
   --agent claude-agent-acp --model claude-haiku-4-5 --sandbox daytona --concurrency 32 \
-  --agent-env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  --proposer-model claude-opus-4-8 --proposer-env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  --proposer-model claude-opus-4-8 \
   --trials 3 --min-gain 0.1 --rounds 5 --max-cost-usd 150
 ```
+
+Both agents read provider keys from the environment or `.env`, as `bench eval run` does; `--agent-env` and `--proposer-env` set them per agent (for example, a separate key for the optimizer).
 
 ```python
 import benchflow as bf
