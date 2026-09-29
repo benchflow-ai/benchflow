@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **A symlink that leaves the workspace no longer costs a trial its review or its verifier.** codex-acp can leave a helper link such as `/app/apply_patch` pointing outside the workspace, and every Python virtualenv links `bin/python` to the system interpreter. Workspace capture aborted on such a link, so a rubric trial ended in a scoring error and a separate-verifier trial was unscored, both with `rewards: null`. Such a link, a link whose target text climbs out of the workspace (which used to pass capture and then fail extraction), and a link loop are now `symlink_escape` exclusions that record their `link_target`, in the Python capture script and in the tar fallback for images without Python alike; no outside file is copied. (#1130)
 - **A regrade restores the file permissions the solver left.** The frozen workspace's manifest now records each file's and directory's mode, and `bench eval regrade` and verifier recovery put them back (the reviewer's copy stays 0644/0755). Before, a solver that made a key private with `chmod 600` passed, and a regrade with the unchanged verifier failed it.
 - **A regrade says when a verdict changed although the task did not.** Each row carries `task_changed`; a changed verdict on an unchanged task has a reason (the verifier read state a regrade does not restore, such as a package installed system-wide or a running service) and is marked in the table.
 - **`bench eval regrade <job>` finds a batch job's tasks without `--tasks-dir`** through the tasks folder the job recorded, and no longer lists attempts a retry replaced as extra trials.
@@ -175,15 +176,7 @@
   scoring error with `rewards: null` although its verifier had run. Capture now
   leaves that tree out as `sandbox_runtime` and records any other socket, FIFO
   or device node as a `special_file` exclusion instead of aborting. Capture
-  limits and concurrent changes still fail closed. (#1128)
-- **A symlink that leaves the workspace no longer costs a rollout its review.**
-  codex-acp can leave a helper link such as `/app/apply_patch` pointing outside
-  the workspace. Evidence capture aborted on it, and the trial ended in a
-  scoring error with `rewards: null` although agent and verifier had finished.
-  Such a link, a link whose target text climbs out of the workspace (which used
-  to pass capture and then fail extraction), and a link loop are now
-  `symlink_escape` exclusions that record their `link_target`; no outside file
-  is copied. (#1130)
+  limits, escaping symlinks and concurrent changes still fail closed. (#1128)
 - **Automatic review supports shell-only task images.** Required Python
   capture tools are provisioned before the solver starts, so a successful
   shell task does not lose its review to a missing interpreter. (#1127)

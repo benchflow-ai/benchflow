@@ -432,8 +432,57 @@ def _component(path: str, rule: str) -> bool:
 
 
 ExclusionReason = Literal[
-    "credential", "sandbox_runtime", "special_file", "task_exclude"
+    "credential", "sandbox_runtime", "special_file", "symlink_escape", "task_exclude"
 ]
+
+# Linux's limit on symlinks followed while resolving one path (ELOOP).
+_MAX_LINK_HOPS = 40
+
+
+def _kept_tar_link(name: str, target: str, links: dict[str, str], root: str) -> bool:
+    """The capture script's ``kept_link`` rule, applied to a tar listing.
+
+    A link is kept only when its target text and its resolution both stay
+    inside the root. The resolution follows the archive's own links, as
+    ``os.path.realpath`` would in the sandbox; a loop is not kept.
+    """
+    if target.startswith("/"):
+        try:
+            if ".." in PurePosixPath(target).relative_to(root).parts:
+                return False
+        except ValueError:
+            return False
+    else:
+        joined = posixpath.join(posixpath.dirname(name), target)
+        if ".." in posixpath.normpath(joined).split("/"):
+            return False
+    pending = list(PurePosixPath(name).parts)
+    resolved: list[str] = []
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part == "..":
+            if not resolved:
+                return False
+            resolved.pop()
+            continue
+        link = links.get("/".join([*resolved, part]))
+        if link is None:
+            resolved.append(part)
+            continue
+        hops += 1
+        if hops > _MAX_LINK_HOPS:
+            return False
+        if link.startswith("/"):
+            try:
+                inside = PurePosixPath(link).relative_to(root)
+            except ValueError:
+                return False
+            resolved = []
+            pending = [*inside.parts, *pending]
+        else:
+            pending = [*PurePosixPath(link).parts, *pending]
+    return True
 
 
 def _exclusion_reason(
@@ -471,8 +520,9 @@ def _normalize_tar_capture(
     """Rewrite a ``tar -C root .`` archive into capture-script form.
 
     Drops the root entry and ``./`` prefixes, applies the exclusion rules,
-    records special files, stores hard links as independent regular files and
-    enforces the limits. Links are checked later by :func:`_extract_archive`.
+    records special files and links the capture script would not keep
+    (``symlink_escape``, with their target text), stores hard links as
+    independent regular files and enforces the limits.
     """
     exclusions: list[EvidenceExclusion] = []
     excluded_dirs: list[str] = []
@@ -486,7 +536,13 @@ def _normalize_tar_capture(
         tarfile.open(raw, "r:") as source,
         tarfile.open(dest, "x", format=tarfile.PAX_FORMAT) as archive,
     ):
-        for member in source.getmembers():
+        members = source.getmembers()
+        links = {
+            posixpath.normpath(member.name): member.linkname
+            for member in members
+            if member.issym()
+        }
+        for member in members:
             name = posixpath.normpath(member.name)
             if name in (".", ""):
                 continue
@@ -497,13 +553,24 @@ def _normalize_tar_capture(
             reason: ExclusionReason | None = _exclusion_reason(
                 absolute, relative, rules
             )
+            link_target = None
+            if (
+                reason is None
+                and member.issym()
+                and not _kept_tar_link(name, member.linkname, links, root)
+            ):
+                reason, link_target = "symlink_escape", member.linkname
             if reason is None and not (
                 member.isfile() or member.isdir() or member.issym() or member.islnk()
             ):
                 reason = "special_file"
             if reason is not None:
                 exclusions.append(
-                    EvidenceExclusion(original_path=absolute.as_posix(), reason=reason)
+                    EvidenceExclusion(
+                        original_path=absolute.as_posix(),
+                        reason=reason,
+                        link_target=link_target,
+                    )
                 )
                 if member.isdir():
                     excluded_dirs.append(name)

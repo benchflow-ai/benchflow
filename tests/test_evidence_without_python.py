@@ -119,15 +119,54 @@ async def test_tar_fallback_captures_a_single_file(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_tar_fallback_refuses_a_symlink_that_escapes(tmp_path: Path):
+async def test_tar_fallback_records_escaping_symlinks_as_python_capture_does(
+    tmp_path: Path,
+):
+    """Guards the tar fallback against the escaping-link abort that #1130
+    fixed in the Python capture script. A virtualenv's bin/python, or an agent
+    CLI's helper linked from outside the workspace, made capture fail, which
+    leaves a separate-verifier trial unscored. A link the bundle cannot keep
+    is now a symlink_escape exclusion with its target text on both paths,
+    and no outside byte is copied."""
     workspace = _tree(tmp_path / "box")
-    (tmp_path / "secret").write_text("host\n")
-    (workspace / "escape").symlink_to(tmp_path / "secret")
-    with pytest.raises(EvidenceError, match="escapes"):
-        await capture_workspace(
-            LocalSandbox(python=False), str(workspace), tmp_path / "out"
-        )
-    assert not (tmp_path / "out").exists()
+    secret = tmp_path / "secret"
+    secret.write_text("host\n")
+    (workspace / "sub").mkdir()
+    escaping = {
+        "escape": str(secret),
+        "parent-escape": "../../secret",
+        "venv-python": "/usr/bin/python3",
+        "through-escape": "escape",
+        "text-detour": str(workspace / "sub" / ".." / "answer.txt"),
+        "loop": "loop",
+    }
+    for name, target in escaping.items():
+        (workspace / name).symlink_to(target)
+    (workspace / "kept-dangling").symlink_to("sub/not-written")
+
+    with_python = await capture_workspace(
+        LocalSandbox(python=True), str(workspace), tmp_path / "a"
+    )
+    without = await capture_workspace(
+        LocalSandbox(python=False), str(workspace), tmp_path / "b"
+    )
+
+    assert _entries(without) == _entries(with_python)
+    assert sorted(x.model_dump_json() for x in without.exclusions) == sorted(
+        x.model_dump_json() for x in with_python.exclusions
+    )
+    assert sorted(
+        (Path(x.original_path).name, x.link_target)
+        for x in without.exclusions
+        if x.reason == "symlink_escape"
+    ) == sorted(escaping.items())
+    assert {"kept-dangling", "link-to-answer"} <= {e.path for e in without.entries}
+    copied = [
+        path.read_bytes()
+        for path in (tmp_path / "b" / "workspace").rglob("*")
+        if path.is_file() and not path.is_symlink()
+    ]
+    assert not any(b"host" in data for data in copied)
 
 
 @pytest.mark.asyncio
