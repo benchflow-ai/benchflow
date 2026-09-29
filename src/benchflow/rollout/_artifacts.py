@@ -6,11 +6,12 @@ too. Files land in ``<trial>/artifacts/`` and ``<trial>/artifacts-manifest.json`
 records every collection (status, reason) and every file (size, sha256).
 
 Transfers reuse the evidence tarball (``benchflow.review.evidence``): the
-sandbox enumerates files without following links, refuses symlinks that leave
-the collected tree, and stops at the byte and file limits, so a collection is
-all or nothing. Unsafe destinations (absolute, ``..``) and destination
-collisions are refused. Collection never fails the rollout: every problem is a
-manifest status, not an exception.
+sandbox enumerates files without following links, leaves out symlinks that
+leave the collected tree (listed in the collection's ``exclusions``), and
+stops at the byte and file limits, so a collection is all or nothing. Unsafe
+destinations (absolute, ``..``) and destination collisions are refused.
+Collection never fails the rollout: every problem is a manifest status, not
+an exception.
 """
 
 from __future__ import annotations
@@ -247,7 +248,7 @@ async def collect_artifacts(
         record["status"] = "empty"
     else:
         try:
-            captured = await _capture(
+            captured, excluded = await _capture(
                 env,
                 logs_source,
                 artifacts_dir,
@@ -262,6 +263,8 @@ async def collect_artifacts(
             )
             files.extend(captured)
             record["status"] = "collected"
+            if excluded:
+                record["exclusions"] = excluded
         except (EvidenceError, OSError, ValueError) as exc:
             record.update(status="error", reason=str(exc)[-500:])
     collections.append(record)
@@ -308,7 +311,7 @@ async def collect_artifacts(
             record.update(status="error", reason="collection limits already reached")
             continue
         try:
-            captured = await _capture(
+            captured, excluded = await _capture(
                 env,
                 probe["source"],
                 target,
@@ -323,6 +326,8 @@ async def collect_artifacts(
             )
             files.extend(captured)
             record["status"] = "collected"
+            if excluded:
+                record["exclusions"] = excluded
         except (EvidenceError, OSError, ValueError) as exc:
             record.update(status="error", reason=str(exc)[-500:])
 
@@ -352,11 +357,12 @@ async def _capture(
     excluded_paths: Sequence[str],
     timeout_sec: int,
     single: str | None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Tar ``source`` out of the sandbox, then publish it at ``target``.
 
     ``target`` is the folder to fill (logs: the existing artifacts/ root) or
     the path to create (declared artifact). Nothing is published on failure.
+    Returns the collected files and the capture's exclusions.
     """
     parent = target.parent if prefix is not None else target
     parent.mkdir(parents=True, exist_ok=True)
@@ -384,7 +390,8 @@ async def _capture(
             shutil.move(str(tree / single), target)
         else:
             tree.rename(target)
-    return _entries(manifest, prefix, index, single)
+    exclusions = [x.model_dump(exclude_none=True) for x in manifest.exclusions]
+    return _entries(manifest, prefix, index, single), exclusions
 
 
 async def collect_rollout_artifacts(rollout: Any) -> None:
