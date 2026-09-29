@@ -52,6 +52,11 @@ _BENCHFLOW_REQUESTED = []  # type: list[str]
 # and pip state. Code below them is trusted by path, whatever modes the
 # runtime's file-mode mask gave it; the directories and their parents are not.
 _BENCHFLOW_TRUSTED = ()  # type: tuple[str, ...]
+# In the agent's own sandbox code must also be root's alone (root-owned, not
+# group- or world-writable, parents included). A separate verifier sandbox
+# never ran the agent: only the blocked paths, which the transfer wrote, are
+# the agent's, and everything else is the verifier image's own.
+_BENCHFLOW_OWNERSHIP = True
 # Marker path prefix for this verification; empty writes no markers.
 _BENCHFLOW_MARKERS = ""
 # Keeps this process's markers apart from other pytest runs of one verifier.
@@ -107,6 +112,12 @@ def _trusted_root(path):
     return None
 
 
+def _blocked_why():
+    if _BENCHFLOW_OWNERSHIP:
+        return "which the agent could write"
+    return "which holds files copied from the agent's sandbox"
+
+
 def ownership_problem(path, st):
     """Why the inode at *path* (stat *st*) is not root's alone, or None."""
     if st.st_uid != 0:
@@ -124,13 +135,13 @@ def untrusted_reason(path, blocked):
     for candidate in (os.path.abspath(path), os.path.realpath(path)):
         for prefix in blocked:
             if under(candidate, prefix):
-                return (
-                    candidate + " is under " + prefix + ", which the agent could write"
-                )
+                return candidate + " is under " + prefix + ", " + _blocked_why()
         try:
             os.stat(candidate)
         except OSError as exc:
             return candidate + " cannot be read (" + type(exc).__name__ + ")"
+        if not _BENCHFLOW_OWNERSHIP:
+            continue
         # Below a trusted directory only the directory and its parents are
         # checked: hardening made it root-owned 0755 after the agent stopped,
         # so only the verifier wrote what is inside, in whatever modes.
@@ -453,6 +464,7 @@ if __name__ == "__main__":
         # argv[3]: the policy the armed guard gets from hardening.
         policy = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
         _BENCHFLOW_TRUSTED = tuple(policy.get("trusted", ()))
+        _BENCHFLOW_OWNERSHIP = bool(policy.get("ownership", True))
         print(
             json.dumps(discover(blocked, requested, ignore_blocked_registrations=True))
         )

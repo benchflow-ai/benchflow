@@ -998,3 +998,63 @@ def test_symlink_out_of_the_trusted_directory_is_judged_where_it_points(
 
     assert guard.trusted(str(workspace / "plugin.py"), ())
     assert not guard.trusted(str(state / "plugin.py"), (str(workspace),))
+
+
+def test_separate_sandbox_distrusts_only_the_transferred_paths(tmp_path, monkeypatch):
+    """Guards the separate-mode trust rule (sdk-update review, must-fix 3).
+
+    No agent process ever ran in a separate verifier sandbox, so owners and
+    modes say nothing about the agent there: only the paths the transfer
+    wrote are refused, and the refusal says why.
+    """
+    workspace = tmp_path / "app"
+    image = tmp_path / "image"
+    workspace.mkdir()
+    image.mkdir()
+    (workspace / "plugin.py").write_text("# transferred from the agent\n")
+    (image / "plugin.py").write_text("# the verifier image's own\n")
+    _stat_model(monkeypatch, ())  # nothing is root's alone
+    monkeypatch.setattr(guard, "_BENCHFLOW_OWNERSHIP", False)
+    blocked = (str(workspace),)
+
+    assert guard.trusted(str(image / "plugin.py"), blocked)
+    assert guard.untrusted_reason(str(workspace / "plugin.py"), blocked) == (
+        f"{workspace}/plugin.py is under {workspace}, which holds files copied "
+        "from the agent's sandbox"
+    )
+    # In the agent's own sandbox the same image file is not root's alone.
+    monkeypatch.setattr(guard, "_BENCHFLOW_OWNERSHIP", True)
+    assert not guard.trusted(str(image / "plugin.py"), blocked)
+    assert guard.untrusted_reason(str(workspace / "plugin.py"), blocked).endswith(
+        "which the agent could write"
+    )
+
+
+def test_separate_sandbox_discovery_proposes_image_plugins_by_path_alone(tmp_path):
+    """Guards the separate-mode trust rule in discovery, with real files and Python.
+
+    The files here belong to the test's user, as an image's might not be
+    root's alone; discovery told the sandbox is separate still proposes the
+    image plugin, and never the one registered in the transferred workspace.
+    """
+    image = tmp_path / "image"
+    workspace = tmp_path / "app"
+    registration(image, "imagepkg", "image_plugin", "image_module")
+    (image / "image_module.py").write_text("# image plugin\n")
+    registration(workspace, "planted", "agent_plugin", "agent_module")
+    (workspace / "agent_module.py").write_text("# agent plugin\n")
+    command = lockdown._discover_pytest_plugins_cmd(
+        (str(workspace),), pythonpath=f"{image}:{workspace}", ownership=False
+    )
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", command.replace("python3 -c", f"{sys.executable} -c", 1)],
+        env={"PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    plugins = json.loads(result.stdout)["plugins"]
+    assert "image_plugin" in plugins and "agent_plugin" not in plugins

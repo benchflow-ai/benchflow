@@ -730,6 +730,20 @@ def _blocked_verifier_path_prefixes(
     return tuple(dict.fromkeys(prefixes))
 
 
+# A separate verifier sandbox never ran the agent. What came from the agent's
+# run is what the transfer wrote (the frozen workspace and declared artifacts,
+# ``agent_paths``) and what lands under /logs (the collected /logs/artifacts,
+# the published trajectory). The plugin guard distrusts exactly those there.
+_SEPARATE_VERIFIER_AGENT_PREFIXES = ("/logs",)
+
+
+def _separate_verifier_blocked_prefixes(
+    agent_paths: "tuple[str, ...] | list[str]",
+) -> tuple[str, ...]:
+    """The plugin guard's blocked prefixes in a separate verifier sandbox."""
+    return tuple(dict.fromkeys([*agent_paths, *_SEPARATE_VERIFIER_AGENT_PREFIXES]))
+
+
 def _blocked_verifier_pythonpath_prefixes(
     sandbox_user: str | None,
 ) -> tuple[str, ...]:
@@ -814,22 +828,30 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
 
 
 def _discover_pytest_plugins_cmd(
-    blocked_prefixes: tuple[str, ...], pythonpath: str | None = None
+    blocked_prefixes: tuple[str, ...],
+    pythonpath: str | None = None,
+    *,
+    ownership: bool = True,
 ) -> str:
     """Build the container-side pytest plugin discovery command.
 
     Runs from ``/`` so the image WORKDIR (usually the agent-writable workspace)
     is not on ``sys.path``, without user site-packages, and, when given, with
     the verifier's trusted PYTHONPATH instead of the image's raw one: the same
-    locations the verifier's own interpreter starts from.
+    locations the verifier's own interpreter starts from. *ownership* is the
+    guard's rule for code outside the blocked prefixes (see
+    ``_BENCHFLOW_OWNERSHIP`` in ``_pytest_plugin_guard.py``).
     """
     env = "PYTHONNOUSERSITE=1 "
     if pythonpath is not None:
         env = f"PYTHONPATH={shlex.quote(pythonpath)} " + env
-    return (
+    command = (
         f"cd / && {env}python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)} "
         f"{shlex.quote(_json.dumps(blocked_prefixes))}"
     )
+    if not ownership:
+        command += f" '[]' {shlex.quote(_json.dumps({'ownership': False}))}"
+    return command
 
 
 async def _discover_pytest_plugin_flags(
@@ -838,12 +860,19 @@ async def _discover_pytest_plugin_flags(
     sandbox_user: str | None = None,
     workspace: str | None = None,
     pythonpath: str | None = None,
+    *,
+    blocked: tuple[str, ...] | None = None,
+    ownership: bool = True,
 ) -> str:
     """Only enable plugins whose current registration and code are trusted.
 
     Missing aliases are deferred to the protected guard in the final pytest
     interpreter, allowing trusted verifier scripts to install plugins with uvx.
+    *blocked* and *ownership* default to the agent's own sandbox; a separate
+    verifier sandbox passes its transferred paths and no ownership rule.
     """
+    if blocked is None:
+        blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
     requested = list(
         dict.fromkeys(
             [
@@ -858,9 +887,7 @@ async def _discover_pytest_plugin_flags(
     )
     try:
         result = await env.exec(
-            _discover_pytest_plugins_cmd(
-                _blocked_verifier_path_prefixes(sandbox_user, workspace), pythonpath
-            ),
+            _discover_pytest_plugins_cmd(blocked, pythonpath, ownership=ownership),
             user="root",
             timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
         )
@@ -1028,11 +1055,13 @@ def _pytest_plugin_guard_source(
     markers_dir: str | None = None,
     *,
     trusted: tuple[str, ...] = (),
+    ownership: bool = True,
 ) -> str:
     """Return the armed guard module *name*: its policy, then its load marker.
 
     *trusted* names directories whose contents the guard trusts by path: the
-    verifier's uv and pip state, created after the agent stopped.
+    verifier's uv and pip state, created after the agent stopped. *ownership*
+    False (a separate verifier sandbox) distrusts the *blocked* paths alone.
     """
     markers_dir = markers_dir or _PYTEST_PLUGIN_GUARD_MARKERS_DIR
     return (
@@ -1043,6 +1072,8 @@ def _pytest_plugin_guard_source(
         + repr(requested)
         + "\n_BENCHFLOW_TRUSTED = "
         + repr(tuple(trusted))
+        + "\n_BENCHFLOW_OWNERSHIP = "
+        + repr(bool(ownership))
         + "\n_BENCHFLOW_MARKERS = "
         + repr(os.path.join(markers_dir, name))
         + "\n_mark('loading')\n"
@@ -1057,6 +1088,8 @@ async def _install_pytest_plugin_guard(
     verifier_path=_SAFE_VERIFIER_PATH,
     *,
     trusted: tuple[str, ...] = (),
+    blocked: tuple[str, ...] | None = None,
+    ownership: bool = True,
 ):
     """Create an unguessable protected bootstrap after solver quiescence.
 
@@ -1066,11 +1099,14 @@ async def _install_pytest_plugin_guard(
     name = PYTEST_PLUGIN_GUARD_PREFIX + uuid.uuid4().hex
     directory = os.path.join(_PYTEST_PLUGIN_GUARD_PARENT, name)
     guard = os.path.join(directory, name + ".py")
+    if blocked is None:
+        blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
     source = _pytest_plugin_guard_source(
         name,
-        _blocked_verifier_path_prefixes(sandbox_user, workspace),
+        blocked,
         shlex.split(plugin_flags)[1::2],
         trusted=trusted,
+        ownership=ownership,
     )
     install_into_interpreters = (
         _INSTALL_PYTEST_PLUGIN_GUARD_CMD_TEMPLATE.replace(
@@ -1294,6 +1330,8 @@ async def _isolate_verifier_tool_state(
     verifier_env: dict[str, str],
     sandbox_user: str | None,
     workspace: str | None,
+    *,
+    blocked: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
     """Move the verifier's uv and pip state to a fresh directory.
 
@@ -1316,7 +1354,8 @@ async def _isolate_verifier_tool_state(
         task.config.verifier.user
     ):
         return {}
-    blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
+    if blocked is None:
+        blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
     directory = os.path.join(
         _VERIFIER_TOOL_STATE_PARENT, VERIFIER_TOOL_STATE_PREFIX + uuid.uuid4().hex
     )
@@ -1887,7 +1926,12 @@ async def _freeze_workspace(env, workspace: str) -> None:
 
 
 async def _build_verifier_env(
-    env, task: "Task", sandbox_user: str | None, workspace: str | None
+    env,
+    task: "Task",
+    sandbox_user: str | None,
+    workspace: str | None,
+    *,
+    agent_paths: "tuple[str, ...] | None" = None,
 ) -> dict[str, str]:
     """Assemble the hardened verifier env, re-pinning security invariants.
 
@@ -1895,7 +1939,17 @@ async def _build_verifier_env(
     invariants are re-pinned so a task cannot replace PATH, strip
     -c /dev/null / --confcutdir, re-enable entry-point plugin loading, or
     inject code via breakpoint()/coverage/Django/Celery startup hooks.
+
+    *agent_paths* marks a separate verifier sandbox and lists what its
+    transfer wrote: the plugin guard distrusts those (and /logs) alone there,
+    instead of every agent-writable tree and anything not root's alone.
     """
+    if agent_paths is None:
+        guard_blocked = _blocked_verifier_path_prefixes(sandbox_user, workspace)
+        ownership = True
+    else:
+        guard_blocked = _separate_verifier_blocked_prefixes(agent_paths)
+        ownership = False
     hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
     hardened_pythonpath = await _trusted_verifier_pythonpath(env, sandbox_user)
     distro_env = await _distro_pip_env(env)
@@ -1918,7 +1972,7 @@ async def _build_verifier_env(
     # ~/.cache/uv, ~/.config/uv/uv.toml, ...); the guard trusts it by path, so
     # what test.sh installs there loads whatever the runtime's mask.
     moved = await _isolate_verifier_tool_state(
-        env, task, verifier_env, sandbox_user, workspace
+        env, task, verifier_env, sandbox_user, workspace, blocked=guard_blocked
     )
     verifier_env.update(moved)
     tool_state = (
@@ -1927,7 +1981,13 @@ async def _build_verifier_env(
     # Auto-discover pytest plugins that resolve to root-owned system code, plus
     # task config declarations. Appends -p flags to the hardened base.
     flags = await _discover_pytest_plugin_flags(
-        env, task, sandbox_user, workspace, pythonpath=hardened_pythonpath
+        env,
+        task,
+        sandbox_user,
+        workspace,
+        pythonpath=hardened_pythonpath,
+        blocked=guard_blocked,
+        ownership=ownership,
     )
     # Hardening, and so the guard, lives in ``main`` only (#248). A test.sh in
     # another service could not import a ``-p`` guard and would score 0.
@@ -1939,6 +1999,8 @@ async def _build_verifier_env(
             flags,
             verifier_path=hardened_path,
             trusted=tool_state,
+            blocked=guard_blocked,
+            ownership=ownership,
         )
         # Only a Python without a copy needs the guard on PYTHONPATH; anywhere
         # else a task's preflight may read the entry as injected startup state.
@@ -1964,6 +2026,8 @@ async def harden_before_verify(
     # contract, e.g. task config [verifier] restore_workspace = true after an
     # oracle/diff audit proves the answer is not stored in the workspace.
     restore_workspace: bool = False,
+    *,
+    agent_paths: "tuple[str, ...] | None" = None,
 ) -> None:
     """Neutralize agent tampering before running the verifier.
 
@@ -1977,6 +2041,10 @@ async def harden_before_verify(
        to root (belt-and-suspenders against zombie sandbox writes).
     6. Remove injected conftest.py, sitecustomize.py, .pth files.
     7. Merge trusted env vars into task.config.verifier.env.
+
+    *agent_paths* marks a separate verifier sandbox, where no agent process
+    ever ran, and lists the paths its transfer wrote (see
+    ``_build_verifier_env``).
 
     Cross-container hardening policy (#248): every step here runs against the
     ``main`` (agent) container only — ``env.exec`` is never passed a
@@ -2024,5 +2092,5 @@ async def harden_before_verify(
     )
     # 7. Merge trusted env vars into task.config.verifier.env.
     task.config.verifier.env = await _build_verifier_env(
-        env, task, sandbox_user, workspace
+        env, task, sandbox_user, workspace, agent_paths=agent_paths
     )

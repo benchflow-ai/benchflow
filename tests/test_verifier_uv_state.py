@@ -303,8 +303,12 @@ async def score(
     env=None,
     workspace_name="root",
     guard_model=None,
+    agent_paths=None,
 ):
-    """Harden a WORKDIR /root image (or *workspace_name*), run test.sh, and score it."""
+    """Harden a WORKDIR /root image (or *workspace_name*), run test.sh, and score it.
+
+    *agent_paths* hardens a separate verifier sandbox that received those paths.
+    """
     layout = Layout(tmp_path, monkeypatch, workspace_name=workspace_name)
     if guard_model is not None:
         monkeypatch.setattr(
@@ -315,8 +319,14 @@ async def score(
     if before is not None:
         before(layout)
     task = make_task(layout, env=env)
+    if agent_paths is not None:
+        agent_paths = tuple(p.format(workspace=layout.workspace) for p in agent_paths)
     task.config.verifier.env = await lockdown._build_verifier_env(
-        layout, task, "agent", str(layout.workspace)
+        layout,
+        task,
+        "agent" if agent_paths is None else None,
+        str(layout.workspace),
+        agent_paths=agent_paths,
     )
     sandbox = ScriptSandbox(layout, solution, place)
     planes = SimpleNamespace(harden_before_verify=AsyncMock(), verifier=Verifier)
@@ -439,6 +449,108 @@ async def test_same_install_outside_the_trusted_directory_is_still_judged_by_mod
     )
     assert rewards is None
     assert error is not None and "installed after the agent stopped" in error
+
+
+def image_plugin_others_can_write(layout):
+    """An image plugin in a world-writable venv (``chmod -R 777 /opt/venv``)."""
+    previous = os.umask(0)
+    try:
+        install_plugin(layout.home / "opt-venv/site-packages", CTRF_PLUGIN)
+    finally:
+        os.umask(previous)
+
+
+def image_venv(env, layout):
+    return [layout.home / "opt-venv/site-packages"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "reward"), [("separate", 1.0), ("shared", 0.0)], ids=["separate", "shared"]
+)
+async def test_separate_verifier_distrusts_only_what_the_transfer_wrote(
+    tmp_path, monkeypatch, mode, reward
+):
+    """Guards the separate-mode trust rule (review of sdk-update-2026-09-27, must-fix 3).
+
+    The separate verifier passed ``sandbox_user=None`` but kept the owner and
+    mode rule meant for the agent's own sandbox, although no agent process
+    ever ran in the fresh one. There only the transferred paths (and /logs)
+    are the agent's, so an image plugin others could write is the image's
+    own. In the agent's sandbox the same plugin could have been rewritten by
+    the agent, and refusing it stays scored.
+    """
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        PASSING,
+        image_venv,
+        before=image_plugin_others_can_write,
+        workspace_name="app",
+        guard_model=mode_ownership(tmp_path),
+        agent_paths=("{workspace}", "/logs/artifacts") if mode == "separate" else None,
+    )
+
+    stdout = layout.paths.test_stdout_path.read_text()
+    assert error is None
+    assert rewards == {"reward": reward}
+    assert ("Verifier plugin trust rejected: ctrf" in stdout) == (mode == "shared")
+
+
+async def test_separate_verifier_still_refuses_a_plugin_planted_in_the_workspace(
+    tmp_path, monkeypatch
+):
+    """Guards #1116 in separate mode: the transferred workspace is still the agent's.
+
+    A hostile ctrf the agent left in its workspace venv crosses with the
+    workspace. The verifier's pytest sees it first, the guard refuses it, and
+    the failing solution scores 0: the planted hook never runs.
+    """
+    proof = tmp_path / "hostile-imported"
+    site_path = Path(".venv/lib/python3.12/site-packages")
+
+    def plant(layout):
+        install_plugin(layout.workspace / site_path, hostile_ctrf(proof))
+
+    def loads_planted(env, layout):
+        return [layout.workspace / site_path, *uvx(env, layout)]
+
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        FAILING,
+        loads_planted,
+        before=plant,
+        workspace_name="app",
+        guard_model=mode_ownership(tmp_path),
+        agent_paths=("{workspace}", "/logs/artifacts"),
+    )
+
+    stdout = layout.paths.test_stdout_path.read_text()
+    assert "Verifier plugin trust rejected: ctrf" in stdout, stdout
+    assert rewards == {"reward": 0.0} and error is None
+    assert markers(layout, "installed") == []
+    assert not proof.exists()
+
+
+async def test_separate_verifier_guard_blocks_the_transfer_not_the_runtime_dirs(
+    tmp_path, monkeypatch
+):
+    """The armed guard in a separate verifier sandbox blocks the transfer's paths."""
+    layout = Layout(tmp_path, monkeypatch, workspace_name="app")
+    task = make_task(layout)
+    await lockdown._build_verifier_env(
+        layout,
+        task,
+        None,
+        str(layout.workspace),
+        agent_paths=(str(layout.workspace), "/out/report.txt", "/logs/artifacts"),
+    )
+
+    (guard,) = layout.fs.glob("_benchflow_guard_*/_benchflow_guard_*.py")
+    source = guard.read_text()
+    blocked = (str(layout.workspace), "/out/report.txt", "/logs/artifacts", "/logs")
+    assert f"_BENCHFLOW_BLOCKED = {blocked!r}" in source
+    assert "_BENCHFLOW_OWNERSHIP = False" in source
 
 
 async def test_workdir_root_state_moves_to_one_fresh_root_directory(

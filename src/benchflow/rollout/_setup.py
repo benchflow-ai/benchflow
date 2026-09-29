@@ -574,6 +574,7 @@ async def _verify_rollout(
     workspace: str | None = None,
     *,
     recovery_eligible: bool = False,
+    agent_paths: tuple[str, ...] | None = None,
 ) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
     """Run verifier with pre-verification hardening.
 
@@ -584,6 +585,9 @@ async def _verify_rollout(
     ``recovery_eligible`` tasks (#1136) use command start receipts and leave a
     lost start to fresh-sandbox recovery; every other task keeps the one-time
     in-place retry of a zero-output timeout (PR #949).
+
+    ``agent_paths`` marks a separate verifier sandbox and lists the paths its
+    transfer wrote; hardening distrusts only those there.
     """
     rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
     t0 = datetime.now()
@@ -592,7 +596,10 @@ async def _verify_rollout(
     timeout_budget = task.config.verifier.timeout_sec
     verifier = None
     try:
-        await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
+        harden: dict[str, Any] = {"workspace": workspace}
+        if agent_paths is not None:
+            harden["agent_paths"] = agent_paths
+        await planes.harden_before_verify(env, task, sandbox_user, **harden)
         logger.info("Running verifier...")
         verifier_kwargs: dict[str, Any] = {
             "task": task,
