@@ -816,6 +816,11 @@ async def test_refused_plugin_the_verifier_installed_is_a_verifier_error(
     )
     assert rewards is None
     assert error is not None and "installed after the agent stopped" in error
+    # It names a refused file and why it was untrusted, not "the agent could
+    # write" in general.
+    venv = layout.workspace / ".venv/lib/python3.12/site-packages"
+    assert f"{venv}/ctrf_model-0.3.5.dist-info (" in error
+    assert f"is under {layout.workspace}, which the agent could write)" in error
     assert classify_verifier_error(error) == VERIFIER_FAILED
     (marker,) = markers(layout, "installed")
     assert ".venv/lib/python3.12/site-packages" in marker.read_text()

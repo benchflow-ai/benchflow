@@ -37,6 +37,8 @@ from benchflow.rewards.validation import (
 from benchflow.sandbox.lockdown import (
     _exec_return_code,
     clear_verifier_output_dir,
+    describe_installed_marker,
+    pytest_plugin_guard_marker_text,
     pytest_plugin_guard_markers,
     pytest_plugin_guard_name,
     with_verifier_umask,
@@ -583,9 +585,11 @@ class Verifier:
             # The guard failed for its own reasons (a refused plugin raises
             # without this marker and stays scored), so pytest's exit status
             # says nothing about the solution.
+            lines = pytest_plugin_guard_marker_text(crashed[0]).strip().splitlines()
             raise PluginGuardLoadError(
-                f"the pytest plugin guard {guard} crashed inside pytest "
-                f"(traceback in verifier/{crashed[0].name}); its reward is not "
+                f"the pytest plugin guard {guard} crashed inside pytest"
+                + (f" ({lines[-1].strip()[:300]})" if lines else "")
+                + f"; traceback in verifier/{crashed[0].name}; its reward is not "
                 "scored"
             )
         installed = (
@@ -599,12 +603,17 @@ class Verifier:
             # The guard refused a plugin the verifier installed after the agent
             # stopped (a refusal of planted code leaves no marker and stays
             # scored): BenchFlow's own false positive, not the solution's 0.
+            files = describe_installed_marker(
+                pytest_plugin_guard_marker_text(installed[0])
+            )
             raise PluginGuardLoadError(
-                f"the pytest plugin guard {guard} refused a plugin the verifier "
-                "installed after the agent stopped, in a directory the agent "
-                "could write (files in verifier/"
-                f"{installed[0].name}); its reward is not scored. Install "
-                "verifier plugins with uvx or into the image's site-packages"
+                f"the pytest plugin guard {guard} refused a pytest plugin the "
+                f"verifier installed after the agent stopped: {files} (listed "
+                f"in verifier/{installed[0].name}); its reward is not scored. "
+                "Install verifier plugins with uvx, whose cache BenchFlow moves "
+                "to a directory the guard trusts, or into the image; the guard "
+                "refuses plugin code in the workspace, /tmp or a venv test.sh "
+                "makes there"
             )
 
         if test_return_code != 0 and (

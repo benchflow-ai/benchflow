@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shlex
+import stat
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1253,6 +1254,37 @@ def pytest_plugin_guard_markers(
         return sorted(verifier_dir.glob(f"{guard}.*.{kind}"))
     except OSError:
         return []
+
+
+# More than any traceback or file list a guard marker holds.
+_GUARD_MARKER_MAX_BYTES = 64 * 1024
+
+
+def pytest_plugin_guard_marker_text(marker: Path) -> str:
+    """Read a guard marker's text without following a link or blocking on a FIFO."""
+    try:
+        fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        return os.read(fd, _GUARD_MARKER_MAX_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+
+
+def describe_installed_marker(text: str) -> str:
+    """Summarise an ``installed`` marker: its first refused file, why, and the count."""
+    entries = [line.split("\t", 1) for line in text.splitlines() if line.strip()]
+    if not entries:
+        return "files the guard could not trust"
+    path, *why = entries[0]
+    first = f"{path} ({why[0]})" if why and why[0] else path
+    more = len(entries) - 1
+    return first + (f" and {more} more file{'s' if more > 1 else ''}" if more else "")
 
 
 def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:

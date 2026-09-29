@@ -31,9 +31,13 @@ the plugin after hardening, into a place the guard cannot trust (a venv in the
 workspace, say). Hardening wrote this module after the agent was stopped and
 the workspace frozen, and only the kernel sets a file's change time, so a
 plugin file changed after this module was written came from the verifier. When
-no untrusted file behind the refusal is older than this module and at least one
-is newer, the guard leaves an ``installed`` marker listing them and still
-stops pytest; the verifier reports an error instead of a score.
+every refused plugin has at least one untrusted file behind it and none of
+those is older than this module, the guard leaves an ``installed`` marker
+listing them, each with why it is untrusted, and still stops pytest; the
+verifier reports an error instead of a score. A refusal no untrusted file
+explains (a name two trusted distributions register, a plugin installed
+nowhere) stays scored. Every refusal message names each refused plugin and
+what about it the guard could not trust.
 """
 
 import json
@@ -317,30 +321,56 @@ def _armed_ns():
 
 
 def _installed_during_verification(names, entry_points, blocked, builtin_names):
-    """Return the files showing the verifier itself installed the refused *names*.
+    """Return the untrusted files showing the verifier itself installed the refused *names*.
 
-    Every refused name needs a file changed after the guard was written, and no
-    untrusted file behind any of them may be older: an older one existed while
-    the agent ran. Returns an empty list, a scored refusal, when that does not
+    Every refused name needs an untrusted file behind it that changed after
+    the guard was written, and no untrusted file behind any of them may be
+    older: an older one existed while the agent ran. A refusal that no
+    untrusted file explains (a name two trusted distributions register, a
+    plugin installed nowhere) is not the verifier installing where the guard
+    cannot trust. Returns an empty list, a scored refusal, when that does not
     hold or anything cannot be read.
     """
     try:
         armed = _armed_ns()
         evidence = []
         for name in names:
-            newer = []
-            for path in _plugin_paths(name, entry_points, builtin_names):
-                if os.stat(path).st_ctime_ns >= armed:
-                    newer.append(path)
-                elif not trusted(path, blocked):
-                    return []
-            if not newer:
+            untrusted = [
+                path
+                for path in _plugin_paths(name, entry_points, builtin_names)
+                if not trusted(path, blocked)
+            ]
+            if not untrusted or any(
+                os.stat(path).st_ctime_ns < armed for path in untrusted
+            ):
                 return []
-            evidence.extend(p for p in newer if not trusted(p, blocked))
-            evidence.extend(p for p in newer if trusted(p, blocked))
+            evidence.extend(untrusted)
         return evidence
     except Exception:
         return []
+
+
+def _why_refused(name, entry_points, blocked, builtin_names):
+    """Say what made the guard refuse *name*; never raise."""
+    try:
+        if entry_points:
+            found = [reg for ep, reg in registrations() if ep.name == name]
+            if len(found) > 1:
+                return (
+                    "registered " + str(len(found)) + " times, so the name does "
+                    "not say which code pytest loads"
+                )
+            if found and found[0] is None:
+                return "registered by a distribution whose files cannot be checked"
+        paths = _plugin_paths(name, entry_points, builtin_names)
+        if not paths:
+            return "not installed where this pytest looks"
+        for path in paths:
+            if not trusted(path, blocked):
+                return untrusted_reason(path, blocked) or path + " is not trusted"
+        return "not trusted"
+    except Exception as exc:
+        return "cannot inspect: " + type(exc).__name__
 
 
 def _validate(names, *, entry_points=True):
@@ -379,16 +409,35 @@ def _validate(names, *, entry_points=True):
             + ")"
         ) from exc
     if refused:
-        message = "Verifier plugin trust rejected: " + ", ".join(sorted(refused))
+        refused = sorted(refused)
+        reasons = [
+            name + ": " + _why_refused(name, entry_points, blocked, builtin_plugins)
+            for name in refused
+        ]
+        message = (
+            "Verifier plugin trust rejected: "
+            + ", ".join(refused)
+            + " ("
+            + "; ".join(reasons)
+            + ")"
+        )
         installed = _installed_during_verification(
-            sorted(refused), entry_points, blocked, builtin_plugins
+            refused, entry_points, blocked, builtin_plugins
         )
         if installed:
-            _mark("installed", "\n".join(installed) + "\n")
+            _mark(
+                "installed",
+                "".join(
+                    path
+                    + "\t"
+                    + (untrusted_reason(path, blocked) or "untrusted")
+                    + "\n"
+                    for path in installed
+                ),
+            )
             message += (
-                " (installed during verification where the agent could write: "
-                + ", ".join(installed[:3])
-                + "; not scored)"
+                "; the verifier installed it after the agent stopped, "
+                "so the run is not scored"
             )
         raise Rejected(message)
 

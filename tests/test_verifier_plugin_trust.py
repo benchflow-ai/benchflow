@@ -1058,3 +1058,93 @@ def test_separate_sandbox_discovery_proposes_image_plugins_by_path_alone(tmp_pat
     assert result.returncode == 0, result.stderr
     plugins = json.loads(result.stdout)["plugins"]
     assert "image_plugin" in plugins and "agent_plugin" not in plugins
+
+
+def _root_owned_everywhere(monkeypatch):
+    """Every path is root's alone, as an image's own files are."""
+    original_stat = os.stat
+
+    def model(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        fields = list(result)
+        fields[4] = 0
+        fields[0] &= ~(stat.S_IWGRP | stat.S_IWOTH)
+        return os.stat_result(fields, {"st_ctime_ns": result.st_ctime_ns})
+
+    monkeypatch.setattr(os, "stat", model)
+
+
+def test_refusal_names_each_plugin_and_what_the_guard_could_not_trust(
+    tmp_path, monkeypatch
+):
+    """Guards the refusal message fix (review of sdk-update-2026-09-27, must-fix 3).
+
+    "Where the agent could write" appeared even when nothing was
+    agent-writable. The message now gives each refused plugin its reason: the
+    untrusted path and why, a name registered twice, or a plugin installed
+    nowhere.
+    """
+    workspace = tmp_path / "workspace"
+    image = tmp_path / "image"
+    info = registration(workspace, "planted", "agent_plugin", "agent_module")
+    (workspace / "agent_module.py").write_text("# agent\n")
+    registration(image, "one", "twice", "mod_one")
+    registration(image, "two", "twice", "mod_two")
+    (image / "mod_one.py").write_text("# one\n")
+    (image / "mod_two.py").write_text("# two\n")
+    monkeypatch.setattr(sys, "path", [str(workspace), str(image), *sys.path])
+    _root_owned_everywhere(monkeypatch)
+    monkeypatch.setattr(guard, "_BENCHFLOW_BLOCKED", (str(workspace),))
+    monkeypatch.setattr(guard, "_BENCHFLOW_MARKERS", "")
+
+    with pytest.raises(guard.Rejected) as refused:
+        guard._validate(["agent_plugin", "twice", "missing_plugin"])
+
+    message = str(refused.value)
+    assert message.startswith(
+        "Verifier plugin trust rejected: agent_plugin, missing_plugin, twice ("
+    )
+    assert (
+        f"agent_plugin: {info} is under {workspace}, which the agent could write"
+        in message
+    )
+    assert "twice: registered 2 times" in message
+    assert "missing_plugin: not installed where this pytest looks" in message
+    # Nothing untrusted explains "twice" or "missing_plugin": not an install.
+    assert "not scored" not in message
+
+
+def test_install_evidence_needs_an_untrusted_file(tmp_path, monkeypatch):
+    """Guards the "installed" evidence fix (sdk-update review, must-fix 3).
+
+    A refusal counted as the verifier's own install, and so unscored, even
+    when no file behind it was untrusted: two trusted registrations of one
+    name, all newer than the guard, were "installed where the agent could
+    write". Now only untrusted, newer files are evidence.
+    """
+    image = tmp_path / "image"
+    workspace = tmp_path / "workspace"
+    registration(image, "one", "twice", "mod_one")
+    registration(image, "two", "twice", "mod_two")
+    (image / "mod_one.py").write_text("# one\n")
+    (image / "mod_two.py").write_text("# two\n")
+    info = registration(workspace, "venv", "venv_plugin", "venv_module")
+    (workspace / "venv_module.py").write_text("# the verifier's install\n")
+    monkeypatch.setattr(sys, "path", [str(image), str(workspace), *sys.path])
+    _root_owned_everywhere(monkeypatch)
+    monkeypatch.setattr(guard, "_armed_ns", lambda: 0)  # every file is newer
+    blocked = (str(workspace),)
+
+    assert guard._installed_during_verification(["twice"], True, blocked, ()) == []
+    assert guard._installed_during_verification(["venv_plugin"], True, blocked, ()) == [
+        str(info),
+        str(info / "entry_points.txt"),
+        str(workspace / "venv_module.py"),
+    ]
+    # One refused name without untrusted evidence keeps the whole refusal scored.
+    assert (
+        guard._installed_during_verification(
+            ["twice", "venv_plugin"], True, blocked, ()
+        )
+        == []
+    )
