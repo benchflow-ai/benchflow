@@ -861,6 +861,8 @@ def main():
                         )
                 except (json.JSONDecodeError, KeyError, TypeError):
                     # Try finding sessionId in raw output
+                    import re
+
                     m = re.search(r'"sessionId"\s*:\s*"([^"]+)"', result.stdout or "")
                     if m:
                         oc_session_id = m.group(1)
