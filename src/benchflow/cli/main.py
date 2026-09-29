@@ -53,6 +53,7 @@ from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
 from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.eval_regrade import register_eval_regrade
+from benchflow.cli.hillclimb import register_hillclimb
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.rescore import register_eval_score
@@ -1808,6 +1809,7 @@ register_eval_results(eval_app)
 register_eval_resume(eval_app)
 register_eval_branches(eval_app)
 register_skills(app)
+register_hillclimb(app)
 register_review(app)
 register_tasks(app)
 register_traj(app)
