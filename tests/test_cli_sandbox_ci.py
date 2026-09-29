@@ -62,6 +62,14 @@ class FakeClient:
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_host_docker_sweep(monkeypatch):
+    """`bench sandbox cleanup` also removes the host's `bf-snap-*` images. These tests
+    mock only Daytona, so without this stub they ran a real `docker rmi` over every kept
+    checkpoint on the machine running the suite. The Docker sweep has its own tests."""
+    monkeypatch.setattr(sandbox_cli, "cleanup_docker_snapshots", lambda **_: None)
+
+
 @pytest.fixture
 def fleet(monkeypatch):
     monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", ME)
