@@ -108,6 +108,15 @@ def test_default_plan_skips_agents_whose_endpoint_is_unreachable():
     assert "unreachable: https://api.anthropic.com/" in skipped[0].reason
 
 
+def test_unreachable_endpoint_reason_hides_url_userinfo():
+    url = "https://proxyuser:proxy-tok-SECRET@llm-proxy.example/v1/"
+    auth = _auth("claude-agent-acp", "CLAUDE_CODE_OAUTH_TOKEN")
+    auth = AgentAuth(auth.agent, auth.label, auth.sources, auth.effective, (url,))
+    _, skipped = plan_smoke(_report(auth, unreachable=frozenset({url})))
+    assert "proxy-tok-SECRET" not in skipped[0].reason
+    assert "https://***@llm-proxy.example/v1/" in skipped[0].reason
+
+
 def test_explicit_agents_always_run_in_order_without_duplicates():
     report = _report(_auth("codex-acp", "~/.codex/auth.json", origin="file"))
     targets, skipped = plan_smoke(report, ["codex=gpt-5.6-sol", "claude", "codex-acp"])

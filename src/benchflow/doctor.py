@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 Status = Literal["pass", "warn", "fail", "skip"]
 
@@ -139,7 +139,7 @@ class DoctorReport:
                     "ready": auth.ready,
                     "effective": auth.effective.to_dict() if auth.effective else None,
                     "sources": [s.to_dict() for s in auth.sources],
-                    "endpoints": list(auth.endpoints),
+                    "endpoints": [_redact_url(url) for url in auth.endpoints],
                     "notes": list(auth.notes),
                 }
                 for name, auth in self.agents.items()
@@ -306,10 +306,15 @@ def secret_values(environ: Mapping[str, str]) -> list[str]:
     return sorted(set(values), key=lambda value: len(value), reverse=True)
 
 
+# ``scheme://userinfo@``: a base URL can carry a token in its userinfo, which is
+# not a secret *value* of any variable, so value redaction alone misses it.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+
+
 def redact(text: str, secrets: Iterable[str]) -> str:
     for secret in secrets:
         text = text.replace(secret, "***")
-    return text
+    return _URL_USERINFO.sub(r"\1***@", text)
 
 
 def _first_line(text: str, limit: int = 200, *, secrets: Iterable[str] = ()) -> str:
@@ -381,7 +386,17 @@ def _parse_version(text: str) -> tuple[int, ...]:
 
 
 def _host(url: str) -> str:
-    return urlparse(url).netloc or url
+    """``host[:port]`` of ``url``, without userinfo (which can carry a token)."""
+    netloc = urlparse(url).netloc
+    return netloc.rsplit("@", 1)[-1] if netloc else url
+
+
+def _redact_url(url: str) -> str:
+    """``url`` with any userinfo (``user:token@``) replaced by ``***``."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc="***@" + parts.netloc.rsplit("@", 1)[-1]))
 
 
 # ── Runtime checks ──────────────────────────────────────────────────────
@@ -668,7 +683,9 @@ def check_daytona(probes: DoctorProbes, *, required: bool, offline: bool) -> Che
         )
     origin = probes.origin("DAYTONA_API_KEY")
     api_url = probes.get("DAYTONA_API_URL") or DAYTONA_DEFAULT_API
-    details.update({"key": "DAYTONA_API_KEY", "origin": origin, "api_url": api_url})
+    details.update(
+        {"key": "DAYTONA_API_KEY", "origin": origin, "api_url": _redact_url(api_url)}
+    )
     if offline:
         summary = (
             f"SDK {sdk}, DAYTONA_API_KEY set ({origin}); not validated (--offline)"
@@ -1199,7 +1216,7 @@ def check_network(
             # Any HTTP answer proves egress; a 404 or 401 here is expected, so
             # the status is kept in the details, not shown next to PASS.
             summary = f"reachable — {why}"
-            details = {"url": url, "http_status": status_code}
+            details = {"url": _redact_url(url), "http_status": status_code}
             checks.append(row("pass", summary, details=details))
             continue
         unreachable.add(url)
@@ -1208,7 +1225,7 @@ def check_network(
                 "fail" if url in required else "warn",
                 f"unreachable — {why}: {error}",
                 "Check VPN/proxy/firewall; HTTPS_PROXY is honored if set",
-                {"url": url, "error": error},
+                {"url": _redact_url(url), "error": error},
             )
         )
     return checks, frozenset(unreachable)

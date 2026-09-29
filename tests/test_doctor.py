@@ -835,3 +835,34 @@ def test_remote_docker_host_ssh_user_is_redacted(tmp_path):
     # The redacted URL (host kept, user hidden) is what remote_docker emits.
     assert "***@10.0.0.5:22" in out
     assert by_id(report)["docker"].status == "pass"
+
+
+def test_redact_masks_url_userinfo_in_free_text():
+    # A token in a base URL's userinfo is not a secret *value* of any variable.
+    assert (
+        doctor.redact("GET https://bob:tok-123@proxy.example/v1 failed", [])
+        == "GET https://***@proxy.example/v1 failed"
+    )
+    assert doctor.redact("dial ssh://deploy-token@10.0.0.5", []) == (
+        "dial ssh://***@10.0.0.5"
+    )
+    # Idempotent, and an address inside a path is not a userinfo.
+    assert doctor.redact("https://***@h/x", []) == "https://***@h/x"
+    assert doctor.redact("https://h/a/b@c.d", []) == "https://h/a/b@c.d"
+
+
+@pytest.mark.parametrize("reachable", [True, False])
+def test_base_url_userinfo_never_reaches_rows_or_details(tmp_path, reachable):
+    base = "https://proxyuser:proxy-tok-SECRET@llm-proxy.example/v1"
+    url = base + "/"
+    outcome = 200 if reachable else RuntimeError(f"connection to {url} refused")
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN, "ANTHROPIC_BASE_URL": base},
+        http={url: outcome},
+    )
+    report = run_doctor(probes=probes)
+    out = all_output(report)
+    assert "proxy-tok-SECRET" not in out and "proxyuser" not in out
+    check = by_id(report)["net.llm-proxy.example"]
+    assert check.details["url"] == "https://***@llm-proxy.example/v1/"

@@ -200,7 +200,11 @@ def plan_smoke(
         blocked = report.agent_blocked_by_network(agent)
         if blocked:
             skipped.append(
-                SmokeSkip(agent, "model endpoint unreachable: " + ", ".join(blocked))
+                SmokeSkip(
+                    agent,
+                    "model endpoint unreachable: "
+                    + ", ".join(redact(url, ()) for url in blocked),
+                )
             )
             continue
         targets.append(SmokeTarget(agent, model, _auth_label(report, agent)))
