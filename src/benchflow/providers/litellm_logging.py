@@ -165,6 +165,34 @@ def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
     _skill_catalog_gate_passed = True
 
 
+def _served_models() -> frozenset[str] | None:
+    # Every name the run's config.yaml routes (BENCHFLOW_LITELLM_SERVED_MODELS,
+    # set by the controller); None when the controller named none.
+    raw = os.environ.get("BENCHFLOW_LITELLM_SERVED_MODELS", "")
+    if not raw:
+        return None
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(values, list):
+        return None
+    return frozenset(value for value in values if isinstance(value, str) and value)
+
+
+class ModelNotServed(Exception):
+    # LiteLLM answers with the exception's status_code; 400 is what it sends
+    # itself for a model its router does not know.
+    status_code = 400
+
+    def __init__(self, model: str) -> None:
+        self.message = (
+            f"model_not_served: this run's gateway serves only the run's model, "
+            f"not {model!r}"
+        )
+        super().__init__(self.message)
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -409,6 +437,24 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     ):
         if not isinstance(data, dict):
             return None
+
+        # Refuse, and record without the request body, a request for a model
+        # the run's config does not route (codex-acp's title thread asks for
+        # gpt-5.6-luna with the task prompt). LiteLLM would also refuse it;
+        # the gate keeps that true whatever its routing fallbacks do, and the
+        # record shows the attempt in the run.
+        model = data.get("model")
+        served = _served_models()
+        if served is not None and isinstance(model, str) and model and model not in served:
+            self._write(
+                {
+                    "event": "refused",
+                    "rule": "model-not-served",
+                    "request_model": model,
+                    "call_type": call_type,
+                }
+            )
+            raise ModelNotServed(model)
 
         _gate_opencode_skill_catalog(data)
 
@@ -708,6 +754,18 @@ def trajectory_from_litellm_callback_log(
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("event") == "refused":
+            # The gateway refused the request before any provider call: not an
+            # exchange, so replay, usage and token coverage never see it.
+            trajectory.metadata.setdefault("refused_requests", []).append(
+                {
+                    key: record.get(key)
+                    for key in ("request_model", "call_type", "rule", "logged_at")
+                }
+            )
             continue
         request = (
             record.get("request") if isinstance(record.get("request"), dict) else {}

@@ -10,6 +10,11 @@ from benchflow.providers.litellm_config import safe_model_alias, strip_provider_
 CODEX_CONFIG_ENV = "CODEX_CONFIG"
 CODEX_DEFAULT_AUTH_REQUEST_ENV = "DEFAULT_AUTH_REQUEST"
 CODEX_MODEL_PROVIDER_ENV = "MODEL_PROVIDER"
+# The launcher writes this TOML to Codex's user config.toml (see codex_home_config).
+CODEX_HOME_CONFIG_ENV = "BENCHFLOW_CODEX_HOME_CONFIG"
+# First line of that file; the launcher removes a file that starts with it when
+# a later launch routes Codex to no provider.
+CODEX_HOME_CONFIG_MARKER = "# benchflow-codex-home-config"
 
 _CODEX_PROVIDER_ID_PREFIX = "benchflow-"
 _LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
@@ -85,6 +90,86 @@ def apply_codex_provider_config(
     )
 
 
+def _toml_scalar(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value) if value == value and abs(value) != float("inf") else None
+    if isinstance(value, str):
+        # JSON's string escapes are TOML basic-string escapes; TOML also
+        # requires DEL escaped, and non-ASCII stays literal (TOML rejects the
+        # surrogate-pair escapes ensure_ascii would write).
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+    return None
+
+
+def _toml_value(value: Any) -> str | None:
+    """A TOML value for scalars, lists of scalars and one-level tables, else None."""
+    scalar = _toml_scalar(value)
+    if scalar is not None:
+        return scalar
+    if isinstance(value, list):
+        items = [r for r in map(_toml_scalar, value) if r is not None]
+        return "[" + ", ".join(items) + "]" if len(items) == len(value) else None
+    if isinstance(value, dict):
+        pairs = []
+        for key, item in value.items():
+            rendered = _toml_scalar(item)
+            if not isinstance(key, str) or rendered is None:
+                return None
+            pairs.append(f"{_toml_scalar(key)} = {rendered}")
+        return "{ " + ", ".join(pairs) + " }" if pairs else "{}"
+    return None
+
+
+def codex_home_config(config: dict[str, Any] | None) -> str | None:
+    """Codex's user config.toml pinning every thread to the session's provider.
+
+    codex-acp hands CODEX_CONFIG only to the threads it opens for the ACP
+    session. Its title generator (codex-acp 1.13.1 through 2.0.0,
+    TitleGenerator.ts) starts an ephemeral thread without it and runs a turn
+    on the hard-wired ``gpt-5.6-luna`` with the user's first message, which is
+    the task prompt. Such a thread takes its provider from the user
+    config.toml, else Codex's built-in ``openai`` provider at api.openai.com:
+    the prompt left the run, and the request failed with 401 on every
+    rollout. This file makes the session's provider the default for every
+    thread and points the built-in ``openai`` provider at the same endpoint
+    (``openai_base_url``) for a thread that names it. None when CODEX_CONFIG
+    routes Codex to no provider of its own.
+    """
+    if not isinstance(config, dict):
+        return None
+    provider_id = config.get("model_provider")
+    providers = config.get("model_providers")
+    provider = providers.get(provider_id) if isinstance(providers, dict) else None
+    if not isinstance(provider_id, str) or not isinstance(provider, dict):
+        return None
+    base_url = provider.get("base_url")
+    if not isinstance(base_url, str) or not base_url:
+        return None
+    lines = [
+        CODEX_HOME_CONFIG_MARKER,
+        "# Written by BenchFlow for this launch: threads that codex-acp starts",
+        "# without the session config use the run's provider too.",
+        f"model_provider = {_toml_scalar(provider_id)}",
+    ]
+    model = config.get("model")
+    if isinstance(model, str) and model:
+        lines.append(f"model = {_toml_scalar(model)}")
+    lines += [
+        f"openai_base_url = {_toml_scalar(base_url)}",
+        "",
+        f"[model_providers.{_toml_scalar(provider_id)}]",
+    ]
+    for key, value in provider.items():
+        rendered = _toml_value(value)
+        if isinstance(key, str) and rendered is not None:
+            lines.append(f"{_toml_scalar(key)} = {rendered}")
+    return "\n".join(lines) + "\n"
+
+
 def apply_codex_launch_config(
     agent: str,
     agent_env: dict[str, str],
@@ -93,7 +178,8 @@ def apply_codex_launch_config(
     reasoning_effort: str | None,
     sandboxed: bool = False,
 ) -> tuple[dict[str, str], bool]:
-    """Configure the adapter's sandbox, web policy and launch-owned model effort."""
+    """Configure the adapter's sandbox, web policy, launch-owned model effort
+    and the provider every Codex thread defaults to."""
     if agent != "codex-acp":
         return agent_env, False
     updated_env = dict(agent_env)
@@ -127,6 +213,12 @@ def apply_codex_launch_config(
         if owns_model and reasoning_effort:
             config["model_reasoning_effort"] = reasoning_effort
         updated_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
+    home_config = codex_home_config(config)
+    if home_config is None:
+        # A value left from another role's launch would route this one.
+        updated_env.pop(CODEX_HOME_CONFIG_ENV, None)
+    else:
+        updated_env[CODEX_HOME_CONFIG_ENV] = home_config
     return (updated_env if updated_env != agent_env else agent_env), owns_model
 
 

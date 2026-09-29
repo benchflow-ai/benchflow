@@ -683,11 +683,24 @@ _ANTIGRAVITY_NO_HOSTED_SEARCH_CMD = _json_settings_merge(
 
 # Immutable built-in command, before manifest/plugin overrides. Policy checks
 # must not confuse a replacement harness with the executable they probed.
+# BENCHFLOW_CODEX_HOME_CONFIG (codex_config.codex_home_config) becomes Codex's
+# user config.toml, so threads codex-acp starts without the session config
+# (its title generator) use the run's provider instead of api.openai.com. The
+# launch fails if the file cannot be written; a launch with no provider removes
+# the file an earlier launch wrote (its first line is the marker).
 CODEX_ACP_BUILTIN_LAUNCH = (
     'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
     'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
     'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
     '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+    "fi; "
+    'c="${CODEX_HOME:-$h/.codex}"; '
+    'if [ -n "$BENCHFLOW_CODEX_HOME_CONFIG" ]; then '
+    '{ mkdir -p "$c" && printf \'%s\' "$BENCHFLOW_CODEX_HOME_CONFIG" > "$c/config.toml"; } '
+    '|| { echo "BenchFlow: cannot write $c/config.toml" >&2; exit 1; }; '
+    'elif [ "$(head -n 1 "$c/config.toml" 2>/dev/null)" = '
+    "'# benchflow-codex-home-config' ]; then "
+    'rm -f "$c/config.toml"; '
     "fi; exec "
     + _js_agent_launch(
         "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
