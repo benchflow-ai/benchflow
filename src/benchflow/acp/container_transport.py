@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from benchflow.sandbox.process import LiveProcess
+from benchflow.sandbox.process._acp_lines import line_limit, shrink_line
 from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
 from benchflow.trajectories.types import redact_trajectory_text
 
@@ -119,6 +120,13 @@ class ContainerTransport(Transport):
         """Receive a JSON-RPC message from the agent."""
         while True:
             line = await self._cp.readline()
+            limit = line_limit()
+            if limit is not None and len(line) > limit:
+                # The same rewrite the sandbox-side filter applies, for a line
+                # that reached us whole (no python3 there): #1138.
+                size = len(line)
+                line = shrink_line(line, limit)
+                logger.info("Shrank a %d-byte agent output line to %d", size, len(line))
             text = line.decode(errors="replace").strip()
             if not text:
                 continue

@@ -306,8 +306,11 @@ class TestDockerProcessEnv:
         assert "codex-acp" in main_bash_cmd
 
     @pytest.mark.asyncio
-    async def test_no_env_single_call(self):
+    async def test_no_env_single_call(self, monkeypatch):
         """When no env is passed, only the main exec runs (no env write step)."""
+        # The exact command, without the #1138 line filter around it
+        # (tests/test_acp_line_limit.py covers that).
+        monkeypatch.setenv("BENCHFLOW_ACP_LINE_LIMIT", "0")
         calls = []
         with patch(
             "asyncio.create_subprocess_exec", side_effect=self._mock_exec(calls)

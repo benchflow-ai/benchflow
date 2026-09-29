@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from typing import Any
 
+from benchflow.sandbox.process._acp_lines import filter_command
 from benchflow.sandbox.process._base import (
     _BOOTSTRAP_DONE,
     _BUFFER_LIMIT,
@@ -348,6 +349,9 @@ class DaytonaProcess(SubprocessLiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        # Lines over the ACP limit are rewritten in the sandbox: Daytona
+        # closes the PTY websocket (1008) on a multi-MB message (#1138).
+        command = filter_command(command)
         remote_env_path = None
 
         if self._is_dind:
@@ -552,6 +556,9 @@ class DaytonaPtyProcess(LiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        # Lines over the ACP limit are rewritten in the sandbox: Daytona
+        # closes the PTY websocket (1008) on a multi-MB message (#1138).
+        command = filter_command(command)
         remote_env_path = None
         session_id = f"acp-{uuid.uuid4().hex[:8]}"
         pty_env = {}

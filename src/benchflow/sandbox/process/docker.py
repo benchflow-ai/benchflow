@@ -8,6 +8,7 @@ import os
 import shlex
 from typing import Any
 
+from benchflow.sandbox.process._acp_lines import filter_command
 from benchflow.sandbox.process._base import _BUFFER_LIMIT, SubprocessLiveProcess
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,8 @@ class DockerProcess(SubprocessLiveProcess):
         cwd: str | None = None,
     ) -> None:
         proc_env = await asyncio.to_thread(self._host_env)
+        # Lines over the ACP limit are rewritten in the container (#1138).
+        command = filter_command(command)
 
         # Write env vars to a file inside the container, then source it
         # in the main command. This keeps secrets off `ps aux` on the host
