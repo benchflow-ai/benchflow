@@ -735,6 +735,13 @@ async def test_workspace_registration_cannot_drop_or_veto_an_image_plugin(
     image_pythonpath = os.pathsep.join(
         [str(workspace), str(image)] if workspace_on_image_pythonpath else [str(image)]
     )
+    # The sandbox's runtime prefixes (/tmp, /logs, ...) stand in here: this
+    # image lives under pytest's tmp_path, which is under /tmp on Linux, and a
+    # blocked /tmp would refuse the image plugin itself instead of the planted
+    # workspace file this test is about.
+    monkeypatch.setattr(
+        lockdown, "_RUNTIME_PATH_PREFIXES", (str(tmp_path / "sandbox-tmp"),)
+    )
     monkeypatch.setattr(
         lockdown,
         "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
