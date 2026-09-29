@@ -59,7 +59,7 @@ A plugin test.sh installs with `uvx`, `uv tool` or `uv run --with` then lives un
 Not moved, on purpose:
 
 - `UV_TOOL_BIN_DIR` (and the uv installer's own `$HOME/.local/bin`). test.sh adds `$HOME/.local/bin` to `PATH` by sourcing the installer's `env` script; moving the bin directory would take `uv tool install` executables off that `PATH`. The guard judges plugin code, which lives in `UV_TOOL_DIR`, not the entry-point scripts.
-- Project environments (`uv run`, `uv sync`, a `.venv` test.sh creates in the workspace). They are built from the workspace's `pyproject.toml`, which the agent controls; moving them into a trusted directory would let the agent's project metadata choose trusted plugin code. A plugin installed there is still refused, and the refusal is reported as a verifier error (next section). powerlifting-coef-calc (`uv init`, `uv add`, `uv run` in `/root`) is such a task.
+- Project environments (`uv run`, `uv sync`, a `.venv` test.sh creates in the workspace). They are built from the workspace's `pyproject.toml`, which the agent controls; moving them into a trusted directory would let the agent's project metadata choose trusted plugin code. A plugin installed there is still refused, and the refusal is reported as a verifier error (next section). powerlifting-coef-calc (`uv init`, `uv add`, `uv run` in `/root`) and Terminal-Bench 2's mailman (`uv venv .tb`, `uv pip install pytest-json-ctrf`) are such tasks; `bench tasks check` warns about the pattern and names the fix.
 - `HOME` itself. Tests read agent output through `~` and `$HOME`, and the uv installer writes where `$HOME` points.
 
 ### How guard failures are scored

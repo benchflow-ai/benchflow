@@ -49,6 +49,7 @@ from .structural_checks import (
     _check_runtime_capabilities,
     _check_task_document,
     _check_unreplaced_verifier_placeholders,
+    _check_workspace_plugin_installs,
     _logical_dir_label,
     task_config_parse_error,
     task_document_parse_error,
@@ -341,7 +342,10 @@ def check_task_warnings(task_dir: Path) -> list[str]:
     - no canary string (:mod:`benchflow.task.canary`) in any task file;
     - task.toml keys BenchFlow does not know: ignored when the task runs;
       those whose semantics BenchFlow cannot honour are named as refused at
-      run time (see :data:`benchflow.task.imports.UNHONOURED_FOREIGN_KEYS`).
+      run time (see :data:`benchflow.task.imports.UNHONOURED_FOREIGN_KEYS`);
+    - a verifier script that installs pytest plugins into a Python
+      environment in the workspace or /tmp, which the pytest plugin guard
+      refuses, leaving every trial unscored.
     """
     from benchflow.task.imports import import_task_config_toml, unhonoured_foreign_key
 
@@ -375,6 +379,13 @@ def check_task_warnings(task_dir: Path) -> list[str]:
             "benchflow-canary GUID <uuid4>') to the task.md frontmatter or "
             "verifier/test.sh so a leak into training data can be traced; "
             "bench tasks init writes one"
+        )
+    paths = TaskPaths(task_dir)
+    if paths.tests_dir.is_dir():
+        warnings.extend(
+            _check_workspace_plugin_installs(
+                paths.tests_dir, label=_logical_dir_label(paths, kind="verifier")
+            )
         )
     return warnings
 
