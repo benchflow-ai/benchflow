@@ -513,15 +513,27 @@ _VERIFIER_START_GRACE_SEC = 30.0
 
 
 async def _verifier_started(env: Any, verifier: Any) -> bool | None:
-    """Whether the command wrote its start receipt; ``None`` when unknown."""
+    """Whether the command wrote its start receipt; ``None`` when unknown.
+
+    A missing receipt is marked abandoned in the same shell command, and the
+    test command checks for that mark right after writing its receipt: a
+    command that starts after this probe gave up on it exits without running
+    the tests, so it cannot race the retry (or recovery) on the verifier's
+    outputs.
+    """
     receipt = getattr(verifier, "execution_receipt", None)
     if not isinstance(receipt, tuple) or len(receipt) != 2:
         return None
     path, service = receipt
+    quoted = shlex.quote(path)
+    abandoned = shlex.quote(f"{path}.abandoned")
     try:
         probe = await asyncio.wait_for(
             env.exec(
-                f"cat {shlex.quote(path)}", service=service, user="root", timeout_sec=10
+                f"if [ -e {quoted} ]; then cat {quoted}; else : > {abandoned}; fi",
+                service=service,
+                user="root",
+                timeout_sec=10,
             ),
             timeout=15,
         )

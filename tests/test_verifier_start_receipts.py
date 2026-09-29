@@ -78,14 +78,17 @@ def _env(started_paths):
     started = started_paths if callable(started_paths) else started_paths.__contains__
 
     async def exec_(command, **kwargs):
-        if command.startswith("cat "):
-            path = command.split(" ", 1)[1].strip("'")
+        if command.startswith("if [ -e "):  # the receipt probe
+            path = command.split()[3]
             if started(path):
                 return SimpleNamespace(stdout="started", stderr="", return_code=0)
-            return SimpleNamespace(stdout="", stderr="No such file", return_code=1)
+            abandoned.add(path)
+            return SimpleNamespace(stdout="", stderr="", return_code=0)
         return SimpleNamespace(stdout="0\n", stderr="", return_code=0)
 
-    return SimpleNamespace(exec=AsyncMock(side_effect=exec_))
+    abandoned: set[str] = set()
+
+    return SimpleNamespace(exec=AsyncMock(side_effect=exec_), abandoned=abandoned)
 
 
 @pytest.fixture
@@ -126,10 +129,10 @@ async def test_a_command_that_never_starts_is_retried_once_then_a_wedge(tmp_path
     assert error.startswith("verifier crashed: RuntimeError: verifier_wedge:")
     assert "did not start in two attempts" in error
     assert classify_verifier_error(error) == VERIFIER_INFRA
-    probed = [
-        c.args[0] for c in env.exec.await_args_list if c.args[0].startswith("cat ")
-    ]
-    assert [p.rsplit("-", 1)[-1] for p in probed] == ["1", "2"]
+    assert env.abandoned == {
+        "/run/benchflow/verifier-started-1",
+        "/run/benchflow/verifier-started-2",
+    }
     assert any("pkill" in c.args[0] for c in env.exec.await_args_list)
 
 
@@ -185,7 +188,8 @@ async def test_the_grace_starts_when_the_command_is_issued(tmp_path):
         _planes(verifier),
     )
     assert (rewards, error, verifier.attempts) == ({"reward": 0.5}, None, 1)
-    assert any(c.args[0].startswith("cat ") for c in env.exec.await_args_list)
+    assert any(c.args[0].startswith("if [ -e ") for c in env.exec.await_args_list)
+    assert env.abandoned == set()
 
 
 @pytest.mark.usefixtures("short_grace")
@@ -228,3 +232,42 @@ async def test_a_hung_status_request_is_retried_not_waited_out(monkeypatch):
         sandbox._poll_response("session", "cmd", timeout_sec=900), timeout=10
     )
     assert (result.return_code, result.stdout, calls["status"]) == (0, "done", 2)
+
+
+async def test_a_command_starting_after_the_probe_gave_up_runs_no_tests(
+    tmp_path, monkeypatch
+):
+    """Real shell: the probe marks a missing receipt abandoned, and a test
+    command the exec layer delivers only afterwards exits before test.sh, so
+    it cannot race the retry on the verifier's outputs."""
+    from types import SimpleNamespace as NS
+
+    from benchflow.rollout._setup import _verifier_started
+    from benchflow.task import verifier_core
+    from benchflow.task.paths import RolloutPaths
+    from benchflow.task.verifier_core import Verifier
+    from benchflow.task.verifier_errors import RewardFileNotFoundError
+    from tests.test_verifier_environment_checks import (
+        _receipt_sandbox,
+        _receipt_task,
+    )
+
+    task = _receipt_task(tmp_path)
+    paths = RolloutPaths(tmp_path / "rollout")
+    paths.mkdir()
+    sandbox = _receipt_sandbox(tmp_path, paths)
+    (tmp_path / "sandbox-run-benchflow").mkdir()
+    receipt = "/run/benchflow/verifier-started-late"
+    # The probe runs before the command: no receipt yet, so it gives up.
+    assert (
+        await _verifier_started(sandbox, NS(execution_receipt=(receipt, "main")))
+        is False
+    )
+    assert (tmp_path / "sandbox-run-benchflow/verifier-started-late.abandoned").exists()
+
+    monkeypatch.setattr(verifier_core, "uuid4", lambda: NS(hex="late"))
+    verifier = Verifier(task, paths, sandbox, execution_receipt=True)
+    with pytest.raises(RewardFileNotFoundError):  # test.sh never ran
+        await verifier.verify()
+    assert not (paths.verifier_dir / "reward.txt").exists()
+    assert (tmp_path / "sandbox-run-benchflow/verifier-started-late").exists()

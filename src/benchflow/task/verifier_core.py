@@ -561,7 +561,12 @@ class Verifier:
         command = f"{{ {test_command}; }} > {test_stdout_path} 2>&1"
         receipt = await self._prepare_execution_receipt(service)
         if receipt is not None:
-            command = f"printf started > {shlex.quote(receipt)} && {command}"
+            # A probe that found no receipt marks it abandoned; a command that
+            # starts after that must not run the tests (_verifier_started).
+            command = (
+                f"printf started > {shlex.quote(receipt)} && "
+                f"[ ! -e {shlex.quote(receipt + '.abandoned')} ] && {command}"
+            )
         guard = pytest_plugin_guard_name((env or {}).get("PYTEST_ADDOPTS"))
         if guard is not None:
             # A previous attempt's markers are not this run's.
