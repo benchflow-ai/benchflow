@@ -8,8 +8,14 @@ from dataclasses import replace
 from typing import Any
 
 from benchflow.agents.env import uses_native_subscription_auth
-from benchflow.agents.registry import pinned_npm_package
+from benchflow.agents.registry import (
+    CLAUDE_AGENT_ACP_LAUNCHER,
+    CLAUDE_CODE_EXECUTABLE_PATH,
+    pinned_npm_package,
+)
 from benchflow.sandbox.egress_denylist import EgressDenylist
+
+_LAUNCHER = "/opt/benchflow/bin/claude-agent-acp"
 
 _ROUTING_CONFLICTS = (
     "BENCHFLOW_PROVIDER_BASE_URL",
@@ -93,10 +99,12 @@ async def validate_native_oauth_transport(
 ) -> dict[str, Any]:
     """Check actual UID and installed native version before admitting transport.
 
-    ACP must be the registry pin; SDK must be the exact version that ACP pins,
-    and native Claude the release that SDK bundles (its ``claudeCodeVersion``).
+    ACP must be the registry pin and its SDK the exact version that ACP pins.
+    Native Claude is the separately pinned Claude Code CLI: its package and
+    its binary's ``--version`` must both be the pin, and the managed launcher
+    must be the one that hands exactly that binary to the adapter.
     """
-    if not sandbox_user or agent_launch != "/opt/benchflow/bin/claude-agent-acp":
+    if not sandbox_user or agent_launch != _LAUNCHER:
         raise ValueError(
             "Native Claude no-web transport requires a managed launcher and nonroot sandbox user"
         )
@@ -115,20 +123,27 @@ async def validate_native_oauth_transport(
         '(process.env.ANTHROPIC_BASE_URL && process.env.ANTHROPIC_BASE_URL.replace(/\\/$/,"")!=="https://api.anthropic.com"))process.exit(2);'
     )
     package, pinned = pinned_npm_package("claude-agent-acp")
+    cli_package, cli_pinned = pinned_npm_package("claude-code")
+    modules = "/opt/benchflow/js-agents/lib/node_modules"
     script = (
         inherited_guard
         + "const acp="
-        + json.dumps(f"/opt/benchflow/js-agents/lib/node_modules/{package}")
+        + json.dumps(f"{modules}/{package}")
+        + ",cli="
+        + json.dumps(f"{modules}/{cli_package}")
+        + ",exe="
+        + json.dumps(CLAUDE_CODE_EXECUTABLE_PATH)
+        + ",launcher="
+        + json.dumps(_LAUNCHER)
         + ";"
         + """const fs=require('fs'),p=require('path'),cp=require('child_process');
 const sdkName='@anthropic-ai/claude-agent-sdk';
-const main=require.resolve(sdkName,{paths:[acp]});
-const dir=p.dirname(main);
-const bin=require.resolve(sdkName+'-linux-'+process.arch+'/claude',{paths:[dir]});
-const r=cp.spawnSync(bin,['--version'],{encoding:'utf8',timeout:10000});
+const dir=p.dirname(require.resolve(sdkName,{paths:[acp]}));
+const r=cp.spawnSync(exe,['--version'],{encoding:'utf8',timeout:10000});
 if(r.status!==0)process.exit(1);
-const a=JSON.parse(fs.readFileSync(p.join(acp,'package.json'))),s=JSON.parse(fs.readFileSync(p.join(dir,'package.json')));
-console.log(JSON.stringify({acp:a.version,acp_sdk:(a.dependencies||{})[sdkName],sdk:s.version,sdk_native:s.claudeCodeVersion,native:r.stdout.trim()}));"""
+const read=f=>JSON.parse(fs.readFileSync(f));
+const a=read(p.join(acp,'package.json')),s=read(p.join(dir,'package.json')),c=read(p.join(cli,'package.json'));
+console.log(JSON.stringify({acp:a.version,acp_sdk:(a.dependencies||{})[sdkName],sdk:s.version,cli:c.version,native:r.stdout.trim(),launcher:fs.readFileSync(launcher,'utf8')}));"""
     )
     result = await env.exec(
         'test -z "${NODE_OPTIONS-}" && test -z "${NODE_PATH-}" && env -u NODE_OPTIONS -u NODE_PATH /opt/benchflow/node/bin/node -e '
@@ -146,8 +161,9 @@ console.log(JSON.stringify({acp:a.version,acp_sdk:(a.dependencies||{})[sdkName],
         or found.get("acp") != pinned
         or not isinstance(found.get("sdk"), str)
         or found.get("acp_sdk") != found["sdk"]
-        or not isinstance(found.get("sdk_native"), str)
-        or found.get("native") != f"{found['sdk_native']} (Claude Code)"
+        or found.get("cli") != cli_pinned
+        or found.get("native") != f"{cli_pinned} (Claude Code)"
+        or found.get("launcher") != CLAUDE_AGENT_ACP_LAUNCHER
     ):
         raise ValueError(
             "Native Claude no-web transport client version is not verified"

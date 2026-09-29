@@ -135,7 +135,19 @@ OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 # Exact pins. The Codex Apps and native Claude no-web admission gates verify
 # installed clients against these through pinned_npm_package(), so a bump here
 # retargets them; re-run their credential-free conformance fixtures when bumping.
-_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
+# Stay on the 0.81 line: 0.82.0 changed the tool-call contract (AIR).
+_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.2"
+# The Claude Code CLI that claude-agent-acp drives, pinned apart from the
+# adapter as Harbor and Verifiers do. Models set a minimum CLI version
+# (claude-opus-5-5 refuses Claude Code older than 2.1.280, #1137), and the CLI
+# the adapter's SDK bundles only moves with an adapter release, which can
+# break the ACP contract. The launcher hands this CLI to the adapter through
+# CLAUDE_CODE_EXECUTABLE, which claude-agent-acp reads before looking for its
+# SDK's bundled binary. That binary is still installed (npm keeps a global
+# package's optional dependencies even with --omit=optional) but never runs;
+# the native no-web gate verifies the launcher. 2.1.280 is the release the
+# adapter's SDK (0.3.280) was built against.
+_CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.280"
 _CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.13.1"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
@@ -194,37 +206,93 @@ def _npm_package_spec(package: str) -> str:
 
 
 def pinned_npm_package(agent: str) -> tuple[str, str]:
-    """Return the built-in ``(package, version)`` pin of a policy-gated ACP agent.
+    """Return the built-in ``(package, version)`` pin of a policy-gated client.
 
-    Reads the constants, not mutable ``AGENTS``: a manifest override must not
-    redefine the version an admission gate verifies.
+    ``agent`` names a policy-gated ACP agent, or ``"claude-code"`` for the
+    Claude Code CLI that ``claude-agent-acp`` runs. Reads the constants, not
+    mutable ``AGENTS``: a manifest override must not redefine the version an
+    admission gate verifies.
     """
     spec = {
         "claude-agent-acp": _CLAUDE_AGENT_ACP_PACKAGE,
+        "claude-code": _CLAUDE_CODE_PACKAGE,
         "codex-acp": _CODEX_ACP_PACKAGE,
     }[agent]
     package, _, version = spec.rpartition("@")
     return package, version
 
 
-def _js_agent_install(binary: str, package: str) -> str:
-    """Install an npm-distributed agent into BenchFlow's isolated prefix."""
+# npm links the Claude Code package's native binary here.
+CLAUDE_CODE_EXECUTABLE_PATH = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/claude"
+
+
+def js_agent_launcher(binary: str, env: tuple[tuple[str, str], ...] = ()) -> str:
+    """The launcher script ``_js_agent_install`` writes to ``/opt/benchflow/bin``.
+
+    It exports ``env`` and runs the agent on BenchFlow's private Node. The
+    native Claude admission gate compares the installed launcher against it.
+    """
+    lines = [
+        "#!/bin/sh",
+        *(f"export {name}={shlex.quote(value)}" for name, value in env),
+        f"exec {_BENCHFLOW_NODE_PREFIX}/bin/node "
+        f'{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary} "$@"',
+    ]
+    return "".join(f"{line}\n" for line in lines)
+
+
+_CLAUDE_AGENT_ACP_ENV = (("CLAUDE_CODE_EXECUTABLE", CLAUDE_CODE_EXECUTABLE_PATH),)
+CLAUDE_AGENT_ACP_LAUNCHER = js_agent_launcher("claude-agent-acp", _CLAUDE_AGENT_ACP_ENV)
+
+
+def _js_agent_install(
+    binary: str,
+    package: str,
+    *,
+    companion: str = "",
+    launcher_env: tuple[tuple[str, str], ...] = (),
+    verify: str = "",
+) -> str:
+    """Install an npm-distributed agent into BenchFlow's isolated prefix.
+
+    ``companion`` is one more exact package spec installed into the same
+    prefix. The launcher exports ``launcher_env`` before it starts the agent,
+    and ``verify`` is a last shell check the install must pass.
+    """
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     package_spec = _npm_package_spec(package)
     install_guard = "" if package_spec == package else f"[ -x {agent_bin} ] || "
+    npm = f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g --prefix {_BENCHFLOW_JS_AGENT_PREFIX}"
+    companion_install = f"( {npm} {companion} ) && " if companion else ""
+    launcher_lines = js_agent_launcher(binary, launcher_env).splitlines()
     return (
         f"{_NODE_INSTALL} && "
         f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
         f'export PATH="{_JS_AGENT_PATH}" && '
-        f"( {install_guard}{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
-        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package_spec} ) && "
-        f"printf '%s\\n' '#!/bin/sh' "
-        f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
+        f"( {install_guard}{npm} {package_spec} ) && "
+        f"{companion_install}"
+        f"printf '%s\\n' {' '.join(shlex.quote(line) for line in launcher_lines)} "
         f"> {wrapper} && "
         f"chmod +x {wrapper} && "
         f"chmod -R a+rX /opt/benchflow && "
-        f"[ -x {agent_bin} ] && [ -x {wrapper} ]"
+        f"[ -x {agent_bin} ] && [ -x {wrapper} ]" + (f" && {verify}" if verify else "")
+    )
+
+
+def _claude_code_version_check() -> str:
+    """Fail the install unless the pinned Claude Code CLI runs and reports its pin.
+
+    The package's postinstall copies the native binary over a stub, so an
+    install that skipped scripts or optional dependencies fails here rather
+    than on the rollout's first model call.
+    """
+    _, version = pinned_npm_package("claude-code")
+    cli = CLAUDE_CODE_EXECUTABLE_PATH
+    expected = f"{version} (Claude Code)"
+    return (
+        f'( v="$({cli} --version 2>&1)"; [ "$v" = {shlex.quote(expected)} ] || '
+        f'{{ echo "BenchFlow: {cli} is not Claude Code {version}: $v" >&2; exit 1; }} )'
     )
 
 
@@ -634,15 +702,23 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.73.0 (bundles @anthropic-ai/claude-agent-sdk 0.3.257):
-        # claude-fable-5-1 rejects Claude Code < 2.1.251 with
-        # `claude_code_version_too_old` (HTTP 400), so the previous 0.40.0 pin
-        # (sdk 0.3.160) cannot run that model at all. The config-option wiring
-        # below (set_config_option + the "model"/"effort" ids) was re-verified
-        # against 0.73.0 with tests/test_acp_pinned_protocol_guard.py; the ids
-        # stay coupled to this pin — re-run that guard when bumping. runtime.py
+        # The adapter and the Claude Code CLI are pinned separately (see
+        # _CLAUDE_CODE_PACKAGE): a model that needs a newer CLI is a CLI bump.
+        # Models reject a CLI below their minimum with
+        # `claude_code_version_too_old` (HTTP 400) on the first API call
+        # (claude-fable-5-1 needs 2.1.251, claude-opus-5-5 2.1.280). The
+        # config-option wiring below (set_config_option + the "model"/"effort"
+        # ids) was re-verified against 0.81.2 with
+        # tests/test_acp_pinned_protocol_guard.py; the ids stay coupled to the
+        # adapter pin, so re-run that guard when bumping either pin. runtime.py
         # uses capability-first dispatch for the rest of the family.
-        install_cmd=_js_agent_install("claude-agent-acp", _CLAUDE_AGENT_ACP_PACKAGE),
+        install_cmd=_js_agent_install(
+            "claude-agent-acp",
+            _CLAUDE_AGENT_ACP_PACKAGE,
+            companion=_CLAUDE_CODE_PACKAGE,
+            launcher_env=_CLAUDE_AGENT_ACP_ENV,
+            verify=_claude_code_version_check(),
+        ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],

@@ -150,7 +150,11 @@ def _tool_display_title(title: str, kind: str) -> str:
 
 
 def _parent_tool_call_id(update: dict) -> str | None:
-    """Read only the explicit attribution emitted by Claude ACP 0.73.0."""
+    """Read only the explicit attribution claude-agent-acp emits.
+
+    The shape, ``_meta.claudeCode.parentToolUseId``, is the same from 0.73.0
+    through 0.81.2.
+    """
     meta = update.get("_meta")
     claude = meta.get("claudeCode") if isinstance(meta, dict) else None
     parent = claude.get("parentToolUseId") if isinstance(claude, dict) else None
@@ -223,12 +227,17 @@ class ToolCallRecord:
     def absorb_parent_attribution(self, update: dict) -> None:
         """Retain Claude ACP's explicit child-tool attribution, not arbitrary meta.
 
-        claude-agent-acp 0.73.0 emits this even without its optional native
-        subagent-session capability. It is adapter-reported parentage, not
-        evidence that the child's complete transcript was captured.
+        claude-agent-acp (0.73.0 through 0.81.2) emits this even without its
+        optional native subagent-session capability. It is adapter-reported
+        parentage, not evidence that the child's complete transcript was
+        captured. A call named as its own parent is not attributed: the
+        adapter's ``tool_progress`` heartbeat for an Agent call whose subagent
+        is running reports that call with its own id as ``parentToolUseId``,
+        and a self-parented call would detach its whole subagent tree from
+        the root agent (the ATIF export drops unreachable scopes).
         """
         parent = _parent_tool_call_id(update)
-        if parent is None:
+        if parent is None or parent == self.tool_call_id:
             return
         if self.parent_tool_call_id is None:
             self.parent_tool_call_id = parent

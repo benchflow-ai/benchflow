@@ -658,7 +658,10 @@ def test_versions_show_sandbox_pin_and_host_cli(tmp_path):
     checks = by_id(run_doctor(probes=probes, offline=True))
     claude = checks["version.claude-agent-acp"]
     assert claude.status == "pass"
-    assert "@agentclientprotocol/claude-agent-acp@0.73.0" in claude.summary
+    assert (
+        "@agentclientprotocol/claude-agent-acp@0.81.2 + "
+        "@anthropic-ai/claude-code@2.1.280" in claude.summary
+    )
     assert "host claude 2.1.280" in claude.summary
     assert "host codex 0.155.1" in checks["version.codex-acp"].summary
     assert "gemini CLI not found" in checks["version.gemini"].summary
@@ -679,6 +682,26 @@ def test_versions_flag_a_registry_override_of_a_pinned_agent(tmp_path, monkeypat
     assert check.status == "warn"
     assert "codex-acp@9.9.9" in check.summary
     assert f"codex-acp@{pinned}" in check.summary
+
+
+def test_versions_flag_an_override_of_the_claude_code_cli_pin(tmp_path, monkeypatch):
+    """The no-web gate verifies the CLI pin too, so its override is flagged."""
+    from dataclasses import replace
+
+    from benchflow.agents.registry import AGENTS, pinned_npm_package
+
+    _, pinned = pinned_npm_package("claude-code")
+    cfg = AGENTS["claude-agent-acp"]
+    overridden = cfg.install_cmd.replace(f"claude-code@{pinned}", "claude-code@9.9.9")
+    assert overridden != cfg.install_cmd, "override must replace the CLI pin"
+    monkeypatch.setitem(
+        AGENTS, "claude-agent-acp", replace(cfg, install_cmd=overridden)
+    )
+    probes = make_probes(tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN})
+    check = by_id(run_doctor(probes=probes, offline=True))["version.claude-agent-acp"]
+    assert check.status == "warn"
+    assert "claude-code@9.9.9" in check.summary
+    assert f"claude-code@{pinned}" in check.summary
 
 
 # ── Network ─────────────────────────────────────────────────────────────
