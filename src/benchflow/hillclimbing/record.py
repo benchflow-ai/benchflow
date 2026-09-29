@@ -202,7 +202,10 @@ class CandidateDoc(_Model):
     train_delta: DeltaDoc | None = None
     test_delta: DeltaDoc | None = None
     cost_change: CostChangeDoc | None = None
-    decision: Literal["keep", "revert", "invalid"]
+    decision: Literal["keep", "revert", "invalid", "pending", "skipped"] = Field(
+        description="keep or revert (evaluated), invalid (no usable patch), pending "
+        "(being evaluated), skipped (not evaluated: the climb stopped first)"
+    )
     reasons: list[str] = Field(default_factory=list)
 
 

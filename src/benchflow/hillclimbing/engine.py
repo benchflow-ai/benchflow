@@ -40,6 +40,7 @@ from benchflow.hillclimbing import record as rec
 from benchflow.hillclimbing import stats
 from benchflow.hillclimbing.evaluate import (
     GRADER_BUG_FLAGS,
+    MISSING,
     EvalSettings,
     SplitName,
     SplitRun,
@@ -910,6 +911,7 @@ class _Climb:
                 return cand
             if matches:
                 self.warn(f"{cid}: the patch copies text from {matches[0]['source']}")
+        cand.decision = "pending"
         return cand
 
     # -- the climb --------------------------------------------------------
@@ -970,6 +972,20 @@ class _Climb:
             baseline = await self.evaluate("baseline", "v000")
             doc.baseline = baseline.doc
             self.save()
+            missing = sum(
+                r.category == MISSING
+                for run in baseline.runs.values()
+                for r in run.records
+            )
+            if self.budget_stopped and missing:
+                return self.finish(
+                    "stopped",
+                    "budget",
+                    f"--max-cost-usd was reached during the baseline ({missing} "
+                    "trial(s) did not run); raise it or run fewer trials",
+                    baseline,
+                    baseline,
+                )
             breach = self.infra_breach(baseline)
             if breach:
                 return self.finish("stopped", "infra", breach, baseline, baseline)
@@ -1110,11 +1126,26 @@ class _Climb:
                 remaining = self.remaining()
                 if remaining is not None and remaining <= 0:
                     self.budget_stopped = True
+                    cand.decision = "skipped"
                     cand.reasons = ["not evaluated: --max-cost-usd was reached"]
                     continue
                 ev = await self.evaluate(cand.id, cand.version)
-                evaluated[cand.id] = ev
                 cand.evaluation = ev.doc
+                missing = sum(
+                    r.category == MISSING
+                    for run in ev.runs.values()
+                    for r in run.records
+                )
+                if self.budget_stopped and missing:
+                    # Cut short by the budget: judging partial scores would
+                    # compare different task sets.
+                    cand.decision = "skipped"
+                    cand.reasons = [
+                        f"--max-cost-usd was reached during its evaluation "
+                        f"({missing} trial(s) did not run)"
+                    ]
+                    break
+                evaluated[cand.id] = ev
                 breach = self.infra_breach(ev)
                 if breach:
                     cand.decision = "revert"
@@ -1122,6 +1153,10 @@ class _Climb:
                     infra_stop = breach
                     break
                 self.save()
+            for cand in candidates:
+                if cand.decision == "pending" and cand.id not in evaluated:
+                    cand.decision = "skipped"
+                    cand.reasons = ["not evaluated: the climb stopped first"]
             gains: dict[str, float] = {}
             for cand in candidates:
                 if cand.id not in evaluated or cand.decision == "revert":

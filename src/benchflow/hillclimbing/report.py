@@ -574,10 +574,20 @@ def _decisions(doc: rec.HillclimbDoc) -> str:
     rows = []
     for rd in doc.rounds:
         for c in rd.candidates:
-            kind = {"keep": "good", "revert": "bad", "invalid": "warn"}[c.decision]
-            label = {"keep": "Kept", "revert": "Reverted", "invalid": "Invalid"}[
-                c.decision
-            ]
+            kind = {
+                "keep": "good",
+                "revert": "bad",
+                "invalid": "warn",
+                "pending": "warn",
+                "skipped": "warn",
+            }[c.decision]
+            label = {
+                "keep": "Kept",
+                "revert": "Reverted",
+                "invalid": "Invalid",
+                "pending": "Evaluating",
+                "skipped": "Skipped",
+            }[c.decision]
 
             def delta(d: rec.DeltaDoc | None) -> str:
                 if d is None or d.value is None:

@@ -282,10 +282,13 @@
           "default": null
         },
         "decision": {
+          "description": "keep or revert (evaluated), invalid (no usable patch), pending (being evaluated), skipped (not evaluated: the climb stopped first)",
           "enum": [
             "keep",
             "revert",
-            "invalid"
+            "invalid",
+            "pending",
+            "skipped"
           ],
           "title": "Decision",
           "type": "string"

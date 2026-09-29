@@ -475,6 +475,22 @@ def test_the_budget_stops_the_climb_before_a_round_it_cannot_afford(
     assert_valid(result.run_dir)
 
 
+def test_a_candidate_the_budget_cannot_cover_is_skipped_not_judged(
+    tmp_path, monkeypatch
+):
+    FakeAgent(lambda task, surface, trial: 0.0).install(monkeypatch)
+    FakeProposer([append_to_skill("x")], cost_usd=10.0).install(monkeypatch)
+    result = hillclimb(_config(tmp_path, max_cost_usd=0.5))
+
+    doc = result.record
+    cand = doc.rounds[0].candidates[0]
+    assert cand.decision == "skipped" and cand.evaluation is None
+    assert "--max-cost-usd" in cand.reasons[0]
+    assert doc.status == "stopped" and doc.stop.reason == "budget"
+    assert doc.cost.proposer_usd == pytest.approx(10.0)
+    assert_valid(result.run_dir)
+
+
 def test_a_prompt_surface_reaches_the_agent_through_the_config_overlay(
     tmp_path, monkeypatch
 ):
