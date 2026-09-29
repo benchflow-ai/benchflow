@@ -34,7 +34,9 @@ def test_the_bootstrap_standard_error_matches_the_textbook_one():
     values = {f"t{i}": [rng.random()] for i in range(60)}
     xs = [v[0] for v in values.values()]
     mean = sum(xs) / len(xs)
-    textbook = math.sqrt(sum((x - mean) ** 2 for x in xs) / len(xs)) / math.sqrt(len(xs))
+    textbook = math.sqrt(sum((x - mean) ** 2 for x in xs) / len(xs)) / math.sqrt(
+        len(xs)
+    )
     est = stats.bootstrap_score(values, samples=4000, seed=3)
     assert est.se == pytest.approx(textbook, rel=0.1)
 

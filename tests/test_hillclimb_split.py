@@ -84,7 +84,9 @@ def test_a_saved_split_reads_back_as_a_split_file(tmp_path):
 
 
 def test_strata_come_from_task_metadata(tmp_path):
-    root = make_tasks(tmp_path, ["p", "q", "r"], category=lambda i: "hydro" if i else "")
+    root = make_tasks(
+        tmp_path, ["p", "q", "r"], category=lambda i: "hydro" if i else ""
+    )
     dirs = {d.name: d for d in root.iterdir()}
     assert task_strata(dirs, "category") == {"p": None, "q": "hydro", "r": "hydro"}
     assert task_strata(dirs, None) == {"p": None, "q": None, "r": None}

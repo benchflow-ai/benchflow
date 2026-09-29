@@ -143,9 +143,10 @@ def test_a_patch_that_lifts_train_and_test_is_kept(tmp_path, monkeypatch):
     assert best.version == "v001" and best.candidate == "r01-c1" and best.round == 1
     assert best.test_delta_vs_baseline.value == pytest.approx(1.0)
     assert best.verdict.exceeds_noise and best.verdict.recommend_merge
-    assert "GENERAL-FIX" in (
-        result.run_dir / "surfaces/v001/skills/flood-skill/SKILL.md"
-    ).read_text()
+    assert (
+        "GENERAL-FIX"
+        in (result.run_dir / "surfaces/v001/skills/flood-skill/SKILL.md").read_text()
+    )
     assert "GENERAL-FIX" in first.diff and first.diff_stats.added == 2
     history = result.run_dir / "surface-history"
     assert _git_subjects(history)[0] == "baseline surface"
@@ -157,9 +158,13 @@ def test_a_patch_that_lifts_train_and_test_is_kept(tmp_path, monkeypatch):
     # Every evaluation is a normal BenchFlow job folder per trial.
     for split, names in (("train", TRAIN), ("test", TEST)):
         for k in (1, 2):
-            folder = result.run_dir / "evals" / "r01-c1" / split / f"trial-{k:02d}" / "job"
+            folder = (
+                result.run_dir / "evals" / "r01-c1" / split / f"trial-{k:02d}" / "job"
+            )
             assert (folder / "summary.json").is_file()
-            ran = sorted(r.parent.name.split("__")[0] for r in folder.glob("*/result.json"))
+            ran = sorted(
+                r.parent.name.split("__")[0] for r in folder.glob("*/result.json")
+            )
             assert ran == names
     assert_valid(result.run_dir)
 
@@ -186,7 +191,9 @@ def test_the_noise_gate_refuses_when_min_gain_is_within_noise(tmp_path, monkeypa
     assert_valid(result.run_dir)
 
 
-def test_a_proposer_that_looks_for_the_test_split_finds_none_of_it(tmp_path, monkeypatch):
+def test_a_proposer_that_looks_for_the_test_split_finds_none_of_it(
+    tmp_path, monkeypatch
+):
     """The structural guarantee: nothing of the test split is in the sandbox.
 
     The scripted optimizer searches everything uploaded to it for the test
@@ -230,7 +237,9 @@ def test_a_proposer_that_looks_for_the_test_split_finds_none_of_it(tmp_path, mon
     # It did get the train split: failures, instructions, verifier output.
     for task in TRAIN:
         assert f"hillclimb/train/tasks/{task}/instruction.md" in tree
-        assert tree[f"hillclimb/train/failures/{task}/trial-01/verifier/test-stdout.txt"]
+        assert tree[
+            f"hillclimb/train/failures/{task}/trial-01/verifier/test-stdout.txt"
+        ]
     assert "app/surface/skills/flood-skill/SKILL.md" in tree
     # Exactly two uploads, both from this round's workspace.
     uploads = proposer.runs[0]["uploads"]
@@ -259,7 +268,9 @@ def test_a_proposer_that_looks_for_the_test_split_finds_none_of_it(tmp_path, mon
     assert sum(m.files for m in seen.mounts) == len(manifest["files"])
     assert {f["mount"] for f in manifest["files"]} == {"/hillclimb", "/app/surface"}
     report = (result.run_dir / "report.html").read_text()
-    assert "Test split never mounted: 0 of 4 test tasks in 1 optimizer sandbox" in report
+    assert (
+        "Test split never mounted: 0 of 4 test tasks in 1 optimizer sandbox" in report
+    )
     assert "What the optimizer saw" in report
     assert_valid(result.run_dir)
 
@@ -295,8 +306,16 @@ def test_a_stall_ends_the_climb_with_a_root_cause_analysis(tmp_path, monkeypatch
     analysis = {
         "summary": "Most failures are capability gaps; one grader looks wrong.",
         "failures": [
-            {"id": "t0/trial-01", "category": "capability_gap", "explanation": "wrong units"},
-            {"id": "t1/trial-01", "category": "grader_bug", "explanation": "rejects a valid csv"},
+            {
+                "id": "t0/trial-01",
+                "category": "capability_gap",
+                "explanation": "wrong units",
+            },
+            {
+                "id": "t1/trial-01",
+                "category": "grader_bug",
+                "explanation": "rejects a valid csv",
+            },
             {"id": "t2/trial-01", "category": "bogus", "explanation": "not a category"},
         ],
         "recommendations": ["Fix t1's grader."],
@@ -423,7 +442,9 @@ def test_a_patch_that_pastes_a_train_instruction_is_rejected(tmp_path, monkeypat
 
     def paste(surface: Path) -> dict:
         skill = surface / "skills" / "flood-skill" / "SKILL.md"
-        skill.write_text(skill.read_text() + "\nFor example: " + instruction_of("t2") + "\n")
+        skill.write_text(
+            skill.read_text() + "\nFor example: " + instruction_of("t2") + "\n"
+        )
         return {"root_cause": "a", "change": "b", "rationale": "c"}
 
     FakeProposer([paste]).install(monkeypatch)
@@ -477,8 +498,10 @@ def test_a_prompt_surface_reaches_the_agent_through_the_config_overlay(
     assert doc.config.surfaces[0].kind == "prompt"
     assert doc.rounds[0].candidates[0].decision == "keep"
     assert any("Work carefully." in c["surface"] for c in agent.calls)
-    assert (result.run_dir / "surfaces/v001/prompt.md").read_text().endswith(
-        "CHECK-UNITS before writing the answer.\n"
+    assert (
+        (result.run_dir / "surfaces/v001/prompt.md")
+        .read_text()
+        .endswith("CHECK-UNITS before writing the answer.\n")
     )
     assert_valid(result.run_dir)
 

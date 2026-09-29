@@ -71,7 +71,9 @@ class TaskSet:
             if _is_task_dir(root):
                 found = [root]
             else:
-                found = [d for d in sorted(root.iterdir()) if d.is_dir() and _is_task_dir(d)]
+                found = [
+                    d for d in sorted(root.iterdir()) if d.is_dir() and _is_task_dir(d)
+                ]
         else:
             for item in tasks:
                 path = Path(item).expanduser()

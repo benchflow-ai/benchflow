@@ -131,7 +131,9 @@ class ExposureDoc(_Model):
     )
     manifest: str = Field(description="every uploaded file with its size and sha256")
     train_tasks: list[str] = Field(description="train tasks whose instructions it held")
-    failures: list[str] = Field(description="failed train trials it held (task/trial-NN)")
+    failures: list[str] = Field(
+        description="failed train trials it held (task/trial-NN)"
+    )
     infra_errors: list[str] = Field(default_factory=list)
     test_tasks: int = Field(description="tasks in the test split")
     test_tasks_in_paths: list[str] = Field(
@@ -287,7 +289,9 @@ class ControlsDoc(_Model):
 class AnalysisFailureDoc(_Model):
     id: str
     task: str | None = None
-    category: Literal["ambiguous_task", "grader_bug", "infrastructure", "capability_gap"]
+    category: Literal[
+        "ambiguous_task", "grader_bug", "infrastructure", "capability_gap"
+    ]
     explanation: str
 
 

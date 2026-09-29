@@ -137,9 +137,7 @@ def make_split(
         raise SplitError(f"--test-frac must be between 0 and 1, got {test_frac}")
     names = sorted(strata)
     if len(names) < 2:
-        raise SplitError(
-            f"a train/test split needs at least 2 tasks, got {len(names)}"
-        )
+        raise SplitError(f"a train/test split needs at least 2 tasks, got {len(names)}")
     groups: dict[str, list[str]] = {}
     for name in names:
         groups.setdefault(strata[name] or NO_STRATUM, []).append(name)
@@ -160,9 +158,7 @@ def make_split(
         seed=seed,
         test_frac=test_frac,
         stratify_by=stratify_by if stratified else None,
-        strata=(
-            {n: strata[n] or NO_STRATUM for n in names} if stratified else {}
-        ),
+        strata=({n: strata[n] or NO_STRATUM for n in names} if stratified else {}),
     )
 
 

@@ -270,9 +270,7 @@ def _gate_split(
     est = bootstrap_score(values, samples=samples, seed=seed)
     noise = rerun_noise(values, samples=samples, seed=seed + 1)
     if noise.band95 is None:
-        return GateSplit(
-            split, est.value, est.se, noise, math.inf, False, noise.reason
-        )
+        return GateSplit(split, est.value, est.se, noise, math.inf, False, noise.reason)
     band = noise.band95
     if objective == "cost":
         # min_gain is a fraction of the cost: compare like with like.

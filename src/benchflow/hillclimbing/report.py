@@ -255,8 +255,7 @@ def _chart(
         return mt + ph * (1 - (v - lo) / (hi - lo if hi > lo else 1))
 
     parts = [
-        f'<svg viewBox="0 0 {w} {h}" role="img" tabindex="0" '
-        f'aria-label="{_e(title)}">'
+        f'<svg viewBox="0 0 {w} {h}" role="img" tabindex="0" aria-label="{_e(title)}">'
     ]
     # Grid and y ticks.
     t = lo
@@ -285,7 +284,9 @@ def _chart(
         color = colors[split]
         # 95% band as a step area (a 10% wash).
         band = [
-            (i, p) for i, p in enumerate(pts) if p.low is not None and p.high is not None
+            (i, p)
+            for i, p in enumerate(pts)
+            if p.low is not None and p.high is not None
         ]
         if band:
             upper, lower = [], []
@@ -320,7 +321,11 @@ def _chart(
                 f'fill="{color}" stroke="var(--surface)" stroke-width="2"/>'
             )
             ends.append(
-                (y(last.value), "Train" if split == "train" else "Test", fmt(last.value))
+                (
+                    y(last.value),
+                    "Train" if split == "train" else "Test",
+                    fmt(last.value),
+                )
             )
     # Candidates: filled when kept, hollow when reverted.
     for c in cands:
@@ -505,8 +510,10 @@ def _verdict_section(doc: rec.HillclimbDoc) -> str:
             + f"<p>{_e(detail)}</p></div></section>"
         )
     objective = doc.config.objective
-    if objective == "cost" and best.cost_change_vs_baseline and (
-        best.cost_change_vs_baseline.test is not None
+    if (
+        objective == "cost"
+        and best.cost_change_vs_baseline
+        and (best.cost_change_vs_baseline.test is not None)
     ):
         hero = f"{best.cost_change_vs_baseline.test:+.1%}"
         hero_label = "Test cost per trial vs baseline"
@@ -616,7 +623,10 @@ def _setup(doc: rec.HillclimbDoc) -> str:
             + (f", by {split.stratify_by}" if split.stratify_by else ""),
         ),
         ("Agent under test", f"{doc.config.agent} / {doc.config.model or 'default'}"),
-        ("Proposer", f"{doc.config.proposer.agent} / {doc.config.proposer.model or 'default'}"),
+        (
+            "Proposer",
+            f"{doc.config.proposer.agent} / {doc.config.proposer.model or 'default'}",
+        ),
         ("Surface", ", ".join(f"{s.kind} ({s.name})" for s in doc.config.surfaces)),
         ("Objective", doc.config.objective),
         ("Trials per task", str(doc.config.trials)),
@@ -646,7 +656,11 @@ def _setup(doc: rec.HillclimbDoc) -> str:
                 if not controls.ran
                 else (
                     f"{len(controls.grader_bugs)} flagged"
-                    + (f", {len(controls.excluded)} excluded" if controls.excluded else "")
+                    + (
+                        f", {len(controls.excluded)} excluded"
+                        if controls.excluded
+                        else ""
+                    )
                 ),
             )
         )
@@ -732,14 +746,16 @@ def _isolation_line(doc: rec.HillclimbDoc) -> str:
     if not seen:
         return ""
     leaked = sorted(
-        {t for _, e in seen for t in e.test_tasks_in_paths + e.test_instructions_in_files}
+        {
+            t
+            for _, e in seen
+            for t in e.test_tasks_in_paths + e.test_instructions_in_files
+        }
     )
     n_test = len(doc.split.test)
     sandboxes = f"{len(seen)} optimizer sandbox" + ("es" if len(seen) != 1 else "")
     if leaked:
-        return _badge(
-            "bad", f"Test material found in {sandboxes}: {', '.join(leaked)}"
-        )
+        return _badge("bad", f"Test material found in {sandboxes}: {', '.join(leaked)}")
     network = (
         "none had network access"
         if all(e.network == "none" for _, e in seen)
@@ -747,8 +763,7 @@ def _isolation_line(doc: rec.HillclimbDoc) -> str:
     )
     return _badge(
         "good",
-        f"Test split never mounted: 0 of {n_test} test tasks in {sandboxes}; "
-        f"{network}",
+        f"Test split never mounted: 0 of {n_test} test tasks in {sandboxes}; {network}",
     )
 
 
@@ -809,7 +824,7 @@ def _diffs(doc: rec.HillclimbDoc) -> str:
                 continue
             stats = (
                 f" · {c.diff_stats.files_changed} file(s), +{c.diff_stats.added} "
-                f"−{c.diff_stats.removed}"
+                f"-{c.diff_stats.removed}"
                 if c.diff_stats
                 else ""
             )

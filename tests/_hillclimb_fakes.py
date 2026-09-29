@@ -56,7 +56,9 @@ def make_tasks(root: Path, names: list[str], *, category=lambda i: "hydro") -> P
         )
         (d / "instruction.md").write_text(instruction_of(name) + "\n")
         (d / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
-        (d / "tests" / "test.sh").write_text("#!/bin/bash\necho 1 > /logs/verifier/reward.txt\n")
+        (d / "tests" / "test.sh").write_text(
+            "#!/bin/bash\necho 1 > /logs/verifier/reward.txt\n"
+        )
         (d / "solution" / "solve.sh").write_text("#!/bin/bash\ntrue\n")
     return root
 
@@ -89,7 +91,9 @@ class FakeAgent:
     def install(self, monkeypatch) -> FakeAgent:
         fake = self
 
-        async def run_single_task(ev: Evaluation, task_dir: Path, cfg: Any) -> RolloutResult:
+        async def run_single_task(
+            ev: Evaluation, task_dir: Path, cfg: Any
+        ) -> RolloutResult:
             return fake.run(ev, task_dir, cfg)
 
         monkeypatch.setattr(Evaluation, "_run_single_task", run_single_task)
@@ -233,7 +237,12 @@ class FakeProposer:
         if (workdir / "surface").is_dir():
             shutil.copytree(workdir / "surface", verifier / "surface")
         check = subprocess.run(
-            [sys.executable, str(config.task_path / "tests" / "validate.py"), mode, str(workdir)],
+            [
+                sys.executable,
+                str(config.task_path / "tests" / "validate.py"),
+                mode,
+                str(workdir),
+            ],
             capture_output=True,
             text=True,
         )

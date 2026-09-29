@@ -85,7 +85,9 @@ def parse_surface(value: str | Path) -> SurfaceSpec:
 
 def check_specs(specs: Sequence[SurfaceSpec]) -> None:
     if not specs:
-        raise SurfaceError("give at least one --surface (a skills folder or a prompt file)")
+        raise SurfaceError(
+            "give at least one --surface (a skills folder or a prompt file)"
+        )
     kinds = [s.kind for s in specs]
     for kind in ("skills", "prompt"):
         if kinds.count(kind) > 1:
@@ -175,7 +177,9 @@ class SurfaceStore:
                 shutil.copyfile(spec.source, dest / spec.name)
         problems = validate_version(dest, self.specs)
         if problems:
-            raise SurfaceError("the starting surface is not usable: " + "; ".join(problems))
+            raise SurfaceError(
+                "the starting surface is not usable: " + "; ".join(problems)
+            )
         return "v000", skipped
 
     def add(self, version: str, edited: Path) -> tuple[list[str], list[str]]:
@@ -271,8 +275,10 @@ def diff_versions(old: Path, new: Path) -> tuple[str, DiffStats]:
     for rel in sorted(set(a) | set(b)):
         la, lb = _lines(a.get(rel)), _lines(b.get(rel))
         if la is None or lb is None:
-            if a.get(rel) is None or b.get(rel) is None or (
-                a[rel].read_bytes() != b[rel].read_bytes()
+            if (
+                a.get(rel) is None
+                or b.get(rel) is None
+                or (a[rel].read_bytes() != b[rel].read_bytes())
             ):
                 changed += 1
                 chunks.append(f"Binary file {rel} differs\n")
@@ -365,11 +371,7 @@ class SurfaceHistory:
         self.error: str | None = None if self.enabled else "git is not installed"
 
     def _git(self, *args: str) -> str:
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith("GIT_")
-        }
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = os.devnull
         proc = subprocess.run(
@@ -397,7 +399,9 @@ class SurfaceHistory:
             elif src.is_file():
                 shutil.copyfile(src, target)
 
-    def commit(self, version_dir: Path, names: Iterable[str], message: str) -> str | None:
+    def commit(
+        self, version_dir: Path, names: Iterable[str], message: str
+    ) -> str | None:
         """Make the tree equal ``version_dir`` and commit; return the commit id."""
         if not self.enabled:
             return None

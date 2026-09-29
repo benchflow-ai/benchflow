@@ -45,7 +45,9 @@ def test_versions_deploy_through_the_existing_mechanisms(tmp_path):
     skills = _skills(tmp_path)
     prompt = tmp_path / "prompt.md"
     prompt.write_text("Check units.\n")
-    store = SurfaceStore(tmp_path / "surfaces", [parse_surface(skills), parse_surface(prompt)])
+    store = SurfaceStore(
+        tmp_path / "surfaces", [parse_surface(skills), parse_surface(prompt)]
+    )
     version, skipped = store.baseline()
     assert version == "v000" and skipped == []
     deploy = deploy_settings(

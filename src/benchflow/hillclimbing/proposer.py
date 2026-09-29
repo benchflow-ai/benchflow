@@ -122,9 +122,7 @@ _SURFACE_TEXT = {
 }
 
 _OBJECTIVE_TEXT = {
-    "score": (
-        "The goal is a higher score: more tasks solved by the agent under test."
-    ),
+    "score": ("The goal is a higher score: more tasks solved by the agent under test."),
     "cost": (
         "The goal is a lower cost per task at the same score: the agent under test "
         "should reach the same results with fewer tokens and turns (less "
@@ -263,7 +261,9 @@ def _write_trial(record: TrialRecord, dest: Path) -> None:
         TRAJECTORY_LIMIT,
     )
     for name in _VERIFIER_FILES:
-        _copy_limited(trial_dir / "verifier" / name, dest / "verifier" / name, TEXT_LIMIT)
+        _copy_limited(
+            trial_dir / "verifier" / name, dest / "verifier" / name, TEXT_LIMIT
+        )
 
 
 def _strip_write_bits(root: Path) -> None:
@@ -359,7 +359,9 @@ def build_workspace(
     if mode == "analyze":
         infra = select_failures(train.infra_records, max_failures)
         for record in infra:
-            dest = evidence / "train" / "infra" / record.task / f"trial-{record.trial:02d}"
+            dest = (
+                evidence / "train" / "infra" / record.task / f"trial-{record.trial:02d}"
+            )
             dest.mkdir(parents=True, exist_ok=True)
             (dest / "verdict.json").write_text(
                 json.dumps(_verdict(record), indent=2) + "\n"
@@ -394,7 +396,9 @@ def leaked_test_names(workspace: Workspace, test_names: Sequence[str]) -> list[s
     hits = set()
     for upload in workspace.uploads:
         for path in Path(upload).rglob("*"):
-            hits.update(part for part in path.relative_to(upload).parts if part in names)
+            hits.update(
+                part for part in path.relative_to(upload).parts if part in names
+            )
     return sorted(hits)
 
 
@@ -574,7 +578,9 @@ if __name__ == "__main__":
 '''
 
 
-def assemble_task(dest: Path, *, mode: Mode, settings: ProposerSettings, instruction: str) -> Path:
+def assemble_task(
+    dest: Path, *, mode: Mode, settings: ProposerSettings, instruction: str
+) -> Path:
     """Write the wrapper task (``task.md``, ``tests/``) under ``dest``."""
     if dest.exists():
         shutil.rmtree(dest)

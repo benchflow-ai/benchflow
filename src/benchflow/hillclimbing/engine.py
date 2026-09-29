@@ -149,7 +149,10 @@ class HillclimbConfig:
                 0 < self.max_infra_error_rate <= 1,
                 "--max-infra-error-rate must be in (0, 1]",
             ),
-            (self.leak_check in ("reject", "warn", "off"), "--leak-check is reject, warn or off"),
+            (
+                self.leak_check in ("reject", "warn", "off"),
+                "--leak-check is reject, warn or off",
+            ),
             (
                 self.max_cost_usd is None or self.max_cost_usd > 0,
                 "--max-cost-usd must be above 0",
@@ -257,7 +260,9 @@ def decide(
     band_t = train_noise or 0.0
     band_s = test_noise or 0.0
     if dt < -band_t - EPS:
-        reasons.append(f"train score fell {dt:+.3f}, beyond the noise band {band_t:.3f}")
+        reasons.append(
+            f"train score fell {dt:+.3f}, beyond the noise band {band_t:.3f}"
+        )
     if ds < -band_s - EPS:
         reasons.append(f"test score fell {ds:+.3f}, beyond the noise band {band_s:.3f}")
     if -ct < min_gain - EPS:
@@ -325,7 +330,9 @@ class _Evaluated:
     runs: dict[SplitName, SplitRun]
     doc: rec.EvaluationDoc
 
-    def values(self, split: SplitName, objective: str = "score") -> dict[str, list[float]]:
+    def values(
+        self, split: SplitName, objective: str = "score"
+    ) -> dict[str, list[float]]:
         return self.runs[split].values(objective)
 
     def cost(self) -> float:
@@ -470,7 +477,9 @@ class _Climb:
         cats: dict[str, int] = {}
         for r in errors:
             cats[r.category or "unscored"] = cats.get(r.category or "unscored", 0) + 1
-        top = ", ".join(f"{k} {v}" for k, v in sorted(cats.items(), key=lambda x: -x[1]))
+        top = ", ".join(
+            f"{k} {v}" for k, v in sorted(cats.items(), key=lambda x: -x[1])
+        )
         return (
             f"{len(errors)} of {len(records)} trials of {ev.id} ({rate:.0%}) ended "
             f"without a score ({top}), above --max-infra-error-rate "
@@ -488,7 +497,9 @@ class _Climb:
                 f"{self.run_dir} already holds a hillclimb run ({rec.RECORD_FILE}); "
                 "pass a new --out"
             )
-        self.taskset = TaskSet.resolve(cfg.tasks, include=cfg.include, exclude=cfg.exclude)
+        self.taskset = TaskSet.resolve(
+            cfg.tasks, include=cfg.include, exclude=cfg.exclude
+        )
         if cfg.split_file:
             self.split = load_split_file(cfg.split_file, self.taskset.dirs)
         else:
@@ -514,7 +525,10 @@ class _Climb:
         self.current_commit = self.baseline_commit
         cfg_doc = rec.ConfigDoc(
             tasks=[str(p) for p in self.taskset.dirs.values()],
-            surfaces=[rec.SurfaceDoc(**s.to_dict()) for s in specs],
+            surfaces=[
+                rec.SurfaceDoc(kind=s.kind, source=str(s.source), name=s.name)
+                for s in specs
+            ],
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
@@ -603,7 +617,9 @@ class _Climb:
             self.warn(judge_note)
         if not self.cfg.controls:
             self.doc.controls = rec.ControlsDoc(
-                ran=False, skipped_reason="--skip-controls", judge_consistency=judge_note
+                ran=False,
+                skipped_reason="--skip-controls",
+                judge_consistency=judge_note,
             )
             self.save()
             return
@@ -640,7 +656,9 @@ class _Climb:
             self.doc.split = self.split_doc_()
         self.doc.controls = rec.ControlsDoc(
             ran=True,
-            oracle_job_dir=self.rel(out / "oracle") if (out / "oracle").exists() else None,
+            oracle_job_dir=self.rel(out / "oracle")
+            if (out / "oracle").exists()
+            else None,
             nop_job_dir=self.rel(out / "nop"),
             tasks=tasks,
             grader_bugs=bugs,
@@ -675,7 +693,10 @@ class _Climb:
                         "decision": c.decision,
                         "reasons": c.reasons,
                         "train_delta": c.train_delta.value if c.train_delta else None,
-                        "train_delta_ci95": [c.train_delta.ci.low, c.train_delta.ci.high]
+                        "train_delta_ci95": [
+                            c.train_delta.ci.low,
+                            c.train_delta.ci.high,
+                        ]
                         if c.train_delta and c.train_delta.ci
                         else None,
                         "test_delta": c.test_delta.value if c.test_delta else None,
@@ -700,7 +721,11 @@ class _Climb:
                 "train": {
                     **agg(current.doc.train.score),
                     "per_task": [
-                        {"task": t.task, "mean_reward": t.mean_reward, "rewards": t.rewards}
+                        {
+                            "task": t.task,
+                            "mean_reward": t.mean_reward,
+                            "rewards": t.rewards,
+                        }
                         for t in current.doc.train.per_task
                     ],
                 },
@@ -842,7 +867,9 @@ class _Climb:
             root_cause=text("root_cause"),
             change=text("change"),
             rationale=text("rationale"),
-            evidence=[str(e) for e in evidence][:50] if isinstance(evidence, list) else [],
+            evidence=[str(e) for e in evidence][:50]
+            if isinstance(evidence, list)
+            else [],
             decision="invalid",
         )
         if outcome.status != "ok" or outcome.surface_dir is None:
@@ -850,7 +877,9 @@ class _Climb:
             return cand
         problems, skipped = self.store.add(version, outcome.surface_dir)
         if skipped:
-            self.warn(f"{cid}: symlinks in the edited surface were dropped: {', '.join(skipped)}")
+            self.warn(
+                f"{cid}: symlinks in the edited surface were dropped: {', '.join(skipped)}"
+            )
         diff, diff_stats = diff_versions(
             self.store.path(current.version), self.store.path(version)
         )
@@ -951,16 +980,22 @@ class _Climb:
                     "refused", "noise_gate", doc.noise_gate.message, baseline, baseline
                 )
             if not doc.noise_gate.passed:
-                self.warn("--force: climbing although the noise gate refused (ungated run)")
+                self.warn(
+                    "--force: climbing although the noise gate refused (ungated run)"
+                )
             return await self.climb(baseline)
         except (KeyboardInterrupt, asyncio.CancelledError):
             doc.status = "stopped"
-            doc.stop = rec.StopDoc(reason="interrupted", detail="the run was interrupted")
+            doc.stop = rec.StopDoc(
+                reason="interrupted", detail="the run was interrupted"
+            )
             self.save()
             raise
         except Exception as exc:
             doc.status = "failed"
-            doc.stop = rec.StopDoc(reason="error", detail=f"{type(exc).__name__}: {exc}")
+            doc.stop = rec.StopDoc(
+                reason="error", detail=f"{type(exc).__name__}: {exc}"
+            )
             self.save()
             raise
 
@@ -990,7 +1025,9 @@ class _Climb:
             )
         )
 
-        def split_doc(gs: stats.GateSplit, score_gs: stats.GateSplit) -> rec.GateSplitDoc:
+        def split_doc(
+            gs: stats.GateSplit, score_gs: stats.GateSplit
+        ) -> rec.GateSplitDoc:
             return rec.GateSplitDoc(
                 split="train" if gs.split == "train" else "test",
                 value=gs.value,
@@ -1143,7 +1180,10 @@ class _Climb:
         return self.finish(status, stop[0], stop[1], baseline, current)
 
     async def analyze(
-        self, baseline: _Evaluated, current: _Evaluated, trigger: Literal["stall", "end"]
+        self,
+        baseline: _Evaluated,
+        current: _Evaluated,
+        trigger: Literal["stall", "end"],
     ) -> None:
         assert self.doc is not None
         ws = build_workspace(
@@ -1164,7 +1204,11 @@ class _Climb:
             ws,
             mode="analyze",
             settings=self.proposer,
-            task_dir=self.run_dir / "proposer" / "analysis" / "task" / "hillclimb-analyze",
+            task_dir=self.run_dir
+            / "proposer"
+            / "analysis"
+            / "task"
+            / "hillclimb-analyze",
             jobs_dir=self.run_dir / "proposer" / "analysis",
         )
         if outcome.cost_usd is not None:
@@ -1262,7 +1306,9 @@ class _Climb:
                 samples=samples,
                 seed=_seed(cfg.seed, "best:test:cost"),
             ),
-            test_noise=self.doc.noise_gate.test.noise_95 if self.doc.noise_gate else None,
+            test_noise=self.doc.noise_gate.test.noise_95
+            if self.doc.noise_gate
+            else None,
             gated=bool(self.doc.noise_gate and self.doc.noise_gate.passed),
         )
         candidate = None if is_baseline else best.id
@@ -1283,7 +1329,9 @@ class _Climb:
         )
 
 
-def _cost_change(before: _Evaluated, after: _Evaluated) -> dict[SplitName, float | None]:
+def _cost_change(
+    before: _Evaluated, after: _Evaluated
+) -> dict[SplitName, float | None]:
     """Relative change in USD per scored trial, per split (negative = cheaper)."""
     out: dict[SplitName, float | None] = {}
     for split in SPLITS:
@@ -1353,16 +1401,10 @@ def _verdict(
         )
     before = stats.score(baseline.values("test", "cost"))
     cut = (
-        -cost_delta.value / before
-        if cost_delta.value is not None and before
-        else None
+        -cost_delta.value / before if cost_delta.value is not None and before else None
     )
     cheaper = bool(cost_delta.ci and cost_delta.ci.high < 0)
-    held = bool(
-        d_test.ci
-        and test_noise is not None
-        and d_test.ci.low >= -test_noise
-    )
+    held = bool(d_test.ci and test_noise is not None and d_test.ci.low >= -test_noise)
     parts = [head + "."]
     if cut is not None:
         parts.append(
@@ -1410,7 +1452,9 @@ def _version() -> str:
     return benchflow.__version__
 
 
-async def ahillclimb(config: HillclimbConfig | None = None, **kwargs: Any) -> HillclimbResult:
+async def ahillclimb(
+    config: HillclimbConfig | None = None, **kwargs: Any
+) -> HillclimbResult:
     """Run a climb (async). Takes a :class:`HillclimbConfig` or its fields."""
     if config is None:
         config = HillclimbConfig(**kwargs)
@@ -1446,7 +1490,9 @@ def summarize(result: HillclimbResult) -> str:
             dt = c.train_delta.value if c.train_delta else None
             ds = c.test_delta.value if c.test_delta else None
             nums = (
-                f" train {dt:+.3f}, test {ds:+.3f}" if dt is not None and ds is not None else ""
+                f" train {dt:+.3f}, test {ds:+.3f}"
+                if dt is not None and ds is not None
+                else ""
             )
             lines.append(f"  {c.id}: {c.decision}{nums} ({'; '.join(c.reasons)[:160]})")
     if doc.best:
