@@ -35,8 +35,9 @@ import benchflow
 _SHIM = Path(benchflow.__file__).resolve().parent / "agents" / "openclaw_acp_shim.py"
 
 # sha256 of the shim bytes embedded in benchflow-ai/agents@af39feb5's
-# acp/openclaw/manifest.toml install_cmd. Update this ONLY together with that
-# manifest (or when the shim moves to the agents repo); never on its own.
+# acp/openclaw/manifest.toml install_cmd — also the exact payload agents #72
+# moves into the agents repo, and main's shim. Update this ONLY together with
+# that manifest (or when the shim moves to the agents repo); never on its own.
 _PINNED_SHIM_SHA256 = "54643ec5a0fd38ce97bdbf0be800029f5f75da5046c6c7aad318170fe0b5b00e"
 
 
@@ -57,15 +58,17 @@ def test_openclaw_shim_bytes_match_the_published_manifest() -> None:
 def test_openclaw_install_cmd_embeds_the_shim() -> None:
     import base64
 
-    from benchflow.agents.registry import AGENTS
+    from benchflow.agents import registry
 
-    cfg = AGENTS.get("openclaw")
-    if cfg is None:
-        pytest.skip("openclaw extracted from core (benchflow #1093)")
-    from benchflow.agents.registry import _OPENCLAW_SHIM
+    # Gate on the core shim itself: after the extraction an "openclaw" entry
+    # may still resolve (from the agents-repo manifest), but not from core.
+    shim_source = getattr(registry, "_OPENCLAW_SHIM", None)
+    cfg = registry.AGENTS.get("openclaw")
+    if not _SHIM.is_file() or shim_source is None or cfg is None:
+        pytest.skip("openclaw extracted from core (agents #72 / benchflow #1093)")
 
     # install_cmd base64-transports the shim source, so a shim edit is a
     # manifest edit — the coupling the parity gate then checks byte-for-byte.
-    assert _SHIM.read_text() == _OPENCLAW_SHIM
-    encoded = base64.b64encode(_OPENCLAW_SHIM.encode()).decode()
+    assert _SHIM.read_text() == shim_source
+    encoded = base64.b64encode(shim_source.encode()).decode()
     assert encoded in cfg.install_cmd
