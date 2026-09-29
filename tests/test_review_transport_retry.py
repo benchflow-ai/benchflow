@@ -130,3 +130,42 @@ async def test_an_ordinary_reviewer_error_is_not_retried(tmp_path, monkeypatch):
     trial = await _review(tmp_path)
     assert len(fake.configs) == 1
     assert not trial.review_valid
+
+
+@pytest.mark.asyncio
+async def test_a_peer_close_from_the_liveness_check_is_retried(tmp_path, monkeypatch):
+    """With the PTY liveness check a closed reviewer websocket reads as "PTY
+    closed by the peer" (tests/test_daytona_pty_liveness.py), no longer as a
+    readline timeout, so the retry fires."""
+    flaky = _FlakyTransport(
+        failures=1,
+        raw_message=(
+            "Agent connection lost: PTY closed by the peer: websocket closed "
+            "(close_code=1006)"
+        ),
+    )
+    monkeypatch.setattr(benchflow, "run", flaky)
+    trial = await _review(tmp_path)
+    assert flaky.calls == 2
+    assert trial.review_valid and trial.error_category is None
+
+
+@pytest.mark.asyncio
+async def test_a_reviewer_that_keeps_losing_its_transport_is_categorized(
+    tmp_path, monkeypatch
+):
+    """#1144: drivers tell a lost transport from a reviewer that ran and
+    produced nothing by ``reviewer_transport``."""
+    flaky = _FlakyTransport(failures=5)
+    monkeypatch.setattr(benchflow, "run", flaky)
+    trial = await _review(tmp_path)
+    assert trial.error_category == "reviewer_transport"
+    silent = _FlakyTransport(
+        failures=5, raw_message="Agent connection lost: PTY readline timeout (900s)"
+    )
+    monkeypatch.setattr(benchflow, "run", silent)
+    assert (await _review(tmp_path / "silent")).error_category is None
+    fake = FakeRun(review_payload=None, error="reviewer timed out")
+    monkeypatch.setattr(benchflow, "run", fake)
+    assert (await _review(tmp_path / "ordinary")).error_category is None
+

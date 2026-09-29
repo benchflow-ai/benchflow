@@ -530,3 +530,44 @@ async def test_refused_review_keeps_timed_out_solver_verifier_result(
     assert result.rewards == {"reward": 0.25}
     assert result.verifier_error is None
     reviewer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_reviewer_transport_loss_is_categorized_in_the_scoring_block(
+    prepared, saved, monkeypatch
+):
+    """#1144: ``scoring.error_category`` is ``reviewer_transport`` when every
+    reviewer attempt lost its sandbox transport, so a driver can tell it from
+    a reviewer that ran and produced nothing; the block still round-trips."""
+    from benchflow.review.outcome import ScoringResult, scoring_from_result
+    from benchflow.review.runner import TrialReview
+
+    lost = TrialReview(
+        trial_name=saved.name,
+        source_rollout=str(saved),
+        error="reviewer did not produce a readable review-result.json",
+        error_category="reviewer_transport",
+    )
+    monkeypatch.setattr(
+        "benchflow.review.runner.run_review", AsyncMock(return_value=lost)
+    )
+    scoring = await automatic.finish_review(prepared, saved)
+    assert scoring.status == "error"
+    assert scoring.error_category == "reviewer_transport"
+    committed = persistence.commit_scoring_result(saved, scoring)
+    assert committed["scoring"]["error_category"] == "reviewer_transport"
+    assert scoring_from_result(committed) == scoring
+
+    # Without a category the block keeps its old shape.
+    lost.error_category = None
+    plain = await automatic.finish_review(prepared, saved)
+    assert "error_category" not in plain.to_dict()
+    with pytest.raises(ValueError, match="complete scoring"):
+        ScoringResult.model_validate(
+            {
+                **plain.to_dict(),
+                "status": "complete",
+                "error": None,
+                "error_category": "reviewer_transport",
+            }
+        )

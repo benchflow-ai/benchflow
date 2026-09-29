@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -38,6 +38,7 @@ from benchflow.review.config import (
     load_rubric,
 )
 from benchflow.review.options import ReviewerConfig
+from benchflow.review.outcome import REVIEWER_TRANSPORT
 from benchflow.review.outcome import deterministic_pass as source_deterministic_pass
 from benchflow.review.scoring import ReviewScoring, score_weighted_review
 from benchflow.review.wrapper import (
@@ -79,6 +80,9 @@ class TrialReview:
     rubric_contract: str | None = None
     criterion_metadata: list[dict[str, str | int | None]] = field(default_factory=list)
     scoring: ReviewScoring | None = None
+    # "reviewer_transport" when every reviewer attempt lost its transport
+    # before a verdict (#1144); None for any other outcome.
+    error_category: Literal["reviewer_transport"] | None = None
 
     def outcome_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {key: 0 for key in _OUTCOME_KEYS}
@@ -138,6 +142,11 @@ class ReviewReport:
                     "criteria": trial.criteria,
                     "criterion_metadata": trial.criterion_metadata,
                     "scoring": trial.scoring.to_dict() if trial.scoring else None,
+                    **(
+                        {"error_category": trial.error_category}
+                        if trial.error_category
+                        else {}
+                    ),
                     "notes": trial.notes,
                 }
                 for trial in self.trials
@@ -607,6 +616,8 @@ async def run_review(
             completion_error = f"reviewer error: {result.error}"
         trial.review_valid = reward == 1.0 and completion_error is None
         review = _leaf_review_result(leaf) if leaf else None
+        if review is None and lost is not None:
+            trial.error_category = REVIEWER_TRANSPORT
         if review is None:
             trial.error = (
                 f"reviewer did not produce a readable {REVIEW_RESULT_FILENAME} "

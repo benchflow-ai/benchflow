@@ -381,6 +381,7 @@ class TransportClosedDiagnostic(Diagnostic):
             "remote_session_killed",
             "pty_startup_timeout",
             "pty_error",
+            "pty_closed",
             "acp_initialize_timeout",
             "acp_session_new_timeout",
         }
