@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import socket
 import time
@@ -529,6 +530,11 @@ class EpisodeServer:
                     "ok": False,
                     "error": f"action must be a list of {e.dim} numbers {e.flat_names()}",
                 }
+        if not all(math.isfinite(float(x)) for x in action):
+            return {
+                "ok": False,
+                "error": "action values must be finite numbers (no nan or inf)",
+            }
         repeat = max(1, min(self.config.max_repeat, repeat))
         n = 0
         for _ in range(repeat):
@@ -607,7 +613,14 @@ class EpisodeServer:
         return self._backend_skill(skill.name, args, skill)
 
     def _backend_skill(self, name: str, args: Any, skill) -> dict:
-        """A backend skill counts as one step of the budget, however long it runs in the simulator."""
+        """A backend skill counts as one step of the budget, however long it runs in the simulator; a closed-loop
+        backend skill (`start_skill`) counts every control step it runs."""
+        if isinstance(args, dict):
+            order = [a.name for a in skill.args] if skill else list(args)
+            args = [args[k] for k in order if k in args]
+        start = getattr(self.backend, "start_skill", None)
+        if callable(start):
+            return self._closed_loop_skill(start, skill.name if skill else name, args)
         run = getattr(self.backend, "run_skill", None)
         if not callable(run):
             return {
@@ -616,9 +629,6 @@ class EpisodeServer:
             }
         if self.steps >= self.config.max_steps:
             return {"ok": False, "error": "step budget exhausted"}
-        if isinstance(args, dict):
-            order = [a.name for a in skill.args] if skill else list(args)
-            args = [args[k] for k in order if k in args]
         out = run(skill.name if skill else name, [str(a) for a in args])
         self.steps += 1
         self.sim_steps += 1
@@ -650,6 +660,49 @@ class EpisodeServer:
             },
         }
 
+    def _closed_loop_skill(self, start, name: str, args: list) -> dict:
+        """A backend skill written as a generator (`start_skill(name, args)`) that yields one full action per control
+        step and returns a result dict. Every yielded action runs as an ordinary step (budget, trace, video frames,
+        success checks), so a skill never moves the robot in a way `act` could not."""
+        try:
+            gen = start(name, [str(a) for a in args])
+        except ValueError as err:
+            return {"ok": False, "error": str(err)}
+        n, out = 0, {}
+        while True:
+            if self.steps >= self.config.max_steps or self.finished:
+                gen.close()
+                out = {
+                    "stopped": "step budget exhausted"
+                    if self.steps >= self.config.max_steps
+                    else "episode finished"
+                }
+                break
+            try:
+                action = next(gen)
+            except StopIteration as stop:
+                out = stop.value or {}
+                break
+            except (
+                Exception
+            ) as err:  # a skill that fails part-way reports it; its steps still count
+                gen.close()
+                out = {"error": f"{type(err).__name__}: {err}"[:300]}
+                break
+            self.env_step([float(x) for x in action], op=f"skill:{name}")
+            n += 1
+        return {
+            "ok": True,
+            "result": {
+                "skill": name,
+                **out,
+                "executed_steps": n,
+                "state": self.state(),
+                "steps_used": self.steps,
+                "max_steps": self.config.max_steps,
+            },
+        }
+
     # ---- ending ------------------------------------------------------------------------------------------
     def finish(self, outcome: str, text: str, settle: bool = True) -> dict:
         if self.finished:
@@ -676,12 +729,19 @@ class EpisodeServer:
         judge = getattr(
             self.backend, "judge", None
         )  # e.g. safety tasks, where refusing is the rewarded ending
-        if callable(judge):
-            success = bool(judge(outcome, text))
-        elif self.config.success_mode == "first":
-            success = bool(self.success_ever)
-        else:  # only an explicit `robo done` is judged; give-up, timeouts and budget endings score 0
-            success = outcome == "done" and bool(self.backend.success())
+        judge_error = None
+        try:
+            if callable(judge):
+                success = bool(judge(outcome, text))
+            elif self.config.success_mode == "first":
+                success = bool(self.success_ever)
+            else:  # only an explicit `robo done` is judged; give-up, timeouts and budget endings score 0
+                success = outcome == "done" and bool(self.backend.success())
+        except (
+            Exception
+        ) as err:  # a simulator that died cannot be judged: score 0 and record why
+            success, judge_error = False, f"{type(err).__name__}: {err}"[:300]
+        detail = getattr(self.backend, "last_judge", None)
         self.finished, self.outcome, self.agent_text = True, outcome, text
         self.result = {
             "task": self.config.task_id,
@@ -700,6 +760,8 @@ class EpisodeServer:
             "sim_steps": self.sim_steps,
             "return": round(self.total_reward, 6),
             "initial_state_sha256": self.initial_state_sha256,
+            **({"judge_error": judge_error} if judge_error else {}),
+            **({"judge_detail": _jsonable(detail)} if detail else {}),
         }
         (self.run_dir / "result.json").write_text(json.dumps(self.result, indent=2))
         self._steps_f.flush()

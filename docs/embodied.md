@@ -26,7 +26,7 @@ The rest of BenchFlow is unchanged: an embodied task is a task format that mater
 
 ## 1. The embodiment spec
 
-A backend describes the robot it simulates with one `Embodiment` object. `robo info` prints it, the episode server validates every action against it, and exports record it next to the trace. The same schema covers single arms, bimanual rigs, dexterous hands, mobile manipulators, quadrupeds, humanoids, drones and skill-only robots.
+A backend describes the robot it simulates with one `Embodiment` object. `robo info` prints it, the episode server validates every action against it, and exports record it next to the trace. The same schema covers single arms, bimanual rigs, dexterous hands, mobile manipulators, quadrupeds, humanoids, drones, vehicles and skill-only robots.
 
 ```json
 {
@@ -70,7 +70,7 @@ A backend describes the robot it simulates with one `Embodiment` object. `robo i
 
 ### Action groups
 
-An action group is a named channel: `name`, `components` (so its dimension is `len(components)`), `low` / `high` per component, `units`, control `mode`, `frame`, and a `hold` policy that says what the channel does in a step where the agent does not command it: `zero` (send zeros, e.g. velocity or delta channels) or `last` (repeat the last command, e.g. a gripper or a position target). `initial` is the value before the first command.
+An action group is a named channel: `name`, `components` (so its dimension is `len(components)`), `low` / `high` per component, `units`, control `mode`, `frame`, and a `hold` policy that says what the channel does in a step where the agent does not command it: `zero` (send zeros, e.g. velocity or delta channels), `last` (repeat the last command, e.g. a gripper or a position target) or `value` (send `hold_value`, e.g. a car whose pedals mean "brake" when not commanded). `initial` is the value before the first command.
 
 Modes (the vocabulary is open; these are the ones in use): `ee_delta_pos`, `ee_delta_rot` (rotation vector), `ee_pose`, `joint_pos`, `joint_delta`, `joint_vel`, `joint_torque`, `gripper`, `base_twist` (vx, vy, yaw rate), `velocity_setpoint`, `rotor_thrust`, `select` (a discrete selector, e.g. which arm the skills drive), `wait`.
 
@@ -88,7 +88,7 @@ Groups are packed into the backend's flat action vector in declaration order, so
 
 ### Skills
 
-A skill is a named, typed operation that may run many simulator steps: `name`, `aliases`, `args` (each `name`, `type` in `float`, `int`, `str`, `bool`, `object`, `enum`, with `units`, `choices`, `optional`, `default`), `preconditions` (human-readable), `doc`, and `impl`: `builtin` (a controller in `benchflow.embodied.skills`, driven through the action groups) or `backend` (the backend's `run_skill`). Every simulator step a skill runs counts against the step budget; a backend skill that runs off-simulator (BEHAVIOR's symbolic primitives) counts as one step.
+A skill is a named, typed operation that may run many simulator steps: `name`, `aliases`, `args` (each `name`, `type` in `float`, `int`, `str`, `bool`, `object`, `enum`, with `units`, `choices`, `optional`, `default`), `preconditions` (human-readable), `doc`, and `impl`: `builtin` (a controller in `benchflow.embodied.skills`, driven through the action groups) or `backend` (the backend's `start_skill` or `run_skill`). A backend with `start_skill(name, args)` writes each skill as a closed-loop controller: a generator that yields one full action per control step and returns a result dict; the server runs every yielded action as an ordinary step (budget, trace line `skill:<name>`, video frame, success check), so a skill never moves the robot in a way `act` could not. Every simulator step a skill runs counts against the step budget; a backend skill that runs off-simulator (`run_skill`, e.g. BEHAVIOR's symbolic primitives) counts as one step.
 
 Built-in controllers need one capability from the backend, `ee_position(arm)`, and command either the action groups named in the skill's `binds` or, when the backend has one, its `ee_command(arm, delta, grip)` (a backend-native end-effector command; Robo Use uses it to keep its skills' exact protocol-1 behaviour):
 
@@ -154,7 +154,7 @@ The simulator image does not install BenchFlow: the modules it runs (`serve`, `s
 
 ### Backend contract (`benchflow.embodied.backend.SimBackend`)
 
-Required: `embodiment() -> Embodiment`, `reset(seed)`, `step(flat_action) -> StepResult(success, reward, info)`, `observe() -> dict`, `render(camera=None) -> HxWx3 uint8`, `success() -> bool`. Optional: `ee_position(arm)` (built-in arm skills), `run_skill(name, args)`, `pop_frames()` (frames a backend skill rendered), `judge(outcome, text)`, `camera_calibration(name, width, height)`, `workspace_images()`, `close()`.
+Required: `embodiment() -> Embodiment`, `reset(seed)`, `step(flat_action) -> StepResult(success, reward, info)`, `observe() -> dict`, `render(camera=None) -> HxWx3 uint8`, `success() -> bool`. Optional: `ee_position(arm)` (built-in arm skills), `start_skill(name, args)` (closed-loop skills, see above), `run_skill(name, args)`, `pop_frames()` (frames a backend skill rendered), `hold_action()` (the "hold still" action, instead of the group hold policies), `judge(outcome, text)` (a judge that raises scores 0 and is recorded as `judge_error` in result.json; a backend attribute `last_judge` is recorded as `judge_detail`), `camera_calibration(name, width, height)`, `workspace_images()`, `close()`.
 
 ## 4. Episode record and rollout extensions
 

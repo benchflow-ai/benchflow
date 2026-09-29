@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -923,3 +924,89 @@ def test_package_key_includes_the_task_name(tmp_path) -> None:
         and (pb / "task.md").exists()
         and pa.parent != pb.parent
     )
+
+
+# ---- closed-loop backend skills, non-finite actions, judge errors, hold values -----------------------------------
+
+
+class ClosedLoopArm(PointArm):
+    """A backend skill written as a generator: `reach X` yields ee_delta actions until the hand is at x = X."""
+
+    def embodiment(self) -> Embodiment:
+        emb = super().embodiment()
+        emb.skills = [Skill("reach", [SkillArg("x", "float", "m")], impl="backend")]
+        return emb
+
+    def start_skill(self, name, args):
+        if name != "reach":
+            raise ValueError(f"unknown skill {name!r}")
+        x = float(args[0])
+
+        def gen():
+            for _ in range(40):
+                dx = x - self.pos[0]
+                if abs(dx) < 0.005:
+                    break
+                yield [float(np.clip(dx / 0.01, -1, 1)), 0.0, 0.0, -1.0]
+            return {"reached": bool(abs(x - self.pos[0]) < 0.01)}
+
+        return gen()
+
+
+def test_closed_loop_backend_skill_runs_each_action_as_a_step(tmp_path) -> None:
+    ep = _server(tmp_path, ClosedLoopArm())
+    r = ep.handle({"op": "skill", "name": "reach", "args": ["0.1"]})
+    assert r["ok"] and r["result"]["reached"] and r["result"]["skill"] == "reach"
+    n = r["result"]["executed_steps"]
+    assert n >= 10 and ep.steps == n  # every control step counts against the budget
+    rows = [
+        json.loads(x)
+        for x in (tmp_path / "ep" / "steps.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == n and all(row["op"] == "skill:reach" for row in rows)
+    assert ep.success_ever
+    bad = ep.handle({"op": "skill", "name": "reach", "args": ["far"]})
+    assert not bad[
+        "ok"
+    ]  # argument types are checked against the spec before the skill starts
+
+
+def test_non_finite_actions_are_rejected(tmp_path) -> None:
+    ep = _server(tmp_path)
+    r = ep.handle({"op": "act", "action": [float("nan"), 0, 0, 0]})
+    assert not r["ok"] and "finite" in r["error"] and ep.steps == 0
+
+
+def test_a_judge_that_raises_scores_zero_and_is_recorded(tmp_path) -> None:
+    class Dies(PointArm):
+        last_judge: ClassVar[dict] = {"rule": "demo"}
+
+        def judge(self, outcome, text):
+            raise RuntimeError("worker died")
+
+    ep = _server(tmp_path, Dies())
+    ep.handle({"op": "done"})
+    assert ep.result["success"] is False
+    assert ep.result["judge_error"].startswith("RuntimeError")
+    assert ep.result["judge_detail"] == {"rule": "demo"}
+
+
+def test_hold_value_policy() -> None:
+    brake = ActionGroup(
+        "car.pedals",
+        ["throttle", "brake"],
+        [0.0, 0.0],
+        [1.0, 1.0],
+        "pedals",
+        hold="value",
+        hold_value=[0.0, 1.0],
+    )
+    emb = Embodiment("car", "vehicle", [brake]).validate()
+    assert emb.hold_action() == [0.0, 1.0]
+    assert Embodiment.from_dict(emb.to_dict()).hold_action() == [0.0, 1.0]
+    with pytest.raises(SpecError):
+        Embodiment(
+            "car",
+            "vehicle",
+            [ActionGroup("p", ["a"], [0.0], [1.0], "pedals", hold="value")],
+        ).validate()

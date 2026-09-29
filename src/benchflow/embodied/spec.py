@@ -23,10 +23,11 @@ KINDS = (
     "quadruped",
     "humanoid",
     "drone",
+    "vehicle",
     "skill_only",
     "other",
 )
-HOLD_POLICIES = ("zero", "last")
+HOLD_POLICIES = ("zero", "last", "value")
 ARG_TYPES = ("float", "int", "str", "bool", "object", "enum")
 SKILL_IMPLS = ("builtin", "backend")
 
@@ -49,12 +50,16 @@ class ActionGroup:
     hold: str = "zero"
     initial: list[float] | None = None
     doc: str = ""
+    # hold "value": the command that means "hold still" when it is not all zeros (e.g. a car that brakes)
+    hold_value: list[float] | None = None
 
     @property
     def dim(self) -> int:
         return len(self.components)
 
-    def hold_value(self, last: list[float] | None) -> list[float]:
+    def hold_command(self, last: list[float] | None) -> list[float]:
+        if self.hold == "value" and self.hold_value is not None:
+            return list(self.hold_value)
         if self.hold == "last" and last is not None:
             return list(last)
         if self.hold == "last" and self.initial is not None:
@@ -209,7 +214,7 @@ class Embodiment:
             if g.name in groups:
                 vals = self.check_group_values(g.name, groups[g.name])
             else:
-                vals = g.hold_value((last or {}).get(g.name))
+                vals = g.hold_command((last or {}).get(g.name))
             flat += [
                 min(max(v, lo), hi)
                 for v, lo, hi in zip(vals, g.low, g.high, strict=True)
@@ -288,6 +293,12 @@ class Embodiment:
             if g.hold not in HOLD_POLICIES:
                 raise SpecError(
                     f"action group {g.name!r}: hold must be one of {HOLD_POLICIES}"
+                )
+            if g.hold == "value" and (
+                g.hold_value is None or len(g.hold_value) != g.dim
+            ):
+                raise SpecError(
+                    f"action group {g.name!r}: hold 'value' needs a hold_value with {g.dim} entries"
                 )
             if g.initial is not None and len(g.initial) != g.dim:
                 raise SpecError(
