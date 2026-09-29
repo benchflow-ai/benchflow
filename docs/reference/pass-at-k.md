@@ -40,7 +40,3 @@ print(rates.get(5).pass_at_k, rates.get(5).pass_hat_k, rates.caveats)
 report = bf.compare("jobs/m/haiku", "jobs/m/sonnet", vary=("model",), ks=[1, 5])
 print(report.solve_rates_a.to_dict(), report.solve_rates_b.to_dict())
 ```
-
-## An interval for pass@1
-
-`benchflow.pass_at_k.pass_at_1_interval(samples, confidence=0.95, resamples=2000, seed=0, solve_threshold=None)` gives a percentile bootstrap interval for pass@1: each replicate draws the tasks with replacement, then each drawn task's scored trials with replacement. It counts samples the way `solve_rates` does, and is seeded. For a job: `pass_at_1_interval(t.solve_sample() for t in bf.load_job(path).agents())`.

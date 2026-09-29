@@ -42,7 +42,6 @@ __all__ = [
     "Sample",
     "SolveRates",
     "default_ks",
-    "pass_at_1_interval",
     "pass_at_k",
     "pass_hat_k",
     "solve_rates",
@@ -270,58 +269,3 @@ def solve_rates(
         caveats=caveats,
         controls_excluded=controls_excluded,
     )
-
-
-def pass_at_1_interval(
-    samples: Iterable[Sample],
-    *,
-    confidence: float = 0.95,
-    resamples: int = 2000,
-    seed: int = 0,
-    solve_threshold: float | None = None,
-) -> tuple[float, float] | None:
-    """A percentile bootstrap interval for pass@1 over ``samples``.
-
-    pass@1 is the mean over tasks of each task's solve rate. Each replicate
-    draws the tasks with replacement, then each drawn task's scored trials
-    with replacement, so the interval covers both which tasks were run and
-    trial-to-trial noise. Samples are counted as in :func:`solve_rates`
-    (unscored ones left out, the same success rule). None when no task has a
-    scored trial. Seeded, so the same samples give the same interval.
-
-    >>> pass_at_1_interval([Sample("a", 1.0), Sample("b", 1.0)])
-    (1.0, 1.0)
-    """
-    if not 0 < confidence < 1:
-        raise ValueError(f"confidence must be between 0 and 1, got {confidence}")
-    per_task: dict[str, list[float]] = {}
-    for s in samples:
-        reward = _finite(s.reward)
-        if reward is None:
-            continue
-        if solve_threshold is not None:
-            ok = reward >= solve_threshold
-        elif s.passed is not None:
-            ok = bool(s.passed)
-        else:
-            ok = reward == 1.0
-        per_task.setdefault(s.task, []).append(1.0 if ok else 0.0)
-    tasks = list(per_task.values())
-    if not tasks:
-        return None
-    import random
-
-    rng = random.Random(seed)
-    n = len(tasks)
-    reps = []
-    for _ in range(max(1, resamples)):
-        total = 0.0
-        for _ in range(n):
-            xs = tasks[rng.randrange(n)]
-            total += sum(rng.choices(xs, k=len(xs))) / len(xs)
-        reps.append(total / n)
-    reps.sort()
-    tail = (1 - confidence) / 2
-    lo = reps[int(tail * (len(reps) - 1))]
-    hi = reps[round((1 - tail) * (len(reps) - 1))]
-    return lo, hi
