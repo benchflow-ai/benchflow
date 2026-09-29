@@ -12,7 +12,7 @@ from benchflow._utils.text import describe_exception
 from benchflow.agents.credentials import credential_evidence_overrides
 from benchflow.models import RolloutResult
 from benchflow.review.automatic import finish_review, prepare_review
-from benchflow.review.evidence import capture_task_evidence
+from benchflow.review.evidence import EvidenceLimitError, capture_task_evidence
 from benchflow.review.evidence_runtime import (
     ensure_capture_tools,
     ensure_evidence_python,
@@ -74,6 +74,12 @@ async def prepare_capture_runtime(rollout: Rollout) -> None:
         await ensure_capture_tools(
             rollout._env, timeout_sec=rollout._config.sandbox_setup_timeout
         )
+    if separate_verifier_requested(getattr(rollout._task, "config", None)):
+        from benchflow.rollout._separate_verifier import record_pristine_outputs
+
+        # The clean control: what capture will read, measured before the
+        # agent, so only a failure the solution caused is scored as its own.
+        await record_pristine_outputs(rollout)
 
 
 async def capture_terminal_workspace(rollout: Rollout) -> None:
@@ -119,6 +125,8 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
         # Tests may still provide useful diagnostics. A capture error prevents
         # final rubric scoring and must not become a solver capability error.
         rollout._export_error = f"Workspace evidence capture failed: {exc}"
+        # A separate verifier can blame the solution for this one alone.
+        rollout._capture_over_limit = isinstance(exc, EvidenceLimitError)
         logger.exception("Workspace evidence capture failed")
 
 

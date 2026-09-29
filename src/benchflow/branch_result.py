@@ -65,7 +65,12 @@ def scope_child_result_state(rollout: Any) -> None:
     ):
         if hasattr(rollout, name):
             setattr(rollout, name, None)
-    for name in ("_terminal_timeout", "_bare_timeout", "_solver_execution_complete"):
+    for name in (
+        "_terminal_timeout",
+        "_bare_timeout",
+        "_solver_execution_complete",
+        "_capture_over_limit",
+    ):
         if hasattr(rollout, name):
             setattr(rollout, name, False)
     rollout._branch_cleanup_unquiesced = False

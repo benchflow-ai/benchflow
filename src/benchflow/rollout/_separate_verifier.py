@@ -21,7 +21,13 @@ Any failure before the verifier produces a reward — no frozen workspace, a
 manifest mismatch, a failed artifact collection, an image that does not
 build, an upload that does not unpack — is an assessment error: ``rewards``
 stays ``None`` and ``verifier_error`` starts with ``separate verifier``. It
-is never scored 0.
+is never scored 0, with one exception: when the solution's own files are why
+its outputs cannot cross (the workspace or ``/logs/artifacts`` over the
+capture limits, a declared artifact that is a symlink, a ``/logs/artifacts``
+file taking a declared artifact's place) and the same paths were within
+bounds before the agent ran, the trial scores 0 and the record says why
+(status ``refused``). The measurement before the agent is the clean control:
+a failure it would also have hit stays unscored.
 
 Per-phase timing lands in the rollout's ``timing`` (``verifier_sandbox_setup``,
 ``verifier_transfer``, ``verifier``, ``verifier_sandbox_teardown``,
@@ -44,10 +50,15 @@ import stat
 import tarfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchflow.review.evidence import (
+    WORKSPACE_MAX_BYTES,
+    WORKSPACE_MAX_ENTRIES,
+    python_missing,
+)
 from benchflow.task.paths import RolloutPaths
 from benchflow.task.verifier_sandbox import (
     SeparateVerifierError,
@@ -62,9 +73,12 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ERROR_PREFIX",
     "SeparateVerifierError",
+    "SolutionTransferRefused",
     "VerifierImage",
     "build_transfer_payload",
+    "measure_outputs",
     "plan_verifier_image",
+    "record_pristine_outputs",
     "run_separate_verifier",
     "separate_verifier_requested",
     "verifier_image_issue",
@@ -81,6 +95,226 @@ _SHARED_DIRS = frozenset(
     {"/", "/home", "/root", "/etc", "/usr", "/var", "/tmp", "/opt", "/logs", "/srv"}
 )
 _STOP_TIMEOUT_SEC = 120
+
+
+class SolutionTransferRefused(SeparateVerifierError):
+    """The solution's own files keep its outputs from the verifier; scored 0."""
+
+
+# --- before the agent: the clean control -------------------------------------
+
+# For each path: whether it exists, whether it is a symlink, and the entries
+# and regular-file bytes under it (following only a top-level link, as capture
+# does for the workspace). Excluded paths are counted too, so the count never
+# undershoots what capture would have kept.
+_PRISTINE_PROBE = r"""
+import json, os, stat, sys
+out = {}
+for path in json.loads(sys.argv[1]):
+    info = {"exists": os.path.lexists(path), "link": os.path.islink(path), "entries": 0, "bytes": 0}
+    if os.path.isdir(path):
+        for directory, dirs, files in os.walk(path, followlinks=False):
+            for name in dirs + files:
+                info["entries"] += 1
+                try:
+                    item = os.lstat(os.path.join(directory, name))
+                except OSError:
+                    continue
+                if stat.S_ISREG(item.st_mode):
+                    info["bytes"] += item.st_size
+    elif os.path.isfile(path):
+        info["entries"], info["bytes"] = 1, os.stat(path).st_size
+    out[path] = info
+print(json.dumps(out))
+"""
+
+# The same for images without python3: "exists link entries bytes" per path,
+# with "?" for a count this image has no tool for.
+_PRISTINE_SHELL_PROBE = r"""
+for p in "$@"; do
+  e=0; l=0; n=0; b=0
+  if [ -e "$p" ] || [ -L "$p" ]; then e=1; fi
+  if [ -L "$p" ]; then l=1; fi
+  if [ -d "$p" ]; then
+    if command -v find >/dev/null 2>&1 && command -v stat >/dev/null 2>&1; then
+      n=$(find "$p/" -mindepth 1 | wc -l | tr -d ' ')
+      b=$(find "$p/" -type f -exec stat -c %s {} + | awk '{s += $1} END {printf "%.0f", s}')
+    else
+      n='?'; b='?'
+    fi
+  elif [ -f "$p" ]; then
+    n=1; b=$(stat -L -c %s "$p" 2>/dev/null || echo '?')
+  fi
+  echo "$e $l $n $b"
+done
+"""
+
+
+def _count(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _measured(info: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "exists": info.get("exists") in (True, "1"),
+        "link": info.get("link") in (True, "1"),
+        "entries": _count(info.get("entries")),
+        "bytes": _count(info.get("bytes")),
+    }
+
+
+async def measure_outputs(
+    env: Any,
+    *,
+    workspace: str,
+    artifacts: Sequence[Any] = (),
+    logs_source: str | None = None,
+    timeout_sec: int = 120,
+) -> dict[str, Any]:
+    """Measure the paths separate-verifier capture reads.
+
+    For the workspace, ``/logs/artifacts`` and each declared artifact source:
+    whether it exists, whether it is a symlink, and its entries and bytes
+    (None when the image has no tool to count them). Raises when the probe
+    cannot run.
+    """
+    from benchflow.rollout._artifacts import LOGS_ARTIFACTS
+    from benchflow.task.artifacts import as_artifact_config
+
+    logs = logs_source or LOGS_ARTIFACTS
+    sources = [
+        str(PurePosixPath(workspace) / as_artifact_config(item).source)
+        for item in artifacts
+    ]
+    paths = list(dict.fromkeys([workspace, logs, *sources]))
+    result = await env.exec(
+        shlex.join(["python3", "-I", "-c", _PRISTINE_PROBE, json.dumps(paths)]),
+        user="root",
+        timeout_sec=timeout_sec,
+    )
+    if result.return_code and python_missing(result):
+        result = await env.exec(
+            shlex.join(["sh", "-c", _PRISTINE_SHELL_PROBE, "probe", *paths]),
+            user="root",
+            timeout_sec=timeout_sec,
+        )
+        if result.return_code:
+            raise RuntimeError((result.stderr or result.stdout or "")[-500:])
+        lines = (result.stdout or "").splitlines()
+        if len(lines) != len(paths):
+            raise RuntimeError("the probe returned an incomplete listing")
+        raw = {
+            # A short line leaves its counts unknown.
+            path: dict(
+                zip(("exists", "link", "entries", "bytes"), line.split(), strict=False)
+            )
+            for path, line in zip(paths, lines, strict=True)
+        }
+    elif result.return_code:
+        raise RuntimeError((result.stderr or result.stdout or "")[-500:])
+    else:
+        raw = json.loads(result.stdout or "")
+    return {
+        "workspace": workspace,
+        "logs": logs,
+        "paths": {path: _measured(raw[path]) for path in paths},
+    }
+
+
+async def record_pristine_outputs(rollout: Any) -> None:
+    """Measure what capture will read before the agent runs: the clean control.
+
+    Stores :func:`measure_outputs` as ``rollout._pristine_outputs``, or None
+    when the probe could not run, which leaves every capture failure unscored.
+    """
+    rollout._pristine_outputs = None
+    try:
+        rollout._pristine_outputs = await measure_outputs(
+            rollout._env,
+            workspace=str(rollout._agent_cwd),
+            artifacts=rollout._task.config.artifacts,
+            timeout_sec=int(
+                getattr(rollout._config, "sandbox_setup_timeout", 0) or 120
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not measure the workspace before the agent ran (%s); a "
+            "separate verifier leaves any capture failure unscored",
+            exc,
+        )
+
+
+def _pristine_totals(
+    pristine: dict[str, Any] | None, *, skip: str
+) -> tuple[int, int] | None:
+    """Entries and bytes over the measured paths other than ``skip``."""
+    if not pristine:
+        return None
+    entries = size = 0
+    for path, info in pristine["paths"].items():
+        if path == skip:
+            continue
+        if info["entries"] is None or info["bytes"] is None:
+            return None
+        entries += info["entries"]
+        size += info["bytes"]
+    return entries, size
+
+
+def _workspace_refusal(pristine: dict[str, Any] | None) -> str | None:
+    """Why an over-limit workspace capture is the solution's doing, if it is."""
+    if not pristine:
+        return None
+    totals = _pristine_totals(pristine, skip=pristine["logs"])
+    if totals is None:
+        return None
+    entries, size = totals
+    if entries > WORKSPACE_MAX_ENTRIES or size > WORKSPACE_MAX_BYTES:
+        return None
+    return (
+        "the solution's workspace and declared artifacts exceed the capture "
+        f"limits ({WORKSPACE_MAX_ENTRIES} entries, {WORKSPACE_MAX_BYTES} bytes); "
+        f"before the agent ran they held {entries} entries and {size} bytes"
+    )
+
+
+def _collection_attributable(
+    record: dict[str, Any], limits: dict[str, Any], pristine: dict[str, Any] | None
+) -> bool:
+    """Whether a failed collection is the solution's doing (see ``cause``)."""
+    if not pristine:
+        return False
+    cause = record.get("cause")
+    if cause == "limits":
+        totals = _pristine_totals(pristine, skip=pristine["workspace"])
+        max_files, max_bytes = limits.get("max_files"), limits.get("max_bytes")
+        return (
+            totals is not None
+            and isinstance(max_files, int)
+            and isinstance(max_bytes, int)
+            and totals[0] <= max_files
+            and totals[1] <= max_bytes
+        )
+    if cause == "symlink":
+        before = pristine["paths"].get(record.get("source"))
+        return before is not None and not before["link"]
+    if cause == "clash":
+        logs = pristine["paths"].get(pristine["logs"])
+        return logs is not None and logs["entries"] == 0
+    return False
+
+
+def _collection_error(record: dict[str, Any]) -> str:
+    return (
+        f"artifact collection of {record.get('source')} "
+        f"{record.get('status')}: {record.get('reason')}"
+    )
+
 
 # --- host side: what crosses over ------------------------------------------
 
@@ -166,12 +400,20 @@ def _add_bundle(payload: _Payload, bundle: Path, manifest: Any) -> None:
             payload.symlink(target, entry.link_target)
 
 
-def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
+def build_transfer_payload(
+    rollout_dir: Path,
+    dest: Path,
+    *,
+    pristine: dict[str, Any] | None = None,
+    capture_over_limit: bool = False,
+) -> dict[str, Any]:
     """Pack the frozen workspace, declared artifacts and ``/logs/artifacts``.
 
     Every byte is checked against the manifest written when it was captured.
     Returns the transfer inventory; raises :class:`SeparateVerifierError`
-    when anything the verifier needs is missing or does not match.
+    when anything the verifier needs is missing or does not match, or
+    :class:`SolutionTransferRefused` when the solution's own files are why,
+    judged against ``pristine`` (:func:`record_pristine_outputs`).
     """
     from benchflow.review.evidence import (
         EvidenceError,
@@ -182,6 +424,9 @@ def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
 
     bundle = Path(rollout_dir) / "evidence"
     if not (bundle / "manifest.json").is_file():
+        refusal = _workspace_refusal(pristine) if capture_over_limit else None
+        if refusal is not None:
+            raise SolutionTransferRefused(refusal)
         raise SeparateVerifierError("no frozen workspace (evidence/manifest.json)")
     try:
         manifest = EvidenceManifest.model_validate_json(
@@ -204,12 +449,23 @@ def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
         ) from exc
 
     collected = _read_json(Path(rollout_dir) / MANIFEST_NAME)
-    for record in collected.get("collections", []):
-        if record.get("status") in _FAILED_COLLECTIONS:
-            raise SeparateVerifierError(
-                f"artifact collection of {record.get('source')} "
-                f"{record.get('status')}: {record.get('reason')}"
-            )
+    failed = [
+        record
+        for record in collected.get("collections", [])
+        if record.get("status") in _FAILED_COLLECTIONS
+    ]
+    if failed:
+        limits = collected.get("limits") or {}
+        blocking = [
+            record
+            for record in failed
+            if not _collection_attributable(record, limits, pristine)
+        ]
+        if blocking:
+            raise SeparateVerifierError(_collection_error(blocking[0]))
+        raise SolutionTransferRefused(
+            "; ".join(_collection_error(record) for record in failed)
+        )
     logs_files = [
         f
         for f in collected.get("files", [])
@@ -434,10 +690,17 @@ async def run_separate_verifier(
     try:
         plan = plan_verifier_image(task.config, Path(task.paths.task_dir))
         record["image_source"] = plan.source
+        record["pristine"] = getattr(rollout, "_pristine_outputs", None)
         try:
             summary = await asyncio.to_thread(
-                build_transfer_payload, rollout_dir, archive
+                build_transfer_payload,
+                rollout_dir,
+                archive,
+                pristine=record["pristine"],
+                capture_over_limit=getattr(rollout, "_capture_over_limit", False),
             )
+        except SolutionTransferRefused:
+            raise
         except SeparateVerifierError as exc:
             capture = getattr(rollout, "_export_error", None)
             detail = f" ({capture})" if capture else ""
@@ -479,6 +742,13 @@ async def run_separate_verifier(
             paths.verifier_dir, rollout._rollout_paths.verifier_dir
         )
         record["status"] = "complete" if error is None else "verifier_failed"
+    except SolutionTransferRefused as exc:
+        # The solution's own files: its result, not a failure to assess it.
+        # No verifier error, so the retry loop cannot resample it away.
+        rewards, error = {"reward": 0.0}, None
+        record["status"] = "refused"
+        record["refusal"] = f"the solution's outputs cannot reach the verifier: {exc}"
+        logger.warning("%s; scored 0", record["refusal"])
     except SeparateVerifierError as exc:
         rewards, error = None, f"{ERROR_PREFIX} {exc}"
         if record["status"] == "pending":

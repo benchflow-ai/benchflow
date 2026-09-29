@@ -887,6 +887,11 @@ class Rollout:
         # an export-time infra failure ("connection lost") as the agent's own
         # infra_failure category in dashboards.
         self._export_error: str | None = None
+        # A separate verifier's clean control: the paths capture reads,
+        # measured before the agent runs, and whether workspace capture then
+        # hit its limits (see rollout._separate_verifier).
+        self._pristine_outputs: dict[str, Any] | None = None
+        self._capture_over_limit = False
         # Single bag for the four parallel diagnostic fields the old code
         # carried as separate attrs (issue #503). Each callsite that used
         # to assign to one of those slots now calls ``self._diagnostics.set(...)``

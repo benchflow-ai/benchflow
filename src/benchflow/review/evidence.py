@@ -37,6 +37,18 @@ class EvidenceError(RuntimeError):
     """Required evidence could not be captured or verified completely."""
 
 
+class EvidenceLimitError(EvidenceError):
+    """The captured files exceed the configured byte or entry limits."""
+
+
+# Default limits for one workspace capture (--freeze-workspace, automatic
+# review, separate verifier sandboxes).
+WORKSPACE_MAX_BYTES = 20 * 1024**3
+WORKSPACE_MAX_ENTRIES = 200_000
+# The capture script's exit status when the limits are exceeded.
+_LIMIT_EXIT = 3
+
+
 class EvidenceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -121,8 +133,8 @@ class _CaptureReceipt(BaseModel):
 # exclusion, a link with its target text. A link is kept only when both its
 # resolution and its text stay inside the root, the rule the host extraction,
 # validate_workspace and the reviewer's admission check apply to it; a link
-# loop has no target to keep. Quota overflows and concurrent changes still
-# fail the capture.
+# loop has no target to keep. Quota overflows (exit status 3) and concurrent
+# changes still fail the capture.
 _CAPTURE_SCRIPT = r"""
 import fnmatch, hashlib, json, os, pathlib, posixpath, stat, sys, tarfile, tempfile
 source = pathlib.Path(sys.argv[1]).resolve()
@@ -134,10 +146,13 @@ root = source if source.is_dir() else source.parent
 max_bytes, max_entries = map(int, sys.argv[2:4])
 rules = json.loads(sys.argv[4])
 paths, exclusions, total = [], [], 0
+def over_limit():
+    sys.stderr.write("workspace evidence exceeds configured capture limits\n")
+    raise SystemExit(3)
 def record(path, reason, **details):
     exclusions.append({"original_path": path.as_posix(), "reason": reason, **details})
     if len(paths) + len(exclusions) > max_entries:
-        raise ValueError("workspace evidence exceeds configured capture limits")
+        over_limit()
 def kept_link(path, target):
     try:
         os.stat(path)
@@ -196,7 +211,7 @@ for directory, dirs, files in walk:
         total += info.st_size if stat.S_ISREG(info.st_mode) else 0
         paths.append((path, info))
         if total > max_bytes or len(paths) + len(exclusions) > max_entries:
-            raise ValueError("workspace evidence exceeds configured capture limits")
+            over_limit()
 temp_root = next((p for p in ("/tmp", "/var/tmp")
                   if not pathlib.Path(p).resolve().is_relative_to(root)), None)
 if temp_root is None:
@@ -279,7 +294,7 @@ def _extract_archive(
             members.append(member)
             total += member.size
             if member.size < 0 or len(members) > max_entries or total > max_bytes:
-                raise EvidenceError(
+                raise EvidenceLimitError(
                     "Workspace evidence exceeds configured capture limits"
                 )
         names: set[PurePosixPath] = set()
@@ -575,7 +590,7 @@ def _normalize_tar_capture(
                 if member.isdir():
                     excluded_dirs.append(name)
                 if over():
-                    raise EvidenceError(
+                    raise EvidenceLimitError(
                         "Workspace evidence exceeds configured capture limits"
                     )
                 continue
@@ -590,7 +605,7 @@ def _normalize_tar_capture(
                 total += copy.size
                 kept += 1
                 if over():
-                    raise EvidenceError(
+                    raise EvidenceLimitError(
                         "Workspace evidence exceeds configured capture limits"
                     )
                 archive.addfile(copy, io.BytesIO(payload))
@@ -601,7 +616,7 @@ def _normalize_tar_capture(
                 copy.type = tarfile.DIRTYPE
             kept += 1
             if over():
-                raise EvidenceError(
+                raise EvidenceLimitError(
                     "Workspace evidence exceeds configured capture limits"
                 )
             archive.addfile(copy)
@@ -698,8 +713,8 @@ async def capture_workspace(
     workspace: str,
     destination: Path,
     *,
-    max_bytes: int = 20 * 1024**3,
-    max_entries: int = 200_000,
+    max_bytes: int = WORKSPACE_MAX_BYTES,
+    max_entries: int = WORKSPACE_MAX_ENTRIES,
     timeout_sec: int = 600,
     exclude: Sequence[str] = (),
     excluded_paths: Sequence[str] = (),
@@ -751,6 +766,8 @@ async def capture_workspace(
             max_entries=max_entries,
             timeout_sec=timeout_sec,
         )
+    if result.return_code == _LIMIT_EXIT:
+        raise EvidenceLimitError("Workspace evidence exceeds configured capture limits")
     if result.return_code != 0:
         raise EvidenceError(
             f"Workspace capture failed: {(result.stderr or result.stdout or '')[-2000:]}"
@@ -1001,8 +1018,8 @@ async def capture_task_evidence(
     *,
     artifacts: Sequence[str | ArtifactConfig] = (),
     excluded_paths: Sequence[str] = (),
-    max_bytes: int = 20 * 1024**3,
-    max_entries: int = 200_000,
+    max_bytes: int = WORKSPACE_MAX_BYTES,
+    max_entries: int = WORKSPACE_MAX_ENTRIES,
     timeout_sec: int = 600,
 ) -> EvidenceManifest:
     """Commit workspace and declared external artifacts as one evidence bundle.
@@ -1085,7 +1102,7 @@ async def capture_task_evidence(
                     status = "in_workspace"
                 else:
                     if min(remaining_bytes, remaining_entries) <= 0:
-                        raise EvidenceError(
+                        raise EvidenceLimitError(
                             "Task evidence exceeds configured capture limits"
                         )
                     status = "captured"

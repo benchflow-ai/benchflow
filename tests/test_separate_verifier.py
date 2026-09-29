@@ -5,7 +5,8 @@ The verifier runs in its own sandbox, built from the task's ``tests/`` (or a
 declared verifier image), and receives only the frozen workspace, the
 declared artifacts and ``/logs/artifacts`` from the agent's sandbox. Nothing
 else the agent left behind reaches it. A failed transfer is an assessment
-error (no reward), never a 0.
+error (no reward), not a 0, unless the solution's own files caused it: then,
+judged against the same paths measured before the agent ran, it scores 0.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import shlex
 import shutil
 import sys
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,7 +29,9 @@ from benchflow.review.evidence import capture_task_evidence
 from benchflow.rollout._artifacts import MANIFEST_NAME, collect_artifacts
 from benchflow.rollout._separate_verifier import (
     SeparateVerifierError,
+    SolutionTransferRefused,
     build_transfer_payload,
+    measure_outputs,
     plan_verifier_image,
     run_separate_verifier,
     separate_verifier_requested,
@@ -338,6 +342,309 @@ async def test_a_declared_artifact_the_agent_never_wrote_is_not_an_error(
     summary = build_transfer_payload(trial, tmp_path / "payload.tar")
     assert summary["declared_artifacts"] == 0
     assert summary["missing_artifacts"] == ["/nowhere/missing.txt"]
+
+
+# --- the solution's own files: its result, not an assessment error ----------
+
+
+async def _measured_trial(
+    tmp_path: Path,
+    solve: Callable[[Path, Path, Path], None],
+    *,
+    artifacts: list = (),  # type: ignore[assignment]
+    before: Callable[[Path, Path, Path], None] | None = None,
+    max_files: int = 10_000,
+) -> tuple[Path, dict[str, Any]]:
+    """Measure the agent sandbox before ``solve`` (the clean control), then
+    let ``solve`` act as the agent and capture and collect as a rollout does."""
+    box = tmp_path / "box"
+    workspace = box / "app"
+    logs = box / "logs" / "artifacts"
+    workspace.mkdir(parents=True)
+    logs.mkdir(parents=True)
+    (workspace / "task-file.txt").write_text("from the image\n")
+    if before is not None:
+        before(box, workspace, logs)
+    env = LocalTransport()
+    pristine = await measure_outputs(
+        env, workspace=str(workspace), artifacts=artifacts, logs_source=str(logs)
+    )
+    solve(box, workspace, logs)
+    trial = tmp_path / "trial"
+    (trial / "artifacts").mkdir(parents=True)
+    await capture_task_evidence(
+        env, str(workspace), trial / "evidence", artifacts=list(artifacts)
+    )
+    await collect_artifacts(
+        env,
+        artifacts=list(artifacts),
+        workspace=str(workspace),
+        artifacts_dir=trial / "artifacts",
+        manifest_path=trial / MANIFEST_NAME,
+        mounted=False,
+        logs_source=str(logs),
+        max_files=max_files,
+    )
+    return trial, pristine
+
+
+def _flood_logs(box: Path, workspace: Path, logs: Path) -> None:
+    for index in range(3):
+        (logs / f"out-{index}.txt").write_text("x\n")
+
+
+def _link_declared_output(box: Path, workspace: Path, logs: Path) -> None:
+    (box / "secret.txt").write_text("outside\n")
+    (workspace / "report.txt").symlink_to(box / "secret.txt")
+
+
+def _take_declared_destination(box: Path, workspace: Path, logs: Path) -> None:
+    (workspace / "report.txt").write_text("the declared output\n")
+    (logs / "report.txt").write_text("left in /logs/artifacts\n")
+
+
+def _only_infrastructure_error(exc: BaseException) -> bool:
+    return isinstance(exc, SeparateVerifierError) and not isinstance(
+        exc, SolutionTransferRefused
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("solve", "artifacts", "cause", "reason"),
+    [
+        (_flood_logs, [], "limits", "exceed the collection limits"),
+        (_link_declared_output, ["report.txt"], "symlink", "is a symlink"),
+        (_take_declared_destination, ["report.txt"], "clash", "already exists"),
+    ],
+)
+async def test_a_collection_the_solution_broke_is_its_result_not_unscored(
+    tmp_path: Path, solve, artifacts, cause, reason
+) -> None:
+    """Guards separate-verifier scoring against the solution's own files.
+
+    /logs/artifacts is the agent's (lockdown chowns it to the agent user): more
+    files than the collection allows, a declared output left as a symlink, or
+    a /logs/artifacts file taking a declared output's place used to end the
+    trial unscored, as if the verifier were broken; a policy could reach that
+    on purpose. Measured clean before the agent ran, it is the solution's."""
+    trial, pristine = await _measured_trial(
+        tmp_path, solve, artifacts=artifacts, max_files=2
+    )
+    collected = json.loads((trial / MANIFEST_NAME).read_text())
+    [failed] = [c for c in collected["collections"] if c.get("cause")]
+    assert failed["cause"] == cause
+
+    with pytest.raises(SolutionTransferRefused, match=reason):
+        build_transfer_payload(trial, tmp_path / "payload.tar", pristine=pristine)
+    # Without the clean control nothing is blamed on the solution.
+    with pytest.raises(SeparateVerifierError) as unmeasured:
+        build_transfer_payload(trial, tmp_path / "payload.tar")
+    assert _only_infrastructure_error(unmeasured.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "artifacts"),
+    [
+        (_flood_logs, []),
+        (_link_declared_output, ["report.txt"]),
+        (_take_declared_destination, ["report.txt"]),
+    ],
+)
+async def test_a_collection_the_clean_control_breaks_too_stays_unscored(
+    tmp_path: Path, before, artifacts
+) -> None:
+    """The same failures, already there before the agent ran (the task's own
+    image or setup), are not the solution's: the trial stays unscored."""
+    trial, pristine = await _measured_trial(
+        tmp_path,
+        lambda *paths: None,
+        artifacts=artifacts,
+        before=before,
+        max_files=2,
+    )
+    with pytest.raises(SeparateVerifierError) as blamed:
+        build_transfer_payload(trial, tmp_path / "payload.tar", pristine=pristine)
+    assert _only_infrastructure_error(blamed.value)
+
+
+@pytest.mark.asyncio
+async def test_an_infrastructure_failure_beside_the_solutions_stays_unscored(
+    tmp_path: Path,
+) -> None:
+    trial, pristine = await _measured_trial(tmp_path, _flood_logs, max_files=2)
+    manifest = json.loads((trial / MANIFEST_NAME).read_text())
+    manifest["collections"].append(
+        {
+            "kind": "declared",
+            "source": "/x",
+            "status": "error",
+            "reason": "probe failed",
+        }
+    )
+    (trial / MANIFEST_NAME).write_text(json.dumps(manifest))
+    with pytest.raises(SeparateVerifierError, match="probe failed") as blamed:
+        build_transfer_payload(trial, tmp_path / "payload.tar", pristine=pristine)
+    assert _only_infrastructure_error(blamed.value)
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_over_the_capture_limits_is_the_solutions_result(
+    tmp_path: Path,
+) -> None:
+    """A workspace over 200,000 entries or 20 GiB fails capture. When it was
+    within those limits before the agent ran, the solution made it so."""
+    trial, pristine = await _measured_trial(tmp_path, lambda *paths: None)
+    shutil.rmtree(trial / "evidence")  # what an over-limit capture leaves
+    with pytest.raises(SolutionTransferRefused, match="capture limits"):
+        build_transfer_payload(
+            trial, tmp_path / "payload.tar", pristine=pristine, capture_over_limit=True
+        )
+    # Any other capture failure, or no clean control, stays unscored.
+    for kwargs in (
+        {"pristine": pristine},
+        {"capture_over_limit": True},
+    ):
+        with pytest.raises(SeparateVerifierError) as blamed:
+            build_transfer_payload(trial, tmp_path / "payload.tar", **kwargs)
+        assert _only_infrastructure_error(blamed.value)
+    # A task image whose workspace was already over the limits.
+    huge = json.loads(json.dumps(pristine))
+    huge["paths"][huge["workspace"]]["entries"] = 300_000
+    with pytest.raises(SeparateVerifierError) as blamed:
+        build_transfer_payload(
+            trial, tmp_path / "payload.tar", pristine=huge, capture_over_limit=True
+        )
+    assert _only_infrastructure_error(blamed.value)
+
+
+@pytest.mark.asyncio
+async def test_bind_mounted_logs_artifacts_over_the_limits_record_their_cause(
+    tmp_path: Path,
+) -> None:
+    """Docker bind-mounts /logs/artifacts onto the trial folder, so its files
+    are only inventoried; over the limits it is the same solution cause."""
+    artifacts = tmp_path / "trial" / "artifacts"
+    artifacts.mkdir(parents=True)
+    for index in range(3):
+        (artifacts / f"out-{index}.txt").write_text("x\n")
+    manifest = await collect_artifacts(
+        LocalTransport(),
+        artifacts=[],
+        workspace=str(tmp_path),
+        artifacts_dir=artifacts,
+        manifest_path=tmp_path / "trial" / MANIFEST_NAME,
+        mounted=True,
+        max_files=2,
+    )
+    [logs] = manifest["collections"]
+    assert (logs["status"], logs["cause"]) == ("over_limit", "limits")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("over_limit", [True, False])
+async def test_terminal_capture_records_whether_it_hit_the_limits(
+    tmp_path: Path, monkeypatch, over_limit: bool
+) -> None:
+    from benchflow.review.evidence import EvidenceError, EvidenceLimitError
+    from benchflow.rollout import _review
+
+    async def capture(*args, **kwargs):
+        raise (EvidenceLimitError if over_limit else EvidenceError)("capture failed")
+
+    async def idle(*args):
+        return None
+
+    monkeypatch.setattr(_review, "capture_task_evidence", capture)
+    rollout = SimpleNamespace(
+        _branch_child_active=False,
+        _review_plan=None,
+        _config=SimpleNamespace(
+            purpose="task", sandbox_user=None, freeze_workspace=False
+        ),
+        _env=object(),
+        _agent_env={},
+        _planes=SimpleNamespace(quiesce_agent=idle),
+        _task=SimpleNamespace(
+            config=TaskConfig.model_validate({"verifier": {"sandbox_mode": "separate"}})
+        ),
+        _agent_cwd="/app",
+        disconnect=idle,
+        _require_rollout_dir=lambda: tmp_path,
+    )
+    await _review.capture_terminal_workspace(rollout)
+    assert "capture failed" in rollout._export_error
+    assert rollout._capture_over_limit is over_limit
+
+
+@pytest.mark.asyncio
+async def test_the_clean_control_is_measured_before_the_agent_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from benchflow.rollout import _review
+
+    monkeypatch.setattr(
+        "benchflow.rollout._verifier_recovery.recovery_ineligible_reason",
+        lambda rollout: "no contract",
+    )
+    workspace = tmp_path / "app"
+    workspace.mkdir()
+    (workspace / "task-file.txt").write_text("from the image\n")
+    rollout = SimpleNamespace(
+        _env=LocalTransport(),
+        _review_plan=None,
+        _agent_cwd=str(workspace),
+        _config=SimpleNamespace(purpose="task", sandbox_setup_timeout=60),
+        _task=SimpleNamespace(
+            config=TaskConfig.model_validate(
+                {"verifier": {"sandbox_mode": "separate"}, "artifacts": ["out.txt"]}
+            )
+        ),
+    )
+    await _review.prepare_capture_runtime(rollout)
+    pristine = rollout._pristine_outputs
+    assert pristine["workspace"] == str(workspace)
+    assert pristine["logs"] == "/logs/artifacts"
+    assert pristine["paths"][str(workspace)] == {
+        "exists": True,
+        "link": False,
+        "entries": 1,
+        "bytes": len("from the image\n"),
+    }
+    assert pristine["paths"][str(workspace / "out.txt")]["exists"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_solutions_refused_outputs_score_zero_without_a_verifier_error(
+    tmp_path: Path,
+) -> None:
+    """End to end: reward 0, no verifier error (so the retry loop keeps the
+    0), no verifier sandbox, and the reason in verifier-sandbox.json."""
+    from benchflow.evaluation import RetryConfig
+
+    trial, pristine = await _measured_trial(
+        tmp_path, _link_declared_output, artifacts=["report.txt"]
+    )
+    task = _task_dir(tmp_path, '[verifier]\nenvironment_mode = "separate"\n')
+    rollout = _fake_rollout(tmp_path, trial, task, str(tmp_path / "box" / "app"))
+    rollout._pristine_outputs = pristine
+    created: list[Any] = []
+
+    rewards, error = await run_separate_verifier(
+        rollout, create_environment=lambda *a: created.append(a), verify=None
+    )
+
+    assert (rewards, error) == ({"reward": 0.0}, None)
+    assert not created
+    assert not RetryConfig().should_retry_verifier_error(error)
+    record = json.loads(
+        (trial / "verifier-sandbox" / "verifier-sandbox.json").read_text()
+    )
+    assert record["status"] == "refused"
+    assert record["error"] is None
+    assert "is a symlink" in record["refusal"]
+    assert record["pristine"] == pristine
 
 
 # --- the verifier sandbox run -------------------------------------------------
