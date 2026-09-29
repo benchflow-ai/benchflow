@@ -740,7 +740,9 @@ class DaytonaPtyProcess(LiveProcess):
         while True:
             with contextlib.suppress(asyncio.QueueEmpty):
                 return self._line_buffer.get_nowait()
-            if self._peer_gone():
+            # The local task, not self._pty_gone: close() clears that while a
+            # read may still be waiting here.
+            if self._closed or gone.done() or _pty_connected(self._pty) is False:
                 raise self._peer_closed_error()
             get = asyncio.ensure_future(self._line_buffer.get())
             try:

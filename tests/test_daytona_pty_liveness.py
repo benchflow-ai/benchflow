@@ -195,6 +195,18 @@ async def test_our_own_close_is_not_reported_as_the_peers(monkeypatch):
     assert caught.value.diagnostic.raw_message == "PTY closed"
 
 
+async def test_a_read_waiting_when_we_close_ends_at_once(monkeypatch):
+    """close() cancels the watch while a read waits on it: the read ends with
+    "PTY closed" instead of spinning on the cancelled watch."""
+    proc, _pty = await _started(monkeypatch)
+    reader = asyncio.ensure_future(proc.readline())
+    await asyncio.sleep(0)
+    await proc.close()
+    with pytest.raises(TransportClosedError) as caught:
+        await asyncio.wait_for(reader, timeout=2)
+    assert caught.value.diagnostic.raw_message == "PTY closed"
+
+
 async def test_a_handle_without_wait_keeps_the_plain_read(monkeypatch):
     """Other SDK layouts (and older fakes) read the queue as before."""
     monkeypatch.setenv("BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT", "0.05")
