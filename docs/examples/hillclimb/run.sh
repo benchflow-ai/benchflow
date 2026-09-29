@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# The bench hillclimb demo: climb an office-files skill on SkillsBench v1.1's
+# The bench hillclimb demo: climb an office-files skill on SkillsBench's
 # office and spreadsheet tasks, with a held-out test split. See README.md.
 #
 #   ./run.sh smoke    # 4 tasks, 2 trials, one forced round, $10 cap: plumbing only
 #   ./run.sh climb    # the demo run
 #
 # Knobs (environment variables): WORK, SANDBOX, CONCURRENCY, AGENT_MODEL,
-# PROPOSER_MODEL, TRIALS, MIN_GAIN, TEST_FRAC, SEED, ROUNDS, MAX_COST_USD.
+# PROPOSER_MODEL, TRIALS, MIN_GAIN, TEST_FRAC, SEED, ROUNDS, MAX_COST_USD,
+# SKILLSBENCH_SHA.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -31,10 +32,15 @@ if [ "$SANDBOX" = daytona ]; then
   : "${DAYTONA_API_KEY:?set DAYTONA_API_KEY, or run with SANDBOX=docker on a large host}"
 fi
 
-# SkillsBench v1.1: 87 native task.md packages, pinned by tag.
+# SkillsBench at the first commit whose task.md files use this BenchFlow's
+# `sandbox:` key (tag v1.1 still says `environment:` and targets BenchFlow
+# <0.7). Same 87-task roster.
+SKILLSBENCH_SHA="${SKILLSBENCH_SHA:-9a1f4dd5f7659f75707435da3ce854b6e48321d1}"
 if [ ! -d "$WORK/skillsbench/tasks" ]; then
-  git clone --quiet --depth 1 --branch v1.1 \
-    https://github.com/benchflow-ai/skillsbench "$WORK/skillsbench"
+  git init -q "$WORK/skillsbench"
+  git -C "$WORK/skillsbench" fetch -q --depth 1 \
+    https://github.com/benchflow-ai/skillsbench "$SKILLSBENCH_SHA"
+  git -C "$WORK/skillsbench" checkout -q FETCH_HEAD
 fi
 
 case "$STAGE" in

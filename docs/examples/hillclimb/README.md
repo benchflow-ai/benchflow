@@ -1,11 +1,11 @@
 # Demo: hill-climb an office-files skill on SkillsBench
 
-This recipe runs [`bench hillclimb`](../../hillclimb.md) on 20 office and spreadsheet tasks from SkillsBench v1.1 (Word, Excel, PowerPoint and PDF work, from the `office-white-collar` and `finance-economics` categories). The surface is one small skill, [`office-skills/office-files`](office-skills/office-files/SKILL.md), deployed to every task in place of the tasks' own bundled skills. An optimizer agent edits that skill from the train split's failures; each edit is kept only if the train score gains at least `--min-gain` and the held-out test split improves. The optimizer's sandbox never holds the test split, and the report shows what each optimizer run was given.
+This recipe runs [`bench hillclimb`](../../hillclimb.md) on 20 office and spreadsheet tasks from SkillsBench (Word, Excel, PowerPoint and PDF work, from the `office-white-collar` and `finance-economics` categories), pinned at commit `9a1f4dd5`, the first whose `task.md` files use this BenchFlow's `sandbox:` key. Tag `v1.1` still says `environment:`, targets BenchFlow below 0.7, and fails to parse here. The surface is one small skill, [`office-skills/office-files`](office-skills/office-files/SKILL.md), deployed to every task in place of the tasks' own bundled skills. An optimizer agent edits that skill from the train split's failures; each edit is kept only if the train score gains at least `--min-gain` and the held-out test split improves. The optimizer's sandbox never holds the test split, and the report shows what each optimizer run was given.
 
 ## What it needs
 
 - **BenchFlow from this branch** (`bench` on `PATH`), git, and bash.
-- **A sandbox.** Daytona (`DAYTONA_API_KEY`) with `--concurrency 40` or more, or Docker on a large host (`SANDBOX=docker`, concurrency about the number of CPUs divided by 2). The LibreOffice tasks' images are about 1 to 2 GB each; the heavy SkillsBench tasks (`latex-formula-extraction`, OCR) are left out.
+- **A sandbox.** Daytona (`DAYTONA_API_KEY`) with `--concurrency 40` or more, or Docker on a large host (`SANDBOX=docker`, concurrency about the number of CPUs divided by 2). The LibreOffice tasks' images are roughly 1 to 2 GB each; the heavy SkillsBench tasks (`latex-formula-extraction`, OCR) are left out.
 - **`ANTHROPIC_API_KEY`**, read from the environment by both agents and passed to the provider only through BenchFlow's model proxy, which also records each rollout's cost for the budget. Keys never go on the command line. The agent under test defaults to `claude-haiku-4-5` (not saturated on these tasks) and the optimizer to `claude-opus-4-8`; set `AGENT_MODEL` and `PROPOSER_MODEL` to change them. Check after the smoke run that `cost.usd_unknown_rollouts` in `hillclimb.json` is 0: a model missing from the pinned LiteLLM price table reports no USD, and the budget cannot count it.
 
 ## Commands
@@ -24,7 +24,15 @@ export DAYTONA_API_KEY=...          # or: export SANDBOX=docker
 ./run.sh climb
 ```
 
-`run.sh` clones SkillsBench at tag `v1.1` into `$WORK/skillsbench` (default `~/hillclimb-demo`) and writes each run to `$WORK/runs/<stage>-<timestamp>/`. The knobs are environment variables: `TRIALS`, `MIN_GAIN`, `TEST_FRAC`, `SEED`, `ROUNDS`, `MAX_COST_USD`, `CONCURRENCY`, `SANDBOX`, `AGENT_MODEL`, `PROPOSER_MODEL`, `WORK`.
+With `SEED=7` and `TEST_FRAC=0.4` the split is (checked against the pinned tasks):
+
+- train (12): `citation-check`, `court-form-filling`, `econ-detrending-correlation`, `exceltable-in-ppt`, `financial-modeling-qa`, `paper-anonymizer`, `powerlifting-coef-calc`, `pptx-reference-formatting`, `sales-pivot-analysis`, `sec-financial-report`, `shock-analysis-supply`, `xlsx-recover-data`;
+- test (8): `edit-pdf`, `invoice-fraud-detection`, `offer-letter-generator`, `organize-messy-files`, `pdf-excel-diff`, `reserves-at-risk-calc`, `shock-analysis-demand`, `weighted-gdp-calc`;
+- smoke: train `court-form-filling`, `reserves-at-risk-calc`; test `offer-letter-generator`, `weighted-gdp-calc`.
+
+All 20 tasks have an oracle, and none uses an LLM judge.
+
+`run.sh` fetches SkillsBench at `9a1f4dd5` into `$WORK/skillsbench` (default `~/hillclimb-demo`) and writes each run to `$WORK/runs/<stage>-<timestamp>/`. The knobs are environment variables: `TRIALS`, `MIN_GAIN`, `TEST_FRAC`, `SEED`, `ROUNDS`, `MAX_COST_USD`, `CONCURRENCY`, `SANDBOX`, `AGENT_MODEL`, `PROPOSER_MODEL`, `WORK`, `SKILLSBENCH_SHA`.
 
 The climb stops early, and cheaply, when something is wrong:
 
