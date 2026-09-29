@@ -269,12 +269,11 @@ def build_transfer_payload(rollout_dir: Path, dest: Path) -> dict[str, Any]:
 
 
 def _install_script(remote: str, workspace: str, sha256: str) -> str:
-    from benchflow.sandbox.lockdown import VERIFIER_UMASK
-
     quoted = shlex.quote(remote)
     # Directories this creates (a missing workspace, /logs/artifacts) get the
-    # verifier's modes whatever the runtime's mask; tar restores its own.
-    lines = ["set -e", f"umask {VERIFIER_UMASK}"]
+    # verifier's modes whatever the runtime's mask; tar restores its own. The
+    # mask is lockdown.VERIFIER_UMASK, which the rollout kernel must not import.
+    lines = ["set -e", "umask 022"]
     lines.append(
         "if command -v sha256sum >/dev/null 2>&1; then "
         f"echo {shlex.quote(sha256 + '  ' + remote)} | sha256sum -c - >/dev/null; fi"
