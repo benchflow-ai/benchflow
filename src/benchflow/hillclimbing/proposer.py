@@ -273,13 +273,17 @@ def _strip_write_bits(root: Path) -> None:
             path.chmod(stat.S_IMODE(path.stat().st_mode) & ~bits)
 
 
+def _restore_owner_write(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        if not path.is_symlink():
+            path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+
+
 def remove_tree(root: Path) -> None:
     """Remove a workspace whose files were made read-only."""
     if not root.exists():
         return
-    for path in [root, *root.rglob("*")]:
-        if not path.is_symlink():
-            path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+    _restore_owner_write(root)
     shutil.rmtree(root)
 
 
@@ -682,6 +686,10 @@ async def run_proposer(
         outcome.error = f"proposer rollout raised: {exc}"
         outcome.rollout_dir = _find_leaf(jobs_dir)
         return outcome
+    finally:
+        # The upload is done: the audit copy may be writable again, so the
+        # run folder can be deleted like any other.
+        _restore_owner_write(workspace.evidence)
     leaf = getattr(result, "rollout_dir", None) or _find_leaf(jobs_dir)
     outcome.rollout_dir = Path(leaf) if leaf else None
     outcome.reward = getattr(result, "reward", None)

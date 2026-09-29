@@ -264,6 +264,9 @@ def test_a_proposer_that_looks_for_the_test_split_finds_none_of_it(
     assert seen.failures == [f"{t}/trial-01" for t in TRAIN] + [
         f"{t}/trial-02" for t in TRAIN
     ]
+    # The audit copy stays, and the run folder can still be deleted.
+    evidence = result.run_dir / "proposer" / "r01-c1" / "workspace" / "evidence"
+    assert (evidence / "BRIEF.md").stat().st_mode & 0o200
     manifest = json.loads((result.run_dir / seen.manifest).read_text())
     assert sum(m.files for m in seen.mounts) == len(manifest["files"])
     assert {f["mount"] for f in manifest["files"]} == {"/hillclimb", "/app/surface"}
