@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 Status = Literal["pass", "warn", "fail", "skip"]
 
@@ -139,7 +139,7 @@ class DoctorReport:
                     "ready": auth.ready,
                     "effective": auth.effective.to_dict() if auth.effective else None,
                     "sources": [s.to_dict() for s in auth.sources],
-                    "endpoints": list(auth.endpoints),
+                    "endpoints": [_redact_url(url) for url in auth.endpoints],
                     "notes": list(auth.notes),
                 }
                 for name, auth in self.agents.items()
@@ -306,15 +306,27 @@ def secret_values(environ: Mapping[str, str]) -> list[str]:
     return sorted(set(values), key=lambda value: len(value), reverse=True)
 
 
+# ``scheme://userinfo@``: a base URL can carry a token in its userinfo, which is
+# not a secret *value* of any variable, so value redaction alone misses it.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+
+
 def redact(text: str, secrets: Iterable[str]) -> str:
     for secret in secrets:
         text = text.replace(secret, "***")
-    return text
+    return _URL_USERINFO.sub(r"\1***@", text)
 
 
-def _first_line(text: str, limit: int = 200) -> str:
+def _first_line(text: str, limit: int = 200, *, secrets: Iterable[str] = ()) -> str:
+    """First non-blank line, redacted *before* it is shortened to ``limit``.
+
+    Redaction runs on the whole line first: shortening a line that still holds
+    a secret can keep a prefix of the secret that :func:`redact` no longer
+    matches, leaking part of a key (a reviewer reproduced 14- and 31-character
+    leaks). Pass ``secrets`` at every site whose text may carry credentials.
+    """
     for line in text.splitlines():
-        line = line.strip()
+        line = redact(line.strip(), secrets)
         if line:
             return line if len(line) <= limit else line[: limit - 3] + "..."
     return ""
@@ -374,7 +386,17 @@ def _parse_version(text: str) -> tuple[int, ...]:
 
 
 def _host(url: str) -> str:
-    return urlparse(url).netloc or url
+    """``host[:port]`` of ``url``, without userinfo (which can carry a token)."""
+    netloc = urlparse(url).netloc
+    return netloc.rsplit("@", 1)[-1] if netloc else url
+
+
+def _redact_url(url: str) -> str:
+    """``url`` with any userinfo (``user:token@``) replaced by ``***``."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc="***@" + parts.netloc.rsplit("@", 1)[-1]))
 
 
 # ── Runtime checks ──────────────────────────────────────────────────────
@@ -451,7 +473,12 @@ class _ColimaState:
 def _docker_context(probes: DoctorProbes) -> str | None:
     host = probes.get("DOCKER_HOST")
     if host:
-        return f"DOCKER_HOST={host}"
+        # A remote ssh:// DOCKER_HOST carries an ssh user that is often an
+        # access token; redact it the way remote_docker does before it reaches
+        # a summary line or the details JSON.
+        from benchflow.sandbox.remote_docker import _safe as _redact_docker_host
+
+        return f"DOCKER_HOST={_redact_docker_host(host)}"
     result = probes.run(["docker", "context", "show"], PROBE_TIMEOUT_SEC)
     if result.returncode != 0:
         return None
@@ -556,8 +583,10 @@ def check_docker(probes: DoctorProbes, *, required: bool) -> list[Check]:
     info: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
     via = context or "default"
     if result.returncode != 0 or not info.get("ServerVersion"):
-        reason = _first_line(result.stderr) or "no response from `docker info`"
-        reason = redact(reason, secret_values(probes.environ))
+        reason = (
+            _first_line(result.stderr, secrets=secret_values(probes.environ))
+            or "no response from `docker info`"
+        )
         start = (
             f"colima start {colima.profile}"
             if colima
@@ -654,7 +683,9 @@ def check_daytona(probes: DoctorProbes, *, required: bool, offline: bool) -> Che
         )
     origin = probes.origin("DAYTONA_API_KEY")
     api_url = probes.get("DAYTONA_API_URL") or DAYTONA_DEFAULT_API
-    details.update({"key": "DAYTONA_API_KEY", "origin": origin, "api_url": api_url})
+    details.update(
+        {"key": "DAYTONA_API_KEY", "origin": origin, "api_url": _redact_url(api_url)}
+    )
     if offline:
         summary = (
             f"SDK {sdk}, DAYTONA_API_KEY set ({origin}); not validated (--offline)"
@@ -663,8 +694,9 @@ def check_daytona(probes: DoctorProbes, *, required: bool, offline: bool) -> Che
     try:
         probes.daytona_check(probes.environ, 15.0)
     except Exception as exc:
-        reason = _first_line(f"{type(exc).__name__}: {exc}")
-        reason = redact(reason, secret_values(probes.environ))
+        reason = _first_line(
+            f"{type(exc).__name__}: {exc}", secrets=secret_values(probes.environ)
+        )
         fix = "Check the key at https://app.daytona.io/dashboard/keys"
         if probes.get("DAYTONA_API_URL"):
             fix += " and DAYTONA_API_URL"
@@ -1169,7 +1201,7 @@ def check_network(
             return (
                 url,
                 None,
-                redact(_first_line(f"{type(exc).__name__}: {exc}"), secrets),
+                _first_line(f"{type(exc).__name__}: {exc}", secrets=secrets),
             )
 
     with ThreadPoolExecutor(max_workers=max(1, min(8, len(urls)))) as pool:
@@ -1184,7 +1216,7 @@ def check_network(
             # Any HTTP answer proves egress; a 404 or 401 here is expected, so
             # the status is kept in the details, not shown next to PASS.
             summary = f"reachable — {why}"
-            details = {"url": url, "http_status": status_code}
+            details = {"url": _redact_url(url), "http_status": status_code}
             checks.append(row("pass", summary, details=details))
             continue
         unreachable.add(url)
@@ -1193,7 +1225,7 @@ def check_network(
                 "fail" if url in required else "warn",
                 f"unreachable — {why}: {error}",
                 "Check VPN/proxy/firewall; HTTPS_PROXY is honored if set",
-                {"url": url, "error": error},
+                {"url": _redact_url(url), "error": error},
             )
         )
     return checks, frozenset(unreachable)

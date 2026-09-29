@@ -143,13 +143,34 @@ def _declares_steps(toml_path: Path) -> bool:
     """True when a legacy task.toml parses and declares Harbor ``[[steps]]``."""
     if not toml_path.is_file():
         return False
-    from benchflow.task.imports import load_task_config_toml
+    # import (not load) so a refused unknown key elsewhere does not hide the
+    # steps layout from the structural check; the refusal is reported separately.
+    from benchflow.task.imports import import_task_config_toml
 
     try:
-        config = load_task_config_toml(toml_path.read_text(), source=str(toml_path))
+        config = import_task_config_toml(
+            toml_path.read_text(), source=str(toml_path)
+        ).config
     except Exception:
         return False
     return bool(config.steps)
+
+
+def _unknown_key_issues(toml_path: Path) -> list[str]:
+    """``bench tasks check`` errors for task.toml keys the run path refuses.
+
+    Keeps the check and the run in agreement: the same typo or decision-table
+    unknown key that stops ``bench eval run`` fails ``bench tasks check`` too.
+    """
+    from benchflow.task.imports import import_task_config_toml, refused_unknown_keys
+
+    try:
+        report = import_task_config_toml(
+            toml_path.read_text(), source=str(toml_path)
+        ).report
+    except Exception:
+        return []  # a genuine parse/type error is task_config_parse_error's to report
+    return [refusal.message for refusal in refused_unknown_keys(report.extra_paths)]
 
 
 def task_symlink_issues(task_dir: Path) -> list[str]:
@@ -225,6 +246,9 @@ def check_task(
         parse_error = task_config_parse_error(toml_path)
         if parse_error is not None:
             issues.append(parse_error)
+        else:
+            # Same refusals the run path raises, so check and run agree (#379).
+            issues.extend(_unknown_key_issues(toml_path))
 
     # Check instruction.md is non-empty and has no placeholder markers
     instr = task_dir / "instruction.md"
@@ -340,14 +364,21 @@ def check_task_warnings(task_dir: Path) -> list[str]:
     """Findings that do not fail ``bench tasks check`` (empty = none).
 
     - no canary string (:mod:`benchflow.task.canary`) in any task file;
-    - task.toml keys BenchFlow does not know: ignored when the task runs;
-      those whose semantics BenchFlow cannot honour are named as refused at
-      run time (see :data:`benchflow.task.imports.UNHONOURED_FOREIGN_KEYS`);
+    - task.toml keys BenchFlow does not know but leniently ignores when the
+      task runs; those whose semantics BenchFlow cannot honour are named as
+      refused at run time (see
+      :data:`benchflow.task.imports.UNHONOURED_FOREIGN_KEYS`). Keys the run path
+      *refuses* (typos, unknown keys in decision tables) are reported by
+      :func:`check_task` as errors, not warned about here;
     - a verifier script that installs pytest plugins into a Python
       environment in the workspace or /tmp, which the pytest plugin guard
       refuses, leaving every trial unscored.
     """
-    from benchflow.task.imports import import_task_config_toml, unhonoured_foreign_key
+    from benchflow.task.imports import (
+        classify_unknown_key,
+        import_task_config_toml,
+        unhonoured_foreign_key,
+    )
 
     warnings: list[str] = []
     toml_path = task_dir / "task.toml"
@@ -360,15 +391,17 @@ def check_task_warnings(task_dir: Path) -> list[str]:
             report = None  # parse/schema errors are check_task's to report
         for path in report.extra_paths if report is not None else ():
             found = unhonoured_foreign_key(path)
-            if found is None:
-                warnings.append(
-                    f"task.toml key {path} is not a BenchFlow key; it is ignored "
-                    "when the task runs"
-                )
-            else:
+            if found is not None:
                 warnings.append(
                     f"task.toml key {path}: {found[1]}; the run is refused while "
                     "it is set"
+                )
+            elif classify_unknown_key(path) is not None:
+                continue  # a refused key: check_task reports it as an error
+            else:
+                warnings.append(
+                    f"task.toml key {path} is not a BenchFlow key; it is ignored "
+                    "when the task runs"
                 )
     from benchflow.task.canary import find_canary
 

@@ -200,7 +200,11 @@ def plan_smoke(
         blocked = report.agent_blocked_by_network(agent)
         if blocked:
             skipped.append(
-                SmokeSkip(agent, "model endpoint unreachable: " + ", ".join(blocked))
+                SmokeSkip(
+                    agent,
+                    "model endpoint unreachable: "
+                    + ", ".join(redact(url, ()) for url in blocked),
+                )
             )
             continue
         targets.append(SmokeTarget(agent, model, _auth_label(report, agent)))
@@ -312,20 +316,26 @@ def _log_hint(log_path: Path, secrets: list[str]) -> str:
     except OSError:
         return ""
     markers = ("error", "Error", "ERROR", "Traceback", "failed", "Failed", "FAIL")
+    # Redact each line before truncating: cutting a line that still holds a
+    # secret can keep a prefix redact() no longer matches (a partial-key leak).
     for line in reversed(lines):
-        text = line.strip()
+        text = redact(line.strip(), secrets)
         if text and any(marker in text for marker in markers):
-            return redact(text[:240], secrets)
+            return text[:240]
     for line in reversed(lines):
-        if line.strip():
-            return redact(line.strip()[:240], secrets)
+        text = redact(line.strip(), secrets)
+        if text:
+            return text[:240]
     return ""
 
 
-def _one_line(text: Any, limit: int = 240) -> str:
+def _one_line(text: Any, limit: int = 240, *, secrets: Iterable[str] = ()) -> str:
+    # Redact before the truncation to ``limit`` for the same reason as
+    # _log_hint: a secret split by the cut would leak its surviving prefix.
     for line in str(text).splitlines():
-        if line.strip():
-            return line.strip()[:limit]
+        line = redact(line.strip(), secrets)
+        if line:
+            return line[:limit]
     return ""
 
 
@@ -389,11 +399,11 @@ def read_outcome(
     if error:
         status = "error"
         category = data.get("error_category") or "agent error"
-        reason = f"{category}: {_one_line(error)}"
+        reason = f"{category}: {_one_line(error, secrets=secrets)}"
     elif verifier_error:
         status = "error"
         category = data.get("verifier_error_category") or "verifier error"
-        reason = f"{category}: {_one_line(verifier_error)}"
+        reason = f"{category}: {_one_line(verifier_error, secrets=secrets)}"
     elif reward is None:
         status = "error"
         reason = "no reward recorded"

@@ -783,3 +783,86 @@ def test_secret_values_include_tokens_inside_inline_auth_json():
     assert REFRESH in secrets
     assert "x" not in secrets
     assert doctor.redact(f"bad token {REFRESH}", secrets) == "bad token ***"
+
+
+# A fake key long enough that truncating a first line at the 200-char cut would
+# slice through it — the exact shape that leaked a key prefix before the fix.
+LONG_KEY = "sk-ant-oat01-" + "S" * 60  # 73 chars
+
+
+def test_first_line_redacts_before_it_truncates():
+    # The key straddles the 200-char cut in the raw line, so the pre-fix code
+    # (truncate, then redact) kept a slice of it; redacting first must not.
+    line = "docker: cannot connect, bearer " + "x" * 150 + LONG_KEY + " trailing"
+    assert line.index(LONG_KEY) < 200 < line.index(LONG_KEY) + len(LONG_KEY)
+    out = doctor._first_line(line, secrets=[LONG_KEY])
+    assert LONG_KEY not in out
+    # Not even a prefix of the key (the pre-fix leak was a 14-char slice).
+    for n in range(8, len(LONG_KEY)):
+        assert LONG_KEY[:n] not in out
+    assert "***" in out  # the key was replaced whole, before any shortening
+    assert len(out) <= 200
+
+
+def test_daytona_error_line_never_leaks_a_key_prefix_across_the_cut(tmp_path):
+    # The key sits astride the first-line cut inside the SDK error text.
+    message = "daytona rejected the request: " + "y" * 160 + LONG_KEY
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN, "DAYTONA_API_KEY": LONG_KEY},
+        dists={"daytona": "0.184.0"},
+        daytona_error=RuntimeError(message),
+    )
+    report = run_doctor(sandbox="daytona", probes=probes)
+    out = all_output(report)
+    assert by_id(report)["daytona"].status == "fail"
+    assert LONG_KEY not in out
+    for n in range(8, len(LONG_KEY)):
+        assert LONG_KEY[:n] not in out
+
+
+def test_remote_docker_host_ssh_user_is_redacted(tmp_path):
+    probes = make_probes(
+        tmp_path,
+        env={
+            "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN,
+            "DOCKER_HOST": "ssh://sshuser-secrettoken@10.0.0.5:22",
+        },
+    )
+    report = run_doctor(probes=probes, offline=True)
+    out = all_output(report)
+    assert "sshuser-secrettoken" not in out
+    # The redacted URL (host kept, user hidden) is what remote_docker emits.
+    assert "***@10.0.0.5:22" in out
+    assert by_id(report)["docker"].status == "pass"
+
+
+def test_redact_masks_url_userinfo_in_free_text():
+    # A token in a base URL's userinfo is not a secret *value* of any variable.
+    assert (
+        doctor.redact("GET https://bob:tok-123@proxy.example/v1 failed", [])
+        == "GET https://***@proxy.example/v1 failed"
+    )
+    assert doctor.redact("dial ssh://deploy-token@10.0.0.5", []) == (
+        "dial ssh://***@10.0.0.5"
+    )
+    # Idempotent, and an address inside a path is not a userinfo.
+    assert doctor.redact("https://***@h/x", []) == "https://***@h/x"
+    assert doctor.redact("https://h/a/b@c.d", []) == "https://h/a/b@c.d"
+
+
+@pytest.mark.parametrize("reachable", [True, False])
+def test_base_url_userinfo_never_reaches_rows_or_details(tmp_path, reachable):
+    base = "https://proxyuser:proxy-tok-SECRET@llm-proxy.example/v1"
+    url = base + "/"
+    outcome = 200 if reachable else RuntimeError(f"connection to {url} refused")
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN, "ANTHROPIC_BASE_URL": base},
+        http={url: outcome},
+    )
+    report = run_doctor(probes=probes)
+    out = all_output(report)
+    assert "proxy-tok-SECRET" not in out and "proxyuser" not in out
+    check = by_id(report)["net.llm-proxy.example"]
+    assert check.details["url"] == "https://***@llm-proxy.example/v1/"
