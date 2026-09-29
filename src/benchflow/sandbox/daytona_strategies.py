@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox._snapshot_credentials import (
+    AsUserResult,
     StashedCredential,
     put_back_credentials,
     scrub_credentials,
@@ -527,11 +528,14 @@ class _DaytonaDirect(_DaytonaStrategy):
 
 
 class _DaytonaCredentialOps:
-    """Root access to the live Daytona sandbox for the credential scrub.
+    """Access to the live Daytona sandbox for the credential scrub.
 
-    File contents move through the Daytona file API, never through session
-    commands: the Daytona daemon keeps each session command's output on disk
-    inside the sandbox, where the snapshot would capture it.
+    File contents never pass through session commands: the Daytona daemon keeps
+    each session command's output on disk inside the sandbox, where the
+    snapshot would capture it. :meth:`run_as` moves stdin and stdout through a
+    fresh root-only staging directory with the file API; the root shell opens
+    those files for the unprivileged command (``su`` to the credential home's
+    owner), so that command never reaches the staging directory by path.
     """
 
     def __init__(self, env: DaytonaSandbox) -> None:
@@ -542,9 +546,38 @@ class _DaytonaCredentialOps:
             command, user="root", timeout_sec=120, cleanup_session=True
         )
 
-    async def read(self, path: str) -> bytes:
-        content = await self._env._require_sandbox().fs.download_file(path)
-        return bytes(content or b"")
-
-    async def write(self, path: str, content: bytes) -> None:
-        await self._env._require_sandbox().fs.upload_file(content, path)
+    async def run_as(
+        self, uid: int, gid: int, script: str, *, stdin: bytes | None = None
+    ) -> AsUserResult:
+        made = await self.run('umask 077 && d="$(mktemp -d)" && printf %s "$d"')
+        stage = (made.stdout or "").strip()
+        if made.return_code != 0 or not stage.startswith("/"):
+            return AsUserResult(1, b"", "could not create a staging directory")
+        quote = shlex.quote
+        try:
+            source = "/dev/null"
+            if stdin is not None:
+                await self._env._require_sandbox().fs.upload_file(stdin, f"{stage}/in")
+                source = f"{stage}/in"
+            redirect = f"< {quote(source)} > {quote(stage + '/out')}"
+            if int(uid) == 0:
+                command = f"sh -c {quote(script)} {redirect}"
+            else:
+                # su needs a name; a uid without one is refused, never run as root.
+                command = (
+                    f"u=$(awk -F: -v id={int(uid)} '$3 == id {{ print $1; exit }}' "
+                    "/etc/passwd); "
+                    f'[ -n "$u" ] || {{ echo "refused: no user with uid {int(uid)}" '
+                    ">&2; exit 97; }; "
+                    f'su "$u" -s /bin/sh -c {quote(script)} {redirect}'
+                )
+            result = await self.run(command)
+            stdout = b""
+            if result.return_code == 0:
+                content = await self._env._require_sandbox().fs.download_file(
+                    f"{stage}/out"
+                )
+                stdout = bytes(content or b"")
+            return AsUserResult(result.return_code, stdout, result.stderr or "")
+        finally:
+            await self.run(f"rm -rf -- {quote(stage)}")

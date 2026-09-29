@@ -1,20 +1,33 @@
-"""Agent credential files never enter a container snapshot.
+"""Agent credential files never enter a container snapshot, and the scrub never
+acts as root on a path the agent controls.
 
-Regression test: a container snapshot captured everything ``install_agent``
+Regression tests: a container snapshot captured everything ``install_agent``
 wrote, including ``~/.codex/auth.json`` (codex-acp) and
 ``~/.claude/.credentials.json`` (host subscription login), so a kept Daytona
 snapshot would store the credential at rest in provider storage. Snapshot
 capture now reads those files into host memory, removes them, captures, and
-writes them back (content, owner, mode) to the live sandbox and to every
-sandbox restored from that snapshot.
+writes them back to the live sandbox and to every sandbox restored from that
+snapshot.
 
-Unit tests over an in-memory filesystem; no Docker, Daytona or credentials.
+The agent's processes can be alive during a checkpoint, so every read, removal
+and write runs as the owner of the credential home (never as root on a path the
+agent controls), a symbolic link on the path is refused and named, a newline in
+a file name cannot forge a listing entry, and a restored mode never carries
+setuid bits.
+
+The provider tests run over an in-memory filesystem (no Docker, Daytona or
+credentials); the script tests run the real scrub scripts with ``sh`` on Linux.
 """
 
 from __future__ import annotations
 
-import json
+import base64
+import os
+import re
 import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -22,7 +35,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.sandbox._snapshot_credentials import (
+    AsUserResult,
     CredentialScrubError,
+    StashedCredential,
+    _read_script,
+    _remove_script,
+    _write_script,
     put_back_credentials,
     scrub_credentials,
 )
@@ -34,19 +52,25 @@ from benchflow.task.paths import RolloutPaths
 
 SECRET = b'{"tokens": {"refresh_token": "fake-refresh-value"}}'
 
+# Owners of the credential homes in the fake container.
+HOMES = {"/root": ("0", "0"), "/home/agent": ("1000", "1000")}
+
 
 class FakeFs:
     """Just enough of a container to answer the scrub's commands."""
 
-    def __init__(self, files: dict[str, tuple[bytes, str, str, str]]):
+    def __init__(self, files: dict[str, tuple[bytes | None, str, str, str]]):
         # path -> (content, uid, gid, mode); symlinks: content None
         self.files = dict(files)
         self.fail_rm = False
+        self.newline_in: str | None = None  # a home whose tree has a newline name
+        self.forged: list[str] = []  # extra raw listing lines
 
     def listing(self) -> str:
         from benchflow.agents.credentials import CREDENTIAL_EVIDENCE_PATHS
 
-        lines = []
+        lines: list[str] = []
+        seen: set[str] = set()
         for path, (content, uid, gid, mode) in sorted(self.files.items()):
             home = (
                 "/root" if path.startswith("/root/") else "/".join(path.split("/")[:3])
@@ -58,69 +82,64 @@ class FakeFs:
             ):
                 continue
             kind = "symbolic link" if content is None else "regular file"
-            lines.append(f"{uid}:{gid}:{mode}:{kind}:{path}")
+            lines.append(f"F:{uid}:{gid}:{mode}:{kind}:{path}")
+            seen.add(home)
+        if self.newline_in:
+            lines.insert(0, f"!newline:{self.newline_in}")
+        lines.extend(self.forged)
+        for home in sorted(seen):
+            uid, gid = HOMES[home]
+            lines.append(f"H:{uid}:{gid}:755:directory:{home}")
         return "\n".join(lines) + ("\n" if lines else "")
 
 
 class FakeOps:
-    """In-memory stand-in that models the symlink-safe put-back flow.
+    """Runs the scrub against FakeFs, recording which uid ran each action.
 
-    ``put_back_credentials`` now stages each file in a fresh root-only dir and
-    runs the ``python3`` write-back that creates the destination without
-    following links (``benchflow.sandbox._credential_writeback``). This fake
-    reproduces the observable contract: a destination that reappeared as a
-    symlink (content ``None``) is refused; a plain regular file is overwritten
-    (the scrub-rollback case); an absent destination is created.
+    ``run_as`` models the privilege-separated scripts (``read``, ``remove``,
+    ``write`` of one path; a symbolic link on it is refused). A write run as
+    root restores the recorded owner; one run as a user leaves the file owned
+    by that user, as ``sh`` would.
     """
-
-    _STAGE = "/tmp/bf-credstage"
 
     def __init__(self, fs: FakeFs):
         self.fs = fs
         self.commands: list[str] = []
-        self._staging: dict[str, bytes] = {}
+        self.scripts: list[str] = []
+        self.actions: list[tuple[str, int, str]] = []  # (action, uid, path)
 
     async def run(self, command: str) -> ExecResult:
         self.commands.append(command)
-        if "mktemp -d" in command:
-            return ExecResult(0, self._STAGE, "")
-        if command.startswith("rm -rf"):
-            self._staging.clear()
-            return ExecResult(0, "", "")
-        if command.startswith("rm -f"):
-            if self.fs.fail_rm:
-                return ExecResult(1, "", "read-only file system")
-            for path in list(self.fs.files):
-                if f"'{path}'" in command or f" {path}" in command:
-                    del self.fs.files[path]
-            return ExecResult(0, "", "")
-        tokens = shlex.split(command)
-        if tokens[:3] == ["python3", "-I", "-c"]:
-            return self._writeback(json.loads(tokens[-1]))
         return ExecResult(0, self.fs.listing(), "")
 
-    def _writeback(self, manifest: list[dict]) -> ExecResult:
-        refused: list[str] = []
-        for entry in manifest:
-            dest = entry["path"]
-            existing = self.fs.files.get(dest)
-            if existing is not None and existing[0] is None:
-                # A symlink where a credential file was scrubbed: the swap.
-                refused.append(dest)
-                continue
-            content = self._staging[entry["staged"]]
-            self.fs.files[dest] = (content, entry["uid"], entry["gid"], entry["mode"])
-        if refused:
-            return ExecResult(3, "", "REFUSED: " + ", ".join(refused))
-        return ExecResult(0, "", "")
-
-    async def read(self, path: str) -> bytes:
-        return self.fs.files[path][0]
-
-    async def write(self, path: str, content: bytes) -> None:
-        # Content is staged into the fresh root-only dir, never the destination.
-        assert path.startswith(self._STAGE + "/"), path
-        self._staging[path] = content
+    async def run_as(
+        self, uid: int, gid: int, script: str, *, stdin: bytes | None = None
+    ) -> AsUserResult:
+        self.scripts.append(script)
+        action = script.split("\n", 1)[0].removeprefix("# benchflow-credential ")
+        values = {
+            name: shlex.split(value)[0]
+            for name, value in re.findall(r"^(p|m|o)=(.*)$", script, flags=re.M)
+        }
+        path = values["p"]
+        self.actions.append((action, int(uid), path))
+        existing = self.fs.files.get(path)
+        if existing is not None and existing[0] is None:
+            return AsUserResult(4, b"", f"refused: {path} is a symbolic link")
+        if action == "read":
+            if existing is None or existing[0] is None:
+                return AsUserResult(4, b"", f"refused: {path} is not a regular file")
+            return AsUserResult(0, base64.b64encode(existing[0]), "")
+        if action == "remove":
+            if self.fs.fail_rm:
+                return AsUserResult(1, b"", "read-only file system")
+            self.fs.files.pop(path, None)
+            return AsUserResult(0, b"", "")
+        assert action == "write", action
+        assert stdin is not None
+        owner = values["o"].split(":") if int(uid) == 0 else [str(uid), str(gid)]
+        self.fs.files[path] = (base64.b64decode(stdin), owner[0], owner[1], values["m"])
+        return AsUserResult(0, b"", "")
 
 
 def _fs() -> FakeFs:
@@ -142,7 +161,6 @@ async def test_scrub_removes_credentials_and_put_back_restores_them():
         "/root/.codex/auth.json",
     ]
     assert set(fs.files) == {"/root/notes.txt"}
-    assert all(SECRET not in command.encode() for command in ops.commands)
     await put_back_credentials(ops, stash)
     assert fs.files["/root/.codex/auth.json"] == (SECRET, "0", "0", "600")
     assert fs.files["/home/agent/.claude/.credentials.json"] == (
@@ -151,7 +169,18 @@ async def test_scrub_removes_credentials_and_put_back_restores_them():
         "1000",
         "600",
     )
+    # Contents never travel in a command or a script, only over stdin/stdout.
+    assert all(SECRET not in text.encode() for text in ops.commands + ops.scripts)
     assert "fake-refresh-value" not in repr(stash)
+
+
+async def test_nothing_under_an_agent_home_runs_as_root():
+    fs = _fs()
+    ops = FakeOps(fs)
+    await put_back_credentials(ops, await scrub_credentials(ops))
+    assert {action for action, _, _ in ops.actions} == {"read", "remove", "write"}
+    for action, uid, path in ops.actions:
+        assert uid == (0 if path.startswith("/root/") else 1000), (action, uid, path)
 
 
 async def test_no_credentials_means_no_changes():
@@ -177,72 +206,152 @@ async def test_failed_removal_puts_files_back_and_refuses():
 
 
 async def test_put_back_refuses_a_credential_swapped_for_a_symlink():
-    """The attack: after the scrub removes ~/.codex/auth.json, the still-alive
-    agent plants a symlink there (to site-packages). The put-back must refuse
-    it, not write through the link, and record why."""
+    """The attack: after the scrub removes the agent's credential file, the
+    still-running agent plants a symlink there (to a sitecustomize.py). The
+    put-back runs as the agent, refuses the link, names it, and never writes
+    through it."""
     fs = _fs()
     ops = FakeOps(fs)
     stash = await scrub_credentials(ops)
-    assert "/root/.codex/auth.json" not in fs.files
-    # Agent re-creates the scrubbed path as a symlink (content None).
-    fs.files["/root/.codex/auth.json"] = (None, "0", "0", "777")
-    with pytest.raises(CredentialScrubError, match="without following a link"):
+    swapped = "/home/agent/.claude/.credentials.json"
+    fs.files[swapped] = (None, "1000", "1000", "777")
+    with pytest.raises(CredentialScrubError, match="symbolic link"):
         await put_back_credentials(ops, stash)
-    # The link is left as it was — its target was never written through.
-    assert fs.files["/root/.codex/auth.json"] == (None, "0", "0", "777")
+    assert fs.files[swapped] == (None, "1000", "1000", "777")
+    assert ("write", 1000, swapped) in ops.actions
+    # The other credential was still restored.
+    assert fs.files["/root/.codex/auth.json"] == (SECRET, "0", "0", "600")
 
 
-def test_credential_writeback_refuses_symlink_swap_on_a_real_filesystem(tmp_path):
-    """The syscall-level guard, exercised end to end on a real filesystem.
+async def test_a_newline_in_a_credential_file_name_refuses_the_snapshot():
+    # A directory name holding a newline makes `stat` print a second line the
+    # agent wrote, e.g. "1000:1000:666:regular file:/etc/shadow".
+    fs = _fs()
+    fs.newline_in = "/home/agent"
+    ops = FakeOps(fs)
+    with pytest.raises(CredentialScrubError, match="newline"):
+        await scrub_credentials(ops)
+    assert ops.actions == []  # nothing read or removed
+    assert "/root/.codex/auth.json" in fs.files
 
-    A credential path is swapped for a symlink to a victim file; the write-back
-    must refuse it (exit 3) and leave the victim untouched, while a sibling
-    non-symlinked path is written with the requested mode and owner.
-    """
-    import os
 
-    from benchflow.sandbox import _credential_writeback
+async def test_a_listing_entry_outside_the_credential_paths_refuses_the_snapshot():
+    fs = _fs()
+    fs.forged = ["F:1000:1000:666:regular file:/etc/shadow"]
+    ops = FakeOps(fs)
+    with pytest.raises(CredentialScrubError, match="unexpected credential path"):
+        await scrub_credentials(ops)
+    assert ops.actions == []
 
-    root = Path(os.path.realpath(tmp_path))  # a symlink-free parent chain
-    victim = root / "victim.py"
-    victim.write_text("# original, must not change\n")
 
+async def test_put_back_never_restores_setuid_bits():
+    fs = FakeFs({})
+    ops = FakeOps(fs)
+    item = StashedCredential(
+        "/root/.ssh/tool", "0", "0", "4755", b"#!/bin/sh\n", "0", "0"
+    )
+    await put_back_credentials(ops, [item])
+    assert fs.files["/root/.ssh/tool"][3] == "755"
+
+
+# ── The scrub's shell scripts, run for real ──────────────────────────────
+# Linux ``sh`` with ``stat -c`` and ``base64``, as the current user (a
+# non-root credential home owner); skipped elsewhere (e.g. macOS).
+
+
+def _posix_tools() -> bool:
+    if sys.platform != "linux" or shutil.which("sh") is None:
+        return False
+    try:
+        probe = subprocess.run(["stat", "-c", "%u", "/"], capture_output=True)
+    except FileNotFoundError:
+        return False
+    return probe.returncode == 0
+
+
+needs_posix_sh = pytest.mark.skipif(
+    not _posix_tools(), reason="runs the scrub's sh scripts: Linux sh, stat -c"
+)
+
+
+def _sh(script: str, stdin: bytes | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["sh", "-c", script], input=stdin, capture_output=True, check=False
+    )
+
+
+@needs_posix_sh
+def test_write_script_refuses_a_symlink_swap_and_writes_nothing(tmp_path):
+    root = Path(os.path.realpath(tmp_path))
+    victim = root / "sitecustomize.py"
+    victim.write_text("# original\n")
     codex = root / "home" / ".codex"
     codex.mkdir(parents=True)
     swapped = codex / "auth.json"
-    swapped.symlink_to(victim)  # the attacker's redirect
+    swapped.symlink_to(victim)
+    uid, gid = os.getuid(), os.getgid()
+    result = _sh(
+        _write_script(uid, str(swapped), "600", f"{uid}:{gid}"),
+        base64.b64encode(b"import os  # agent code\n"),
+    )
+    assert result.returncode == 4 and b"symbolic link" in result.stderr
+    assert victim.read_text() == "# original\n" and swapped.is_symlink()
 
-    staged_bad = root / "stage-bad"
-    staged_bad.write_bytes(b'{"secret": "x"}')
-    staged_ok = root / "stage-ok"
-    staged_ok.write_bytes(SECRET)
-    ok_dest = root / "home" / ".claude" / ".credentials.json"
 
-    manifest = [
-        {
-            "staged": str(staged_bad),
-            "path": str(swapped),
-            "uid": str(os.getuid()),
-            "gid": str(os.getgid()),
-            "mode": "600",
-        },
-        {
-            "staged": str(staged_ok),
-            "path": str(ok_dest),
-            "uid": str(os.getuid()),
-            "gid": str(os.getgid()),
-            "mode": "600",
-        },
-    ]
-    rc = _credential_writeback.main(["_credential_writeback.py", json.dumps(manifest)])
-    assert rc == 3  # a link appeared -> refused
-    # The victim was not written through the link, and the link still points at it.
-    assert victim.read_text() == "# original, must not change\n"
-    assert swapped.is_symlink()
-    # The clean sibling was still written safely, owner/mode set on the fd.
-    assert ok_dest.read_bytes() == SECRET
-    assert not ok_dest.is_symlink()
-    assert oct(ok_dest.stat().st_mode)[-3:] == "600"
+@needs_posix_sh
+def test_write_script_refuses_a_symlinked_parent_directory(tmp_path):
+    root = Path(os.path.realpath(tmp_path))
+    site_packages = root / "site-packages"
+    site_packages.mkdir()
+    home = root / "home"
+    home.mkdir()
+    (home / ".codex").symlink_to(site_packages)
+    uid, gid = os.getuid(), os.getgid()
+    result = _sh(
+        _write_script(uid, str(home / ".codex" / "auth.json"), "600", f"{uid}:{gid}"),
+        base64.b64encode(SECRET),
+    )
+    assert result.returncode == 4 and b"symbolic link" in result.stderr
+    assert not (site_packages / "auth.json").exists()
+
+
+@needs_posix_sh
+def test_read_script_refuses_a_symlinked_credential(tmp_path):
+    root = Path(os.path.realpath(tmp_path))
+    secret_elsewhere = root / "shadow"
+    secret_elsewhere.write_text("root-only\n")
+    (root / "home").mkdir()
+    link = root / "home" / "auth.json"
+    link.symlink_to(secret_elsewhere)
+    result = _sh(_read_script(os.getuid(), str(link)))
+    assert result.returncode == 4 and b"root-only" not in result.stdout
+
+
+@needs_posix_sh
+def test_scripts_round_trip_a_credential_with_its_mode(tmp_path):
+    root = Path(os.path.realpath(tmp_path))
+    path = root / "home" / ".config" / "gcloud" / "adc.json"  # parents created
+    uid, gid = os.getuid(), os.getgid()
+    wrote = _sh(
+        _write_script(uid, str(path), "640", f"{uid}:{gid}"), base64.b64encode(SECRET)
+    )
+    assert wrote.returncode == 0, wrote.stderr
+    assert path.read_bytes() == SECRET
+    assert oct(path.stat().st_mode & 0o777) == "0o640"
+    read = _sh(_read_script(uid, str(path)))
+    assert read.returncode == 0
+    assert base64.b64decode(b"".join(read.stdout.split())) == SECRET
+    removed = _sh(_remove_script(uid, str(path)))
+    assert removed.returncode == 0 and not path.exists()
+
+
+@needs_posix_sh
+def test_scripts_refuse_to_run_as_another_user():
+    if os.getuid() == 0:
+        pytest.skip("the check needs a non-root caller")
+    # A root script run by a user (a provider that failed to switch) stops.
+    result = _sh(_read_script(0, "/etc/hostname"))
+    assert result.returncode == 98 and b"not running as uid 0" in result.stderr
 
 
 @pytest.fixture

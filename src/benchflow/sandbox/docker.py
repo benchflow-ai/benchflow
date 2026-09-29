@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
-import base64
 import contextlib
 import json
 import logging
@@ -46,7 +45,7 @@ from benchflow.sandbox._recovery_baseline import (
     validate_baseline,
 )
 from benchflow.sandbox._snapshot_credentials import (
-    CredentialScrubError,
+    AsUserResult,
     StashedCredential,
     put_back_credentials,
     scrub_credentials,
@@ -1431,9 +1430,11 @@ class DockerSandbox(BaseSandbox):
 
 
 class _DockerCredentialOps:
-    """Root access to one container for the snapshot credential scrub.
+    """Access to one container for the snapshot credential scrub.
 
-    File contents travel over ``docker exec`` stdin/stdout as base64, never as
+    :meth:`run_as` drops to the credential home owner's uid:gid with
+    ``docker exec -u`` (see :mod:`benchflow.sandbox._snapshot_credentials`).
+    File contents travel over ``docker exec`` stdin/stdout, never as
     command-line arguments; Docker keeps no copy of exec output in the
     container filesystem.
     """
@@ -1447,31 +1448,33 @@ class _DockerCredentialOps:
             ["exec", "-u", "0", self._container, "sh", "-c", command], check=False
         )
 
-    async def read(self, path: str) -> bytes:
-        result = await self.run(f"base64 < {shlex.quote(path)}")
-        if result.return_code != 0:
-            raise CredentialScrubError(f"could not read {path} before the snapshot")
-        return base64.b64decode("".join((result.stdout or "").split()))
-
-    async def write(self, path: str, content: bytes) -> None:
+    async def run_as(
+        self, uid: int, gid: int, script: str, *, stdin: bytes | None = None
+    ) -> AsUserResult:
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
-            "-i",
+            *(["-i"] if stdin is not None else []),
             "-u",
-            "0",
+            f"{int(uid)}:{int(gid)}",
             self._container,
             "sh",
             "-c",
-            f"umask 077 && base64 -d > {shlex.quote(path)}",
-            stdin=asyncio.subprocess.PIPE,
+            script,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin is not None
+                else asyncio.subprocess.DEVNULL
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._sandbox._docker_client_env(),
         )
-        _, stderr = await proc.communicate(base64.b64encode(content))
-        if proc.returncode != 0:
-            raise CredentialScrubError(
-                f"could not write {path} back: "
-                f"{(stderr or b'').decode(errors='replace').strip()[:300]}"
-            )
+        stdout, stderr = await proc.communicate(stdin)
+        message = (stderr or b"").decode(errors="replace")
+        # A remote Docker host's ssh user can appear in client errors.
+        redact = getattr(getattr(self._sandbox, "docker_host", None), "redact", None)
+        if callable(redact):
+            message = redact(message)
+        code = proc.returncode if proc.returncode is not None else 1
+        return AsUserResult(code, stdout or b"", message)
