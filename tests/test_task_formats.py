@@ -114,7 +114,8 @@ def test_broken_entry_point_is_ignored(monkeypatch):
     monkeypatch.setattr(formats, "_registered", [])
     monkeypatch.setattr(formats, "_entry_point_formats", None)
     monkeypatch.setattr("importlib.metadata.entry_points", lambda group: [BrokenEP()])
-    assert formats.task_formats() == []
+    # Only the built-in formats remain.
+    assert [f.name for f in formats.task_formats()] == ["taskmd"]
 
 
 def test_evaluation_runs_claimed_tasks_as_native_packages(tmp_path, demo):
