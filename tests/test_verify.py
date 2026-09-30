@@ -944,7 +944,7 @@ class TestScrapedTrajectoryTrust:
 
         mock_env = AsyncMock()
         mock_env.exec = AsyncMock(
-            return_value=MagicMock(stdout="", stderr="", exit_code=0)
+            return_value=MagicMock(stdout="", stderr="", return_code=0)
         )
         mock_env.stop = AsyncMock()
 
