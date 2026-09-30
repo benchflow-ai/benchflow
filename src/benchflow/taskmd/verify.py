@@ -34,9 +34,14 @@ from typing import Any
 
 from benchflow.taskmd import grading, judging
 from benchflow.taskmd import trajectory as traj
+from benchflow.taskmd._util import listed, table
 from benchflow.taskmd._vendor import judgeprompt as jp
 from benchflow.taskmd._vendor import taskmd as ref
-from benchflow.taskmd.materialize import judge_package_dir, shared_rubrics, taskmd_metadata
+from benchflow.taskmd.materialize import (
+    judge_package_dir,
+    shared_rubrics,
+    taskmd_metadata,
+)
 
 JUDGE_DIR = "taskmd-judge"
 RUNNER_UID = 65534
@@ -82,9 +87,10 @@ async def take_offline(sandbox: Any) -> str:
 
 def kept_paths(config: dict[str, Any]) -> list[str]:
     """What the runtime saves: each declared output's path, or the working folder."""
-    sandbox = config.get("sandbox") if isinstance(config.get("sandbox"), dict) else {}
-    outputs = sandbox.get("outputs")
-    paths = [p for p in (jp.restored_path(o) for o in outputs or []) if p]
+    sandbox = table(config.get("sandbox"))
+    paths = [
+        p for p in (jp.restored_path(o) for o in listed(sandbox.get("outputs"))) if p
+    ]
     if paths:
         return paths
     workdir = sandbox.get("workdir")
@@ -124,7 +130,9 @@ async def copy_kept(sandbox: Any, paths: list[str], fs_root: Path) -> dict[str, 
         if kind == "none":
             continue
         if kind in ("link", "special"):
-            refused[path] = f"a {'symbolic link' if kind == 'link' else 'special file'} is never saved"
+            refused[path] = (
+                f"a {'symbolic link' if kind == 'link' else 'special file'} is never saved"
+            )
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         if kind == "dir":
@@ -135,7 +143,9 @@ async def copy_kept(sandbox: Any, paths: list[str], fs_root: Path) -> dict[str, 
         for found in sorted(target.rglob("*"), reverse=True) if target.is_dir() else []:
             if found.is_symlink() or not (found.is_file() or found.is_dir()):
                 found.unlink(missing_ok=True)
-                refused[str(PurePosixPath(path) / found.relative_to(target).as_posix())] = "a symbolic link or special file is never saved"
+                refused[
+                    str(PurePosixPath(path) / found.relative_to(target).as_posix())
+                ] = "a symbolic link or special file is never saved"
         why = _within_caps(target)
         if why:
             if target.is_dir():
@@ -165,7 +175,9 @@ class SandboxRunner:
     kept: list[str]
     views: dict[str, bytes]
     path: str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    drop: str = "root"  # how commands lose root: setpriv, runuser, or root when neither exists
+    drop: str = (
+        "root"  # how commands lose root: setpriv, runuser, or root when neither exists
+    )
     ready: bool = False
 
     async def setup(self) -> None:
@@ -187,15 +199,23 @@ if command -v setpriv >/dev/null 2>&1; then echo setpriv; elif command -v runuse
         from benchflow.sandbox.lockdown import _exec_return_code
 
         if _exec_return_code(result) != 0:
-            raise TaskMdVerifierError(f"the judge's runner could not be set up: {(result.stderr or result.stdout or '')[-300:]}")
+            raise TaskMdVerifierError(
+                f"the judge's runner could not be set up: {(result.stderr or result.stdout or '')[-300:]}"
+            )
         self.drop = ((result.stdout or "").strip().splitlines() or ["root"])[-1]
-        path = await self.sandbox.exec("cat /run/taskmd-judge/path", user="root", timeout_sec=30)
+        path = await self.sandbox.exec(
+            "cat /run/taskmd-judge/path", user="root", timeout_sec=30
+        )
         image_path = (path.stdout or "").strip()
         if image_path:
             keep = [
                 entry
                 for entry in image_path.split(":")
-                if entry and not any(entry == k or entry.startswith(k.rstrip("/") + "/") for k in [*self.kept, "/tmp/taskmd-judge"])
+                if entry
+                and not any(
+                    entry == k or entry.startswith(k.rstrip("/") + "/")
+                    for k in [*self.kept, "/tmp/taskmd-judge"]
+                )
             ]
             self.path = ":".join(keep) or self.path
         for view_path, data in self.views.items():
@@ -206,7 +226,9 @@ if command -v setpriv >/dev/null 2>&1; then echo setpriv; elif command -v runuse
             )
         self.ready = True
 
-    async def __call__(self, command: str, timeout: int) -> tuple[int | None, bool, bytes]:
+    async def __call__(
+        self, command: str, timeout: int
+    ) -> tuple[int | None, bool, bytes]:
         if not self.ready:
             await self.setup()
         kept = " ".join(shlex.quote(p) for p in self.kept)
@@ -235,13 +257,17 @@ size=$(wc -c < /run/taskmd-judge/out)
 echo "$code $size"
 if [ "$size" -le 16384 ]; then base64 -w0 /run/taskmd-judge/out; echo; else head -c 8192 /run/taskmd-judge/out | base64 -w0; echo; tail -c 8192 /run/taskmd-judge/out | base64 -w0; echo; fi
 """
-        result = await self.sandbox.exec(script, user="root", timeout_sec=int(timeout) + 60)
+        result = await self.sandbox.exec(
+            script, user="root", timeout_sec=int(timeout) + 60
+        )
         lines = (result.stdout or "").splitlines()
         try:
             code_text, size_text = lines[0].split()
             code, size = int(code_text), int(size_text)
         except (IndexError, ValueError) as exc:
-            raise TaskMdVerifierError(f"the judge's runner failed: {(result.stderr or result.stdout or '')[-300:]}") from exc
+            raise TaskMdVerifierError(
+                f"the judge's runner failed: {(result.stderr or result.stdout or '')[-300:]}"
+            ) from exc
         if size <= traj.SHELL_CAP:
             output = base64.b64decode(lines[1] if len(lines) > 1 else "")
         else:
@@ -263,8 +289,10 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
     task_dir = Path(verifier._task.paths.task_dir)
     meta = taskmd_metadata(task_dir)
     if meta is None:
-        raise TaskMdVerifierError(f"{task_dir} is not a materialized task.md package (no metadata.taskmd)")
-    config = meta.get("config") if isinstance(meta.get("config"), dict) else {}
+        raise TaskMdVerifierError(
+            f"{task_dir} is not a materialized task.md package (no metadata.taskmd)"
+        )
+    config = table(meta.get("config"))
     paths = verifier._rollout_paths
     judge_dir = paths.verifier_dir / JUDGE_DIR
     sandbox = verifier._sandbox
@@ -276,11 +304,18 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
     has_script = isinstance(cfg.get("command"), str)
 
     script_timeout = cfg.get("script_timeout")
-    script_timeout = float(script_timeout) if isinstance(script_timeout, (int, float)) else None
+    script_timeout = (
+        float(script_timeout) if isinstance(script_timeout, (int, float)) else None
+    )
     if grading_kind != "rubric":
         if not has_script:
             raise TaskMdVerifierError("the package has no test.sh and no rubric")
-        return await verifier._verify_test_script(strategy=None, cwd=workdir, script_timeout_sec=script_timeout, parse_rewards=True)
+        return await verifier._verify_test_script(
+            strategy=None,
+            cwd=workdir,
+            script_timeout_sec=script_timeout,
+            parse_rewards=True,
+        )
 
     pkg = judge_package_dir(task_dir)
     shared = shared_rubrics(task_dir, meta)
@@ -299,7 +334,12 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
 
     return_code = None
     if has_script:
-        await verifier._verify_test_script(strategy=None, cwd=workdir, script_timeout_sec=script_timeout, parse_rewards=False)
+        await verifier._verify_test_script(
+            strategy=None,
+            cwd=workdir,
+            script_timeout_sec=script_timeout,
+            parse_rewards=False,
+        )
         return_code = getattr(verifier, "test_return_code", None)
     for name in ("reward.txt", "reward.json"):
         path = paths.verifier_dir / name
@@ -324,18 +364,28 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
             if not matched
             else f"all {len(matched)} matching tests passed"
             if passed
-            else "not passed: " + ", ".join(f"{t['name']} ({t['status']})" for t in matched if t.get("status") != "passed")
+            else "not passed: "
+            + ", ".join(
+                f"{t['name']} ({t['status']})"
+                for t in matched
+                if t.get("status") != "passed"
+            )
         )
         records[c["id"]] = {
             "check": str(c.get("check")),
             "verdict": "pass" if passed else "fail",
-            "judge": {"role": "test", "tool": report.tool} | ({"rubric_version": rubric["version"]} if isinstance(rubric.get("version"), str) else {}),
+            "judge": {"role": "test", "tool": report.tool}
+            | (
+                {"rubric_version": rubric["version"]}
+                if isinstance(rubric.get("version"), str)
+                else {}
+            ),
             "rationale": rationale[:300],
         }
 
     lazy = True
-    judges_table = (config.get("verifier") or {}).get("judges") if isinstance(config.get("verifier"), dict) else None
-    if isinstance(judges_table, dict) and judges_table.get("lazy") is False:
+    judges_table = table(table(config.get("verifier")).get("judges"))
+    if judges_table.get("lazy") is False:
         lazy = False
     usage_total: dict[str, Any] = {}
     setup_hash = None
@@ -346,7 +396,12 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
             )
         skip = set()
         if lazy and gate_failed:
-            skip = {c["id"] for c in criteria if c.get("judge") in ("llm", "agent") and not float(c.get("points", 0) or 0) < 0}
+            skip = {
+                c["id"]
+                for c in criteria
+                if c.get("judge") in ("llm", "agent")
+                and not float(c.get("points", 0) or 0) < 0
+            }
         judged, setup_hash, usage_total = await _run_judges(
             verifier=verifier,
             meta=meta,
@@ -380,7 +435,9 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
         entry = {"id": c["id"], **record}
         if c.get("gate"):
             entry["gate"] = True
-        entry["score"] = grading.verdict_points(c, values[c["id"]] if record["verdict"] != "skip" else None)
+        entry["score"] = grading.verdict_points(
+            c, values[c["id"]] if record["verdict"] != "skip" else None
+        )
         verdicts.append(entry)
         summary[entry["verdict"]] = summary.get(entry["verdict"], 0) + 1
     review: dict[str, Any] = {"$schema": grading.REVIEW_SCHEMA, "record": "verifier"}
@@ -406,7 +463,11 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
         "not_checked": ["[runs]", "[integrity.controls]", "rubric validation"],
     }
     _write_json(paths.verifier_dir / "review.json", review)
-    rewards = {"reward": reward, "strict": 1.0 if result.strict else 0.0, "partial": float(result.partial)}
+    rewards = {
+        "reward": reward,
+        "strict": 1.0 if result.strict else 0.0,
+        "partial": float(result.partial),
+    }
     _write_json(paths.reward_json_path, rewards)
     paths.reward_text_path.write_text(f"{reward}\n")
     return VerifierResult(rewards=rewards)
@@ -450,15 +511,25 @@ async def _run_judges(
     oracle_output = _oracle_output(paths)
     record = traj.solver_record(events, oracle_output)
     (judge_root / "trajectory.jsonl").write_text(jp.trajectory_view(record))
-    (judge_root / "trajectory-reasoning.jsonl").write_text(jp.trajectory_view(record, reasoning=True))
+    (judge_root / "trajectory-reasoning.jsonl").write_text(
+        jp.trajectory_view(record, reasoning=True)
+    )
     (judge_root / "tests.json").write_text(grading.tests_view(report))
     _write_json(judge_dir / "trajectory-1.json", record)
     scripted = traj.is_scripted(events)
     mounts = (str(meta.get("oracle_mount") or "/oracle"),) if scripted else ()
 
-    workdir = (config.get("sandbox") or {}).get("workdir") if isinstance(config.get("sandbox"), dict) else None
-    files = judging.JudgeFiles(root=fs_root, kept=kept, separate_verifier=separate, scripted_mounts=mounts)
-    tests_by_id = {t["id"]: t for t in json.loads((judge_root / "tests.json").read_text())["tests"]}
+    workdir = (
+        (config.get("sandbox") or {}).get("workdir")
+        if isinstance(config.get("sandbox"), dict)
+        else None
+    )
+    files = judging.JudgeFiles(
+        root=fs_root, kept=kept, separate_verifier=separate, scripted_mounts=mounts
+    )
+    tests_by_id = {
+        t["id"]: t for t in json.loads((judge_root / "tests.json").read_text())["tests"]
+    }
     by_id = {c["id"]: c for c in criteria}
     sessions = judging.compile_sessions(pkg, shared, fs_root)
     seat_visible = bool(mounts) and _seat_visible(files, mounts)
@@ -466,13 +537,21 @@ async def _run_judges(
     decided = {
         c["id"]: found
         for c in criteria
-        if c.get("judge") in ("llm", "agent") and c["id"] not in skip
-        and (found := _evidence_missing(c, fs_root, workdir, refused)) is not None and found[1] is not None
+        if c.get("judge") in ("llm", "agent")
+        and c["id"] not in skip
+        and (found := _evidence_missing(c, fs_root, workdir, refused)) is not None
+        and found[1] is not None
     }
     used_roles = sorted({c.get("judge") for c in criteria} & {"llm", "agent"})
     setup: dict[str, Any] | None = None
     samples: dict[str, list[dict[str, Any]]] = {}
-    usage_total = {"sessions": 0, "prompt_tokens": 0, "completion_tokens": 0, "tool_calls": 0, "seconds": 0.0}
+    usage_total = {
+        "sessions": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "tool_calls": 0,
+        "seconds": 0.0,
+    }
     runner: SandboxRunner | None = None
     submission = jp.submission_tree(fs_root)
     judged_meta: dict[str, dict[str, Any]] = {}
@@ -488,25 +567,41 @@ async def _run_judges(
                 f"[verifier.judges.{role}] names no model: set one, or {judging.MODEL_ENV}"
             )
         if not model.startswith(("claude-", "anthropic/")):
-            raise TaskMdVerifierError(f"judge model {model!r}: BenchFlow runs judge-loop@1 over the Anthropic Messages API only")
+            raise TaskMdVerifierError(
+                f"judge model {model!r}: BenchFlow runs judge-loop@1 over the Anthropic Messages API only"
+            )
         if setup is None:
             models = {}
             for used in used_roles:
-                chosen_model = judging.model_for(used, ref.resolve_judge(document.config, used, None, pkg)[0])
+                chosen_model = judging.model_for(
+                    used, ref.resolve_judge(document.config, used, None, pkg)[0]
+                )
                 if chosen_model is not None:
                     models[used] = chosen_model
-            setup = jp.judge_setup(pkg, shared=shared, models=models, config=document.config)
+            setup = jp.judge_setup(
+                pkg, shared=shared, models=models, config=document.config
+            )
         seconds = int(-(-(ref.duration_s(settings.get("timeout")) or 120) // 1))
-        budget = settings.get("budget") if isinstance(settings.get("budget"), dict) else {}
-        tokens = ref.count_value(budget.get("tokens")) if budget.get("tokens") is not None else None
+        budget = table(settings.get("budget"))
+        tokens = (
+            ref.count_value(budget.get("tokens"))
+            if budget.get("tokens") is not None
+            else None
+        )
         budget_text = ref.session_budget(document, pkg, session) or f"{seconds} seconds"
         calls = None
         if role == "agent":
             for part in budget_text.split(", "):
                 if part.endswith(" tool calls"):
                     calls = int(part.split()[0])
-        brief = jp.normalize_brief((pkg / session["brief"]).read_bytes()) if session.get("brief") else None
-        tools = ("read", "run", "submit_review") if role == "agent" else ("submit_review",)
+        brief = (
+            jp.normalize_brief((pkg / session["brief"]).read_bytes())
+            if session.get("brief")
+            else None
+        )
+        tools = (
+            ("read", "run", "submit_review") if role == "agent" else ("submit_review",)
+        )
         spec = judging.SessionSpec(
             role=role,
             unit=session["unit"],
@@ -521,15 +616,23 @@ async def _run_judges(
             tools=tools,
         )
         if jp.prompt_text(brief, session["assignment"]) != session["prompt"]:
-            raise TaskMdVerifierError("judge-prompt@1 did not compile to the reference compiler's bytes")
+            raise TaskMdVerifierError(
+                "judge-prompt@1 did not compile to the reference compiler's bytes"
+            )
         if role == "agent" and runner is None:
             if not separate:
-                raise TaskMdVerifierError('an agent judge needs [verifier] isolation = "separate"')
+                raise TaskMdVerifierError(
+                    'an agent judge needs [verifier] isolation = "separate"'
+                )
             views = _views(settings, judge_root, record)
             files.views = views
             runner = SandboxRunner(sandbox=sandbox, kept=kept, views=views)
             await runner.setup()
-        evidence = judging.evidence_with_fence(session["assignment"], fs_root) if role == "llm" else None
+        evidence = (
+            judging.evidence_with_fence(session["assignment"], fs_root)
+            if role == "llm"
+            else None
+        )
         n_samples = int(settings.get("samples", 1))
         client = judging.MessagesClient(credentials)
         unit_meta = {
@@ -553,7 +656,9 @@ async def _run_judges(
                     evidence_text=evidence,
                     runner=runner,
                 )
-                name = f"{role}-{session['unit'].replace(':', '-')}-s{sample}-a{attempt}"
+                name = (
+                    f"{role}-{session['unit'].replace(':', '-')}-s{sample}-a{attempt}"
+                )
                 _write_json(
                     judge_dir / f"{name}.json",
                     {
@@ -581,10 +686,15 @@ async def _run_judges(
             for ident in ids:
                 crit = by_id[ident]
                 if accepted is None:
-                    samples.setdefault(ident, []).append({"verdict": "error", "score": None, "trajectory": name})
+                    samples.setdefault(ident, []).append(
+                        {"verdict": "error", "score": None, "trajectory": name}
+                    )
                     continue
                 res, seed, name = accepted
-                raw = next(v for v in res.accepted["verdicts"] if v["id"] == ident)
+                submitted = table(res.accepted)
+                raw = next(
+                    v for v in listed(submitted.get("verdicts")) if v["id"] == ident
+                )
                 ctx = judging.CitationContext(
                     files=files,
                     record=record,
@@ -597,16 +707,23 @@ async def _run_judges(
                         for e in criterion["evidence"]
                     ),
                 )
-                cites = [judging.check_citation(c, ctx, res.judge_steps) for c in raw.get("citations", [])]
+                cites = [
+                    judging.check_citation(c, ctx, res.judge_steps)
+                    for c in raw.get("citations", [])
+                ]
                 verdict = {**raw, "citations": cites}
                 verdict, flags = judging.apply_citation_rules(crit, verdict)
                 if seat_visible:
                     flags.append("seat-visible")
                 entry: dict[str, Any] = {
                     "verdict": verdict["verdict"],
-                    "score": grading.verdict_points(crit, judging.verdict_value(crit, verdict)),
+                    "score": grading.verdict_points(
+                        crit, judging.verdict_value(crit, verdict)
+                    ),
                     "citations": cites,
-                    "rationale": str(verdict.get("rationale", ""))[: judging.MAX_RATIONALE],
+                    "rationale": str(verdict.get("rationale", ""))[
+                        : judging.MAX_RATIONALE
+                    ],
                     "trajectory": name,
                 }
                 if verdict["verdict"] == "level":
@@ -706,7 +823,9 @@ async def _run_judges(
     return out, setup_hash, usage_total
 
 
-def _evidence_missing(criterion: dict[str, Any], fs_root: Path, workdir: Any, refused: dict[str, str]) -> tuple[str, str | None, Any] | None:
+def _evidence_missing(
+    criterion: dict[str, Any], fs_root: Path, workdir: Any, refused: dict[str, str]
+) -> tuple[str, str | None, Any] | None:
     """docs/runtime/judging.md, "Missing evidence": (flag, verdict, the score() input), or None.
 
     A criterion that names a refused output fails without a session, whatever
@@ -715,11 +834,15 @@ def _evidence_missing(criterion: dict[str, Any], fs_root: Path, workdir: Any, re
     remains (None as its input), or skipped with ``missing = "no-penalty"``.
     """
     items = [str(i).split("#", 1)[0] for i in criterion.get("evidence") or []]
-    files = [i for i in items if i not in jp.RUNTIME_KINDS and not i.startswith("diff:")]
+    files = [
+        i for i in items if i not in jp.RUNTIME_KINDS and not i.startswith("diff:")
+    ]
     paths = []
     for item in files:
         try:
-            paths.append(jp.normalize_path(item, workdir if isinstance(workdir, str) else None))
+            paths.append(
+                jp.normalize_path(item, workdir if isinstance(workdir, str) else None)
+            )
         except jp.JudgePromptError:
             return None
     if any(p == r or p.startswith(r.rstrip("/") + "/") for p in paths for r in refused):
@@ -745,7 +868,9 @@ def _seat_visible(files: judging.JudgeFiles, mounts: tuple[str, ...]) -> bool:
                     return True
     for kept in files.kept:
         base = files.host(kept)
-        for path in [base] if base.is_file() else base.rglob("*") if base.is_dir() else []:
+        for path in (
+            [base] if base.is_file() else base.rglob("*") if base.is_dir() else []
+        ):
             if path.is_file() and path.stat().st_size < 4_000_000:
                 with contextlib.suppress(OSError):
                     data = path.read_text(encoding="utf-8", errors="replace")
@@ -754,12 +879,20 @@ def _seat_visible(files: judging.JudgeFiles, mounts: tuple[str, ...]) -> bool:
     return False
 
 
-def _views(settings: dict[str, Any], judge_root: Path, record: dict[str, Any]) -> dict[str, bytes]:
+def _views(
+    settings: dict[str, Any], judge_root: Path, record: dict[str, Any]
+) -> dict[str, bytes]:
     """The agent role's views: the trajectory view at each named path."""
     views: dict[str, bytes] = {}
     for view in settings.get("views") or []:
-        if isinstance(view, dict) and view.get("format") == "trajectory-1" and isinstance(view.get("path"), str):
-            views[jp.normalize_path(view["path"])] = jp.trajectory_view(record).encode("utf-8")
+        if (
+            isinstance(view, dict)
+            and view.get("format") == "trajectory-1"
+            and isinstance(view.get("path"), str)
+        ):
+            views[jp.normalize_path(view["path"])] = jp.trajectory_view(record).encode(
+                "utf-8"
+            )
     return views
 
 

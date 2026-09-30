@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
 
+from benchflow.taskmd._util import table
 from benchflow.taskmd._vendor import judgeprompt as jp
 
 CTRF_STATUSES = ("passed", "failed", "skipped", "pending", "other")
@@ -57,14 +58,26 @@ def read_ctrf(data: bytes | None) -> TestReport:
     tests = results.get("tests") if isinstance(results, dict) else None
     if not isinstance(tests, list):
         return TestReport([], None, "ctrf.json has no results.tests list")
-    for n, test in enumerate(tests):
-        if not (isinstance(test, dict) and isinstance(test.get("name"), str) and isinstance(test.get("status"), str)):
-            return TestReport([], None, f"ctrf.json results.tests[{n}] needs a name and a status")
+    checked: list[dict[str, Any]] = []
+    for n, raw in enumerate(tests):
+        test = table(raw)
+        if not (
+            isinstance(raw, dict)
+            and isinstance(test.get("name"), str)
+            and isinstance(test.get("status"), str)
+        ):
+            return TestReport(
+                [], None, f"ctrf.json results.tests[{n}] needs a name and a status"
+            )
+        checked.append(test)
     tool = results.get("tool") if isinstance(results, dict) else None
     name = tool.get("name") if isinstance(tool, dict) else None
     version = tool.get("version") if isinstance(tool, dict) else None
-    label = " ".join(str(x) for x in (name, version) if isinstance(x, str) and x.strip()) or None
-    return TestReport(list(tests), label)
+    label = (
+        " ".join(str(x) for x in (name, version) if isinstance(x, str) and x.strip())
+        or None
+    )
+    return TestReport(checked, label)
 
 
 def tests_view(report: TestReport) -> str:
@@ -77,7 +90,13 @@ def tests_view(report: TestReport) -> str:
         ident = name if seen[name] == 1 else f"{name} [{seen[name]}]"
         status = test["status"] if test["status"] in CTRF_STATUSES else "other"
         duration = test.get("duration")
-        ms = math.floor(duration + 0.5) if isinstance(duration, (int, float)) and not isinstance(duration, bool) and math.isfinite(duration) else 0
+        ms = (
+            math.floor(duration + 0.5)
+            if isinstance(duration, (int, float))
+            and not isinstance(duration, bool)
+            and math.isfinite(duration)
+            else 0
+        )
         entries.append({"id": ident, "outcome": status, "duration_ms": ms})
     summary = dict(Counter(e["outcome"] for e in entries))
     return jp.jcs({"summary": summary, "tests": entries}) + "\n"
@@ -97,7 +116,10 @@ def matching_tests(check: str, tests: list[dict[str, Any]]) -> list[dict[str, An
         return list(tests)
 
     def named(name: str) -> bool:
-        return any(n == check or n.endswith(("::" + check, "/" + check)) for n in (name, name.split("[", 1)[0]))
+        return any(
+            n == check or n.endswith(("::" + check, "/" + check))
+            for n in (name, name.split("[", 1)[0])
+        )
 
     by_name = [t for t in tests if named(str(t.get("name", "")))]
     if by_name:
@@ -108,10 +130,22 @@ def matching_tests(check: str, tests: list[dict[str, Any]]) -> list[dict[str, An
 
     wanted = bare(check.strip())
     files = [
-        (t, t.get("filePath") or (str(t.get("name", "")).split("::", 1)[0] if "::" in str(t.get("name", "")) else None))
+        (
+            t,
+            t.get("filePath")
+            or (
+                str(t.get("name", "")).split("::", 1)[0]
+                if "::" in str(t.get("name", ""))
+                else None
+            ),
+        )
         for t in tests
     ]
-    return [t for t, f in files if f and (bare(f) == wanted or bare(f).endswith("/" + wanted))]
+    return [
+        t
+        for t, f in files
+        if f and (bare(f) == wanted or bare(f).endswith("/" + wanted))
+    ]
 
 
 def test_verdict(check: str, tests: list[dict[str, Any]]) -> bool:
@@ -132,7 +166,12 @@ class Score:
     penalty: Fraction = field(default_factory=Fraction)
 
 
-def score(rubric: dict[str, Any], criteria: list[dict[str, Any]], verdicts: dict[str, Any], behaviors: tuple[Any, ...] = ()) -> Score:
+def score(
+    rubric: dict[str, Any],
+    criteria: list[dict[str, Any]],
+    verdicts: dict[str, Any],
+    behaviors: tuple[Any, ...] = (),
+) -> Score:
     """Score one trial as docs/rubrics.md defines it (``tools/rubrics.py`` ``score``).
 
     ``criteria`` is the merged rubric's criteria. ``verdicts`` maps each
@@ -156,7 +195,9 @@ def score(rubric: dict[str, Any], criteria: list[dict[str, Any]], verdicts: dict
             maximum += pts
         if isinstance(v, bool):
             # Positive points are earned on pass; negative points are charged on fail.
-            earned += (pts if v else Fraction(0)) if pts > 0 else (Fraction(0) if v else pts)
+            earned += (
+                (pts if v else Fraction(0)) if pts > 0 else (Fraction(0) if v else pts)
+            )
         elif c.get("score"):
             # A continuous criterion: v says how far its text holds. For a bad outcome, holding is going wrong.
             lo, hi = Fraction(str(c["score"]["min"])), Fraction(str(c["score"]["max"]))
@@ -165,22 +206,37 @@ def score(rubric: dict[str, Any], criteria: list[dict[str, Any]], verdicts: dict
             earned += pts * well if pts > 0 else pts * (1 - well)
         else:
             if isinstance(v, str) and c.get("levels") and v not in c["levels"]:
-                raise ValueError(f"{c['id']}: {v!r} is not one of its levels")  # judges pick a level; they do not invent scores
+                raise ValueError(
+                    f"{c['id']}: {v!r} is not one of its levels"
+                )  # judges pick a level; they do not invent scores
             earned += Fraction(str(v))
     if method == "sum":
         base = earned  # neither divided nor clipped
     elif maximum:
         base = earned / maximum
     else:
-        base = 1 + earned  # no positive points: 1 when nothing is charged, less the charges
-    penalty = sum((Fraction(str(b["penalty"])) for b in behaviors if isinstance(b, dict) and "penalty" in b), Fraction(0))
+        base = (
+            1 + earned
+        )  # no positive points: 1 when nothing is charged, less the charges
+    penalty = sum(
+        (
+            Fraction(str(b["penalty"]))
+            for b in behaviors
+            if isinstance(b, dict) and "penalty" in b
+        ),
+        Fraction(0),
+    )
     fail = any(b == "fail" for b in behaviors)
     partial = base if method == "sum" else min(max(base, Fraction(0)), Fraction(1))
     if failed or fail:
         partial = Fraction(0)
     elif penalty:
-        partial = max(partial + penalty, min(partial, Fraction(0)))  # floored at 0, and never lifting a negative sum
-    threshold = Fraction(str(scoring.get("pass_threshold", maximum if method == "sum" else 1)))
+        partial = max(
+            partial + penalty, min(partial, Fraction(0))
+        )  # floored at 0, and never lifting a negative sum
+    threshold = Fraction(
+        str(scoring.get("pass_threshold", maximum if method == "sum" else 1))
+    )
     return Score(
         raw=base + penalty,
         reward=partial,
@@ -196,7 +252,9 @@ def score(rubric: dict[str, Any], criteria: list[dict[str, Any]], verdicts: dict
 def headline(rubric: dict[str, Any], result: Score) -> float:
     """The reward written to reward.txt: the partial score, or strict when the rubric's headline says so."""
     head = (rubric.get("scoring") or {}).get("headline", "partial")
-    return float(1 if result.strict else 0) if head == "strict" else float(result.partial)
+    return (
+        float(1 if result.strict else 0) if head == "strict" else float(result.partial)
+    )
 
 
 def verdict_points(criterion: dict[str, Any], value: Any) -> float | None:
@@ -207,7 +265,10 @@ def verdict_points(criterion: dict[str, Any], value: Any) -> float | None:
     if isinstance(value, bool):
         return float((pts if value else 0) if pts > 0 else (0 if value else pts))
     if criterion.get("score"):
-        lo, hi = Fraction(str(criterion["score"]["min"])), Fraction(str(criterion["score"]["max"]))
+        lo, hi = (
+            Fraction(str(criterion["score"]["min"])),
+            Fraction(str(criterion["score"]["max"])),
+        )
         f = min(max((Fraction(str(value)) - lo) / (hi - lo), Fraction(0)), Fraction(1))
         well = 1 - f if criterion.get("outcome") == "bad" else f
         return float(pts * well if pts > 0 else pts * (1 - well))

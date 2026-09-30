@@ -25,7 +25,9 @@ def test_a_runnable_package_passes_both_checks() -> None:
 
 
 def test_a_refused_package_fails_and_names_the_fields() -> None:
-    result = CliRunner().invoke(app, ["tasks", "check", str(EXAMPLES / "calc-quarterly")])
+    result = CliRunner().invoke(
+        app, ["tasks", "check", str(EXAMPLES / "calc-quarterly")]
+    )
     assert result.exit_code == 1
     assert "refused: [sandbox] clock" in result.output
     assert "refused: [world]" in result.output
@@ -43,5 +45,8 @@ def test_a_package_refused_only_for_agents_passes_with_a_note(monkeypatch) -> No
     monkeypatch.setattr(check.shutil, "which", lambda name: "/usr/bin/docker")
     result = CliRunner().invoke(app, ["tasks", "check", str(EXAMPLES / "sql-family")])
     assert result.exit_code == 0, result.output
-    assert "refused when an agent runs" in result.output and "[agent] budget" in result.output
+    assert (
+        "refused when an agent runs" in result.output
+        and "[agent] budget" in result.output
+    )
     assert "materialized seed" in result.output

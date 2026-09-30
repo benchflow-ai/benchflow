@@ -136,72 +136,224 @@ HONORED, REFUSED, PARTIAL, AGENT_REFUSED, RECORDED = (
 )
 
 SUPPORT: list[tuple[str, str, str]] = [
-    ("name, version, description, authors, keywords", RECORDED, "native task.name, version, description, authors, keywords"),
+    (
+        "name, version, description, authors, keywords",
+        RECORDED,
+        "native task.name, version, description, authors, keywords",
+    ),
     ("title", RECORDED, "metadata.title"),
     ("[about] <key>", RECORDED, "native metadata"),
     ("[agent] timeout", HONORED, "agent.timeout_sec"),
-    ("[agent] on_timeout", PARTIAL, '"grade" (BenchFlow grades what the agent left and records timed_out); "grade-flagged" and "fail" are refused'),
-    ("[agent] budget, [agent.budget] tool_calls, tokens", AGENT_REFUSED, "BenchFlow enforces no tool-call or token budget on an agent; a scripted seat never approaches one"),
-    ("[agent] user", AGENT_REFUSED, "the oracle runs as it; an agent runs as the run's --sandbox-user, so a different user is refused"),
-    ("[agent] network", PARTIAL, "equal to [sandbox] network, or a host list over an open sandbox (an agent allowlist); anything else is refused"),
-    ("[agent] network_reason", HONORED, "reviewer documentation: nothing to do at run time"),
-    ("[agent] system_prompt_append", AGENT_REFUSED, "BenchFlow's harnesses take no system prompt addition"),
-    ("[agent] timeout_basis", PARTIAL, '"wall" (BenchFlow counts wall time); "environment" is refused'),
-    ("[sandbox] image", HONORED, "sandbox.docker_image, or FROM in environment/Dockerfile"),
+    (
+        "[agent] on_timeout",
+        PARTIAL,
+        '"grade" (BenchFlow grades what the agent left and records timed_out); "grade-flagged" and "fail" are refused',
+    ),
+    (
+        "[agent] budget, [agent.budget] tool_calls, tokens",
+        AGENT_REFUSED,
+        "BenchFlow enforces no tool-call or token budget on an agent; a scripted seat never approaches one",
+    ),
+    (
+        "[agent] user",
+        AGENT_REFUSED,
+        "the oracle runs as it; an agent runs as the run's --sandbox-user, so a different user is refused",
+    ),
+    (
+        "[agent] network",
+        PARTIAL,
+        "equal to [sandbox] network, or a host list over an open sandbox (an agent allowlist); anything else is refused",
+    ),
+    (
+        "[agent] network_reason",
+        HONORED,
+        "reviewer documentation: nothing to do at run time",
+    ),
+    (
+        "[agent] system_prompt_append",
+        AGENT_REFUSED,
+        "BenchFlow's harnesses take no system prompt addition",
+    ),
+    (
+        "[agent] timeout_basis",
+        PARTIAL,
+        '"wall" (BenchFlow counts wall time); "environment" is refused',
+    ),
+    (
+        "[sandbox] image",
+        HONORED,
+        "sandbox.docker_image, or FROM in environment/Dockerfile",
+    ),
     ("[sandbox] os", PARTIAL, '"linux"; "windows" is refused'),
-    ("[sandbox] cpus, memory, disk", HONORED, "sandbox.cpus, memory_mb, storage_mb (a whole number of CPUs)"),
+    (
+        "[sandbox] cpus, memory, disk",
+        HONORED,
+        "sandbox.cpus, memory_mb, storage_mb (a whole number of CPUs)",
+    ),
     ("[sandbox] build_timeout", HONORED, "sandbox.build_timeout_sec"),
     ("[sandbox] gpus", HONORED, "sandbox.gpus"),
-    ("[sandbox] gpu_types, tpu", PARTIAL, "gpu_types to sandbox.gpu_types; tpu is refused"),
-    ("[sandbox] network", PARTIAL, '"none" (no-network), "open" (public), a host list (allowlist); { block = [...] } is refused'),
+    (
+        "[sandbox] gpu_types, tpu",
+        PARTIAL,
+        "gpu_types to sandbox.gpu_types; tpu is refused",
+    ),
+    (
+        "[sandbox] network",
+        PARTIAL,
+        '"none" (no-network), "open" (public), a host list (allowlist); { block = [...] } is refused',
+    ),
     ("[sandbox] workdir", HONORED, "sandbox.workdir"),
-    ("[sandbox] env", PARTIAL, "literal values to sandbox.env; ${VAR} values are refused"),
-    ("[sandbox] skills", REFUSED, "BenchFlow installs task skills only in its with-skill mode"),
+    (
+        "[sandbox] env",
+        PARTIAL,
+        "literal values to sandbox.env; ${VAR} values are refused",
+    ),
+    (
+        "[sandbox] skills",
+        REFUSED,
+        "BenchFlow installs task skills only in its with-skill mode",
+    ),
     ("[sandbox] mcp", REFUSED, "not mapped yet"),
     ("[sandbox] mounts", REFUSED, "task files are not mounted at start yet"),
-    ("[sandbox] services, [[sandbox.services]] name, image, build, command, env, ready", PARTIAL, "Compose services beside main; refused with network = \"none\", or a build folder outside sandbox/"),
+    (
+        "[sandbox] services, [[sandbox.services]] name, image, build, command, env, ready",
+        PARTIAL,
+        'Compose services beside main; refused with network = "none", or a build folder outside sandbox/',
+    ),
     ("[sandbox] compose", PARTIAL, "only sandbox/docker-compose.yaml"),
-    ("[sandbox] ready, [sandbox.ready] run, interval, timeout, start_period, start_interval, retries", HONORED, "sandbox.healthcheck"),
-    ("[sandbox] outputs, [[sandbox.outputs]] path, save_as, exclude", HONORED, "native artifacts; the judges read the saved outputs"),
-    ("[[sandbox.outputs]] max_bytes, service", REFUSED, "per-output caps and service outputs are not implemented"),
+    (
+        "[sandbox] ready, [sandbox.ready] run, interval, timeout, start_period, start_interval, retries",
+        HONORED,
+        "sandbox.healthcheck",
+    ),
+    (
+        "[sandbox] outputs, [[sandbox.outputs]] path, save_as, exclude",
+        HONORED,
+        "native artifacts; the judges read the saved outputs",
+    ),
+    (
+        "[[sandbox.outputs]] max_bytes, service",
+        REFUSED,
+        "per-output caps and service outputs are not implemented",
+    ),
     ("[sandbox] boundary", PARTIAL, '"container"; gvisor, microvm, and vm are refused'),
-    ("[sandbox] clock, [sandbox.clock] start, advance, enforce", REFUSED, "BenchFlow sets no clock"),
-    ("[sandbox] timezone", REFUSED, "BenchFlow cannot check that the image has the zone's data"),
+    (
+        "[sandbox] clock, [sandbox.clock] start, advance, enforce",
+        REFUSED,
+        "BenchFlow sets no clock",
+    ),
+    (
+        "[sandbox] timezone",
+        REFUSED,
+        "BenchFlow cannot check that the image has the zone's data",
+    ),
     ("[verifier] timeout", HONORED, "verifier.timeout_sec"),
     ("[verifier] user", HONORED, "verifier.user"),
-    ("[verifier] env", PARTIAL, "literal values to verifier.env; ${VAR} values are refused"),
-    ("[verifier] network", PARTIAL, "equal to [sandbox] network; a shared verifier is taken offline for \"none\""),
-    ("[verifier] isolation", HONORED, '"shared", or "separate" (verifier.sandbox_mode: separate)'),
-    ("[verifier] sandbox, [verifier.sandbox] <key>", PARTIAL, "image, cpus, memory, disk, workdir, env, build_timeout; the rest is refused"),
-    ("[verifier] snapshot, [[verifier.snapshot]] run, reads, service, timeout, user", REFUSED, "snapshot commands are not run"),
-    ("[verifier] combine_stages, unreached_stages", HONORED, "no stage is graded on its own, so the task's verifier alone decides the reward"),
+    (
+        "[verifier] env",
+        PARTIAL,
+        "literal values to verifier.env; ${VAR} values are refused",
+    ),
+    (
+        "[verifier] network",
+        PARTIAL,
+        'equal to [sandbox] network; a shared verifier is taken offline for "none"',
+    ),
+    (
+        "[verifier] isolation",
+        HONORED,
+        '"shared", or "separate" (verifier.sandbox_mode: separate)',
+    ),
+    (
+        "[verifier] sandbox, [verifier.sandbox] <key>",
+        PARTIAL,
+        "image, cpus, memory, disk, workdir, env, build_timeout; the rest is refused",
+    ),
+    (
+        "[verifier] snapshot, [[verifier.snapshot]] run, reads, service, timeout, user",
+        REFUSED,
+        "snapshot commands are not run",
+    ),
+    (
+        "[verifier] combine_stages, unreached_stages",
+        HONORED,
+        "no stage is graded on its own, so the task's verifier alone decides the reward",
+    ),
     ("[verifier] mount", PARTIAL, '"/verifier" or "/tests"'),
     ("[verifier] feedback", HONORED, "BenchFlow shows an agent none of its review"),
-    ("[verifier] models", PARTIAL, "false; true (a script that calls a model) is refused"),
-    ("[verifier] judges and its role tables", PARTIAL, "llm and agent roles run judge-loop@1 (docs/task-authoring-taskmd-v2.md); vlm, panel, effort, a hosted harness, resources, services are refused"),
-    ("[verifier] human, [verifier.human] <key>", REFUSED, "human assessment is not supported"),
+    (
+        "[verifier] models",
+        PARTIAL,
+        "false; true (a script that calls a model) is refused",
+    ),
+    (
+        "[verifier] judges and its role tables",
+        PARTIAL,
+        "llm and agent roles run judge-loop@1 (docs/task-authoring-taskmd-v2.md); vlm, panel, effort, a hosted harness, resources, services are refused",
+    ),
+    (
+        "[verifier] human, [verifier.human] <key>",
+        REFUSED,
+        "human assessment is not supported",
+    ),
     ("[oracle] env", PARTIAL, "literal values to oracle.env"),
     ("[oracle] mount", PARTIAL, '"/oracle" or "/solution"'),
-    ("[world], [tiers], [conventions] (every key)", REFUSED, "worlds, tiers, and conventions are not provided"),
-    ("[stages.<name>] unlock", PARTIAL, "a chain from the instruction (at_start, on_submit, after:<previous>) becomes turns of one session; on_request and at_turn are refused"),
-    ("[stages.<name>] submit, mounts, agent, verifier, gate, ready, outputs", REFUSED, "stages graded or set up on their own are not implemented"),
-    ("[roles.<name>] <key>, [interaction] <key>", REFUSED, "multi-agent roles are not mapped (the spec leaves each role's prompt and order open)"),
+    (
+        "[world], [tiers], [conventions] (every key)",
+        REFUSED,
+        "worlds, tiers, and conventions are not provided",
+    ),
+    (
+        "[stages.<name>] unlock",
+        PARTIAL,
+        "a chain from the instruction (at_start, on_submit, after:<previous>) becomes turns of one session; on_request and at_turn are refused",
+    ),
+    (
+        "[stages.<name>] submit, mounts, agent, verifier, gate, ready, outputs",
+        REFUSED,
+        "stages graded or set up on their own are not implemented",
+    ),
+    (
+        "[roles.<name>] <key>, [interaction] <key>",
+        REFUSED,
+        "multi-agent roles are not mapped (the spec leaves each role's prompt and order open)",
+    ),
     ("[user] <key>", REFUSED, "simulated users are not mapped"),
     ("[variants.<name>] <key>", RECORDED, "BenchFlow runs the base task"),
     ("[matrix] <key>", REFUSED, "condition grids are not run"),
-    ("[family] generator, seed_param, params, splits, database", HONORED, "family@1 per seed (--seeds): the generator runs in a fresh container of the task's image"),
+    (
+        "[family] generator, seed_param, params, splits, database",
+        HONORED,
+        "family@1 per seed (--seeds): the generator runs in a fresh container of the task's image",
+    ),
     ("[training] reward, learnable_band, difficulty, admit", RECORDED, "metadata"),
     ("[training] fork", HONORED, "a bench eval run sets every episode up from scratch"),
     ("[training] max_concurrent", REFUSED, "not enforced across a run's trials yet"),
     ("[trajectory] require", PARTIAL, '"tool-calls"; the rest is refused'),
     ("[preference] <key>", REFUSED, "the human-preference protocol is not run"),
-    ("[integrity] profile", PARTIAL, '"shared-hardened", or "separated-verifier" with isolation = "separate"; "runner-separated" is refused'),
+    (
+        "[integrity] profile",
+        PARTIAL,
+        '"shared-hardened", or "separated-verifier" with isolation = "separate"; "runner-separated" is refused',
+    ),
     ("[integrity] intended_use", HONORED, "a BenchFlow eval run is not training"),
     ("[integrity] canary, threat_model, residual_risks", RECORDED, "metadata"),
     ("[integrity] forbidden_sources", REFUSED, "not blocked yet"),
-    ("[integrity] resources, [integrity.resources] <key>", REFUSED, "per-path resource classes are not enforced"),
-    ("[integrity] answers", HONORED, "judges are never served files the verifier writes"),
-    ("[integrity] controls and its keys", RECORDED, "scoring rule, not checked; controls run as control variants (Python API) and --agent nop"),
+    (
+        "[integrity] resources, [integrity.resources] <key>",
+        REFUSED,
+        "per-path resource classes are not enforced",
+    ),
+    (
+        "[integrity] answers",
+        HONORED,
+        "judges are never served files the verifier writes",
+    ),
+    (
+        "[integrity] controls and its keys",
+        RECORDED,
+        "scoring rule, not checked; controls run as control variants (Python API) and --agent nop",
+    ),
     ("[runs] <key>", RECORDED, "scoring rule, not checked"),
     ("[[credits]], [provenance], [import.<format>]", RECORDED, "metadata"),
     ("x- keys and [x-<name>]", PARTIAL, "metadata; [x-benchflow] is refused"),
@@ -258,7 +410,9 @@ def _author(value: Any) -> dict[str, str] | None:
             out["email"] = value["email"]
         return out
     if isinstance(value, str):
-        match = re.match(r"^(?P<name>[^<>]*?)(?: <(?P<email>[^<>@\s]+@[^<>\s]+)>)?$", value)
+        match = re.match(
+            r"^(?P<name>[^<>]*?)(?: <(?P<email>[^<>@\s]+@[^<>\s]+)>)?$", value
+        )
         if match and match["email"]:
             return {"name": match["name"], "email": match["email"]}
         return {"name": value}
@@ -272,7 +426,7 @@ def network_setting(value: Any) -> tuple[str, list[str] | None] | None:
     if value == "open":
         return "public", None
     if isinstance(value, list) and value and all(isinstance(h, str) for h in value):
-        return "allowlist", list(value)
+        return "allowlist", [str(h) for h in value]
     return None
 
 
@@ -342,13 +496,23 @@ def plan_package(document: Any, task_dir: Path) -> Plan:
     return plan
 
 
-def _identity(plan: Plan, config: dict[str, Any], fm: dict[str, Any], metadata: dict[str, Any]) -> None:
+def _identity(
+    plan: Plan, config: dict[str, Any], fm: dict[str, Any], metadata: dict[str, Any]
+) -> None:
     task: dict[str, Any] = {}
     name = config.get("name")
-    if isinstance(name, str) and re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", name) and ".." not in name and not name.startswith("."):
+    if (
+        isinstance(name, str)
+        and re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", name)
+        and ".." not in name
+        and not name.startswith(".")
+    ):
         task["name"] = name
     elif name is not None:
-        plan.record("name", f"{name!r} is not a native org/name, so it stays in metadata.taskmd only")
+        plan.record(
+            "name",
+            f"{name!r} is not a native org/name, so it stays in metadata.taskmd only",
+        )
     for key in ("version", "description"):
         if isinstance(config.get(key), str):
             task[key] = config[key]
@@ -360,7 +524,10 @@ def _identity(plan: Plan, config: dict[str, Any], fm: dict[str, Any], metadata: 
     if task and "name" in task:
         fm["task"] = task
     elif task:
-        plan.record("version, description, authors, keywords", "native keeps these beside a name, so they stay in metadata.taskmd")
+        plan.record(
+            "version, description, authors, keywords",
+            "native keeps these beside a name, so they stay in metadata.taskmd",
+        )
     if isinstance(config.get("title"), str):
         metadata["title"] = config["title"]
     about = _table(config.get("about"))
@@ -391,20 +558,28 @@ def _sandbox(walker: _Walker, sandbox: dict[str, Any], fm: dict[str, Any]) -> An
             if value == "linux":
                 plan.honor(where, "linux")
             else:
-                plan.refuse(where, f"{value!r} sandboxes are not provided; BenchFlow runs linux containers")
+                plan.refuse(
+                    where,
+                    f"{value!r} sandboxes are not provided; BenchFlow runs linux containers",
+                )
         elif key == "cpus":
             if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
                 out["cpus"] = value
                 plan.honor(where, "sandbox.cpus")
             else:
-                plan.refuse(where, "BenchFlow allocates a whole number of CPUs, at least 1")
+                plan.refuse(
+                    where, "BenchFlow allocates a whole number of CPUs, at least 1"
+                )
         elif key in ("memory", "disk"):
             mb = megabytes(value)
             if mb is None:
                 plan.refuse(where, "not a size")
             else:
                 out["memory_mb" if key == "memory" else "storage_mb"] = mb
-                plan.honor(where, f"sandbox.{'memory_mb' if key == 'memory' else 'storage_mb'} = {mb}")
+                plan.honor(
+                    where,
+                    f"sandbox.{'memory_mb' if key == 'memory' else 'storage_mb'} = {mb}",
+                )
         elif key == "build_timeout":
             secs = seconds(value)
             if secs is None:
@@ -456,23 +631,37 @@ def _sandbox(walker: _Walker, sandbox: dict[str, Any], fm: dict[str, Any]) -> An
                 fm["artifacts"] = artifacts
         elif key == "boundary":
             if value == "container":
-                plan.honor(where, "every BenchFlow sandbox isolates at least a container")
+                plan.honor(
+                    where, "every BenchFlow sandbox isolates at least a container"
+                )
             else:
-                plan.refuse(where, f"{value!r} isolation is not guaranteed by BenchFlow's sandboxes")
+                plan.refuse(
+                    where,
+                    f"{value!r} isolation is not guaranteed by BenchFlow's sandboxes",
+                )
         elif key == "services":
             plan.compose = _services(plan, value, network)
         elif key == "compose":
             if value == COMPOSE_PATH:
                 plan.compose_file = COMPOSE_PATH
-                plan.honor(where, "environment/docker-compose.yaml; its service main is the agent's container")
+                plan.honor(
+                    where,
+                    "environment/docker-compose.yaml; its service main is the agent's container",
+                )
             else:
-                plan.refuse(where, f"only {COMPOSE_PATH} is supported: BenchFlow reads the Compose file beside the agent's Dockerfile")
+                plan.refuse(
+                    where,
+                    f"only {COMPOSE_PATH} is supported: BenchFlow reads the Compose file beside the agent's Dockerfile",
+                )
         elif key in ("skills", "mcp", "mounts", "tpu", "clock", "timezone"):
             plan.refuse(where, _REFUSED_SANDBOX[key])
         else:
             walker.unknown(where)
     if plan.compose is not None and plan.compose_file is not None:
-        plan.refuse("[sandbox] services", "[[sandbox.services]] and [sandbox] compose both declare services; declare them in one place")
+        plan.refuse(
+            "[sandbox] services",
+            "[[sandbox.services]] and [sandbox] compose both declare services; declare them in one place",
+        )
     if out:
         fm["sandbox"] = out
     return network
@@ -491,7 +680,12 @@ _REFUSED_SANDBOX = {
 def _healthcheck(plan: Plan, where: str, value: Any) -> dict[str, Any] | None:
     ready = _table(value)
     out: dict[str, Any] = {"command": ready.get("run")}
-    for key, native in (("interval", "interval_sec"), ("timeout", "timeout_sec"), ("start_period", "start_period_sec"), ("start_interval", "start_interval_sec")):
+    for key, native in (
+        ("interval", "interval_sec"),
+        ("timeout", "timeout_sec"),
+        ("start_period", "start_period_sec"),
+        ("start_interval", "start_interval_sec"),
+    ):
         if key in ready:
             secs = seconds(ready[key])
             if secs is None:
@@ -527,7 +721,10 @@ def _outputs(plan: Plan, outputs: Any, where: str) -> list[Any]:
             elif key == "exclude":
                 native["exclude"] = list(value) if isinstance(value, list) else [value]
             elif key in ("max_bytes", "service"):
-                plan.refuse(f"{at} {key}", "per-output caps and service outputs are not implemented")
+                plan.refuse(
+                    f"{at} {key}",
+                    "per-output caps and service outputs are not implemented",
+                )
             else:
                 plan.refuse(f"{at} {key}", "not an output key")
         artifacts.append(native)
@@ -561,8 +758,15 @@ def _services(plan: Plan, services: Any, network: Any) -> dict[str, Any] | None:
                 entry["image"] = str(value)
             elif key == "build":
                 path = PurePosixPath(str(value))
-                if path.is_absolute() or ".." in path.parts or path.parts[:1] != ("sandbox",):
-                    plan.refuse(f"{where} build", "must be a folder in sandbox/, which becomes the Compose build context")
+                if (
+                    path.is_absolute()
+                    or ".." in path.parts
+                    or path.parts[:1] != ("sandbox",)
+                ):
+                    plan.refuse(
+                        f"{where} build",
+                        "must be a folder in sandbox/, which becomes the Compose build context",
+                    )
                     continue
                 entry["build"] = PurePosixPath(*path.parts[1:]).as_posix() or "."
             elif key == "command":
@@ -581,20 +785,31 @@ def _services(plan: Plan, services: Any, network: Any) -> dict[str, Any] | None:
                         "retries": check.get("retries", 3),
                     }
                     if check.get("start_period_sec"):
-                        entry["healthcheck"]["start_period"] = f"{round(check['start_period_sec'] * 1000)}ms"
+                        entry["healthcheck"]["start_period"] = (
+                            f"{round(check['start_period_sec'] * 1000)}ms"
+                        )
                     if "start_interval_sec" in check:
-                        entry["healthcheck"]["start_interval"] = f"{round(check['start_interval_sec'] * 1000)}ms"
+                        entry["healthcheck"]["start_interval"] = (
+                            f"{round(check['start_interval_sec'] * 1000)}ms"
+                        )
             else:
                 plan.refuse(f"{where} {key}", "not a service key")
         out[name] = entry
-        waits[name] = {"condition": "service_healthy" if "ready" in service else "service_started"}
+        waits[name] = {
+            "condition": "service_healthy" if "ready" in service else "service_started"
+        }
     if not out:
         return None
-    plan.honor("[sandbox] services", "Compose services beside main (environment/docker-compose.yaml)")
+    plan.honor(
+        "[sandbox] services",
+        "Compose services beside main (environment/docker-compose.yaml)",
+    )
     return {"services": {"main": {"depends_on": waits}, **out}}
 
 
-def _agent(walker: _Walker, agent: dict[str, Any], fm: dict[str, Any], sandbox_network: Any) -> None:
+def _agent(
+    walker: _Walker, agent: dict[str, Any], fm: dict[str, Any], sandbox_network: Any
+) -> None:
     plan = walker.plan
     out: dict[str, Any] = {}
     for key in walker.x_keys(agent, "[agent]"):
@@ -609,22 +824,36 @@ def _agent(walker: _Walker, agent: dict[str, Any], fm: dict[str, Any], sandbox_n
                 plan.honor(where, "agent.timeout_sec")
         elif key == "on_timeout":
             if value == "grade":
-                plan.honor(where, "BenchFlow grades what the agent left at the time limit and records timed_out")
+                plan.honor(
+                    where,
+                    "BenchFlow grades what the agent left at the time limit and records timed_out",
+                )
             else:
-                plan.refuse(where, f"{value!r} is not implemented: BenchFlow grades what the agent left at the time limit")
+                plan.refuse(
+                    where,
+                    f"{value!r} is not implemented: BenchFlow grades what the agent left at the time limit",
+                )
         elif key == "budget":
-            plan.refuse_agent(where, "BenchFlow enforces no tool-call or token budget on an agent")
+            plan.refuse_agent(
+                where, "BenchFlow enforces no tool-call or token budget on an agent"
+            )
         elif key == "user":
             plan.agent_user = value
             out["user"] = value
-            plan.honor(where, "the oracle and controls run as it; an agent must run with --sandbox-user set to it")
+            plan.honor(
+                where,
+                "the oracle and controls run as it; an agent must run with --sandbox-user set to it",
+            )
         elif key == "network":
             if value == sandbox_network:
                 plan.honor(where, "the sandbox's network")
             elif sandbox_network == "open" and isinstance(value, list) and value:
                 out["network_mode"] = "allowlist"
                 out["allowed_hosts"] = list(value)
-                plan.honor(where, "an agent allowlist over an open sandbox (agent.network_mode = allowlist)")
+                plan.honor(
+                    where,
+                    "an agent allowlist over an open sandbox (agent.network_mode = allowlist)",
+                )
             else:
                 plan.refuse(
                     where,
@@ -634,19 +863,26 @@ def _agent(walker: _Walker, agent: dict[str, Any], fm: dict[str, Any], sandbox_n
         elif key == "network_reason":
             plan.honor(where, "reviewer documentation; nothing to do at run time")
         elif key == "system_prompt_append":
-            plan.refuse_agent(where, "BenchFlow's harnesses take no system prompt addition")
+            plan.refuse_agent(
+                where, "BenchFlow's harnesses take no system prompt addition"
+            )
         elif key == "timeout_basis":
             if value == "wall":
                 plan.honor(where, "BenchFlow counts wall time")
             else:
-                plan.refuse(where, "BenchFlow counts only wall time, and cannot freeze the sandbox while a policy generates")
+                plan.refuse(
+                    where,
+                    "BenchFlow counts only wall time, and cannot freeze the sandbox while a policy generates",
+                )
         else:
             walker.unknown(where)
     if out:
         fm["agent"] = out
 
 
-def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], sandbox_network: Any) -> None:
+def _verifier(
+    walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], sandbox_network: Any
+) -> None:
     plan = walker.plan
     out: dict[str, Any] = {}
     isolation = verifier.get("isolation", "shared")
@@ -662,7 +898,9 @@ def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], san
             else:
                 out["timeout_sec"] = secs
                 plan.script_timeout = secs
-                plan.honor(where, "bounds test.sh; each judge session has its own timeout")
+                plan.honor(
+                    where, "bounds test.sh; each judge session has its own timeout"
+                )
         elif key == "user":
             out["user"] = value
             plan.honor(where, "verifier.user")
@@ -675,11 +913,17 @@ def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], san
             if value == sandbox_network:
                 plan.honor(where, "the sandbox's network")
             else:
-                plan.refuse(where, f"{value!r} differs from [sandbox] network ({sandbox_network!r}); BenchFlow gives a verifier the sandbox's network")
+                plan.refuse(
+                    where,
+                    f"{value!r} differs from [sandbox] network ({sandbox_network!r}); BenchFlow gives a verifier the sandbox's network",
+                )
         elif key == "isolation":
             if value == "separate":
                 out["sandbox_mode"] = "separate"
-                plan.honor(where, "verifier.sandbox_mode = separate: a fresh container with only the saved outputs")
+                plan.honor(
+                    where,
+                    "verifier.sandbox_mode = separate: a fresh container with only the saved outputs",
+                )
             else:
                 plan.honor(where, "the agent's container, after BenchFlow's hardening")
         elif key == "sandbox":
@@ -689,11 +933,17 @@ def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], san
         elif key == "snapshot":
             plan.refuse(where, "snapshot commands are not run before grading")
         elif key in ("combine_stages", "unreached_stages"):
-            plan.honor(where, "no stage is graded on its own, so the task's verifier alone decides the reward")
+            plan.honor(
+                where,
+                "no stage is graded on its own, so the task's verifier alone decides the reward",
+            )
         elif key == "mount":
             dirname = VERIFIER_DIRS.get(str(value))
             if dirname is None:
-                plan.refuse(where, f"{value!r} is not supported: BenchFlow places the verifier at /verifier or /tests, the paths it locks from the agent")
+                plan.refuse(
+                    where,
+                    f"{value!r} is not supported: BenchFlow places the verifier at /verifier or /tests, the paths it locks from the agent",
+                )
             else:
                 plan.verifier_dirname = dirname
                 plan.honor(where, f"the package's {dirname}/ folder")
@@ -701,7 +951,10 @@ def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], san
             plan.honor(where, "BenchFlow shows an agent none of its review")
         elif key == "models":
             if value is True:
-                plan.refuse(where, "a verifier script that calls a model needs the model proxy's seat token, which BenchFlow does not provide yet")
+                plan.refuse(
+                    where,
+                    "a verifier script that calls a model needs the model proxy's seat token, which BenchFlow does not provide yet",
+                )
             else:
                 plan.honor(where, "the verifier's scripts call no model")
         elif key == "judges":
@@ -710,13 +963,22 @@ def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], san
             plan.refuse(where, "human assessment is not supported")
         else:
             walker.unknown(where)
-    if isolation == "separate" and isinstance(verifier.get("sandbox"), dict) and "image" not in verifier["sandbox"]:
-        plan.refuse("[verifier.sandbox]", "without an image, BenchFlow would build the verifier's sandbox from verifier/Dockerfile only; give it an image")
+    if (
+        isolation == "separate"
+        and isinstance(verifier.get("sandbox"), dict)
+        and "image" not in verifier["sandbox"]
+    ):
+        plan.refuse(
+            "[verifier.sandbox]",
+            "without an image, BenchFlow would build the verifier's sandbox from verifier/Dockerfile only; give it an image",
+        )
     if out:
         fm["verifier"] = out
 
 
-def _verifier_sandbox(plan: Plan, table: dict[str, Any], sandbox_network: Any) -> dict[str, Any]:
+def _verifier_sandbox(
+    plan: Plan, table: dict[str, Any], sandbox_network: Any
+) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in table.items():
         where = f"[verifier.sandbox] {key}"
@@ -725,7 +987,12 @@ def _verifier_sandbox(plan: Plan, table: dict[str, Any], sandbox_network: Any) -
         elif key == "image":
             out["docker_image"] = str(value)
             plan.honor(where, "verifier.sandbox.docker_image")
-        elif key == "cpus" and isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        elif (
+            key == "cpus"
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 1
+        ):
             out["cpus"] = value
             plan.honor(where, "verifier.sandbox.cpus")
         elif key in ("memory", "disk") and megabytes(value) is not None:
@@ -768,7 +1035,10 @@ def _oracle(walker: _Walker, oracle: dict[str, Any], fm: dict[str, Any]) -> None
         elif key == "mount":
             dirname = ORACLE_DIRS.get(str(value))
             if dirname is None:
-                plan.refuse(where, f"{value!r} is not supported: BenchFlow places the oracle at /oracle or /solution")
+                plan.refuse(
+                    where,
+                    f"{value!r} is not supported: BenchFlow places the oracle at /oracle or /solution",
+                )
             else:
                 plan.oracle_dirname = dirname
                 plan.honor(where, f"the package's {dirname}/ folder")
@@ -809,13 +1079,19 @@ def _stages(walker: _Walker, stages: Any, metadata: dict[str, Any]) -> None:
             where = f"[stages.{name}] {key}"
             if key == "unlock" or str(key).startswith("x-"):
                 continue
-            plan.refuse(where, "stages graded, set up, or unlocked by a file on their own are not implemented; a stage maps only as a prompt revealed after the previous one")
+            plan.refuse(
+                where,
+                "stages graded, set up, or unlocked by a file on their own are not implemented; a stage maps only as a prompt revealed after the previous one",
+            )
 
 
 def _variants(walker: _Walker, variants: Any, metadata: dict[str, Any]) -> None:
     del metadata
     for name in _table(variants):
-        walker.plan.record(f"[variants.{name}]", "BenchFlow runs the base task; selecting a variant is not implemented")
+        walker.plan.record(
+            f"[variants.{name}]",
+            "BenchFlow runs the base task; selecting a variant is not implemented",
+        )
 
 
 def _family(walker: _Walker, family: Any, metadata: dict[str, Any]) -> None:
@@ -828,7 +1104,10 @@ def _family(walker: _Walker, family: Any, metadata: dict[str, Any]) -> None:
         if key in ("generator", "seed_param", "params", "splits"):
             plan.honor(where, "family@1, one package per seed (bench eval run --seeds)")
         elif key == "database":
-            plan.honor(where, "not read under family@1, which writes an instance's files into agent/ and verifier/")
+            plan.honor(
+                where,
+                "not read under family@1, which writes an instance's files into agent/ and verifier/",
+            )
         else:
             walker.unknown(where)
 
@@ -841,9 +1120,15 @@ def _training(walker: _Walker, training: Any, metadata: dict[str, Any]) -> None:
         if key in ("reward", "learnable_band", "difficulty", "admit"):
             plan.record(where, "metadata")
         elif key == "fork":
-            plan.honor(where, "bench eval run sets every episode up from scratch (bench eval branch does not check it yet)")
+            plan.honor(
+                where,
+                "bench eval run sets every episode up from scratch (bench eval branch does not check it yet)",
+            )
         elif key == "max_concurrent":
-            plan.refuse(where, "BenchFlow does not limit how many trials of one task run at once yet")
+            plan.refuse(
+                where,
+                "BenchFlow does not limit how many trials of one task run at once yet",
+            )
         else:
             walker.unknown(where)
 
@@ -861,7 +1146,10 @@ def _trajectory(walker: _Walker, table: Any, metadata: dict[str, Any]) -> None:
             if item == "tool-calls":
                 plan.honor(f"{where} tool-calls", "BenchFlow records every tool call")
             else:
-                plan.refuse(f"{where} {item}", "BenchFlow cannot guarantee a trajectory holds this")
+                plan.refuse(
+                    f"{where} {item}",
+                    "BenchFlow cannot guarantee a trajectory holds this",
+                )
 
 
 def _integrity(walker: _Walker, table: Any, metadata: dict[str, Any]) -> None:
@@ -881,9 +1169,15 @@ def _integrity(walker: _Walker, table: Any, metadata: dict[str, Any]) -> None:
         elif key == "resources":
             plan.refuse(where, "per-path resource classes are not enforced")
         elif key == "answers":
-            plan.honor(where, "judges are never served files the verifier writes, so no answer reaches them that way")
+            plan.honor(
+                where,
+                "judges are never served files the verifier writes, so no answer reaches them that way",
+            )
         elif key == "controls":
-            plan.record(where, "a scoring rule, not checked by a development run; control scripts run as control variants (benchflow.taskmd), and --agent nop is the do-nothing run")
+            plan.record(
+                where,
+                "a scoring rule, not checked by a development run; control scripts run as control variants (benchflow.taskmd), and --agent nop is the do-nothing run",
+            )
         else:
             walker.unknown(where)
 
@@ -891,7 +1185,10 @@ def _integrity(walker: _Walker, table: Any, metadata: dict[str, Any]) -> None:
 def _runs(walker: _Walker, table: Any, metadata: dict[str, Any]) -> None:
     del metadata
     for key in _table(table):
-        walker.plan.record(f"[runs] {key}", "a scoring rule, recorded as not checked: no BenchFlow run claims to be scored")
+        walker.plan.record(
+            f"[runs] {key}",
+            "a scoring rule, recorded as not checked: no BenchFlow run claims to be scored",
+        )
 
 
 ROLES_REFUSED = (
@@ -905,24 +1202,38 @@ USER_REFUSED = (
 
 _TOP_LEVEL: dict[str, Any] = {
     "about": _about,
-    "world": _refuse_table("world", "worlds (desktop, browser, simulator, robot, lab) are not provided"),
+    "world": _refuse_table(
+        "world", "worlds (desktop, browser, simulator, robot, lab) are not provided"
+    ),
     "tiers": _refuse_table("tiers", "sim-to-real tiers are not provided"),
-    "conventions": _refuse_table("conventions", "conventions are read by a world's profile, and BenchFlow provides no world"),
+    "conventions": _refuse_table(
+        "conventions",
+        "conventions are read by a world's profile, and BenchFlow provides no world",
+    ),
     "stages": _stages,
     "roles": _refuse_table("roles", ROLES_REFUSED),
     "user": _refuse_table("user", USER_REFUSED),
-    "interaction": _refuse_table("interaction", "multi-agent interaction is not mapped"),
+    "interaction": _refuse_table(
+        "interaction", "multi-agent interaction is not mapped"
+    ),
     "variants": _variants,
-    "matrix": _refuse_table("matrix", "condition matrices are not run: BenchFlow would run only the base task"),
+    "matrix": _refuse_table(
+        "matrix",
+        "condition matrices are not run: BenchFlow would run only the base task",
+    ),
     "family": _family,
     "training": _training,
     "trajectory": _trajectory,
-    "preference": _refuse_table("preference", "the human-preference protocol is not run"),
+    "preference": _refuse_table(
+        "preference", "the human-preference protocol is not run"
+    ),
     "integrity": _integrity,
     "runs": _runs,
     "credits": _record_table("credits", "metadata"),
     "provenance": _record_table("provenance", "metadata"),
-    "import": _record_table("import", "metadata: settings of an imported task that task.md does not read"),
+    "import": _record_table(
+        "import", "metadata: settings of an imported task that task.md does not read"
+    ),
 }
 
 
@@ -933,7 +1244,10 @@ def _integrity_profile(plan: Plan, config: dict[str, Any]) -> None:
     isolation = _table(config.get("verifier")).get("isolation", "shared")
     where = "[integrity] profile"
     if profile == "shared-hardened":
-        plan.honor(where, "BenchFlow hardens a shared verifier's container (kills the agent's processes, cleans test hooks, wipes reward files)")
+        plan.honor(
+            where,
+            "BenchFlow hardens a shared verifier's container (kills the agent's processes, cleans test hooks, wipes reward files)",
+        )
     elif profile == "separated-verifier" and isolation == "separate":
         plan.honor(where, "a separate verifier sandbox")
     elif profile == "separated-verifier":
@@ -949,7 +1263,9 @@ def _blocks(plan: Plan, document: Any) -> None:
     prompts = {b.arg: ref.prompt(b) for b in document.blocks if b.kind == "stage"}
     for block in document.blocks:
         if block.kind == "notes":
-            plan.record("```notes", "author and reviewer notes, never shown to an agent")
+            plan.record(
+                "```notes", "author and reviewer notes, never shown to an agent"
+            )
         elif block.kind == "role":
             plan.refuse(f"```role {block.arg}", ROLES_REFUSED)
         elif block.kind == "user":
@@ -964,11 +1280,17 @@ def _blocks(plan: Plan, document: Any) -> None:
         unlock = _table(stages[name]).get("unlock")
         if unlock == "at_start":
             if index != 0:
-                plan.refuse(f"[stages.{name}] unlock", "at_start must be the first stage")
+                plan.refuse(
+                    f"[stages.{name}] unlock", "at_start must be the first stage"
+                )
             previous = name
-            plan.honor(f"[stages.{name}] unlock", "at_start: its prompt is the instruction")
+            plan.honor(
+                f"[stages.{name}] unlock", "at_start: its prompt is the instruction"
+            )
             continue
-        chained = unlock == "on_submit" or (isinstance(unlock, str) and unlock == f"after:{previous}")
+        chained = unlock == "on_submit" or (
+            isinstance(unlock, str) and unlock == f"after:{previous}"
+        )
         if previous is None and isinstance(unlock, str) and unlock.startswith("after:"):
             chained = False
         if not chained:
@@ -979,34 +1301,66 @@ def _blocks(plan: Plan, document: Any) -> None:
             )
             continue
         plan.turns.append({"stage": name, "prompt": prompts.get(name, "")})
-        plan.honor(f"[stages.{name}] unlock", "a new turn of the same agent session, after the agent ends its previous turn")
+        plan.honor(
+            f"[stages.{name}] unlock",
+            "a new turn of the same agent session, after the agent ends its previous turn",
+        )
         previous = name
 
 
 def _package_files(plan: Plan, task_dir: Path, config: dict[str, Any]) -> None:
     if (task_dir / "stages").is_dir():
-        plan.refuse("stages/", "stages graded on their own (stages/<name>/verifier/, oracle/) are not implemented")
+        plan.refuse(
+            "stages/",
+            "stages graded on their own (stages/<name>/verifier/, oracle/) are not implemented",
+        )
     if (task_dir / "world").is_dir() and "world" not in config:
         plan.record("world/", "unused: the task declares no [world]")
     has_sandbox = (task_dir / "sandbox" / "Dockerfile").is_file()
     if plan.image is None and not has_sandbox:
-        plan.refuse("sandbox/Dockerfile", "the task names no [sandbox] image and ships no sandbox/Dockerfile, so there is nothing to run the agent in")
+        plan.refuse(
+            "sandbox/Dockerfile",
+            "the task names no [sandbox] image and ships no sandbox/Dockerfile, so there is nothing to run the agent in",
+        )
     compose = task_dir / COMPOSE_PATH
     if compose.is_file() and plan.compose_file is None:
-        plan.refuse(COMPOSE_PATH, "BenchFlow would start the services in this file beside the agent's container, but [sandbox] compose does not declare it")
+        plan.refuse(
+            COMPOSE_PATH,
+            "BenchFlow would start the services in this file beside the agent's container, but [sandbox] compose does not declare it",
+        )
     elif plan.compose_file is not None and not compose.is_file():
-        plan.refuse("[sandbox] compose", f"names {COMPOSE_PATH}, which the package does not have")
-    if plan.compose is not None and (task_dir / "sandbox" / "docker-compose.yaml").is_file():
-        plan.refuse("[sandbox] services", "sandbox/docker-compose.yaml exists too; BenchFlow runs one Compose file")
+        plan.refuse(
+            "[sandbox] compose",
+            f"names {COMPOSE_PATH}, which the package does not have",
+        )
+    if (
+        plan.compose is not None
+        and (task_dir / "sandbox" / "docker-compose.yaml").is_file()
+    ):
+        plan.refuse(
+            "[sandbox] services",
+            "sandbox/docker-compose.yaml exists too; BenchFlow runs one Compose file",
+        )
     for service in _table(config.get("sandbox")).get("services") or []:
         build = service.get("build") if isinstance(service, dict) else None
         if isinstance(build, str) and not (task_dir / build / "Dockerfile").is_file():
-            plan.refuse(f"[sandbox.services.{service.get('name')}] build", f"{build} has no Dockerfile")
+            plan.refuse(
+                f"[sandbox.services.{service.get('name')}] build",
+                f"{build} has no Dockerfile",
+            )
     verifier = task_dir / "verifier"
     if (verifier / "verifier.md").is_file():
-        plan.refuse("verifier/verifier.md", "a BenchFlow verifier.md would replace task.md's verifier contract")
-    if (verifier / "docker-compose.yaml").is_file() and _table(config.get("verifier")).get("isolation") == "separate":
-        plan.refuse("verifier/docker-compose.yaml", "a verifier image built from Compose is not supported")
+        plan.refuse(
+            "verifier/verifier.md",
+            "a BenchFlow verifier.md would replace task.md's verifier contract",
+        )
+    if (verifier / "docker-compose.yaml").is_file() and _table(
+        config.get("verifier")
+    ).get("isolation") == "separate":
+        plan.refuse(
+            "verifier/docker-compose.yaml",
+            "a verifier image built from Compose is not supported",
+        )
     oracle = task_dir / "oracle"
     if oracle.is_dir() and not (oracle / "solve.sh").is_file():
         plan.record("oracle/", "no solve.sh, so --agent oracle cannot run")
@@ -1015,21 +1369,35 @@ def _package_files(plan: Plan, task_dir: Path, config: dict[str, Any]) -> None:
 # Judging (M2) ---------------------------------------------------------------------------------------
 
 
-def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) -> JudgingPlan:
+def _judging(
+    plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]
+) -> JudgingPlan:
     rubric = document.rubric if isinstance(document.rubric, dict) else None
     judging = JudgingPlan(rubric=rubric)
     behaviors = document.behaviors if isinstance(document.behaviors, dict) else None
     if behaviors is not None and (behaviors.get("watch") or behaviors.get("paired")):
-        plan.refuse("verifier/behaviors.json", "watched and paired behaviors are not detected, and their consequences and tags are not applied")
+        plan.refuse(
+            "verifier/behaviors.json",
+            "watched and paired behaviors are not detected, and their consequences and tags are not applied",
+        )
     judges = _table(_table(config.get("verifier")).get("judges"))
     has_test = (task_dir / "verifier" / "test.sh").is_file()
     if rubric is None:
         if judges:
-            plan.refuse("[verifier] judges", "the task has no task.md rubric for a judge to grade")
+            plan.refuse(
+                "[verifier] judges",
+                "the task has no task.md rubric for a judge to grade",
+            )
         if not has_test:
-            plan.refuse("verifier/test.sh", "the task has neither a task.md rubric nor a test.sh, so nothing would grade it")
+            plan.refuse(
+                "verifier/test.sh",
+                "the task has neither a task.md rubric nor a test.sh, so nothing would grade it",
+            )
         else:
-            plan.honor("verifier/test.sh", "the verifier's script writes the reward itself (reward.txt or reward.json), as in Harbor")
+            plan.honor(
+                "verifier/test.sh",
+                "the verifier's script writes the reward itself (reward.txt or reward.json), as in Harbor",
+            )
         return judging
     unresolved = []
     for url in rubric.get("extends") or []:
@@ -1050,7 +1418,9 @@ def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) 
     if unresolved:
         return judging
     try:
-        criteria = jp.merged_criteria(rubric, {u: str(p) for u, p in judging.shared.items()})
+        criteria = jp.merged_criteria(
+            rubric, {u: str(p) for u, p in judging.shared.items()}
+        )
     except jp.JudgePromptError as exc:
         plan.refuse("verifier/rubric.json", str(exc))
         return judging
@@ -1058,9 +1428,15 @@ def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) 
     streams = streams if isinstance(streams, list) else []
     tests = [c for c in criteria if c.get("judge") == "test"]
     if tests and not has_test:
-        plan.refuse("verifier/test.sh", f"{len(tests)} criteria are decided by tests, and the package has no verifier/test.sh to report them")
+        plan.refuse(
+            "verifier/test.sh",
+            f"{len(tests)} criteria are decided by tests, and the package has no verifier/test.sh to report them",
+        )
     if tests:
-        plan.honor("test-judged criteria", "decided from the verifier's CTRF report, verifier/ctrf.json")
+        plan.honor(
+            "test-judged criteria",
+            "decided from the verifier's CTRF report, verifier/ctrf.json",
+        )
     by_role: dict[str, list[dict[str, Any]]] = {}
     for criterion in criteria:
         judge = criterion.get("judge")
@@ -1071,7 +1447,15 @@ def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) 
             plan.refuse(where, f"criteria judged by {judge} are not implemented")
             continue
         if judge in ("vlm", "panel"):
-            plan.refuse(where, f"the {judge} role is not implemented" + (" (task.md leaves the panel role undefined)" if judge == "panel" else ""))
+            plan.refuse(
+                where,
+                f"the {judge} role is not implemented"
+                + (
+                    " (task.md leaves the panel role undefined)"
+                    if judge == "panel"
+                    else ""
+                ),
+            )
             continue
         by_role.setdefault(str(judge), []).append(criterion)
         for item in criterion.get("evidence") or []:
@@ -1085,7 +1469,9 @@ def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) 
                 )
     if not by_role:
         if judges:
-            plan.record("[verifier] judges", "no criterion goes to a model, so no judge runs")
+            plan.record(
+                "[verifier] judges", "no criterion goes to a model, so no judge runs"
+            )
         return judging
     verifier = _table(config.get("verifier"))
     isolation = verifier.get("isolation", "shared")
@@ -1095,31 +1481,70 @@ def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) 
         where = f"[verifier.judges.{role}]"
         for key, value in settings.items():
             if key == "effort":
-                plan.refuse(f"{where} effort", "reasoning effort is not passed to the judge model yet")
+                plan.refuse(
+                    f"{where} effort",
+                    "reasoning effort is not passed to the judge model yet",
+                )
             elif key == "harness" and value != "judge-loop@1":
-                plan.refuse(f"{where} harness", f"{value!r}: BenchFlow runs judge-loop@1 only; hosted harnesses are not admitted")
+                plan.refuse(
+                    f"{where} harness",
+                    f"{value!r}: BenchFlow runs judge-loop@1 only; hosted harnesses are not admitted",
+                )
             elif key == "resources" and value:
-                plan.refuse(f"{where} resources", "a judge's runner uses the verifier sandbox's resources")
+                plan.refuse(
+                    f"{where} resources",
+                    "a judge's runner uses the verifier sandbox's resources",
+                )
             elif key == "services" and value:
-                plan.refuse(f"{where} services", "a judge's runner cannot reach the task's services")
+                plan.refuse(
+                    f"{where} services",
+                    "a judge's runner cannot reach the task's services",
+                )
             elif key == "views":
                 for view in value or []:
-                    if not (isinstance(view, dict) and view.get("format") == "trajectory-1"):
-                        plan.refuse(f"{where} views", "only trajectory-1 views are defined")
+                    if not (
+                        isinstance(view, dict) and view.get("format") == "trajectory-1"
+                    ):
+                        plan.refuse(
+                            f"{where} views", "only trajectory-1 views are defined"
+                        )
         if role == "agent":
             if isolation != "separate":
-                plan.refuse(where, 'an agent judge\'s commands run in a fresh copy of the submission\'s environment; BenchFlow provides that only with [verifier] isolation = "separate"')
+                plan.refuse(
+                    where,
+                    "an agent judge's commands run in a fresh copy of the submission's environment; BenchFlow provides that only with [verifier] isolation = \"separate\"",
+                )
             if plan.verifier_network != "none":
-                plan.refuse(where, f'an agent judge\'s runners have no network; the verifier sandbox BenchFlow runs them in has network {plan.verifier_network!r}. Set [sandbox] network = "none"')
-            if isinstance(verifier.get("sandbox"), dict) and verifier["sandbox"].get("image"):
-                plan.refuse(where, "an agent judge's runner starts from the solver's image, and this verifier runs another image")
+                plan.refuse(
+                    where,
+                    f'an agent judge\'s runners have no network; the verifier sandbox BenchFlow runs them in has network {plan.verifier_network!r}. Set [sandbox] network = "none"',
+                )
+            if isinstance(verifier.get("sandbox"), dict) and verifier["sandbox"].get(
+                "image"
+            ):
+                plan.refuse(
+                    where,
+                    "an agent judge's runner starts from the solver's image, and this verifier runs another image",
+                )
             if (task_dir / "verifier" / "Dockerfile").is_file():
-                plan.refuse(where, "an agent judge's runner starts from the solver's image, and this verifier builds its own from verifier/Dockerfile")
+                plan.refuse(
+                    where,
+                    "an agent judge's runner starts from the solver's image, and this verifier builds its own from verifier/Dockerfile",
+                )
         per = settings.get("per") or ("rubric" if role == "agent" else "criterion")
         units = 1 if per == "rubric" else len(assigned)
-        samples = settings.get("samples", 1) if isinstance(settings.get("samples", 1), int) else 1
-        plan.judge_seconds += units * samples * 2 * (seconds(settings.get("timeout")) or 0)
-        plan.honor(where, f"judge-loop@1 over the Anthropic Messages API, {len(assigned)} criteria")
+        samples = (
+            settings.get("samples", 1)
+            if isinstance(settings.get("samples", 1), int)
+            else 1
+        )
+        plan.judge_seconds += (
+            units * samples * 2 * (seconds(settings.get("timeout")) or 0)
+        )
+        plan.honor(
+            where,
+            f"judge-loop@1 over the Anthropic Messages API, {len(assigned)} criteria",
+        )
     for criterion in criteria:
         reference = criterion.get("reference")
         if isinstance(reference, str):

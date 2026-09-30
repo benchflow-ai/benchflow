@@ -27,11 +27,15 @@ def taskmd_repo() -> Path | None:
 def require_taskmd_repo() -> Path:
     repo = taskmd_repo()
     if repo is None:
-        pytest.skip("TASKMD_REPO does not point at a task-md checkout (live comparison with the reference tools)")
+        pytest.skip(
+            "TASKMD_REPO does not point at a task-md checkout (live comparison with the reference tools)"
+        )
     return repo
 
 
-def reference_tool(repo: Path, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def reference_tool(
+    repo: Path, *args: str, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run one of the task-md checkout's own tools with this Python (3.11 or later)."""
     return subprocess.run(
         [sys.executable, str(repo / "tools" / args[0]), *args[1:]],

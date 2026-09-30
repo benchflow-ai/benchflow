@@ -84,7 +84,11 @@ def _tool_text(event: dict[str, Any]) -> str:
     parts: list[str] = []
     for block in event.get("content") or []:
         if isinstance(block, dict):
-            inner = block.get("content") if isinstance(block.get("content"), dict) else block
+            inner = (
+                block.get("content")
+                if isinstance(block.get("content"), dict)
+                else block
+            )
             text = inner.get("text") if isinstance(inner, dict) else None
             if isinstance(text, str):
                 parts.append(text)
@@ -136,13 +140,24 @@ def acp_record(events: list[dict[str, Any]]) -> dict[str, Any]:
             if current is None:
                 current = new_step()
             raw_input = event.get("raw_input")
-            arguments = raw_input if isinstance(raw_input, dict) else {"title": event.get("title")}
+            arguments = (
+                raw_input
+                if isinstance(raw_input, dict)
+                else {"title": event.get("title")}
+            )
             current["tool_calls"].append(
                 {
-                    "id": str(event.get("tool_call_id") or f"call-{len(steps)}-{len(current['tool_calls'])}"),
+                    "id": str(
+                        event.get("tool_call_id")
+                        or f"call-{len(steps)}-{len(current['tool_calls'])}"
+                    ),
                     "name": str(event.get("tool_name") or event.get("kind") or "tool"),
                     "arguments": json.dumps(arguments, default=str),
-                    "result": {"text": _tool_text(event), "origin": "sandbox", "status": event.get("status")},
+                    "result": {
+                        "text": _tool_text(event),
+                        "origin": "sandbox",
+                        "status": event.get("status"),
+                    },
                 }
             )
     return {
@@ -155,7 +170,9 @@ def acp_record(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def solver_record(trajectory: list[dict[str, Any]], oracle_output: bytes | None = None) -> dict[str, Any]:
+def solver_record(
+    trajectory: list[dict[str, Any]], oracle_output: bytes | None = None
+) -> dict[str, Any]:
     """The solver's record from a trial's trajectory (``acp_trajectory.jsonl`` events).
 
     An oracle trial's trajectory is one ``{"type": "oracle", "return_code", "stdout"}``
@@ -166,7 +183,11 @@ def solver_record(trajectory: list[dict[str, Any]], oracle_output: bytes | None 
     if trajectory and trajectory[0].get("type") == "oracle":
         event = trajectory[0]
         code = event.get("return_code")
-        output = oracle_output if oracle_output is not None else str(event.get("stdout") or "").encode()
+        output = (
+            oracle_output
+            if oracle_output is not None
+            else str(event.get("stdout") or "").encode()
+        )
         return scripted_seat_record(int(code) if isinstance(code, int) else 0, output)
     if trajectory and trajectory[0].get("type") == "nop":
         return scripted_seat_record(0, b"")

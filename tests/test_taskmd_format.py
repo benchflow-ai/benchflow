@@ -6,14 +6,19 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
 from benchflow.task.formats import detect_task_format, materialize_task_dir
-from benchflow.taskmd import TaskMdError, TaskMdFormat, family, is_taskmd_package, taskmd_metadata
+from benchflow.taskmd import (
+    TaskMdError,
+    TaskMdFormat,
+    family,
+    is_taskmd_package,
+    taskmd_metadata,
+)
 from benchflow.taskmd.reference import parse_package
 from tests._taskmd_helpers import EXAMPLES
 
@@ -37,10 +42,19 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _package(root: Path, task_md: str, *, dockerfile: str = "FROM ubuntu:24.04\nWORKDIR /app\n", test_sh: str | None = None) -> Path:
+def _package(
+    root: Path,
+    task_md: str,
+    *,
+    dockerfile: str = "FROM ubuntu:24.04\nWORKDIR /app\n",
+    test_sh: str | None = None,
+) -> Path:
     _write(root / "task.md", task_md)
     _write(root / "sandbox" / "Dockerfile", dockerfile)
-    _write(root / "verifier" / "test.sh", test_sh or "#!/bin/bash\necho 1 > /logs/verifier/reward.txt\n")
+    _write(
+        root / "verifier" / "test.sh",
+        test_sh or "#!/bin/bash\necho 1 > /logs/verifier/reward.txt\n",
+    )
     return root
 
 
@@ -50,15 +64,23 @@ def _package(root: Path, task_md: str, *, dockerfile: str = "FROM ubuntu:24.04\n
 def test_detects_draft_2_and_never_a_native_or_frontmatter_task(tmp_path) -> None:
     assert is_taskmd_package(EXAMPLES / "hello-world")
     assert detect_task_format(EXAMPLES / "hello-world").name == "taskmd"
-    canary = _write(tmp_path / "canary" / "task.md", "<!-- task.md canary 1234 -->\n\nDo it.\n")
+    canary = _write(
+        tmp_path / "canary" / "task.md", "<!-- task.md canary 1234 -->\n\nDo it.\n"
+    )
     assert is_taskmd_package(canary.parent)
-    native = _write(tmp_path / "native" / "task.md", "---\nschema_version: '1.3'\n---\n\nDo it.\n")
+    native = _write(
+        tmp_path / "native" / "task.md", "---\nschema_version: '1.3'\n---\n\nDo it.\n"
+    )
     assert not is_taskmd_package(native.parent)
     bom = _write(tmp_path / "bom" / "task.md", "﻿---\nagent: {}\n---\nDo it.\n")
     assert not is_taskmd_package(bom.parent)
-    blank_first = _write(tmp_path / "blank" / "task.md", "\n\n---\nagent: {}\n---\nDo it.\n")
+    blank_first = _write(
+        tmp_path / "blank" / "task.md", "\n\n---\nagent: {}\n---\nDo it.\n"
+    )
     assert not is_taskmd_package(blank_first.parent)
-    robouse = _write(tmp_path / "robouse" / "task.md", "---\nrobouse:\n  id: reach\n---\nReach.\n")
+    robouse = _write(
+        tmp_path / "robouse" / "task.md", "---\nrobouse:\n  id: reach\n---\nReach.\n"
+    )
     assert not is_taskmd_package(robouse.parent)
     empty = _write(tmp_path / "empty" / "task.md", "")
     assert not is_taskmd_package(empty.parent)
@@ -94,10 +116,16 @@ def test_hello_world_materializes_as_a_native_package() -> None:
     task = Task(native)
     assert task.instruction.strip() == parse_package(source).instruction.strip()
     assert task.config.agent.timeout_sec == 120
-    assert (native / "environment" / "Dockerfile").read_text() == (source / "sandbox" / "Dockerfile").read_text()
-    assert (native / "oracle" / "solve.sh").read_bytes() == (source / "oracle" / "solve.sh").read_bytes()
+    assert (native / "environment" / "Dockerfile").read_text() == (
+        source / "sandbox" / "Dockerfile"
+    ).read_text()
+    assert (native / "oracle" / "solve.sh").read_bytes() == (
+        source / "oracle" / "solve.sh"
+    ).read_bytes()
     assert (native / "verifier" / "rubric.json").is_file()
-    strategy = yaml.safe_load((native / "verifier" / "verifier.md").read_text().split("---")[1])
+    strategy = yaml.safe_load(
+        (native / "verifier" / "verifier.md").read_text().split("---")[1]
+    )
     assert strategy["verifier"]["strategies"]["taskmd"] == {
         "type": "taskmd",
         "grading": "rubric",
@@ -109,7 +137,9 @@ def test_hello_world_materializes_as_a_native_package() -> None:
     assert meta is not None
     assert meta["verifier_mount"] == "/verifier" and meta["grading"] == "rubric"
     assert meta["source_tree"].startswith("sha256:")
-    assert (native / ".taskmd" / "package" / "task.md").read_bytes() == (source / "task.md").read_bytes()
+    assert (native / ".taskmd" / "package" / "task.md").read_bytes() == (
+        source / "task.md"
+    ).read_bytes()
     assert materialize_task_dir(source) == native  # content-addressed
 
 
@@ -124,11 +154,18 @@ def test_harbor_import_keeps_its_mounts_and_prebuilt_image() -> None:
     from benchflow.task import Task
 
     native = materialize_task_dir(EXAMPLES / "regex-log")
-    assert (native / "tests" / "test.sh").is_file() and not (native / "verifier").exists()
-    assert (native / "solution" / "solve.sh").is_file() and not (native / "oracle").exists()
+    assert (native / "tests" / "test.sh").is_file() and not (
+        native / "verifier"
+    ).exists()
+    assert (native / "solution" / "solve.sh").is_file() and not (
+        native / "oracle"
+    ).exists()
     task = Task(native)
     assert task.config.sandbox.docker_image == "alexgshaw/regex-log:20251031"
-    assert task.config.sandbox.memory_mb == 2048 and task.config.sandbox.storage_mb == 10240
+    assert (
+        task.config.sandbox.memory_mb == 2048
+        and task.config.sandbox.storage_mb == 10240
+    )
     assert taskmd_metadata(native)["grading"] == "script"
 
 
@@ -141,17 +178,39 @@ def test_separate_verifier_offline_and_judge_time() -> None:
     assert task.config.sandbox.network_mode.value == "no-network"
     # 5m of scripts, plus 3 agent sessions of 20m each rejudged once, plus the setup margin.
     assert task.config.verifier.timeout_sec == 300 + 3 * 2 * 1200 + 600
-    strategy = yaml.safe_load((native / "verifier" / "verifier.md").read_text().split("---")[1])["verifier"]["strategies"]["taskmd"]
-    assert strategy["offline"] is True and strategy["workdir"] == "/work" and strategy["script_timeout"] == 300
+    strategy = yaml.safe_load(
+        (native / "verifier" / "verifier.md").read_text().split("---")[1]
+    )["verifier"]["strategies"]["taskmd"]
+    assert (
+        strategy["offline"] is True
+        and strategy["workdir"] == "/work"
+        and strategy["script_timeout"] == 300
+    )
     assert "verifier/answers.json" in json.dumps(taskmd_metadata(native)["config"])
 
 
 @pytest.mark.parametrize(
     ("name", "fields"),
     [
-        ("calc-quarterly", ["[sandbox] clock", "[world]", "[agent] network", "bar-chart", "verifier/behaviors.json"]),
+        (
+            "calc-quarterly",
+            [
+                "[sandbox] clock",
+                "[world]",
+                "[agent] network",
+                "bar-chart",
+                "verifier/behaviors.json",
+            ],
+        ),
         ("flaky-retry", ["[agent] network", "extends", "verifier/behaviors.json"]),
-        ("ising-exponent", ["[sandbox] network", "[stages.analysis] submit", "[stages.analysis] mounts"]),
+        (
+            "ising-exponent",
+            [
+                "[sandbox] network",
+                "[stages.analysis] submit",
+                "[stages.analysis] mounts",
+            ],
+        ),
     ],
 )
 def test_refusals_name_every_field(name: str, fields: list[str]) -> None:
@@ -163,7 +222,10 @@ def test_refusals_name_every_field(name: str, fields: list[str]) -> None:
 
 
 def test_a_reference_error_refuses_the_package(tmp_path) -> None:
-    package = _package(tmp_path / "bad", 'Do it.\n\n```toml task\n[agent]\ntimeout = "2m"\nbudgett = 3\n```\n')
+    package = _package(
+        tmp_path / "bad",
+        'Do it.\n\n```toml task\n[agent]\ntimeout = "2m"\nbudgett = 3\n```\n',
+    )
     with pytest.raises(TaskMdError, match="reference parser reports errors") as caught:
         materialize_task_dir(package)
     assert "budgett" in str(caught.value)
@@ -172,8 +234,13 @@ def test_a_reference_error_refuses_the_package(tmp_path) -> None:
 def test_an_instruction_with_reserved_native_headings_is_kept(tmp_path) -> None:
     from benchflow.task import Task
 
-    instruction = "Write the play.\n\n## role:narrator\n\nSay hello.\n\n## prompt\n\nThe end."
-    package = _package(tmp_path / "play", instruction + '\n\n```toml task\n[agent]\ntimeout = "1m"\n```\n')
+    instruction = (
+        "Write the play.\n\n## role:narrator\n\nSay hello.\n\n## prompt\n\nThe end."
+    )
+    package = _package(
+        tmp_path / "play",
+        instruction + '\n\n```toml task\n[agent]\ntimeout = "1m"\n```\n',
+    )
     native = materialize_task_dir(package)
     assert Task(native).instruction.strip() == instruction
 
@@ -193,7 +260,11 @@ def test_a_batch_skips_a_refused_package_and_runs_the_rest(tmp_path, caplog) -> 
     suite = tmp_path / "suite"
     shutil.copytree(EXAMPLES / "hello-world", suite / "hello-world")
     shutil.copytree(EXAMPLES / "calc-quarterly", suite / "calc-quarterly")
-    ev = Evaluation(tasks_dir=suite, jobs_dir=tmp_path / "jobs", config=EvaluationConfig(agent="oracle"))
+    ev = Evaluation(
+        tasks_dir=suite,
+        jobs_dir=tmp_path / "jobs",
+        config=EvaluationConfig(agent="oracle"),
+    )
     with caplog.at_level("WARNING"):
         dirs = ev._get_task_dirs()
     assert [d.name for d in dirs] == ["hello-world"]
@@ -203,7 +274,9 @@ def test_a_batch_skips_a_refused_package_and_runs_the_rest(tmp_path, caplog) -> 
 # Families ------------------------------------------------------------------------------------------
 
 
-def _host_docker(args: list[str], *, timeout: float, what: str) -> subprocess.CompletedProcess[str]:
+def _host_docker(
+    args: list[str], *, timeout: float, what: str
+) -> subprocess.CompletedProcess[str]:
     """Stand-in for the docker CLI: runs the generator on the host with /package and /out mapped."""
     del timeout, what
     if args[0] in ("build", "rmi"):
@@ -217,10 +290,16 @@ def _host_docker(args: list[str], *, timeout: float, what: str) -> subprocess.Co
     at = args.index("--entrypoint")
     entrypoint, tail = args[at + 1], args[at + 3 :]  # skip the image
     tail = [
-        package + a[len("/package") :] if a.startswith("/package/") else out if a == "/out" else a
+        package + a[len("/package") :]
+        if a.startswith("/package/")
+        else out
+        if a == "/out"
+        else a
         for a in tail
     ]
-    return subprocess.run([entrypoint, *tail], capture_output=True, text=True, cwd=package, check=False)
+    return subprocess.run(
+        [entrypoint, *tail], capture_output=True, text=True, cwd=package, check=False
+    )
 
 
 def test_a_family_seed_materializes_its_instance(monkeypatch) -> None:
@@ -237,23 +316,36 @@ def test_a_family_seed_materializes_its_instance(monkeypatch) -> None:
     meta = taskmd_metadata(native)
     params = meta["family"]["params"]
     assert meta["family"]["seed"] == 3 and meta["family"]["role"] == "train"
-    assert params["metric"] in task.instruction and f"top {params['k']}" in task.instruction
+    assert (
+        params["metric"] in task.instruction
+        and f"top {params['k']}" in task.instruction
+    )
     assert (native / "environment" / "taskmd-instance" / "data" / "shop.db").is_file()
-    assert "COPY taskmd-instance/ /" in (native / "environment" / "Dockerfile").read_text()
+    assert (
+        "COPY taskmd-instance/ /" in (native / "environment" / "Dockerfile").read_text()
+    )
     assert (native / "verifier" / "instance" / "hidden.db").is_file()
     assert not (native / "environment" / "taskmd-instance" / "verifier").exists()
     fm = _frontmatter(native)
-    expected = {"TASKMD_SEED": "3", "TASKMD_PARAMS": json.dumps(params, sort_keys=True, separators=(",", ":"))}
+    expected = {
+        "TASKMD_SEED": "3",
+        "TASKMD_PARAMS": json.dumps(params, sort_keys=True, separators=(",", ":")),
+    }
     assert fm["oracle"]["env"] == expected and fm["verifier"]["env"] == expected
     assert meta["agent_refused"][0]["field"] == "[agent] budget"
     # seed 9 is in the test split
-    assert taskmd_metadata(materialize_task_dir(source, seed=9))["family"]["role"] == "test"
+    assert (
+        taskmd_metadata(materialize_task_dir(source, seed=9))["family"]["role"]
+        == "test"
+    )
 
 
 def test_a_failing_generator_refuses_the_seed(monkeypatch, tmp_path) -> None:
     def failing(args, *, timeout, what):
         del timeout, what
-        return subprocess.CompletedProcess(args, 0 if args[0] != "run" else 3, "", "boom")
+        return subprocess.CompletedProcess(
+            args, 0 if args[0] != "run" else 3, "", "boom"
+        )
 
     monkeypatch.setattr(family, "_docker", failing)
     with pytest.raises(TaskMdError, match="generator-failed"):
@@ -273,9 +365,13 @@ def test_a_control_runs_as_the_oracle(format_cache) -> None:
 
     source = EXAMPLES / "analysis-judge"
     assert controls(source) == {"known-bad-line-fit": "controls/line-fit.sh"}
-    native = TaskMdFormat().materialize_variant(source, format_cache / "taskmd", control="known-bad-line-fit")
+    native = TaskMdFormat().materialize_variant(
+        source, format_cache / "taskmd", control="known-bad-line-fit"
+    )
     assert native.name == "analysis-judge--control-known-bad-line-fit"
-    assert (native / "oracle" / "solve.sh").read_bytes() == (source / "controls" / "line-fit.sh").read_bytes()
+    assert (native / "oracle" / "solve.sh").read_bytes() == (
+        source / "controls" / "line-fit.sh"
+    ).read_bytes()
     assert not (native / "environment" / "controls").exists()
 
 
@@ -297,10 +393,16 @@ def test_chained_stages_become_turns_of_the_runs_agent(tmp_path) -> None:
 
     native = materialize_task_dir(_staged(tmp_path / "staged"))
     assert [t["stage"] for t in taskmd_metadata(native)["turns"]] == ["build", "report"]
-    config = RolloutConfig.from_legacy(task_path=native, agent="claude-agent-acp", model="claude-haiku-4-5")
+    config = RolloutConfig.from_legacy(
+        task_path=native, agent="claude-agent-acp", model="claude-haiku-4-5"
+    )
     (scene,) = config.scenes
     assert [role.agent for role in scene.roles] == ["claude-agent-acp"]
-    assert [t.prompt for t in scene.turns] == [None, "Now build it from the plan.", "Report what you built in /app/report.md."]
+    assert [t.prompt for t in scene.turns] == [
+        None,
+        "Now build it from the plan.",
+        "Report what you built in /app/report.md.",
+    ]
     oracle = RolloutConfig.from_legacy(task_path=native, agent="oracle")
     assert oracle.primary_agent == "oracle"
     assert len(oracle.effective_scenes[0].turns) == 1
@@ -316,7 +418,7 @@ def test_stages_out_of_order_are_refused(tmp_path) -> None:
 
 
 def test_roles_and_users_are_refused(tmp_path) -> None:
-    text = "Build it.\n\n```role reviewer\nReview it.\n```\n\n```user\nYou are a customer.\n```\n\n```toml task\n[roles.reviewer]\ntools = [\"shell\"]\n```\n"
+    text = 'Build it.\n\n```role reviewer\nReview it.\n```\n\n```user\nYou are a customer.\n```\n\n```toml task\n[roles.reviewer]\ntools = ["shell"]\n```\n'
     with pytest.raises(TaskMdError) as caught:
         materialize_task_dir(_package(tmp_path / "multi", text))
     assert "```role reviewer" in str(caught.value) and "```user" in str(caught.value)
@@ -340,7 +442,12 @@ def test_judges_are_checked_before_the_solver_starts(monkeypatch) -> None:
     from benchflow.taskmd.launch import TaskMdLaunchRefused, check_launch
 
     native = materialize_task_dir(EXAMPLES / "analysis-judge")
-    for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_OAUTH_TOKEN", "BENCHFLOW_TASKMD_JUDGE_MODEL"):
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_OAUTH_TOKEN",
+        "BENCHFLOW_TASKMD_JUDGE_MODEL",
+    ):
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(TaskMdLaunchRefused, match="ANTHROPIC_API_KEY"):
         check_launch(native, primary_agent="oracle", sandbox_user=None)
@@ -349,5 +456,7 @@ def test_judges_are_checked_before_the_solver_starts(monkeypatch) -> None:
     monkeypatch.setenv("BENCHFLOW_TASKMD_JUDGE_MODEL", "gpt-5")
     with pytest.raises(TaskMdLaunchRefused, match="Anthropic Messages API only"):
         check_launch(native, primary_agent="oracle", sandbox_user=None)
-    monkeypatch.setenv("BENCHFLOW_TASKMD_JUDGE_MODEL", "agent=claude-haiku-4-5-20251001")
+    monkeypatch.setenv(
+        "BENCHFLOW_TASKMD_JUDGE_MODEL", "agent=claude-haiku-4-5-20251001"
+    )
     check_launch(native, primary_agent="oracle", sandbox_user=None)

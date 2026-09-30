@@ -39,6 +39,7 @@ from typing import Any
 import yaml
 
 from benchflow.taskmd import family as family_mod
+from benchflow.taskmd._util import table
 from benchflow.taskmd.plan import Plan, plan_package
 from benchflow.taskmd.reference import errors as reference_errors
 from benchflow.taskmd.reference import parse_package, reference_commit
@@ -108,7 +109,9 @@ def package_tree_hash(task_dir: Path) -> str:
                 continue
             if path.is_symlink() or not path.is_file():
                 continue
-            entries.append((rel.encode("utf-8"), hashlib.sha256(path.read_bytes()).digest()))
+            entries.append(
+                (rel.encode("utf-8"), hashlib.sha256(path.read_bytes()).digest())
+            )
     digest = hashlib.sha256()
     for key, content in sorted(entries):
         digest.update(key + b"\0" + content)
@@ -148,16 +151,30 @@ def controls(task_dir: Path) -> dict[str, str]:
     """
     document = parse_package(Path(task_dir).resolve())
     config = document.config if isinstance(document.config, dict) else {}
-    table = config.get("integrity", {}).get("controls", {}) if isinstance(config.get("integrity"), dict) else {}
+    table = (
+        config.get("integrity", {}).get("controls", {})
+        if isinstance(config.get("integrity"), dict)
+        else {}
+    )
     out: dict[str, str] = {}
-    for kind, value in (table.items() if isinstance(table, dict) else ()):
+    for kind, value in table.items() if isinstance(table, dict) else ():
         if kind == "injection":
             continue
-        scripts = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+        scripts = (
+            [value]
+            if isinstance(value, str)
+            else value
+            if isinstance(value, list)
+            else []
+        )
         for script in scripts:
             if not isinstance(script, str):
                 continue
-            ident = _slug(kind) if isinstance(value, str) else _slug(f"{kind}-{Path(script).stem}")
+            ident = (
+                _slug(kind)
+                if isinstance(value, str)
+                else _slug(f"{kind}-{Path(script).stem}")
+            )
             out[ident] = script
     return out
 
@@ -176,7 +193,9 @@ class TaskMdFormat:
         if plan.family is not None:
             raise TaskMdError(
                 plan.task_dir,
-                ["[family]: a family's instance comes from a seed; run it with --seeds (for example --seeds 0-4)"],
+                [
+                    "[family]: a family's instance comes from a seed; run it with --seeds (for example --seeds 0-4)"
+                ],
                 headline="this task is a family of seeded instances",
             )
         return self._materialize(plan, Path(out_root))
@@ -194,7 +213,9 @@ class TaskMdFormat:
         if seed is not None and plan.family is None:
             raise TaskMdError(
                 plan.task_dir,
-                ["--seeds: the task declares no [family], so it has no seeded instances"],
+                [
+                    "--seeds: the task declares no [family], so it has no seeded instances"
+                ],
                 headline="this task is not a family",
             )
         if seed is None and plan.family is not None:
@@ -223,7 +244,9 @@ class TaskMdFormat:
             if script is None or not (task_dir / script).is_file():
                 raise TaskMdError(
                     task_dir,
-                    [f"control {control!r} is not a script the task declares; it declares {', '.join(sorted(declared)) or 'none'}"],
+                    [
+                        f"control {control!r} is not a script the task declares; it declares {', '.join(sorted(declared)) or 'none'}"
+                    ],
                     headline="no such control",
                 )
         name = task_dir.name
@@ -239,7 +262,10 @@ class TaskMdFormat:
                 "name": name,
                 "seed": seed,
                 "control": control,
-                "shared": {u: hashlib.sha256(p.read_bytes()).hexdigest() for u, p in (plan.judging.shared if plan.judging else {}).items()},
+                "shared": {
+                    u: hashlib.sha256(p.read_bytes()).hexdigest()
+                    for u, p in (plan.judging.shared if plan.judging else {}).items()
+                },
                 "module": _module_digest(),
             },
             sort_keys=True,
@@ -262,7 +288,14 @@ class TaskMdFormat:
                         scratch / "out",
                         document=plan.document,
                     )
-                _write_package(plan, pkg, source_tree=source_tree, instance=instance, control_script=script, control=control)
+                _write_package(
+                    plan,
+                    pkg,
+                    source_tree=source_tree,
+                    instance=instance,
+                    control_script=script,
+                    control=control,
+                )
             finally:
                 if scratch is not None:
                     shutil.rmtree(scratch, ignore_errors=True)
@@ -329,7 +362,9 @@ def _write_package(
 ) -> None:
     task_dir = plan.task_dir
     document = plan.document
-    config: dict[str, Any] = document.config if isinstance(document.config, dict) else {}
+    config: dict[str, Any] = (
+        document.config if isinstance(document.config, dict) else {}
+    )
     strategy = _strategy(plan, config)
     fm = json.loads(json.dumps(plan.frontmatter, default=str))
     placeholders = instance.placeholders if instance is not None else {}
@@ -342,7 +377,11 @@ def _write_package(
     else:
         env.mkdir()
     dockerfile = env / "Dockerfile"
-    bake = instance is not None and (instance.root / "agent").is_dir() and any((instance.root / "agent").iterdir())
+    bake = (
+        instance is not None
+        and (instance.root / "agent").is_dir()
+        and any((instance.root / "agent").iterdir())
+    )
     if plan.image is not None:
         dockerfile.write_text(f"FROM {plan.image}\n")
         if not bake:
@@ -350,7 +389,9 @@ def _write_package(
     if bake and instance is not None:
         target = env / INSTANCE_CONTEXT
         if target.exists():
-            raise ValueError(f"sandbox/{INSTANCE_CONTEXT} would collide with the family instance's files")
+            raise ValueError(
+                f"sandbox/{INSTANCE_CONTEXT} would collide with the family instance's files"
+            )
         _copytree(instance.root / "agent", target)
         for path in target.rglob("*"):
             if path.is_file():
@@ -364,7 +405,9 @@ def _write_package(
             + f"COPY {INSTANCE_CONTEXT}/ /\n"
         )
     if plan.compose is not None:
-        (env / "docker-compose.yaml").write_text(yaml.safe_dump(plan.compose, sort_keys=False))
+        (env / "docker-compose.yaml").write_text(
+            yaml.safe_dump(plan.compose, sort_keys=False)
+        )
 
     # verifier/ (or tests/) -----------------------------------------------------------------------
     vdir = pkg / plan.verifier_dirname
@@ -374,7 +417,9 @@ def _write_package(
         vdir.mkdir()
     if instance is not None and (instance.root / "verifier").is_dir():
         if (vdir / "instance").exists():
-            raise ValueError("verifier/instance would collide with the family instance's verifier files")
+            raise ValueError(
+                "verifier/instance would collide with the family instance's verifier files"
+            )
         _copytree(instance.root / "verifier", vdir / "instance")
     (vdir / "verifier.md").write_text(_verifier_document(strategy))
 
@@ -389,7 +434,10 @@ def _write_package(
 
     # environment variables of a family instance (family@1) ---------------------------------------
     if instance is not None:
-        family_env = {"TASKMD_SEED": str(instance.seed), "TASKMD_PARAMS": instance.params_jcs}
+        family_env = {
+            "TASKMD_SEED": str(instance.seed),
+            "TASKMD_PARAMS": instance.params_jcs,
+        }
         for section in ("oracle", "verifier"):
             table = fm.setdefault(section, {})
             table["env"] = {**table.get("env", {}), **family_env}
@@ -406,7 +454,9 @@ def _write_package(
             (judge_pkg / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, judge_pkg / rel)
     shared_files: dict[str, str] = {}
-    for n, (url, path) in enumerate(sorted((plan.judging.shared if plan.judging else {}).items())):
+    for n, (url, path) in enumerate(
+        sorted((plan.judging.shared if plan.judging else {}).items())
+    ):
         dest = pkg / ".taskmd" / "shared" / f"{n}-{path.name}"
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dest)
@@ -415,7 +465,10 @@ def _write_package(
     # task.md -------------------------------------------------------------------------------------
     instruction = family_mod.fill_placeholders(document.instruction, placeholders)
     turns = [
-        {"stage": t["stage"], "prompt": family_mod.fill_placeholders(t["prompt"], placeholders)}
+        {
+            "stage": t["stage"],
+            "prompt": family_mod.fill_placeholders(t["prompt"], placeholders),
+        }
         for t in plan.turns
     ]
     metadata = fm.setdefault("metadata", {})
@@ -424,12 +477,17 @@ def _write_package(
         "format_version": FORMAT_VERSION,
         "source": str(task_dir),
         "source_tree": source_tree,
-        "reference": {"repository": "task.md", "commit": reference_commit()},
+        "reference": {
+            "repository": "task.md",
+            "commit": reference_commit(),
+        },
         "config": json.loads(json.dumps(config, default=str)),
         "verifier_mount": _mount_of(plan.verifier_dirname),
         "oracle_mount": _mount_of(plan.oracle_dirname),
         "grading": strategy["grading"],
-        "agent_refused": [{"field": f.field, "reason": f.detail} for f in plan.agent_refused],
+        "agent_refused": [
+            {"field": f.field, "reason": f.detail} for f in plan.agent_refused
+        ],
     }
     if isinstance(config.get("name"), str):
         taskmd["name"] = config["name"]
@@ -488,21 +546,28 @@ def _native_body(instruction: str) -> str:
 
 
 def _mount_of(dirname: str) -> str:
-    return {"verifier": "/verifier", "tests": "/tests", "oracle": "/oracle", "solution": "/solution"}[dirname]
+    return {
+        "verifier": "/verifier",
+        "tests": "/tests",
+        "oracle": "/oracle",
+        "solution": "/solution",
+    }[dirname]
 
 
 def _strategy(plan: Plan, config: dict[str, Any]) -> dict[str, Any]:
     """The ``taskmd`` verifier strategy's settings (benchflow.taskmd.verify)."""
-    verifier = config.get("verifier") if isinstance(config.get("verifier"), dict) else {}
-    sandbox = config.get("sandbox") if isinstance(config.get("sandbox"), dict) else {}
+    verifier = table(config.get("verifier"))
+    sandbox = table(config.get("sandbox"))
     isolation = verifier.get("isolation", "shared")
     workdir = None
-    if isolation == "separate" and isinstance(verifier.get("sandbox"), dict):
-        workdir = verifier["sandbox"].get("workdir")
+    if isolation == "separate":
+        workdir = table(verifier.get("sandbox")).get("workdir")
     workdir = workdir or sandbox.get("workdir")
     strategy: dict[str, Any] = {
         "type": "taskmd",
-        "grading": "rubric" if plan.judging is not None and plan.judging.rubric is not None else "script",
+        "grading": "rubric"
+        if plan.judging is not None and plan.judging.rubric is not None
+        else "script",
         "isolation": isolation,
         "offline": plan.verifier_network == "none",
     }
@@ -516,7 +581,9 @@ def _strategy(plan: Plan, config: dict[str, Any]) -> dict[str, Any]:
         # that becomes the scripts' limit plus the judges' worst case.
         script = plan.script_timeout or DEFAULT_SCRIPT_TIMEOUT
         strategy["script_timeout"] = script
-        plan.frontmatter.setdefault("verifier", {})["timeout_sec"] = script + plan.judge_seconds + JUDGE_MARGIN_SEC
+        plan.frontmatter.setdefault("verifier", {})["timeout_sec"] = (
+            script + plan.judge_seconds + JUDGE_MARGIN_SEC
+        )
     return strategy
 
 
@@ -567,7 +634,10 @@ def taskmd_metadata(task_path: Path) -> dict[str, Any] | None:
 
 def shared_rubrics(task_path: Path, meta: dict[str, Any]) -> dict[str, str]:
     """URL -> local file of the shared rubrics a package's rubric extends."""
-    return {url: str(Path(task_path) / rel) for url, rel in (meta.get("shared_rubrics") or {}).items()}
+    return {
+        url: str(Path(task_path) / rel)
+        for url, rel in (meta.get("shared_rubrics") or {}).items()
+    }
 
 
 __all__ = [

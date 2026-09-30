@@ -41,13 +41,17 @@ def check_package(task_dir: Path) -> CheckReport:
     lines: list[str] = []
     document = parse_package(task_dir)
     if errors(document):
-        lines.append(f"not planned: the reference parser reports errors, so BenchFlow will not run this {FORMAT_LABEL} package")
+        lines.append(
+            f"not planned: the reference parser reports errors, so BenchFlow will not run this {FORMAT_LABEL} package"
+        )
         return CheckReport(False, list(reference.lines), lines)
     plan = plan_package(document, task_dir)
     for finding in plan.refused:
         lines.append(f"refused: {finding}")
     for finding in plan.agent_refused:
-        lines.append(f"refused when an agent runs (the oracle, controls, and --agent nop run): {finding}")
+        lines.append(
+            f"refused when an agent runs (the oracle, controls, and --agent nop run): {finding}"
+        )
     lines += [f"honored: {f}" for f in plan.honored]
     lines += [f"recorded: {f}" for f in plan.recorded]
     ok = reference.ok and plan.ok
@@ -67,7 +71,9 @@ def check_package(task_dir: Path) -> CheckReport:
                     )
                 else:
                     native_dir = fmt.materialize_variant(task_dir, out_root, seed=seed)
-                    lines.append(f"materialized seed {seed}, the reference checker's sample seed")
+                    lines.append(
+                        f"materialized seed {seed}, the reference checker's sample seed"
+                    )
             else:
                 native_dir = fmt.materialize(task_dir, out_root)
         except TaskMdError as exc:

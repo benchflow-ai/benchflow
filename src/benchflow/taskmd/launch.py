@@ -23,7 +23,9 @@ class TaskMdLaunchRefused(ValueError):
     """This run cannot honor the task; the message names each field."""
 
 
-def check_launch(task_path: Path, *, primary_agent: str, sandbox_user: str | None) -> None:
+def check_launch(
+    task_path: Path, *, primary_agent: str, sandbox_user: str | None
+) -> None:
     """Raise :class:`TaskMdLaunchRefused` when this run cannot honor the package."""
     meta = taskmd_metadata(Path(task_path))
     if meta is None:
@@ -82,7 +84,9 @@ def judge_preflight(task_path: Path, meta: dict[str, Any]) -> list[str]:
         settings, _ = ref.resolve_judge(document.config, role, None, pkg)
         model = judging.model_for(role, settings)
         if model is None:
-            reasons.append(f"[verifier.judges.{role}] model: none is named; set one, or {judging.MODEL_ENV}")
+            reasons.append(
+                f"[verifier.judges.{role}] model: none is named; set one, or {judging.MODEL_ENV}"
+            )
         elif not model.startswith(("claude-", "anthropic/")):
             reasons.append(
                 f"[verifier.judges.{role}] model: {model!r}; BenchFlow runs judge-loop@1 over the "

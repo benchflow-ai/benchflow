@@ -14,9 +14,17 @@ from benchflow.taskmd import grading
 from tests._taskmd_helpers import require_taskmd_repo
 
 REPORT = [
-    {"name": "tests/test_retry.py::test_timeout_retries", "status": "passed", "duration": 41},
+    {
+        "name": "tests/test_retry.py::test_timeout_retries",
+        "status": "passed",
+        "duration": 41,
+    },
     {"name": "tests/test_retry.py::test_backoff[0.5]", "status": "passed"},
-    {"name": "tests/test_retry.py::test_backoff[1.0]", "status": "failed", "message": "assert 1.31 <= 1.2"},
+    {
+        "name": "tests/test_retry.py::test_backoff[1.0]",
+        "status": "failed",
+        "message": "assert 1.31 <= 1.2",
+    },
 ]
 
 
@@ -35,7 +43,9 @@ REPORT = [
         ("./tests/test_retry.py", 3, False),
     ],
 )
-def test_the_spec_table_of_check_matches(check: str, matched: int, verdict: bool) -> None:
+def test_the_spec_table_of_check_matches(
+    check: str, matched: int, verdict: bool
+) -> None:
     assert len(grading.matching_tests(check, REPORT)) == matched
     assert grading.test_verdict(check, REPORT) is verdict
 
@@ -46,7 +56,10 @@ def test_star_passes_only_a_nonempty_report_that_all_passed() -> None:
 
 
 def test_a_file_path_matches_by_file_only_when_no_name_does() -> None:
-    tests = [{"name": "a", "status": "passed", "filePath": "/src/tests/test_x.py"}, {"name": "b", "status": "passed", "filePath": "./tests/test_x.py"}]
+    tests = [
+        {"name": "a", "status": "passed", "filePath": "/src/tests/test_x.py"},
+        {"name": "b", "status": "passed", "filePath": "./tests/test_x.py"},
+    ]
     assert len(grading.matching_tests("tests/test_x.py", tests)) == 2
     assert len(grading.matching_tests("a", tests)) == 1
 
@@ -56,19 +69,50 @@ def test_read_ctrf_refuses_what_is_not_a_report() -> None:
     assert grading.read_ctrf(b"{").tests == []
     assert grading.read_ctrf(b'{"results": {}}').problem
     assert grading.read_ctrf(b'{"results": {"tests": [{"name": "x"}]}}').problem
-    good = grading.read_ctrf(json.dumps({"results": {"tool": {"name": "pytest", "version": "8.4.1"}, "tests": REPORT}}).encode())
+    good = grading.read_ctrf(
+        json.dumps(
+            {
+                "results": {
+                    "tool": {"name": "pytest", "version": "8.4.1"},
+                    "tests": REPORT,
+                }
+            }
+        ).encode()
+    )
     assert good.problem is None and good.tool == "pytest 8.4.1" and len(good.tests) == 3
 
 
 def test_tests_view_is_jcs_with_ids_outcomes_and_durations() -> None:
     report = grading.read_ctrf(
-        json.dumps({"results": {"tests": [*REPORT, {"name": "tests/test_retry.py::test_backoff[0.5]", "status": "error", "duration": 2.5}]}}).encode()
+        json.dumps(
+            {
+                "results": {
+                    "tests": [
+                        *REPORT,
+                        {
+                            "name": "tests/test_retry.py::test_backoff[0.5]",
+                            "status": "error",
+                            "duration": 2.5,
+                        },
+                    ]
+                }
+            }
+        ).encode()
     )
     view = json.loads(grading.tests_view(report))
     assert grading.tests_view(report).endswith("}\n")
-    assert [t["id"] for t in view["tests"]][-1] == "tests/test_retry.py::test_backoff[0.5] [2]"
-    assert view["tests"][0] == {"duration_ms": 41, "id": "tests/test_retry.py::test_timeout_retries", "outcome": "passed"}
-    assert view["tests"][-1]["outcome"] == "other" and view["tests"][-1]["duration_ms"] == 3
+    assert [t["id"] for t in view["tests"]][
+        -1
+    ] == "tests/test_retry.py::test_backoff[0.5] [2]"
+    assert view["tests"][0] == {
+        "duration_ms": 41,
+        "id": "tests/test_retry.py::test_timeout_retries",
+        "outcome": "passed",
+    }
+    assert (
+        view["tests"][-1]["outcome"] == "other"
+        and view["tests"][-1]["duration_ms"] == 3
+    )
     assert view["summary"] == {"passed": 2, "failed": 1, "other": 1}
     assert grading.tests_view(grading.read_ctrf(None)) == '{"summary":{},"tests":[]}\n'
 
@@ -78,27 +122,53 @@ def _criteria() -> list[dict]:
         {"id": "gate", "gate": True, "judge": "test", "check": "x"},
         {"id": "earn", "points": 3, "judge": "test", "check": "y"},
         {"id": "charge", "points": -2, "judge": "test", "check": "z"},
-        {"id": "lvl", "points": 4, "judge": "agent", "levels": {"0": "a", "2": "b", "4": "c"}},
+        {
+            "id": "lvl",
+            "points": 4,
+            "judge": "agent",
+            "levels": {"0": "a", "2": "b", "4": "c"},
+        },
         {"id": "cont", "points": 2, "judge": "llm", "score": {"min": 0, "max": 10}},
-        {"id": "bad", "points": 2, "outcome": "bad", "judge": "llm", "score": {"min": 0, "max": 10}},
+        {
+            "id": "bad",
+            "points": 2,
+            "outcome": "bad",
+            "judge": "llm",
+            "score": {"min": 0, "max": 10},
+        },
     ]
 
 
 def test_score_by_the_rules_of_docs_rubrics() -> None:
     rubric = {"scoring": {"method": "points"}}
-    full = {"gate": True, "earn": True, "charge": True, "lvl": "4", "cont": 10, "bad": 0}
+    full = {
+        "gate": True,
+        "earn": True,
+        "charge": True,
+        "lvl": "4",
+        "cont": 10,
+        "bad": 0,
+    }
     result = grading.score(rubric, _criteria(), full)
     assert result.partial == 1 and result.strict and result.maximum == 11
     charged = grading.score(rubric, _criteria(), full | {"charge": False, "cont": 5})
-    assert charged.earned == Fraction(3 + 0 + 4 + 1 + 2 - 2) and charged.partial == Fraction(8, 11)
+    assert charged.earned == Fraction(
+        3 + 0 + 4 + 1 + 2 - 2
+    ) and charged.partial == Fraction(8, 11)
     assert not charged.strict
     gated = grading.score(rubric, _criteria(), full | {"gate": False})
     assert gated.partial == 0 and not gated.strict and gated.failed == ["gate"]
     only_gates = grading.score({}, [_criteria()[0]], {"gate": True})
     assert only_gates.partial == 1 and only_gates.strict
-    total = grading.score({"scoring": {"method": "sum"}}, _criteria(), full | {"charge": False})
+    total = grading.score(
+        {"scoring": {"method": "sum"}}, _criteria(), full | {"charge": False}
+    )
     assert total.partial == 9 and not total.strict
-    threshold = grading.score({"scoring": {"pass_threshold": 0.7}}, _criteria(), full | {"charge": False, "cont": 5})
+    threshold = grading.score(
+        {"scoring": {"pass_threshold": 0.7}},
+        _criteria(),
+        full | {"charge": False, "cont": 5},
+    )
     assert threshold.strict
     assert grading.headline({"scoring": {"headline": "strict"}}, threshold) == 1.0
     with pytest.raises(ValueError, match="not one of its levels"):
@@ -131,15 +201,31 @@ def _battery(seed: int = 7, count: int = 400) -> list[tuple[dict, list[dict], di
                 criteria.append({"id": cid, "points": rng.choice([-3, -1, 1, 2, 5])})
                 verdicts[cid] = rng.random() < 0.6
             elif kind == "levels":
-                criteria.append({"id": cid, "points": 4, "levels": {"0": "a", "2": "b", "4": "c"}})
+                criteria.append(
+                    {"id": cid, "points": 4, "levels": {"0": "a", "2": "b", "4": "c"}}
+                )
                 verdicts[cid] = rng.choice(["0", "2", "4"])
             else:
                 outcome = rng.choice(["good", "bad"])
-                criteria.append({"id": cid, "points": rng.choice([-2, 3]), "outcome": outcome, "score": {"min": 0, "max": 10}})
+                criteria.append(
+                    {
+                        "id": cid,
+                        "points": rng.choice([-2, 3]),
+                        "outcome": outcome,
+                        "score": {"min": 0, "max": 10},
+                    }
+                )
                 verdicts[cid] = rng.choice([0, 2.5, 7, 10])
-        scoring = {"method": rng.choice(["points", "sum"]), "headline": rng.choice(["partial", "strict"])}
+        scoring = {
+            "method": rng.choice(["points", "sum"]),
+            "headline": rng.choice(["partial", "strict"]),
+        }
         if rng.random() < 0.5:
-            scoring["pass_threshold"] = rng.choice([0.5, 0.7, 1.0]) if scoring["method"] == "points" else rng.choice([1, 3])
+            scoring["pass_threshold"] = (
+                rng.choice([0.5, 0.7, 1.0])
+                if scoring["method"] == "points"
+                else rng.choice([1, 3])
+            )
         cases.append(({"scoring": scoring}, criteria, verdicts))
     return cases
 
@@ -158,7 +244,13 @@ def test_score_equals_the_reference_rubrics_tool() -> None:
         "    out.append({k: str(r[k]) for k in ('raw', 'reward', 'partial', 'strict', 'earned', 'maximum')} | {'failed': r['failed']})\n"
         "print(json.dumps(out))\n"
     )
-    run = subprocess.run([sys.executable, "-c", script], input=json.dumps(cases), capture_output=True, text=True, check=True)
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps(cases),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     expected = json.loads(run.stdout)
     for (rubric, criteria, verdicts), want in zip(cases, expected, strict=True):
         got = grading.score(rubric, criteria, verdicts)
@@ -175,8 +267,24 @@ def test_score_equals_the_reference_rubrics_tool() -> None:
 
 def test_matching_equals_the_reference_rubrics_tool() -> None:
     repo = require_taskmd_repo()
-    tests = [*REPORT, {"name": "a/b.py::t", "status": "passed", "filePath": "./a/b.py"}, {"name": "plain", "status": "skipped"}]
-    checks = ["test_timeout_retries", "test_backoff", "test_backoff[1.0]", "tests/test_retry.py", "/tests/test_retry.py", "b.py", "a/b.py", "t", "plain", "*", "nothing"]
+    tests = [
+        *REPORT,
+        {"name": "a/b.py::t", "status": "passed", "filePath": "./a/b.py"},
+        {"name": "plain", "status": "skipped"},
+    ]
+    checks = [
+        "test_timeout_retries",
+        "test_backoff",
+        "test_backoff[1.0]",
+        "tests/test_retry.py",
+        "/tests/test_retry.py",
+        "b.py",
+        "a/b.py",
+        "t",
+        "plain",
+        "*",
+        "nothing",
+    ]
     script = (
         "import json, sys\n"
         f"sys.path.insert(0, {str(repo / 'tools')!r})\n"
@@ -184,5 +292,13 @@ def test_matching_equals_the_reference_rubrics_tool() -> None:
         "tests, checks = json.load(sys.stdin)\n"
         "print(json.dumps([[t['name'] for t in rubrics.matching_tests(c, tests)] for c in checks]))\n"
     )
-    run = subprocess.run([sys.executable, "-c", script], input=json.dumps([tests, checks]), capture_output=True, text=True, check=True)
-    assert json.loads(run.stdout) == [[t["name"] for t in grading.matching_tests(c, tests)] for c in checks]
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps([tests, checks]),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(run.stdout) == [
+        [t["name"] for t in grading.matching_tests(c, tests)] for c in checks
+    ]

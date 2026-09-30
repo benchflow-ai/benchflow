@@ -29,7 +29,13 @@ from tests._taskmd_helpers import EXAMPLES
 def format_cache(tmp_path, monkeypatch) -> Path:
     cache = tmp_path / "format-cache"
     monkeypatch.setenv("BENCHFLOW_TASK_FORMAT_CACHE", str(cache))
-    for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_OAUTH_TOKEN", judging.MODEL_ENV, judging.SESSION_LIMIT_ENV):
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_OAUTH_TOKEN",
+        judging.MODEL_ENV,
+        judging.SESSION_LIMIT_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
     return cache
 
@@ -54,21 +60,40 @@ class _Sandbox:
         if "then echo link" in command:
             path = re.search(r"\[ -L '?([^' ]+)'? \]", command).group(1)
             target = self.root / path.lstrip("/")
-            kind = "link" if target.is_symlink() else "dir" if target.is_dir() else "file" if target.is_file() else "none"
+            kind = (
+                "link"
+                if target.is_symlink()
+                else "dir"
+                if target.is_dir()
+                else "file"
+                if target.is_file()
+                else "none"
+            )
             return _Result(stdout=kind + "\n")
         if "/proc/net/dev" in command:
-            return _Result(1, "online: the container reaches the internet") if self.online else _Result(0, "offline: no network interface but lo\n")
+            return (
+                _Result(1, "online: the container reaches the internet")
+                if self.online
+                else _Result(0, "offline: no network interface but lo\n")
+            )
         if "rm -rf /verifier" in command:
             return _Result(stdout="setpriv\n")
         if command.startswith("cat /run/taskmd-judge/path"):
             return _Result(stdout="/usr/local/bin:/usr/bin:/bin\n")
         if "base64 -d)" in command:
             output = b"alpha=2.55\n"
-            return _Result(stdout=f"0 {len(output)}\n{base64.b64encode(output).decode()}\n")
+            return _Result(
+                stdout=f"0 {len(output)}\n{base64.b64encode(output).decode()}\n"
+            )
         return _Result()
 
     async def download_dir(self, source_dir, target_dir):
-        shutil.copytree(self.root / source_dir.lstrip("/"), target_dir, dirs_exist_ok=True, symlinks=True)
+        shutil.copytree(
+            self.root / source_dir.lstrip("/"),
+            target_dir,
+            dirs_exist_ok=True,
+            symlinks=True,
+        )
 
     async def download_file(self, source, target):
         shutil.copy2(self.root / source.lstrip("/"), target)
@@ -77,7 +102,15 @@ class _Sandbox:
 class _Verifier:
     """The parts of benchflow.task.verifier_core.Verifier the strategy reads."""
 
-    def __init__(self, native: Path, trial: Path, sandbox: _Sandbox, *, report: dict | None, script_reward: str | None = None) -> None:
+    def __init__(
+        self,
+        native: Path,
+        trial: Path,
+        sandbox: _Sandbox,
+        *,
+        report: dict | None,
+        script_reward: str | None = None,
+    ) -> None:
         self._task = Task(native)
         self._rollout_paths = RolloutPaths(rollout_dir=trial)
         self._rollout_paths.mkdir()
@@ -106,7 +139,12 @@ def _strategy(native: Path):
 
 
 def _ctrf(*tests: tuple[str, str]) -> dict:
-    return {"results": {"tool": {"name": "test.sh"}, "tests": [{"name": n, "status": s} for n, s in tests]}}
+    return {
+        "results": {
+            "tool": {"name": "test.sh"},
+            "tests": [{"name": n, "status": s} for n, s in tests],
+        }
+    }
 
 
 async def test_a_test_gate_passes_and_fails(tmp_path) -> None:
@@ -114,31 +152,53 @@ async def test_a_test_gate_passes_and_fails(tmp_path) -> None:
     sandbox = _Sandbox(tmp_path / "container")
     for status, reward in (("passed", 1.0), ("failed", 0.0)):
         trial = tmp_path / f"trial-{status}"
-        verifier = _Verifier(native, trial, sandbox, report=_ctrf(("test_hello", status)), script_reward="0.5")
+        verifier = _Verifier(
+            native,
+            trial,
+            sandbox,
+            report=_ctrf(("test_hello", status)),
+            script_reward="0.5",
+        )
         result = await verify.verify_taskmd(verifier, _strategy(native))
         assert result.rewards == {"reward": reward, "strict": reward, "partial": reward}
-        assert verifier.calls[0]["parse_rewards"] is False and verifier.calls[0]["cwd"] is None
+        assert (
+            verifier.calls[0]["parse_rewards"] is False
+            and verifier.calls[0]["cwd"] is None
+        )
         review = json.loads((trial / "verifier" / "review.json").read_text())
         assert review["verdicts"][0]["gate"] is True
         assert review["verdicts"][0]["verdict"] == ("pass" if reward else "fail")
         # A reward file the script wrote is set aside: the rubric decides.
         assert (trial / "verifier" / "script-reward.txt").read_text() == "0.5"
-        assert json.loads((trial / "verifier" / "reward.json").read_text())["reward"] == reward
+        assert (
+            json.loads((trial / "verifier" / "reward.json").read_text())["reward"]
+            == reward
+        )
         assert (trial / "verifier" / "reward.txt").read_text() == f"{reward}\n"
 
 
 async def test_no_report_fails_every_test_criterion(tmp_path) -> None:
     native = materialize_task_dir(EXAMPLES / "hello-world")
-    verifier = _Verifier(native, tmp_path / "trial", _Sandbox(tmp_path / "c"), report=None)
+    verifier = _Verifier(
+        native, tmp_path / "trial", _Sandbox(tmp_path / "c"), report=None
+    )
     result = await verify.verify_taskmd(verifier, _strategy(native))
     assert result.rewards["reward"] == 0.0
     review = json.loads((tmp_path / "trial" / "verifier" / "review.json").read_text())
-    assert review["x-benchflow"]["tests"]["problem"] == "the verifier wrote no ctrf.json"
+    assert (
+        review["x-benchflow"]["tests"]["problem"] == "the verifier wrote no ctrf.json"
+    )
 
 
 async def test_a_harbor_import_keeps_the_scripts_reward(tmp_path) -> None:
     native = materialize_task_dir(EXAMPLES / "regex-log")
-    verifier = _Verifier(native, tmp_path / "trial", _Sandbox(tmp_path / "c"), report=None, script_reward="1")
+    verifier = _Verifier(
+        native,
+        tmp_path / "trial",
+        _Sandbox(tmp_path / "c"),
+        report=None,
+        script_reward="1",
+    )
     result = await verify.verify_taskmd(verifier, _strategy(native))
     assert result.rewards == {"reward": 1.0}
     assert verifier.calls[0]["parse_rewards"] is True
@@ -146,8 +206,12 @@ async def test_a_harbor_import_keeps_the_scripts_reward(tmp_path) -> None:
 
 async def test_an_offline_verifier_that_is_online_is_not_scored(tmp_path) -> None:
     native = materialize_task_dir(EXAMPLES / "analysis-judge")
-    verifier = _Verifier(native, tmp_path / "trial", _Sandbox(tmp_path / "c", online=True), report=None)
-    with pytest.raises(verify.TaskMdVerifierError, match="could not take the verifier offline"):
+    verifier = _Verifier(
+        native, tmp_path / "trial", _Sandbox(tmp_path / "c", online=True), report=None
+    )
+    with pytest.raises(
+        verify.TaskMdVerifierError, match="could not take the verifier offline"
+    ):
         await verify.verify_taskmd(verifier, _strategy(native))
 
 
@@ -168,34 +232,68 @@ class _Judge:
                 judge.sessions += 1
             script = judge.replies[(judge.sessions - 1) % len(judge.replies)]
             step = (len(body["messages"]) - 1) // 2
-            return {"content": script[min(step, len(script) - 1)], "usage": {"input_tokens": 1000, "output_tokens": 50}}
+            return {
+                "content": script[min(step, len(script) - 1)],
+                "usage": {"input_tokens": 1000, "output_tokens": 50},
+            }
 
         return call
 
 
 def _analysis_container(root: Path) -> None:
     (root / "work").mkdir(parents=True)
-    (root / "work" / "fit.json").write_text('{"alpha": 2.596, "alpha_err": 0.05, "xmin": 15.13, "n_tail": 860}\n')
-    (root / "work" / "report.md").write_text("# Fit\n\nMaximum likelihood above a KS-chosen x_min.\n\nCaveat: sensitive to x_min.\n")
+    (root / "work" / "fit.json").write_text(
+        '{"alpha": 2.596, "alpha_err": 0.05, "xmin": 15.13, "n_tail": 860}\n'
+    )
+    (root / "work" / "report.md").write_text(
+        "# Fit\n\nMaximum likelihood above a KS-chosen x_min.\n\nCaveat: sensitive to x_min.\n"
+    )
     (root / "work" / "fit.png").write_bytes(b"\x89PNG\r\n\x1a\nplot")
 
 
 def _submit(levels: dict[str, str], passes: dict[str, str]) -> dict:
     verdicts = [
-        {"id": cid, "verdict": "level", "level": level, "citations": [{"source": "file", "path": "/work/report.md", "quote": "Maximum likelihood"}], "rationale": "ok"}
+        {
+            "id": cid,
+            "verdict": "level",
+            "level": level,
+            "citations": [
+                {
+                    "source": "file",
+                    "path": "/work/report.md",
+                    "quote": "Maximum likelihood",
+                }
+            ],
+            "rationale": "ok",
+        }
         for cid, level in levels.items()
     ] + [
-        {"id": cid, "verdict": verdict, "citations": [{"source": "judge", "step": 1, "quote": "alpha=2.55"}], "rationale": "ok"}
+        {
+            "id": cid,
+            "verdict": verdict,
+            "citations": [{"source": "judge", "step": 1, "quote": "alpha=2.55"}],
+            "rationale": "ok",
+        }
         for cid, verdict in passes.items()
     ]
-    return {"type": "tool_use", "id": "submit", "name": "submit_review", "input": {"verdicts": verdicts, "tags": []}}
+    return {
+        "type": "tool_use",
+        "id": "submit",
+        "name": "submit_review",
+        "input": {"verdicts": verdicts, "tags": []},
+    }
 
 
 FULL = _submit(
     {"mle-method": "4", "xmin-justified": "2", "uncertainty-justified": "2"},
     {"figure-shows-fit": "pass", "caveats": "pass", "unsupported-claim": "pass"},
 )
-RUN = {"type": "tool_use", "id": "run", "name": "run", "input": {"command": "python3 -c 'print(2.55)'"}}
+RUN = {
+    "type": "tool_use",
+    "id": "run",
+    "name": "run",
+    "input": {"command": "python3 -c 'print(2.55)'"},
+}
 
 
 async def test_the_agent_judge_grades_the_oracle(tmp_path, monkeypatch) -> None:
@@ -208,33 +306,67 @@ async def test_the_agent_judge_grades_the_oracle(tmp_path, monkeypatch) -> None:
     _analysis_container(container)
     trial = tmp_path / "trial"
     (trial / "agent").mkdir(parents=True)
-    (trial / "agent" / "acp_trajectory.jsonl").write_text(json.dumps({"type": "oracle", "return_code": 0, "stdout": "KS scan: xmin=15.1\n"}) + "\n")
-    report = _ctrf(("test_outputs_present", "passed"), ("test_alpha_accurate", "passed"), ("test_uncertainty_covers", "passed"))
+    (trial / "agent" / "acp_trajectory.jsonl").write_text(
+        json.dumps(
+            {"type": "oracle", "return_code": 0, "stdout": "KS scan: xmin=15.1\n"}
+        )
+        + "\n"
+    )
+    report = _ctrf(
+        ("test_outputs_present", "passed"),
+        ("test_alpha_accurate", "passed"),
+        ("test_uncertainty_covers", "passed"),
+    )
     verifier = _Verifier(native, trial, _Sandbox(container), report=report)
     result = await verify.verify_taskmd(verifier, _strategy(native))
     assert result.rewards == {"reward": 1.0, "strict": 1.0, "partial": 1.0}
     assert judge.sessions == 3  # samples = 3, per rubric
     first = judge.bodies[0]
     assert first["model"] == "claude-haiku-4-5-20251001"
-    assert first["messages"][0]["content"].startswith("You are grading a power-law analysis")
-    assert "60 tool calls, 2000000 tokens, 1200 seconds" in first["messages"][0]["content"]
+    assert first["messages"][0]["content"].startswith(
+        "You are grading a power-law analysis"
+    )
+    assert (
+        "60 tool calls, 2000000 tokens, 1200 seconds" in first["messages"][0]["content"]
+    )
     review = json.loads((trial / "verifier" / "review.json").read_text())
     by_id = {v["id"]: v for v in review["verdicts"]}
-    assert by_id["mle-method"]["verdict"] == "level" and by_id["mle-method"]["level"] == "4" and by_id["mle-method"]["score"] == 4.0
-    assert len(by_id["mle-method"]["samples"]) == 3 and by_id["mle-method"]["spread"] == 0.0
+    assert (
+        by_id["mle-method"]["verdict"] == "level"
+        and by_id["mle-method"]["level"] == "4"
+        and by_id["mle-method"]["score"] == 4.0
+    )
+    assert (
+        len(by_id["mle-method"]["samples"]) == 3
+        and by_id["mle-method"]["spread"] == 0.0
+    )
     assert by_id["mle-method"]["judge"]["model"] == "claude-haiku-4-5-20251001"
-    assert by_id["mle-method"]["judge"]["harness"] == "judge-loop" and by_id["mle-method"]["judge"]["prompt_format"] == "judge-prompt@1"
+    assert (
+        by_id["mle-method"]["judge"]["harness"] == "judge-loop"
+        and by_id["mle-method"]["judge"]["prompt_format"] == "judge-prompt@1"
+    )
     assert by_id["mle-method"]["citations"][0]["verified"] is True
     assert by_id["caveats"]["citations"][0]["label"] == "solver-executed"
     assert by_id["unsupported-claim"]["score"] == 0.0
     assert review["submission_tree"].startswith("sha256:")
-    trajectory = (trial / "verifier" / "taskmd-judge" / "fs" / "judge" / "trajectory.jsonl").read_text()
-    assert '"arguments":"{\\"command\\": \\"bash /opt/seat/run.sh\\"}"' in trajectory and "KS scan" in trajectory
-    sessions = sorted((trial / "verifier" / "taskmd-judge").glob("agent-rubric-s*-a1.json"))
-    assert len(sessions) == 3 and json.loads(sessions[0].read_text())["end"] == "accepted"
+    trajectory = (
+        trial / "verifier" / "taskmd-judge" / "fs" / "judge" / "trajectory.jsonl"
+    ).read_text()
+    assert (
+        '"arguments":"{\\"command\\": \\"bash /opt/seat/run.sh\\"}"' in trajectory
+        and "KS scan" in trajectory
+    )
+    sessions = sorted(
+        (trial / "verifier" / "taskmd-judge").glob("agent-rubric-s*-a1.json")
+    )
+    assert (
+        len(sessions) == 3 and json.loads(sessions[0].read_text())["end"] == "accepted"
+    )
 
 
-async def test_a_failed_gate_skips_the_judges_but_not_a_penalty(tmp_path, monkeypatch) -> None:
+async def test_a_failed_gate_skips_the_judges_but_not_a_penalty(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
     judge = _Judge([[[FULL]]])
     monkeypatch.setattr(judging, "MessagesClient", judge.client)
@@ -243,21 +375,33 @@ async def test_a_failed_gate_skips_the_judges_but_not_a_penalty(tmp_path, monkey
     (container / "work").mkdir(parents=True)
     trial = tmp_path / "trial"
     (trial / "agent").mkdir(parents=True)
-    (trial / "agent" / "acp_trajectory.jsonl").write_text(json.dumps({"type": "nop"}) + "\n")
-    report = _ctrf(("test_outputs_present", "failed"), ("test_alpha_accurate", "failed"), ("test_uncertainty_covers", "failed"))
+    (trial / "agent" / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "nop"}) + "\n"
+    )
+    report = _ctrf(
+        ("test_outputs_present", "failed"),
+        ("test_alpha_accurate", "failed"),
+        ("test_uncertainty_covers", "failed"),
+    )
     verifier = _Verifier(native, trial, _Sandbox(container), report=report)
     result = await verify.verify_taskmd(verifier, _strategy(native))
     assert result.rewards["reward"] == 0.0
     review = json.loads((trial / "verifier" / "review.json").read_text())
     by_id = {v["id"]: v for v in review["verdicts"]}
-    assert by_id["mle-method"]["verdict"] == "skip" and by_id["mle-method"]["flags"] == ["lazy"]
-    assert by_id["caveats"]["verdict"] == "skip" and by_id["caveats"]["flags"] == ["lazy"]
+    assert by_id["mle-method"]["verdict"] == "skip" and by_id["mle-method"][
+        "flags"
+    ] == ["lazy"]
+    assert by_id["caveats"]["verdict"] == "skip" and by_id["caveats"]["flags"] == [
+        "lazy"
+    ]
     # unsupported-claim has negative points, so lazy never skips it; the session still judges it.
     assert by_id["unsupported-claim"]["verdict"] == "pass"
     assert judge.sessions == 3
 
 
-async def test_a_criterion_whose_files_were_never_saved_fails_without_a_session(tmp_path, monkeypatch) -> None:
+async def test_a_criterion_whose_files_were_never_saved_fails_without_a_session(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
     judge = _Judge([[[FULL]]])
     monkeypatch.setattr(judging, "MessagesClient", judge.client)
@@ -265,17 +409,34 @@ async def test_a_criterion_whose_files_were_never_saved_fails_without_a_session(
     container = tmp_path / "container"
     _analysis_container(container)
     (container / "work" / "report.md").unlink()
-    report = _ctrf(("test_outputs_present", "passed"), ("test_alpha_accurate", "passed"), ("test_uncertainty_covers", "passed"))
+    report = _ctrf(
+        ("test_outputs_present", "passed"),
+        ("test_alpha_accurate", "passed"),
+        ("test_uncertainty_covers", "passed"),
+    )
     trial = tmp_path / "trial"
-    result = await verify.verify_taskmd(_Verifier(native, trial, _Sandbox(container), report=report), _strategy(native))
-    by_id = {v["id"]: v for v in json.loads((trial / "verifier" / "review.json").read_text())["verdicts"]}
-    assert by_id["caveats"]["verdict"] == "fail" and by_id["caveats"]["flags"] == ["evidence-missing"]
+    result = await verify.verify_taskmd(
+        _Verifier(native, trial, _Sandbox(container), report=report), _strategy(native)
+    )
+    by_id = {
+        v["id"]: v
+        for v in json.loads((trial / "verifier" / "review.json").read_text())[
+            "verdicts"
+        ]
+    }
+    assert by_id["caveats"]["verdict"] == "fail" and by_id["caveats"]["flags"] == [
+        "evidence-missing"
+    ]
     assert "samples" not in by_id["caveats"]
-    assert by_id["mle-method"]["verdict"] == "level"  # its other items (the trajectory) remain
+    assert (
+        by_id["mle-method"]["verdict"] == "level"
+    )  # its other items (the trajectory) remain
     assert result.rewards["partial"] == 14 / 15
 
 
-async def test_a_judge_that_never_submits_leaves_the_trial_unscored(tmp_path, monkeypatch) -> None:
+async def test_a_judge_that_never_submits_leaves_the_trial_unscored(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
     judge = _Judge([[[{"type": "text", "text": "thinking"}]]])
     monkeypatch.setattr(judging, "MessagesClient", judge.client)
@@ -283,7 +444,11 @@ async def test_a_judge_that_never_submits_leaves_the_trial_unscored(tmp_path, mo
     native = materialize_task_dir(EXAMPLES / "analysis-judge")
     container = tmp_path / "container"
     _analysis_container(container)
-    report = _ctrf(("test_outputs_present", "passed"), ("test_alpha_accurate", "passed"), ("test_uncertainty_covers", "passed"))
+    report = _ctrf(
+        ("test_outputs_present", "passed"),
+        ("test_alpha_accurate", "passed"),
+        ("test_uncertainty_covers", "passed"),
+    )
     verifier = _Verifier(native, tmp_path / "trial", _Sandbox(container), report=report)
     with pytest.raises(verify.TaskMdVerifierError, match="valid samples"):
         await verify.verify_taskmd(verifier, _strategy(native))
@@ -299,7 +464,11 @@ async def test_the_session_limit_stops_the_judges(tmp_path, monkeypatch) -> None
     native = materialize_task_dir(EXAMPLES / "analysis-judge")
     container = tmp_path / "container"
     _analysis_container(container)
-    report = _ctrf(("test_outputs_present", "passed"), ("test_alpha_accurate", "passed"), ("test_uncertainty_covers", "passed"))
+    report = _ctrf(
+        ("test_outputs_present", "passed"),
+        ("test_alpha_accurate", "passed"),
+        ("test_uncertainty_covers", "passed"),
+    )
     verifier = _Verifier(native, tmp_path / "trial", _Sandbox(container), report=report)
     with pytest.raises(judging.JudgeError, match="spent"):
         await verify.verify_taskmd(verifier, _strategy(native))
@@ -308,7 +477,14 @@ async def test_the_session_limit_stops_the_judges(tmp_path, monkeypatch) -> None
 
 def test_kept_paths() -> None:
     assert verify.kept_paths({"sandbox": {"workdir": "/work/"}}) == ["/work"]
-    assert verify.kept_paths({"sandbox": {"workdir": "/work", "outputs": ["/work/a.md", {"path": "/logs/x"}]}}) == ["/work/a.md", "/logs/x"]
+    assert verify.kept_paths(
+        {
+            "sandbox": {
+                "workdir": "/work",
+                "outputs": ["/work/a.md", {"path": "/logs/x"}],
+            }
+        }
+    ) == ["/work/a.md", "/logs/x"]
     assert verify.kept_paths({}) == []
 
 

@@ -11,16 +11,56 @@ from benchflow.taskmd import plan
 from benchflow.taskmd._vendor import taskmd as ref
 
 VALUES = {  # a plausible value per key name; anything else gets "x"
-    "timeout": "1m", "build_timeout": "1m", "interval": "5s", "start_period": "0s", "start_interval": "5s",
-    "memory": "1 GB", "disk": "1 GB", "cpus": 1, "gpus": 0, "retries": 3, "samples": 1, "min_samples": 1,
-    "network": "none", "env": {}, "outputs": ["/work/a"], "services": [{"name": "db", "image": "postgres"}],
-    "ready": {"run": "true"}, "snapshot": [{"run": "true", "reads": ["/data"]}], "budget": {"tool_calls": 1},
-    "tokens": 100, "tool_calls": 1, "lazy": True, "models": False, "mount": "/verifier", "isolation": "shared",
-    "gpu_types": ["a100"], "keywords": ["k"], "authors": ["A <a@b.c>"], "mounts": [], "trials": 1,
-    "unlock": "on_submit", "params": {}, "splits": {}, "seed_param": "seed", "generator": "family/gen.py",
-    "fork": True, "max_concurrent": 1, "require": ["tool-calls"], "on_timeout": "grade", "timeout_basis": "wall",
-    "boundary": "container", "os": "linux", "feedback": "none", "views": [], "resources": {}, "controls": {},
-    "answers": [], "combine_stages": "mean", "unreached_stages": "zero", "services_judge": False,
+    "timeout": "1m",
+    "build_timeout": "1m",
+    "interval": "5s",
+    "start_period": "0s",
+    "start_interval": "5s",
+    "memory": "1 GB",
+    "disk": "1 GB",
+    "cpus": 1,
+    "gpus": 0,
+    "retries": 3,
+    "samples": 1,
+    "min_samples": 1,
+    "network": "none",
+    "env": {},
+    "outputs": ["/work/a"],
+    "services": [{"name": "db", "image": "postgres"}],
+    "ready": {"run": "true"},
+    "snapshot": [{"run": "true", "reads": ["/data"]}],
+    "budget": {"tool_calls": 1},
+    "tokens": 100,
+    "tool_calls": 1,
+    "lazy": True,
+    "models": False,
+    "mount": "/verifier",
+    "isolation": "shared",
+    "gpu_types": ["a100"],
+    "keywords": ["k"],
+    "authors": ["A <a@b.c>"],
+    "mounts": [],
+    "trials": 1,
+    "unlock": "on_submit",
+    "params": {},
+    "splits": {},
+    "seed_param": "seed",
+    "generator": "family/gen.py",
+    "fork": True,
+    "max_concurrent": 1,
+    "require": ["tool-calls"],
+    "on_timeout": "grade",
+    "timeout_basis": "wall",
+    "boundary": "container",
+    "os": "linux",
+    "feedback": "none",
+    "views": [],
+    "resources": {},
+    "controls": {},
+    "answers": [],
+    "combine_stages": "mean",
+    "unreached_stages": "zero",
+    "services_judge": False,
 }
 
 
@@ -37,7 +77,7 @@ def _expand(path: tuple) -> list[tuple[str, ...]]:
     out: list[tuple[str, ...]] = [()]
     for part in path:
         options = part if isinstance(part, tuple) else (part,)
-        out = [p + (o,) for p in out for o in options]
+        out = [(*p, o) for p in out for o in options]
     return out
 
 
@@ -75,7 +115,11 @@ def test_every_documented_key_has_a_decision(tmp_path: Path) -> None:
             continue
         config = _config_for(path)
         result = plan.plan_package(_Document(config), tmp_path)
-        silent = [f for f in result.refused if "does not implement this setting yet" in f.detail]
+        silent = [
+            f
+            for f in result.refused
+            if "does not implement this setting yet" in f.detail
+        ]
         if silent:
             undecided.append((path, [str(f) for f in silent]))
     assert undecided == []
@@ -83,14 +127,22 @@ def test_every_documented_key_has_a_decision(tmp_path: Path) -> None:
 
 def test_nothing_is_dropped_silently(tmp_path: Path) -> None:
     """A key no handler names is refused, never passed over."""
-    result = plan.plan_package(_Document({"sandbox": {"future_key": 1}, "agent": {"another": 2}}), tmp_path)
+    result = plan.plan_package(
+        _Document({"sandbox": {"future_key": 1}, "agent": {"another": 2}}), tmp_path
+    )
     fields = {f.field for f in result.refused}
     assert {"[sandbox] future_key", "[agent] another"} <= fields
 
 
 @pytest.mark.parametrize("status", sorted({row[1] for row in plan.SUPPORT}))
 def test_the_support_table_uses_known_statuses(status: str) -> None:
-    assert status in (plan.HONORED, plan.REFUSED, plan.PARTIAL, plan.AGENT_REFUSED, plan.RECORDED)
+    assert status in (
+        plan.HONORED,
+        plan.REFUSED,
+        plan.PARTIAL,
+        plan.AGENT_REFUSED,
+        plan.RECORDED,
+    )
 
 
 def test_the_support_table_names_every_table() -> None:

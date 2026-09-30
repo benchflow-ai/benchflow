@@ -20,7 +20,7 @@ GOLDEN_NAMES = sorted(p.stem for p in GOLDEN.glob("*.json"))
 
 
 def test_there_are_goldens_for_every_fixture() -> None:
-    assert GOLDEN_NAMES == sorted(p.name for p in EXAMPLES.iterdir() if p.is_dir())
+    assert sorted(p.name for p in EXAMPLES.iterdir() if p.is_dir()) == GOLDEN_NAMES
 
 
 @pytest.mark.parametrize("name", GOLDEN_NAMES)

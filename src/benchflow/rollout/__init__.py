@@ -2555,10 +2555,14 @@ class Rollout:
         self._bare_timeout = not detail and agent_phase
         # The agent's wall-clock budget ran out (an idle-watchdog abort is not
         # running out of time); a task.md draft 2 reward.json records it.
-        if agent_phase and not isinstance(e, IdleTimeoutError) and (
-            isinstance(e, AgentPromptTimeoutError)
-            or "exceeded wall-clock budget" in detail
-            or not detail
+        if (
+            agent_phase
+            and not isinstance(e, IdleTimeoutError)
+            and (
+                isinstance(e, AgentPromptTimeoutError)
+                or "exceeded wall-clock budget" in detail
+                or not detail
+            )
         ):
             self._agent_ran_out_of_time = True
         if not detail and self._started_at is not None:

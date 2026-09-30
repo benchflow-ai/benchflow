@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.taskmd._util import table
 from benchflow.taskmd._vendor import judgeprompt as jp
 from benchflow.taskmd._vendor import taskmd as ref
 
@@ -57,20 +58,30 @@ class Instance:
 
 def fill_placeholders(text: str, placeholders: dict[str, str]) -> str:
     """``{{name}}`` (spaces allowed inside the braces) replaced from ``placeholders``."""
-    return ref.PLACEHOLDER.sub(
-        lambda m: placeholders.get(m.group(1), m.group(0)), text
-    )
+    return ref.PLACEHOLDER.sub(lambda m: placeholders.get(m.group(1), m.group(0)), text)
 
 
 def seed_split(config: dict[str, Any], seed: int) -> tuple[str | None, str | None]:
     """(split name, role) of the family split whose rule selects ``seed``, or (None, None)."""
-    family = config.get("family") if isinstance(config.get("family"), dict) else {}
+    family = table(config.get("family"))
     variable = family.get("seed_param", "seed")
     variable = variable if isinstance(variable, str) else "seed"
-    splits = family.get("splits") if isinstance(family.get("splits"), dict) else {}
+    splits = table(family.get("splits"))
     for name, entry in splits.items():
-        rule = entry if isinstance(entry, str) else entry.get("rule") if isinstance(entry, dict) else None
-        role = name if isinstance(entry, str) else entry.get("role", name) if isinstance(entry, dict) else None
+        rule = (
+            entry
+            if isinstance(entry, str)
+            else entry.get("rule")
+            if isinstance(entry, dict)
+            else None
+        )
+        role = (
+            name
+            if isinstance(entry, str)
+            else entry.get("role", name)
+            if isinstance(entry, dict)
+            else None
+        )
         try:
             if isinstance(rule, str) and ref.parse_rule(rule, variable)(seed):
                 return str(name), str(role) if role is not None else None
@@ -79,7 +90,9 @@ def seed_split(config: dict[str, Any], seed: int) -> tuple[str | None, str | Non
     return None, None
 
 
-def _docker(args: list[str], *, timeout: float, what: str) -> subprocess.CompletedProcess[str]:
+def _docker(
+    args: list[str], *, timeout: float, what: str
+) -> subprocess.CompletedProcess[str]:
     docker = shutil.which("docker")
     if docker is None:
         raise FamilyError(
@@ -138,27 +151,39 @@ def generate(
     """
     if not 0 <= seed < 2**53:
         raise FamilyError(f"seed {seed} is outside 0 to 2^53 - 1")
-    family = config.get("family") if isinstance(config.get("family"), dict) else {}
+    family = table(config.get("family"))
     generator = family.get("generator")
     if not isinstance(generator, str) or not (task_dir / generator).is_file():
-        raise FamilyError(f"[family] generator {generator!r} is not a file in the package")
+        raise FamilyError(
+            f"[family] generator {generator!r} is not a file in the package"
+        )
     argv = _interpreter(task_dir / generator)
-    sandbox = config.get("sandbox") if isinstance(config.get("sandbox"), dict) else {}
-    image = sandbox.get("image") if isinstance(sandbox.get("image"), str) else None
+    sandbox = table(config.get("sandbox"))
+    declared_image = sandbox.get("image")
+    image = declared_image if isinstance(declared_image, str) else None
     built: str | None = None
     if image is None:
         context = task_dir / "sandbox"
         if not (context / "Dockerfile").is_file():
-            raise FamilyError("the task has neither [sandbox] image nor sandbox/Dockerfile to run the generator in")
+            raise FamilyError(
+                "the task has neither [sandbox] image nor sandbox/Dockerfile to run the generator in"
+            )
         built = f"benchflow-taskmd-generator:{_tree_digest(context)}"
-        result = _docker(["build", "-q", "-t", built, str(context)], timeout=BUILD_LIMIT_S, what="building the task's image")
+        result = _docker(
+            ["build", "-q", "-t", built, str(context)],
+            timeout=BUILD_LIMIT_S,
+            what="building the task's image",
+        )
         if result.returncode != 0:
-            raise FamilyError(f"building the task's image failed: {(result.stderr or result.stdout).strip()[-500:]}")
+            raise FamilyError(
+                f"building the task's image failed: {(result.stderr or result.stdout).strip()[-500:]}"
+            )
         image = built
     out.mkdir(parents=True, exist_ok=True)
     limits: list[str] = []
-    if isinstance(sandbox.get("cpus"), int) and not isinstance(sandbox.get("cpus"), bool):
-        limits += ["--cpus", str(sandbox["cpus"])]
+    cpus = sandbox.get("cpus")
+    if isinstance(cpus, int) and not isinstance(cpus, bool):
+        limits += ["--cpus", str(cpus)]
     from benchflow.taskmd.plan import megabytes
 
     memory = megabytes(sandbox.get("memory"))
@@ -191,7 +216,9 @@ def generate(
         "/out",
     ]
     try:
-        result = _docker(run, timeout=GENERATOR_LIMIT_S, what=f"{generator} --seed {seed}")
+        result = _docker(
+            run, timeout=GENERATOR_LIMIT_S, what=f"{generator} --seed {seed}"
+        )
     finally:
         if built is not None:
             _docker(["rmi", built], timeout=120, what="removing the generator's image")
@@ -200,7 +227,9 @@ def generate(
             f"{generator} --seed {seed} exited with status {result.returncode} (generator-failed): "
             f"{(result.stderr or result.stdout).strip()[-500:]}"
         )
-    return check_instance(task_dir, config, seed, out, generator=generator, document=document)
+    return check_instance(
+        task_dir, config, seed, out, generator=generator, document=document
+    )
 
 
 def check_instance(
@@ -214,17 +243,26 @@ def check_instance(
 ) -> Instance:
     """family@1's rules for what a generator wrote, by the reference checker's own check."""
     doc = document if document is not None else ref.parse(task_dir)
-    problems = [d.message for d in ref.check_instance(doc, out, seed, generator) if d.level == "error"]
+    problems = [
+        d.message
+        for d in ref.check_instance(doc, out, seed, generator)
+        if d.level == "error"
+    ]
     if not (out / "instance.json").is_file():
         problems.append("no instance.json")
     if problems:
-        raise FamilyError(f"{generator} wrote a malformed instance for seed {seed} (generator-failed): " + "; ".join(problems))
+        raise FamilyError(
+            f"{generator} wrote a malformed instance for seed {seed} (generator-failed): "
+            + "; ".join(problems)
+        )
     data = json.loads((out / "instance.json").read_text(encoding="utf-8"))
     split, role = seed_split(config, seed)
     return Instance(
         seed=seed,
         params=dict(data.get("params") or {}),
-        placeholders={str(k): str(v) for k, v in (data.get("placeholders") or {}).items()},
+        placeholders={
+            str(k): str(v) for k, v in (data.get("placeholders") or {}).items()
+        },
         split=split,
         role=role,
         root=out,

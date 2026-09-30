@@ -48,6 +48,7 @@ from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchflow.taskmd._util import table
 from benchflow.taskmd._vendor import judgeprompt as jp
 
 CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -86,7 +87,10 @@ class Credentials:
     base_url: str = DEFAULT_BASE_URL
 
     def headers(self) -> dict[str, str]:
-        headers = {"anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
+        headers = {
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        }
         if self.kind == "api-key":
             headers["x-api-key"] = self.token
         else:
@@ -98,7 +102,10 @@ class Credentials:
         """judge-loop@1's system message; a Claude Code OAuth token needs Claude Code's identity first."""
         if self.kind == "api-key":
             return jp.SYSTEM_PROMPT_1
-        return [{"type": "text", "text": CLAUDE_CODE_IDENTITY}, {"type": "text", "text": jp.SYSTEM_PROMPT_1}]
+        return [
+            {"type": "text", "text": CLAUDE_CODE_IDENTITY},
+            {"type": "text", "text": jp.SYSTEM_PROMPT_1},
+        ]
 
     @property
     def system_note(self) -> str | None:
@@ -141,8 +148,12 @@ class MessagesClient:
             if remaining <= 0:
                 break
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(min(remaining, 600.0), connect=30.0)) as client:
-                    response = await client.post(url, headers=self.credentials.headers(), json=body)
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(min(remaining, 600.0), connect=30.0)
+                ) as client:
+                    response = await client.post(
+                        url, headers=self.credentials.headers(), json=body
+                    )
             except httpx.HTTPError as exc:
                 last = f"{type(exc).__name__}: {exc}"
             else:
@@ -150,11 +161,15 @@ class MessagesClient:
                     return response.json()
                 last = f"HTTP {response.status_code}: {response.text[:300]}"
                 if response.status_code not in (408, 409, 429, 500, 502, 503, 504, 529):
-                    raise JudgeError(f"the judge model's provider refused the request: {last}")
+                    raise JudgeError(
+                        f"the judge model's provider refused the request: {last}"
+                    )
             if attempt < self.retries:
                 await asyncio.sleep(min(delay, max(deadline - time.monotonic(), 0)))
                 delay *= 2
-        raise JudgeError(f"the judge model's provider failed after {self.retries + 1} tries: {last}")
+        raise JudgeError(
+            f"the judge model's provider failed after {self.retries + 1} tries: {last}"
+        )
 
 
 class SessionLimit:
@@ -171,16 +186,22 @@ class SessionLimit:
         try:
             cap = int(raw)
         except ValueError as exc:
-            raise JudgeError(f"{SESSION_LIMIT_ENV}={raw!r} is not a whole number") from exc
+            raise JudgeError(
+                f"{SESSION_LIMIT_ENV}={raw!r} is not a whole number"
+            ) from exc
         if self.started >= cap:
-            raise JudgeError(f"the judge-session limit {SESSION_LIMIT_ENV}={cap} is spent in this process")
+            raise JudgeError(
+                f"the judge-session limit {SESSION_LIMIT_ENV}={cap} is spent in this process"
+            )
         self.started += 1
 
 
 SESSIONS = SessionLimit()
 
 
-def model_for(role: str, settings: dict[str, Any], env: dict[str, str] | None = None) -> str | None:
+def model_for(
+    role: str, settings: dict[str, Any], env: dict[str, str] | None = None
+) -> str | None:
     """The model a role runs: an override from ``BENCHFLOW_TASKMD_JUDGE_MODEL``, else the task's.
 
     The override is ``<model>`` for every role, or ``role=model`` pairs joined by commas.
@@ -219,12 +240,20 @@ def compile_sessions(
     ``evidence_sha256``.
     """
     with _FENCE_LOCK:
-        return jp.sessions(package, shared=shared or None, evidence=evidence, hmac_key=hmac_key)
+        return jp.sessions(
+            package, shared=shared or None, evidence=evidence, hmac_key=hmac_key
+        )
 
 
-def session_prompt(session: dict[str, Any], package: Path, *, fence: str, budget: str) -> str:
+def session_prompt(
+    session: dict[str, Any], package: Path, *, fence: str, budget: str
+) -> str:
     """The prompt a session receives: parts 1 to 3 with this session's fence and budget."""
-    brief = jp.normalize_brief((package / session["brief"]).read_bytes()) if session.get("brief") else None
+    brief = (
+        jp.normalize_brief((package / session["brief"]).read_bytes())
+        if session.get("brief")
+        else None
+    )
     return jp.prompt_text(brief, session["assignment"], fence=fence, budget=budget)
 
 
@@ -239,11 +268,11 @@ def evidence_with_fence(assignment: dict[str, Any], root: Path) -> Callable[[str
     def build(fence: str) -> str:
         with _FENCE_LOCK:
             saved = jp.FENCE
-            jp.FENCE = fence
+            setattr(jp, "FENCE", fence)  # noqa: B010
             try:
                 return jp.evidence_part(assignment, root)[0]
             finally:
-                jp.FENCE = saved
+                setattr(jp, "FENCE", saved)  # noqa: B010
 
     return build
 
@@ -260,13 +289,18 @@ class JudgeFiles:
     kept: list[str]  # absolute paths the runtime saved (outputs, or the working folder)
     views: dict[str, bytes] = field(default_factory=dict)
     separate_verifier: bool = True
-    scripted_mounts: tuple[str, ...] = ()  # a scripted seat's mount paths, for seat-visible
+    scripted_mounts: tuple[
+        str, ...
+    ] = ()  # a scripted seat's mount paths, for seat-visible
 
     def host(self, path: str) -> Path:
         return self.root / path.lstrip("/")
 
     def in_kept(self, path: str) -> bool:
-        return any(path == k or path.startswith(k.rstrip("/") + "/") or k == "/" for k in self.kept)
+        return any(
+            path == k or path.startswith(k.rstrip("/") + "/") or k == "/"
+            for k in self.kept
+        )
 
 
 def _served(files: JudgeFiles, path: str, assignment: dict[str, Any]) -> bool:
@@ -274,7 +308,9 @@ def _served(files: JudgeFiles, path: str, assignment: dict[str, Any]) -> bool:
         return True
     if path == "/judge" or path.startswith("/judge/"):
         return jp._judge_file_served(path, assignment) and files.host(path).exists()
-    return files.in_kept(path) and (files.host(path).exists() or files.host(path).is_symlink())
+    return files.in_kept(path) and (
+        files.host(path).exists() or files.host(path).is_symlink()
+    )
 
 
 def _block(fence: str, text: str) -> str:
@@ -289,15 +325,29 @@ def _lines_of(text: str) -> list[str]:
     return rows
 
 
-def read_result(files: JudgeFiles, assignment: dict[str, Any], step: int, fence: str, args: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+def read_result(
+    files: JudgeFiles,
+    assignment: dict[str, Any],
+    step: int,
+    fence: str,
+    args: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """The ``read`` tool: (result text, extra content blocks such as an image, a record for citations)."""
     raw_path = args.get("path")
     if not isinstance(raw_path, str) or not raw_path.startswith("/"):
-        return f"[judge step {step}] read: the path must be absolute", [], {"tool": "read"}
+        return (
+            f"[judge step {step}] read: the path must be absolute",
+            [],
+            {"tool": "read"},
+        )
     try:
         path = jp.normalize_path(raw_path)
     except jp.JudgePromptError:
-        return f"[judge step {step}] read: {raw_path} is not served; use run", [], {"tool": "read"}
+        return (
+            f"[judge step {step}] read: {raw_path} is not served; use run",
+            [],
+            {"tool": "read"},
+        )
     record: dict[str, Any] = {"tool": "read", "path": path}
     if not _served(files, path, assignment):
         return f"[judge step {step}] read: {path} is not served; use run", [], record
@@ -316,26 +366,54 @@ def read_result(files: JudgeFiles, assignment: dict[str, Any], step: int, fence:
                     entries.append(f"file {child.name} {child.stat().st_size}")
             text = "\n".join(entries)
             record["text"] = text
-            return f"[judge step {step}] read {path}: {len(entries)} entries\n" + _block(fence, text), [], record
+            return (
+                f"[judge step {step}] read {path}: {len(entries)} entries\n"
+                + _block(fence, text),
+                [],
+                record,
+            )
         data = target.read_bytes()
     record["bytes"] = data
     suffix = PurePosixPath(path).suffix.lower()
     digest = hashlib.sha256(data).hexdigest()
     if suffix in jp.IMAGE_TYPES:
         media = jp.IMAGE_TYPES[suffix]
-        image = {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64.b64encode(data).decode()}}
-        return f"[judge step {step}] read {path}: {media}, {len(data)} bytes, sha256:{digest}", [image], record
+        image = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media,
+                "data": base64.b64encode(data).decode(),
+            },
+        }
+        return (
+            f"[judge step {step}] read {path}: {media}, {len(data)} bytes, sha256:{digest}",
+            [image],
+            record,
+        )
     if suffix == ".pdf":
-        return f"[judge step {step}] read {path}: PDF, {len(data)} bytes, sha256:{digest}; this runtime extracts no PDF text", [], record
+        return (
+            f"[judge step {step}] read {path}: PDF, {len(data)} bytes, sha256:{digest}; this runtime extracts no PDF text",
+            [],
+            record,
+        )
     try:
         data.decode("utf-8")
     except UnicodeDecodeError:
-        return f"[judge step {step}] read {path}: binary file, {len(data)} bytes, sha256:{digest}", [], record
+        return (
+            f"[judge step {step}] read {path}: binary file, {len(data)} bytes, sha256:{digest}",
+            [],
+            record,
+        )
     text, removed = jp.render_text(data)
     rows = _lines_of(text)
     total = len(rows)
     lines = args.get("lines")
-    if isinstance(lines, list) and len(lines) == 2 and all(isinstance(n, int) and not isinstance(n, bool) for n in lines):
+    if (
+        isinstance(lines, list)
+        and len(lines) == 2
+        and all(isinstance(n, int) and not isinstance(n, bool) for n in lines)
+    ):
         first, last = max(lines[0], 1), min(lines[1], total)
         if total == 0 or first > last:
             shown, span = "", "0-0"
@@ -346,13 +424,20 @@ def read_result(files: JudgeFiles, assignment: dict[str, Any], step: int, fence:
     shown = jp.cap(shown, READ_CAP)
     record["text"] = shown
     note = f"; {removed} invisible characters removed" if removed else ""
-    return f"[judge step {step}] read {path}: lines {span} of {total}{note}\n" + _block(fence, shown), [], record
+    return (
+        f"[judge step {step}] read {path}: lines {span} of {total}{note}\n"
+        + _block(fence, shown),
+        [],
+        record,
+    )
 
 
 Runner = Callable[[str, int], Awaitable[tuple[int | None, bool, bytes]]]
 
 
-async def run_result(runner: Runner | None, step: int, fence: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+async def run_result(
+    runner: Runner | None, step: int, fence: str, args: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
     """The ``run`` tool: one command in a fresh copy of the submission's environment."""
     command = args.get("command")
     record: dict[str, Any] = {"tool": "run", "command": command}
@@ -361,8 +446,15 @@ async def run_result(runner: Runner | None, step: int, fence: str, args: dict[st
     timeout = args.get("timeout", RUN_TIMEOUT_DEFAULT)
     if isinstance(timeout, float) and timeout.is_integer():
         timeout = int(timeout)
-    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= RUN_TIMEOUT_MAX:
-        return f"[judge step {step}] run: timeout must be a whole number of seconds from 1 to {RUN_TIMEOUT_MAX}", record
+    if (
+        not isinstance(timeout, int)
+        or isinstance(timeout, bool)
+        or not 1 <= timeout <= RUN_TIMEOUT_MAX
+    ):
+        return (
+            f"[judge step {step}] run: timeout must be a whole number of seconds from 1 to {RUN_TIMEOUT_MAX}",
+            record,
+        )
     if runner is None:
         return f"[judge step {step}] run: this session has no runner", record
     code, timed_out, output = await runner(command, timeout)
@@ -389,8 +481,15 @@ def _int(value: Any, minimum: int = 1) -> bool:
 def validate_submission(args: Any, assignment: dict[str, Any]) -> list[str]:
     """judge-loop@1's checks 1 to 4 on a ``submit_review`` call; an empty list accepts it."""
     problems: list[str] = []
-    if not isinstance(args, dict) or set(args) != {"verdicts", "tags"} or not isinstance(args.get("verdicts"), list) or not isinstance(args.get("tags"), list):
-        return ["the arguments are an object with exactly verdicts and tags, both lists"]
+    if (
+        not isinstance(args, dict)
+        or set(args) != {"verdicts", "tags"}
+        or not isinstance(args.get("verdicts"), list)
+        or not isinstance(args.get("tags"), list)
+    ):
+        return [
+            "the arguments are an object with exactly verdicts and tags, both lists"
+        ]
     criteria = {c["id"]: c for c in assignment.get("criteria", [])}
     behaviors = {b["id"]: b for b in assignment.get("behaviors", [])}
     seen: list[str] = []
@@ -402,48 +501,87 @@ def validate_submission(args: Any, assignment: dict[str, Any]) -> list[str]:
         extra = set(v) - {"id", "verdict", "level", "value", "citations", "rationale"}
         missing = {"id", "verdict", "citations", "rationale"} - set(v)
         if extra:
-            problems.append(f"{at} has keys the schema does not define: {', '.join(sorted(extra))}")
+            problems.append(
+                f"{at} has keys the schema does not define: {', '.join(sorted(extra))}"
+            )
         if missing:
             problems.append(f"{at} needs {', '.join(sorted(missing))}")
             continue
-        if not isinstance(v["id"], str) or v["verdict"] not in ("pass", "fail", "level", "value"):
-            problems.append(f"{at}: id is a string and verdict is pass, fail, level, or value")
+        if not isinstance(v["id"], str) or v["verdict"] not in (
+            "pass",
+            "fail",
+            "level",
+            "value",
+        ):
+            problems.append(
+                f"{at}: id is a string and verdict is pass, fail, level, or value"
+            )
             continue
         if not isinstance(v["rationale"], str) or len(v["rationale"]) > MAX_RATIONALE:
-            problems.append(f"{at}: rationale is a string of at most {MAX_RATIONALE} characters")
+            problems.append(
+                f"{at}: rationale is a string of at most {MAX_RATIONALE} characters"
+            )
         cites = v["citations"]
         if not isinstance(cites, list) or len(cites) > MAX_CITATIONS:
             problems.append(f"{at}: citations is a list of at most {MAX_CITATIONS}")
         else:
-            for m, c in enumerate(cites):
+            for m, raw_cite in enumerate(cites):
                 where = f"{at}.citations[{m}]"
-                if not isinstance(c, dict) or c.get("source") not in _SOURCES or set(c) - _CITATION_KEYS:
-                    problems.append(f"{where}: a citation has a source ({', '.join(_SOURCES)}) and only path, lines, page, cell, step, quote")
+                c = table(raw_cite)
+                if (
+                    not isinstance(raw_cite, dict)
+                    or c.get("source") not in _SOURCES
+                    or set(c) - _CITATION_KEYS
+                ):
+                    problems.append(
+                        f"{where}: a citation has a source ({', '.join(_SOURCES)}) and only path, lines, page, cell, step, quote"
+                    )
                     continue
-                if "lines" in c and not (isinstance(c["lines"], list) and len(c["lines"]) == 2 and all(_int(x) for x in c["lines"])):
+                if "lines" in c and not (
+                    isinstance(c["lines"], list)
+                    and len(c["lines"]) == 2
+                    and all(_int(x) for x in c["lines"])
+                ):
                     problems.append(f"{where}: lines is [first, last], counted from 1")
                 for key in ("page", "cell", "step"):
                     if key in c and not _int(c[key]):
                         problems.append(f"{where}: {key} is a whole number, at least 1")
                 if "path" in c and not isinstance(c["path"], str):
                     problems.append(f"{where}: path is a string")
-                if "quote" in c and (not isinstance(c["quote"], str) or len(c["quote"]) > MAX_QUOTE):
-                    problems.append(f"{where}: quote is a string of at most {MAX_QUOTE} characters")
+                if "quote" in c and (
+                    not isinstance(c["quote"], str) or len(c["quote"]) > MAX_QUOTE
+                ):
+                    problems.append(
+                        f"{where}: quote is a string of at most {MAX_QUOTE} characters"
+                    )
         seen.append(v["id"])
         criterion = criteria.get(v["id"])
         if criterion is None:
             problems.append(f"{at}: {v['id']!r} is not a criterion in the assignment")
             continue
         if "levels" in criterion:
-            if v["verdict"] != "level" or str(v.get("level")) not in criterion["levels"]:
-                problems.append(f"{at}: {v['id']} takes verdict \"level\" with level one of {', '.join(criterion['levels'])}")
+            if (
+                v["verdict"] != "level"
+                or str(v.get("level")) not in criterion["levels"]
+            ):
+                problems.append(
+                    f'{at}: {v["id"]} takes verdict "level" with level one of {", ".join(criterion["levels"])}'
+                )
             elif not isinstance(v.get("level"), str):
                 problems.append(f"{at}: level is a string")
         elif "score" in criterion:
             lo, hi = criterion["score"]["min"], criterion["score"]["max"]
             value = v.get("value")
-            if v["verdict"] != "value" or not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not lo <= value <= hi:
-                problems.append(f"{at}: {v['id']} takes verdict \"value\" with a number from {lo} to {hi}")
+            if (
+                v["verdict"] != "value"
+                or not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or not lo <= value <= hi
+            ):
+                problems.append(
+                    f'{at}: {v["id"]} takes verdict "value" with a number from {lo} to {hi}'
+                )
         elif v["verdict"] not in ("pass", "fail"):
             problems.append(f"{at}: {v['id']} takes pass or fail")
     for ident in sorted(set(criteria) - set(seen)):
@@ -453,8 +591,14 @@ def validate_submission(args: Any, assignment: dict[str, Any]) -> list[str]:
     tags_seen = []
     for n, t in enumerate(args["tags"]):
         at = f"tags[{n}]"
-        if not isinstance(t, dict) or {"id", "detected", "severity", "spans"} - set(t) or set(t) - {"id", "detected", "severity", "spans", "note"}:
-            problems.append(f"{at} has id, detected, severity, spans, and optionally note")
+        if (
+            not isinstance(t, dict)
+            or {"id", "detected", "severity", "spans"} - set(t)
+            or set(t) - {"id", "detected", "severity", "spans", "note"}
+        ):
+            problems.append(
+                f"{at} has id, detected, severity, spans, and optionally note"
+            )
             continue
         tags_seen.append(t["id"])
         behavior = behaviors.get(t["id"])
@@ -470,7 +614,9 @@ def validate_submission(args: Any, assignment: dict[str, Any]) -> list[str]:
             or (detected is True and not binary and severity in (1, 2, 3))
         )
         if not ok:
-            problems.append(f"{at}: severity is null when detected is null, 0 when false, 1 for a detected binary behavior, and 1 to 3 for a 0-3 behavior")
+            problems.append(
+                f"{at}: severity is null when detected is null, 0 when false, 1 for a detected binary behavior, and 1 to 3 for a 0-3 behavior"
+            )
     for ident in sorted(set(behaviors) - set(tags_seen)):
         problems.append(f"no tag for behavior {ident}")
     return problems
@@ -504,7 +650,9 @@ class SessionResult:
     transcript: list[dict[str, Any]]
 
 
-def _budget_line(spec: SessionSpec, calls: int, tokens: int, started: float) -> str | None:
+def _budget_line(
+    spec: SessionSpec, calls: int, tokens: int, started: float
+) -> str | None:
     """The runtime's line once 80 percent of any budget is spent."""
     spent = []
     if spec.tool_calls:
@@ -521,7 +669,13 @@ def _budget_line(spec: SessionSpec, calls: int, tokens: int, started: float) -> 
     if spec.tokens:
         parts.append(f"{max(spec.tokens - tokens, 0)} tokens")
     parts.append(f"{max(int(spec.seconds - elapsed), 0)} seconds")
-    joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + (", and " if len(parts) > 2 else " and ") + parts[-1]
+    joined = (
+        parts[0]
+        if len(parts) == 1
+        else ", ".join(parts[:-1])
+        + (", and " if len(parts) > 2 else " and ")
+        + parts[-1]
+    )
     return f"[runtime: {joined} left]"
 
 
@@ -536,12 +690,20 @@ async def run_session(
 ) -> SessionResult:
     """One judge-loop@1 session: prompt, tools, and at most one accepted review."""
     fence = secrets.token_hex(8)
-    prompt = jp.prompt_text(spec.brief, spec.assignment, fence=fence, budget=spec.budget_text)
+    prompt = jp.prompt_text(
+        spec.brief, spec.assignment, fence=fence, budget=spec.budget_text
+    )
     if evidence_text is not None:
         prompt += evidence_text(fence)
     tools = jp.render_tools("anthropic-messages", spec.tools)
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-    usage = {"prompt_tokens": 0, "cached_tokens": 0, "completion_tokens": 0, "tool_calls": 0, "calls": 0}
+    usage = {
+        "prompt_tokens": 0,
+        "cached_tokens": 0,
+        "completion_tokens": 0,
+        "tool_calls": 0,
+        "calls": 0,
+    }
     judge_steps: dict[int, dict[str, Any]] = {}
     started = time.monotonic()
     step = 0
@@ -568,14 +730,20 @@ async def run_session(
             "tool_choice": {"type": "auto"},
         }
         try:
-            response = await asyncio.wait_for(call(body, remaining), timeout=remaining + 5)
+            response = await asyncio.wait_for(
+                call(body, remaining), timeout=remaining + 5
+            )
         except TimeoutError:
             return result("timeout")
         except JudgeError as exc:
             return result(f"provider: {exc}")
         u = response.get("usage") or {}
         cache_read = int(u.get("cache_read_input_tokens") or 0)
-        prompt_tokens = int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0) + cache_read
+        prompt_tokens = (
+            int(u.get("input_tokens") or 0)
+            + int(u.get("cache_creation_input_tokens") or 0)
+            + cache_read
+        )
         completion = int(u.get("output_tokens") or 0)
         usage["prompt_tokens"] += prompt_tokens
         usage["cached_tokens"] += cache_read
@@ -584,7 +752,9 @@ async def run_session(
         tokens += prompt_tokens + completion
         content = response.get("content") or []
         messages.append({"role": "assistant", "content": content})
-        uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        uses = [
+            b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
         if not uses:
             quiet += 1
             if quiet >= 3:
@@ -606,19 +776,28 @@ async def run_session(
                     text = "Review accepted."
                 else:
                     rejected += 1
-                    text = "Review not accepted:\n" + "".join(f"- {p}\n" for p in problems) + "Fix these and submit again."
+                    text = (
+                        "Review not accepted:\n"
+                        + "".join(f"- {p}\n" for p in problems)
+                        + "Fix these and submit again."
+                    )
                     if rejected >= 3:
                         ended = "rejected"
             elif name in ("read", "run") and name in spec.tools:
                 step += 1
-                if spec.tool_calls is not None and usage["tool_calls"] >= spec.tool_calls:
+                if (
+                    spec.tool_calls is not None
+                    and usage["tool_calls"] >= spec.tool_calls
+                ):
                     text = f"[judge step {step}] {name}: the tool-call budget is spent; submit your review"
                     judge_steps[step] = {"tool": name, "text": ""}
                 else:
                     usage["tool_calls"] += 1
                     arguments = args if isinstance(args, dict) else {}
                     if name == "read":
-                        text, blocks, record = read_result(files, spec.assignment, step, fence, arguments)
+                        text, blocks, record = read_result(
+                            files, spec.assignment, step, fence, arguments
+                        )
                     else:
                         text, record = await run_result(runner, step, fence, arguments)
                     judge_steps[step] = record
@@ -627,8 +806,12 @@ async def run_session(
                     text += line + "\n" if text.endswith("\n") else "\n" + line + "\n"
             else:
                 text = f"error: unknown tool {name!r}"
-            content_out: Any = [{"type": "text", "text": text}, *blocks] if blocks else text
-            results.append({"type": "tool_result", "tool_use_id": use_id, "content": content_out})
+            content_out: Any = (
+                [{"type": "text", "text": text}, *blocks] if blocks else text
+            )
+            results.append(
+                {"type": "tool_result", "tool_use_id": use_id, "content": content_out}
+            )
         messages.append({"role": "user", "content": results})
         if accepted is not None:
             return result("accepted", accepted)
@@ -671,9 +854,15 @@ def _trajectory_fields(step: dict[str, Any], reasoning: bool) -> list[str]:
     return fields
 
 
-def check_citation(cite: dict[str, Any], ctx: CitationContext, steps: dict[int, dict[str, Any]]) -> dict[str, Any]:
+def check_citation(
+    cite: dict[str, Any], ctx: CitationContext, steps: dict[int, dict[str, Any]]
+) -> dict[str, Any]:
     """A citation as the review records it: verified, label, match, and detail when it did not resolve."""
-    out = {k: cite[k] for k in ("source", "path", "lines", "page", "cell", "step", "quote") if k in cite}
+    out = {
+        k: cite[k]
+        for k in ("source", "path", "lines", "page", "cell", "step", "quote")
+        if k in cite
+    }
     source = cite.get("source")
     quote = cite.get("quote") if isinstance(cite.get("quote"), str) else ""
     spans: list[str] = []
@@ -706,7 +895,9 @@ def check_citation(cite: dict[str, Any], ctx: CitationContext, steps: dict[int, 
     elif source == "trajectory":
         label = "solver"
         wanted = cite.get("step")
-        step = next((s for s in ctx.record.get("steps") or [] if s.get("id") == wanted), None)
+        step = next(
+            (s for s in ctx.record.get("steps") or [] if s.get("id") == wanted), None
+        )
         if step is None:
             detail = f"the trajectory has no step {wanted}"
         else:
@@ -721,8 +912,9 @@ def check_citation(cite: dict[str, Any], ctx: CitationContext, steps: dict[int, 
         if record is None:
             detail = f"no judge step {wanted}"
         elif record.get("tool") == "run":
-            command = record.get("command") if isinstance(record.get("command"), str) else ""
-            text = record.get("text") or ""
+            raw_command = record.get("command")
+            command = raw_command if isinstance(raw_command, str) else ""
+            text = str(record.get("text") or "")
             if quote and quote in command:
                 label, spans = "judge", [command]
             else:
@@ -754,7 +946,11 @@ def check_citation(cite: dict[str, Any], ctx: CitationContext, steps: dict[int, 
         path = str(cite.get("path", ""))
         label = "solver"
         data = ctx.files.views.get(path)
-        if data is None and path.startswith("/judge/") and ctx.files.host(path).is_file():
+        if (
+            data is None
+            and path.startswith("/judge/")
+            and ctx.files.host(path).is_file()
+        ):
             data = ctx.files.host(path).read_bytes()
             label = _read_label(path, ctx.files)
         if data is None:
@@ -828,17 +1024,26 @@ def verdict_value(criterion: dict[str, Any], verdict: dict[str, Any]) -> Any:
     return verdict["verdict"] == "pass"
 
 
-def apply_citation_rules(criterion: dict[str, Any], verdict: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def apply_citation_rules(
+    criterion: dict[str, Any], verdict: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
     """Flags, and ``cite = "independent"``: a pass without a verified judge or environment citation is a fail."""
     flags: list[str] = []
     verified = [c for c in verdict.get("citations", []) if c.get("verified") is True]
     if not verified:
         flags.append("no-verified-citation")
-    passing = verdict["verdict"] == "pass" or (verdict["verdict"] in ("level", "value") and sample_number(criterion, verdict) > 0)
+    passing = verdict["verdict"] == "pass" or (
+        verdict["verdict"] in ("level", "value")
+        and sample_number(criterion, verdict) > 0
+    )
     independent = [c for c in verified if c.get("label") in ("judge", "environment")]
     if passing and verified and not independent:
         flags.append("self-cited")
-    if criterion.get("cite") == "independent" and verdict["verdict"] == "pass" and not independent:
+    if (
+        criterion.get("cite") == "independent"
+        and verdict["verdict"] == "pass"
+        and not independent
+    ):
         verdict = {**verdict, "verdict": "fail"}
         if "self-cited" not in flags:
             flags.append("self-cited")
