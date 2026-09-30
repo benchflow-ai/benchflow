@@ -22,6 +22,8 @@ What it checks:
   ``DAYTONA_API_KEY``), and the policy must not run as root.
 - A model-server failure after the policy acted (the stand-in answers the
   second call with HTTP 502) comes back discarded as ``ModelEndpointFailed``.
+- Disconnect: a caller that goes away mid-episode (Miles cancelling the agent
+  function's task) gets its episode cancelled and its sandbox released.
 - Abort: an episode stuck in a sleeping command, cancelled through ``/abort``
   (or the agent function's ``abort`` hook), comes back discarded as
   ``Aborted``, and no sandbox is left held.
@@ -37,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import socket
@@ -311,6 +314,37 @@ async def main_async(args: argparse.Namespace) -> int:
         print(
             f"policy uid in the sandbox: {sorted(standin.uids)}; secrets checked: {sorted(secrets)}"
         )
+
+        # Disconnect: when the caller goes away (Miles cancels the agent function's
+        # task), the server must cancel the episode and release its sandbox.
+        calls_before = standin.calls
+        goner = asyncio.create_task(runner.episode(http, rows[0], mode="sleep"))
+        for _ in range(120):
+            await asyncio.sleep(1)
+            if standin.calls > calls_before:
+                break
+        await asyncio.sleep(2)  # the sleeping command is running now
+        goner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await goner
+        gone_at = time.monotonic()
+        released = None
+        for _ in range(60):
+            health = (await http.get(f"{runner.env_url}/health")).json()
+            if not health["in_flight"] and not health["sandboxes_in_use"]:
+                released = time.monotonic() - gone_at
+                break
+            await asyncio.sleep(0.5)
+        print(
+            "disconnect: "
+            + (
+                f"the episode was cancelled and its sandbox released {released:.1f}s later"
+                if released is not None
+                else "the episode was still running 30s later"
+            )
+        )
+        if released is None:
+            failures.append("a caller that went away left its episode running")
 
         # Abort: an episode stuck in a sleeping command must come back discarded.
         calls_before = standin.calls
