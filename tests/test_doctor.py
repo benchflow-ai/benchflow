@@ -1090,3 +1090,33 @@ def test_the_aggregate_is_listed_with_the_credentials(tmp_path):
     groups = [c.group for c in report.checks]
     assert groups.index("network") > groups.index("agents")
     assert "agents" not in groups[groups.index("versions") :]
+
+
+def test_the_usage_check_sends_only_a_subscription_token_to_anthropic(tmp_path):
+    """Review finding: the check sent ANTHROPIC_AUTH_TOKEN (usually a gateway's
+    token) to api.anthropic.com, and an OAuth token to whatever host
+    ANTHROPIC_BASE_URL named."""
+    calls: list = []
+    gateway = run_doctor(
+        probes=make_probes(
+            tmp_path, env={"ANTHROPIC_AUTH_TOKEN": "gw-" + "a" * 40}, calls=calls
+        )
+    )
+    check = by_id(gateway)["usage.claude-agent-acp"]
+    assert (
+        check.status == "skip" and "only a subscription's OAuth token" in check.summary
+    )
+    elsewhere = run_doctor(
+        probes=make_probes(
+            tmp_path,
+            env={
+                "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN,
+                "ANTHROPIC_BASE_URL": "https://gateway.example.com",
+            },
+            calls=calls,
+        )
+    )
+    check = by_id(elsewhere)["usage.claude-agent-acp"]
+    assert check.status == "skip" and "gateway.example.com" in check.summary
+    assert not [c for c in calls if c[0] == "headroom"]
+

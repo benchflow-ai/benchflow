@@ -1179,8 +1179,13 @@ def check_agent_auth(auth: AgentAuth, now: datetime) -> Check:
 
 
 def _claude_token(probes: DoctorProbes, src: CredentialSource) -> str | None:
-    """The OAuth token behind a Claude credential, or None when it is not one."""
-    if src.kind in ("oauth-token", "auth-token"):
+    """The subscription OAuth token behind a Claude credential, or None.
+
+    Only ``CLAUDE_CODE_OAUTH_TOKEN``/``CLAUDE_OAUTH_TOKEN`` and the login file
+    hold one; ``ANTHROPIC_AUTH_TOKEN`` is usually a gateway's token, which
+    must not be sent to api.anthropic.com.
+    """
+    if src.kind == "oauth-token":
         return probes.get(src.name)
     if src.kind == "login-file" and src.usable:
         try:
@@ -1220,6 +1225,20 @@ def check_claude_headroom(
     who = f"{src.name} ({src.origin})" if src.origin != "file" else src.name
     if offline:
         return row("skip", f"{who}: usage not checked (--offline)")
+    if src.kind not in ("oauth-token", "login-file"):
+        return row(
+            "skip",
+            f"{who}: usage not checked (only a subscription's OAuth token is, "
+            "and only against api.anthropic.com)",
+        )
+    custom = probes.get("ANTHROPIC_BASE_URL")
+    if custom and _host(custom) != _host(ANTHROPIC_API):
+        return row(
+            "skip",
+            f"{who}: usage not checked: ANTHROPIC_BASE_URL points at "
+            f"{_host(custom)}, and the check sends the token only to "
+            f"{_host(ANTHROPIC_API)}",
+        )
     token = _claude_token(probes, src)
     if token is None:
         return row(
@@ -1228,8 +1247,9 @@ def check_claude_headroom(
         )
     from benchflow.agents.usage_limits import format_reset, parse_unified_headers
 
-    base = probes.get("ANTHROPIC_BASE_URL") or ANTHROPIC_API
-    status, headers, error = probes.claude_headroom(token, base, HEADROOM_TIMEOUT_SEC)
+    status, headers, error = probes.claude_headroom(
+        token, ANTHROPIC_API, HEADROOM_TIMEOUT_SEC
+    )
     secrets = [token, *secret_values(probes.environ)]
     request = f"one 8-token {HEADROOM_MODEL} request"
     if status is None:
