@@ -480,7 +480,7 @@ Fork an agent run at a checkpoint into labelled children, each started from the 
 ```bash
 # Branch after the first of two parent prompts; two children with different prompts.
 bench eval branch --tasks-dir tests/examples/hello-world-task \
-  --agent claude-agent-acp --model claude-sonnet-4-6 --sandbox daytona \
+  --agent claude-agent-acp --model claude-sonnet-5 --sandbox daytona \
   --prompt "Create draft.txt containing: Hello world" --prompt @instruction \
   --checkpoint-after-prompt 1 \
   --child "label=baseline" --child "label=hint,prompt=Rename draft.txt to hello.txt."

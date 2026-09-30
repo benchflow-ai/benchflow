@@ -129,8 +129,12 @@ _TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
                     "capabilities": ["code-edit", "tests"],
                 },
                 "reviewer": {
+                    # The pinned claude-agent-acp (0.81.2, registry.py) refuses
+                    # claude-sonnet-4-6 at session/set_config_option, so a task
+                    # generated from this profile got a reviewer that failed on
+                    # every run. Keep this id one the pinned adapter accepts.
                     "agent": "claude-agent-acp",
-                    "model": "claude-sonnet-4-6",
+                    "model": "claude-sonnet-5",
                     "capabilities": ["review"],
                 },
             },

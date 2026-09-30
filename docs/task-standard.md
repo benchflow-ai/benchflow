@@ -667,7 +667,7 @@ agents:
   roles:
     planner:
       agent: claude-agent-acp
-      model: claude-sonnet-4-6
+      model: claude-sonnet-5
     implementer:
       agent: codex-acp
       model: gpt-5.5

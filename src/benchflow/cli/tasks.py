@@ -9,6 +9,7 @@ only wires the call.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -81,6 +82,22 @@ def register_tasks(app: typer.Typer) -> None:
             # which `bench tasks check` validates).
             for rel in result.files:
                 console.print(f"  {rel}")
+            # The scaffold fails on purpose until edited; say what comes next.
+            # Its own --jobs-dir, so it cannot resume another experiment's job,
+            # and --fresh, because this is the authoring loop: without it a
+            # re-run after an edit resumes its own last job and reports the
+            # cached result of the code the author just changed.
+            task_dir = shlex.quote(str(result.task_dir))
+            jobs_dir = shlex.quote(f"jobs/{result.task_dir.name}-oracle")
+            for line in (
+                "Next: replace every [REPLACE: ...] placeholder (bench tasks check "
+                "lists them), then prove the task with its reference solution:",
+                f"bench tasks check {task_dir}",
+                f"bench eval run --tasks-dir {task_dir} --agent oracle "
+                f"--sandbox docker --jobs-dir {jobs_dir} --fresh",
+                "Guide: https://github.com/benchflow-ai/benchflow/blob/main/docs/task-authoring.md",
+            ):
+                console.print(escape(line), highlight=False, soft_wrap=True)
         except (OSError, ValueError) as e:
             # OSError covers FileExistsError plus the NotADirectoryError /
             # PermissionError that mkdir() raises for `--dir <file>` or a

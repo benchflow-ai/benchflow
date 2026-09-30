@@ -26,7 +26,7 @@ from benchflow.cli._shared import (
 
 _EXAMPLE = (
     "bench eval branch --tasks-dir tests/examples/hello-world-task "
-    "--agent claude-agent-acp --model claude-sonnet-4-6 --sandbox daytona "
+    "--agent claude-agent-acp --model claude-sonnet-5 --sandbox daytona "
     '--prompt "Write draft.txt containing: Hello world" '
     "--prompt @instruction --checkpoint-after-prompt 1 "
     '--child "label=baseline" '

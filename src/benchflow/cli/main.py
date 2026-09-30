@@ -135,6 +135,10 @@ _TAGLINE = "The universal environment framework — run, author, and adopt agent
 app = typer.Typer(
     name="benchflow",
     help=_TAGLINE,
+    epilog=(
+        "New here? Run bench doctor, then follow "
+        "https://github.com/benchflow-ai/benchflow/blob/main/docs/getting-started.md"
+    ),
     no_args_is_help=True,
 )
 
@@ -286,7 +290,9 @@ def _cleanup_daytona_snapshots(client, *, dry_run: bool, max_age_minutes: int) -
 # Evaluation execution
 
 
-eval_app = typer.Typer(help="Evaluation commands.")
+eval_app = typer.Typer(
+    help="Run agents on tasks (smoke, run) and read the results (metrics, view, inspect, compare)."
+)
 app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # `bench eval --help` lists commands in registration order: smoke, then run,
 # the order the README and getting-started use (doctor, smoke, run).
@@ -347,16 +353,24 @@ def eval_run(
         str | None,
         typer.Option(
             "--source-repo",
-            help="Remote repo as org/repo (e.g. benchflow-ai/skillsbench)",
+            help="GitHub repo of the tasks as org/repo (e.g. benchflow-ai/skillsbench)",
         ),
     ] = None,
     source_path: Annotated[
         str | None,
-        typer.Option("--source-path", help="Subpath within the repo (e.g. tasks)"),
+        typer.Option(
+            "--source-path",
+            help=(
+                "Folder in the repo: one task (tasks/citation-check) or a folder "
+                "of tasks (tasks). Only this folder is downloaded"
+            ),
+        ),
     ] = None,
     source_ref: Annotated[
         str | None,
-        typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
+        typer.Option(
+            "--source-ref", help="Branch, tag or full commit SHA to fetch (e.g. main)"
+        ),
     ] = None,
     source_env: Annotated[
         str | None,
@@ -431,7 +445,13 @@ def eval_run(
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Agent name"),
+        typer.Option(
+            "--agent",
+            help=(
+                "Agent: claude, codex, gemini, ... (bench agent list), oracle (the "
+                "task's reference solution) or nop (does nothing)"
+            ),
+        ),
     ] = None,
     model: ModelOption = None,
     reasoning_effort: Annotated[
@@ -693,7 +713,10 @@ def eval_run(
     ] = False,
     jobs_dir: Annotated[
         str | None,
-        typer.Option("--jobs-dir", help="Output directory"),
+        typer.Option(
+            "--jobs-dir",
+            help="Output directory (default jobs); a plain run resumes its latest job",
+        ),
     ] = None,
     fresh: Annotated[
         bool,

@@ -33,9 +33,8 @@ GUARDRAILS (apply to every step):
 STEP 0 — Preflight
 - Check Docker: `docker info > /dev/null 2>&1`. If it fails, ask the user to
   start Docker Desktop / the Docker daemon, then re-check. Do not continue
-  without it: `bench eval run` has no up-front daemon check, so a dead daemon
-  fails the run partway through instead of at startup (`bench doctor` in
-  step 1 checks it again).
+  without it (`bench doctor` in step 1 checks it again, and `bench eval run`
+  refuses to start a Docker job without it).
 - Check uv: `command -v uv`. If missing, install it:
   `curl -LsSf https://astral.sh/uv/install.sh | sh` and ensure it is on PATH.
 - uv will provision the required Python if the install command includes
@@ -67,11 +66,14 @@ PASS/WARN/FAIL line per check (Docker, credentials, network) with a fix; resolve
 every FAIL before continuing. It names credentials but never prints them.
 
 STEP 2 — Fetch one sample task (sparse checkout, not a full clone)
-The skillsbench repo is large; download only one task:
+The skillsbench repo is large; download only one task so you can read it:
     git clone --depth 1 --filter=blob:none --sparse https://github.com/benchflow-ai/skillsbench
     cd skillsbench && git sparse-checkout set tasks/tictoc-unnecessary-abort-detection && cd ..
 Confirm the task directory exists and briefly summarize its task.md prompt body
 to the user so they know what the benchmark agent will be asked to do.
+(`bench eval run --source-repo benchflow-ai/skillsbench --source-path
+tasks/<task>` fetches a single task the same way, into .cache/datasets/, when
+you do not need to read it first.)
 
 STEP 3 — Set credentials
 Ask the user which model provider to use, then have them put keys in a local
@@ -191,10 +193,9 @@ verifier loop:
       --agent oracle \
       --sandbox docker \
       --jobs-dir "jobs/oracle-$(date +%Y%m%d-%H%M%S)"
-If the console prints "Unknown agent 'oracle' — not in registry ... Will
-attempt to use as raw command" (older benchflow builds do this), the warning
-is EXPECTED and the run is still a real oracle run — do not classify it as a
-broken step. A correct task scores reward 1.0 with the oracle.
+A correct task scores reward 1.0 with the oracle. Then run the empty control
+with a new jobs dir: `--agent nop` runs nothing, so the verifier scores the
+untouched workspace, and a sound verifier gives it 0.0.
 
 STEP 8 — Report
 Summarize for the user: installed version; the eval command used; whether the
