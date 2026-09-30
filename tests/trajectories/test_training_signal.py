@@ -96,8 +96,8 @@ def test_two_scored_two_unscored_group(tmp_path: Path) -> None:
     assert by["demo__00000002"]["advantage"] == pytest.approx(0.5 / (std + 1e-4))
     assert by["demo__00000001"]["advantage"] == pytest.approx(-0.5 / (std + 1e-4))
     group = by["demo__00000002"]["group"]
-    assert group["id"] == ("task=demo-task|agent=opencode|model=vendor/model-a")
-    assert group["by"] == ["task", "agent", "model"]
+    assert group["id"] == ("task=demo-task|agent=opencode|model=vendor/model-a|job=job")
+    assert group["by"] == ["task", "agent", "model", "job"]
     assert group["normalisation"] == "grpo"
     assert group["rollouts"] == 4
     assert group["scored"] == 2
@@ -116,7 +116,7 @@ def test_two_scored_two_unscored_group(tmp_path: Path) -> None:
 
     signal = stats.training_signal
     assert signal["group_advantage"] == "grpo"
-    assert signal["group_by"] == ["task", "agent", "model"]
+    assert signal["group_by"] == ["task", "agent", "model", "job"]
     (entry,) = signal["groups"]
     members = {m["rollout"]: m for m in entry["members"]}
     assert members["demo__00000003"]["reward"] is None
@@ -467,3 +467,43 @@ def test_schema_file_is_current_and_rows_validate(tmp_path: Path) -> None:
     assert len(rows) == 4
     for row in rows:
         jsonschema.validate(row, schema, cls=jsonschema.Draft202012Validator)
+
+
+def test_groups_stay_inside_a_job_and_skip_retried_attempts(tmp_path: Path) -> None:
+    """A baseline never mixes jobs by default, nor an attempt a retry replaced.
+
+    Guards the dx/sdk fix of the training signal from bf6e8412 (SDK update),
+    whose default group (task, agent, model) pooled rollouts across jobs,
+    which may have run different policy checkpoints under one model name,
+    and across an Evaluation's retried attempts.
+    """
+    root = tmp_path / "jobs"
+    _rollout(root / "step-1", "a1", reward=0.0)
+    _rollout(root / "step-1", "a2", reward=1.0)
+    _rollout(root / "step-2", "b1", reward=1.0)
+    _rollout(root / "step-2", "b2", reward=1.0)
+    # An Evaluation job: its first attempt of demo-task hung and was retried.
+    retried = _rollout(root / "eval", "c1", reward=0.0, error="idle timeout")
+    _rollout(root / "eval", "c2", reward=1.0)
+    (root / "eval" / "evaluation.json").write_text("{}")
+    import os
+    import time
+
+    now = time.time()
+    os.utime(retried / "result.json", (now - 60, now - 60))
+
+    signals = rollout_training_signals(root, group_advantage="grpo")
+    groups = {g["key"]["job"]: g for g in signals.groups}
+    assert set(groups) == {"step-1", "step-2", "eval"}
+    assert groups["step-2"]["mean"] == 1.0  # not pooled with step-1's 0.0
+    ev = groups["eval"]
+    assert (ev["rollouts"], ev["scored"], ev["mean"]) == (1, 1, 1.0)
+    members = {m["rollout"]: m for m in ev["members"]}
+    assert members["c1"]["excluded"] == "retried"
+    assert members["c1"]["advantage"] is None
+
+    pooled = rollout_training_signals(
+        root, group_advantage="grpo", group_by=("task", "agent", "model")
+    )
+    (only,) = pooled.groups
+    assert (only["rollouts"], only["scored"]) == (5, 5)

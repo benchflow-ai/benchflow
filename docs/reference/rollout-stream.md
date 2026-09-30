@@ -49,7 +49,8 @@ await job
 - A rollout is emitted once, when its `result.json` exists. BenchFlow writes `result.json` atomically and last, after the trajectory and the gateway log, so a half-written rollout is never read. Rollouts already finished when the stream starts come first; then new ones in the order they finish.
 - The stream ends when the job finishes: the job lock (`.evaluation.lock`) is gone and `summary.json` exists. The argument may be the job folder or a `--jobs-dir` holding one job. `bench eval run` and `bf.Evaluation` write both; `bf.run` and `bf.run_batch` write neither, so for their folders use `--no-follow` (`follow=False`) or `--timeout`.
 - `--no-follow` (`follow=False`) scans once and stops.
-- `--group-size N` (`group_size=N`) holds rollouts until N of a group have finished, then emits them together with a GRPO advantage, `(reward - mean) / (std + 1e-4)` over the group's scored rollouts (sample std). The group is `--group-by` (default `task,agent,model`, same keys as `bench train convert`). Groups still short when the stream ends are emitted with `advantage: null` and `group_complete: false`. Without `--group-size`, `advantage` and `group_complete` are null and the trainer computes its own baseline.
+- `--group-size N` (`group_size=N`) holds rollouts until N final rollouts of a group have finished, then emits them together with a GRPO advantage, `(reward - mean) / (std + 1e-4)` over the group's scored rollouts (sample std). The group is `--group-by` (default `task,agent,model,job`, same keys as `bench train convert`: a group never spans jobs unless `job` is left out). Groups still short when the stream ends are emitted with `advantage: null` and `group_complete: false`. Without `--group-size`, `advantage` and `group_complete` are null and the trainer computes its own baseline.
+- Retries. In an Evaluation job, a rollout that the job's retry policy (`evaluation.json`) would retry is not final: with `--group-size` it counts toward no group until the job ends (it was then its trial's last attempt) or a retry replaces it, when it is emitted with `retried: true`, no advantage and no group. Every rollout that replaces an earlier attempt of its trial names it in `replaces` (its `rollout_path`), with or without `--group-size`, so a trainer computing its own baseline can drop the replaced one.
 - Unscored rollouts (verifier error, crash) have `reward: null`, never 0, and never enter a baseline.
 
 | Situation | CLI | Python |
@@ -75,8 +76,8 @@ JSON Schema: [`schemas/benchflow-rollout-stream.v1.schema.json`](schemas/benchfl
   "task": "hello-pass",
   "agent": "claude-agent-acp",
   "model": "vllm/fake-policy",
-  "group_id": "task=hello-pass|agent=claude-agent-acp|model=vllm/fake-policy",
-  "group": {"task": "hello-pass", "agent": "claude-agent-acp", "model": "vllm/fake-policy"},
+  "group_id": "task=hello-pass|agent=claude-agent-acp|model=vllm/fake-policy|job=2026-01-01__12-00-00",
+  "group": {"task": "hello-pass", "agent": "claude-agent-acp", "model": "vllm/fake-policy", "job": "2026-01-01__12-00-00"},
   "reward": 1.0,
   "scored": true,
   "outcome": "passed",
@@ -104,7 +105,9 @@ JSON Schema: [`schemas/benchflow-rollout-stream.v1.schema.json`](schemas/benchfl
     {"thread": 1, "kind": "helper", "calls": [2], "...": "..."}
   ],
   "advantage": null,
-  "group_complete": null
+  "group_complete": null,
+  "replaces": null,
+  "retried": false
 }
 ```
 

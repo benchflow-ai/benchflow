@@ -156,6 +156,18 @@ class StreamedRollout:
     advantage: float | None = None
     group_complete: bool | None = None
     rollout_dir: Path = field(default=Path(), compare=False, repr=False)
+    # The earlier attempt of the same trial (an Evaluation's retry or resume
+    # re-run) this rollout replaces, as its rollout_path; None otherwise.
+    replaces: str | None = None
+    # True when a later attempt replaced this one (known when the stream held
+    # it back for a group): it is not a sample and joins no group.
+    retried: bool = False
+    # (job, task, agent, model) in an Evaluation job folder, else None; and
+    # whether the job's retry policy would retry this rollout.
+    _attempt_key: tuple[Any, ...] | None = field(
+        default=None, compare=False, repr=False
+    )
+    _retryable: bool = field(default=False, compare=False, repr=False)
 
     @property
     def scored(self) -> bool:
@@ -186,6 +198,8 @@ class StreamedRollout:
             "sequences": list(self.sequences),
             "advantage": self.advantage,
             "group_complete": self.group_complete,
+            "replaces": self.replaces,
+            "retried": self.retried,
         }
 
     def to_json(self) -> str:
@@ -338,8 +352,13 @@ def read_rollout(
     job_dir: str | Path | None = None,
     group_by: str | Sequence[str] | None = None,
     result: dict[str, Any] | None = None,
+    job_label: str | None = None,
 ) -> StreamedRollout | None:
-    """The stream record for one finished rollout; None without a readable result."""
+    """The stream record for one finished rollout; None without a readable result.
+
+    ``job_label`` names the rollout's job in its group key (default: the job
+    folder's name).
+    """
     root = Path(rollout_dir)
     if result is None:
         result = _read_json(root / "result.json")
@@ -347,7 +366,7 @@ def read_rollout(
         return None
     job_root = Path(job_dir) if job_dir is not None else root.parent
     keys = parse_group_by(group_by)
-    key = {k: _key_value(result, root, k) for k in keys}
+    key = {k: _key_value(result, root, k, job=job_label) for k in keys}
     exchanges = _exchanges(root)
     if exchanges is None:
         usage = result.get("usage_tracking")
@@ -421,13 +440,37 @@ def _with_advantages(
 
 
 class _Grouper:
+    """Holds records until ``size`` final rollouts of a group have finished.
+
+    A rollout that the job's retry policy would retry is not final: it counts
+    toward no group until a later attempt of its trial replaces it (then it
+    is emitted with ``retried=True`` and no advantage) or the job ends (then
+    it was the trial's last attempt and joins its group).
+    """
+
     def __init__(self, size: int | None) -> None:
         self.size = size
         self.pending: dict[str, list[StreamedRollout]] = {}
+        self.waiting: dict[tuple[Any, ...], StreamedRollout] = {}
 
     def add(self, record: StreamedRollout) -> list[StreamedRollout]:
         if self.size is None:
             return [record]
+        out: list[StreamedRollout] = []
+        key = record._attempt_key
+        if key is not None and record.replaces is not None:
+            old = self.waiting.pop(key, None)
+            if old is not None:
+                out.append(
+                    _replace(old, retried=True, advantage=None, group_complete=None)
+                )
+        if key is not None and record._retryable:
+            self.waiting[key] = record
+            return out
+        return out + self._count(record)
+
+    def _count(self, record: StreamedRollout) -> list[StreamedRollout]:
+        assert self.size is not None
         members = self.pending.setdefault(record.group_id, [])
         members.append(record)
         if len(members) < self.size:
@@ -437,6 +480,9 @@ class _Grouper:
 
     def flush(self) -> list[StreamedRollout]:
         out: list[StreamedRollout] = []
+        waiting, self.waiting = list(self.waiting.values()), {}
+        for record in waiting:  # the job ended: each was its trial's last attempt
+            out += self._count(record)
         for members in self.pending.values():
             out += [_replace(m, advantage=None, group_complete=False) for m in members]
         self.pending.clear()
@@ -461,6 +507,35 @@ class _Scanner:
         self.warn = warn
         self.seen: set[Path] = set()
         self.bad: set[Path] = set()
+        # Per job folder: the retry policy of an Evaluation job, else None.
+        self.policies: dict[Path, Any] = {}
+        # (job, task, agent, model) -> rollout_path of its latest attempt.
+        self.latest: dict[tuple[Any, ...], str] = {}
+
+    def _label(self, folder: Path) -> str:
+        try:
+            label = folder.relative_to(self.job_dir).as_posix()
+        except ValueError:
+            label = "."
+        return folder.name if label == "." else label
+
+    def _policy(self, folder: Path) -> Any:
+        """The folder's Evaluation retry policy; None for a folder of samples."""
+        if folder not in self.policies:
+            from benchflow._utils.result_paths import holds_attempts
+
+            policy = None
+            if holds_attempts(folder):
+                from benchflow.evaluation import RetryConfig
+
+                record = _read_json(folder / EVALUATION_RECORD) or {}
+                config = record.get("config")
+                raw = config.get("retry") if isinstance(config, dict) else None
+                policy = RetryConfig.from_mapping(
+                    raw if isinstance(raw, dict) else None
+                )
+            self.policies[folder] = policy
+        return self.policies[folder]
 
     def scan(self) -> list[StreamedRollout]:
         if not self.job_dir.is_dir():
@@ -476,8 +551,13 @@ class _Scanner:
                     self.bad.add(root)
                     self.warn(f"skipping {path}: not a readable JSON object")
                 continue
+            label = self._label(root.parent)
             record = read_rollout(
-                root, job_dir=self.job_dir, group_by=self.group_by, result=result
+                root,
+                job_dir=self.job_dir,
+                group_by=self.group_by,
+                result=result,
+                job_label=label,
             )
             if record is None:
                 continue
@@ -486,9 +566,39 @@ class _Scanner:
                 mtime = path.stat().st_mtime
             except OSError:
                 mtime = 0.0
+            policy = self._policy(root.parent)
+            if policy is not None:
+                record = _replace(
+                    record,
+                    _attempt_key=(label, record.task, record.agent, record.model),
+                    _retryable=_would_retry(policy, result),
+                )
             fresh.append((mtime, record))
         fresh.sort(key=lambda pair: (pair[0], pair[1].rollout_path))
-        return [record for _, record in fresh]
+        out = []
+        for _, record in fresh:  # oldest first: an attempt replaces the one before
+            key = record._attempt_key
+            if key is not None:
+                replaces = self.latest.get(key)
+                self.latest[key] = record.rollout_path
+                if replaces is not None:
+                    record = _replace(record, replaces=replaces)
+            out.append(record)
+        return out
+
+
+def _would_retry(policy: Any, result: dict[str, Any]) -> bool:
+    """Whether an Evaluation with ``policy`` retries a rollout that ended so
+    (``Evaluation._run_task``'s rule; a committed review is final)."""
+    if policy.max_retries < 1:
+        return False
+    scoring = result.get("scoring")
+    if isinstance(scoring, dict) and scoring.get("status") == "complete":
+        return False
+    return bool(
+        policy.should_retry(result.get("error"), category=result.get("error_category"))
+        or policy.should_retry_verifier_error(result.get("verifier_error"))
+    )
 
 
 def _stderr(message: str) -> None:
@@ -560,10 +670,14 @@ def stream_rollouts(
     With ``follow`` (default) the folder is polled every ``poll_interval``
     seconds until the job finishes (``summary.json`` written, lock
     released); rollouts already finished are yielded first. Without it, one
-    scan. ``group_size=N`` holds records until N rollouts of a group
-    (``group_by``, default task, agent, model) have finished, then yields
-    them with a GRPO advantage; groups still short when the stream ends are
-    yielded with ``advantage=None`` and ``group_complete=False``.
+    scan. ``group_size=N`` holds records until N final rollouts of a group
+    (``group_by``, default task, agent, model and job) have finished, then
+    yields them with a GRPO advantage; groups still short when the stream
+    ends are yielded with ``advantage=None`` and ``group_complete=False``. In
+    an Evaluation job a rollout its retry policy would retry is final only
+    once the job ends; if a retry replaces it first, it is yielded with
+    ``retried=True`` and joins no group. A rollout that replaces an earlier
+    attempt names it in ``replaces``.
 
     Raises :class:`JobNotFound` without ``follow`` when the folder does not
     exist, :class:`StreamTimeout` after ``timeout`` seconds, and
@@ -679,7 +793,7 @@ SCHEMA: dict[str, Any] = {
         "group_id": {
             "type": "string",
             "description": "Stable id of the group, e.g. "
-            "'task=hello|agent=claude-agent-acp|model=vllm/policy'.",
+            "'task=hello|agent=claude-agent-acp|model=vllm/policy|job=2026-01-01__12-00-00'.",
         },
         "group": {
             "type": "object",
@@ -794,6 +908,17 @@ SCHEMA: dict[str, Any] = {
             "type": ["boolean", "null"],
             "description": "group_size only: false when the stream ended "
             "before the group filled.",
+        },
+        "replaces": {
+            "type": ["string", "null"],
+            "description": "rollout_path of the earlier attempt of the same "
+            "trial that this rollout replaces (an Evaluation's retry or resume "
+            "re-run); that attempt is not a sample.",
+        },
+        "retried": {
+            "type": "boolean",
+            "description": "group_size only: true when a later attempt "
+            "replaced this rollout before its group formed; it joins no group.",
         },
     },
 }

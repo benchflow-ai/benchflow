@@ -808,7 +808,7 @@ bench train convert jobs/run-001 --out train.jsonl --manifest m.json \
 ```
 
 - `reward_vector`: for a rubric-scored trial, the test gate and every rubric criterion with its kind, weight and 0–1 value (scored = score / 2; blocker pass = 1, fail = 0); otherwise every numeric key the verifier wrote to `rewards`. The scalar `reward` is unchanged.
-- `advantage` and `group`: the reward normalised over the scored rollouts of the same group (`--group-by`, default `task,agent,model`): `grpo` = `(r − mean) / (std + 1e-4)` with the sample std, `loo` = `r − mean(others)`. `group` records the key, normalisation, formula, counts, mean and std. With both options, `advantage_vector` normalises each component the same way.
+- `advantage` and `group`: the reward normalised over the scored rollouts of the same group (`--group-by`, default `task,agent,model,job`: a group stays inside one job unless `job` is left out, since jobs may have run different policy checkpoints; an attempt an Evaluation retried is excluded as `retried`): `grpo` = `(r − mean) / (std + 1e-4)` with the sample std, `loo` = `r − mean(others)`. `group` records the key, normalisation, formula, counts, mean and std. With both options, `advantage_vector` normalises each component the same way.
 - Unscored rollouts (errors, scoring errors, no reward) never enter a baseline; their advantage is null with `excluded: "unscored"`, never 0. A group with one scored rollout has no advantage (`excluded: "single_scored_rollout"`). Groups are computed before `--min-reward` filters rows. The manifest's `training_signal` block lists every group with its members.
 
 TRL conversion never truncates implicitly. The default `full` context policy
@@ -839,7 +839,7 @@ cannot fit.
 | `--subagent-rows` | `false` | Also write Claude subagent calls as separate rows tagged with the spawning tool call |
 | `--reward-vector` | `false` | `prime-sft`/`trl-sft`: add `reward_vector` (rubric criteria or verifier keys, with names and weights) |
 | `--group-advantage` | — | `prime-sft`/`trl-sft`: add `advantage` and `group`; `grpo` (mean/std) or `loo` (leave-one-out) |
-| `--group-by` | `task,agent,model` | Grouping key for `--group-advantage`: any of `task`, `agent`, `model`, `task_digest` |
+| `--group-by` | `task,agent,model,job` | Grouping key for `--group-advantage`: any of `task`, `agent`, `model`, `task_digest`, `job` (leave `job` out to pool the trial jobs of one policy, e.g. `--matrix --trials`) |
 
 ### bench train token-coverage
 
