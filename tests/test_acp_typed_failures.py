@@ -208,6 +208,27 @@ async def test_a_lost_agent_process_says_it_was_the_agents_own():
     )
 
 
+@pytest.mark.parametrize("severity", ["fatal", "critical", "Error", "", None])
+async def test_a_failure_of_any_severity_but_warning_ends_the_turn(severity):
+    """Review finding: only severity "error" raised, so a record marked
+    "fatal", "critical" or "Error" passed as a finished turn and the
+    untouched workspace was scored 0."""
+    title = "The connection to Claude was lost."
+    reply = _failure_response("connection", ["new_session"], title, severity=severity)
+    client = await _client_with_session([{"result": reply}])
+    with pytest.raises(ACPError):
+        await client.prompt("hi")
+
+
+@pytest.mark.parametrize("severity", ["warning", "Warning"])
+async def test_an_advisory_does_not_end_the_turn(severity):
+    title = "claude-opus-4-1 declined this request; retried with claude-sonnet-4-5"
+    reply = _failure_response("unknown", [], title, severity=severity)
+    client = await _client_with_session([{"result": reply}])
+    result = await client.prompt("hi")
+    assert result.stop_reason == "end_turn"
+
+
 async def test_a_finished_turn_without_a_failure_is_returned():
     ok = {"stopReason": "end_turn", "_meta": {"quota": {"token_count": {}}}}
     client = await _client_with_session([{"result": ok}])

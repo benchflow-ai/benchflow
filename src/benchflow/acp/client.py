@@ -57,6 +57,20 @@ def session_failure(meta: Any) -> dict[str, Any] | None:
     return failure if isinstance(failure, dict) else None
 
 
+# AIR's severities are "warning", an advisory the turn went on after, and
+# "error". Any other value, or none, counts as an error, so a failed turn
+# never passes as a finished one.
+_ADVISORY_SEVERITIES = frozenset({"warning"})
+
+
+def is_advisory(failure: dict[str, Any]) -> bool:
+    """Whether a session-failure record is only an advisory."""
+    severity = failure.get("severity")
+    return isinstance(severity, str) and severity.strip().lower() in (
+        _ADVISORY_SEVERITIES
+    )
+
+
 def session_failure_error(failure: dict[str, Any]) -> AgentProtocolError:
     """The exception for a failure the agent ended its turn with.
 
@@ -547,7 +561,7 @@ class ACPClient:
         # raises as the agent's -32603 did, never passes as a finished turn:
         # verifying it would score the untouched workspace 0.
         failure = session_failure(prompt_result.field_meta)
-        if failure is not None and failure.get("severity", "error") == "error":
+        if failure is not None and not is_advisory(failure):
             raise session_failure_error(failure)
         # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
@@ -592,7 +606,7 @@ def _session_notice(update: Any) -> Any:
     title = str((failure or {}).get("title") or "").strip()
     if failure is None or not title:
         return update
-    if failure.get("severity", "error") == "error":
+    if not is_advisory(failure):
         logger.warning("Agent reported: %s", title)
         return update
     if failure.get("category") == "unknown":
