@@ -1,0 +1,10 @@
+{
+  "repository": "task.md",
+  "commit": "99052af827073133a7af47c3dfa16af1022ff4f3",
+  "copied": {
+    "examples/<name>": "examples/<name> (regex-log from examples/datasets/terminal-mini/tasks/regex-log)",
+    "vectors/judge-prompt-1": "schema/vectors/judge-prompt-1"
+  },
+  "golden": "golden/<name>.json is what 'python3 tools/taskmd.py json <name>' printed at that commit, run from examples/",
+  "note": "Test fixtures for benchflow.taskmd. Copies, never edited here."
+}

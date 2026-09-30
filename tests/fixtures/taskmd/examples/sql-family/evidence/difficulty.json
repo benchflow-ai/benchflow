@@ -1,0 +1,9 @@
+{
+  "note": "Pass rates measured in round 2 of draft 2 (spec/rounds/r2/dogfood/datasets-report.json, episode and loader sections) on the terminal-mini copy of this family, tree sha256:a13ca63005df2cef7edd397acb587dc4edca6d8959a3ae2e8f3c06da1d04d8f6. That copy has the same instruction, parameters, and rows; this package differs in the generator's output folder (agent/ instead of sandbox/), instance.json's placeholders, and grade.py's handling of unreadable answers, so these runs are carried as evidence, not current.",
+  "tree": "sha256:a13ca63005df2cef7edd397acb587dc4edca6d8959a3ae2e8f3c06da1d04d8f6",
+  "measurements": [
+    {"model": "Qwen3-4B-Instruct-2507 Q4_K_M (llama.cpp b11223)", "harness": "tools drive, the trainer's own loop", "reasoning_effort": null, "split": "train", "seeds": [1], "trials": 8, "pass_rate": 0.125},
+    {"model": "deepseek-ai/DeepSeek-V4.1-Flash", "harness": "mini-swe-agent 2.4.6", "reasoning_effort": null, "split": "test", "seeds": [9], "trials": 4, "pass_rate": 1.0},
+    {"model": "Qwen3-4B-Instruct-2507 Q4_K_M (llama.cpp b11223)", "harness": "Verifiers v1 null harness, tools drive", "reasoning_effort": null, "split": "validation", "seeds": [8, 18], "trials": 2, "pass_rate": 1.0}
+  ]
+}
