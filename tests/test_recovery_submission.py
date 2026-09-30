@@ -178,7 +178,10 @@ def test_source_mutation_during_capture_is_rejected(tmp_path, monkeypatch):
         data = original_read(fd, count)
         if not mutated and os.fstat(fd).st_ino == inode:
             mutated = True
-            file.write_bytes(b"a,b\n3,4\n")
+            # A different size: a same-size rewrite in the same coarse
+            # timestamp tick leaves size, mtime and ctime unchanged, which made
+            # this test miss the change in about a quarter of runs.
+            file.write_bytes(b"a,b\n3,4\n5,6\n")
         return data
 
     monkeypatch.setattr(os, "read", mutating_read)
