@@ -199,3 +199,31 @@ def test_limit_spreads_over_kinds_in_a_seeded_order():
     assert kinds == ["bugfix", "csv", "log", "sql", "bugfix", "csv"]
     assert picked == fireworks_rl.stratified(rows, meta, 6, seed=3)
     assert len({r["benchflow_task_id"] for r in picked}) == 6
+
+
+def test_deploy_helper_needs_an_account_and_a_key(monkeypatch):
+    import fireworks_deploy as fd
+
+    monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        fd._key()
+    monkeypatch.delenv("FIREWORKS_ACCOUNT_ID", raising=False)
+    with pytest.raises(SystemExit):
+        fd.main(["status", "dep-1"])
+
+
+def test_usage_counts_only_this_deployment(monkeypatch, capsys):
+    import fireworks_deploy as fd
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key-not-real")
+    rows = [
+        {"deploymentId": "accounts/a/deployments/mine", "acceleratorSeconds": "1800"},
+        {"deploymentId": "accounts/a/deployments/mine", "acceleratorSeconds": "1800"},
+        {"deploymentId": "accounts/a/deployments/mine-2", "acceleratorSeconds": "9999"},
+        {"deploymentId": "accounts/a/deployments/someone-else", "acceleratorSeconds": "7030"},
+    ]
+    monkeypatch.setattr(fd, "_get", lambda path, **params: {"dedicatedCosts": rows})
+    fd.main(["--account", "a", "usage", "mine", "--since", "2026-09-30", "--usd-per-hour", "8"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["accelerator_seconds"] == 3600
+    assert out["usd"] == 8.0
