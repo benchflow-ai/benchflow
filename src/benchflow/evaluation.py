@@ -455,6 +455,20 @@ DEFAULT_JOB_MODE = "parallel-independent"
 _AUTO_JOB_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}(-\d+)?$")
 
 
+def _is_job_folder(folder: Path) -> bool:
+    """Whether ``folder`` is one job (not, say, a folder of jobs): an
+    auto-generated name, a job record, or a trial folder inside it."""
+    if _AUTO_JOB_NAME.match(folder.name):
+        return True
+    if (folder / EVALUATION_RECORD).is_file() or (folder / "summary.json").is_file():
+        return True
+    return any(
+        (child / "result.json").is_file() or (child / "config.json").is_file()
+        for child in folder.iterdir()
+        if child.is_dir()
+    )
+
+
 def _recorded_run_differs(
     job_dir: Path, config: EvaluationConfig | None, tasks_dir: Path | None
 ) -> str | None:
@@ -997,16 +1011,17 @@ class Evaluation:
     ) -> str:
         """Pick a job_name when none was explicitly provided.
 
-        The latest job folder under ``jobs_dir`` whose name has the
-        auto-generated timestamp form is reused, so a second
-        ``Evaluation.run()`` (or plain ``bench eval run``) resumes into the
-        same directory instead of creating an orphan. Other folders, such as
-        a folder of jobs (``jobs/smoke/``) or a named job, are never picked.
-        When that job's ``evaluation.json`` records another agent, model or
-        tasks folder than ``config`` and ``tasks_dir``, a new job starts
-        instead (resuming would blend two runs' results); it is named in the
-        log so it can still be resumed by name. Without such a folder: a
-        fresh timestamp.
+        The latest job folder under ``jobs_dir`` (alphabetically last) is
+        reused, so a second ``Evaluation.run()`` (or plain ``bench eval
+        run``) resumes into the same directory instead of creating an orphan.
+        A job folder has an auto-generated (timestamp) name, a job record
+        (``evaluation.json``, ``summary.json``) or trial folders; a folder
+        that is none of these, such as a folder of jobs (``jobs/smoke/``), is
+        never picked. When that job's ``evaluation.json`` records another
+        agent, model or tasks folder than ``config`` and ``tasks_dir``, a new
+        job starts instead (resuming would blend two runs' results); it is
+        named in the log so it can still be resumed by name. Without such a
+        folder: a fresh timestamp.
 
         Guards ENG-160: auto-generated job_name must be stable across
         resume calls.
@@ -1015,7 +1030,9 @@ class Evaluation:
         if not jobs_dir.is_dir():
             return fresh
         job_dirs = sorted(
-            d for d in jobs_dir.iterdir() if d.is_dir() and _AUTO_JOB_NAME.match(d.name)
+            d
+            for d in jobs_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and _is_job_folder(d)
         )
         if not job_dirs:
             return fresh
