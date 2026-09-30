@@ -49,8 +49,9 @@ The agent may pass or fail; either way the evaluation completed. `bench eval smo
 **4. Read the results.**
 
 ```bash
-bench eval metrics jobs/      # pass rate, tokens and time of every run under jobs/
-bench eval view jobs/claude   # trajectory, verifier output and score, in your browser
+bench eval list jobs/            # one row per experiment: claude 0/1, oracle 1/1, ...
+bench eval metrics jobs/claude   # pass rate, solve rate, pass@k, tool calls and time
+bench eval view jobs/claude      # trajectory, verifier output and score, in your browser
 ```
 
 Each run writes its rewards, token usage and full trajectory under its `--jobs-dir`. Running the same command again resumes that job: finished tasks are kept, not rerun. Add `--fresh` to start a new run.

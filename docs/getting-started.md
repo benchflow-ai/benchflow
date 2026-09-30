@@ -220,10 +220,12 @@ Each run writes under `--jobs-dir` (default `jobs/`):
 ### Reading results
 
 ```bash
-bench eval metrics jobs/        # a table over every run under jobs/: passed, failed, errored, score, duration
-bench eval list jobs/           # one row per job
-bench eval view jobs/claude     # the browser view of every run in jobs/claude
+bench eval list jobs/            # one row per experiment folder, with its score
+bench eval metrics jobs/claude   # passed, failed, errored, score, solve rate, pass@k, tool calls, duration
+bench eval view jobs/claude      # every run in jobs/claude, in the browser
 ```
+
+`bench eval metrics jobs/` counts every run under `jobs/` together, whatever agent ran it; point it at one experiment's folder to read that experiment.
 
 To read a run the way a reviewer would, open it in the browser: `bench eval view` serves a local page (at the printed `http://localhost:8888` URL; `--port` picks another) with the full trajectory, the verifier output and whether the run completed and was scored. Point it at one job, a folder of jobs such as `jobs/`, or a single rollout. `bench eval run` prints this command at the end of each run. On a remote machine, forward the port first, for example `ssh -L 8888:localhost:8888 <host>`, then open the URL on your own machine.
 
