@@ -1687,8 +1687,13 @@ async def ensure_litellm_runtime(
     if sandbox_local and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
+    agent_cfg = AGENTS.get(agent)
     try:
-        route = resolve_litellm_route(model, agent_env)
+        route = resolve_litellm_route(
+            model,
+            agent_env,
+            protocol=(agent_cfg.api_protocol if agent_cfg else "") or None,
+        )
     except ValueError as exc:
         await _raise_litellm_unavailable(
             runtime=runtime,

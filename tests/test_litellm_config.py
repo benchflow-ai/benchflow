@@ -181,6 +181,42 @@ def test_zai_coding_preserves_explicit_proxy_route():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+def test_route_uses_agent_protocol_when_provider_serves_it():
+    """An Anthropic Messages agent reaches a provider that serves Messages over
+    Messages: translating to chat completions turns tool_result images into
+    text."""
+    env = resolve_agent_env("claude-agent-acp", "zai/glm-5.1", {"ZAI_API_KEY": "k"})
+    route = resolve_litellm_route("zai/glm-5.1", env, protocol="anthropic-messages")
+
+    assert route.upstream_model == "anthropic/glm-5.1"
+    assert route.litellm_params["api_base"] == "https://api.z.ai/api/anthropic"
+    assert route.litellm_params["api_base"] == env["BENCHFLOW_PROVIDER_BASE_URL"]
+    assert route.litellm_params["api_key"] == "os.environ/ZAI_API_KEY"
+    assert route.required_env == ("ZAI_API_KEY",)
+
+
+@pytest.mark.parametrize("protocol", [None, "openai-completions", "openai-responses"])
+def test_route_keeps_openai_upstream_for_openai_protocols(protocol):
+    route = resolve_litellm_route(
+        "zai/glm-5.1", {"ZAI_API_KEY": "k"}, protocol=protocol
+    )
+
+    assert route.upstream_model == "openai/glm-5.1"
+    assert route.litellm_params["api_base"] == "https://api.z.ai/api/paas/v4"
+
+
+def test_route_falls_back_to_chat_when_protocol_not_served():
+    """OpenRouter serves only chat completions; a Messages agent still gets it."""
+    route = resolve_litellm_route(
+        "openrouter/qwen/qwen3.5-397b-a17b",
+        {"OPENROUTER_API_KEY": "k"},
+        protocol="anthropic-messages",
+    )
+
+    assert route.upstream_model == "openai/qwen/qwen3.5-397b-a17b"
+    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+
+
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])
 def test_gemini_native_route_honors_explicit_base_url(model):
     """Guards the fix from PR #881 for issue #672."""

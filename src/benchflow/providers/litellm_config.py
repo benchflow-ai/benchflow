@@ -209,6 +209,7 @@ def _route_registered_provider(
     provider_name: str,
     provider_cfg: ProviderConfig,
     env: dict[str, str],
+    protocol: str | None = None,
 ) -> LiteLLMRoute:
     bare = strip_provider_prefix(model)
     params: dict[str, str | int | float | bool | list[str]]
@@ -289,11 +290,15 @@ def _route_registered_provider(
             litellm_params=params,
         )
 
-    protocol = (
-        "openai-completions"
-        if "openai-completions" in provider_cfg.all_endpoints
-        else provider_cfg.api_protocol
-    )
+    # The agent's own protocol when the provider serves it: translating it to
+    # chat completions is lossy (an image inside an Anthropic tool_result
+    # reaches the model as text). Otherwise chat completions, then primary.
+    if not protocol or protocol not in provider_cfg.all_endpoints:
+        protocol = (
+            "openai-completions"
+            if "openai-completions" in provider_cfg.all_endpoints
+            else provider_cfg.api_protocol
+        )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
     zai_registry_base = (
@@ -367,8 +372,18 @@ def _route_registered_provider(
     )
 
 
-def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
-    """Resolve a BenchFlow model ID to one LiteLLM proxy route."""
+def resolve_litellm_route(
+    model: str,
+    env: dict[str, str],
+    protocol: str | None = None,
+) -> LiteLLMRoute:
+    """Resolve a BenchFlow model ID to one LiteLLM proxy route.
+
+    *protocol* is the wire protocol the agent speaks (its ``api_protocol``).
+    When a registered provider serves that protocol, the route reaches the
+    provider over it; otherwise it uses the provider's chat-completions
+    endpoint, as without *protocol*.
+    """
     provider = find_provider(model)
     if provider is not None:
         provider_name, provider_cfg = provider
@@ -377,6 +392,7 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
             provider_name=provider_name,
             provider_cfg=provider_cfg,
             env=env,
+            protocol=protocol,
         )
 
     lower = model.lower()

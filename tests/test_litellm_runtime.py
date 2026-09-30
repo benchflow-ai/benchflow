@@ -122,6 +122,40 @@ async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent", "backend", "api_base"),
+    [
+        ("claude-agent-acp", "anthropic/glm-5.1", "https://api.z.ai/api/anthropic"),
+        ("codex-acp", "openai/glm-5.1", "https://api.z.ai/api/paas/v4"),
+    ],
+)
+async def test_litellm_route_follows_agent_protocol(
+    monkeypatch, agent, backend, api_base
+):
+    """The proxy reaches the provider over the agent's own protocol when the
+    provider serves it."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    _updated, provider_runtime = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env={"ZAI_API_KEY": "sk-zai"},
+        model="zai/glm-5.1",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert provider_runtime.backend_model == backend
+    assert starts[0]["route"].litellm_params["api_base"] == api_base
+
+
+@pytest.mark.asyncio
 async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypatch):
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
