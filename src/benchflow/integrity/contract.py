@@ -487,12 +487,18 @@ def authorized_task_egress(
     the class follows the enforced mode; a binding's measurement mode can
     narrow it (closed-book tasks forbid all agent egress, even when the
     sandbox is public).
+
+    Deviation from BenchGuard: a binding that leaves ``measurement_mode``
+    unset keeps the enforced class. BenchGuard treated an unset mode like
+    ``custom`` (no egress), so a ``benchguard.yaml`` written only to mark a
+    trusted tree turned every download on a public task into a violation.
+    An explicit ``custom`` still means no egress, as in BenchGuard.
     """
 
     mode = agent_network_mode or "public"
     if mode == "no-network":
         return "NoEgress"
-    if binding is None:
+    if binding is None or binding.task.measurement_mode is None:
         return "Allowlist" if mode == "allowlist" else "Full"
     measurement_mode = binding.task.measurement_mode
     if measurement_mode == "closed_book":

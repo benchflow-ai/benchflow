@@ -536,3 +536,28 @@ def test_verdict_exposes_what_apply_integrity_takes(tmp_path: Path) -> None:
     verdict = audit_trial(trial, task_path=DET_TASK)
     assert isinstance(verdict.exploited, bool) and verdict.exploited
     assert "reward" in verdict.reason
+
+
+def test_a_resources_only_binding_keeps_the_enforced_network_class(
+    tmp_path: Path,
+) -> None:
+    """Guards the port's deviation from BenchGuard's _authorized_task_egress.
+
+    Found replaying the BenchGuard corpus (ClawsBench cells): a binding with no
+    measurement_mode compiled to NoEgress, so marking one trusted tree made
+    every download on a public task a forbidden-network violation.
+    """
+    fetch = _calls("curl -s https://pypi.org/simple/numpy/ -o /app/index.html")
+    only_resources = TaskBinding.model_validate(
+        {
+            "resources": [
+                {"id": "lib", "selector": "/app/lib", "class": "Trusted", "reason": "x"}
+            ]
+        }
+    )
+    claim = _verdict(tmp_path / "resources", fetch, binding=only_resources)
+    assert claim["exploited"] is False
+    assert not claim["final_flags"]["network_policy_gap"]
+    custom = TaskBinding.model_validate({"task": {"measurement_mode": "custom"}})
+    claim = _verdict(tmp_path / "custom", fetch, binding=custom)
+    assert claim["exploited"] is True and claim["final_flags"]["forbidden_network"]
