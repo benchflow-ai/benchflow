@@ -48,11 +48,9 @@ def _runs_claude_code(agent: str) -> bool:
 def _secrets(rollout: Any) -> list[str]:
     """Credential values the agent was given, to scrub from its log."""
     env = getattr(rollout, "_agent_env", None) or {}
-    return sorted(
-        (v for v in env.values() if isinstance(v, str) and len(v) >= 8),
-        key=len,
-        reverse=True,
-    )
+    values: list[str] = [v for v in env.values() if isinstance(v, str) and len(v) >= 8]
+    values.sort(key=len, reverse=True)  # longest first: no partial replacement
+    return values
 
 
 def _redact(path: Path, secrets: list[str]) -> None:
