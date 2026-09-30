@@ -185,8 +185,7 @@ def _settings(tasks: Path, tmp_path: Path, **overrides: Any) -> EpisodeSettings:
     settings = EpisodeSettings(
         tasks_dir=tasks,
         harness=BashHarnessConfig(jobs_dir=tmp_path / "jobs", max_output_chars=2000),
-        transport_retries=0,
-        **overrides,
+        **{"transport_retries": 0, **overrides},
     )
     return settings.normalized()
 
