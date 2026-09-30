@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow._utils.scoring import AGENT_INTEGRATION, classify_error
-from benchflow.acp.client import ACPClient, ACPError
+from benchflow.acp.client import ACPClient, ACPError, acp_error
 from benchflow.diagnostics import AgentModelNotOfferedError
 from benchflow.evaluation import RetryConfig
 
@@ -71,8 +71,14 @@ async def _connect(tmp_path, acp, model: str) -> None:
         )
 
 
+# claude-agent-acp throws `Error("Invalid value for config option model: <v>")`;
+# the ACP TypeScript SDK (1.5.0, jsonrpc.ts errorToResult) answers it as
+# -32603 "Internal error" with data {"details": <the message>}.
+REFUSED = {"details": "Invalid value for config option model: claude-sonnet-9"}
+
+
 async def test_a_refused_model_names_the_offered_ones_and_is_not_retried(tmp_path):
-    acp = _acp(ACPError(-32603, "Internal error"))
+    acp = _acp(acp_error(-32603, "Internal error", REFUSED))
     with pytest.raises(AgentModelNotOfferedError) as caught:
         await _connect(tmp_path, acp, "claude-sonnet-9")
     message = str(caught.value)
@@ -90,3 +96,22 @@ async def test_a_timeout_is_not_called_a_refusal(tmp_path):
         await _connect(tmp_path, acp, "claude-sonnet-9")
     assert not isinstance(caught.value, AgentModelNotOfferedError)
     assert "Failed to set ACP model config option" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("error", "model"),
+    [
+        # An opaque -32603 with nothing saying the value was refused.
+        (ACPError(-32603, "Internal error"), "claude-sonnet-9"),
+        # A listed value that fails is not a value the agent does not offer.
+        (ACPError(-32603, "Internal error", REFUSED), "sonnet"),
+    ],
+)
+async def test_other_config_errors_stay_retryable(tmp_path, error, model):
+    """Review finding: every -32603 on the model option became a permanent,
+    never retried agent_model failure that also trips the circuit breaker."""
+    acp = _acp(error)
+    with pytest.raises(RuntimeError) as caught:
+        await _connect(tmp_path, acp, model)
+    assert not isinstance(caught.value, AgentModelNotOfferedError)
+    assert RetryConfig().should_retry(str(caught.value)) is True

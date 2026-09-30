@@ -102,7 +102,7 @@ def acp_error(code: int, message: str, data: Any = None) -> AgentProtocolError:
     if isinstance(data, dict) and data.get("codexErrorInfo") == "usageLimitExceeded":
         detail = str(data.get("message") or message)
         return UsageLimitError.from_text(detail) or UsageLimitError(detail)
-    return UsageLimitError.from_text(message) or ACPError(code, message)
+    return UsageLimitError.from_text(message) or ACPError(code, message, data)
 
 
 def _auto_approve_option_id(options: list[dict[str, Any]]) -> str:
@@ -608,9 +608,16 @@ def _session_notice(update: Any) -> Any:
 
 
 class ACPError(AgentProtocolError):
-    """Error from ACP agent."""
+    """Error from ACP agent.
 
-    def __init__(self, code: int, message: str):
+    ``data`` is the JSON-RPC error's ``data`` (the ACP TypeScript SDK puts a
+    thrown ``Error``'s text in ``{"details": ...}``); it is kept for callers
+    that need it, and never added to the message, whose text categories are
+    read from.
+    """
+
+    def __init__(self, code: int, message: str, data: Any = None):
         self.code = code
         self.message = message
+        self.data = data
         super().__init__(f"ACP error {code}: {message}")

@@ -495,6 +495,19 @@ def _config_option_values(session: object | None, config_id: str) -> list[str]:
     return []
 
 
+_REFUSAL_MARKERS = ("invalid value", "not offered", "unknown model", "not available")
+
+
+def _refuses_value(exc: BaseException) -> bool:
+    """Whether an ACP error answer says the value itself was refused."""
+    if not isinstance(exc, AgentProtocolError):
+        return False
+    data = getattr(exc, "data", None)
+    details = data.get("details") if isinstance(data, dict) else data
+    text = f"{getattr(exc, 'message', '')} {details or ''}".lower()
+    return any(marker in text for marker in _REFUSAL_MARKERS)
+
+
 async def _set_acp_model(
     acp_client: ACPClient,
     *,
@@ -549,10 +562,13 @@ async def _set_acp_config_option(
             e,
         )
         offered = _config_option_values(session, config_id)
-        if label == "model" and isinstance(e, AgentProtocolError) and offered:
-            # The agent answered no (claude-agent-acp: an opaque -32603) and
-            # will on every retry: an unscored agent_model integration
-            # failure that names what it offers, like codex's set_model.
+        if label == "model" and offered and value not in offered and _refuses_value(e):
+            # The agent refused a value it does not list (claude-agent-acp:
+            # -32603 "Internal error" with data.details "Invalid value for
+            # config option model: <value>") and will on every retry: an
+            # unscored agent_model integration failure that names what it
+            # offers, like codex's set_model. Anything else stays a retried
+            # error: a transient failure must not become permanent.
             raise AgentModelNotOfferedError(agent, value, offered) from e
         raise RuntimeError(
             f"Failed to set ACP {label} config option {config_id!r}="
