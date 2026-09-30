@@ -25,7 +25,6 @@
     "advantage",
     "group_complete"
   ],
-  "additionalProperties": false,
   "properties": {
     "schema_version": {
       "const": "benchflow.rollout-stream.v1"
@@ -227,7 +226,6 @@
           "completion_mask",
           "completion_logprobs"
         ],
-        "additionalProperties": false,
         "properties": {
           "thread": {
             "type": "integer"

@@ -64,7 +64,7 @@ Records go to stdout, one JSON object per line; status and warnings go to stderr
 
 ## The record: `benchflow.rollout-stream.v1`
 
-JSON Schema: [`schemas/benchflow-rollout-stream.v1.schema.json`](schemas/benchflow-rollout-stream.v1.schema.json) (generated from `benchflow.trajectories.rollout_stream.SCHEMA`). An illustrative record in the shape the end-to-end scenario (`tests/e2e/test_rl_self_hosted.py`: `claude-agent-acp` on a vLLM-shaped policy server in a sandbox) produces, with synthetic ids and token lists shortened:
+JSON Schema: [`schemas/benchflow-rollout-stream.v1.schema.json`](schemas/benchflow-rollout-stream.v1.schema.json) (generated from `benchflow.trajectories.rollout_stream.SCHEMA`). A new optional field keeps `benchflow.rollout-stream.v1`, and the schema is open (no `additionalProperties: false`), so a trainer validating records keeps working when one is added; removing or changing a field is a new version. An illustrative record in the shape the end-to-end scenario (`tests/e2e/test_rl_self_hosted.py`: `claude-agent-acp` on a vLLM-shaped policy server in a sandbox) produces, with synthetic ids and token lists shortened:
 
 ```json
 {

@@ -375,7 +375,9 @@ def read_rollout(
         # A conversation that cannot be merged into one token stream is never
         # dropped silently: the rollout is not training-grade, and says why.
         summary["training_grade"] = False
-        summary["reason"] = "a conversation's calls could not be merged into one sequence"
+        summary["reason"] = (
+            "a conversation's calls could not be merged into one sequence"
+        )
         sequences = []
     try:
         rollout_path = str(root.relative_to(job_root))
@@ -663,7 +665,6 @@ SCHEMA: dict[str, Any] = {
         "advantage",
         "group_complete",
     ],
-    "additionalProperties": False,
     "properties": {
         "schema_version": {"const": ROLLOUT_STREAM_SCHEMA_VERSION},
         "job": {"type": "string", "description": "Job folder name."},
@@ -758,7 +759,6 @@ SCHEMA: dict[str, Any] = {
                     "completion_mask",
                     "completion_logprobs",
                 ],
-                "additionalProperties": False,
                 "properties": {
                     "thread": {"type": "integer"},
                     "kind": {"enum": ["agent", "helper", "chat"]},

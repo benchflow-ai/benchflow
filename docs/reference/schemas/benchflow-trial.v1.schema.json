@@ -1,7 +1,6 @@
 {
   "$defs": {
     "BranchChildExport": {
-      "additionalProperties": false,
       "properties": {
         "advantage": {
           "anyOf": [
@@ -110,7 +109,6 @@
       "type": "object"
     },
     "EvidenceRefExport": {
-      "additionalProperties": false,
       "properties": {
         "area": {
           "description": "the reviewer's /evidence mount: the trial folder, the task, or the solver's final workspace",
@@ -148,7 +146,6 @@
       "type": "object"
     },
     "ForkExport": {
-      "additionalProperties": false,
       "properties": {
         "children": {
           "items": {
@@ -257,7 +254,6 @@
       "type": "object"
     },
     "ReviewCriterionExport": {
-      "additionalProperties": false,
       "properties": {
         "blocker": {
           "anyOf": [
@@ -324,7 +320,6 @@
       "type": "object"
     },
     "ReviewExport": {
-      "additionalProperties": false,
       "properties": {
         "criteria": {
           "items": {
@@ -375,7 +370,6 @@
       "type": "object"
     },
     "RubricCriterionDefinitionExport": {
-      "additionalProperties": false,
       "properties": {
         "description": {
           "anyOf": [
@@ -453,7 +447,6 @@
       "type": "object"
     },
     "RubricDefinitionExport": {
-      "additionalProperties": false,
       "properties": {
         "contract": {
           "description": "v0.2 (blockers and weights) or v0.1",
@@ -515,7 +508,6 @@
       "type": "object"
     },
     "RubricReviewRecordExport": {
-      "additionalProperties": false,
       "properties": {
         "current": {
           "description": "the revision result.json's reward comes from",
@@ -637,7 +629,6 @@
       "type": "object"
     },
     "RubricReviewerExport": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "anyOf": [
@@ -708,7 +699,6 @@
       "type": "object"
     },
     "RubricRewardExport": {
-      "additionalProperties": false,
       "properties": {
         "all_blockers_pass": {
           "anyOf": [
@@ -868,7 +858,6 @@
       "type": "object"
     },
     "RubricVerdictExport": {
-      "additionalProperties": false,
       "properties": {
         "evidence": {
           "description": "the evidence files the explanation cites",
@@ -971,7 +960,6 @@
       "type": "object"
     },
     "SandboxExport": {
-      "additionalProperties": false,
       "properties": {
         "created_at": {
           "anyOf": [
@@ -1017,7 +1005,6 @@
       "type": "object"
     },
     "UsageExport": {
-      "additionalProperties": false,
       "properties": {
         "cost_status": {
           "anyOf": [
@@ -1128,7 +1115,6 @@
       "type": "object"
     },
     "VerifierExport": {
-      "additionalProperties": false,
       "properties": {
         "ctrf": {
           "default": null,
@@ -1191,7 +1177,6 @@
   },
   "$id": "https://benchflow.ai/schemas/benchflow-trial.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "agent": {
       "title": "Agent",

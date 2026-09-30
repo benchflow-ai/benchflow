@@ -10,7 +10,9 @@ stale (regenerate with ``python -m benchflow.job_export docs/reference/schemas``
 
 Versioning: a new optional field keeps the version; removing or renaming a
 field, or changing its meaning or type, bumps ``schema_version`` and the
-schema file name (``benchflow-job.v2.schema.json``).
+schema file name (``benchflow-job.v2.schema.json``). The published schemas
+are open (no ``additionalProperties: false``), so a document with a field
+added later still validates against the schema a reader already has.
 
 >>> from benchflow.job_export import SCHEMA_VERSION, json_schema
 >>> SCHEMA_VERSION, json_schema("job")["properties"]["kind"]["const"]
@@ -529,13 +531,33 @@ _MODELS: dict[str, type[_Model]] = {
 
 
 def json_schema(kind: DocumentKind) -> dict[str, Any]:
-    """The JSON Schema (draft 2020-12) of one document kind."""
-    schema = _MODELS[kind].model_json_schema(mode="serialization")
+    """The JSON Schema (draft 2020-12) of one document kind.
+
+    The schema is open: it does not refuse properties it does not list, so a
+    reader validating with it keeps working when a later release adds an
+    optional field within the same ``schema_version`` (the versioning rule in
+    the module docstring). The models that build the documents stay strict
+    (``extra="forbid"``), so BenchFlow itself cannot write an undeclared field.
+    """
+    schema = _open(_MODELS[kind].model_json_schema(mode="serialization"))
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": f"{SCHEMA_ID_BASE}/benchflow-{kind}.v{SCHEMA_VERSION}.schema.json",
         **schema,
     }
+
+
+def _open(schema: Any) -> Any:
+    """``schema`` without ``additionalProperties: false`` at any level."""
+    if isinstance(schema, dict):
+        return {
+            key: _open(value)
+            for key, value in schema.items()
+            if not (key == "additionalProperties" and value is False)
+        }
+    if isinstance(schema, list):
+        return [_open(value) for value in schema]
+    return schema
 
 
 def schema_filename(kind: str) -> str:

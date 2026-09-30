@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ComparisonRowExport": {
-      "additionalProperties": false,
       "properties": {
         "checks": {
           "items": {
@@ -96,7 +95,6 @@
       "type": "object"
     },
     "ComparisonSideExport": {
-      "additionalProperties": false,
       "properties": {
         "denominators": {
           "$ref": "#/$defs/DenominatorsExport"
@@ -130,7 +128,6 @@
       "type": "object"
     },
     "ComparisonSummaryExport": {
-      "additionalProperties": false,
       "properties": {
         "b_higher": {
           "title": "B Higher",
@@ -201,7 +198,6 @@
       "type": "object"
     },
     "DenominatorsExport": {
-      "additionalProperties": false,
       "properties": {
         "assessment_errors": {
           "title": "Assessment Errors",
@@ -309,7 +305,6 @@
       "type": "object"
     },
     "SettingCheckExport": {
-      "additionalProperties": false,
       "properties": {
         "a": {
           "anyOf": [
@@ -362,7 +357,6 @@
       "type": "object"
     },
     "SettingMismatchExport": {
-      "additionalProperties": false,
       "properties": {
         "a": {
           "items": {},
@@ -393,7 +387,6 @@
       "type": "object"
     },
     "SolveRatesExport": {
-      "additionalProperties": false,
       "description": "pass@k, pass^k and the solve rate (``benchflow.pass_at_k``).",
       "properties": {
         "caveats": {
@@ -535,7 +528,6 @@
   },
   "$id": "https://benchflow.ai/schemas/benchflow-comparison.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "a": {
       "$ref": "#/$defs/ComparisonSideExport"

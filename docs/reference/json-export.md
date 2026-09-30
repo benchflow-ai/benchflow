@@ -19,7 +19,7 @@ Size: trajectories are left out of job documents unless `include_trajectories=Tr
 
 ## Versioning
 
-A new optional field keeps `schema_version` 1 and bumps `schema_minor` (so trial documents written today say 1.1: `schema_version` 1, `schema_minor` 1). Removing or renaming a field, or changing its type or meaning, bumps the version and the schema file name (`benchflow-job.v2.schema.json`), and the previous files stay. Readers should check `kind` and `schema_version` and ignore fields they do not know.
+A new optional field keeps `schema_version` 1 and bumps `schema_minor` (so trial documents written today say 1.1: `schema_version` 1, `schema_minor` 1). Removing or renaming a field, or changing its type or meaning, bumps the version and the schema file name (`benchflow-job.v2.schema.json`), and the previous files stay. Readers should check `kind` and `schema_version` and ignore fields they do not know. The committed schemas are open (they set no `additionalProperties: false`), so a document with a field added in a later minor still validates against the schema file a reader already has; BenchFlow's own writer stays strict and cannot emit an undeclared field.
 
 ## Rubric reviews
 
