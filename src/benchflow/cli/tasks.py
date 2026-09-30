@@ -9,6 +9,7 @@ only wires the call.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -82,12 +83,15 @@ def register_tasks(app: typer.Typer) -> None:
             for rel in result.files:
                 console.print(f"  {rel}")
             # The scaffold fails on purpose until edited; say what comes next.
-            task_dir = str(result.task_dir)
+            # Its own --jobs-dir: a plain run resumes the latest job in jobs/.
+            task_dir = shlex.quote(str(result.task_dir))
+            jobs_dir = shlex.quote(f"jobs/{result.task_dir.name}-oracle")
             for line in (
                 "Next: replace every [REPLACE: ...] placeholder (bench tasks check "
                 "lists them), then prove the task with its reference solution:",
-                f"  bench tasks check {task_dir}",
-                f"  bench eval run --tasks-dir {task_dir} --agent oracle --sandbox docker",
+                f"bench tasks check {task_dir}",
+                f"bench eval run --tasks-dir {task_dir} --agent oracle "
+                f"--sandbox docker --jobs-dir {jobs_dir}",
                 "Guide: https://github.com/benchflow-ai/benchflow/blob/main/docs/task-authoring.md",
             ):
                 console.print(escape(line), highlight=False, soft_wrap=True)
