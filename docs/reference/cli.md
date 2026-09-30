@@ -9,7 +9,7 @@ bench --version
 
 ## bench doctor
 
-Check that this machine can run evals and print one PASS, WARN, FAIL or SKIP line per check, each with a concrete fix. Credentials are reported by variable name or file path, source (`env`, `.env`, file) and expiry; their values are never printed. Exits 1 when a required check fails, 0 otherwise (warnings do not fail). The Claude subscription check is the one model request doctor makes: one 8-token `claude-haiku-4-5-20251001` request with the login's OAuth token (`--offline` skips it). [When a run fails](../when-a-run-fails.md) explains each line.
+Check that this machine can run evals and print one PASS, WARN, FAIL or SKIP line per check, each with a concrete fix. Credentials are reported by variable name or file path, source (`env`, `.env`, file) and expiry; their values are never printed. Exits 1 when a required check fails, 0 otherwise (warnings do not fail). The Claude subscription check is the one model request doctor makes: one 8-token `claude-haiku-4-5-20251001` request, sent only to api.anthropic.com and only with a subscription's own OAuth token (`--offline`, an API key or gateway token, and a custom `ANTHROPIC_BASE_URL` each skip it with a reason). [When a run fails](../when-a-run-fails.md) explains each line.
 
 ```bash
 bench doctor

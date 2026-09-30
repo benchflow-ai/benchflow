@@ -5,7 +5,7 @@ A failed run should tell you three things at once: what failed, whose fault it w
 ## How `bench` ends on an error
 
 - **An error you can fix** (a task file that does not parse, a bad flag, a missing file or login, a spent usage limit) prints one red message and its next step, and exits non-zero (1, or 2 for a flag Click rejects). No job folder is created when the problem is found before the run, as a missing login is.
-- **Anything else is a bug in BenchFlow.** `bench` prints the Python traceback, then `bench: unexpected error (<type>). This is a bug in BenchFlow, not in your task or setup.` and the path of a crash log, and exits 1. The log is in `~/.cache/benchflow/logs/` (or `$BENCHFLOW_LOG_DIR`) and holds the command, the versions, the traceback and the run's last 2000 log lines. Credential values from the environment, `.env` and `KEY=VALUE` arguments are replaced with `***` in both. Attach the log to an issue at https://github.com/benchflow-ai/benchflow/issues.
+- **Anything else is a bug in BenchFlow.** `bench` prints the Python traceback, then `bench: unexpected error (<type>). This is a bug in BenchFlow, not in your task or setup.` and the path of a crash log, and exits 1. The log is in `~/.cache/benchflow/logs/` (or `$BENCHFLOW_LOG_DIR`) and holds the command, the versions, the traceback and the run's last 2000 log lines. Credential values from the environment, `.env`, `KEY=VALUE` arguments (`--agent-env KEY=V` and `--agent-env=KEY=V`) and credential-named options (`--hf-token V`, `--hf-token=V`) are replaced with `***` in both. Attach the log to an issue at https://github.com/benchflow-ai/benchflow/issues.
 
 | Message | Cause | Fix |
 |---|---|---|
@@ -90,7 +90,7 @@ A Claude subscription (and a ChatGPT plan) allows a fixed amount of use in a 5-h
 
 - Python and uv;
 - Docker: the daemon answers, its version, and the free disk in its data root (a warning below 10 GiB); or the Daytona SDK and a read-only API call with `DAYTONA_API_KEY`;
-- each agent's credentials, by name and source (never the value), and for a Claude subscription login its 5-hour and 7-day windows from one 8-token `claude-haiku-4-5-20251001` request (`--offline` skips it);
+- each agent's credentials, by name and source (never the value), and for a Claude subscription login its 5-hour and 7-day windows from one 8-token `claude-haiku-4-5-20251001` request. That request is the only one doctor makes, and it goes only to api.anthropic.com with a subscription's own OAuth token (from the environment or `~/.claude/.credentials.json`): `--offline`, an API key or gateway token, and an `ANTHROPIC_BASE_URL` pointing elsewhere each skip it with a reason, so no token reaches a host it was not issued for;
 - Codex's login file, Gemini and Bedrock keys, other provider keys;
 - the agent pins the sandbox installs;
 - the model proxy (LiteLLM) that API-key runs go through, and a custom `BENCHFLOW_PROVIDER_BASE_URL`;
