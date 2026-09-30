@@ -138,7 +138,9 @@ def _reply(
             {
                 "index": 0,
                 "message": message,
-                "finish_reason": finish if calls else ("stop" if finish == "tool_calls" else finish),
+                "finish_reason": finish
+                if calls
+                else ("stop" if finish == "tool_calls" else finish),
                 "meta_info": {"output_token_logprobs": [[-0.1, 7, None]]},
             }
         ],
@@ -278,7 +280,9 @@ async def test_a_truncated_reply_ends_the_episode_without_running_its_tools(
 ):
     """The session server refuses to extend a turn cut at max_tokens."""
 
-    cut = _reply("", [_tool_call("run_bash", {"command": "rm -rf x"}, "c")], finish="length")
+    cut = _reply(
+        "", [_tool_call("run_bash", {"command": "rm -rf x"}, "c")], finish="length"
+    )
     outcome, sessions = await _run(tasks, tmp_path, [cut])
     assert len(sessions.requests) == 1
     assert _Runtime.created[0].commands == []
@@ -301,7 +305,9 @@ async def test_turn_limit_runs_max_turns_tool_turns_and_one_more_call(
     assert outcome.turns == 4 and outcome.tool_calls == 3
 
 
-async def test_a_reply_without_tool_calls_is_verified_as_left(tasks: Path, tmp_path: Path):
+async def test_a_reply_without_tool_calls_is_verified_as_left(
+    tasks: Path, tmp_path: Path
+):
     _Runtime.verify_outcome = {"reward": 0.0, "rewards": {"reward": 0.0}}
     outcome, _ = await _run(tasks, tmp_path, [_reply("I give up.")])
     assert outcome.exit_status == "NoToolCall"
@@ -340,8 +346,14 @@ async def test_sandbox_that_never_starts_is_dropped_before_any_model_call(
 @pytest.mark.parametrize(
     ("failure", "exit_status"),
     [
-        (httpx.Response(502, json={"error": "backend transport error"}), "ModelEndpointFailed"),
-        (httpx.Response(404, json={"error": "session not found"}), "ModelEndpointFailed"),
+        (
+            httpx.Response(502, json={"error": "backend transport error"}),
+            "ModelEndpointFailed",
+        ),
+        (
+            httpx.Response(404, json={"error": "session not found"}),
+            "ModelEndpointFailed",
+        ),
         (httpx.Response(503, json={"error": "aborted"}), "GenerationAborted"),
         (httpx.ConnectError("refused"), "ModelEndpointFailed"),
     ],
@@ -361,10 +373,15 @@ async def test_model_server_failures_are_dropped_after_the_policy_acted(
     ("failure", "exit_status"),
     [
         (
-            httpx.Response(400, json={"error": "maximum context length is 16384 tokens"}),
+            httpx.Response(
+                400, json={"error": "maximum context length is 16384 tokens"}
+            ),
             "SequenceLengthLimitExceeded",
         ),
-        (httpx.Response(400, json={"error": "messages are not append-only"}), "AgentError"),
+        (
+            httpx.Response(400, json={"error": "messages are not append-only"}),
+            "AgentError",
+        ),
         (httpx.Response(500, json={"error": "TITO prefix mismatch"}), "AgentError"),
     ],
 )
@@ -398,9 +415,14 @@ async def test_verifier_crash_on_an_untouched_sandbox_is_dropped(
     assert outcome.dropped and outcome.exit_status == "VerifierCrashCleanRun"
 
 
-async def test_an_exploit_verdict_scores_zero_and_is_flagged(tasks: Path, tmp_path: Path):
+async def test_an_exploit_verdict_scores_zero_and_is_flagged(
+    tasks: Path, tmp_path: Path
+):
     _Runtime.verify_outcome = {
-        "integrity": {"exploited": True, "reason": "read /workdir/.grader/expected.json"}
+        "integrity": {
+            "exploited": True,
+            "reason": "read /workdir/.grader/expected.json",
+        }
     }
     submit = _reply("", [_tool_call("submit", {"answer": "7"}, "c1")])
     outcome, _ = await _run(tasks, tmp_path, [submit])
@@ -446,12 +468,18 @@ async def test_every_episode_is_kept_for_audit(tasks: Path, tmp_path: Path):
     assert record["exit_status"] == "Submitted" and record["reward"] == 1.0
     assistant, tool = record["messages"][-2:]
     assert assistant["tool_calls"][0]["function"]["name"] == "submit"
-    assert tool == {"role": "tool", "tool_call_id": "c1", "content": "submission recorded"}
+    assert tool == {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": "submission recorded",
+    }
     saved = json.loads((outcome.rollout_dir / "policy" / "messages.json").read_text())
     assert saved["episode_id"] == outcome.episode_id
 
 
-def test_integrity_audit_is_refused_when_the_runtime_has_none(tasks: Path, tmp_path: Path):
+def test_integrity_audit_is_refused_when_the_runtime_has_none(
+    tasks: Path, tmp_path: Path
+):
     fields = {f for f in episode_module.TaskRuntimeConfig.__dataclass_fields__}
     if "integrity" in fields:
         pytest.skip("this BenchFlow has the integrity audit")
@@ -489,7 +517,9 @@ async def test_server_runs_an_episode_and_refuses_unknown_tasks(
     app = _app(tasks, tmp_path, sessions)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://env") as http:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://env"
+        ) as http:
             ok = (await http.post("/run", json=_BODY)).json()
             unknown = await http.post(
                 "/run", json={**_BODY, "metadata": {"instance_id": "nope"}}
@@ -512,7 +542,9 @@ async def test_abort_cancels_episodes_in_flight_and_releases_sandboxes(
     app = _app(tasks, tmp_path, sessions)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://env") as http:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://env"
+        ) as http:
             running = asyncio.create_task(http.post("/run", json=_BODY))
             while not (_Runtime.created and _Runtime.created[0].commands):
                 await asyncio.sleep(0.01)
@@ -527,10 +559,14 @@ async def test_server_checks_the_bearer_token(tasks: Path, tmp_path: Path):
     app = _app(tasks, tmp_path, _Sessions([]), token="s3cret")
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://env") as http:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://env"
+        ) as http:
             anonymous = await http.get("/tasks")
             forged = await http.post("/abort", headers={"Authorization": "Bearer nope"})
-            signed = await http.get("/tasks", headers={"Authorization": "Bearer s3cret"})
+            signed = await http.get(
+                "/tasks", headers={"Authorization": "Bearer s3cret"}
+            )
     assert anonymous.status_code == 401 and forged.status_code == 401
     assert signed.json() == {"tasks": ["alpha"]}
 

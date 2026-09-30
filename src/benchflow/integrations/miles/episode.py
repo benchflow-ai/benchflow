@@ -344,7 +344,8 @@ class EpisodeOutcome:
             # Wall-clock time spent outside policy generation; Miles subtracts it
             # from throughput accounting (Sample.non_generation_time).
             "total_tool_time": sum(
-                t.get(key) or 0.0 for key in ("sandbox_start_sec", "tool_sec", "verify_sec")
+                t.get(key) or 0.0
+                for key in ("sandbox_start_sec", "tool_sec", "verify_sec")
             ),
         }
         return {
@@ -648,7 +649,9 @@ class _Episode:
             if name == "run_bash":
                 command = str(arguments["command"])
                 out.policy_acted = True
-                result = await self.runtime.bash(command, timeout_sec=h.bash_timeout_sec)
+                result = await self.runtime.bash(
+                    command, timeout_sec=h.bash_timeout_sec
+                )
                 output = result.stdout
                 if result.stderr:
                     output = f"{output}{result.stderr}"

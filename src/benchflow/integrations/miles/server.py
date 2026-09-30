@@ -173,7 +173,9 @@ def create_app(
         task_id = episode.metadata.get("instance_id") or episode.metadata.get("task_id")
         if task_id not in state.tasks:
             return JSONResponse(
-                {"error": f"unknown task {task_id!r}; GET /tasks lists this server's tasks"},
+                {
+                    "error": f"unknown task {task_id!r}; GET /tasks lists this server's tasks"
+                },
                 status_code=400,
             )
         if episode.episode_id in state.in_flight:
