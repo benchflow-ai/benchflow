@@ -1520,6 +1520,12 @@ class Evaluation:
         that PARSES but is structurally incomplete (e.g. a schema-only fixture)
         keeps its existing silent skip.
         """
+        if not self._tasks_dir.is_dir():
+            raise FileNotFoundError(
+                f"Tasks directory not found: {self._tasks_dir} (resolved against "
+                f"{Path.cwd()}); pass a folder of task folders, or one task "
+                "folder (each holds task.md or task.toml)"
+            )
         # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:

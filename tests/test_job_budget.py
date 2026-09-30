@@ -507,3 +507,11 @@ def test_max_rollouts_reaches_the_config_from_the_cli() -> None:
         EvalCreateRequest(tasks_dir=HELLO, agent="oracle", max_rollouts=7)
     )
     assert plan.make_eval_config().budget == Budget(max_rollouts=7)
+
+
+def test_a_misspelt_budget_key_is_refused() -> None:
+    """``budget: {max_usd: 5}`` (YAML) or ``EvaluationConfig(budget={...})``
+    with a misspelt cap silently ran the job without a budget."""
+    with pytest.raises(ValueError, match=r"unknown budget key.*max_usd.*max_cost_usd"):
+        EvaluationConfig(agent="oracle", budget={"max_usd": 5})
+    assert Budget.coerce({"max_cost_usd": None}) is None
