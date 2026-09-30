@@ -95,14 +95,35 @@ LITELLM_PRICE_TABLE_PREFIX: dict[str, str] = {
 
 #: Per-token USD prices for hosted models newer than LiteLLM's pinned price
 #: table, keyed by the exact ``--model`` id (``<provider>/<model id>``, compared
-#: lowercase). Unlike ``MODEL_COST_PER_TOKEN`` there is no substring matching:
-#: the same weights cost different amounts on different hosts. VERIFY each entry
-#: against the provider's pricing page; the date says when it was checked.
-HOSTED_MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {}
+#: lowercase): ``(input, output)`` or ``(input, output, cached input)``. Unlike
+#: ``MODEL_COST_PER_TOKEN`` there is no substring matching: the same weights cost
+#: different amounts on different hosts. The cached-input price matters for
+#: agents, whose every turn resends the conversation: without it LiteLLM bills
+#: cached prompt tokens at the full input price. VERIFY each entry against the
+#: provider's pricing page; the comment says when and where it was checked.
+HOSTED_MODEL_COST_PER_TOKEN: dict[str, tuple[float, ...]] = {
+    # docs.fireworks.ai/serverless/pricing, Standard tier, checked 2026-09-30:
+    # input / cached input / output per 1M tokens.
+    "fireworks/accounts/fireworks/models/glm-5p3": (1.40e-6, 4.40e-6, 0.26e-6),
+    "fireworks/accounts/fireworks/models/kimi-k3": (3.00e-6, 15.00e-6, 0.30e-6),
+    # baseten.co/pricing (Model APIs), checked 2026-09-30.
+    "baseten/zai-org/glm-5.3": (1.40e-6, 4.40e-6, 0.14e-6),
+    "baseten/moonshotai/kimi-k3": (3.00e-6, 15.00e-6, 0.30e-6),
+}
+
+_LITELLM_PRICE_FIELDS = (
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "cache_read_input_token_cost",
+)
 
 
-def _litellm_table_cost_per_token(model: str) -> tuple[float, float] | None:
-    """(input, output) USD-per-token from LiteLLM's own table, by exact id."""
+def _price_fields(price: tuple[float, ...]) -> dict[str, float]:
+    return {field: float(value) for field, value in zip(_LITELLM_PRICE_FIELDS, price)}
+
+
+def _litellm_table_price(model: str) -> dict[str, float] | None:
+    """LiteLLM price fields from its own table, by exact id (any case)."""
     try:
         import litellm
     except ImportError:  # pragma: no cover - litellm is a core dependency
@@ -111,16 +132,19 @@ def _litellm_table_cost_per_token(model: str) -> tuple[float, float] | None:
     for key, entry in litellm.model_cost.items():
         if key.lower() != wanted or not isinstance(entry, dict):
             continue
-        in_cost = entry.get("input_cost_per_token")
-        out_cost = entry.get("output_cost_per_token")
-        if isinstance(in_cost, int | float) and isinstance(out_cost, int | float):
-            if in_cost or out_cost:
-                return float(in_cost), float(out_cost)
+        fields = {
+            field: float(entry[field])
+            for field in _LITELLM_PRICE_FIELDS
+            if isinstance(entry.get(field), int | float)
+            and not isinstance(entry.get(field), bool)
+        }
+        if fields.get("input_cost_per_token") or fields.get("output_cost_per_token"):
+            return fields
     return None
 
 
-def route_cost_per_token(route: LiteLLMRoute) -> tuple[float, float] | None:
-    """Per-token USD price to inject into a route's LiteLLM deployment, if any.
+def route_price_fields(route: LiteLLMRoute) -> dict[str, float]:
+    """LiteLLM price fields to inject into a route's deployment (empty if none).
 
     A hosted provider in ``LITELLM_PRICE_TABLE_PREFIX`` is priced only by its
     exact model id: first ``HOSTED_MODEL_COST_PER_TOKEN``, then LiteLLM's table
@@ -130,12 +154,13 @@ def route_cost_per_token(route: LiteLLMRoute) -> tuple[float, float] | None:
     """
     hosted = HOSTED_MODEL_COST_PER_TOKEN.get(route.requested_model.lower())
     if hosted is not None:
-        return hosted
+        return _price_fields(hosted)
     prefix = LITELLM_PRICE_TABLE_PREFIX.get(route.provider_name)
     if prefix is not None:
         bare = strip_provider_prefix(route.requested_model)
-        return _litellm_table_cost_per_token(f"{prefix}/{bare}")
-    return custom_cost_per_token(route.upstream_model)
+        return _litellm_table_price(f"{prefix}/{bare}") or {}
+    custom = custom_cost_per_token(route.upstream_model)
+    return _price_fields(custom) if custom is not None else {}
 
 
 # Claude 4.8+ and every 5-family model. Kept in sync with
@@ -497,10 +522,8 @@ def litellm_proxy_config(
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
     params = dict(route.litellm_params)
-    cost = route_cost_per_token(route)
-    if cost is not None:
-        params.setdefault("input_cost_per_token", cost[0])
-        params.setdefault("output_cost_per_token", cost[1])
+    for field, value in route_price_fields(route).items():
+        params.setdefault(field, value)
     openai_alias = f"openai/{route.model_alias}"
     bare_requested = strip_provider_prefix(route.requested_model)
     model_list: list[dict[str, object]] = [

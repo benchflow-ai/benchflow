@@ -1031,26 +1031,76 @@ def test_hosted_provider_never_takes_another_hosts_family_price(monkeypatch):
 
 def test_hosted_model_price_matches_exact_id_only(monkeypatch):
     from benchflow.providers import litellm_config
-    from benchflow.providers.litellm_config import route_cost_per_token
+    from benchflow.providers.litellm_config import route_price_fields
 
     _fake_litellm_table(monkeypatch, {})
     monkeypatch.setattr(
         litellm_config,
         "HOSTED_MODEL_COST_PER_TOKEN",
-        {"baseten/zai-org/glm-5.3": (1e-6, 3e-6)},
+        {"baseten/zai-org/glm-5.3": (1e-6, 3e-6, 1e-7)},
     )
     exact = litellm_config.resolve_litellm_route(
         "baseten/zai-org/GLM-5.3", {"BASETEN_API_KEY": "k"}
     )
-    assert route_cost_per_token(exact) == (1e-6, 3e-6)
+    assert route_price_fields(exact) == {
+        "input_cost_per_token": 1e-6,
+        "output_cost_per_token": 3e-6,
+        "cache_read_input_token_cost": 1e-7,
+    }
     longer = litellm_config.resolve_litellm_route(
         "baseten/zai-org/GLM-5.3-Fast", {"BASETEN_API_KEY": "k"}
     )
-    assert route_cost_per_token(longer) is None
+    assert route_price_fields(longer) == {}
     other_host = litellm_config.resolve_litellm_route(
         "fireworks/zai-org/GLM-5.3", {"FIREWORKS_API_KEY": "k"}
     )
-    assert route_cost_per_token(other_host) is None
+    assert route_price_fields(other_host) == {}
+
+
+def test_hosted_price_injects_cached_input_price(monkeypatch):
+    """Agents resend the conversation every turn: cached prompt tokens must be
+    billed at the cached rate, so the deployment carries that price too."""
+    from benchflow.providers.litellm_config import (
+        litellm_proxy_config,
+        resolve_litellm_route,
+    )
+
+    _fake_litellm_table(monkeypatch, {})
+    route = resolve_litellm_route(
+        "fireworks/accounts/fireworks/models/glm-5p3", {"FIREWORKS_API_KEY": "k"}
+    )
+    params = litellm_proxy_config(route, master_key="sk-master")["model_list"][0][
+        "litellm_params"
+    ]
+    assert params["input_cost_per_token"] == pytest.approx(1.40e-6)
+    assert params["output_cost_per_token"] == pytest.approx(4.40e-6)
+    assert params["cache_read_input_token_cost"] == pytest.approx(0.26e-6)
+
+
+def test_litellm_table_price_carries_its_cache_price(monkeypatch):
+    from benchflow.providers.litellm_config import (
+        resolve_litellm_route,
+        route_price_fields,
+    )
+
+    _fake_litellm_table(
+        monkeypatch,
+        {
+            "fireworks_ai/accounts/fireworks/models/minimax-m3": {
+                "input_cost_per_token": 3e-7,
+                "output_cost_per_token": 1.2e-6,
+                "cache_read_input_token_cost": 6e-8,
+            }
+        },
+    )
+    route = resolve_litellm_route(
+        "fireworks/accounts/fireworks/models/minimax-m3", {"FIREWORKS_API_KEY": "k"}
+    )
+    assert route_price_fields(route) == {
+        "input_cost_per_token": 3e-7,
+        "output_cost_per_token": 1.2e-6,
+        "cache_read_input_token_cost": 6e-8,
+    }
 
 
 @pytest.mark.asyncio
