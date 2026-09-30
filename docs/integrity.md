@@ -91,6 +91,19 @@ resources:
 
 A binding can add and narrow; it cannot make `/tests`, `/solution` or the reward folder agent-visible.
 
+Reward-relevant state inside the workspace is the case the derived contract cannot see. Everything under the agent's working directory is agent-writable, including state a task puts there for its own grading: a task that writes the expected answer, a grading key or a score file into the workspace gives the agent a leak that is not a protected-root crossing, so the default contract does not flag reading it. This stays a binding, not a default, because BenchFlow cannot tell a grader's hidden directory from one the task asks the agent to create; guessing by name would both miss leaks and flag honest work.
+
+```yaml
+schema_version: benchguard.task_binding.v1
+resources:
+  - id: grader-state
+    selector: /workdir/.grader
+    class: Hidden
+    reason: the verifier's expected answer is stored inside the agent's workspace
+```
+
+With that binding, an agent that reads `/workdir/.grader/expected.json` and submits it is `AgentViolation` even though the verifier passed it. Keeping grading state out of the workspace is better where the task can (`/tests`, `/verifier`, `/solution` and `/oracle` are protected by default); the binding is for tasks that cannot.
+
 ## Re-verdict a stored trial
 
 The checker is a pure function of the stored evidence, so a trial run without `--integrity` can be audited later from its folder:
@@ -123,6 +136,7 @@ The same verdict is on disk (`integrity/claim_verdict.json`) for trainers that r
 ## Limits
 
 - Audit mode sees what the agent's tool calls say. A command run through an interpreter (`python -c`, `perl -e`, a script the agent wrote) is opaque: its file writes are not witnessed, and when it names a protected path the verdict is `Rejected`, not `Checked`. The host-side Docker monitor that would corroborate such writes is not ported.
+- Reward-relevant state a task keeps inside the agent's workspace is agent-writable by default, so reading it is not a violation until a binding names it (see "The contract").
 - Answer-source shortcuts (reading an upstream fix from git history, fetching a published answer) are semantic (I7). They are caught only when a binding says so (for example `measurement_mode: closed_book` turns any egress into a violation).
 - The static taint analysis that finds vectors before a run, and the LLM audit agents, are not part of this; the rubric review's `reward_hacking` criterion is BenchFlow's LLM reviewer.
 - Declared artifacts that are code run inside the verifier; they are handed over like data.
