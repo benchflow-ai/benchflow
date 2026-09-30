@@ -360,9 +360,34 @@ def load_rows(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict]:
         include += [t.strip() for t in args.tasks_file.read_text().splitlines() if t.strip()]
     spec = BenchFlowSpec(tasks_dir=args.tasks_dir, include_tasks=include)
     rows = list(spec.train_dataset_rows)
+    meta = _task_meta(args.tasks_dir)
     if args.limit:
-        rows = rows[: args.limit]
-    return rows, _task_meta(args.tasks_dir)
+        rows = stratified(rows, meta, args.limit, seed=args.seed)
+    return rows, meta
+
+
+def stratified(rows: list[dict[str, Any]], meta: dict, limit: int, *, seed: int) -> list[dict[str, Any]]:
+    """``limit`` rows taken round-robin over task kinds, each kind in a seeded order.
+
+    Task folders sort by kind, so the first N rows would all be one kind.
+    """
+
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        kind = meta.get(row["benchflow_task_id"], {}).get("kind") or "?"
+        by_kind.setdefault(kind, []).append(row)
+    rng = random.Random(seed)
+    queues = []
+    for kind in sorted(by_kind):
+        group = by_kind[kind][:]
+        rng.shuffle(group)
+        queues.append(group)
+    picked: list[dict[str, Any]] = []
+    while len(picked) < limit and any(queues):
+        for queue in queues:
+            if queue and len(picked) < limit:
+                picked.append(queue.pop(0))
+    return picked
 
 
 def summary_of(rollouts: list[Rollout]) -> dict[str, Any]:
@@ -523,7 +548,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.add_argument("--tasks-dir", type=Path, required=True)
         p.add_argument("--tasks-file", type=Path, help="task ids, one per line (screen's learnable.txt)")
         p.add_argument("--include", action="append", default=[], help="task id to include")
-        p.add_argument("--limit", type=int, help="only the first N tasks")
+        p.add_argument("--limit", type=int, help="N tasks, spread evenly over task kinds (seeded)")
         p.add_argument("--out", type=Path, required=True)
         p.add_argument("--base-model", default=BASE_MODEL)
         p.add_argument("--tokenizer", default=TOKENIZER)

@@ -186,3 +186,16 @@ def test_checkpoint_names_fit_fireworks_limit():
         fc.checkpoint_name("a-very-long-prefix", 1)
     with pytest.raises(ValueError):
         fc.checkpoint_name("Final", 1)
+
+
+def test_limit_spreads_over_kinds_in_a_seeded_order():
+    pytest.importorskip("benchflow.integrations.trl")
+    import fireworks_rl
+
+    rows = [{"benchflow_task_id": f"{kind}-{i:06d}"} for kind in ("bugfix", "csv", "log", "sql") for i in range(5)]
+    meta = {r["benchflow_task_id"]: {"kind": r["benchflow_task_id"].split("-")[0]} for r in rows}
+    picked = fireworks_rl.stratified(rows, meta, 6, seed=3)
+    kinds = [r["benchflow_task_id"].split("-")[0] for r in picked]
+    assert kinds == ["bugfix", "csv", "log", "sql", "bugfix", "csv"]
+    assert picked == fireworks_rl.stratified(rows, meta, 6, seed=3)
+    assert len({r["benchflow_task_id"] for r in picked}) == 6
