@@ -27,8 +27,18 @@
   while the output arrives as `_meta.terminal_output_delta` chunks and the
   exit code in `_meta.terminal_exit`. `ToolCallRecord.raw_output` rebuilds the
   1.x `{"formatted_output", "exit_code"}` shape from those chunks (an
-  agent-sent `formatted_output` still wins), so captured trajectories and the
-  viewer keep every command's output.
+  agent-sent `formatted_output` still wins), so captured trajectories keep
+  every command's output. The trajectory viewer now shows it for shell
+  commands too: it rendered Codex's `terminal` content block (a terminal id)
+  instead of the command's raw output, on codex-acp 1.x as well.
+- **Known regression: the `gpt-5.4` family falls back under codex-acp 2.0.1.**
+  codex 0.158 dropped `gpt-5.4` from its catalog, and no codex release lists
+  both `gpt-5.4` and `gpt-6.1-sol`. On 2.0.1, `gpt-5.4`, `gpt-5.4-mini` and
+  `gpt-5.4-nano` log "Model metadata ... not found" and lose `apply_patch` and
+  `tool_search`. This affects the codex-acp integration model
+  (`.github/integration/scope_defaults.yml`, `gpt-5.4-nano`) and the
+  `openai/gpt-5.4-mini` examples; a model the catalog knows (for example
+  `gpt-5.5` or `gpt-5.6-luna`) keeps the full surface.
 - **Codex gets its real model id, and a codex that knows it (#1145).** Under
   a BenchFlow provider (LiteLLM proxy) the `codex-acp` thread was started with
   the proxy alias as the model (`benchflow-azure-foundry-openai-gpt-5.6-luna`).

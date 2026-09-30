@@ -324,3 +324,21 @@ def test_agent_formatted_output_wins_over_terminal_chunks() -> None:
     }
     record = _session_from([start, chunk, end]).tool_calls[0]
     assert record.raw_output == {"formatted_output": "x\n", "exit_code": 0}
+
+
+def test_payload_renders_codex_2_shell_output_behind_a_terminal_block(
+    tmp_path: Path,
+) -> None:
+    """A codex shell call's only content block is a terminal reference; the
+    viewer shows the command and the output rebuilt from _meta, not the id."""
+    traj = tmp_path / "trajectory"
+    traj.mkdir()
+    events = _events_to_trajectory(_session_from(_CODEX_2_SHELL).events)
+    (traj / "acp_trajectory.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    (tmp_path / "result.json").write_text("{}")
+    steps = _build_acp_payload(tmp_path, None).to_payload()["steps"]
+    tool = next(s["tool"] for s in steps if s["kind"] == "tool")
+    assert tool["content"] == [
+        "echo hello-from-mock; echo second-line; exit 3",
+        "hello-from-mock\nsecond-line\n[exit code 3]",
+    ]
