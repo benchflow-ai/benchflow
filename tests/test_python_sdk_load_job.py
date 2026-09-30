@@ -431,6 +431,7 @@ def test_an_evaluation_result_prints_on_one_line() -> None:
         },
     )
     assert repr(result) == (
-        "EvaluationResult(job='j', passed=1/2 (50.0%), failed=1, errored=0, "
-        "verifier_errored=0, mean_reward=0.500, job_dir=None)"
+        "EvaluationResult(job_name='j', total=2, passed=1, failed=1, errored=0, "
+        "verifier_errored=0, score=0.500, mean_reward=0.5, results=<2 task(s)>, "
+        "job_dir=None)"
     )

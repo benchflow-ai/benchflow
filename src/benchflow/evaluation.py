@@ -814,12 +814,14 @@ class EvaluationResult:
     ran: int = 0
 
     def __repr__(self) -> str:
-        mean = "n/a" if self.mean_reward is None else f"{self.mean_reward:.3f}"
+        # The counts, not the config or every task's RolloutResult.
+        job_dir = str(self.job_dir) if self.job_dir is not None else None
         return (
-            f"EvaluationResult(job={self.job_name!r}, passed={self.passed}/"
-            f"{self.total} ({self.score:.1%}), failed={self.failed}, "
-            f"errored={self.errored}, verifier_errored={self.verifier_errored}, "
-            f"mean_reward={mean}, job_dir={str(self.job_dir) if self.job_dir else None!r})"
+            f"EvaluationResult(job_name={self.job_name!r}, total={self.total}, "
+            f"passed={self.passed}, failed={self.failed}, errored={self.errored}, "
+            f"verifier_errored={self.verifier_errored}, score={self.score:.3f}, "
+            f"mean_reward={self.mean_reward!r}, results=<{len(self.results)} "
+            f"task(s)>, job_dir={job_dir!r})"
         )
 
     def to_records(self) -> list[dict[str, Any]]:
