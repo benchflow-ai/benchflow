@@ -412,7 +412,8 @@ def test_export_masks_secrets_paths_and_links(tmp_path: Path) -> None:
         job / "alpha__1",
         "alpha",
         reward=None,
-        error=f"provider said 401 for key {FAKE_KEY} at {job}/alpha__1",
+        error=f"provider said 401 for key {FAKE_KEY} at {job}/alpha__1 "
+        "(first run at /home/someone/jobs/x and /Users/someone/jobs/y)",
         error_category="provider_auth",
         trajectory=True,
     )
@@ -422,6 +423,7 @@ def test_export_masks_secrets_paths_and_links(tmp_path: Path) -> None:
     assert n == 2
     assert FAKE_KEY not in html
     assert str(tmp_path) not in html
+    assert "someone" not in html  # other users' home folders too
     assert sum(categories.values()) >= 1
     assert '"mode":"export"' in html.replace(" ", "")
     boot = json.loads(
@@ -513,7 +515,9 @@ def test_browse_server_serves_outcomes_for_several_jobs(tmp_path: Path, capsys) 
     assert status == 404
 
 
-def test_a_job_without_trajectories_still_gets_its_views(tmp_path: Path, monkeypatch) -> None:
+def test_a_job_without_trajectories_still_gets_its_views(
+    tmp_path: Path, monkeypatch
+) -> None:
     from benchflow.trajectories.viewer import server
 
     job = tmp_path / "job"

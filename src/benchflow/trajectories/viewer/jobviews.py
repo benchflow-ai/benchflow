@@ -10,6 +10,8 @@ and every string passed through the redaction ``bench traj upload`` applies
 
 from __future__ import annotations
 
+import os
+import re
 import threading
 from collections import Counter
 from pathlib import Path
@@ -86,15 +88,21 @@ class OutcomesCache:
             return self._linked.get(rid)
 
 
+# A user's home folder named anywhere in a string: /home/<user> or /Users/<user>.
+_USER_HOME = re.compile(r"/(?:home|Users)/[^/\s\"'<>]+")
+
+
 def redact_for_export(
     doc: dict[str, Any], paths: list[Path]
 ) -> tuple[dict[str, Any], Counter[str]]:
     """The document as it may leave the machine.
 
     Trial links are dropped (they only work against the local server), the
-    served folders' absolute paths and the home folder are replaced by
-    ``<job>`` and ``~`` wherever a string mentions them, and every value
-    goes through :func:`benchflow.publish.redact.redact_value`.
+    served folders' absolute paths become ``<job>``, any home folder
+    (``$HOME``, the account's home, and every ``/home/<user>`` or
+    ``/Users/<user>`` prefix, since error text can name paths of other runs)
+    becomes ``~``, and every value goes through
+    :func:`benchflow.publish.redact.redact_value`.
     """
     from benchflow.publish.redact import redact_value
 
@@ -103,19 +111,26 @@ def redact_for_export(
     columns["link"] = [None] * len(columns["link"])
     shared["columns"] = columns
     shared.pop("timing", None)
+    homes = {str(Path.home())}
+    try:
+        import pwd
+
+        homes.add(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError):
+        pass
     replacements = sorted(
         {(str(p.resolve()), "<job>") for p in paths}
         | {(str(p), "<job>") for p in paths if p.is_absolute()}
-        | {(str(Path.home()), "~")},
+        | {(home, "~") for home in homes},
         key=lambda pair: -len(pair[0]),
     )
 
     def scrub(value: Any) -> Any:
         if isinstance(value, str):
             for old, new in replacements:
-                if old and old != "/" and old in value:
+                if len(old) > 1 and old in value:
                     value = value.replace(old, new)
-            return value
+            return _USER_HOME.sub("~", value)
         if isinstance(value, dict):
             return {scrub(k): scrub(v) for k, v in value.items()}
         if isinstance(value, list):

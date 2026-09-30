@@ -139,9 +139,7 @@ def serve(
         rollouts = BrowseRoots([path]).scan(cap + 1)
         # A job whose trials kept no trajectory still has job views.
         results_only = (
-            not rollouts
-            and not (path / "result.json").exists()
-            and has_trials(path)
+            not rollouts and not (path / "result.json").exists() and has_trials(path)
         )
         if rollouts or results_only:
             capped = len(rollouts) > cap

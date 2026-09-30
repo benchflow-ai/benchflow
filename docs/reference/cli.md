@@ -758,9 +758,15 @@ skill fills it from the `Masked for you` line printed by
 `bench traj upload PATH --dry-run`. Without `--confirm` the flag has no
 effect; without the flag the bar is unchanged.
 
+A folder that holds trials (a job, or several jobs) also gets **Outcomes**, **Pareto** and **Training** tabs: a grid with one square per trial, grouped by task and by model, agent, harness, seed, step, split or job, with unscored trials hatched and their cause on hover, retries and BenchShield verdicts marked, and pass@k with its interval per row; cost, tokens or time against reward with bootstrap intervals and a Pareto frontier per dataset; and reward over training steps with held-out tasks before and after. Pass several job folders to compare them in one page. A job whose trials kept no trajectory opens with these tabs too. See [job views](job-views.md).
+
+`--export PATH` writes the job views of the given folders to one self-contained HTML file and exits, printing what it masked. It holds no trajectories and no trial links; every string goes through the redaction `bench traj upload` applies, and absolute paths are replaced. It cannot be combined with `--confirm`.
+
 ```bash
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
+bench eval view jobs/model-a jobs/model-b
+bench eval view jobs/run --export outcomes.html
 bench eval view hf://benchflow/skillsbench-trajectories-apr2026/jobs/opus47-with-skills-t1
 bench eval view ~/.claude/projects/<project>/<session>.jsonl
 bench eval view ~/.claude/projects/<project>/<session>.jsonl --confirm
