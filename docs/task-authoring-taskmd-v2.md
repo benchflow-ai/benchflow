@@ -174,6 +174,19 @@ The rest of the package:
 | `stages/<name>/` | Refused: stages graded on their own |
 | `world/`, `variants/` | Refused with `[world]`; unused files of the base task otherwise |
 
+## Harbor parity
+
+An imported Harbor task should score what the original scores. To check that, 56 Harbor tasks were each run twice on one host, on Docker, with the oracle and with a do-nothing agent: once on BenchFlow's native path over the Harbor `task.toml` folder, and once on the `taskmd` format over the draft-2 package `task-md/tools/convert.py import` writes from it. The tasks were Terminal-Bench 2's terminal-mini set and BenchFlow's own Harbor-format examples and network, verifier-mode and sidecar matrices.
+
+Twenty-six of them ran and scored on both paths, and every score is identical; twenty-two of those separate the oracle from doing nothing (1 and 0 on both paths), and four score 0 for both agents on both paths. Eleven more reach the same partial or failed outcome on both paths, such as a task that ships no oracle. Sixteen are declined by both paths — BenchFlow's native path raises `UnsupportedTaskFeatureError` for Harbor multi-step `steps` and per-step networks, and the `taskmd` format refuses the same task naming the field.
+
+Three disagree, all in the network-policy matrix, and all because the `taskmd` format is deliberately stricter than the native path:
+
+- `dynamic/e-a-diff` and `dynamic/e-a-diff-v-match` give the agent's phase *more* network than the sandbox. The agent works inside the sandbox's container, so this cannot be honored without rebuilding the container mid-run; the native path ignores the override and scores 0, and the `taskmd` format refuses naming `[agent] network`.
+- `dynamic/e-v-diff` asks for an offline verifier in an image with no `iptables`. The native path ignores the setting and scores 0; the `taskmd` format reports that it could not take the verifier offline and does not score the trial.
+
+Refusing by name rather than scoring a task whose settings were not honored is the point of the format hook, so these three stand as they are.
+
 ## Where BenchFlow's judges depart from the spec
 
 Each verdict records the setup that produced it (`judge.model`, `judge.harness`, `judge.prompt_sha256`, `judge.judge_setup_sha256`, `judge.evidence_sha256`), and each session's record under `verifier/taskmd-judge/` shows what it sent and received. These rules of docs/runtime/judging.md are not yet honored:
