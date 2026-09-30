@@ -37,6 +37,7 @@ from benchflow.acp.watchdog import (
     pending_grace_from_env,
 )
 from benchflow.agents.codex_config import apply_codex_launch_config
+from benchflow.agents.errors import AgentProtocolError, UsageLimitError
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -475,6 +476,25 @@ def _resolve_acp_model_option_id(
     return None
 
 
+def _config_option_values(session: object | None, config_id: str) -> list[str]:
+    """The values a ``select`` config option offers (groups flattened)."""
+    for option in getattr(session, "config_options", None) or ():
+        if not isinstance(option, dict) or option.get("id") != config_id:
+            continue
+        values: list[str] = []
+        stack = list(option.get("options") or ())
+        while stack:
+            choice = stack.pop(0)
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("options"), list):  # a group of choices
+                stack[:0] = choice["options"]
+            elif isinstance(choice.get("value"), str):
+                values.append(choice["value"])
+        return values
+    return []
+
+
 async def _set_acp_model(
     acp_client: ACPClient,
     *,
@@ -484,6 +504,8 @@ async def _set_acp_model(
     try:
         await asyncio.wait_for(acp_client.set_model(model_id), timeout=60)
         logger.info(f"Model set to: {model_id}")
+    except UsageLimitError:
+        raise
     except Exception as e:
         logger.error(
             "ACP session/set_model failed for agent=%s model=%s: %s",
@@ -516,6 +538,8 @@ async def _set_acp_config_option(
             acp_client.set_config_option(config_id, value), timeout=60
         )
         logger.info(f"ACP {label} config option {config_id!r} set to: {value}")
+    except UsageLimitError:
+        raise
     except Exception as e:
         logger.error(
             "ACP session/set_config_option failed for agent=%s config=%s value=%s: %s",
@@ -524,6 +548,12 @@ async def _set_acp_config_option(
             value,
             e,
         )
+        offered = _config_option_values(session, config_id)
+        if label == "model" and isinstance(e, AgentProtocolError) and offered:
+            # The agent answered no (claude-agent-acp: an opaque -32603) and
+            # will on every retry: an unscored agent_model integration
+            # failure that names what it offers, like codex's set_model.
+            raise AgentModelNotOfferedError(agent, value, offered) from e
         raise RuntimeError(
             f"Failed to set ACP {label} config option {config_id!r}="
             f"{value!r} for agent {agent!r}: {e}"
