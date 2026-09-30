@@ -33,7 +33,7 @@ In each GRPO group (several episodes of one task), a dropped episode is left out
 
 The Training API samples tokens, not chat messages, so the loop does the chat formatting itself ([`fireworks_chat.py`](fireworks_chat.py)): it renders the conversation with the model's own chat template (pinned tokenizer revision), samples the next assistant turn with its per-token logprobs, parses the Qwen3.8 completion (thinking, content, `<tool_call>` blocks) into an OpenAI-style message, and runs the tool calls in the sandbox exactly as `evaluate.py` does.
 
-Training needs the exact tokens the policy sampled. An episode's turns are joined into one training sequence only where the next turn's prompt provably extends the previous prompt and completion, token for token; otherwise the next turn starts a new sequence. Every sampled token is trained exactly once, with the logprob it was sampled with, and prompt and tool-result tokens carry no loss. (With Qwen3.8's template, all of the 192 screened episodes of task family v1 joined into one sequence each.)
+Training needs the exact tokens the policy sampled. An episode's turns are joined into one training sequence only where the next turn's prompt provably extends the previous prompt and completion, token for token; otherwise the next turn starts a new sequence. Every sampled token is trained exactly once, with the logprob it was sampled with, and prompt and tool-result tokens carry no loss. With Qwen3.8's template, 190 of 192 screened episodes of task family v1 joined into one sequence; in the other 2 the re-rendered history differed from the sampled tokens, and each was split into two sequences rather than trained on tokens the policy never produced.
 
 ## Keys: where they go, and what never sees them
 
