@@ -10,7 +10,9 @@ over ``file://``, and check which file contents were fetched at all.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -233,3 +235,43 @@ def test_git_can_sparse_reads_the_version(monkeypatch, version, can_sparse):
         assert br._git_can_sparse() is can_sparse
     finally:
         br._git_can_sparse.cache_clear()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
+def test_the_fetch_prints_no_progress_on_a_terminal(bench):
+    """git shows an on-demand blob fetch's progress ("Receiving objects: ...")
+    when stderr is a terminal, whatever the command's own flags: in the
+    2026-09-30 first-run walk it printed two progress blocks before the
+    dashboard. Run the resolve on a pseudo-terminal, then, as a control, one
+    unquieted git command that fetches, and check only the control shows it."""
+    import pty
+
+    pid, fd = pty.fork()
+    if pid == 0:  # the child: stdout and stderr are the terminal
+        code = 1
+        try:
+            os.write(2, b"tty=%d\n" % os.isatty(2))
+            br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
+            br.resolve_source_with_metadata("acme/bench", path="tasks/court-form")
+            os.write(2, b"CONTROL\n")
+            subprocess.run(["git", "-C", str(bench), "sparse-checkout", "add", "docs"])
+            code = 0
+        finally:
+            os._exit(code)
+    output = b""
+    while True:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        output += chunk
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0, output
+    ours, _, control = output.partition(b"CONTROL")
+    assert b"tty=1" in ours
+    if b"Receiving objects" not in control:
+        pytest.skip("this git prints no fetch progress on a terminal")
+    assert b"Receiving objects" not in ours
+    assert b"remote:" not in ours

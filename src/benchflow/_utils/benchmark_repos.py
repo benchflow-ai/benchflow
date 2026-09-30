@@ -26,6 +26,7 @@ import posixpath
 import re
 import shutil
 import subprocess
+import sys
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -211,10 +212,22 @@ def _git_can_sparse() -> bool:
 
 
 def _git_quiet(root: Path, *args: str) -> None:
-    """Run a git command in ``root``; its errors still reach stderr."""
-    subprocess.run(
-        ["git", "-C", str(root), *args], check=True, stdout=subprocess.DEVNULL
+    """Run a git command in ``root`` without its progress output.
+
+    A blob-less clone fetches file contents on demand, and git shows that
+    fetch's progress on a terminal ("Receiving objects: ...") whatever the
+    command's own flags. Its stderr is therefore captured, and replayed only
+    when the command fails.
+    """
+    cmd = ["git", "-C", str(root), *args]
+    result = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
     )
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, stderr=result.stderr
+        )
 
 
 def _sparse_source_path(path: str | None) -> str | None:
@@ -286,7 +299,7 @@ def _widen_sparse_checkout(root: Path, path: str | None) -> None:
     if not _is_sparse_checkout(root):
         return
     if path is None:
-        _git_quiet(root, "sparse-checkout", "disable")
+        _check_out_everything(root)
         return
     sparse_path = _sparse_source_path(path)
     if sparse_path is None:
@@ -295,13 +308,22 @@ def _widen_sparse_checkout(root: Path, path: str | None) -> None:
     prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
     entries = [_tree_entry(root, prefix) for prefix in prefixes]
     if any(entry is not None and entry[0] == _SYMLINK_MODE for entry in entries):
-        _git_quiet(root, "sparse-checkout", "disable")
+        _check_out_everything(root)
         return
     if entries[-1] is None or entries[-1][1] != "tree":
         return
     _git_quiet(root, "sparse-checkout", "add", "--", sparse_path)
+    # The clone checks out nothing (--no-checkout), so fill the working tree
+    # from HEAD under the new patterns; on a filled one this changes nothing.
+    _git_quiet(root, "read-tree", "-mu", "HEAD")
     if not _holds_native_tasks(root / sparse_path):
-        _git_quiet(root, "sparse-checkout", "disable")
+        _check_out_everything(root)
+
+
+def _check_out_everything(root: Path) -> None:
+    """Turn a sparse checkout into a full one, as clones were before."""
+    _git_quiet(root, "sparse-checkout", "disable")
+    _git_quiet(root, "read-tree", "-mu", "HEAD")
 
 
 def _clone_repo_unlocked(
@@ -332,10 +354,10 @@ def _clone_repo_unlocked(
         # the one-line summary. Errors still print (git keeps stderr on fail).
         cmd = ["git", "clone", "--quiet", "--depth", "1"]
         if sparse:
-            # Only what the path needs: no file contents up front, and a
-            # checkout of the repository's top-level files alone until
-            # _widen_sparse_checkout adds the path.
-            cmd.extend(["--filter=blob:none", "--sparse"])
+            # Only what the path needs: no file contents up front, and no
+            # checkout until _widen_sparse_checkout has added the path (a
+            # checkout here would fetch the top-level files with progress).
+            cmd.extend(["--filter=blob:none", "--sparse", "--no-checkout"])
         if ref and not _looks_like_commit_sha(ref):
             cmd.extend(["--branch", ref])
         cmd.extend([url, str(clone_tmp)])
