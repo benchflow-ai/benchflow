@@ -11,6 +11,8 @@ import base64
 import json
 import re
 import shutil
+import stat
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,7 +78,7 @@ class _Sandbox:
                 if self.online
                 else _Result(0, "offline: no network interface but lo\n")
             )
-        if "rm -rf /verifier" in command:
+        if "kept.tar --files-from" in command:
             return _Result(stdout="setpriv\n")
         if command.startswith("cat /run/taskmd-judge/path"):
             return _Result(stdout="/usr/local/bin:/usr/bin:/bin\n")
@@ -497,3 +499,106 @@ async def test_a_symbolic_link_in_an_output_is_never_kept(tmp_path) -> None:
     assert refused == {"/work/link": "a symbolic link or special file is never saved"}
     assert (tmp_path / "fs" / "work" / "ok.md").read_text() == "ok"
     assert not (tmp_path / "fs" / "work" / "link").exists()
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_the_runner_hides_mounted_logs_and_never_deletes_through_a_mount(
+    tmp_path,
+) -> None:
+    """Before the judge's first ``run`` call, the verifier's files leave the sandbox.
+
+    BenchFlow bind-mounts /logs/verifier and /logs/agent from the host, so
+    deleting them would delete the trial's records (it once did: ``rm -rf``
+    emptied the mounted folder, then failed on the mount point). The setup
+    script runs here against a folder, with a mount table naming which paths
+    are mount points.
+    """
+    root = tmp_path / "root"
+    for rel, text in {
+        "verifier/rubric.json": "{}",
+        "tests/test_outputs.py": "x",
+        "solution/data/answer.txt": "42",
+        "logs/verifier/ctrf.json": "{}",
+        "logs/agent/acp_trajectory.jsonl": "",
+        "logs/artifacts/fit.png": "png",
+    }.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "solve.sh").write_text("echo")
+    (root / "oracle").symlink_to(elsewhere)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "22 1 0:21 / / rw - overlay overlay rw\n"
+        + "".join(
+            f"{n} 22 8:1 /src{n} {root}/{rel} rw - ext4 /dev/sda1 rw\n"
+            for n, rel in enumerate(
+                ["tests", "solution/data", "logs/verifier", "logs/agent"], start=30
+            )
+        )
+    )
+    watched = [
+        root / "tests",
+        root / "solution",
+        root / "logs/verifier",
+        root / "logs/agent",
+    ]
+    before = {p: _mode(p) for p in watched}
+    logs_mode = _mode(root / "logs")
+    subprocess.run(
+        ["bash", "-c", verify._hide_script(str(root), str(mountinfo))], check=True
+    )
+    # Removed: files that are not mounted, and a link (never what it points to).
+    assert not (root / "verifier").exists()
+    assert not (root / "oracle").is_symlink() and (elsewhere / "solve.sh").is_file()
+    # Hidden, not deleted: a mount point, a folder holding one, and the logs.
+    for rel in (
+        "tests/test_outputs.py",
+        "solution/data/answer.txt",
+        "logs/verifier/ctrf.json",
+        "logs/agent/acp_trajectory.jsonl",
+    ):
+        assert (root / rel).is_file(), rel
+    assert all(_mode(p) == 0o700 for p in watched)
+    # /logs itself and the solver's artifacts stay as they were.
+    assert _mode(root / "logs") == logs_mode
+    assert (root / "logs/artifacts/fit.png").is_file()
+    subprocess.run(["bash", "-c", verify._restore_script(str(root))], check=True)
+    assert {p: _mode(p) for p in watched} == before
+
+
+def test_the_runner_leaves_a_log_folder_holding_a_kept_path_visible(tmp_path) -> None:
+    root = tmp_path / "root"
+    (root / "logs" / "agent").mkdir(parents=True)
+    (root / "logs" / "verifier").mkdir(parents=True)
+    before = _mode(root / "logs" / "agent")
+    script = verify._hide_script(
+        str(root), str(tmp_path / "no-mountinfo"), hidden=("/logs/verifier",)
+    )
+    subprocess.run(["bash", "-c", script], check=True)
+    assert _mode(root / "logs" / "verifier") == 0o700
+    assert _mode(root / "logs" / "agent") == before
+
+
+async def test_the_runner_does_not_hide_a_log_folder_holding_a_kept_path_or_view() -> (
+    None
+):
+    sandbox = _Sandbox(Path("/nonexistent"))
+    runner = verify.SandboxRunner(
+        sandbox=sandbox, kept=["/work", "/logs/agent/report.md"], views={}
+    )
+    await runner.setup()
+    setup = next(c for c in sandbox.commands if "kept.tar --files-from" in c)
+    assert "for p in /logs/verifier; do" in setup
+    assert "/logs/agent;" not in setup
+    sandbox = _Sandbox(Path("/nonexistent"))
+    runner = verify.SandboxRunner(
+        sandbox=sandbox, kept=["/work"], views={"/logs/verifier/trajectory.json": b""}
+    )
+    await runner.setup()
+    setup = next(c for c in sandbox.commands if "kept.tar --files-from" in c)
+    assert "for p in /logs/agent; do" in setup

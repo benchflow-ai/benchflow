@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import logging
 import shlex
 import shutil
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ from benchflow.taskmd.materialize import (
     shared_rubrics,
     taskmd_metadata,
 )
+
+logger = logging.getLogger(__name__)
 
 JUDGE_DIR = "taskmd-judge"
 RUNNER_UID = 65534
@@ -156,19 +159,96 @@ async def copy_kept(sandbox: Any, paths: list[str], fs_root: Path) -> dict[str, 
     return refused
 
 
+# The verifier's files and any oracle, removed from the judge's sandbox before its first call.
+REMOVED = (
+    "/verifier",
+    "/tests",
+    "/oracle",
+    "/solution",
+    "/oracle_backup",
+    "/solution_oracle_backup",
+)
+# The verifier's and the solver's logs. BenchFlow bind-mounts them from the
+# host, so they are hidden from the runner's uid, never deleted.
+HIDDEN = ("/logs/verifier", "/logs/agent")
+
+
+def _hide_script(
+    root: str = "",
+    mountinfo: str = "/proc/self/mountinfo",
+    hidden: tuple[str, ...] = HIDDEN,
+) -> str:
+    """Shell that takes the verifier's files out of the judge's sandbox.
+
+    Each path of :data:`REMOVED` is deleted, unless it is or holds a mount
+    point: deleting through a bind mount deletes the host's files, so such a
+    path is hidden instead (mode 700; the runner's uid cannot enter it), as is
+    each path of ``hidden``. The hidden paths' modes are saved in
+    ``/run/taskmd-judge/modes`` for :func:`restore_hidden`. ``root``
+    prefixes every path, so tests can run the script against a folder.
+    """
+    state = shlex.quote(f"{root}/run/taskmd-judge")
+    removed = " ".join(shlex.quote(root + p) for p in REMOVED)
+    hide_paths = " ".join(shlex.quote(root + p) for p in hidden)
+    return f"""
+set -e
+mkdir -p {state} && chmod 700 {state}
+: > {state}/modes
+mounts=$(awk '{{print $5}}' {shlex.quote(mountinfo)} 2>/dev/null || true)
+held() {{ printf '%s\\n' "$mounts" | awk -v p="$1" '$0 == p || index($0, p "/") == 1 {{ f = 1 }} END {{ exit !f }}'; }}
+hide() {{
+  m=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1")
+  echo "$m $1" >> {state}/modes
+  chmod 700 "$1"
+}}
+for p in {removed}; do
+  if [ -L "$p" ]; then rm -f "$p"
+  elif [ -e "$p" ]; then
+    if held "$p"; then hide "$p"; else rm -rf "$p"; fi
+  fi
+done
+for p in {hide_paths}; do
+  if [ -e "$p" ]; then hide "$p"; fi
+done
+"""
+
+
+def _restore_script(root: str = "") -> str:
+    """Shell that gives the hidden paths back their modes."""
+    modes = shlex.quote(f"{root}/run/taskmd-judge/modes")
+    return f"""
+if [ -f {modes} ]; then
+  while read -r m p; do chmod "$m" "$p" 2>/dev/null || true; done < {modes}
+  : > {modes}
+fi
+"""
+
+
+async def restore_hidden(sandbox: Any) -> None:
+    """Give the paths hidden from the judge's runner their modes back (best effort; a no-op when none were)."""
+    try:
+        await sandbox.exec(_restore_script(), user="root", timeout_sec=60)
+    except Exception as exc:  # the sandbox is discarded next; no score depends on this
+        logger.warning("Could not restore the paths hidden from the judge: %s", exc)
+
+
 @dataclass
 class SandboxRunner:
     """judge-tools@1's ``run``: each call in a fresh copy of the submission's environment.
 
     The runner is the separate verifier sandbox: a fresh container of the
     task's image holding only the kept copy. Before the first call BenchFlow
-    removes ``/verifier``, ``/tests``, ``/logs``, and any oracle from it and
-    stashes the kept copy; before every call it restores the kept copy, a
-    fresh working folder and HOME, then runs ``bash --noprofile --norc -c``
-    as an unprivileged uid with no network, stdin at /dev/null, and stdout and
-    stderr merged, under the call's timeout, and kills whatever the command
-    left. What persists between calls outside the kept copy is the container's
-    other writable paths: a fresh container per call is not provided.
+    removes ``/verifier``, ``/tests``, and any oracle from it, hides
+    ``/logs/verifier`` and ``/logs/agent`` (the verifier's and the solver's
+    logs, mounted from the host) from the runner's uid unless they hold a
+    kept path or a view, and stashes the kept copy; before every call it
+    restores the kept copy, a fresh working folder and HOME, then runs
+    ``bash --noprofile --norc -c`` as an unprivileged uid with no network,
+    stdin at /dev/null, and stdout and stderr merged, under the call's
+    timeout, and kills whatever the command left. What persists between calls
+    outside the kept copy is the container's other writable paths: a fresh
+    container per call is not provided. :func:`restore_hidden` gives the
+    hidden paths their modes back.
     """
 
     sandbox: Any
@@ -182,10 +262,15 @@ class SandboxRunner:
 
     async def setup(self) -> None:
         kept = " ".join(shlex.quote(p.lstrip("/")) for p in self.kept)
-        script = f"""
-set -e
-rm -rf /verifier /tests /logs/verifier /logs/agent /oracle /solution /oracle_backup /solution_oracle_backup
-mkdir -p /run/taskmd-judge && chmod 700 /run/taskmd-judge
+        # A log folder holding a kept path or a view stays visible: the judge reads those.
+        hidden = tuple(
+            h
+            for h in HIDDEN
+            if not any(
+                k == h or k.startswith(h + "/") for k in [*self.kept, *self.views]
+            )
+        )
+        script = f"""{_hide_script(hidden=hidden)}
 cd /
 present=""
 for p in {kept}; do [ -e "/$p" ] && present="$present $p"; done
@@ -402,23 +487,27 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
                 if c.get("judge") in ("llm", "agent")
                 and not float(c.get("points", 0) or 0) < 0
             }
-        judged, setup_hash, usage_total = await _run_judges(
-            verifier=verifier,
-            meta=meta,
-            config=config,
-            document=document,
-            pkg=pkg,
-            shared=shared,
-            criteria=criteria,
-            report=report,
-            fs_root=fs_root,
-            kept=kept,
-            refused=refused,
-            skip=skip,
-            judge_dir=judge_dir,
-            separate=cfg.get("isolation") == "separate",
-            sandbox=sandbox,
-        )
+        try:
+            judged, setup_hash, usage_total = await _run_judges(
+                verifier=verifier,
+                meta=meta,
+                config=config,
+                document=document,
+                pkg=pkg,
+                shared=shared,
+                criteria=criteria,
+                report=report,
+                fs_root=fs_root,
+                kept=kept,
+                refused=refused,
+                skip=skip,
+                judge_dir=judge_dir,
+                separate=cfg.get("isolation") == "separate",
+                sandbox=sandbox,
+            )
+        finally:
+            if "agent" in model_roles:
+                await restore_hidden(sandbox)
         for ident, record in judged.items():
             records[ident] = record
             values[ident] = record.pop("_value")
