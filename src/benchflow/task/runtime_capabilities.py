@@ -701,6 +701,18 @@ def _append_verifier_strategy_issue(
             sandbox=sandbox,
         )
         return
+    if strategy.type == "taskmd":
+        # A materialized task.md draft 2 package (benchflow.taskmd): its
+        # writer checked everything else when it refused unsupported fields.
+        command = strategy.command
+        if command is not None and not (paths.tests_dir / command).is_file():
+            _issue(
+                unsupported,
+                path=f"verifier.strategies.{strategy.name}.command",
+                reason=f"the verifier package has no {command}",
+                sandbox=sandbox,
+            )
+        return
     if strategy.type not in {"script", "llm-judge", "agent-judge", "ors-episode"}:
         _issue(
             unsupported,

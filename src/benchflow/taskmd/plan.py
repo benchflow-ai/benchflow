@@ -99,6 +99,10 @@ class Plan:
     family: dict[str, Any] | None = None
     # [agent] user: the oracle runs as it, and an agent must run as it.
     agent_user: Any = None
+    # [verifier] timeout in seconds (None: BenchFlow's default), which bounds the scripts only.
+    script_timeout: float | None = None
+    # The judges' worst case in seconds: every session of every sample, rejudged once.
+    judge_seconds: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -657,7 +661,8 @@ def _verifier(walker: _Walker, verifier: dict[str, Any], fm: dict[str, Any], san
                 plan.refuse(where, "not a duration")
             else:
                 out["timeout_sec"] = secs
-                plan.honor(where, "verifier.timeout_sec; it bounds the scripts, and each judge session has its own")
+                plan.script_timeout = secs
+                plan.honor(where, "bounds test.sh; each judge session has its own timeout")
         elif key == "user":
             out["user"] = value
             plan.honor(where, "verifier.user")
@@ -1110,6 +1115,10 @@ def _judging(plan: Plan, document: Any, task_dir: Path, config: dict[str, Any]) 
                 plan.refuse(where, "an agent judge's runner starts from the solver's image, and this verifier runs another image")
             if (task_dir / "verifier" / "Dockerfile").is_file():
                 plan.refuse(where, "an agent judge's runner starts from the solver's image, and this verifier builds its own from verifier/Dockerfile")
+        per = settings.get("per") or ("rubric" if role == "agent" else "criterion")
+        units = 1 if per == "rubric" else len(assigned)
+        samples = settings.get("samples", 1) if isinstance(settings.get("samples", 1), int) else 1
+        plan.judge_seconds += units * samples * 2 * (seconds(settings.get("timeout")) or 0)
         plan.honor(where, f"judge-loop@1 over the Anthropic Messages API, {len(assigned)} criteria")
     for criterion in criteria:
         reference = criterion.get("reference")

@@ -52,6 +52,8 @@ SOURCE_FILE = ".taskmd-source.json"
 JUDGE_PACKAGE = ".taskmd/package"
 INSTANCE_CONTEXT = "taskmd-instance"
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
+DEFAULT_SCRIPT_TIMEOUT = 600.0  # BenchFlow's verifier.timeout_sec default
+JUDGE_MARGIN_SEC = 600.0  # copying the kept copy and setting up the judges' runner
 # The package tree hash leaves these root paths out (docs/package.md, "Tree hash").
 _TREE_EXCLUDED = ("evidence", "changes.json", ".git")
 
@@ -328,6 +330,7 @@ def _write_package(
     task_dir = plan.task_dir
     document = plan.document
     config: dict[str, Any] = document.config if isinstance(document.config, dict) else {}
+    strategy = _strategy(plan, config)
     fm = json.loads(json.dumps(plan.frontmatter, default=str))
     placeholders = instance.placeholders if instance is not None else {}
 
@@ -373,7 +376,6 @@ def _write_package(
         if (vdir / "instance").exists():
             raise ValueError("verifier/instance would collide with the family instance's verifier files")
         _copytree(instance.root / "verifier", vdir / "instance")
-    strategy = _strategy(plan, config)
     (vdir / "verifier.md").write_text(_verifier_document(strategy))
 
     # oracle/ (or solution/) ----------------------------------------------------------------------
@@ -447,7 +449,7 @@ def _write_package(
     if control is not None:
         taskmd["control"] = {"id": control, "script": control_script}
     metadata["taskmd"] = taskmd
-    body = instruction.strip("\n") + "\n"
+    body = _native_body(instruction)
     (pkg / "task.md").write_text("---\n" + _dump_frontmatter(fm) + "---\n\n" + body)
     (pkg / SOURCE_FILE).write_text(
         json.dumps(
@@ -464,6 +466,25 @@ def _write_package(
         )
         + "\n"
     )
+
+
+def _native_body(instruction: str) -> str:
+    """The instruction as a native task.md body the native parser returns unchanged.
+
+    A native body is split at reserved headings (``## prompt``, ``## role:<name>``,
+    ``## scene:<name>``, ``## user-persona``), which a draft 2 instruction may hold
+    as ordinary markdown. Such an instruction goes under an explicit ``## prompt``
+    section with those headings escaped, which the native parser undoes.
+    """
+    from benchflow.task._document_parse import (
+        _SECTION_RE,
+        _escape_reserved_section_headings,
+    )
+
+    text = instruction.strip("\n")
+    if _SECTION_RE.search(text):
+        return "## prompt\n\n" + _escape_reserved_section_headings(text) + "\n"
+    return text + "\n"
 
 
 def _mount_of(dirname: str) -> str:
@@ -489,6 +510,13 @@ def _strategy(plan: Plan, config: dict[str, Any]) -> dict[str, Any]:
         strategy["command"] = "test.sh"
     if isinstance(workdir, str):
         strategy["workdir"] = workdir
+    if plan.judge_seconds:
+        # [verifier] timeout bounds the scripts only; each judge session has its
+        # own. BenchFlow bounds the whole verifier by verifier.timeout_sec, so
+        # that becomes the scripts' limit plus the judges' worst case.
+        script = plan.script_timeout or DEFAULT_SCRIPT_TIMEOUT
+        strategy["script_timeout"] = script
+        plan.frontmatter.setdefault("verifier", {})["timeout_sec"] = script + plan.judge_seconds + JUDGE_MARGIN_SEC
     return strategy
 
 

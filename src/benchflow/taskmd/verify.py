@@ -293,10 +293,12 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
     grading_kind = cfg.get("grading")
     has_script = isinstance(cfg.get("command"), str)
 
+    script_timeout = cfg.get("script_timeout")
+    script_timeout = float(script_timeout) if isinstance(script_timeout, (int, float)) else None
     if grading_kind != "rubric":
         if not has_script:
             raise TaskMdVerifierError("the package has no test.sh and no rubric")
-        return await verifier._verify_test_script(strategy=None, cwd=workdir, parse_rewards=True)
+        return await verifier._verify_test_script(strategy=None, cwd=workdir, script_timeout_sec=script_timeout, parse_rewards=True)
 
     pkg = judge_package_dir(task_dir)
     shared = shared_rubrics(task_dir, meta)
@@ -315,7 +317,7 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
 
     return_code = None
     if has_script:
-        await verifier._verify_test_script(strategy=None, cwd=workdir, parse_rewards=False)
+        await verifier._verify_test_script(strategy=None, cwd=workdir, script_timeout_sec=script_timeout, parse_rewards=False)
         return_code = getattr(verifier, "test_return_code", None)
     for name in ("reward.txt", "reward.json"):
         path = paths.verifier_dir / name
