@@ -537,7 +537,9 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
 
     For jobs that have no trial folders (a copied-out results file, or a
     Verifiers-style export). Rows carry less than a trial folder: no
-    trajectory, verifier output, lineage or review.
+    trajectory, verifier output, lineage or review. A BenchFlow row written
+    before ``info.schema_version`` 2 held reward 0.0 for an unscored rollout;
+    it is read as unscored (its ``metrics`` has no ``reward``), never as 0.
     """
     path = Path(path)
     trials = []
@@ -562,6 +564,15 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
         )
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
         reward = row.get("reward")
+        if (
+            info.get("source") == "benchflow"
+            and "schema_version" not in info
+            and reward == 0.0
+            and "reward" not in metrics
+        ):
+            # A version-1 BenchFlow row wrote 0.0 for an unscored rollout; a
+            # scored one also has its reward in metrics. Unscored is never 0.
+            reward = None
         error, verifier_error = _row_error(row.get("error"))
 
         def _int(value: Any) -> int | None:

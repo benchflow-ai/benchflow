@@ -782,7 +782,7 @@ bench train convert jobs/run-001 \
 ```
 
 `results.jsonl` remains the canonical scored-rollout artifact regardless of
-trainer. The selected format changes only the converted output. For TRL,
+trainer. Each BenchFlow row carries `info.schema_version`: from version 2, `reward` and `score` are null when the rollout is unscored (an agent, verifier or infrastructure failure), never 0; rows without the field are version 1, which wrote 0.0 there (such a row's `metrics` has no `reward` key, which is how `bf.load_job` still reads it as unscored). The selected format changes only the converted output. For TRL,
 `exchange` mode emits one supervised completion for every primary agent model
 call while excluding captured OpenCode title, summary, compaction, and helper
 calls. `rollout` mode emits only the final primary model call.
