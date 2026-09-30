@@ -15,7 +15,7 @@ await rollout.branch(2, run_child=run_child,
 
 ```bash
 bench eval branch --tasks-dir tests/examples/hello-world-task \
-  --agent claude-agent-acp --model claude-sonnet-4-6 --sandbox daytona \
+  --agent claude-agent-acp --model claude-sonnet-5 --sandbox daytona \
   --prompt "Create draft.txt containing exactly one line: Hello world. Do not create hello.txt." \
   --prompt @instruction --checkpoint-after-prompt 1 \
   --child "label=baseline" \
@@ -75,7 +75,7 @@ Drive the rollout lifecycle yourself, in this order:
 from benchflow.rollout import BranchChild, Rollout, RolloutConfig
 
 rollout = Rollout(RolloutConfig(task_path=task, agent="claude-agent-acp",
-                                model="claude-sonnet-4-6", environment="docker"))
+                                model="claude-sonnet-5", environment="docker"))
 prompts = {"baseline": instruction, "hint": "Rename draft.txt to hello.txt."}
 
 async def run_child(node, *, child: BranchChild) -> float | None:

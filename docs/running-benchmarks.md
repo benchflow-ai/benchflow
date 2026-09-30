@@ -104,7 +104,7 @@ bench eval run \
 bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
-  --agent claude-agent-acp --model anthropic/claude-sonnet-4-6 --sandbox daytona --concurrency 32
+  --agent claude-agent-acp --model anthropic/claude-sonnet-5 --sandbox daytona --concurrency 32
 ```
 
 > **Note:** Harvey LAB task names in `benchflow-ai/benchmarks` are flattened with
