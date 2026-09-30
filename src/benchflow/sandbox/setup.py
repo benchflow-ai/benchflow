@@ -685,6 +685,33 @@ def _patch_docker_dind() -> None:
     _DIND_PATCH_APPLIED = True
 
 
+_DAYTONA_DEFAULT_INTERVAL_MINS = 1440
+
+
+def _daytona_minutes(name: str) -> int:
+    """A Daytona auto-stop or auto-delete interval, from its env override.
+
+    Daytona stops a sandbox after this many idle minutes and deletes a
+    stopped one after as many more, so a run that is killed before it can
+    clean up leaves nothing running for long. Training loops set these low
+    (for example 30); the default is a day. Read at sandbox creation, not at
+    import, so a process can set it after importing BenchFlow.
+    """
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return _DAYTONA_DEFAULT_INTERVAL_MINS
+    try:
+        minutes = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{name} must be a whole number of minutes, not {raw!r}"
+        ) from None
+    if minutes < 1:
+        raise ValueError(f"{name} must be at least 1 minute, not {minutes}")
+    return minutes
+
+
 def _create_sandbox_environment(
     sandbox_type: str,
     task: Task,
@@ -812,8 +839,12 @@ def _create_sandbox_environment(
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
-            auto_stop_interval_mins=1440,
-            auto_delete_interval_mins=1440,
+            auto_stop_interval_mins=_daytona_minutes(
+                "BENCHFLOW_DAYTONA_AUTO_STOP_MINS"
+            ),
+            auto_delete_interval_mins=_daytona_minutes(
+                "BENCHFLOW_DAYTONA_AUTO_DELETE_MINS"
+            ),
             persistent_env=manifest_env or None,
         )
     elif sandbox_type == "modal":

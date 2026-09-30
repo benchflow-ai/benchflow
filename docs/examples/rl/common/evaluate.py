@@ -36,6 +36,7 @@ import json
 import math
 import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -48,7 +49,13 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import MAX_TURNS, harness_config
+from harness import (
+    MAX_TURNS,
+    harness_config,
+    run_owner,
+    shorten_daytona_lifetimes,
+    sweep_daytona,
+)
 
 from benchflow.integrations.rewards import (
     RewardDecision,
@@ -63,6 +70,12 @@ from benchflow.integrations.trl import (
 )
 
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529}
+INVALID_TOOL_CALL_MARKERS = (
+    "tool_use_failed",
+    "failed to parse tool call",
+    "tool call validation failed",
+    "invalid tool call",
+)
 CONTEXT_MARKERS = (
     "context length",
     "context_length",
@@ -78,6 +91,15 @@ class EndpointError(Exception):
 
 class ContextExhausted(Exception):
     """The endpoint refused the conversation as too long: the policy's budget ran out."""
+
+
+class InvalidToolCall(Exception):
+    """The endpoint could not parse the tool call the model generated.
+
+    That is the policy's output, not an endpoint failure. As in TRL, where a
+    completion whose tool call does not parse ends the tool loop, the episode
+    ends and the sandbox is scored as the policy left it.
+    """
 
 
 @dataclass
@@ -155,6 +177,10 @@ class Endpoint:
                 m in text.lower() for m in CONTEXT_MARKERS
             ):
                 raise ContextExhausted(text)
+            if response.status_code == 400 and any(
+                m in text.lower() for m in INVALID_TOOL_CALL_MARKERS
+            ):
+                raise InvalidToolCall(text)
             last = f"HTTP {response.status_code}: {text}"
             if response.status_code not in RETRYABLE_STATUS:
                 break
@@ -182,6 +208,9 @@ def _tool_result(
         return json.dumps({"error": str(exc)}), False
 
 
+STOP = threading.Event()
+
+
 def run_episode(
     row: dict[str, Any],
     sample: int,
@@ -205,10 +234,15 @@ def run_episode(
             if env.decision is not None and env.decision.dropped:
                 episode.ended = "sandbox_start"
                 break
+            if STOP.is_set():
+                raise KeyboardInterrupt
             try:
                 reply = endpoint.chat(messages)
             except ContextExhausted:
                 episode.ended = "context_exhausted"
+                break
+            except InvalidToolCall:
+                episode.ended = "invalid_tool_call"
                 break
             usage = reply.get("usage") or {}
             episode.prompt_tokens += int(usage.get("prompt_tokens") or 0)
@@ -355,20 +389,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--extra-body", help="JSON merged into each request body")
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--request-timeout", type=float, default=180.0)
-    parser.add_argument("--owner", help="Daytona owner label (BENCHFLOW_DAYTONA_OWNER)")
+    parser.add_argument(
+        "--owner",
+        help="Daytona owner label for this run's sandboxes (default: unique per run)",
+    )
+    parser.add_argument(
+        "--cleanup-only",
+        action="store_true",
+        help="delete every Daytona sandbox of --owner (after a hard kill) and exit",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    owner = args.owner or run_owner("bf-eval")
+    os.environ["BENCHFLOW_DAYTONA_OWNER"] = owner
+    if args.cleanup_only:
+        if not args.owner:
+            print("error: --cleanup-only needs --owner", file=sys.stderr)
+            return 2
+        print(
+            f"deleting the Daytona sandboxes of owner {owner}: {sweep_daytona(owner)}"
+        )
+        return 0
     api_key = os.environ.get(args.api_key_env, "")
     if not api_key:
         print(
             f"error: set {args.api_key_env} to the endpoint's API key", file=sys.stderr
         )
         return 2
-    if args.owner:
-        os.environ["BENCHFLOW_DAYTONA_OWNER"] = args.owner
+    shorten_daytona_lifetimes()
     args.out.mkdir(parents=True, exist_ok=True)
     spec = BenchFlowSpec(tasks_dir=args.tasks_dir, include_tasks=args.include)
     rows = (
@@ -378,36 +429,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     meta = _task_meta(args.tasks_dir)
     config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
-    config["tasks"] = len(rows)
+    config.update(tasks=len(rows), owner=owner)
     (args.out / "config.json").write_text(json.dumps(config, indent=1) + "\n")
 
     endpoint = Endpoint(args, api_key)
     episodes: list[Episode] = []
-    lock = threading.Lock()
     work = [(row, sample) for row in rows for sample in range(args.samples)]
     print(
         f"evaluating {args.model} on {len(rows)} tasks x {args.samples} sample(s), "
-        f"{args.sandbox}, concurrency {args.concurrency}",
+        f"{args.sandbox}, concurrency {args.concurrency}, Daytona owner {owner}",
         flush=True,
     )
-    with (
-        (args.out / "episodes.jsonl").open("w") as out,
-        concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool,
-    ):
-        futures = {
-            pool.submit(
-                run_episode,
-                row,
-                sample,
-                endpoint,
-                args,
-                meta.get(row["benchflow_task_id"], {}),
-            ): row
-            for row, sample in work
-        }
-        for future in concurrent.futures.as_completed(futures):
-            episode = future.result()
-            with lock:
+
+    def interrupted(signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency)
+    try:
+        with (args.out / "episodes.jsonl").open("w") as out:
+            futures = [
+                pool.submit(
+                    run_episode,
+                    row,
+                    sample,
+                    endpoint,
+                    args,
+                    meta.get(row["benchflow_task_id"], {}),
+                )
+                for row, sample in work
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                episode = future.result()
                 episodes.append(episode)
                 out.write(json.dumps(episode.row()) + "\n")
                 out.flush()
@@ -418,6 +471,19 @@ def main(argv: list[str] | None = None) -> int:
                     f"turns={episode.turns} ended={episode.ended}",
                     flush=True,
                 )
+    except KeyboardInterrupt:
+        # Stop every episode at its next turn, then delete this run's sandboxes.
+        STOP.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        print("interrupted: deleting this run's sandboxes", flush=True)
+        if args.sandbox == "daytona":
+            print(f"swept: {sweep_daytona(owner)}", flush=True)
+        return 130
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    if args.sandbox == "daytona":
+        # Every episode closed its own sandbox; this catches any that did not.
+        sweep_daytona(owner)
     summary = summarise(episodes, args)
     (args.out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     ci = summary["ci95"]
