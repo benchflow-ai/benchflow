@@ -156,6 +156,43 @@ async def test_litellm_route_follows_agent_protocol(
 
 
 @pytest.mark.asyncio
+async def test_codex_gets_responses_bridge_for_bridged_provider(monkeypatch):
+    from benchflow.agents.providers import PROVIDERS, ProviderConfig
+
+    monkeypatch.setitem(
+        PROVIDERS,
+        "bridge-test",
+        ProviderConfig(
+            name="bridge-test",
+            base_url="https://llm.example.test/v1",
+            api_protocol="openai-completions",
+            auth_type="api_key",
+            auth_env="BRIDGE_TEST_API_KEY",
+            endpoints={"openai-responses": "https://llm.example.test/v1"},
+            responses_bridge=True,
+        ),
+    )
+
+    async def fake_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, _runtime = await ensure_litellm_runtime(
+        agent="codex-acp",
+        agent_env={"BRIDGE_TEST_API_KEY": "sk-bridge"},
+        model="bridge-test/org/m-1",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert json.loads(updated["CODEX_CONFIG"])["model"] == (
+        "benchflow-bridge-test-org-m-1-responses-bridge"
+    )
+
+
+@pytest.mark.asyncio
 async def test_bearer_value_reaches_proxy_env_only(monkeypatch):
     from benchflow.agents.providers import PROVIDERS, ProviderConfig
     from benchflow.providers.litellm_config import LITELLM_BEARER_AUTH_ENV

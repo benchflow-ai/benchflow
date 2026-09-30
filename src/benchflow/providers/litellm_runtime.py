@@ -1523,11 +1523,12 @@ def _wire_litellm_agent_env(
         updated[LITELLM_MODEL_VIA_ENV] = "1"
         # The bare slug, not route.model_alias: Codex looks its model metadata
         # up by slug and falls back to a reduced tool surface for the alias
-        # (#1145). The proxy serves both names.
+        # (#1145). The proxy serves both names. A provider whose Responses
+        # endpoint Codex cannot use gets the chat-completions bridge name.
         apply_codex_provider_config(
             updated,
             base_url=openai_base_url,
-            model=strip_provider_prefix(route.requested_model),
+            model=route.responses_model,
             provider_name="litellm",
             strict=True,
         )

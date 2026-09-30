@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from benchflow.providers.litellm_config import safe_model_alias, strip_provider_prefix
+from benchflow.providers.litellm_config import (
+    RESPONSES_BRIDGE_SUFFIX,
+    safe_model_alias,
+    strip_provider_prefix,
+)
 
 CODEX_CONFIG_ENV = "CODEX_CONFIG"
 CODEX_DEFAULT_AUTH_REQUEST_ENV = "DEFAULT_AUTH_REQUEST"
@@ -109,15 +113,20 @@ def apply_codex_launch_config(
     )
     config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=disable_search)
     provider_model = agent_env.get(_PROVIDER_MODEL_ENV)
-    # The launch owns the model when CODEX_CONFIG names either the proxy
-    # alias or the bare slug the provider config hands Codex (#1145).
+    # The launch owns the model when CODEX_CONFIG names the proxy alias, its
+    # Responses bridge, or the bare slug the provider config hands Codex (#1145).
     owns_model = bool(
         model
         and agent_env.get(_LITELLM_MODEL_VIA_ENV) in {"1", "true", "True"}
         and provider_model
         and provider_model == safe_model_alias(model)
         and config is not None
-        and config.get("model") in {provider_model, strip_provider_prefix(model)}
+        and config.get("model")
+        in {
+            provider_model,
+            f"{provider_model}{RESPONSES_BRIDGE_SUFFIX}",
+            strip_provider_prefix(model),
+        }
     )
     if config is not None and (disable_search or (owns_model and reasoning_effort)):
         if disable_search:

@@ -302,15 +302,28 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         # (deepseek, vllm), that stray tool makes the backend reject the whole
         # request ("unknown variant namespace, expected function"). The dropped
         # tools cannot be represented on the chat wire anyway; the function tools
-        # (shell, file IO, ...) survive untouched.
+        # (shell, file IO, ...) survive untouched. On a ``-responses-bridge``
+        # model a namespace (function tools grouped under a name, e.g. Codex's
+        # multi_agent_v1) is flattened into its function tools instead.
         tools = cleaned.get("tools")
         if isinstance(tools, list):
-            kept = [
-                t
-                for t in tools
-                if not isinstance(t, dict) or t.get("type", "function") == "function"
-            ]
-            if len(kept) != len(tools):
+            bridged = str(cleaned.get("model") or "").endswith("-responses-bridge")
+            kept = []
+            for t in tools:
+                if not isinstance(t, dict) or t.get("type", "function") == "function":
+                    kept.append(t)
+                elif (
+                    bridged
+                    and t.get("type") == "namespace"
+                    and isinstance(t.get("tools"), list)
+                ):
+                    kept.extend(
+                        inner
+                        for inner in t["tools"]
+                        if isinstance(inner, dict)
+                        and inner.get("type", "function") == "function"
+                    )
+            if kept != tools:
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept

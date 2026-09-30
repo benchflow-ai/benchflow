@@ -58,6 +58,10 @@ Common optional fields
                        the key: ``"x-api-key"`` (default, Anthropic's own
                        header) or ``"bearer"`` (``Authorization: Bearer``,
                        for compatible endpoints that reject ``x-api-key``).
+- ``responses_bridge`` True when Responses-API clients (Codex) must reach
+                       this provider through LiteLLM's Responses-to-chat-
+                       completions bridge instead of the provider's own
+                       Responses endpoint.
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
@@ -108,6 +112,10 @@ class ProviderConfig:
     # own) or "bearer" (Authorization: Bearer, for compatible endpoints that
     # reject x-api-key).
     anthropic_auth_header: str = "x-api-key"
+    # Responses-API clients (Codex) reach this provider through LiteLLM's
+    # Responses-to-chat-completions bridge (litellm_proxy_config's
+    # "<alias>-responses-bridge"), not the provider's own Responses endpoint.
+    responses_bridge: bool = False
 
     @property
     def all_endpoints(self) -> dict[str, str]:
