@@ -677,6 +677,13 @@ def native_branch_in_place(det_root, fake_url) -> h.CliRun:
 
 
 @pytest.fixture(scope="session")
+def native_branch_resume(det_root, fake_url) -> h.CliRun:
+    return _branch(
+        det_root, fake_url, "branch-resume-native", extra=[*NATIVE, "--resume-session"]
+    )
+
+
+@pytest.fixture(scope="session")
 def codex_acp_job(det_root, fake_url) -> h.CliRun:
     return _run(
         det_root,
@@ -873,6 +880,34 @@ def test_native_branch_reproduces_the_acp_golden(native_branch_in_place):
     _check_branch(
         native_branch_in_place, "branch-in-place", isolated=False, native=True
     )
+
+
+@needs_sandbox
+def test_native_branch_children_resume_the_cli_session(native_branch_resume):
+    """--resume-session: each child continues the parent's CLI session.
+
+    The session lives in the sandbox (Claude Code's session log under the
+    sandbox user's home), so the child's ``claude -p --resume`` finds it in
+    the restored checkpoint; a missing session fails the child's turn.
+    """
+    run = native_branch_resume
+    assert run.returncode == 0, run.output[-4000:]
+    (trial,) = run.trial_dirs()
+    (fork,) = h.read_json(trial / "tree.json")["forks"]
+    assert [c["reward"] for c in fork["children"]] == [1.0, 0.0]
+    draft = h.read_json(trial / "agent" / "native-turns.json")[0]
+    assert draft["resumed"] is None and draft["stop_reason"] == "end_turn"
+    children = trial / "branches" / fork["id"] / "children"
+    for child in fork["children"]:
+        # Each child writes its own evidence (the rollout follows it there).
+        (turn,) = h.read_json(
+            children / child["node_id"] / "agent" / "native-turns.json"
+        )
+        assert turn["resumed"] == draft["session_id"]
+        assert turn["argv"][turn["argv"].index("--resume") + 1] == draft["session_id"]
+        # The CLI continued that session rather than starting a new one.
+        assert turn["session_id"] == draft["session_id"]
+        assert turn["stop_reason"] == "end_turn"
 
 
 # ----- wire parity ---------------------------------------------------------
