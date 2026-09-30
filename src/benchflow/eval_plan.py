@@ -588,6 +588,25 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         )
     if request.fail_under is not None and not 0.0 <= request.fail_under <= 1.0:
         raise EvalPlanError("--fail-under is a pass rate between 0 and 1")
+    if request.source_env:
+        # vf-eval scores a hosted run as one mean reward, with no trials to
+        # count, so these would be ignored; refuse them instead of passing CI.
+        ignored = [
+            flag
+            for flag, value in (
+                ("--fail-under", request.fail_under),
+                ("--fail-on", request.fail_on),
+                ("--summary-out", request.summary_out),
+            )
+            if value is not None and value != []
+        ]
+        if ignored:
+            raise EvalPlanError(
+                f"{', '.join(ignored)} {'is' if len(ignored) == 1 else 'are'} not "
+                "supported with --source-env: vf-eval scores the run as one mean "
+                "reward, with no trials to count. The run exits 1 when it "
+                "errors; its reward is in <jobs-dir>/hosted-env/<run>/result.json."
+            )
     unknown_gates = sorted(set(split_fail_on(request.fail_on)) - set(FAIL_ON_CHOICES))
     if unknown_gates:
         raise EvalPlanError(

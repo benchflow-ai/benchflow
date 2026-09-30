@@ -318,7 +318,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--job-name` | latest job, or a new timestamp | Job folder name under `--jobs-dir`; an existing one is resumed |
 | `--fail-under` | off | Exit 1 when the pass rate (passed / all tasks) is below this rate, e.g. `0.8` |
 | `--fail-on` | off | Exit 1 when any trial ended this way: `timeout` (even when the verifier scored it), `error`, `verifier-error`; comma-separated or repeated |
-| `--summary-out` | off | Write the run's `benchflow.run-summary` JSON: job dir, counts, timeouts, reused/ran, gate result and exit code ([schema](./schemas/benchflow-run-summary.v1.schema.json)) |
+| `--summary-out` | off | Write the run's `benchflow.run-summary` JSON: job dir, counts, timeouts, reused/ran, gate result and exit code ([schema](./schemas/benchflow-run-summary.v1.schema.json)). `--fail-under`, `--fail-on` and `--summary-out` are refused with `--source-env`, whose run vf-eval scores as one mean reward with no trials to count |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--codex-apps-policy` | automatic | `disabled` or `inherit` for managed direct Codex Apps. Scored tasks default to disabled; inherit explicitly opts in without removing any stricter existing managed policy. CLI overrides YAML; unsupported hosted source environments reject an explicit setting. Other harnesses are unchanged. |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
