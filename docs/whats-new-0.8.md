@@ -24,7 +24,7 @@ bench doctor
 
 ## New in 0.8
 
-- **First run:** `bench doctor` checks the machine and each agent's login and prints a fix per problem; `bench eval smoke` runs a bundled hello-world task once per logged-in agent. See [Getting started](./getting-started.md).
+- **First run:** `bench doctor` checks the machine and each agent's login and prints a fix per problem; `bench eval smoke` runs a bundled hello-world task once per logged-in agent; `bench --help` and `bench tasks init` end by naming the command that comes next. See [Getting started](./getting-started.md).
 - **Controls:** `--agent nop` runs nothing, so a sound verifier scores the untouched workspace 0; with `--agent oracle` it brackets a task before any model sees it.
 - **CI:** `--fresh`, `--job-name`, `--fail-under`, `--fail-on` and `--summary-out` on `bench eval run`, and `bench eval resume JOB_DIR`. SIGTERM cancels a run, deletes its sandboxes and exits 143.
 - **Budgets:** `--max-cost-usd`, `--max-sandbox-seconds` and `--max-tokens` (`bf.Budget` in Python) stop a job at a cap. See [Budgets](./reference/budget.md).
