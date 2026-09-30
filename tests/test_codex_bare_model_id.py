@@ -108,5 +108,6 @@ def test_launch_does_not_own_a_foreign_model():
 
 
 def test_codex_acp_pin_bundles_a_codex_that_knows_current_models():
-    """codex-acp 1.13.1 bundles codex 0.156.1; 0.148 (1.6.0) has no metadata for gpt-6-astra."""
-    assert "@agentclientprotocol/codex-acp@1.13.1" in AGENTS["codex-acp"].install_cmd
+    """codex-acp 2.0.1 depends on codex ^0.159.1, whose catalog lists gpt-6.1-sol;
+    1.13.1 (codex 0.156.1) has no metadata for it, 1.6.0 (0.148) none for gpt-6-astra."""
+    assert "@agentclientprotocol/codex-acp@2.0.1" in AGENTS["codex-acp"].install_cmd

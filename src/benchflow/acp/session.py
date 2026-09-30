@@ -163,9 +163,12 @@ class ToolCallRecord:
         self.status = ToolCallStatus.PENDING
         self.content: list[dict] = []
         # ACP ``rawInput`` / ``rawOutput``: the agent's own view of the call.
-        # codex-acp puts the command and its output here and nowhere else.
+        # codex-acp puts the command here; its output lands in ``raw_output``
+        # (see the property for codex-acp 2.x, which streams it in ``_meta``).
         self.raw_input: object | None = None
-        self.raw_output: object | None = None
+        self._raw_output: object | None = None
+        self._terminal_output: list[str] = []
+        self._terminal_exit: dict | None = None
         self.started_at = datetime.now()
         self.finished_at: datetime | None = None
 
@@ -182,12 +185,51 @@ class ToolCallRecord:
         ):
             self.finished_at = datetime.now()
 
+    @property
+    def raw_output(self) -> object | None:
+        """The agent's ``rawOutput``, completed from terminal chunks if it lacks the output.
+
+        codex-acp 1.x ended a command with ``rawOutput`` ``{"formatted_output",
+        "exit_code"}``. codex-acp 2.x (its tool call contract, upstream #530)
+        sends a client that declares no terminal capability the output only as
+        ``_meta.terminal_output_delta`` chunks and the exit code only in
+        ``_meta.terminal_exit``: a shell command ends with no ``rawOutput``, a
+        read / search / list command with ``{"exit_code": n}``. Rebuild the 1.x
+        shape from those chunks so the trajectory and viewer keep the output;
+        an agent-sent ``formatted_output`` always wins.
+        """
+        raw = self._raw_output
+        if not self._terminal_output and self._terminal_exit is None:
+            return raw
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict) or "formatted_output" in raw:
+            return raw
+        folded = {"formatted_output": "".join(self._terminal_output), **raw}
+        if self._terminal_exit is not None:
+            folded["exit_code"] = self._terminal_exit.get("exit_code")
+        folded.setdefault("exit_code", None)
+        return folded
+
+    @raw_output.setter
+    def raw_output(self, value: object | None) -> None:
+        self._raw_output = value
+
     def absorb_raw_io(self, update: dict) -> None:
-        """Keep the latest ``rawInput`` / ``rawOutput`` an update carries."""
+        """Keep the latest ``rawInput`` / ``rawOutput`` and the terminal chunks an update carries."""
         if update.get("rawInput") is not None:
             self.raw_input = update["rawInput"]
         if update.get("rawOutput") is not None:
-            self.raw_output = update["rawOutput"]
+            self._raw_output = update["rawOutput"]
+        meta = update.get("_meta")
+        if not isinstance(meta, dict):
+            return
+        chunk = meta.get("terminal_output_delta")
+        if isinstance(chunk, dict) and isinstance(chunk.get("data"), str):
+            self._terminal_output.append(chunk["data"])
+        terminal_exit = meta.get("terminal_exit")
+        if isinstance(terminal_exit, dict):
+            self._terminal_exit = terminal_exit
 
 
 class ACPSession:

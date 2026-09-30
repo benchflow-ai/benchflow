@@ -4,6 +4,31 @@
 
 ### Fixed
 
+- **Codex knows `gpt-6.1-sol`: the `codex-acp` pin moves from 1.13.1 to
+  2.0.1.** Codex takes a model's tool surface from the model catalog bundled
+  with its `@openai/codex` dependency. codex 0.156.1 (behind 1.13.1) has no
+  `gpt-6.1-sol`, so a `gpt-6.1-sol` rollout logged "Model metadata for
+  `gpt-6.1-sol` not found. Defaulting to fallback metadata" and was offered
+  only the fallback function tools: no code mode, no `apply_patch`, no
+  multi-agent tools (the #1145 symptom again), and `session/set_model` to a
+  `gpt-6.1-sol[...]` id failed. codex-acp 2.0.1 depends on `@openai/codex`
+  ^0.159.1 (npm resolves 0.159.2 today; both catalogs list `gpt-6.1-sol` with
+  efforts low to max and ultra, code mode only, multi-agent v2, a 272k
+  context). On a live docker rollout through the LiteLLM proxy (Azure),
+  `gpt-6.1-sol` at effort `max` now gets code mode (`exec`, `wait`),
+  `clock.sleep` and the collaboration tools (`spawn_agent`, `wait_agent`,
+  `send_message`, `followup_task`, `interrupt_agent`, `list_agents`), and
+  `session/set_model` accepts `gpt-6.1-sol[max]` for direct providers.
+- **Codex command output stays in the trajectory under codex-acp 2.x.**
+  codex-acp 2.0 (its tool call contract) stopped putting a finished
+  command's output in `rawOutput.formatted_output` for a client that declares
+  no terminal capability, which is BenchFlow: a shell command now ends with no
+  `rawOutput` and a read / search / list command with only `{"exit_code": n}`,
+  while the output arrives as `_meta.terminal_output_delta` chunks and the
+  exit code in `_meta.terminal_exit`. `ToolCallRecord.raw_output` rebuilds the
+  1.x `{"formatted_output", "exit_code"}` shape from those chunks (an
+  agent-sent `formatted_output` still wins), so captured trajectories and the
+  viewer keep every command's output.
 - **Codex gets its real model id, and a codex that knows it (#1145).** Under
   a BenchFlow provider (LiteLLM proxy) the `codex-acp` thread was started with
   the proxy alias as the model (`benchflow-azure-foundry-openai-gpt-5.6-luna`).
