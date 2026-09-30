@@ -331,6 +331,48 @@ def test_continue_refuses_a_run_folder_with_an_episode_record(tmp_path):
         load_run_folder(folder)
 
 
+async def test_regrade_refuses_an_embodied_task(tmp_path, toy_suite):
+    """evaluation.json or --tasks-dir names the source folder; its package is
+    embodied, so the frozen workspace would be judged without its world."""
+    from benchflow.eval_regrade import aregrade
+    from tests.test_regrade import _trial
+
+    job = tmp_path / "jobs" / "j"
+    await _trial(job, "toy-reach__a", "toy-reach", 0.0, frozen=True, tmp=tmp_path)
+    calls: list = []
+
+    async def runner(*args, **kwargs):
+        calls.append(args)
+        return {"reward": 1.0}, None
+
+    summary = await aregrade(job, tasks_dir=toy_suite, runner=runner)
+    [row] = summary.not_regradable
+    assert calls == [] and "regrade refused" in row.reason
+
+
+async def test_regrade_refuses_a_trial_with_an_episode_record(tmp_path):
+    """A software task folder, but the trial's own record shows it was embodied."""
+    from benchflow.eval_regrade import aregrade
+    from tests.test_regrade import _task, _trial
+
+    tasks = tmp_path / "tasks"
+    _task(tasks, "t1", "#!/bin/bash\nexit 0\n")
+    job = tmp_path / "jobs" / "j"
+    trial = await _trial(job, "t1__a", "t1", 0.0, frozen=True, tmp=tmp_path)
+    episode = trial / "verifier" / "episode"
+    episode.mkdir(parents=True)
+    (episode / "episode.json").write_text(json.dumps({"embodiment": {"mode": "sim"}}))
+    calls: list = []
+
+    async def runner(*args, **kwargs):
+        calls.append(args)
+        return {"reward": 1.0}, None
+
+    summary = await aregrade(job, tasks_dir=tasks, runner=runner)
+    [row] = summary.not_regradable
+    assert calls == [] and "regrade refused" in row.reason
+
+
 def test_continue_still_replays_a_software_task(tmp_path):
     folder = write_run_folder(
         tmp_path / "run", exchanges=[exchange(completion(content="a"))]

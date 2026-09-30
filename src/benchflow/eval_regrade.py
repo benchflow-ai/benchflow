@@ -238,6 +238,29 @@ def resolve_task(trial: Path, tasks_dir: Path | None) -> tuple[Path | None, str 
     return None, f"task folder for {name!r} unknown; pass --tasks-dir"
 
 
+def _restorable_task(trial: Path, task_dir: Path) -> tuple[Path, str | None]:
+    """The task's native package, and why its world cannot be restored for a
+    regrade, if it cannot.
+
+    A regrade restores the frozen workspace into a fresh sandbox; an embodied
+    task's world (the simulator or the robot) is not in that workspace, so the
+    verifier would judge an episode the agent never touched. A folder in a task
+    format is materialized first (evaluation.json records the source folder).
+    """
+    from benchflow.embodied.spec import RestoreRefused
+    from benchflow.embodied.trials import (
+        task_dir_restore_boundary,
+        trial_restore_boundary,
+    )
+
+    try:
+        native, declared = task_dir_restore_boundary(task_dir)
+        trial_restore_boundary(trial, declared).require_world_restore("regrade")
+    except (RestoreRefused, ValueError, RuntimeError) as exc:
+        return task_dir, str(exc)
+    return native, None
+
+
 def original_score(trial: Path) -> dict[str, Any]:
     """The score the run itself recorded (never a previous regrade)."""
     result = _read_json(trial / "result.json") or _read_json(trial / "solver.json")
@@ -623,6 +646,8 @@ async def _regrade_one(
     task_dir = None
     if why is None:
         task_dir, why = resolve_task(trial, tasks_dir)
+    if why is None and task_dir is not None:
+        task_dir, why = _restorable_task(trial, task_dir)
     if why is not None or task_dir is None:
         row.reason = why
         return row
