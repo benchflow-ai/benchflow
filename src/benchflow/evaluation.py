@@ -666,6 +666,12 @@ class EvaluationConfig:
     # Hard per-job budget (benchflow.budget): stop launching and cancel
     # running trials once USD, sandbox-seconds or tokens reach a cap.
     budget: Budget | None = None
+    # Python hooks run in every rollout's sandbox after it starts and before
+    # the agent does (RolloutConfig.pre_agent_hooks): ``async def hook(sandbox)``.
+    # Callables cannot be written to a config file; evaluation.json records
+    # their names, and Evaluation.resume(job_dir, pre_agent_hooks=[...]) takes
+    # them again.
+    pre_agent_hooks: list[Callable[..., Any]] | None = None
 
     def retry_policy(self) -> RetryPolicy | None:
         """The parsed retry policy, or None when not requested."""
@@ -903,11 +909,21 @@ def _config_to_record(config: EvaluationConfig) -> dict[str, Any]:
             record[f.name] = None if value is None else value.to_mapping()
         elif f.name == "budget":
             record[f.name] = None if value is None else value.to_dict()
+        elif f.name == "pre_agent_hooks":
+            record[f.name] = (
+                None if not value else [_callable_name(hook) for hook in value]
+            )
         elif isinstance(value, set):
             record[f.name] = sorted(value)
         else:
             record[f.name] = value
     return json.loads(json.dumps(record, default=str))
+
+
+def _callable_name(hook: Any) -> str:
+    """``module.qualname`` of a hook, for the record."""
+    name = getattr(hook, "__qualname__", None) or type(hook).__qualname__
+    return f"{getattr(hook, '__module__', '?')}.{name}"
 
 
 def _config_from_record(
@@ -918,6 +934,7 @@ def _config_from_record(
 
     known = {f.name for f in dataclasses.fields(EvaluationConfig)}
     kwargs = {k: v for k, v in raw.items() if k in known}
+    kwargs.pop("pre_agent_hooks", None)  # names only; see Evaluation.resume
     missing = sorted(set(raw.get("agent_env_keys") or []) - set(agent_env or {}))
     if missing:
         logger.warning(
@@ -1125,6 +1142,11 @@ class Evaluation:
         not written, so each run of the saved config starts a new job.
         """
         cfg = self._config
+        if cfg.pre_agent_hooks:
+            raise ValueError(
+                "pre_agent_hooks are Python callables and cannot be written to a "
+                "config file; save the config without them and pass them in Python"
+            )
         record = _config_to_record(cfg)
         reviewer = cfg.reviewer.to_dict()
         if not include_agent_env:
@@ -1856,6 +1878,11 @@ class Evaluation:
             loop_strategy=cfg.loop_strategy,
         )
         rollout_config.checkpoints = cfg.checkpoint_policy()
+        if cfg.pre_agent_hooks:
+            rollout_config.pre_agent_hooks = [
+                *(rollout_config.pre_agent_hooks or []),
+                *cfg.pre_agent_hooks,
+            ]
         rollout_config.freeze_workspace = cfg.freeze_workspace
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
@@ -2366,7 +2393,8 @@ class Evaluation:
         Reads the ``evaluation.json`` a job writes when it starts (tasks
         directory and config). Running the returned Evaluation reuses the
         finished tasks and runs only the rest. agent_env values are never
-        stored, so pass ``agent_env`` again if the agent needs it;
+        stored, so pass ``agent_env`` again if the agent needs it, and
+        ``pre_agent_hooks`` too (only their names are recorded);
         ``config_overrides`` replace individual config fields (e.g.
         ``concurrency=8``). Jobs started before this record existed need
         ``Evaluation(tasks_dir, jobs_dir=job_dir.parent, config=...,
@@ -2385,6 +2413,14 @@ class Evaluation:
             )
         record = json.loads(record_path.read_text())
         config = _config_from_record(record["config"], agent_env)
+        hooks = record["config"].get("pre_agent_hooks")
+        if hooks and "pre_agent_hooks" not in config_overrides:
+            logger.warning(
+                "The job ran pre_agent_hooks %s, which %s cannot store; pass "
+                "pre_agent_hooks=[...] to Evaluation.resume() to run them again.",
+                ", ".join(map(str, hooks)),
+                EVALUATION_RECORD,
+            )
         if config_overrides:
             config = dataclasses.replace(config, **config_overrides)
         return cls(

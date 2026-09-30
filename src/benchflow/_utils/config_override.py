@@ -29,7 +29,10 @@ from benchflow._utils.content_address import sha256_prefixed
 #: Top-level config sections a run-time overlay MAY patch (fail-closed allowlist).
 #: The C axis is agent/budgets/sandbox/config — never the scorer, so anything
 #: outside this set (verifier, reward, solution/oracle, …) is rejected.
-_PATCHABLE_SECTIONS = frozenset({"agent", "sandbox", "metadata"})
+#: ``artifacts`` is additive: an overlay's entries are collected besides the
+#: task's own, which a separate verifier may need, and never replace them.
+_PATCHABLE_SECTIONS = frozenset({"agent", "sandbox", "metadata", "artifacts"})
+_ADDITIVE_SECTIONS = frozenset({"artifacts"})
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +119,8 @@ def validate_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
 
     Scoring sections (``verifier``/``reward``/``solution``/``oracle``) and any
     other non-config section are disallowed so a per-run overlay can never weaken
-    how the run is graded. Returns the overlay unchanged when it is legal.
+    how the run is graded. ``artifacts`` entries are added to the task's own.
+    Returns the overlay unchanged when it is legal.
     """
     illegal = set(overlay) - _PATCHABLE_SECTIONS
     if illegal:
@@ -147,7 +151,16 @@ def apply_config_override(config: Any, overlay: dict[str, Any] | None) -> Any:
     # re-validation accept them. (``sandbox`` is now the only spelling — the
     # legacy ``environment`` alias was removed in the rename — but ``oracle``
     # still serializes via alias, so the field-name dump stays load-bearing.)
-    merged = deep_merge(config.model_dump(by_alias=False), overlay)
+    base = config.model_dump(by_alias=False)
+    merged = deep_merge(
+        base, {k: v for k, v in overlay.items() if k not in _ADDITIVE_SECTIONS}
+    )
+    for key in _ADDITIVE_SECTIONS & set(overlay):
+        added = overlay[key]
+        if not isinstance(added, list):
+            raise ValueError(f"config override {key!r} must be a list, got {added!r}")
+        kept = list(base.get(key) or [])
+        merged[key] = kept + [item for item in added if item not in kept]
     patched = TaskConfig.model_validate(merged)
     logger.debug(
         "config override applied: keys=%s (%s)", sorted(overlay), overlay_hash(overlay)

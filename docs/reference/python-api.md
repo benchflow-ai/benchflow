@@ -120,6 +120,22 @@ async for name, result in evaluation.stream():
 print(evaluation.result.score)
 ```
 
+To run Python in every trial's sandbox before its agent starts, give the job hooks, `async def hook(sandbox)`, as for a single rollout (`RolloutConfig.pre_agent_hooks`); to keep more files from every trial, add artifacts through the config overlay, collected besides each task's own:
+
+```python
+async def lock_inputs(sandbox):
+    await sandbox.exec("chmod -R a-w /data", user="root", timeout_sec=60)
+
+config = bf.EvaluationConfig(
+    agent="claude-agent-acp",
+    pre_agent_hooks=[lock_inputs],
+    config_override={"artifacts": [{"source": "/home/agent/.claude/projects",
+                                    "destination": "claude-sessions"}]},
+)
+```
+
+Hooks are Python objects: a config file cannot hold them (`to_dict`/`to_yaml` refuse), `evaluation.json` records their names, and `Evaluation.resume(job_dir, pre_agent_hooks=[...])` takes them again.
+
 A job records its tasks directory and config in `<job_dir>/evaluation.json` when it starts (the names of `agent_env` keys, never their values). To finish an interrupted job from its directory alone:
 
 ```python
