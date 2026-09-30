@@ -25,7 +25,7 @@ HARNESS_MESSAGE = (
 BASH_TIMEOUT_SEC = 30
 MAX_OUTPUT_CHARS = 2000
 # Tool-calling turns per episode (TRL: max_tool_calling_iterations).
-MAX_TURNS = 10
+MAX_TURNS = 16
 
 
 def harness_config(

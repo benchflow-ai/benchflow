@@ -59,7 +59,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prompts-per-step", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--lora-r", type=int, default=32)
-    parser.add_argument("--max-completion-length", type=int, default=4096)
+    parser.add_argument("--max-completion-length", type=int, default=8192)
     parser.add_argument(
         "--eval-model", help="evaluate this model instead of the one just trained"
     )
@@ -128,8 +128,10 @@ def train(args: argparse.Namespace) -> Path:
         max_steps=args.max_steps,
         learning_rate=args.learning_rate,
         lr_scheduler_type="constant",
-        per_device_train_batch_size=args.num_generations,
-        gradient_accumulation_steps=args.prompts_per_step,
+        # Four rollouts per forward pass keeps long multi-turn completions within
+        # memory; one optimizer step still covers prompts_per_step groups.
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=args.prompts_per_step * args.num_generations // 4,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         max_tool_calling_iterations=MAX_TURNS,
@@ -241,8 +243,15 @@ def serve(
         "--max-model-len", "16384", "--gpu-memory-utilization", "0.85",
     ]  # fmt: skip
     log_file = (OUT / f"vllm-{port}.log").open("w")
+    # FlashInfer's sampler compiles a CUDA kernel at first use, and the Job image
+    # has no nvcc: sample with PyTorch instead.
+    env = {**os.environ, "VLLM_USE_FLASHINFER_SAMPLER": "0"}
     process = subprocess.Popen(
-        command, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True
+        command,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
     )
     deadline = time.monotonic() + 900
     while time.monotonic() < deadline:
