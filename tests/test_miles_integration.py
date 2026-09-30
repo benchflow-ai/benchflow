@@ -486,6 +486,38 @@ async def test_a_wall_clock_overrun_scores_zero_and_releases_the_sandbox(
     assert _Runtime.created[0].closed and _Runtime.created[0].verified == 0
 
 
+async def test_a_wall_clock_overrun_before_the_policy_acted_is_dropped(
+    tasks: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Only a policy that acted can own a timeout (the attribution rule)."""
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
+        raise AssertionError("unreachable")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(hang))
+    async with client:
+        outcome = await run_episode(
+            _request(),
+            _settings(tasks, tmp_path, episode_timeout_sec=0.2),
+            client=client,
+        )
+    assert outcome.dropped and outcome.exit_status == "ModelEndpointFailed"
+    assert "during agent" in outcome.response()["detail"]
+    assert _Runtime.created[0].closed and _Runtime.created[0].verified == 0
+
+    gate = asyncio.Event()  # never set: the sandbox never finishes starting
+
+    async def slow_start(config: Any) -> _Runtime:
+        await gate.wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(episode_module.TaskRuntime, "create", slow_start)
+    outcome, sessions = await _run(tasks, tmp_path, [], episode_timeout_sec=0.2)
+    assert outcome.dropped and outcome.exit_status == "SandboxUnavailable"
+    assert sessions.requests == []
+
+
 async def test_a_cancelled_episode_releases_its_sandbox(tasks: Path, tmp_path: Path):
     _Runtime.bash_gate = asyncio.Event()
     acted = _reply("", [_tool_call("run_bash", {"command": "sleep 999"}, "c1")])

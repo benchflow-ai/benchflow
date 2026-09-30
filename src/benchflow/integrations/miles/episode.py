@@ -463,6 +463,8 @@ class _Episode:
         # one episode it will train on.
         self.max_seq_len = _positive_int(request.metadata.get("max_seq_len"))
         self.reply_budget = _positive_int(request.request_kwargs.get("max_tokens")) or 0
+        # What the episode is doing: "start", "agent" or "verify".
+        self.phase = "start"
 
     async def run(self, sandbox_slots: asyncio.Semaphore | None) -> EpisodeOutcome:
         out = self.out
@@ -477,10 +479,7 @@ class _Episode:
                     )
                 except TimeoutError:
                     out.ended = TIME_LIMIT
-                    out.decision = zero(
-                        TIMEOUT,
-                        f"episode exceeded {self.settings.episode_timeout_sec:g}s",
-                    )
+                    out.decision = self._timeout_decision()
                 finally:
                     await self._close()
         except asyncio.CancelledError:
@@ -500,6 +499,7 @@ class _Episode:
         if not await self._start():
             return
         t_agent = time.monotonic()
+        self.phase = "agent"
         try:
             await self._loop()
         except _ModelServerFailure as exc:
@@ -511,7 +511,29 @@ class _Episode:
         finally:
             out.timings["agent_sec"] = time.monotonic() - t_agent
         if out.decision is None:
+            self.phase = "verify"
             await self._verify()
+
+    def _timeout_decision(self) -> RewardDecision:
+        """A wall-clock overrun is the policy's only once it has acted.
+
+        Before that, the time went to starting the sandbox, to model calls (a
+        reply without a tool call ends the episode, so only a slow model server
+        keeps it in the loop), or to a verifier on an untouched sandbox: the
+        attribution rule of ``benchflow.integrations.rewards`` drops each.
+        """
+
+        detail = (
+            f"episode exceeded {self.settings.episode_timeout_sec:g}s "
+            f"during {self.phase}"
+        )
+        if self.runtime is None:
+            return sandbox_start_failure(detail)
+        if self.out.policy_acted:
+            return zero(TIMEOUT, detail)
+        if self.phase == "verify":
+            return dropped(VERIFIER_CRASH_CLEAN_RUN, detail)
+        return dropped(MODEL_ENDPOINT, detail)
 
     async def _start(self) -> bool:
         h = self.settings.harness
