@@ -556,11 +556,21 @@ def check_credentials(configs: Sequence[Any]) -> None:
     use: with ``scenes``, each role's agent and model with the config's
     ``agent_env`` plus the role's ``env`` (the legacy ``agent``/``model``
     fields are then unused); otherwise ``agent``, ``model`` and ``agent_env``
-    as given. Only a missing credential is raised here; anything else the
-    resolution rejects still surfaces in the trial.
+    as given. A target with no model is checked against the agent's own
+    ``default_model`` (never the global default, which would demand another
+    provider's key, #343), since that is what the agent falls back to; an
+    agent with neither is not checked. Only a missing credential is raised
+    here; anything else the resolution rejects still surfaces in the trial.
     """
     from benchflow.agents.env import resolve_agent_env
+    from benchflow.agents.registry import AGENTS
     from benchflow.errors import MissingCredentialError
+
+    def checked_model(agent: str, model: str | None) -> str | None:
+        if model:
+            return model
+        agent_cfg = AGENTS.get(agent)
+        return agent_cfg.default_model if agent_cfg else None
 
     seen: set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
     for config in configs:
@@ -574,9 +584,10 @@ def check_credentials(configs: Sequence[Any]) -> None:
             ]
         else:
             targets = [(config.agent, config.model, base_env)]
-        for agent, model, env in targets:
+        for agent, raw_model, env in targets:
             if not agent or agent in ("oracle", "nop"):
                 continue
+            model = checked_model(agent, raw_model)
             key = (agent, model, tuple(sorted(env.items())))
             if key in seen:
                 continue

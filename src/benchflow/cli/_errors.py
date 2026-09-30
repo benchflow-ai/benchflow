@@ -8,9 +8,15 @@
   a log file with the command, the versions, the traceback and the run's
   last log lines, and exits 1.
 
-Secrets never reach either: every credential-looking variable of the
-environment and of ``.env``, and every ``KEY=VALUE`` argument whose key looks
-like a credential, is replaced with ``***`` before anything is written.
+Credential values are replaced with ``***`` before anything is written:
+every credential-looking variable of the environment and of ``.env``, every
+``KEY=VALUE`` argument whose key looks like a credential (``--agent-env K=V``
+and ``--agent-env=K=V``), the value of an option named like one
+(``--hf-token V``, ``--hf-token=V``), and the strings inside the Claude and
+Codex login files. Redaction matches names and values, so it cannot catch a
+secret under a name that looks like nothing (``--bearer <token>``,
+``--agent-env FOO2=<token>``) or one shorter than eight characters: read a
+log before attaching it to a public issue.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ import contextlib
 import logging
 import os
 import platform
+import re
 import sys
 import tempfile
 import traceback
@@ -71,6 +78,31 @@ def install_recent_log() -> None:
         logger.addHandler(RECENT_LOG)
 
 
+# An option's value that reads as another option, so the value of a flag with
+# no value is not taken for a secret and redacted out of the log.
+# A long flag, or a short one of at most three characters ("-e", "-rf"): a
+# longer "-..." word is far likelier to be a secret that begins with a dash.
+_OPTION_LIKE = re.compile(r"^(--[A-Za-z][\w-]*|-[A-Za-z]\w{0,2})$")
+# Login files whose contents never appear in the environment; their strings
+# are redacted like an inline ``CODEX_AUTH_JSON`` (``_JSON`` keys contribute
+# every long string inside them).
+_LOGIN_FILES = ("~/.claude/.credentials.json", "~/.codex/auth.json")
+_LOGIN_FILE_MAX_BYTES = 64 * 1024
+
+
+def _login_file_secrets() -> dict[str, str]:
+    found: dict[str, str] = {}
+    paths = [Path(name).expanduser() for name in _LOGIN_FILES]
+    configured = os.environ.get("CODEX_AUTH_JSON", "").strip()
+    if configured and not configured.startswith("{"):
+        paths.append(Path(configured).expanduser())
+    for index, path in enumerate(paths):
+        with contextlib.suppress(Exception):
+            if path.stat().st_size <= _LOGIN_FILE_MAX_BYTES:
+                found[f"LOGIN_FILE_{index}_AUTH_JSON"] = path.read_text()
+    return found
+
+
 def _secrets(argv: Sequence[str]) -> list[str]:
     from benchflow._dotenv import load_dotenv_env
     from benchflow.doctor import _SECRET_NAME_RE, secret_values
@@ -79,6 +111,7 @@ def _secrets(argv: Sequence[str]) -> list[str]:
     with contextlib.suppress(Exception):
         environ.update(load_dotenv_env())
     environ.update(os.environ)
+    environ.update(_login_file_secrets())
     words = list(argv)
     for index, arg in enumerate(words):
         pairs = [arg]
@@ -97,7 +130,7 @@ def _secrets(argv: Sequence[str]) -> list[str]:
             and "=" not in arg
             and _SECRET_NAME_RE.search(arg.upper().replace("-", "_"))
             and following
-            and not following.startswith("-")
+            and not _OPTION_LIKE.match(following)
         ):
             environ[f"ARGV_{index + 1}_TOKEN"] = following
     return secret_values(environ)

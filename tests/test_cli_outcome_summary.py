@@ -195,6 +195,31 @@ def test_a_trial_with_no_verdict_and_no_error_is_errored_on_both_lines(
     assert "1 errored: no verdict was recorded" in out
 
 
+def test_a_trial_whose_cause_is_unknown_keeps_the_score_line_s_bucket(
+    tmp_path, monkeypatch
+):
+    """Second review finding: a trial the Score line counts as errored but
+    whose cause cannot be read (an unreadable or missing result.json) was
+    counted a scored failure, so the two lines disagreed. It now lands in
+    the same bucket, only without an explanation under it."""
+    import benchflow.failures as failures
+
+    job_dir = tmp_path / "jobs" / "run"
+    job_dir.mkdir(parents=True)
+    result = EvaluationResult(
+        job_name="run",
+        config=EvaluationConfig(),
+        total=1,
+        errored=1,
+        job_dir=job_dir,
+        results={"cut": _trial(job_dir, "cut")},
+    )
+    monkeypatch.setattr(failures, "cause_of", lambda *a, **k: None)
+    out = _render(monkeypatch, result, job_dir)
+    assert "Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored" in out
+    assert "next:" not in out  # no cause to explain, so no group under the line
+
+
 def test_a_scored_trial_has_no_cause(job):
     _, result = job
     assert cause_of(result.results["fine"]) is None

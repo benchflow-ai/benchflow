@@ -282,8 +282,44 @@ def test_the_credential_check_looks_only_at_what_the_rollout_uses(
         check_credentials(
             [RolloutConfig(task_path=HELLO, scenes=[Scene(name="s", roles=[bare])])]
         )
-    # No model: the rollout resolves without one, and so does the check.
-    check_credentials([RolloutConfig(task_path=HELLO, agent="claude-agent-acp")])
+    # Second review finding: with no model the check used to do nothing at
+    # all (resolve_agent_env validates only when a model is given), so
+    # bf.run("gemini") with no key built a sandbox before failing. The
+    # agent's own default model is what it would run, so that is checked.
+    with pytest.raises(MissingCredentialError, match="GEMINI_API_KEY"):
+        check_credentials([RolloutConfig(task_path=HELLO, agent="gemini")])
+    # An agent with no default model of its own is still not checked against
+    # the global default, which belongs to another provider (#343).
+    # (RolloutConfig refuses an unregistered agent, so this goes in directly,
+    # as bench eval run's preflight passes it.)
+    from types import SimpleNamespace
+
+    check_credentials(
+        [SimpleNamespace(agent="some-raw-command", model=None, agent_env={})]
+    )
+
+
+def test_the_crash_log_redacts_the_login_files(capsys, tmp_path, monkeypatch):
+    """Second review finding: the OAuth token BenchFlow reads out of
+    ~/.claude/.credentials.json is in neither argv nor the environment, so a
+    traceback or a log line carrying it was written unredacted into the file
+    the message invites users to attach to a public issue."""
+    import json
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    token = "sk-ant-oat01-" + "z" * 40
+    (home / ".claude" / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": token, "subscriptionType": "max"}})
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("BENCHFLOW_LOG_DIR", str(tmp_path / "logs"))
+    assert _run(_app(RuntimeError(f"boom with {token}")), ["go"]) == 1
+    err = capsys.readouterr().err
+    (log,) = (tmp_path / "logs").glob("bench-*.log")
+    text = log.read_text()
+    assert token not in text and token not in err
+    assert "***" in text
 
 
 @pytest.mark.parametrize(
@@ -292,6 +328,9 @@ def test_the_credential_check_looks_only_at_what_the_rollout_uses(
         ["go", "--agent-env=OPENAI_API_KEY=sk-attached-secret-value-5678"],
         ["go", "--hf-token", "hf_attachedsecretvalue5678"],
         ["go", "--hf-token=hf_attachedsecretvalue5678"],
+        # Second review finding: a value that begins with "-" was read as the
+        # next option and left in the log.
+        ["go", "--hf-token", "-hfattachedsecretvalue5678"],
     ],
 )
 def test_the_crash_log_redacts_every_argv_form(argv, capsys, tmp_path, monkeypatch):

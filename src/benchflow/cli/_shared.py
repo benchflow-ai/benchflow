@@ -358,17 +358,18 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         if outcome in ("passed", "failed"):
             counts[outcome] += 1
             continue
-        cause = cause_of(trial, job_dir=job_dir, task_dir=task_dir(name))
-        if cause is None:
-            counts["passed" if outcome == "passed" else "failed"] += 1
-            continue
         if outcome is None:
             outcome = "errored" if getattr(trial, "error", None) else "unscored"
         bucket = "errored" if outcome == "errored" else "unscored"
+        # The bucket follows the Score line even when no cause is known (a
+        # trial whose result.json cannot be read): the two lines always
+        # agree, and only the explanation below is missing.
         counts[bucket] += 1
-        groups.setdefault((bucket, cause.headline(), cause.key), []).append(
-            (name, cause.next_step)
-        )
+        cause = cause_of(trial, job_dir=job_dir, task_dir=task_dir(name))
+        if cause is not None:
+            groups.setdefault((bucket, cause.headline(), cause.key), []).append(
+                (name, cause.next_step)
+            )
     scored = counts["passed"] + counts["failed"]
     console.print(
         f"Outcomes: {scored} scored ({counts['passed']} passed, {counts['failed']} "

@@ -85,7 +85,9 @@ def is_advisory(failure: dict[str, Any]) -> bool:
     spending trials on a login that can no longer answer.
     """
     severity = failure.get("severity")
-    if not (isinstance(severity, str) and severity.strip().lower() in _ADVISORY_SEVERITIES):
+    if not (
+        isinstance(severity, str) and severity.strip().lower() in _ADVISORY_SEVERITIES
+    ):
         return False
     return not is_spent_subscription(failure)
 
