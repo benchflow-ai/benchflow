@@ -342,7 +342,8 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         return
     groups: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
     counts = {"passed": 0, "failed": 0, "unscored": 0, "errored": 0}
-    for name, trial in sorted(results.items()):
+    for key, trial in sorted(results.items()):
+        name = str(key)
         cause = cause_of(
             trial,
             job_dir=job_dir,
