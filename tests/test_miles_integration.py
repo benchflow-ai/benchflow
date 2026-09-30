@@ -400,6 +400,16 @@ async def test_model_server_failures_are_dropped_after_the_policy_acted(
     assert runtime.verified == 0 and runtime.closed
 
 
+async def test_a_502_is_retried_as_the_latest_turn(tasks: Path, tmp_path: Path):
+    acted = _reply("", [_tool_call("run_bash", {"command": "ls"}, "c1")])
+    blip = httpx.Response(502, json={"error": "backend transport error"})
+    outcome, sessions = await _run(
+        tasks, tmp_path, [acted, blip, _reply("done")], transport_retries=1
+    )
+    assert not outcome.dropped and outcome.exit_status == "NoToolCall"
+    assert sessions.requests[1] == sessions.requests[2]  # the same turn, re-sent
+
+
 @pytest.mark.parametrize(
     ("failure", "exit_status"),
     [
