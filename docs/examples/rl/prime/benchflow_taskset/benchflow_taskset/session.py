@@ -20,6 +20,11 @@ BRIDGE_SCRIPT = Path(__file__).with_name("bridge.py")
 
 # Extra seconds a reply may take beyond the work it waits for.
 REPLY_SLACK_SEC = 60.0
+# Closing: how long the bridge may take to close its sandbox when asked, to exit
+# after its input ends, and to close the sandbox after SIGTERM.
+CLOSE_REPLY_SEC = 240.0
+EXIT_WAIT_SEC = 30.0
+TERM_WAIT_SEC = 200.0
 
 # What the bridge inherits from this process: what BenchFlow needs to reach its
 # sandbox backend, and nothing else. In particular no model keys, and none of this
@@ -78,6 +83,9 @@ class Bridge:
         self.process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._log_handle: Any = None
+        # Set when a call timed out or was cancelled: a late reply could otherwise be
+        # read as the answer to the next request, so the pipe is never used again.
+        self.broken: str | None = None
 
     async def open(self) -> None:
         if self.log_path is not None:
@@ -108,6 +116,8 @@ class Bridge:
         if process is None or process.stdin is None or process.stdout is None:
             raise BridgeError("the bridge is not running")
         async with self._lock:
+            if self.broken is not None:
+                raise BridgeError(f"the bridge is unusable: {self.broken}")
             if process.returncode is not None:
                 raise BridgeError(f"the bridge exited with code {process.returncode}{self._log_tail()}")
             try:
@@ -115,7 +125,11 @@ class Bridge:
                 await process.stdin.drain()
                 line = await asyncio.wait_for(process.stdout.readline(), timeout_sec)
             except asyncio.TimeoutError as exc:
+                self.broken = f"no answer to {request.get('op')!r} within {timeout_sec:g}s"
                 raise BridgeError(f"the bridge did not answer {request.get('op')!r} within {timeout_sec:g}s") from exc
+            except asyncio.CancelledError:
+                self.broken = f"the {request.get('op')!r} call was cancelled"
+                raise
             except (BrokenPipeError, ConnectionResetError) as exc:
                 raise BridgeError(f"the bridge pipe broke during {request.get('op')!r}{self._log_tail()}") from exc
             if not line:
@@ -131,27 +145,29 @@ class Bridge:
                 raise BridgeError(f"the bridge sent {type(reply).__name__}, not an object")
             return reply
 
-    async def close(self, *, timeout_sec: float = 240.0) -> None:
-        """Ask the bridge to close its sandbox; escalate to SIGTERM, then SIGKILL."""
+    async def close(self) -> None:
+        """Ask the bridge to close its sandbox; escalate to SIGTERM, then SIGKILL.
+
+        Safe to call more than once, and after the bridge died. A bridge that stopped
+        answering is not asked: it gets SIGTERM, which makes it close its sandbox."""
         process = self.process
         if process is None:
             self._close_log()
             return
         try:
-            if process.returncode is None:
+            if process.returncode is None and self.broken is None:
                 with contextlib.suppress(BridgeError):
-                    await self.call({"op": "close"}, timeout_sec=timeout_sec)
+                    await self.call({"op": "close"}, timeout_sec=CLOSE_REPLY_SEC)
             if process.stdin is not None:
                 with contextlib.suppress(Exception):
                     process.stdin.close()
             try:
-                await asyncio.wait_for(process.wait(), 30)
+                await asyncio.wait_for(process.wait(), EXIT_WAIT_SEC)
             except asyncio.TimeoutError:
-                # SIGTERM makes the bridge close its sandbox before it exits.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGTERM)
                 try:
-                    await asyncio.wait_for(process.wait(), 200)
+                    await asyncio.wait_for(process.wait(), TERM_WAIT_SEC)
                 except asyncio.TimeoutError:
                     with contextlib.suppress(ProcessLookupError):
                         os.killpg(process.pid, signal.SIGKILL)
