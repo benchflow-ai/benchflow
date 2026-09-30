@@ -157,7 +157,9 @@ def test_a_refused_request_raises(server):
         run()
 
 
-def test_the_backstop_timeout_scores_zero(server, monkeypatch):
+def test_no_answer_by_the_backstop_is_discarded(server, monkeypatch):
+    """The server attributes its own episode cap; past the backstop the server failed."""
+    monkeypatch.setattr(baf, "InfraAbort", FakeInfraAbort)
     monkeypatch.setenv("BENCHFLOW_EPISODE_TIMEOUT", "0.05")
 
     async def slow(request):
@@ -165,8 +167,9 @@ def test_the_backstop_timeout_scores_zero(server, monkeypatch):
         return httpx.Response(200, json=SCORED)
 
     monkeypatch.setattr(baf, "_client", httpx.AsyncClient(transport=httpx.MockTransport(slow)))
-    out = run()
-    assert out["reward"] == 0.0 and out["exit_status"] == "TimeLimitExceeded"
+    with pytest.raises(FakeInfraAbort) as caught:
+        run()
+    assert caught.value.exit_status == "EnvironmentTimeout"
 
 
 def test_abort_asks_the_server_to_cancel_its_episodes(server):

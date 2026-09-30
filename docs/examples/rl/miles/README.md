@@ -51,7 +51,7 @@ The rule is Miles' own (radixark/miles#2802): discard only what the policy canno
 | BenchFlow reason | Miles `exit_status` | Sample |
 | --- | --- | --- |
 | `scored` | `Submitted`, `NoToolCall`, `TurnLimitExceeded`, `SequenceLengthLimitExceeded`, `RequestRejected` (how the episode ended) | verifier's reward |
-| `timeout` | `TimeLimitExceeded` | 0 |
+| `timeout` (the episode's wall-clock cap after the policy acted, or the verifier's timeout) | `TimeLimitExceeded` | 0 |
 | `verifier_error` (after the policy acted) | `VerifierError` | 0 |
 | `run_error`, `no_reward` | `AgentError`, `NoReward` | 0 |
 | `integrity_violation` | `IntegrityViolation` | 0, flagged |
@@ -59,9 +59,11 @@ The rule is Miles' own (radixark/miles#2802): discard only what the policy canno
 | `model_endpoint` | `ModelEndpointFailed`; `GenerationAborted` when SGLang aborted the turn (503) | discarded |
 | `verifier_crash_clean_run` | `VerifierCrashCleanRun` | discarded |
 | (cancelled by Miles' abort hook) | `Aborted` | discarded |
+| (the environment server did not answer by the agent function's backstop) | `EnvironmentTimeout` | discarded |
 
 - A discard is `InfraAbort(exit_status)` on a Miles with radixark/miles#2801; before it, the agent function returns `reward: None` and Miles' missing-reward filter drops the group. A sandbox that never starts makes no model call, so Miles discards that sample on its own either way.
 - The session server's refusals the policy's output can cause (400, 409, 422, 500) end the episode and the verifier scores it (`RequestRejected`, or `SequenceLengthLimitExceeded` for a context overflow). A 502 is retried as the latest turn, then discarded.
+- The episode's wall-clock cap (`--episode-timeout`) is the policy's only once it has acted. Before that, the overrun is discarded under the phase that hung: `SandboxUnavailable`, `ModelEndpointFailed`, or `VerifierCrashCleanRun`.
 - A reply cut at `max_tokens` ends the episode, since the session server will not extend a truncated turn. The server also ends an episode whose next request could pass Miles' `--max-seq-len`, so the reward belongs to the tokens Miles trains on.
 
 ### Reward integrity (BenchShield)

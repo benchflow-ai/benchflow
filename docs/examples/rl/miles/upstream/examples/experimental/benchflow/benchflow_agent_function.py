@@ -28,8 +28,11 @@ Env vars (read on the rollout worker):
   BENCHFLOW_ENV_TOKEN_FILE   file holding the server's bearer token, when it
                              was started with --token-file
   BENCHFLOW_EPISODE_TIMEOUT  backstop in seconds for one /run call (default
-                             3600); the server's own --episode-timeout fires
-                             first and scores the episode 0
+                             3600). The server's own --episode-timeout fires
+                             first and attributes the overrun (0 once the policy
+                             acted); a server that has not answered by the
+                             backstop failed on its side, and the sample is
+                             discarded (EnvironmentTimeout)
 
 Failure semantics (the rule of radixark/miles#2802): discard only what the
 policy cannot have caused, score everything else 0 with a named exit_status.
@@ -44,12 +47,14 @@ server knows whether the policy acted and which side failed:
                                                     sandbox the policy never used
                              Aborted                cancelled by ``abort``
                              ServerUnreachable      no BenchFlow server
+                             EnvironmentTimeout     no answer by the backstop
   scored by the verifier     Submitted, NoToolCall, TurnLimitExceeded,
                              SequenceLengthLimitExceeded (a reply cut at
                              max_tokens, or the context full), RequestRejected
                              (the session server refused a request the
                              policy's output can break: 400, 409, 422, 500)
-  scored 0                   TimeLimitExceeded, VerifierError, AgentError,
+  scored 0                   TimeLimitExceeded (the server's cap, after the
+                             policy acted), VerifierError, AgentError,
                              NoReward, IntegrityViolation (the reward-integrity
                              audit caught the policy exploiting the grader;
                              ``eval_report.flagged`` is true)
@@ -166,10 +171,12 @@ async def run(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        # The server's own episode cap should have fired first; the policy may be
-        # what is stalling, so this is a 0, not a discard.
-        logger.error(f"BenchFlow /run for {metadata.get('instance_id')} exceeded {timeout_s:.0f}s; scoring 0")
-        return _failed("TimeLimitExceeded", f"no answer from {url} within {timeout_s:.0f}s")
+        # The server scores a stalling policy itself, within its own episode cap;
+        # past the backstop the server is what failed (a queue that never drained,
+        # a hung sandbox provider), which this episode's policy cannot cause.
+        # Cancelling the request makes the server cancel the episode and release
+        # its sandbox.
+        return _discard("EnvironmentTimeout", f"no answer from {url} within {timeout_s:.0f}s")
     except httpx.TransportError as e:
         return _discard(
             "ServerUnreachable",

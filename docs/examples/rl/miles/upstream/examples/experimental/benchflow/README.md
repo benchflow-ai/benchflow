@@ -92,9 +92,9 @@ Groups whose episodes all got the same reward carry no GRPO signal: they are dro
 | `Submitted`, `NoToolCall`, `TurnLimitExceeded` | the policy submitted, stopped calling tools, or used its turns | verifier's reward |
 | `SequenceLengthLimitExceeded` | a reply was cut at `max_tokens`, or the context would pass `--max-seq-len` | verifier's reward |
 | `RequestRejected` | the session server refused a request the policy's output can break (HTTP 400, 409, 422, 500) | verifier's reward |
-| `TimeLimitExceeded`, `VerifierError`, `AgentError`, `NoReward` | failures the policy could have caused | 0 |
+| `TimeLimitExceeded`, `VerifierError`, `AgentError`, `NoReward` | failures the policy could have caused (the episode's wall-clock cap counts only after the policy acted; before, the overrun is discarded under the phase that hung) | 0 |
 | `IntegrityViolation` | the integrity audit caught the policy exploiting the grader | 0, flagged |
-| `SandboxUnavailable`, `ModelEndpointFailed`, `GenerationAborted`, `VerifierCrashCleanRun`, `Aborted`, `ServerUnreachable` | failures the policy cannot cause | discarded (`InfraAbort`) |
+| `SandboxUnavailable`, `ModelEndpointFailed`, `GenerationAborted`, `VerifierCrashCleanRun`, `Aborted`, `ServerUnreachable`, `EnvironmentTimeout` | failures the policy cannot cause | discarded (`InfraAbort`) |
 
 A reply cut at `max_tokens` ends the episode (the session server will not extend a truncated turn), and the server ends an episode whose next request could pass `--max-seq-len` (it counts the tokens the session server reported and estimates new tool output at 3 characters per token), so the reward is the reward of the tokens Miles trains on. On a Miles without `InfraAbort` a discarded episode returns `reward: None`, and the missing-reward filter drops its group.
 
