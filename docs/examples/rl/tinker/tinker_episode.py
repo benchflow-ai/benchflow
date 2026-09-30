@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 import shutil
 import signal
@@ -58,7 +59,14 @@ from benchflow.integrations.trl import write_rollout_record
 COMMON = Path(__file__).resolve().parents[1] / "common"
 if str(COMMON) not in sys.path:
     sys.path.insert(0, str(COMMON))
-from harness import HARNESS_MESSAGE, MAX_TURNS, harness_config  # noqa: E402
+from harness import (  # noqa: E402
+    HARNESS_MESSAGE,
+    MAX_TURNS,
+    harness_config,
+    run_owner,
+    shorten_daytona_lifetimes,
+    sweep_daytona,
+)
 
 log = logging.getLogger(__name__)
 
@@ -97,17 +105,21 @@ __all__ = [
     "describe",
     "free_gib",
     "group_kind",
+    "own_daytona_run",
     "run_guarded",
     "solved",
+    "sweep_owner",
     "truncate",
 ]
 
 
 def solved(decision: RewardDecision | None) -> bool:
-    """Every check passed: the verifier's full reward."""
-    return (
-        decision is not None and decision.reward is not None and decision.reward >= 1.0
-    )
+    """Every check passed, as the verifier reports it (else a full reward)."""
+    if decision is None or decision.reward is None:
+        return False
+    if decision.passed is not None:
+        return decision.passed
+    return decision.reward >= 1.0
 
 
 class InfrastructureError(RuntimeError):
@@ -454,6 +466,39 @@ async def close_all_live() -> int:
 
 class RunStopped(RuntimeError):
     """A run stopped from outside: a signal, or its disk running low."""
+
+
+def own_daytona_run(prefix: str) -> str | None:
+    """Daytona hygiene for one run, as the other RL cookbooks do.
+
+    Idle sandboxes stop, and stopped ones are deleted, after 30 minutes (so a
+    killed run leaves nothing running for long). Without BENCHFLOW_DAYTONA_OWNER,
+    the run gets an owner label of its own and returns it: sweep_owner() then
+    deletes exactly this run's leftovers. With a label set, the caller owns
+    cleanup (`bench sandbox cleanup --all`), since other runs may share it.
+    """
+    shorten_daytona_lifetimes()
+    if os.environ.get("BENCHFLOW_DAYTONA_OWNER"):
+        return None
+    owner = run_owner(prefix)
+    os.environ["BENCHFLOW_DAYTONA_OWNER"] = owner
+    return owner
+
+
+def sweep_owner(owner: str | None) -> None:
+    """Delete every Daytona sandbox still labelled with this run's owner."""
+    if owner is None:
+        return
+    try:
+        log.info("swept the sandboxes of owner %s: %s", owner, sweep_daytona(owner))
+    except Exception as exc:
+        log.warning(
+            "sweeping owner %s failed (%s); run `bench sandbox cleanup --all` "
+            "with BENCHFLOW_DAYTONA_OWNER=%s",
+            owner,
+            describe(exc),
+            owner,
+        )
 
 
 def free_gib(path: Path | str) -> float:

@@ -190,6 +190,9 @@ def test_asking_for_integrity_without_the_option_fails_clearly(tmp_path):
 def test_solved_means_every_check_passed():
     assert ep.solved(ep.Decision(1.0, "scored"))
     assert not ep.solved(ep.Decision(0.99, "scored"))
+    assert not ep.solved(
+        ep.Decision(1.0, "scored", passed=False)
+    )  # the verifier says so
     assert not ep.solved(None)
 
 
@@ -211,7 +214,8 @@ def test_a_submitted_episode_is_verified_once_and_closed(tmp_path):
 
     first, again = run(go())
     rt = runtimes[0]
-    assert first == again == ep.Decision(1.0, "scored")
+    assert first == again
+    assert (first.reward, first.reason, first.passed) == (1.0, "scored", True)
     assert rt.verified == 1 and rt.closed == 1
     assert slots.in_use == 0 and episode not in ep.LIVE
     assert episode.policy_acted and episode.submitted
@@ -280,7 +284,9 @@ def test_a_timed_out_episode_scores_zero_without_a_verifier_run(tmp_path):
         return await episode.time_out()
 
     decision = run(go())
-    assert decision == ep.Decision(0.0, "timeout", "the episode ran past 10 s")
+    assert decision == ep.Decision(
+        0.0, "timeout", "the episode ran past 10 s", passed=False
+    )
     assert runtimes[0].verified == 0 and runtimes[0].closed == 1
 
 
@@ -575,3 +581,14 @@ def test_sigterm_stops_a_run_after_its_cleanup():
     with pytest.raises(ep.RunStopped, match="SIGTERM"):
         run(go())
     assert cleaned == [True]
+
+
+@pytest.mark.parametrize(
+    "rewards",
+    [[1.0, 0.0], [0.5, 0.5], [1.0, 1.0, 1.0], [0.0, 0.25, 0.0], [0.3333, 0.3333]],
+)
+def test_no_reward_variance_means_what_the_shared_dynamic_sampling_means(rewards):
+    from benchflow.integrations.rewards import dynamic_sampling, scored
+
+    _, counts = dynamic_sampling({"g": [scored(r) for r in rewards]}, enabled=True)
+    assert (ep.group_kind(rewards) != "mixed") == (counts["uniform"] == 1)

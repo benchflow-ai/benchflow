@@ -35,7 +35,9 @@ from tinker_episode import (  # noqa: E402
     SUBMIT_PATH,
     EpisodeSettings,
     RunStopped,
+    own_daytona_run,
     run_guarded,
+    sweep_owner,
 )
 
 log = logging.getLogger("tinker_train")
@@ -373,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         drops_path=args.log_path / "infrastructure_drops.jsonl",
         groups_path=args.log_path / "groups.jsonl",
     )
+    owner = own_daytona_run("tinker-rl-train") if args.sandbox == "daytona" else None
     moved = prune_for_resume(args.log_path)
     if moved:
         log.info("resuming: set aside %d records of steps that run again", moved)
@@ -383,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s; rerun with the same --log-path to resume", exc)
         code = 3
     finally:
+        sweep_owner(owner)
         summary = summarize(args)
         (args.log_path / "summary.json").write_text(json.dumps(summary, indent=1))
         log.info(

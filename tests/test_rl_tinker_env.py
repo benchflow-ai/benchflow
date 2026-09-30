@@ -220,7 +220,7 @@ def test_the_turn_limit_ends_with_a_verifier_run(tmp_path):
     results = run(go())
     assert [r.episode_done for r in results] == [False] * 9 + [True]
     assert results[-1].reward == 0.0 and runtimes[0].verified == 1
-    assert env.episode.decision == ep.Decision(0.0, "scored")
+    assert (env.episode.decision.reward, env.episode.decision.reason) == (0.0, "scored")
 
 
 def test_a_verifier_crash_on_a_clean_run_is_dropped(tmp_path):

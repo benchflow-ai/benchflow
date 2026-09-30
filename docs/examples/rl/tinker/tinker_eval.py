@@ -34,7 +34,13 @@ import tinker_stats  # noqa: E402
 from tinker_cookbook.completers import TinkerTokenCompleter  # noqa: E402
 from tinker_cookbook.exceptions import AllTrajectoriesFailedError  # noqa: E402
 from tinker_cookbook.rl.rollouts import do_group_rollout  # noqa: E402
-from tinker_episode import RunStopped, close_all_live, run_guarded  # noqa: E402
+from tinker_episode import (  # noqa: E402
+    RunStopped,
+    close_all_live,
+    own_daytona_run,
+    run_guarded,
+    sweep_owner,
+)
 from tinker_train import add_env_args, env_config  # noqa: E402
 
 log = logging.getLogger("tinker_eval")
@@ -211,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         drops_path=args.out.with_name(args.out.stem + "-drops.jsonl"),
         groups_path=args.out.with_name(args.out.stem + "-groups.jsonl"),
     )
+    owner = own_daytona_run("tinker-rl-eval") if args.sandbox == "daytona" else None
     try:
         doc = asyncio.run(
             run_guarded(
@@ -222,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     except RunStopped as exc:
         log.error("%s", exc)
         return 3
+    finally:
+        sweep_owner(owner)
     args.out.write_text(json.dumps(doc, indent=1, default=str))
     for ev in doc["evaluations"]:
         s = ev["summary"]
