@@ -813,7 +813,11 @@ def transport_silence_budget(
     """
     if idle_timeout is None:
         return timeout + _SILENCE_GUARD_SLACK_SEC
-    grace = pending_tool_grace if pending_tool_grace is not None else pending_grace_from_env()
+    grace = (
+        pending_tool_grace
+        if pending_tool_grace is not None
+        else pending_grace_from_env()
+    )
     if grace is None:
         grace = PENDING_GRACE_MULTIPLIER * idle_timeout
     return max(grace, idle_timeout) + _SILENCE_GUARD_SLACK_SEC
