@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "benchflow-taskset"
+version = "0.1.0"
+description = "BenchFlow tasks as a Verifiers v1 taskset, for evals and prime-rl training"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+keywords = ["benchflow", "verifiers", "rl", "prime-rl", "sandbox", "agentic-rl"]
+# BenchFlow itself is not a dependency: it cannot share a Python environment with
+# Verifiers v1 (litellm[proxy] needs mcp<2; Verifiers needs mcp==2.0.0). The tasks run
+# through bridge.py in a separate BenchFlow venv, named by $BENCHFLOW_PYTHON.
+dependencies = ["verifiers>=0.3.2.dev158"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["benchflow_taskset"]
