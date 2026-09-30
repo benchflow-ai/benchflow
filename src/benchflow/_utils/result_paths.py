@@ -11,6 +11,36 @@ from benchflow._utils.scoring import assessment_status, assessment_withholds_sco
 
 logger = logging.getLogger(__name__)
 
+# Files an Evaluation (or branch) job writes in its folder: evaluation.json
+# when it starts, summary.json when it ends (the only one in older jobs).
+_JOB_RECORDS = ("evaluation.json", "summary.json")
+
+
+def holds_attempts(folder: Path) -> bool:
+    """Whether results of one task in ``folder`` are attempts of one trial.
+
+    An Evaluation job runs each task once and retries it, on an
+    infrastructure error, in the same folder (a resume re-runs it there
+    too), so its results for one task are attempts, and one of them is the
+    trial's result. Any other folder, such as a ``bf.run_batch`` job or
+    ``bf.run`` calls sharing a ``job_name``, holds independent rollouts:
+    each is a sample of its own.
+    """
+    return any((folder / name).is_file() for name in _JOB_RECORDS)
+
+
+def attempt_rank(result_path: Path, *, scored: bool) -> tuple[bool, float, str]:
+    """How attempts of one trial are ordered; the highest is the trial's result.
+
+    A scored attempt wins, then the newest, the rule an Evaluation's resume
+    and ``summary.json`` use (:func:`load_task_results`).
+    """
+    try:
+        mtime = result_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return (scored, mtime, str(result_path))
+
 
 def iter_task_result_paths(root: Path) -> list[Path]:
     """Return result files at trial boundaries, excluding reviewer children.

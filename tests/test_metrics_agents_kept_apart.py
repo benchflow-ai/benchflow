@@ -51,6 +51,8 @@ def test_a_retried_task_of_one_agent_still_counts_once(tmp_path: Path):
     jobs = tmp_path / "jobs"
     _trial(jobs / "run", "alpha__1", "alpha", "oracle", 0.0)
     _trial(jobs / "run", "alpha__2", "alpha", "oracle", 1.0)
+    # Retries happen inside an Evaluation job, which records evaluation.json.
+    (jobs / "run" / "evaluation.json").write_text("{}")
 
     metrics = collect_metrics(jobs)
 

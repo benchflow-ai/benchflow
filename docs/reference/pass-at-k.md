@@ -15,7 +15,7 @@ The job value is the mean over tasks. Both need n ≥ k for a task. A task with 
 
 - Samples are scored trials. An unscored trial (agent error, verifier error, no reward) is left out of n and counted in `unscored`; it is not a failure. Harbor counts a missing reward as 0; BenchFlow does not.
 - Control runs (oracle, empty/nop, task copies suffixed `__o` (oracle) or `__e` (empty solution)) are left out (`controls_excluded`) unless `include_controls=True`.
-- A task's trials in different job folders are separate samples: `--matrix --trials N` writes `<alias>/trial-NN/<job>/`, so `bench eval metrics <jobs-dir>/<alias>` pools the N trials. Retries of one task inside one job folder are one sample (the best attempt, as `bf.load_job` keeps).
+- A task's trials in different job folders are separate samples: `--matrix --trials N` writes `<alias>/trial-NN/<job>/`, so `bench eval metrics <jobs-dir>/<alias>` pools the N trials. Retries of one task inside one Evaluation job are one sample (the best attempt, as `bf.load_job` keeps); repeated rollouts of a task in one `bf.run_batch` folder are separate samples.
 - One `Evaluation` holds one result per task, so its `summary.json` has n = 1 and only pass@1; pool trial folders for k > 1.
 
 ## Success rule and partial credit

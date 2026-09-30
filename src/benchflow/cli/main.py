@@ -1660,9 +1660,11 @@ def eval_metrics(
 ) -> None:
     """Collect and display metrics from a jobs directory.
 
-    pass@k / pass^k pool a task's trials across every job folder under the
-    directory (e.g. the trial-NN folders of --matrix --trials); unscored
-    trials and control runs are left out.
+    One row per trial, as bf.load_job counts them: a retried task of an
+    Evaluation job counts once, and repeated rollouts (a bf.run_batch
+    folder, the trial-NN folders of --matrix --trials) count as separate
+    trials. pass@k / pass^k pool a task's trials across every job folder
+    under the directory; unscored trials and control runs are left out.
     """
     import benchflow as bf
     from benchflow.metrics import collect_metrics

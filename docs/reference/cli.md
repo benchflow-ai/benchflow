@@ -628,6 +628,8 @@ bench eval list jobs/
 Collect and display metrics (pass/fail/score, memory score, tool calls, duration)
 from a jobs directory. Use `--json` for machine-readable output.
 
+Trials are counted as `bf.load_job` counts them: the attempts of a task that an Evaluation job retried (or re-ran on resume) are one trial, its scored attempt first, then its newest; repeated rollouts of a task, in one `bf.run_batch` folder or in the `trial-NN` folders of `--matrix --trials`, are separate trials. So `Total`, `Passed` and `Score` agree with the solve rate below.
+
 ```bash
 bench eval metrics jobs/
 bench eval metrics jobs/ --json

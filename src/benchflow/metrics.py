@@ -12,7 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._utils.result_paths import iter_task_result_paths
+from benchflow._utils.result_paths import (
+    attempt_rank,
+    holds_attempts,
+    iter_task_result_paths,
+)
 from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
     classify_error,
@@ -330,11 +334,13 @@ class BenchmarkMetrics:
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
             "integration_failures": self.integration_failures,
-            "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
-            "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
-            "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
+            # Task names, once each: a task with several trials (a batch, or
+            # --matrix --trials) is listed under every outcome it had.
+            "passed_tasks": sorted({t.task_name for t in self.tasks if t.passed}),
+            "failed_tasks": sorted({t.task_name for t in self.tasks if t.failed}),
+            "errored_tasks": sorted({t.task_name for t in self.tasks if t.errored}),
             "verifier_errored_tasks": sorted(
-                t.task_name for t in self.tasks if t.score_verifier_errored
+                {t.task_name for t in self.tasks if t.score_verifier_errored}
             ),
         }
 
@@ -381,16 +387,6 @@ def _with_integration_failure(
     }
 
 
-def _result_rank(result: dict[str, Any]) -> tuple[bool, bool, float]:
-    """Prefer a scored pass, then quality, without selecting stale error rewards."""
-    reward = extract_reward(result)
-    return (
-        reward is not None,
-        classify_score_outcome(result) == "passed",
-        reward if isinstance(reward, (int, float)) else 0.0,
-    )
-
-
 def collect_metrics(
     results_dir: str | Path,
     benchmark: str = "",
@@ -399,29 +395,41 @@ def collect_metrics(
 ) -> BenchmarkMetrics:
     """Collect metrics from a results directory.
 
-    Reads all result.json files, picks the best result per task, agent and
-    model (rewards > no rewards, higher reward preferred).
+    Reads every result.json under it, one row per trial, selected the way
+    ``bf.load_job`` selects them: the attempts of one task, agent and model
+    in an Evaluation job folder (retries, and re-runs on resume) are one
+    trial, its scored attempt first, then its newest; rollouts in any other
+    folder (``bf.run_batch``) and in separate job folders (``--matrix
+    --trials``) are separate trials. ``total``, ``passed`` and ``score``
+    therefore agree with ``bf.load_job(results_dir).solve_rates()``.
     """
     results_dir = Path(results_dir)
-    # One result per task, agent and model: a retried task counts once, but a
-    # folder holding several agents' jobs keeps each agent's result.
-    best: dict[tuple[str, str, str], dict] = {}
+    folders: dict[Path, bool] = {}
+    best: dict[tuple[Any, ...], tuple[tuple[bool, float, str], dict]] = {}
 
     for rfile in iter_task_result_paths(results_dir):
         try:
             r = _with_integration_failure(json.loads(rfile.read_text()), rfile.parent)
-            key = (
+            folder = rfile.parent.parent
+            if folder not in folders:
+                folders[folder] = holds_attempts(folder)
+            key: tuple[Any, ...] = (
                 r["task_name"],
+                str(folder),
                 str(r.get("agent_name") or r.get("agent") or ""),
                 str(r.get("model") or ""),
             )
-            if key not in best or _result_rank(r) > _result_rank(best[key]):
-                best[key] = r
+            if not folders[folder]:
+                key = (r["task_name"], str(rfile))
+            rank = attempt_rank(rfile, scored=extract_reward(r) is not None)
+            if key not in best or rank >= best[key][0]:
+                best[key] = (rank, r)
         except Exception as e:
             logger.debug(f"Skipping corrupt result file {rfile}: {e}")
 
     tasks = []
-    for (task_name, _agent, _model), r in sorted(best.items()):
+    for key, (_rank, r) in sorted(best.items(), key=lambda item: item[0]):
+        task_name = key[0]
         reward = extract_reward(r)
         # Calculate duration
         duration = 0.0

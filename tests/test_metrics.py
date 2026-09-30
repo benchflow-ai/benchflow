@@ -1,6 +1,7 @@
 """Tests for metrics collection and aggregation."""
 
 import json
+import os
 
 import pytest
 
@@ -63,40 +64,53 @@ def results_dir(tmp_path):
 
 @pytest.fixture
 def results_dir_with_retries(tmp_path):
-    """Results dir where task-a failed first, then passed on retry."""
-    # Task A: first attempt failed
-    trial_a1 = tmp_path / "attempt1" / "task-a__first"
-    trial_a1.mkdir(parents=True)
-    (trial_a1 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task-a",
-                "rewards": {"reward": 0.0},
-                "error": None,
-                "n_tool_calls": 5,
-                "started_at": "2026-03-24 10:00:00.000000",
-                "finished_at": "2026-03-24 10:01:00.000000",
-            }
-        )
-    )
+    """An Evaluation job where task-a failed first, then passed on retry.
 
-    # Task A: retry passed
-    trial_a2 = tmp_path / "attempt2" / "task-a__second"
-    trial_a2.mkdir(parents=True)
-    (trial_a2 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task-a",
-                "rewards": {"reward": 1.0},
-                "error": None,
-                "n_tool_calls": 15,
-                "started_at": "2026-03-24 10:02:00.000000",
-                "finished_at": "2026-03-24 10:03:00.000000",
-            }
-        )
+    An Evaluation retries a task inside its own job folder (which holds
+    evaluation.json); attempt 1 of each task is older than attempt 2.
+    """
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "evaluation.json").write_text("{}")
+    _attempt(
+        job,
+        "task-a__first",
+        1,
+        {
+            "task_name": "task-a",
+            "rewards": {"reward": 0.0},
+            "error": None,
+            "n_tool_calls": 5,
+        },
     )
+    _attempt(
+        job,
+        "task-a__second",
+        2,
+        {
+            "task_name": "task-a",
+            "rewards": {"reward": 1.0},
+            "error": None,
+            "n_tool_calls": 15,
+        },
+    )
+    return job
 
-    return tmp_path
+
+def _attempt(job, name: str, attempt: int, result: dict) -> None:
+    """Write one attempt's result.json; attempt 2 is newer than attempt 1."""
+    trial = job / name
+    trial.mkdir(parents=True)
+    minute = 2 * (attempt - 1)
+    result = {
+        "started_at": f"2026-03-24 10:0{minute}:00.000000",
+        "finished_at": f"2026-03-24 10:0{minute + 1}:00.000000",
+        **result,
+    }
+    path = trial / "result.json"
+    path.write_text(json.dumps(result))
+    stamp = 1_774_000_000 + attempt * 100
+    os.utime(path, (stamp, stamp))
 
 
 def test_collect_metrics_basic(results_dir):
@@ -133,83 +147,75 @@ def test_collect_metrics_duration(results_dir):
 
 
 def test_collect_metrics_best_result_picking(results_dir_with_retries):
-    """Test that best result per task is picked (higher reward wins)."""
-    base = results_dir_with_retries
+    """One attempt per retried task: a scored attempt first, then the newest.
 
-    # Both errored (no rewards): first seen is kept, counted once as errored
-    trial_b1 = base / "attempt1" / "task-b__err1"
-    trial_b1.mkdir(parents=True)
-    (trial_b1 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task-b",
-                "rewards": None,
-                "error": "install failed",
-                "n_tool_calls": 0,
-                "started_at": "2026-03-24 10:00:00.000000",
-                "finished_at": "2026-03-24 10:01:00.000000",
-            }
-        )
-    )
-    trial_b2 = base / "attempt2" / "task-b__err2"
-    trial_b2.mkdir(parents=True)
-    (trial_b2 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task-b",
-                "rewards": None,
-                "error": "pipe closed",
-                "n_tool_calls": 0,
-                "started_at": "2026-03-24 10:02:00.000000",
-                "finished_at": "2026-03-24 10:03:00.000000",
-            }
-        )
-    )
+    The rule the job's own summary.json and bf.load_job use, so the three
+    agree on the same job.
+    """
+    job = results_dir_with_retries
 
-    # Equal rewards: deterministic pick (counted once)
-    trial_c1 = base / "attempt1" / "task-c__eq1"
-    trial_c1.mkdir(parents=True)
-    (trial_c1 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task-c",
-                "rewards": {"reward": 0.5},
-                "error": None,
-                "n_tool_calls": 3,
-                "started_at": "2026-03-24 10:00:00.000000",
-                "finished_at": "2026-03-24 10:01:00.000000",
-            }
-        )
+    # Both errored (no rewards): the newest attempt is kept, counted once
+    _attempt(
+        job,
+        "task-b__err1",
+        1,
+        {
+            "task_name": "task-b",
+            "rewards": None,
+            "error": "install failed",
+            "n_tool_calls": 0,
+        },
     )
-    trial_c2 = base / "attempt2" / "task-c__eq2"
-    trial_c2.mkdir(parents=True)
-    (trial_c2 / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "task-c",
-                "rewards": {"reward": 0.5},
-                "error": None,
-                "n_tool_calls": 4,
-                "started_at": "2026-03-24 10:02:00.000000",
-                "finished_at": "2026-03-24 10:03:00.000000",
-            }
-        )
+    _attempt(
+        job,
+        "task-b__err2",
+        2,
+        {
+            "task_name": "task-b",
+            "rewards": None,
+            "error": "pipe closed",
+            "n_tool_calls": 0,
+        },
+    )
+    # Equal rewards: counted once
+    _attempt(
+        job,
+        "task-c__eq1",
+        1,
+        {
+            "task_name": "task-c",
+            "rewards": {"reward": 0.5},
+            "error": None,
+            "n_tool_calls": 3,
+        },
+    )
+    _attempt(
+        job,
+        "task-c__eq2",
+        2,
+        {
+            "task_name": "task-c",
+            "rewards": {"reward": 0.5},
+            "error": None,
+            "n_tool_calls": 4,
+        },
     )
 
-    metrics = collect_metrics(str(base))
+    metrics = collect_metrics(str(job))
     s = metrics.summary()
 
-    # task-a: passed (higher reward picked), task-b: errored, task-c: failed (0.5 != 1.0)
+    # task-a: passed (its scored retry), task-b: errored, task-c: failed (0.5 != 1.0)
     assert s["total"] == 3
     assert s["passed"] == 1
     assert "task-a" in s["passed_tasks"]
     assert s["errored"] == 1
     assert "task-b" in s["errored_tasks"]
-    # Determinism: when both attempts errored, first-seen wins (install_failure
-    # from attempt1, not "other" from attempt2's "pipe closed").
-    assert s["error_breakdown"] == {"install_failure": 1}
+    # When both attempts errored, the newest wins: attempt 2's "pipe closed"
+    # (category "other"), as the job's summary.json reports it.
+    assert s["error_breakdown"] == {"other": 1}
     assert s["failed"] == 1
     assert "task-c" in s["failed_tasks"]
+    assert [t.n_tool_calls for t in metrics.tasks if t.task_name == "task-c"] == [4]
 
 
 def test_collect_metrics_empty_dir(tmp_path):
