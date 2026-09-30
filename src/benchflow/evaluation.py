@@ -220,6 +220,15 @@ def _budget_overrides(cfg: Any, task_dir: Path) -> dict[str, Any]:
     return out
 
 
+def _seeds_from_config(value: Any) -> list[int] | None:
+    """``seeds:`` in a job config: a list of ints, or the CLI form (``0-4``)."""
+    if value is None or isinstance(value, list):
+        return value
+    from benchflow.embodied.rollouts import parse_seeds
+
+    return parse_seeds(str(value))
+
+
 def task_name_selected(name: str, include: set[str], exclude: set[str]) -> bool:
     """``--include`` / ``--exclude`` matching: exact names or fnmatch globs
     (``libero-10-*``, ``*-hard``). Exclude wins over include."""
@@ -1129,6 +1138,11 @@ class Evaluation:
             "retry_prompt": cfg.retry_prompt,
             "retry_resume_session": cfg.retry_resume_session,
             "budget": None if cfg.budget is None else cfg.budget.to_dict(),
+            "seeds": cfg.seeds,
+            "n_tasks": cfg.n_tasks,
+            "sample_seed": cfg.sample_seed,
+            "timeout_multiplier": cfg.timeout_multiplier,
+            "extra_instruction": cfg.extra_instruction,
             "source_provenance": cfg.source_provenance,
             "dataset_name": cfg.dataset_name,
             "dataset_version": cfg.dataset_version,
@@ -1331,6 +1345,11 @@ class Evaluation:
             retry_prompt=raw.get("retry_prompt"),
             retry_resume_session=bool(raw.get("retry_resume_session", False)),
             budget=Budget.coerce(raw.get("budget")),
+            seeds=_seeds_from_config(raw.get("seeds")),
+            n_tasks=raw.get("n_tasks"),
+            sample_seed=raw.get("sample_seed"),
+            timeout_multiplier=raw.get("timeout_multiplier"),
+            extra_instruction=raw.get("extra_instruction"),
         )
         evaluation = cls(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs

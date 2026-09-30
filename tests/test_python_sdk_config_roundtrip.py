@@ -59,6 +59,11 @@ def _evaluation(tmp_path: Path) -> bf.Evaluation:
         freeze_workspace=True,
         retry_from_checkpoint="on-failure",
         retry_prompt="Try again from here.",
+        seeds=[0, 2],
+        n_tasks=3,
+        sample_seed=7,
+        timeout_multiplier=1.5,
+        extra_instruction="Think step by step.",
     )
     return bf.Evaluation(
         tasks_dir=TASK.parent, jobs_dir=tmp_path / "jobs", config=config
@@ -126,6 +131,7 @@ def test_rollout_config_round_trip(tmp_path: Path) -> None:
         timeout=123,
         sandbox_setup_timeout=200,
         agent_env={"K": SECRET},
+        prompt_suffix="Think step by step.",
     )
     path = config.to_yaml(tmp_path / "rollout.yaml", include_agent_env=True)
     back = bf.RolloutConfig.from_yaml(path)
@@ -139,6 +145,7 @@ def test_rollout_config_round_trip(tmp_path: Path) -> None:
         "timeout",
         "sandbox_setup_timeout",
         "agent_env",
+        "prompt_suffix",
     ):
         assert getattr(back, field) == getattr(config, field), field
     assert Path(back.jobs_dir) == Path(config.jobs_dir)
@@ -152,6 +159,12 @@ def test_rollout_config_refuses_what_cannot_be_written(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="user"):
         config.to_dict()
+
+
+def test_seeds_in_a_config_take_the_cli_form(tmp_path: Path) -> None:
+    raw = _evaluation(tmp_path).to_dict()
+    raw["seeds"] = "0-2,5"
+    assert bf.Evaluation.from_dict(raw)._config.seeds == [0, 1, 2, 5]
 
 
 def test_agent_env_keys_survive_a_second_save(tmp_path: Path) -> None:
