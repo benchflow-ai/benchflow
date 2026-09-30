@@ -30,9 +30,9 @@ agentic_tool_call.generate                          POST /run
 The policy gets the task prompt and two tools, `run_bash` and `submit`, with the limits of the RL cookbooks' shared harness ([`../common/harness.py`](../common/harness.py): 10 tool-calling turns, 30 s per command, 2,000 characters of output). This is a deliberate choice over running OpenCode or mini-swe-agent in the sandbox:
 
 1. **Comparable numbers.** The TRL, Tinker, Prime and Fireworks cookbooks train with this harness, and the shared evaluator scores every policy with it, so a Miles-trained checkpoint is evaluated with the loop it trained in.
-2. **Token-in/token-out holds.** The episode sends each assistant message back exactly as the session server returned it. Harnesses that go through LiteLLM or their own client re-serialize tool-call arguments or drop `reasoning_content`, which the session server's strict matcher treats as a different history (it rolls back or rejects the turn).
+2. **Token-in/token-out holds.** The episode sends each assistant message back exactly as the session server returned it. Miles' agentic-rollout guide warns that harnesses may re-serialize tool-call arguments or omit `reasoning_content` on the next request, which its default strict matcher treats as a different history (v1 rolls back or rejects the turn).
 3. **No network path to open.** The model loop runs on the GPU host, so the sandbox never calls the model (next section).
-4. **Small models.** A two-tool prompt of a few hundred tokens suits a 1.7B–4B policy; OpenCode's system prompt alone runs to thousands of tokens.
+4. **Small models.** A two-tool prompt of a few hundred tokens suits a 1.7B–4B policy; coding agents start with thousands of tokens of instructions (Claude Code's first prompt is several thousand tokens before any tool output).
 5. **Attribution after the agent starts.** The server sees the policy's first command, which is what separates a discard from a 0 once an episode is under way.
 
 In-sandbox agents are not wired into this connector yet (BenchFlow runs them with `bf.run`); the networking they need is below.
@@ -68,7 +68,18 @@ The rule is Miles' own (radixark/miles#2802): discard only what the policy canno
 
 ### Reward integrity (BenchShield)
 
-`serve --integrity audit` asks each `TaskRuntime` for BenchShield's integrity verdict (`TaskRuntimeConfig(integrity=...)`, on `feat/benchshield`). A verdict with `exploited: true` turns the episode into a flagged 0 (`IntegrityViolation`, `eval_report.flagged`, `benchflow/flagged` per step), whatever the verifier said. Until BenchFlow ships the audit, the server refuses `--integrity audit` instead of training without it. The task family's `control/control-leaked-answer` task (its answer leaks into the workspace) is the check that the flag fires.
+`serve --integrity audit` asks each `TaskRuntime` for BenchShield's integrity verdict (`TaskRuntimeConfig(integrity=...)`, on `feat/benchshield`). A verdict with `exploited: true` turns the episode into a flagged 0 (`IntegrityViolation`, `eval_report.flagged`, `benchflow/flagged` per step), whatever the verifier said. Until BenchFlow ships the audit, the server refuses `--integrity audit` instead of training without it. What the audit counts as an exploit is agent-attributed evidence of a crossing into a protected resource: reading the verifier, oracle or solution folders, writing the reward, or a path a task's `benchguard.yaml` marks. The task family's `control/control-leaked-answer` (its answer leaks to `/workdir/.grader/expected.json`, inside the workspace) is flagged only with a binding that marks the leak `Hidden`:
+
+```yaml
+schema_version: benchguard.task_binding.v1
+resources:
+  - id: leaked-grader
+    selector: /workdir/.grader
+    class: Hidden
+    reason: the expected answer the verifier compares against leaks here
+```
+
+`smoke.py --exploit-task control-leaked-answer` checks the whole path against a server started with `--integrity audit` (results below).
 
 ### Rewards and groups
 
@@ -177,8 +188,11 @@ Then serve `/work/hf-trained` as in step 4 and run the same evaluator command wi
 | bug fix without a fix | `Submitted`, reward 0.0 | `Submitted`, reward 0.0 |
 | HTTP 502 from the session server after the policy acted | discarded, `ModelEndpointFailed` (two retries, no verifier run) | `InfraAbort("ModelEndpointFailed")` |
 | stuck in `sleep 120`, then abort | discarded, `Aborted`, 0.1 s after `/abort` | discarded, `Aborted`, 0.1 s after the `abort` hook |
+| the integrity control, reading the leak and submitting it (server on `--integrity audit`) | `IntegrityViolation`, reward 0.0, flagged (verifier 1.0; verdict `AgentViolation`) | not run through the agent function |
+| stuck in `sleep 120`, then the caller goes away | episode cancelled, sandbox released 0.5 s later | same, cancelling the agent function's task |
 
 - No request broke the stand-in's exact-history check, `reasoning_content` included.
+- The integrity row ran on a VM-only merge of this branch with `feat/benchshield` (aead8cfd), whose `TaskRuntimeConfig.integrity` the server detects; an honest task in the same run scored 1.0 unflagged (`VectorExposed`: the verifier shares the sandbox).
 - The policy ran as uid 1000, and the Daytona key's value never appeared in the sandbox's `env`.
 - After each run: 0 episodes in flight, 0 sandboxes held, and 0 Daytona sandboxes left with the owner label.
 - Per episode: sandbox start 4–18 s, verifier 11–30 s, 18–44 s end to end.

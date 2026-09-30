@@ -18,7 +18,7 @@ What BenchFlow brings to the sample:
 
 ## How the pieces talk
 
-- The environment server runs next to the rollout workers, in its own Python environment: BenchFlow and Miles pin different versions of shared packages (litellm, mcp, transformers), so they do not share one.
+- The environment server runs next to the rollout workers, in its own Python environment: BenchFlow needs Python 3.12 or newer and pins litellm, which caps mcp below 2, so it stays out of Miles' environment instead of being resolved together with it.
 - Model calls go from the environment server straight to the session URL: one non-streamed chat request per turn, with each assistant message sent back exactly as the session server returned it (`reasoning_content` and `tool_calls` included), so the strict message matcher always extends the session.
 - The sandbox never calls the model. The policy's commands reach it through the sandbox provider's API, and nothing inside it needs a route to the session server or the SGLang router. So no `--session-server-external-host` is needed, and no port has to be open to the sandbox provider's network.
 - The server binds to 127.0.0.1 by default. On a multi-node job, run it on the node that hosts the rollout manager, or bind another address with `--token-file` (a bearer token; the launcher forwards only the file's path to the workers, as with provider keys).
@@ -33,7 +33,7 @@ uv venv /root/benchflow-venv --python 3.12
 VIRTUAL_ENV=/root/benchflow-venv uv pip install "benchflow[sandbox-daytona]"
 ```
 
-The Daytona key stays with BenchFlow: `export DAYTONA_API_KEY=...` in the shell that starts the server (or `set -a; . daytona.env; set +a`), never in Miles' environment.
+The Daytona key stays with BenchFlow: load it into the shell that starts the server from a file (for example `set -a; . daytona.env; set +a`), never into Miles' environment and never on a command line.
 
 ## 2. Tasks and prompt data
 
@@ -61,7 +61,7 @@ The rows Miles reads (`--input-key prompt --metadata-key metadata`, no `--apply-
     --jobs-dir /root/benchflow/jobs --job-name train
 ```
 
-`--max-sandboxes` caps the sandboxes alive at once (episodes beyond it wait); `--max-turns`, `--bash-timeout` and `--max-output-chars` are the harness limits (defaults: 10 turns, 30 s, 2,000 characters); `--episode-timeout` is the wall-clock cap from sandbox start to verdict, which scores 0. `GET /health` shows episodes, sandboxes in use and exit statuses.
+`--max-sandboxes` caps the sandboxes alive at once (episodes beyond it wait); `--max-turns`, `--bash-timeout` and `--max-output-chars` are the harness limits (defaults: 10 turns, 30 s, 2,000 characters); `--episode-timeout` is the wall-clock cap from sandbox start to verdict: it scores 0 once the policy has acted, and before that the overrun is discarded. `GET /health` shows episodes, sandboxes in use and exit statuses.
 
 ## 4. Launch
 
@@ -104,6 +104,6 @@ A reply cut at `max_tokens` ends the episode (the session server will not extend
 
 ## Validation
 
-Checked without a GPU, on Daytona (BenchFlow's `docs/examples/rl/miles/smoke.py`, a stand-in session server that refuses any request not extending the stored history exactly): episodes through `benchflow_agent_function.run` score 1 with the right answer and 0 without; a 502 from the session server after the policy acted raises `InfraAbort("ModelEndpointFailed")`; the `abort` hook discards an episode stuck in a command within a second and releases its sandbox; the policy runs as uid 1000 and cannot read the Daytona key. The offline tests are in `tests/fast/examples/experimental/benchflow`.
+Checked without a GPU, on Daytona (BenchFlow's `docs/examples/rl/miles/smoke.py`, a stand-in session server that refuses any request not extending the stored history exactly): episodes through `benchflow_agent_function.run` score 1 with the right answer and 0 without; a 502 from the session server after the policy acted raises `InfraAbort("ModelEndpointFailed")`; the `abort` hook discards an episode stuck in a command within a second and releases its sandbox, and so does cancelling the agent function's task mid-episode; the policy runs as uid 1000 and cannot read the Daytona key; with BenchFlow's integrity audit (`serve --integrity audit`), an episode that reads an answer its task leaks and submits it scores 0 and is flagged (`IntegrityViolation`) although the verifier passed it. The offline tests are in `tests/fast/examples/experimental/benchflow`.
 
 Not yet run: `run.py` on a GPU, so the Miles side (session server, GRPO) of this example is unvalidated end to end.
