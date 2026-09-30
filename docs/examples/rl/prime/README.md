@@ -42,7 +42,7 @@ Verifiers' own stage timeouts are never used for the policy's limits, because pr
 
 ## How it works
 
-**Two Python environments.** BenchFlow and Verifiers v1 cannot be installed together: BenchFlow pins `litellm[proxy]==1.91.0`, which requires `mcp<2`, and Verifiers requires `mcp==2.0.0` (`uv pip compile` finds no solution). So `benchflow-taskset` is installed next to prime-rl and never imports BenchFlow. Each episode starts `bridge.py` with the Python of a separate BenchFlow venv (`$BENCHFLOW_PYTHON`); the bridge speaks JSON lines over stdin and stdout and owns the sandbox through `TaskRuntime`. It closes the sandbox on a `close` request, when its input ends (the env worker died), on SIGTERM, and after 30 idle minutes. It starts with an allowlisted environment: the Daytona and BenchFlow variables, never model keys or the Verifiers venv's Python settings.
+**Two Python environments.** BenchFlow and Verifiers v1 cannot be installed together: BenchFlow pins `litellm[proxy]==1.91.0`, which requires `mcp<2`, and Verifiers requires `mcp==2.0.0` (`uv pip compile` finds no solution). So `benchflow-taskset` is installed next to prime-rl and never imports BenchFlow. Each episode starts `bridge.py` with the Python of a separate BenchFlow venv (`$BENCHFLOW_PYTHON`); the bridge speaks JSON lines over stdin and stdout and owns the sandbox through `TaskRuntime`. It closes the sandbox on a `close` request, when its input ends (the env worker died), on SIGTERM, and after 30 idle minutes, and it asks Daytona to stop and delete an idle sandbox after 30 minutes, so one orphaned by a hard kill of the pod does not live for BenchFlow's default day. It starts with an allowlisted environment: the Daytona and BenchFlow variables, never model keys or the Verifiers venv's Python settings.
 
 **The env owns the sandbox.** A Verifiers rollout tears down its tool servers before it scores, and toolsets run as separate processes, so a toolset cannot own a sandbox that must still be alive when the verifier runs. `BenchFlowEnv` holds it for the whole episode instead:
 
@@ -172,10 +172,10 @@ Prime allows an account more than two instances only after its top-ups reach $10
 
 ```bash
 cd docs/examples/rl/prime/benchflow_taskset && <verifiers-venv>/bin/python -m pytest -q tests   # 42 tests, no network
-uv run pytest tests/test_prime_cookbook_pods.py tests/test_prime_cookbook_harness.py              # in BenchFlow's venv
+uv run pytest tests/test_prime_cookbook_bridge.py tests/test_prime_cookbook_harness.py tests/test_prime_cookbook_pods.py   # 37, in BenchFlow's venv
 ```
 
-The package tests run the real bridge client, session, tool server, env, and task hooks against a scripted bridge: reward mapping and drops through Verifiers' own scoring boundary, the TRL harness's tool outputs, the bridge's environment allowlist, and the sandbox closing when an episode ends normally, crashes, is cancelled, never starts, or its bridge dies or stops answering. They found one bug before training (MCP could not resolve the tools' annotations, so every episode would have failed to serve its tools).
+The package tests run the real bridge client, session, tool server, env, and task hooks against a scripted bridge: reward mapping and drops through Verifiers' own scoring boundary, the TRL harness's tool outputs, the bridge's environment allowlist, and the sandbox closing when an episode ends normally, crashes, is cancelled, never starts, or its bridge dies or stops answering. They found one bug before training (MCP could not resolve the tools' annotations, so every episode would have failed to serve its tools). In BenchFlow's suite, the bridge tests use BenchFlow's real task loader and reward helper with a scripted `TaskRuntime`, and run the bridge as a process to check that a close request, end of input, SIGTERM during a command, and the idle timeout each close the sandbox; the harness tests keep the package's copy of the shared harness identical to the source; the watchdog tests cover its stop rules, including that it never touches or counts a pod we did not create.
 
 ## Publishing to the Environments Hub
 
