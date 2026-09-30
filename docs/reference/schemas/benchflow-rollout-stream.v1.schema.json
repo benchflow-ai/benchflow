@@ -300,6 +300,115 @@
     "retried": {
       "type": "boolean",
       "description": "group_size only: true when a later attempt replaced this rollout before its group formed; it joins no group."
+    },
+    "segments": {
+      "type": "array",
+      "description": "Exact token segments (benchflow.token-segments.v1): one per span of a conversation in which each prompt extends the previous prompt and sampled tokens. Present whether or not the whole rollout is training-grade; helper and compaction calls are segments with trainable false.",
+      "items": {
+        "type": "object",
+        "required": [
+          "segment",
+          "thread",
+          "kind",
+          "trainable",
+          "calls",
+          "start",
+          "prompt_ids",
+          "completion_ids",
+          "action_mask",
+          "logprobs",
+          "policy_versions",
+          "digest"
+        ],
+        "properties": {
+          "segment": {
+            "type": "integer"
+          },
+          "thread": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "agent",
+              "subagent",
+              "chat",
+              "helper",
+              "compaction"
+            ]
+          },
+          "trainable": {
+            "type": "boolean"
+          },
+          "excluded": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "start": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Why this segment began after an earlier one of its conversation: reason rerender, compaction or after_dropped_call, and the call before it."
+          },
+          "prompt_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "completion_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "action_mask": {
+            "type": "array",
+            "items": {
+              "enum": [
+                0,
+                1
+              ]
+            }
+          },
+          "logprobs": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "call_spans": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "policy_versions": {
+            "type": "array"
+          },
+          "routing": {
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "digest": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tokens": {
+      "type": "object",
+      "description": "The account of every call (benchflow.token-segments.v1 without the segments): status exact, partial or none; dropped calls with reasons; failed attempts retried or not; and the attestation against the policy relay when the rollout ran behind one."
     }
   }
 }

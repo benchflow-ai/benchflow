@@ -41,6 +41,7 @@ from benchflow.trajectories.token_capture import (
     TOKEN_CAPTURE_SCHEMA_VERSION,
     summarize_token_capture,
 )
+from benchflow.trajectories.token_segments import segment_rollout
 from benchflow.trajectories.training_signal import (
     _advantages,
     _group_id,
@@ -168,6 +169,13 @@ class StreamedRollout:
         default=None, compare=False, repr=False
     )
     _retryable: bool = field(default=False, compare=False, repr=False)
+    # Exact token segments of the rollout (every conversation, helpers
+    # marked not trainable), and the account of every call: dropped calls
+    # with reasons, failed attempts, attestation against the policy relay
+    # (benchflow.trajectories.token_segments). Unlike ``sequences`` they do
+    # not need the whole rollout to be training-grade.
+    segments: list[dict[str, Any]] = field(default_factory=list)
+    tokens: dict[str, Any] = field(default_factory=dict)
 
     @property
     def scored(self) -> bool:
@@ -203,6 +211,8 @@ class StreamedRollout:
             "group_complete": self.group_complete,
             "replaces": self.replaces,
             "retried": self.retried,
+            "segments": list(self.segments),
+            "tokens": dict(self.tokens),
         }
 
     def to_json(self) -> str:
@@ -402,6 +412,7 @@ def read_rollout(
             "a conversation's calls could not be merged into one sequence"
         )
         sequences = []
+    report = segment_rollout(exchanges or [], relay_calls=_relay_calls(root))
     try:
         rollout_path = str(root.relative_to(job_root))
     except ValueError:
@@ -425,7 +436,25 @@ def read_rollout(
         calls=calls,
         sequences=sequences,
         rollout_dir=root,
+        segments=report["segments"],
+        tokens={k: v for k, v in report.items() if k != "segments"},
     )
+
+
+def _relay_calls(rollout_dir: Path) -> list[dict[str, Any]] | None:
+    """The policy relay's record of the rollout's calls, when it ran behind one."""
+    path = rollout_dir / "trajectory" / "policy_relay.jsonl"
+    if not path.is_file():
+        return None
+    rows = []
+    for line in path.read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 # --- the stream -------------------------------------------------------------
@@ -923,6 +952,62 @@ SCHEMA: dict[str, Any] = {
             "type": "boolean",
             "description": "group_size only: true when a later attempt "
             "replaced this rollout before its group formed; it joins no group.",
+        },
+        "segments": {
+            "type": "array",
+            "description": "Exact token segments (benchflow.token-segments.v1): "
+            "one per span of a conversation in which each prompt extends the "
+            "previous prompt and sampled tokens. Present whether or not the "
+            "whole rollout is training-grade; helper and compaction calls are "
+            "segments with trainable false.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "segment",
+                    "thread",
+                    "kind",
+                    "trainable",
+                    "calls",
+                    "start",
+                    "prompt_ids",
+                    "completion_ids",
+                    "action_mask",
+                    "logprobs",
+                    "policy_versions",
+                    "digest",
+                ],
+                "properties": {
+                    "segment": {"type": "integer"},
+                    "thread": {"type": "integer"},
+                    "kind": {
+                        "enum": ["agent", "subagent", "chat", "helper", "compaction"]
+                    },
+                    "trainable": {"type": "boolean"},
+                    "excluded": _OPT_STR,
+                    "calls": {"type": "array", "items": {"type": "integer"}},
+                    "start": {
+                        "type": ["object", "null"],
+                        "description": "Why this segment began after an earlier "
+                        "one of its conversation: reason rerender, compaction or "
+                        "after_dropped_call, and the call before it.",
+                    },
+                    "prompt_ids": _INTS,
+                    "completion_ids": _INTS,
+                    "action_mask": {"type": "array", "items": {"enum": [0, 1]}},
+                    "logprobs": {"type": "array", "items": {"type": "number"}},
+                    "call_spans": {"type": "array", "items": {"type": "object"}},
+                    "policy_versions": {"type": "array"},
+                    "routing": {"type": ["array", "null"]},
+                    "digest": {"type": "string"},
+                },
+            },
+        },
+        "tokens": {
+            "type": "object",
+            "description": "The account of every call (benchflow.token-segments.v1 "
+            "without the segments): status exact, partial or none; dropped calls "
+            "with reasons; failed attempts retried or not; and the attestation "
+            "against the policy relay when the rollout ran behind one.",
         },
     },
 }

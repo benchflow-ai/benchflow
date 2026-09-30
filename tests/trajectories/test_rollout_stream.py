@@ -452,3 +452,54 @@ def test_groups_do_not_span_jobs_by_default(tmp_path):
         )
     )
     assert {r.group_complete for r in pooled} == {True}
+
+
+def test_segments_survive_a_failed_attempt_and_a_compaction(tmp_path):
+    """``sequences`` need the whole rollout to be training-grade; one failed
+    provider attempt or one compaction used to leave a trainer nothing.
+    ``segments`` keep every exact span, and ``tokens`` says what was left out."""
+    tools = {"tools": [{"type": "function", "function": {"name": "Bash"}}]}
+    same = {"messages": [{"role": "user", "content": "again"}], **tools}
+    first = dict(_capture([1, 2, 3], [10, 11]), request={"body": tools})
+    failed = {
+        "request": {"body": same},
+        "response": {"status_code": 503, "body": {}},
+        "metadata": {"call_purpose": "agent"},
+    }
+    retry = dict(_capture([1, 2, 3, 10, 11, 7, 8], [12]), request={"body": same})
+    compacted = dict(_capture([1, 99], [13]), request={"body": tools})
+    helper = _capture([40, 41], [42])
+    write_rollout(
+        tmp_path / "job", "t__a", calls=[first, failed, retry, compacted, helper]
+    )
+
+    [record] = rs.stream_rollouts(tmp_path / "job", follow=False)
+
+    assert not record.training_grade and record.sequences == []
+    kinds = [(s["kind"], s["calls"], s["trainable"]) for s in record.segments]
+    assert kinds == [
+        ("agent", [0, 2], True),
+        ("agent", [3], True),
+        ("helper", [4], False),
+    ]
+    assert record.segments[1]["start"] == {"reason": "compaction", "call": 2}
+    assert record.tokens["failed_attempts"] == {"retried": 1, "unretried": 0}
+    assert record.tokens["status"] == "exact"
+    assert record.tokens["attestation"]["status"] == "unavailable"
+    jsonschema.validate(record.to_json_dict(), rs.SCHEMA)
+
+
+def test_segments_are_attested_against_the_relay_log(tmp_path):
+    from benchflow.trajectories.token_capture import token_digest
+
+    call = _capture([1, 2], [3])
+    root = write_rollout(tmp_path / "job", "t__a", calls=[call])
+    digest = token_digest(
+        [1, 2], [{"index": 0, "token_ids": [3], "logprobs": [-0.5]}]
+    )
+    (root / "trajectory" / "policy_relay.jsonl").write_text(
+        json.dumps({"status": "ok", "digest": digest, "version": 12}) + "\n"
+    )
+    [record] = rs.stream_rollouts(tmp_path / "job", follow=False)
+    assert record.tokens["attestation"]["status"] == "attested"
+    assert record.segments[0]["policy_versions"] == [12]
