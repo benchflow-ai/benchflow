@@ -29,6 +29,7 @@ from rich.table import Table
 from benchflow import __version__
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli._errors import install_recent_log
 from benchflow.cli._live_progress import (
     LiveEvalProgress,
     live_session,
@@ -47,6 +48,7 @@ from benchflow.cli._shared import (
     console,
     err_console,
     print_error,
+    stopped_run_result,
 )
 from benchflow.cli._termination import run_until_terminated
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
@@ -122,6 +124,8 @@ def _log_settings(environ: Mapping[str, str]) -> tuple[int, str]:
 
 _level, _format = _log_settings(os.environ)
 logging.basicConfig(level=_level, format=_format)
+# The last log lines, for the crash log of an unexpected error (cli/_errors.py).
+install_recent_log()
 
 _TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
 
@@ -1336,6 +1340,7 @@ def run_batch_eval(
     Promoted from the ``eval_run`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
+    from benchflow.agents.errors import UsageLimitError
     from benchflow.eval_sharding import ShardWorkerError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
     from benchflow.task.discovery import resolve_task_collection_root
@@ -1394,6 +1399,10 @@ def run_batch_eval(
                     worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
                 )
             )
+    except UsageLimitError as e:
+        # The job stopped on its login's usage limit: report what finished;
+        # the summary names the login, the window and the reset.
+        result = stopped_run_result(e)
     except EmptyTaskSelectionError as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None
@@ -1415,6 +1424,7 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
 
     import yaml
 
+    from benchflow.agents.errors import UsageLimitError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
 
     req = plan.request
@@ -1542,6 +1552,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     )
     try:
         result = run_until_terminated(j.run())
+    except UsageLimitError as e:
+        result = stopped_run_result(e)
     except (EmptyTaskSelectionError, ValueError) as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None
@@ -1962,5 +1974,12 @@ register_environment(app)
 register_monitor(app)
 
 
+def main() -> None:
+    """The ``bench`` / ``benchflow`` console script (see ``benchflow.cli._errors``)."""
+    from benchflow.cli._errors import run_cli
+
+    run_cli(app)
+
+
 if __name__ == "__main__":
-    app()
+    main()

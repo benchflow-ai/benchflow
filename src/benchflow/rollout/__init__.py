@@ -79,6 +79,7 @@ from benchflow.agents.codex_connector_policy import (
     enforce_codex_apps_policy,
 )
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.errors import UsageLimitError
 from benchflow.agents.registry import (
     AGENTS,
     infer_env_key_for_model,
@@ -100,7 +101,9 @@ from benchflow.diagnostics import (
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
+    UsageLimitDiagnostic,
 )
+from benchflow.errors import UserError, user_message
 from benchflow.loop_strategies import (
     LoopStrategyUser,
     collect_loop_metadata,
@@ -2868,7 +2871,9 @@ class Rollout:
             # self._error to the provider_auth marker, so this is only a
             # placeholder during cleanup.
             self._error = str(e)
-            logger.error(str(e))
+            if not isinstance(e, UsageLimitError):
+                # A usage limit is logged once, below, with its login.
+                logger.error(str(e))
         except Exception as e:
             # describe_exception, not str(e): this is the funnel every
             # unclassified rollout failure lands in, and some SDK errors
@@ -2879,7 +2884,12 @@ class Rollout:
                 self._verifier_error = f"[solver-preserved] post-solver stage failed: {describe_exception(e)}"
             else:
                 self._error = describe_exception(e)
-            logger.error("Run failed", exc_info=True)
+            if isinstance(e, UserError):
+                # Expected (a missing login, a task file that does not
+                # parse): its message says it all, a traceback would not.
+                logger.error(f"Run failed: {user_message(e)}")
+            else:
+                logger.error("Run failed", exc_info=True)
         finally:
             try:
                 await self.cleanup()
@@ -3188,6 +3198,21 @@ class Rollout:
             diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
+        if isinstance(e, UsageLimitError):
+            # Name the login (a label, never the token) and record the typed
+            # diagnostic: the trial is an unscored usage_limit, never retried.
+            from benchflow.agents.env import login_label
+
+            named = e.with_login(
+                login_label(
+                    self._config.primary_agent,
+                    self._config.primary_model,
+                    self._agent_env,
+                    self._config.agent_env,
+                )
+            )
+            self._diagnostics.set(UsageLimitDiagnostic.from_error(named))
+            return str(named)
         # The base AgentProtocolError only annotates `message: str` without
         # assigning it, so a base instance has no `.message` (AttributeError
         # risk); ACPError subclasses do set it. Fall back to str(e) defensively.

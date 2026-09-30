@@ -632,6 +632,11 @@ class AgentConfig:
     acp_subagent_transcript: bool = False
     # Only verified direct harnesses may request the legacy same-session child
     # transcript extension; this does not advertise native child sessions.
+    acp_typed_failures: bool = False
+    # Ask the agent for typed session failures (the AIR ``sessionFailure``
+    # extension): a spent subscription then arrives as its own failure kind
+    # instead of an opaque -32603. Only for harnesses whose failure records
+    # were checked against the pinned version (benchflow.acp.client).
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
@@ -749,6 +754,8 @@ AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
         name="claude-agent-acp",
         acp_subagent_transcript=True,
+        # Verified against claude-agent-acp 0.81.2's session-failure-extension.
+        acp_typed_failures=True,
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
@@ -1459,8 +1466,9 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         home_dirs=config.home_dirs,
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
-        # acpx forwarding of this extension has not been verified.
+        # acpx forwarding of these extensions has not been verified.
         acp_subagent_transcript=False,
+        acp_typed_failures=False,
         supports_acp_set_model=config.supports_acp_set_model,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,

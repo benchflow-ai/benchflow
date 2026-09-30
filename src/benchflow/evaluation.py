@@ -58,6 +58,7 @@ from benchflow._utils.scoring import (
     PROVIDER_REJECTED,
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
+    USAGE_LIMIT,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -74,10 +75,12 @@ from benchflow._utils.scoring import (
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
+from benchflow.agents.errors import UsageLimitError
 from benchflow.budget import Budget, BudgetGuard
 from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest, load_manifest
+from benchflow.errors import UserError
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -187,7 +190,7 @@ def _task_parse_error(path: Path) -> tuple[Path, str] | None:
     return None
 
 
-class EmptyTaskSelectionError(ValueError):
+class EmptyTaskSelectionError(ValueError, UserError):
     """Raised when task discovery + include/exclude filters resolve to zero tasks.
 
     Failing fast is preferred over silently writing a 0/0 summary.json that
@@ -195,7 +198,7 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
-class ResumeMismatchError(ValueError):
+class ResumeMismatchError(ValueError, UserError):
     """Raised when resuming a jobs_dir whose completed tasks ran a different agent.
 
     A jobs_dir holds one (agent, model) run. Folding a *different* agent's cached
@@ -262,7 +265,7 @@ def sample_task_dirs(
     return sorted(random.Random(seed).sample(tasks, n_tasks))
 
 
-class MalformedTaskError(ValueError):
+class MalformedTaskError(ValueError, UserError):
     """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
     but fails to parse (#3).
 
@@ -270,6 +273,8 @@ class MalformedTaskError(ValueError):
     as a clean red message + exit 1. The message names the offending file —
     silently treating a typo'd task.md as "not a task" would make the task vanish.
     """
+
+    fault = "task"
 
 
 @dataclass
@@ -351,6 +356,10 @@ class RetryConfig:
         category = category or classify_error(error)
         if not category:
             return False
+        if category == USAGE_LIMIT:
+            # Whatever exclude_categories says: every retry on the same login
+            # fails the same way until the window resets.
+            return False
         if category in self.exclude_categories:
             return False
         if self.retry_on_install and category == INSTALL_FAILED:
@@ -372,25 +381,42 @@ class RetryConfig:
             return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
+    def reruns_on_resume(
+        self, error: str | None, *, category: str | None = None
+    ) -> bool:
+        """Whether a resumed job runs an unscored trial again.
+
+        Everything ``should_retry`` retries, and a trial that ended on its
+        login's usage limit: never retried within the run (the same login
+        would only hit it again), but a resume is how a caller runs it again
+        on another login or after the reset.
+        """
+        category = category or classify_error(error)
+        return category == USAGE_LIMIT or self.should_retry(error, category=category)
+
     def reruns_unjudged_solver(
         self,
         scoring: ScoringResult | None,
         error: str | None,
         *,
         category: str | None = None,
+        on_resume: bool = False,
     ) -> bool:
         """Whether a rubric trial's solver runs again despite its scoring block.
 
         A rubric trial commits a scoring block even when its solver failed on
         the sandbox or transport and nothing was judged: a scoring error with
         no verifier reward. That is a retryable infrastructure failure like
-        any other (#1059), not a verdict that pins the trial.
+        any other (#1059), not a verdict that pins the trial. ``on_resume``
+        also runs again a solver that ended on a usage limit
+        (:meth:`reruns_on_resume`).
         """
+        again = self.reruns_on_resume if on_resume else self.should_retry
         return (
             scoring is not None
             and scoring.status == "error"
             and scoring.verifier_reward is None
-            and self.should_retry(error, category=category)
+            and again(error, category=category)
         )
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
@@ -490,6 +516,44 @@ class ApiErrorCircuitBreaker:
             f"skipped: api-error circuit breaker open "
             f"([{self._fingerprint}] x{self._streak} consecutive)"
         )
+
+
+class UsageLimitStop:
+    """Stop starting trials once one ends on its login's usage limit.
+
+    Every trial of an Evaluation runs on the same login, so once one reports
+    the limit the rest would fail the same way until the window resets.
+    Running trials finish; trials not yet started are left out of the job
+    (not counted as results) for a resume on another login or after the
+    reset. ``Evaluation.run`` raises the first ``UsageLimitError`` at the end.
+    """
+
+    def __init__(self) -> None:
+        self.error: UsageLimitError | None = None
+        self.not_started: list[str] = []
+
+    def record(self, result: RunResult) -> None:
+        if self.error is not None:
+            return
+        self.error = UsageLimitError.from_result(result)
+        if self.error is not None:
+            login = f"login {self.error.login}" if self.error.login else "the login"
+            logger.error(
+                f"Stopping the job: {login} is out of usage; running trials "
+                "finish, no new ones start"
+            )
+
+    def skip(self, name: str) -> bool:
+        """True (and recorded) when ``name`` must not start."""
+        if self.error is None:
+            return False
+        self.not_started.append(name)
+        return True
+
+    def summary(self) -> dict[str, Any] | None:
+        if self.error is None:
+            return None
+        return {**self.error.to_dict(), "not_started": list(self.not_started)}
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -1024,6 +1088,7 @@ class Evaluation:
             # A hard per-job cap (benchflow.budget); same as config.budget.
             self._config.budget = Budget.coerce(budget)
         self._budget_guard: BudgetGuard | None = None
+        self._usage_stop = UsageLimitStop()
         # agent_env names a loaded config declared without values; to_dict
         # keeps listing them so a second save does not forget them.
         self._declared_env_keys: list[str] = []
@@ -1685,11 +1750,12 @@ class Evaluation:
                 if (
                     rerun_ok
                     and pending.get("rewards") is None
-                    and self._config.retry.should_retry(
+                    and self._config.retry.reruns_on_resume(
                         pending.get("error"), category=pending.get("error_category")
                     )
                 ):
-                    # Its solver failed on infrastructure: nothing to review.
+                    # Its solver failed on infrastructure or ended on a usage
+                    # limit: nothing to review.
                     continue
                 latest[name] = {
                     **pending,
@@ -1707,7 +1773,10 @@ class Evaluation:
             # unless the solver failed on infrastructure and nothing was judged.
             if r.get("scoring") is not None:
                 if rerun_ok and self._config.retry.reruns_unjudged_solver(
-                    _scoring_block(r), r.get("error"), category=r.get("error_category")
+                    _scoring_block(r),
+                    r.get("error"),
+                    category=r.get("error_category"),
+                    on_resume=True,
                 ):
                     logger.info(
                         f"Re-running task whose solver failed on infrastructure "
@@ -2027,11 +2096,14 @@ class Evaluation:
 
         breaker = ApiErrorCircuitBreaker()
         guard = self._budget_guard
+        usage_stop = self._usage_stop
 
         async def bounded(td: Path) -> tuple[str, RunResult | None]:
             async with sem:
                 if guard is not None and guard.stopped:
                     guard.start(td.name)  # records it as not started
+                    return td.name, None
+                if usage_stop.skip(td.name):
                     return td.name, None
                 if breaker.tripped:
                     result = RunResult(task_name=td.name, error=breaker.skip_error())
@@ -2047,6 +2119,10 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                    # A trial that hit the usage limit during the wait stops
+                    # this one too.
+                    if usage_stop.skip(td.name):
+                        return td.name, None
                 if guard is not None and not guard.start(
                     td.name, asyncio.current_task()
                 ):
@@ -2055,6 +2131,7 @@ class Evaluation:
                 result = await self._run_budgeted(td, guard)
                 if result is None:
                     return td.name, None
+                usage_stop.record(result)
                 breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
@@ -2178,8 +2255,12 @@ class Evaluation:
                 self._learner_export_dir = export_dir
 
                 guard = self._budget_guard
-                if guard is not None and guard.stopped:
-                    guard.start(td.name)  # records it as not started
+                if (guard is not None and guard.stopped) or self._usage_stop.error:
+                    if self._usage_stop.error is not None:
+                        self._usage_stop.skip(td.name)
+                    else:
+                        assert guard is not None
+                        guard.start(td.name)  # records it as not started
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
                     continue
@@ -2212,6 +2293,7 @@ class Evaluation:
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
 
+                self._usage_stop.record(result)
                 self._log_and_report(td, result)
                 pairs.append((td.name, result))
 
@@ -2666,6 +2748,7 @@ class Evaluation:
 
         start = time.time()
 
+        self._usage_stop = UsageLimitStop()
         self._budget_guard = None
         if cfg.budget is not None:
             self._budget_guard = BudgetGuard(cfg.budget)
@@ -2806,6 +2889,11 @@ class Evaluation:
             **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
             **({"budget": job_result.budget} if job_result.budget is not None else {}),
+            **(
+                {"usage_limit": stop}
+                if (stop := self._usage_stop.summary()) is not None
+                else {}
+            ),
             **summary_source_fields(cfg.source_provenance, all_results),
             **(
                 {
@@ -2914,4 +3002,10 @@ class Evaluation:
         )
 
         self.result = job_result
+        if self._usage_stop.error is not None:
+            # The job stopped on its login's usage limit: raise the typed
+            # error (with this result) so a caller can switch logins and
+            # resume; summary.json and every finished trial are written.
+            self._usage_stop.error.result = job_result
+            raise self._usage_stop.error
         return job_result

@@ -15,6 +15,8 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from benchflow.errors import UserError
+
 VERIFIER_DOCUMENT_FILENAME = "verifier.md"
 
 VerifierStrategyType = Literal[
@@ -38,8 +40,10 @@ _KNOWN_STRATEGY_TYPES = {
 }
 
 
-class VerifierDocumentParseError(ValueError):
+class VerifierDocumentParseError(ValueError, UserError):
     """Raised when ``verifier/verifier.md`` cannot be parsed."""
+
+    fault = "task"
 
 
 @dataclass(frozen=True)

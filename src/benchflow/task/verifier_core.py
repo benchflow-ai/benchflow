@@ -42,6 +42,7 @@ from benchflow.sandbox.lockdown import (
     _exec_return_code,
     clear_verifier_output_dir,
     describe_installed_marker,
+    installed_marker_plugins,
     parse_pytest_plugin_guard_markers,
     pytest_plugin_guard_markers_cmd,
     pytest_plugin_guard_markers_dir,
@@ -649,15 +650,24 @@ class Verifier:
             # The guard refused a plugin the verifier installed after the agent
             # stopped (a refusal of planted code leaves no marker and stays
             # scored): BenchFlow's own false positive, not the solution's 0.
-            files = describe_installed_marker(installed[0].detail)
+            detail = installed[0].detail
+            plugins, environments = installed_marker_plugins(detail)
+            what = "pytest plugin " + (", ".join(plugins) if plugins else "code")
+            where = f" into {', '.join(environments)}" if environments else ""
+            task_dir = getattr(getattr(self._task, "paths", None), "task_dir", None)
+            check = f"bench tasks check {task_dir}" if task_dir else "bench tasks check"
+            example = plugins[0].replace(" ", "==") if plugins else "<plugin>"
             raise PluginGuardLoadError(
-                f"the pytest plugin guard {guard} refused a pytest plugin the "
-                f"verifier installed after the agent stopped: {files} (listed "
-                f"in verifier/{installed[0].name}); its reward is not scored. "
-                "Install verifier plugins with uvx, whose cache BenchFlow moves "
-                "to a directory the guard trusts, or into the image; the guard "
-                "refuses plugin code in the workspace, /tmp or a venv test.sh "
-                "makes there"
+                f"{what} was installed after the agent stopped, by the "
+                f"verifier{where}, where the agent could write; the pytest "
+                f"plugin guard {guard} refused it, so this run is not scored, "
+                "and neither is any run of this task, the reference solution's "
+                f"included. This is a task problem: `{check}` flags it. Install "
+                f"verifier plugins with uvx (for example `uvx --with {example} "
+                "pytest ...`), whose cache BenchFlow moves to a directory the "
+                "guard trusts, or into the image. Refused: "
+                f"{describe_installed_marker(detail)} (listed in "
+                f"verifier/{installed[0].name})"
             )
 
         if test_return_code != 0 and (

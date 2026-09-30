@@ -44,6 +44,8 @@ from pydantic import (
     model_validator,
 )
 
+from benchflow.errors import UserError
+
 LEGACY_REVIEW_RUBRIC_CONTRACT = "v0.1"
 WEIGHTED_REVIEW_RUBRIC_CONTRACT = "v0.2"
 # Backward-compatible public alias. New code that needs to distinguish
@@ -68,8 +70,10 @@ NonBlankText = Annotated[
 ]
 
 
-class ReviewRubricError(ValueError):
+class ReviewRubricError(ValueError, UserError):
     """Raised when a rubric file cannot be loaded or is not a valid rubric."""
+
+    fault = "task"
 
 
 class RubricCriterion(BaseModel):

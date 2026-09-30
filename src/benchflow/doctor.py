@@ -4,7 +4,13 @@ One place that answers "can this machine run a BenchFlow eval right now, and if
 not, what do I do?" Each check returns a :class:`Check` with a pass / warn /
 fail / skip status, a one-line summary and a concrete fix. ``fail`` is reserved
 for problems that stop every run on the selected sandbox (no Docker daemon, no
-Daytona SDK, no usable agent credential); everything else is a warning.
+Daytona SDK); everything else is a warning, including a machine with no agent
+credential at all (the oracle and nop controls still run).
+
+The Claude subscription check is the one model request doctor makes: one
+8-token ``claude-haiku-4-5-20251001`` request with the login's OAuth token,
+whose ``anthropic-ratelimit-unified-*`` headers give the 5-hour and 7-day
+windows' use and resets (``--offline`` skips it).
 
 Credentials are read to decide *whether* they exist and *when* they expire.
 Values never leave this module: summaries, fixes and ``details`` carry variable
@@ -42,6 +48,13 @@ GIB = 1024**3
 MIN_DOCKER_MEMORY_BYTES = 4 * GIB
 MIN_DAYTONA_SDK = (0, 184, 0)
 PROBE_TIMEOUT_SEC = 5.0
+# Below this Docker's data root runs out while building task images.
+MIN_DOCKER_FREE_BYTES = 10 * GIB
+HEADROOM_TIMEOUT_SEC = 20.0
+HEADROOM_MODEL = "claude-haiku-4-5-20251001"
+ANTHROPIC_API = "https://api.anthropic.com"
+# Where a Daytona sandbox installs the LiteLLM model proxy from.
+PYPI_ENDPOINT = "https://pypi.org/simple/"
 
 # Endpoints every JS agent install needs from inside the sandbox (Node tarball
 # + npm packages). Probed from the host as a proxy for the sandbox's egress.
@@ -187,6 +200,50 @@ def _http_status(url: str, timeout: float) -> int:
     return response.status_code
 
 
+def _claude_headroom_request(
+    token: str, base_url: str, timeout: float
+) -> tuple[int | None, dict[str, str], str]:
+    """One 8-token Haiku request with a Claude OAuth token: (status, headers, error).
+
+    The headers are returned whatever the status (a spent login answers 429
+    with the same ``anthropic-ratelimit-unified-*`` headers); ``error`` is a
+    transport failure. The token goes only into the Authorization header.
+    """
+    import logging
+
+    import httpx
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    try:
+        response = httpx.post(
+            base_url.rstrip("/") + "/v1/messages",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": HEADROOM_MODEL,
+                "max_tokens": 8,
+                "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+                "messages": [{"role": "user", "content": "Reply with ready."}],
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return None, {}, f"{type(exc).__name__}: {exc}"
+    return response.status_code, dict(response.headers), ""
+
+
+def _disk_free(path: str) -> int | None:
+    """Free bytes on the filesystem holding ``path``, or None when it is not here."""
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
+
+
 def _dist_version(dist: str) -> str | None:
     from importlib.metadata import PackageNotFoundError, version
 
@@ -231,7 +288,12 @@ class DoctorProbes:
     http_status: Callable[[str, float], int] = _http_status
     dist_version: Callable[[str], str | None] = _dist_version
     daytona_check: Callable[[Mapping[str, str], float], None] = _daytona_list_one
+    claude_headroom: Callable[
+        [str, str, float], tuple[int | None, dict[str, str], str]
+    ] = _claude_headroom_request
+    disk_free: Callable[[str], int | None] = _disk_free
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
+    system: str = platform.system()
     python_version: tuple[int, int, int] = (
         sys.version_info.major,
         sys.version_info.minor,
@@ -562,12 +624,15 @@ def check_docker(probes: DoctorProbes, *, required: bool) -> list[Check]:
     """
     row = _checker("sandbox", "docker")
     bad: Status = "fail" if required else "warn"
+    linux = probes.system == "Linux"
     if probes.which("docker") is None:
         return [
             row(
                 bad,
                 "docker CLI not found on PATH",
-                "Install Docker Desktop, OrbStack or Colima (brew install colima docker)",
+                "Install Docker Engine: https://docs.docker.com/engine/install/"
+                if linux
+                else "Install Docker Desktop, OrbStack or Colima (brew install colima docker)",
             )
         ]
     context = _docker_context(probes)
@@ -587,11 +652,19 @@ def check_docker(probes: DoctorProbes, *, required: bool) -> list[Check]:
             _first_line(result.stderr, secrets=secret_values(probes.environ))
             or "no response from `docker info`"
         )
-        start = (
-            f"colima start {colima.profile}"
-            if colima
-            else "Start Docker Desktop / OrbStack, or `colima start`"
-        )
+        if probes.get("DOCKER_HOST"):
+            start = (
+                f"{context} is set: unset DOCKER_HOST, or point it at a running daemon"
+            )
+        elif colima:
+            start = f"colima start {colima.profile}"
+        elif linux:
+            start = (
+                "sudo systemctl start docker; if the socket's permission is "
+                "denied, `sudo usermod -aG docker $USER` and log in again"
+            )
+        else:
+            start = "Start Docker Desktop / OrbStack, or `colima start`"
         checks.append(
             row(
                 bad,
@@ -606,20 +679,42 @@ def check_docker(probes: DoctorProbes, *, required: bool) -> list[Check]:
     ncpu = info.get("NCPU")
     mem = info.get("MemTotal")
     mem_text = _fmt_bytes(mem) if isinstance(mem, int) else "? GiB"
+    root = str(info.get("DockerRootDir") or "")
+    # Only a daemon on this machine keeps its data root on this filesystem;
+    # Docker Desktop, Colima and a remote DOCKER_HOST keep it in their VM.
+    local = context in (None, "default") or (context or "").startswith(
+        "DOCKER_HOST=unix://"
+    )
+    free = probes.disk_free(root) if root and local and not colima else None
     details = {
         "context": context,
         "server_version": version,
         "cpus": ncpu,
         "memory_bytes": mem,
         "os": info.get("OperatingSystem"),
+        "root_dir": root or None,
+        "free_bytes": free,
     }
+    disk_text = f", {_fmt_bytes(free)} free in {root}" if free is not None else ""
     checks.append(
         row(
             "pass",
-            f"Docker {version} via {via} ({ncpu} CPU, {mem_text})",
+            f"Docker {version} via {via} ({ncpu} CPU, {mem_text}{disk_text})",
             details=details,
         )
     )
+    if free is not None and free < MIN_DOCKER_FREE_BYTES:
+        disk_row = _checker("sandbox", "docker disk", "docker-disk")
+        checks.append(
+            disk_row(
+                "warn",
+                f"only {_fmt_bytes(free)} free in {root}; task images and agent "
+                f"installs need at least {_fmt_bytes(MIN_DOCKER_FREE_BYTES)}",
+                "`docker system df` shows what uses it; remove images you no "
+                "longer need with `docker image rm`",
+                {"root_dir": root, "free_bytes": free},
+            )
+        )
     buildx = probes.run(["docker", "buildx", "version"], PROBE_TIMEOUT_SEC)
     if buildx.returncode != 0:
         buildx_row = _checker("sandbox", "docker buildx", "docker-buildx")
@@ -630,7 +725,10 @@ def check_docker(probes: DoctorProbes, *, required: bool) -> list[Check]:
             "heredocs)"
         )
         fix = (
-            "Docker Desktop and OrbStack include it; with Colima, run "
+            "sudo apt-get install docker-buildx-plugin (Debian/Ubuntu; other "
+            "distributions: https://docs.docker.com/build/install-buildx/)"
+            if linux
+            else "Docker Desktop and OrbStack include it; with Colima, run "
             "`brew install docker-buildx` and add "
             '"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"] '
             "to ~/.docker/config.json"
@@ -1080,6 +1178,204 @@ def check_agent_auth(auth: AgentAuth, now: datetime) -> Check:
     return row("pass", summary, details=details)
 
 
+def _claude_token(probes: DoctorProbes, src: CredentialSource) -> str | None:
+    """The subscription OAuth token behind a Claude credential, or None.
+
+    Only ``CLAUDE_CODE_OAUTH_TOKEN``/``CLAUDE_OAUTH_TOKEN`` and the login file
+    hold one; ``ANTHROPIC_AUTH_TOKEN`` is usually a gateway's token, which
+    must not be sent to api.anthropic.com.
+    """
+    if src.kind == "oauth-token":
+        return probes.get(src.name)
+    if src.kind == "login-file" and src.usable:
+        try:
+            data = probes.read_json(probes.home / ".claude" / ".credentials.json")
+        except (OSError, ValueError):
+            return None
+        oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+        token = oauth.get("accessToken") if isinstance(oauth, dict) else None
+        return token if isinstance(token, str) and token else None
+    return None
+
+
+def _window_text(headroom: Any, window: str, now: datetime) -> str | None:
+    from benchflow.agents.usage_limits import format_reset
+
+    used = headroom.used.get(window)
+    if used is None:
+        return None
+    resets = headroom.resets.get(window)
+    reset = f", resets {format_reset(resets)}" if resets is not None else ""
+    return f"{window} window {used:.0%} used{reset}"
+
+
+def check_claude_headroom(
+    probes: DoctorProbes, auth: AgentAuth, *, offline: bool
+) -> Check | None:
+    """The Claude subscription login: accepted, and how much of each window is left.
+
+    One 8-token Haiku request with the login's OAuth token (the headers a
+    spent login answers with are the same, on HTTP 429). None when Claude's
+    effective credential is an API key or absent: there is no subscription.
+    """
+    src = auth.effective
+    if src is None or src.kind == "api-key":
+        return None
+    row = _checker("agents", "claude usage", "usage.claude-agent-acp")
+    who = f"{src.name} ({src.origin})" if src.origin != "file" else src.name
+    if offline:
+        return row("skip", f"{who}: usage not checked (--offline)")
+    if src.kind not in ("oauth-token", "login-file"):
+        return row(
+            "skip",
+            f"{who}: usage not checked (only a subscription's OAuth token is, "
+            "and only against api.anthropic.com)",
+        )
+    custom = probes.get("ANTHROPIC_BASE_URL")
+    if custom and _host(custom) != _host(ANTHROPIC_API):
+        return row(
+            "skip",
+            f"{who}: usage not checked: ANTHROPIC_BASE_URL points at "
+            f"{_host(custom)}, and the check sends the token only to "
+            f"{_host(ANTHROPIC_API)}",
+        )
+    token = _claude_token(probes, src)
+    if token is None:
+        return row(
+            "skip",
+            f"{who}: no usable OAuth token to check (see the claude-agent-acp line)",
+        )
+    from benchflow.agents.usage_limits import format_reset, parse_unified_headers
+
+    status, headers, error = probes.claude_headroom(
+        token, ANTHROPIC_API, HEADROOM_TIMEOUT_SEC
+    )
+    secrets = [token, *secret_values(probes.environ)]
+    request = f"one 8-token {HEADROOM_MODEL} request"
+    if status is None:
+        return row(
+            "warn",
+            f"{who}: could not check its usage ({_first_line(error, secrets=secrets)})",
+            f"Check that {_host(ANTHROPIC_API)} is reachable; "
+            "HTTPS_PROXY is honored if set",
+        )
+    headroom = parse_unified_headers(headers)
+    details: dict[str, Any] = {"http_status": status, "request": request}
+    if headroom is not None:
+        details.update(
+            {
+                "status": headroom.status,
+                "used": headroom.used,
+                "resets": {w: t.isoformat() for w, t in headroom.resets.items()},
+                "rejected": list(headroom.rejected),
+            }
+        )
+    if status in (401, 403):
+        details["blocks_runs"] = True
+        return row(
+            "warn",
+            f"{who} was refused (HTTP {status}): the login is invalid or expired",
+            _AGENT_FIXES["claude-agent-acp"],
+            details,
+        )
+    if headroom is None:
+        if status == 200:
+            return row(
+                "pass",
+                f"{who} accepted; the answer carried no usage windows ({request})",
+                details=details,
+            )
+        if status == 429:
+            # Refused for want of quota, with no window to name: still a
+            # login no run can use, so it counts as unusable like a spent one.
+            details["blocks_runs"] = True
+        return row(
+            "warn",
+            f"{who}: HTTP {status} and no usage windows ({request})",
+            _AGENT_FIXES["claude-agent-acp"],
+            details,
+        )
+    now = probes.now()
+    windows = [
+        text
+        for window in ("5-hour", "7-day", "7-day Opus", "7-day Sonnet")
+        if (text := _window_text(headroom, window, now)) is not None
+    ]
+    if headroom.limited:
+        details["blocks_runs"] = True
+        spent = headroom.window or ", ".join(headroom.rejected) or "a"
+        when = format_reset(headroom.resets_at)
+        return row(
+            "warn",
+            f"{who} is out of usage: its {spent} window is spent until {when}"
+            + (f" ({'; '.join(windows)})" if windows else ""),
+            "Claude runs on this login stop at once with a usage-limit error "
+            f"until {when}: use another login (CLAUDE_CODE_OAUTH_TOKEN from "
+            "`claude setup-token` on another account) or wait",
+            details,
+        )
+    summary = f"{who} accepted: " + ("; ".join(windows) or "no window reported")
+    high = [w for w in ("5-hour", "7-day") if (headroom.used.get(w) or 0.0) >= 0.9]
+    if high:
+        return row(
+            "warn",
+            summary + f" ({request})",
+            f"The {' and '.join(high)} window is nearly spent; a long run may stop "
+            "on the usage limit",
+            details,
+        )
+    return row("pass", summary + f" ({request})", details=details)
+
+
+def check_model_proxy(probes: DoctorProbes, *, sandbox: str) -> Check:
+    """The LiteLLM proxy that API-key and provider runs go through.
+
+    On Docker it runs on this machine (the ``litellm`` next to this Python);
+    on Daytona it is installed inside the sandbox from PyPI. Subscription
+    runs (a Claude or ChatGPT login) do not use it.
+    """
+    from benchflow.providers.litellm_runtime import LITELLM_VERSION_SPEC
+
+    row = _checker("proxy", "litellm", "proxy.litellm")
+    version = probes.dist_version("litellm")
+    sibling = Path(probes.python_executable).with_name("litellm")
+    executable = str(sibling) if sibling.exists() else probes.which("litellm")
+    details = {
+        "version": version,
+        "executable": executable,
+        "pinned": LITELLM_VERSION_SPEC,
+        "sandbox": sandbox,
+    }
+    where = (
+        "installed inside each Daytona sandbox from PyPI"
+        if sandbox == "daytona"
+        else "runs on this machine"
+    )
+    custom = [
+        f"{name}={_redact_url(value)}"
+        for name in ("BENCHFLOW_PROVIDER_BASE_URL", "LLM_BASE_URL")
+        if (value := probes.get(name))
+    ]
+    tail = f"; custom endpoint {', '.join(custom)}" if custom else ""
+    if executable is None and sandbox != "daytona":
+        return row(
+            "warn",
+            f"LiteLLM CLI not found, so API-key and provider-routed runs on "
+            f"{sandbox} cannot start their model proxy (subscription logins "
+            f"do not need it){tail}",
+            "Reinstall BenchFlow so its pinned "
+            f"{LITELLM_VERSION_SPEC} is installed next to it "
+            "(`uv tool install --reinstall benchflow`)",
+            details,
+        )
+    shown = f"LiteLLM {version}" if version else "LiteLLM"
+    return row(
+        "pass",
+        f"{shown} for API-key and provider runs, {where}{tail}",
+        details=details,
+    )
+
+
 def check_provider_keys(sources: list[CredentialSource], now: datetime) -> Check:
     row = _checker("agents", "provider keys", "auth.providers")
     details = {"sources": [s.to_dict() for s in sources]}
@@ -1264,10 +1560,16 @@ def run_doctor(
             bedrock_auth(probes),
         )
     }
-    checks.extend(check_agent_auth(auth, now) for auth in auths.values())
+    headroom = check_claude_headroom(probes, auths["claude-agent-acp"], offline=offline)
+    for auth in auths.values():
+        checks.append(check_agent_auth(auth, now))
+        if auth.agent == "claude-agent-acp" and headroom is not None:
+            checks.append(headroom)
     provider_sources = provider_key_sources(probes)
     checks.append(check_provider_keys(provider_sources, now))
+    agents_end = len(checks)
     checks.extend(check_agent_versions(probes))
+    checks.append(check_model_proxy(probes, sandbox=sandbox))
 
     unreachable: frozenset[str] = frozenset()
     if offline:
@@ -1282,6 +1584,11 @@ def run_doctor(
             (required if sandbox == "daytona" else optional)[url + "/"] = "Daytona API"
         for url in AGENT_INSTALL_ENDPOINTS:
             required[url] = "agent install inside the sandbox"
+        if sandbox == "daytona":
+            optional[PYPI_ENDPOINT] = "model proxy install inside the sandbox"
+        for name in ("BENCHFLOW_PROVIDER_BASE_URL", "LLM_BASE_URL"):
+            if value := probes.get(name):
+                optional.setdefault(value.rstrip("/") + "/", f"model proxy ({name})")
         for auth in auths.values():
             if auth.effective is None:
                 continue
@@ -1290,17 +1597,22 @@ def run_doctor(
         net_checks, unreachable = check_network(probes, required, optional)
         checks.extend(net_checks)
 
+    # Only a spent or refused login stops Claude runs; a nearly spent window,
+    # a network blip or a 5xx does not.
+    claude_spent = headroom is not None and bool(headroom.details.get("blocks_runs"))
     usable = [
         a
         for a in auths.values()
-        if a.ready and not any(url in unreachable for url in a.endpoints)
+        if a.ready
+        and not any(url in unreachable for url in a.endpoints)
+        and not (a.agent == "claude-agent-acp" and claude_spent)
     ]
     if not usable and not any(s.usable for s in provider_sources):
         found_any = bool(provider_sources) or any(
             a.effective is not None for a in auths.values()
         )
         why = (
-            "every credential found is expired, incomplete or unreachable"
+            "every credential found is expired, spent, incomplete or unreachable"
             if found_any
             else "no credential found for any agent"
         )
@@ -1309,7 +1621,16 @@ def run_doctor(
             "see docs/getting-started.md#auth-oauth-long-lived-token-or-api-key"
         )
         row = _checker("agents", "agent credentials", "auth.any")
-        checks.append(row("fail", f"no agent can run: {why}", fix))
+        # A warning: the oracle and nop controls need no credential. Listed
+        # with the other credential lines, not after the network ones.
+        checks.insert(
+            agents_end,
+            row(
+                "warn",
+                f"no model agent can run: {why} (the oracle and nop controls still can)",
+                fix,
+            ),
+        )
     return DoctorReport(checks, sandbox, auths, unreachable)
 
 

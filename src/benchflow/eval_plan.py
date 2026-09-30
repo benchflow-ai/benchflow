@@ -31,6 +31,7 @@ from benchflow._utils.config import (
 )
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.budget import Budget
+from benchflow.errors import UserError
 from benchflow.evaluation import DEFAULT_AGENT, EvaluationConfig, effective_model
 from benchflow.loop_strategies import (
     SINGLE_SHOT,
@@ -63,7 +64,7 @@ __all__ = [
 ]
 
 
-class EvalPlanError(ValueError):
+class EvalPlanError(ValueError, UserError):
     """A ``bench eval run`` validation failure.
 
     Carries the operator-facing ``message`` exactly as the CLI used to print it

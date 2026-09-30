@@ -36,6 +36,7 @@ _GROUP_TITLES = {
     "sandbox": "Sandbox",
     "agents": "Agent credentials",
     "versions": "Agent versions",
+    "proxy": "Model proxy",
     "network": "Network",
 }
 _GETTING_STARTED_URL = (
@@ -181,6 +182,29 @@ def eval_preflight(
             raise typer.Exit(1) from None
     if os.environ.get(PREFLIGHT_OPT_OUT_ENV, "").strip().lower() in _OPT_OUT_VALUES:
         return
+    if agent:
+        from types import SimpleNamespace
+
+        from benchflow.errors import MissingCredentialError, user_message
+        from benchflow.evaluation import effective_model
+        from benchflow.runtime import check_credentials
+
+        try:
+            # The model the job's trials will use (bench eval run resolves the
+            # agent's default the same way).
+            trial_model = effective_model(agent, model)
+        except ValueError as exc:
+            # An agent with no default model and no --model: the job would
+            # fail on the same error once it started, so say it here.
+            print_error(f"{exc}\nNo job was created.")
+            raise typer.Exit(1) from None
+        try:
+            check_credentials(
+                [SimpleNamespace(agent=agent, model=trial_model, agent_env=agent_env)]
+            )
+        except MissingCredentialError as exc:
+            print_error(f"{user_message(exc)}\nNo job was created.")
+            raise typer.Exit(1) from None
     from benchflow import doctor as doctor_mod
 
     probes = doctor_mod.DoctorProbes.from_host()
