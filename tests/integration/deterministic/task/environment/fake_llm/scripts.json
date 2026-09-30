@@ -72,5 +72,18 @@
     {
       "text": "Still here."
     }
+  ],
+  "oracle-probe": [
+    {
+      "text": "Checking whether the task's answer is in the sandbox.",
+      "tool": "Bash",
+      "input": {
+        "command": "if [ -e /oracle ] || [ -e /solution ]; then printf 'LEAK\\n' > /app/hello.txt; else printf 'Hello, world!\\n' > /app/hello.txt; fi",
+        "description": "Probe for oracle files"
+      }
+    },
+    {
+      "text": "Done."
+    }
   ]
 }
