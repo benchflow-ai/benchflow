@@ -7,9 +7,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .catalog import (
-    _discover_rollouts,
-    _resolve_browse_rollout,
-    _rollout_summary,
+    BrowseRoots,
+    _rollout_summary_at,
     _runs_cap,
 )
 from .legacy import (
@@ -79,6 +78,7 @@ def serve(
     prompts: list[str] | None = None,
     confirm: bool = False,
     redaction_summary: str | None = None,
+    more_paths: list[str] | None = None,
 ) -> str | None:
     """Serve a trial directory, a session JSONL file, a directory of runs,
     or an ``hf://`` dataset source.
@@ -96,7 +96,26 @@ def serve(
 
     ``confirm`` needs exactly one trajectory to approve, so combining it with
     a multi-run directory is an error.
+
+    ``more_paths`` adds further job folders: the browser then lists the runs
+    of every folder, and its Outcomes, Pareto and Training tabs compare them
+    (a ``job`` dimension tells them apart).
     """
+    if more_paths:
+        if confirm:
+            print("--confirm needs a single rollout or session file, not several jobs")
+            raise SystemExit(1)
+        paths = [_local_dir(p) for p in [str(rollout_path), *more_paths]]
+        roots = BrowseRoots(paths)
+        cap = _runs_cap()
+        found = roots.scan(cap + 1)
+        _serve_browse(
+            roots,
+            port,
+            n_runs=min(len(found), cap),
+            capped=len(found) > cap,
+        )
+        return None
     try:
         source = parse_source(str(rollout_path))
         if isinstance(source, HfDatasetSource):
@@ -116,7 +135,7 @@ def serve(
         and not any(path.glob("turn*.txt"))
     ):
         cap = _runs_cap()
-        rollouts = _discover_rollouts(path, cap=cap + 1)
+        rollouts = BrowseRoots([path]).scan(cap + 1)
         if rollouts:
             capped = len(rollouts) > cap
             n_runs = min(len(rollouts), cap)
@@ -127,7 +146,7 @@ def serve(
                     + (f"{n_runs}+ runs" if capped else _plural(n_runs, "run"))
                 )
                 sys.exit(1)
-            _serve_browse(path, port, n_runs=n_runs, capped=capped)
+            _serve_browse(BrowseRoots([path]), port, n_runs=n_runs, capped=capped)
             return None
     return _serve_single(
         path,
@@ -137,6 +156,24 @@ def serve(
         redaction_summary,
         persist_sidecar=not is_hf_source,
     )
+
+
+def _local_dir(spec: str) -> Path:
+    """A local job folder given on the command line (several-jobs mode)."""
+    try:
+        source = parse_source(spec)
+        path = (
+            resolve_hf_dataset(source)
+            if isinstance(source, HfDatasetSource)
+            else source.path
+        )
+    except (ValueError, ViewerSourceError) as exc:
+        print(exc)
+        raise SystemExit(1) from None
+    if not path.is_dir():
+        print(f"Not a directory: {path} (several paths must all be job folders)")
+        raise SystemExit(1)
+    return path
 
 
 def _serve_single(
@@ -355,11 +392,27 @@ def _serve_single(
     return decision
 
 
-def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> None:
-    """Multi-rollout browser: sidebar shell + JSON API, rescanned per request."""
-    from http.server import HTTPServer, SimpleHTTPRequestHandler
+def _serve_browse(
+    roots: BrowseRoots | Path, port: int, n_runs: int, capped: bool = False
+) -> None:
+    """Multi-rollout browser: sidebar shell + JSON API, rescanned per request.
 
+    When the folders hold trials, the Outcomes, Pareto and Training data is
+    built once in a background thread and served at ``/api/outcomes``.
+    """
+    import http.server
+    import socketserver
+    from http.server import SimpleHTTPRequestHandler
+
+    from .jobviews import OutcomesCache, has_trials
+
+    if isinstance(roots, Path):
+        roots = BrowseRoots([roots])
     expected_port = port
+    outcomes = OutcomesCache(roots) if any(has_trials(p) for p in roots.paths) else None
+    if outcomes is not None:
+        outcomes.start()
+    title = " + ".join(p.name for p in roots.paths)
 
     class Handler(SimpleHTTPRequestHandler):
         def _has_expected_host(self) -> bool:
@@ -385,11 +438,21 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
             self.end_headers()
             self.wfile.write(body)
 
-        def _scan(self) -> tuple[list[str], bool]:
-            """Fresh id list plus whether the cap truncated it."""
+        def _scan(self) -> tuple[list[tuple[str, Path]], bool]:
+            """Fresh (id, folder) list plus whether the cap truncated it."""
             cap = _runs_cap()
-            ids = _discover_rollouts(base, cap=cap + 1)
-            return ids[:cap], len(ids) > cap
+            found = list(roots.scan(cap + 1).items())
+            return found[:cap], len(found) > cap
+
+        def _resolve(self, rid: str | None) -> Path | None:
+            """A rollout folder by id: whitelist membership only (a fresh
+            scan, or a trial the outcomes document links to)."""
+            if rid is None:
+                return None
+            found = roots.scan(_runs_cap())
+            if rid in found:
+                return found[rid]
+            return outcomes.linked(rid) if outcomes is not None else None
 
         def do_GET(self):
             if not self._has_expected_host():
@@ -401,11 +464,12 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
             if parsed.path == "/":
                 ids, capped = self._scan()
                 shell = _render_shell(
-                    base.name,
+                    title,
                     {
                         "mode": "browse",
                         "capped": capped,
-                        "rollouts": [_rollout_summary(base, r) for r in ids],
+                        "jobviews": outcomes is not None,
+                        "rollouts": [_rollout_summary_at(d, r) for r, d in ids],
                     },
                 )
                 self._send(
@@ -417,7 +481,7 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                 query = parse_qs(parsed.query)
                 rid = (query.get("id") or [None])[0]
                 branch = (query.get("branch") or [None])[0]
-                rollout_dir = _resolve_browse_rollout(base, rid)
+                rollout_dir = self._resolve(rid)
                 if rollout_dir is None:
                     self._send(
                         404,
@@ -443,6 +507,22 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                     "application/json; charset=utf-8",
                     body.encode("utf-8", errors="replace"),
                 )
+            elif parsed.path == "/api/outcomes" and outcomes is not None:
+                if (parse_qs(parsed.query).get("refresh") or [None])[0] == "1":
+                    outcomes.start()
+                doc, error = outcomes.get()
+                if doc is None:
+                    self._send(
+                        503,
+                        "application/json; charset=utf-8",
+                        _safe_json({"error": error}).encode("utf-8"),
+                    )
+                    return
+                self._send(
+                    200,
+                    "application/json; charset=utf-8",
+                    _safe_json(doc).encode("utf-8", errors="replace"),
+                )
             else:
                 self._send(404, "text/plain; charset=utf-8", b"not found")
 
@@ -465,13 +545,22 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
         def log_message(self, format, *args):
             pass
 
-    server = HTTPServer(("localhost", port), Handler)
+    # Threaded: /api/outcomes may wait for the background build, and the
+    # run list must keep answering meanwhile.
+    server_cls = type(
+        "BrowseServer",
+        (socketserver.ThreadingMixIn, http.server.HTTPServer),
+        {"daemon_threads": True},
+    )
+    server = server_cls(("localhost", port), Handler)
     expected_port = server.server_port
     runs_desc = _plural(n_runs, "run")
     if capped:
         runs_desc = f"first {runs_desc} (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)"
     print(f"Trajectory browser: http://localhost:{expected_port}")
-    print(f"Scanning: {base} ({runs_desc})")
+    print(f"Scanning: {', '.join(str(p) for p in roots.paths)} ({runs_desc})")
+    if outcomes is not None:
+        print("Outcomes, Pareto and Training: built in the background")
     print("Press Ctrl+C to stop\n")
     sys.stdout.flush()
     try:

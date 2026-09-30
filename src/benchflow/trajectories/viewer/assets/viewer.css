@@ -356,3 +356,93 @@ table.plain a:hover { color: var(--foreground); }
   .runrow .rstats { width: 100%; margin-left: 17px; flex-wrap: wrap; gap: 5px 10px; white-space: normal; }
   .barrow { grid-template-columns: minmax(70px, 1fr) minmax(50px, 2fr) minmax(55px, auto); gap: 6px; }
 }
+
+/* ── Job views: Outcomes, Pareto, Training (jobviews.js) ───────────────
+   Reward is a magnitude: one blue ramp, light to dark (dark mode: dark to
+   light), endpoints from the validated sequential ramp (step 250 to 700 on
+   light, 600 to 100 on dark). Unscored trials are neutral and hatched, never
+   a reward color. A BenchShield exploit is a status mark (destructive) with
+   a legend label. Categorical slots follow the fixed validated order. */
+:root {
+  --seq-lo: #86b6ef; --seq-hi: #0d366b;
+  --hatch-ink: #a3a29c; --hatch-bg: #f0efec;
+  --viz-cat-1: #2a78d6; --viz-cat-2: #eb6834; --viz-cat-3: #1baf7a; --viz-cat-4: #eda100;
+  --viz-cat-5: #e87ba4; --viz-cat-6: #008300; --viz-cat-7: #4a3aa7; --viz-cat-8: #e34948;
+}
+:root[data-theme="dark"] {
+  --seq-lo: #184f95; --seq-hi: #cde2fb;
+  --hatch-ink: #6d6c66; --hatch-bg: #383835;
+  --viz-cat-1: #3987e5; --viz-cat-2: #d95926; --viz-cat-3: #199e70; --viz-cat-4: #c98500;
+  --viz-cat-5: #d55181; --viz-cat-6: #008300; --viz-cat-7: #9085e9; --viz-cat-8: #e66767;
+}
+#jobtabs { display: flex; gap: 4px; margin: 4px 0 14px; border-bottom: 1px solid var(--border); }
+#jobtabs.hidden { display: none; }
+.jtab { font: 500 13px var(--font-sans); color: var(--muted-foreground); background: none; border: 0; border-bottom: 2px solid transparent; padding: 7px 12px; cursor: pointer; }
+.jtab.on { color: var(--foreground); border-bottom-color: var(--foreground); }
+.jtab:focus-visible { outline: 2px solid var(--foreground); outline-offset: -2px; }
+#view-job { padding-bottom: 40px; }
+.jhead { display: flex; flex-wrap: wrap; gap: 14px; font: 12px var(--font-mono); color: var(--muted-foreground); margin-bottom: 8px; }
+.jnote { font-size: 12px; color: var(--muted-foreground); margin: 4px 0; }
+.jnote.bad { color: var(--bad-ink); }
+.jcaption { font-size: 12px; color: var(--ink-secondary); margin: 6px 0 10px; max-width: 900px; line-height: 1.5; }
+.jcontrols { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 10px 0; }
+.jctl { display: inline-flex; gap: 6px; align-items: center; font: 12px var(--font-sans); color: var(--muted-foreground); }
+.jctl select, .jcontrols input[type="search"] { font: 12px var(--font-sans); color: var(--foreground); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
+.jcontrols input[type="search"] { min-width: 160px; }
+.jlegend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11.5px; color: var(--ink-secondary); margin: 6px 0 12px; }
+.jlegend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.jlegend .muted { color: var(--muted-foreground); }
+.jlegend .ramp { width: 90px; height: 10px; border-radius: 2px; background: linear-gradient(in oklab 90deg, var(--seq-lo), var(--seq-hi)); }
+.jgridwrap { overflow-x: auto; }
+.jgrid { border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.jgrid th, .jgrid td { border-bottom: 1px solid var(--border); padding: 5px 8px; vertical-align: top; text-align: left; }
+.jgrid thead th { position: sticky; top: 0; background: var(--background); z-index: 1; }
+.jgrid th.rh { min-width: 220px; max-width: 320px; font-weight: 400; }
+.jgrid .rl { display: block; font-family: var(--font-mono); color: var(--foreground); overflow-wrap: anywhere; }
+.jgrid .rs { display: block; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.jgrid th.ch { font-weight: 500; min-width: 64px; max-width: 160px; }
+.jgrid .chl { display: block; font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.jgrid .chs { display: block; font-size: 10.5px; color: var(--muted-foreground); font-weight: 400; }
+.jgrid td { line-height: 0; max-width: 240px; }
+.sq { display: inline-block; width: 12px; height: 12px; margin: 0 2px 2px 0; border-radius: 2px; position: relative; vertical-align: top; box-sizing: border-box; }
+.sq.s { background: color-mix(in oklab, var(--seq-hi) calc(var(--r, 0) * 100%), var(--seq-lo)); }
+.jlegend .sq.s { --r: 0.55; }
+.jgrid.discrete .sq.s { background: var(--seq-lo); }
+.jgrid.discrete .sq.s.p { background: var(--seq-hi); }
+.sq.u { background: repeating-linear-gradient(45deg, var(--hatch-ink) 0 1.5px, var(--hatch-bg) 1.5px 4px); }
+.sq.e { box-shadow: inset 0 0 0 2px var(--warning); }
+.sq.t::after { content: ""; position: absolute; left: 3px; right: 3px; bottom: 1px; height: 2px; border-radius: 1px; background: var(--background); }
+.sq.x { outline: 2px solid var(--destructive); outline-offset: 1px; }
+.sq.x::before { content: ""; position: absolute; top: -4px; right: -4px; width: 6px; height: 6px; border-radius: 50%; background: var(--destructive); }
+.sq.v { outline: 1.5px dashed var(--destructive); outline-offset: 1px; }
+.sq.o { opacity: 0.55; }
+.sq.l { cursor: pointer; }
+.sq.l:hover { outline: 2px solid var(--foreground); outline-offset: 1px; }
+.jtip { position: absolute; z-index: 20; max-width: 420px; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.45; box-shadow: 0 6px 24px rgba(0,0,0,.12); pointer-events: none; }
+.jtip .tt { font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
+.jtip .tm { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.jtip .tv { font-variant-numeric: tabular-nums; }
+.jtip .tc { color: var(--ink-secondary); }
+.jtip .td { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.jtip .tx { color: var(--bad-ink); font-weight: 600; }
+.jtip .tl { color: var(--muted-foreground); font-style: italic; }
+.jchartwrap { max-width: 900px; }
+.jchart { width: 100%; height: auto; font-family: var(--font-sans); }
+.jchart .grid line { stroke: var(--border); stroke-width: 1; }
+.jchart .tick { font-size: 11px; fill: var(--muted-foreground); }
+.jchart .axis { font-size: 12px; fill: var(--ink-secondary); }
+.jchart .dl { font-size: 11px; fill: var(--ink-secondary); paint-order: stroke; stroke: var(--background); stroke-width: 3px; }
+.jchart .frontier { fill: none; stroke-width: 2; stroke-dasharray: 5 3; }
+.jchart .err { stroke-width: 1.5; opacity: 0.55; }
+.jchart circle.on, .jchart circle.off { stroke: var(--background); stroke-width: 2; }
+.jchart circle.off { opacity: 0.8; }
+.jchart .hit { fill: transparent; stroke: none; }
+.jchart .band { opacity: 0.14; }
+.jchart .line { fill: none; stroke-width: 2; }
+.jchart .conn { stroke: var(--muted-foreground); stroke-width: 2; }
+.jchart .before { fill: var(--background); stroke: var(--viz-cat-1); stroke-width: 2; }
+.jchart .after { fill: var(--viz-cat-1); stroke: var(--background); stroke-width: 2; }
+.jchart .pt:hover circle.on, .jchart .pt:hover circle.off { stroke: var(--foreground); }
+.jsection h3 { font: 600 13px var(--font-sans); margin: 22px 0 4px; }
+.jtable { border-collapse: collapse; font-size: 12px; margin-top: 12px; font-variant-numeric: tabular-nums; }
+.jtable th, .jtable td { border-bottom: 1px solid var(--border); padding: 4px 10px; text-align: left; }

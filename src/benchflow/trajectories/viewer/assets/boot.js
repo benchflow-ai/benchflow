@@ -99,6 +99,14 @@ BF.navigation = (() => {
 
   function startBrowse(boot) {
     BF.catalog.init(boot, (runId, sourceButton) => openRun(runId, true, sourceButton));
+    if (boot.jobviews) {
+      BF.jobviews.init({
+        openRun: (runId) => {
+          BF.catalog.allowRun(runId);
+          openRun(runId, true);
+        },
+      });
+    }
     const back = document.getElementById("backbtn");
     back.addEventListener("click", () => {
       if (shownBranch && selectedRun) openRun(selectedRun, true);
@@ -178,5 +186,13 @@ BF.navigation = (() => {
     BF.navigation.startBrowse(boot);
     return;
   }
-  bootError('Unknown viewer mode: expected "single" or "browse".');
+  if (boot.mode === "export") {
+    if (!BF.core.isRecord(boot.outcomes) || !BF.core.isRecord(boot.outcomes.columns)) {
+      bootError("Export viewer data must contain an outcomes document.");
+      return;
+    }
+    BF.jobviews.startExport(boot.outcomes);
+    return;
+  }
+  bootError('Unknown viewer mode: expected "single", "browse" or "export".');
 })();

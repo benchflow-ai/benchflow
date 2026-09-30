@@ -1943,12 +1943,13 @@ def eval_view(
     rollout_dir: Annotated[
         # A str, not a Path: hf:// specs must arrive verbatim — Path
         # normalization would collapse the double slash into hf:/.
-        str,
+        list[str],
         typer.Argument(
             help=(
                 "Rollout directory, job directory, trajectory JSONL file, or "
                 "an hf://<org>/<dataset> trajectory dataset "
-                "(optionally with /subpath)"
+                "(optionally with /subpath). Several job directories are "
+                "browsed and compared together."
             )
         ),
     ],
@@ -1976,12 +1977,63 @@ def eval_view(
             ),
         ),
     ] = None,
+    export: Annotated[
+        Path | None,
+        typer.Option(
+            "--export",
+            help=(
+                "Write the jobs' Outcomes, Pareto and Training views to one "
+                "self-contained HTML file for sharing, and exit. Secret-shaped "
+                "values are masked as in `bench traj upload`; trial links, "
+                "trajectories and absolute paths are left out."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """View a trial or session trajectory in the browser."""
+    """View a trial or session trajectory in the browser, or a job's outcomes.
+
+    A job directory opens the run list with Outcomes, Pareto and Training
+    tabs; give several job directories to compare them.
+    """
     from benchflow.trajectories import viewer
 
+    if export is not None:
+        from benchflow.trajectories.viewer.jobviews import export_html
+        from benchflow.trajectories.viewer.server import _local_dir
+
+        if confirm:
+            print_error("--export and --confirm cannot be combined")
+            raise typer.Exit(2)
+        paths = [_local_dir(spec) for spec in rollout_dir]
+        try:
+            out, categories, n = export_html(paths, export)
+        except FileNotFoundError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
+        from benchflow.publish.redact import format_redaction_breakdown
+
+        console.print(
+            f"Wrote {escape(str(out))} ({n} trial{'' if n == 1 else 's'})",
+            soft_wrap=True,
+        )
+        console.print(
+            "Masked for you: "
+            + (
+                escape(format_redaction_breakdown(categories))
+                if categories
+                else "nothing (no secret-shaped values found)"
+            )
+        )
+        return
+
+    # One path keeps the historical call; several add more_paths.
+    more = {"more_paths": rollout_dir[1:]} if len(rollout_dir) > 1 else {}
     decision = viewer.serve(
-        rollout_dir, port, confirm=confirm, redaction_summary=redaction_summary
+        rollout_dir[0],
+        port,
+        confirm=confirm,
+        redaction_summary=redaction_summary,
+        **more,
     )
     # Exit-code contract for --confirm: 0 approved, 3 rejected. 3 is chosen
     # so a rejection never collides with the CLI's existing error exits

@@ -59,6 +59,7 @@ BF.core = (() => {
 
   function showDetailShell(isBrowse) {
     document.getElementById("view-index").classList.add("hidden");
+    if (BF.jobviews) BF.jobviews.hide();
     document.getElementById("content").classList.remove("hidden");
     document.getElementById("backbar").classList.toggle("hidden", !isBrowse);
   }

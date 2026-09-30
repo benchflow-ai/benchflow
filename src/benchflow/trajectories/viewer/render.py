@@ -9,7 +9,14 @@ from .payload import _branch_child_payloads, _build_acp_payload, _safe_json
 
 _PAYLOAD_PLACEHOLDER = "__BENCHFLOW_PAYLOAD__"
 _TITLE_PLACEHOLDER = "__BENCHFLOW_TITLE__"
-_SCRIPT_ASSETS = ("viewer.js", "theme.js", "detail.js", "catalog.js", "boot.js")
+_SCRIPT_ASSETS = (
+    "viewer.js",
+    "theme.js",
+    "detail.js",
+    "catalog.js",
+    "jobviews.js",
+    "boot.js",
+)
 # Third-party scripts packaged under assets/vendor (see the LICENSE files there).
 _VENDOR_ASSETS = ("vendor/highlight.min.js",)
 

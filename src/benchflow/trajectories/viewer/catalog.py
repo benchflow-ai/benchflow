@@ -16,8 +16,12 @@ def _runs_cap() -> int:
         return 500
 
 
+# Deep enough for a hill-climb run's evals/<version>/<split>/trial-NN/job/<trial>.
+_MAX_DEPTH = 8
+
+
 def _discover_rollouts(
-    base: Path, max_depth: int = 4, cap: int | None = None
+    base: Path, max_depth: int = _MAX_DEPTH, cap: int | None = None
 ) -> list[str]:
     """Relative paths of ACP rollout dirs under ``base``, sorted, capped.
 
@@ -72,7 +76,11 @@ def _resolve_browse_rollout(base: Path, rid: str | None) -> Path | None:
 
 def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
     """Catalog row for one rollout: identity, verdict, row-level stats."""
-    d = base / rel_id
+    return _rollout_summary_at(base / rel_id, rel_id)
+
+
+def _rollout_summary_at(d: Path, rel_id: str) -> dict[str, Any]:
+    """Catalog row for the rollout folder ``d``, listed under ``rel_id``."""
     metadata = _load_rollout_metadata(d)
     lineage = _load_lineage(d)
     return RunSummary(
@@ -94,3 +102,64 @@ def _rollout_summary(base: Path, rel_id: str) -> dict[str, Any]:
         if lineage is not None
         else None,
     ).to_payload()
+
+
+def root_labels(paths: list[Path]) -> list[str]:
+    """A distinct, path-free label per served job root (its folder name)."""
+    labels: list[str] = []
+    for path in paths:
+        name = path.name or "job"
+        label, n = name, 2
+        while label in labels:
+            label, n = f"{name}-{n}", n + 1
+        labels.append(label)
+    return labels
+
+
+class BrowseRoots:
+    """One or more served job folders and the ids of the rollouts under them.
+
+    With one root, ids are paths relative to it (the historical ids). With
+    several, each id starts with its root's label (:func:`root_labels`), so
+    ``/api/rollout`` resolves ids only by membership in a fresh scan, never
+    as paths, whatever the number of roots.
+    """
+
+    def __init__(self, paths: list[Path]) -> None:
+        self.paths = paths
+        self.labels = [""] if len(paths) == 1 else root_labels(paths)
+
+    def pairs(self) -> list[tuple[str, Path]]:
+        return list(zip(self.labels, self.paths, strict=True))
+
+    def _prefixed(self, label: str, rel: str) -> str:
+        if not label:
+            return rel
+        return label if rel in ("", ".") else f"{label}/{rel}"
+
+    def scan(self, cap: int) -> dict[str, Path]:
+        """Rollout id -> folder, at most ``cap`` of them, in root order."""
+        found: dict[str, Path] = {}
+        for label, base in self.pairs():
+            if len(found) >= cap:
+                break
+            if label and _is_acp_rollout_dir(base):
+                found[label] = base
+                continue
+            for rel in _discover_rollouts(base, cap=cap - len(found)):
+                found[self._prefixed(label, rel)] = base / rel
+        return found
+
+    def id_for(self, trial_dir: Path) -> str | None:
+        """The id of a trial folder under a root, when it is a rollout."""
+        if not _is_acp_rollout_dir(trial_dir):
+            return None
+        for label, base in self.pairs():
+            try:
+                rel = trial_dir.relative_to(base).as_posix()
+            except ValueError:
+                continue
+            if not label and rel == ".":
+                return None
+            return self._prefixed(label, rel)
+        return None

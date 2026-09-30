@@ -14,6 +14,7 @@ BF.catalog = (() => {
   ]);
 
   let rollouts = [];
+  const linkedRuns = new Set();
   let capped = false;
   let onSelectRun = null;
   const state = {
@@ -73,6 +74,7 @@ BF.catalog = (() => {
       try { return decodeURIComponent(value); } catch { return value; }
     };
     state.toggled = new Set((params.get("toggled") || "").split(",").filter(Boolean).map(decode));
+    if (BF.jobviews) BF.jobviews.readURL(params);
     return params.get("run");
   }
 
@@ -88,6 +90,7 @@ BF.catalog = (() => {
     if (state.toggled.size) {
       params.set("toggled", [...state.toggled].map(encodeURIComponent).join(","));
     }
+    if (BF.jobviews) BF.jobviews.addParams(params, Boolean(runId));
     if (runId) params.set("run", runId);
     if (runId && branch) params.set("branch", branch);
     return location.pathname + (params.toString() ? "?" + params.toString() : "");
@@ -337,6 +340,7 @@ BF.catalog = (() => {
     const main = document.getElementById("view-index");
     main.classList.remove("hidden");
     renderIndex();
+    if (BF.jobviews) BF.jobviews.show();
     window.scrollTo(0, state.scrollY);
     if (options.focusRun) {
       requestAnimationFrame(() => {
@@ -351,8 +355,14 @@ BF.catalog = (() => {
     state.scrollY = window.scrollY;
   }
 
+  // A run the catalog lists, or one the job views link to (the server
+  // resolves both; the catalog list may be capped).
   function hasRun(runId) {
-    return rollouts.some((run) => run.id === runId);
+    return rollouts.some((run) => run.id === runId) || linkedRuns.has(runId);
+  }
+
+  function allowRun(runId) {
+    linkedRuns.add(runId);
   }
 
   function unknownRunMessage(runId) {
@@ -361,6 +371,7 @@ BF.catalog = (() => {
   }
 
   return {
+    allowRun,
     hasRun,
     init,
     readBranch,
