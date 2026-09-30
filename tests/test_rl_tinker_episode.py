@@ -160,6 +160,33 @@ def test_an_episode_scores_its_verify_result_by_the_rule(
     assert runtimes[0].closed == 1
 
 
+def test_an_integrity_verdict_makes_an_exploit_a_flagged_zero(tmp_path):
+    verdict = SimpleNamespace(exploited=True, reason="read the expected answers")
+    episode, runtimes = make_episode(
+        tmp_path, verify=result(reward=1.0, integrity=verdict)
+    )
+
+    async def go():
+        await episode.start()
+        await episode.run_bash("cat /workdir/.grader/expected.json")
+        return await episode.finish()
+
+    decision = run(go())
+    assert decision.reward == 0.0 and decision.flagged
+    assert decision.reason == "integrity_violation"
+    assert runtimes[0].closed == 1
+
+
+def test_asking_for_integrity_without_the_option_fails_clearly(tmp_path):
+    episode, runtimes = make_episode(tmp_path)
+    episode.settings = ep.EpisodeSettings(integrity="audit")
+    if "integrity" in bf.TaskRuntimeConfig.__dataclass_fields__:
+        pytest.skip("this BenchFlow has benchflow.integrity")
+    with pytest.raises(ValueError, match="reward-integrity"):
+        run(episode.start())
+    assert episode.slots.in_use == 0 and not runtimes
+
+
 def test_solved_means_every_check_passed():
     assert ep.solved(ep.Decision(1.0, "scored"))
     assert not ep.solved(ep.Decision(0.99, "scored"))

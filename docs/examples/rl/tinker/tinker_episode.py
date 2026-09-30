@@ -179,6 +179,10 @@ class EpisodeSettings:
     submit_path: str = SUBMIT_PATH  # where submit(answer) writes the answer
     episode_timeout_sec: float = 900.0  # wall clock once the sandbox is up; 0 = none
     verify_timeout_sec: float = 900.0  # guard around BenchFlow's verify and finalize
+    # Reward integrity (BenchShield, benchflow.integrity): "audit" or "strict"
+    # need a BenchFlow with TaskRuntimeConfig.integrity; an exploit the audit
+    # finds scores 0 and is flagged (rewards.apply_integrity).
+    integrity: str = "off"
 
 
 RuntimeFactory = Callable[[Any], Awaitable[Any]]
@@ -238,12 +242,23 @@ class Episode:
         self._start_called = True
         await self.slots.acquire()
         self._slot_held = True
+        integrity = {}
+        if self.settings.integrity != "off":
+            if "integrity" not in bf.TaskRuntimeConfig.__dataclass_fields__:
+                self._release_slot()
+                self._closed = True
+                raise ValueError(
+                    "this BenchFlow has no reward-integrity option; it comes with "
+                    "benchflow.integrity (BenchShield)"
+                )
+            integrity = {"integrity": self.settings.integrity}
         config = bf.TaskRuntimeConfig(
             task_path=self.task_dir,
             environment=self.settings.sandbox,
             sandbox_user=self.settings.sandbox_user,
             jobs_dir=self.settings.jobs_dir,
             job_name=self.job_name,
+            **integrity,
         )
         t0 = self._created_at = self._clock()
         try:
@@ -336,7 +351,12 @@ class Episode:
         else:
             with contextlib.suppress(Exception):
                 self.rollout_dir = Path(result.rollout_dir)
-            decision = reward_from_verify(result, policy_acted=self.policy_acted)
+            # With an integrity audit, an exploit scores 0 and is flagged.
+            decision = reward_from_verify(
+                result,
+                policy_acted=self.policy_acted,
+                integrity=getattr(result, "integrity", None),
+            )
         finally:
             self.timings["verify_sec"] = round(self._clock() - t0, 3)
             await self.close()

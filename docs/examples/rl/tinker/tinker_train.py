@@ -108,6 +108,20 @@ def add_env_args(parser: argparse.ArgumentParser) -> None:
     h.add_argument(
         "--submit-path", default=SUBMIT_PATH, help="where submit(answer) writes"
     )
+    h.add_argument(
+        "--sandbox-user",
+        default="agent",
+        help="user the policy's commands run as; 'root' for task sets whose "
+        "harnesses run as root (the shared family needs 'agent': a root policy "
+        "could read the oracle)",
+    )
+    h.add_argument(
+        "--integrity",
+        choices=["off", "audit", "strict"],
+        default="off",
+        help="BenchShield reward-integrity audit (needs a BenchFlow with "
+        "benchflow.integrity); an exploit scores 0 and is flagged",
+    )
 
 
 def env_config(args: argparse.Namespace, jobs_dir: Path) -> te.EnvConfig:
@@ -121,7 +135,9 @@ def env_config(args: argparse.Namespace, jobs_dir: Path) -> te.EnvConfig:
             command_timeout_sec=args.command_timeout,
             max_output_chars=args.max_output_chars,
             submit_path=args.submit_path,
+            sandbox_user=None if args.sandbox_user == "root" else args.sandbox_user,
             episode_timeout_sec=args.episode_timeout,
+            integrity=args.integrity,
         ),
         max_turns=args.max_turns,
         max_tokens=args.max_tokens,
