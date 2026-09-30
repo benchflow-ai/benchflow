@@ -27,7 +27,11 @@ def _fake_worktree(cmd):
 
 
 def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
-    """Guards PR #226: SkillsBench downloads must track GitHub main explicitly."""
+    """Guards PR #226: SkillsBench downloads must track GitHub main explicitly.
+
+    The alias names a path (``tasks``), so the clone is the blob-less sparse
+    one that dx/first-run introduced (see tests/test_source_sparse_clone.py).
+    """
     monkeypatch.chdir(tmp_path)
     calls = []
 
@@ -54,6 +58,8 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
             "--quiet",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
             "--branch",
             "main",
             "https://github.com/benchflow-ai/skillsbench.git",
@@ -737,6 +743,8 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
             "--quiet",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
             "https://github.com/org/repo.git",
             str(clone_tmp),
         ],
