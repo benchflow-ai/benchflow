@@ -133,6 +133,7 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
+_CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@2.0.1"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -697,12 +698,13 @@ AGENTS: dict[str, AgentConfig] = {
         # config option, but that option rejects ``model[effort]`` ids
         # (-32602), so runtime.py keeps codex on session/set_model — verified
         # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
-        # 1.13.1 bundles codex 0.156.1: 0.148 (bundled by 1.6.0) has no model
-        # metadata for gpt-6-astra, so even with the bare slug it offers the
-        # fallback tool surface (#1145).
-        install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@1.13.1"
-        ),
+        # The pin decides which models Codex knows: codex resolves a model's
+        # tool surface from the catalog bundled with the @openai/codex it
+        # depends on, and a model missing from it gets the fallback surface
+        # (plain function tools, no code mode / apply_patch / spawn_agent, #1145).
+        # 1.6.0 (codex 0.148) lacked gpt-6-astra; 1.13.1 (codex 0.156.1) lacks
+        # gpt-6.1-sol; 2.0.1 (@openai/codex ^0.159.1) lists it.
+        install_cmd=_js_agent_install("codex-acp", _CODEX_ACP_PACKAGE),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
         # instead of relying on core's credential_files writer. This makes the
