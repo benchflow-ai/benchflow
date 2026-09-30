@@ -46,7 +46,9 @@ server knows whether the policy acted and which side failed:
                              ServerUnreachable      no BenchFlow server
   scored by the verifier     Submitted, NoToolCall, TurnLimitExceeded,
                              SequenceLengthLimitExceeded (a reply cut at
-                             max_tokens, or the context full)
+                             max_tokens, or the context full), RequestRejected
+                             (the session server refused a request the
+                             policy's output can break: 400, 409, 422, 500)
   scored 0                   TimeLimitExceeded, VerifierError, AgentError,
                              NoReward, IntegrityViolation (the reward-integrity
                              audit caught the policy exploiting the grader;
