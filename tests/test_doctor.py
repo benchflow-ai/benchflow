@@ -52,6 +52,16 @@ DOCKER_DOWN = CommandResult(
 )
 
 
+# A Messages API answer's unified rate-limit headers for a login with room left.
+ALLOWED_HEADERS = {
+    "anthropic-ratelimit-unified-status": "allowed",
+    "anthropic-ratelimit-unified-5h-utilization": "0.12",
+    "anthropic-ratelimit-unified-5h-reset": "1790762400",
+    "anthropic-ratelimit-unified-7d-utilization": "0.36",
+    "anthropic-ratelimit-unified-7d-reset": "1791054000",
+}
+
+
 def _colima_list(status: str = "Running", mem: int = 8 * GIB) -> CommandResult:
     rows = [
         {"name": "default", "status": status, "cpus": 4, "memory": mem},
@@ -72,6 +82,9 @@ def make_probes(
     dists: Mapping[str, str] | None = None,
     daytona_error: Exception | None = None,
     calls: list | None = None,
+    headroom: tuple[int | None, dict, str] | None = None,
+    disk_free: int | None = None,
+    system: str = "Darwin",
 ) -> DoctorProbes:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
@@ -109,6 +122,14 @@ def make_probes(
         if daytona_error is not None:
             raise daytona_error
 
+    def claude_headroom(token: str, base: str, timeout: float):
+        # Never the real request: a fake answer (by default an accepted login
+        # with plenty left), recorded without the token.
+        record.append(("headroom", base))
+        if headroom is not None:
+            return headroom
+        return 200, dict(ALLOWED_HEADERS), ""
+
     return DoctorProbes(
         environ=environ,
         origins=origins,
@@ -118,9 +139,12 @@ def make_probes(
         http_status=http_status,
         dist_version=lambda dist: (dists or {}).get(dist),
         daytona_check=daytona_check,
+        claude_headroom=claude_headroom,
+        disk_free=lambda path: disk_free,
         now=lambda: NOW,
         python_version=(3, 12, 9),
         python_executable="/venv/bin/python",
+        system=system,
     )
 
 
@@ -598,26 +622,31 @@ def test_provider_keys_report_missing_base_url_and_ignore_github_token(tmp_path)
     assert "SECRET" not in all_output(report)
 
 
-def test_no_credentials_at_all_fails(tmp_path):
+def test_no_credentials_at_all_warns(tmp_path):
+    """dx/errors: a machine with no credential still runs the oracle and nop
+    controls, so it is a warning, not "not ready" (it failed before)."""
     report = run_doctor(probes=make_probes(tmp_path), offline=True)
     check = by_id(report)["auth.any"]
-    assert check.status == "fail"
+    assert check.status == "warn"
     assert "no credential found for any agent" in check.summary
-    assert not report.ok
+    assert "the oracle and nop controls still can" in check.summary
+    assert report.ok
 
 
-def test_expired_login_alone_warns_and_fails_the_aggregate(tmp_path):
+def test_expired_login_alone_warns_in_the_aggregate(tmp_path):
     """An expired login is not a working credential. Its own line only warns
-    (its refresh token might still work), but the aggregate check fails
-    because no agent is known to be able to run."""
+    (its refresh token might still work), and so does the aggregate check: no
+    model agent is known to be able to run, though the controls can."""
     probes = make_probes(
         tmp_path,
         files={".claude/.credentials.json": _claude_file(NOW - timedelta(days=1))},
     )
     report = run_doctor(probes=probes, offline=True)
     assert by_id(report)["auth.claude-agent-acp"].status == "warn"
-    assert by_id(report)["auth.any"].status == "fail"
-    assert "expired, incomplete or unreachable" in by_id(report)["auth.any"].summary
+    assert by_id(report)["auth.any"].status == "warn"
+    assert "expired, spent, incomplete or unreachable" in (
+        by_id(report)["auth.any"].summary
+    )
 
 
 def test_dotenv_origin_is_reported(tmp_path):
@@ -762,14 +791,14 @@ def test_model_endpoint_unreachable_blocks_that_agent_only(tmp_path):
     assert report.ok
 
 
-def test_every_agent_blocked_fails_the_aggregate(tmp_path):
+def test_every_agent_blocked_warns_in_the_aggregate(tmp_path):
     probes = make_probes(
         tmp_path,
         env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
         http={"https://api.anthropic.com/": TimeoutError("timed out")},
     )
     report = run_doctor(probes=probes)
-    assert by_id(report)["auth.any"].status == "fail"
+    assert by_id(report)["auth.any"].status == "warn"
 
 
 def test_json_report_shape(tmp_path):
@@ -889,3 +918,175 @@ def test_base_url_userinfo_never_reaches_rows_or_details(tmp_path, reachable):
     assert "proxy-tok-SECRET" not in out and "proxyuser" not in out
     check = by_id(report)["net.llm-proxy.example"]
     assert check.details["url"] == "https://***@llm-proxy.example/v1/"
+
+
+# ── dx/errors: what a first run needs ─────────────────────────────────────
+
+SPENT_HEADERS = {
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-representative-claim": "seven_day",
+    "anthropic-ratelimit-unified-reset": "1791054000",
+    "anthropic-ratelimit-unified-5h-status": "allowed",
+    "anthropic-ratelimit-unified-5h-utilization": "0.0",
+    "anthropic-ratelimit-unified-5h-reset": "1790762400",
+    "anthropic-ratelimit-unified-7d-status": "rejected",
+    "anthropic-ratelimit-unified-7d-utilization": "1.0",
+    "anthropic-ratelimit-unified-7d-reset": "1791054000",
+}
+
+
+def test_the_claude_login_reports_its_windows(tmp_path):
+    calls: list = []
+    probes = make_probes(
+        tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN}, calls=calls
+    )
+    report = run_doctor(probes=probes)
+    check = by_id(report)["usage.claude-agent-acp"]
+    assert check.status == "pass"
+    assert check.summary.startswith("CLAUDE_CODE_OAUTH_TOKEN (env) accepted: ")
+    assert "5-hour window 12% used, resets 2026-09-30 10:00 UTC" in check.summary
+    assert "7-day window 36% used, resets 2026-10-03 19:00 UTC" in check.summary
+    assert "one 8-token claude-haiku-4-5-20251001 request" in check.summary
+    # One request, to the API, and it comes right after the credential line.
+    assert calls.count(("headroom", "https://api.anthropic.com")) == 1
+    ids = [c.id for c in report.checks]
+    assert ids.index("usage.claude-agent-acp") == ids.index("auth.claude-agent-acp") + 1
+    assert CLAUDE_TOKEN not in json.dumps(report.to_dict())
+
+
+def test_a_spent_claude_login_warns_with_its_reset(tmp_path):
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
+        headroom=(429, SPENT_HEADERS, ""),
+    )
+    report = run_doctor(probes=probes)
+    check = by_id(report)["usage.claude-agent-acp"]
+    assert check.status == "warn"
+    assert (
+        "CLAUDE_CODE_OAUTH_TOKEN (env) is out of usage: its 7-day window is spent "
+        "until 2026-10-03 19:00 UTC"
+    ) in check.summary
+    assert "use another login" in check.fix
+    # With no other credential, no model agent can run.
+    assert by_id(report)["auth.any"].status == "warn"
+
+
+def test_a_refused_claude_login_and_an_unreachable_api(tmp_path):
+    env = {"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN}
+    refused = run_doctor(probes=make_probes(tmp_path, env=env, headroom=(401, {}, "")))
+    check = by_id(refused)["usage.claude-agent-acp"]
+    assert check.status == "warn"
+    assert "was refused (HTTP 401)" in check.summary
+    assert "claude setup-token" in check.fix
+    down = run_doctor(
+        probes=make_probes(
+            tmp_path, env=env, headroom=(None, {}, f"ConnectError: {CLAUDE_TOKEN}")
+        )
+    )
+    check = by_id(down)["usage.claude-agent-acp"]
+    assert check.status == "warn" and "could not check its usage" in check.summary
+    assert CLAUDE_TOKEN not in check.summary  # redacted before it is shortened
+
+
+def test_no_usage_request_offline_or_for_an_api_key(tmp_path):
+    calls: list = []
+    offline = run_doctor(
+        probes=make_probes(
+            tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN}, calls=calls
+        ),
+        offline=True,
+    )
+    assert by_id(offline)["usage.claude-agent-acp"].status == "skip"
+    api_key = run_doctor(
+        probes=make_probes(
+            tmp_path, env={"ANTHROPIC_API_KEY": "sk-ant-api03-" + "k" * 40}, calls=calls
+        )
+    )
+    assert "usage.claude-agent-acp" not in by_id(api_key)
+    assert not [c for c in calls if c[0] == "headroom"]
+
+
+def test_docker_reports_its_version_and_free_disk(tmp_path):
+    info = _docker_info()
+    data = json.loads(info.stdout)
+    data["DockerRootDir"] = "/var/lib/docker"
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
+        commands={
+            ("docker", "context", "show"): CommandResult(0, "default\n", ""),
+            ("docker", "info", "--format", "{{json .}}"): CommandResult(
+                0, json.dumps(data), ""
+            ),
+        },
+        disk_free=4 * GIB,
+        system="Linux",
+    )
+    report = run_doctor(probes=probes, offline=True)
+    docker = by_id(report)["docker"]
+    assert docker.status == "pass"
+    assert "4.0 GiB free in /var/lib/docker" in docker.summary
+    disk = by_id(report)["docker-disk"]
+    assert disk.status == "warn" and "docker system df" in disk.fix
+
+
+def test_linux_fixes_name_linux_commands(tmp_path, monkeypatch):
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
+        commands={
+            ("docker", "buildx", "version"): CommandResult(1, "", "unknown command"),
+        },
+        system="Linux",
+    )
+    report = run_doctor(probes=probes, offline=True)
+    assert (
+        "sudo apt-get install docker-buildx-plugin"
+        in by_id(report)["docker-buildx"].fix
+    )
+    down = make_probes(
+        tmp_path,
+        env={"DOCKER_HOST": "unix:///tmp/nothing.sock"},
+        commands={
+            ("docker", "info", "--format", "{{json .}}"): CommandResult(
+                1, "", "Cannot connect to the Docker daemon"
+            ),
+        },
+        system="Linux",
+    )
+    check = by_id(run_doctor(probes=down, offline=True))["docker"]
+    assert check.status == "fail"
+    assert "unset DOCKER_HOST" in check.fix
+
+
+def test_the_model_proxy_line(tmp_path):
+    report = run_doctor(
+        probes=make_probes(
+            tmp_path,
+            env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
+            binaries=("docker", "uv", "litellm"),
+            dists={"litellm": "1.91.0"},
+        ),
+        offline=True,
+    )
+    check = by_id(report)["proxy.litellm"]
+    assert check.status == "pass"
+    assert check.summary.startswith("LiteLLM 1.91.0 for API-key and provider runs")
+    missing = run_doctor(
+        probes=make_probes(tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN}),
+        offline=True,
+    )
+    check = by_id(missing)["proxy.litellm"]
+    assert (
+        check.status == "warn" and "uv tool install --reinstall benchflow" in check.fix
+    )
+
+
+def test_the_aggregate_is_listed_with_the_credentials(tmp_path):
+    """dx/first-run: the aggregate line came after the network lines, so the
+    report printed the "Agent credentials" header twice."""
+    report = run_doctor(probes=make_probes(tmp_path))
+    groups = [c.group for c in report.checks]
+    assert groups.index("network") > groups.index("agents")
+    assert "agents" not in groups[groups.index("versions") :]

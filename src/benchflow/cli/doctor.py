@@ -36,6 +36,7 @@ _GROUP_TITLES = {
     "sandbox": "Sandbox",
     "agents": "Agent credentials",
     "versions": "Agent versions",
+    "proxy": "Model proxy",
     "network": "Network",
 }
 _GETTING_STARTED_URL = (
