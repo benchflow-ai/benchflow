@@ -155,6 +155,9 @@ async def test_upload_skips_the_oracle_when_told(tmp_path):
 def lease_home(tmp_path, monkeypatch):
     directory = tmp_path / "leases"
     monkeypatch.setenv(leases.LEASE_DIR_ENV, str(directory))
+    # The registry is process-wide: tests elsewhere that start a mocked
+    # sandbox without stopping it leave entries a lease file would list.
+    monkeypatch.setattr(leases, "_live", {})
     yield directory
     for entry in leases.live():
         leases.release(entry["provider"], entry["id"])
