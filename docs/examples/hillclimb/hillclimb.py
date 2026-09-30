@@ -173,6 +173,7 @@ def check_noise(s: Settings, rec: Record) -> dict:
         seed=s.seed,
     )
     rec.doc["noise_gate"] = {**gate, "forced": s.force and not gate["passed"]}
+    rec.save()  # the baseline and the gate, before the first round
     return gate
 
 
