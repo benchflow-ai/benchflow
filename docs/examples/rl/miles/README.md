@@ -87,7 +87,7 @@ The task family's verifier is binary. Groups whose episodes all got the same rew
 
 ## Steps
 
-Times and costs are measured where a number is given; the GPU steps have not run yet.
+Step 0 was run and timed. The GPU steps have not run yet, so their times are estimates.
 
 ### 0. Before renting a GPU: check the environment server (about 2 minutes, a few sandbox-minutes)
 
@@ -106,7 +106,7 @@ uv run python docs/examples/rl/miles/smoke.py --tasks-dir ~/rl/tasks/train \
 
 `smoke.py` plays scripted episodes against a stand-in session server that refuses any request not extending its history exactly, checks the discard on a model-server failure, the abort, and that the policy cannot read the Daytona key. With a Miles checkout and the example on `PYTHONPATH`, `--via-agent-function` runs the same episodes through `benchflow_agent_function.run`.
 
-### 1. Rent one GPU (about 10 minutes)
+### 1. Rent one GPU (estimate: 10 minutes)
 
 One H200 (141 GB) fits a 1.7B–4B policy trained with FSDP and colocated with SGLang. On Prime, use the Prime cookbook's pod tools and watchdog (`docs/examples/rl/prime/pods/`), so the pod is in the shared ledger with an owner and a maximum lifetime:
 
@@ -117,7 +117,7 @@ python3 prime_pods.py --dir ~/prime-pods create --owner miles --gpu-type H200_14
 
 Price on 2026-09-30: $4.50/h for the GPU, $5.48/h with the offer's minimum 1,500 GB disk, CPU and memory.
 
-### 2. Start the Miles container (about 10 minutes, mostly the image pull)
+### 2. Start the Miles container (estimate: 10 minutes, mostly the image pull)
 
 ```bash
 docker run -d --name miles --gpus all --ipc=host --shm-size=32g --ulimit memlock=-1 --ulimit stack=67108864 \
@@ -126,7 +126,7 @@ docker run -d --name miles --gpus all --ipc=host --shm-size=32g --ulimit memlock
 
 `radixark/miles:latest` is CUDA 13 (23.7 GB compressed); on a driver older than 580 use `radixark/miles:latest-cu12` (29.1 GB). This cookbook's example was written against Miles `79ef601` (2026-09-30).
 
-### 3. BenchFlow, tasks and prompt data (about 5 minutes)
+### 3. BenchFlow, tasks and prompt data (estimate: 5 minutes)
 
 Stream the BenchFlow checkout in with `git archive` and the stripped task folders with `tar`; then, in the container:
 
@@ -136,9 +136,9 @@ cp -r docs/examples/rl/miles/upstream/examples/experimental/benchflow /root/mile
 .venv/bin/python -m benchflow.integrations.miles prepare --tasks-dir /work/tasks/train --out /work/train.jsonl --split train
 ```
 
-### 4. Baseline and model choice (about 15 minutes per model)
+### 4. Model choice and baseline (estimate: 15 minutes per model)
 
-Serve the base model with SGLang and score it with the shared evaluator (thinking off, the evaluator's sampling):
+Serve the base model with SGLang and score it with the shared evaluator (thinking off, the evaluator's sampling). Choose the model on a train subset, so the test split stays held out for the before-and-after comparison:
 
 ```bash
 python -m sglang.launch_server --model-path Qwen/Qwen3-1.7B --served-model-name policy --tool-call-parser qwen25 \
@@ -148,9 +148,9 @@ SGLANG_KEY=unused .venv/bin/python docs/examples/rl/common/evaluate.py --tasks-d
     --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}' --out /work/eval/base
 ```
 
-Pick the Qwen3 size whose solve rate lands between 20% and 60%. The family is close to saturated for newer instruct models (the Tinker cookbook measured Qwen3.5-4B at 96% on a train subset), so start with Qwen3-1.7B and move down to 0.6B or up to 4B as needed.
+For the model choice, run the same command on `--tasks-dir /work/tasks/train --limit 48 --samples 2 --out /work/eval/choice-<model>`, and pick the Qwen3 size whose solve rate lands between 20% and 60%; then run the command above, on the test split, for the baseline. The family is close to saturated for newer instruct models (the Tinker cookbook measured Qwen3.5-4B at 96% on a train subset), so start with Qwen3-1.7B and move down to 0.6B or up to 4B as needed.
 
-### 5. Train (about 3 to 4 hours for 30 steps)
+### 5. Train (estimate: 3 to 4 hours for 30 steps)
 
 ```bash
 .venv/bin/python -m benchflow.integrations.miles serve --tasks-dir /work/tasks/train --sandbox daytona \
@@ -162,7 +162,7 @@ cd /root/miles && python examples/experimental/benchflow/run.py --model-name Qwe
 
 Watch `rollout/raw_reward`, `benchflow/exit_status/*` and `benchflow/clipped_reply_ratio` in the log (`rollout N: {...}`); `curl 127.0.0.1:12100/health` shows sandboxes in use and exit statuses.
 
-### 6. Evaluate the trained checkpoint (about 20 minutes)
+### 6. Evaluate the trained checkpoint (estimate: 20 minutes)
 
 ```bash
 python tools/convert_fsdp_to_hf.py --input-dir /work/ckpt/<last iteration> --output-dir /work/hf-trained --origin-hf-dir /root/models/Qwen3-1.7B
