@@ -59,3 +59,33 @@ def test_fixtures_equal_the_pinned_commit() -> None:
         assert shown == path.read_bytes(), str(rel)
         checked += 1
     assert checked > 50
+    # ... and nothing upstream is missing from the copies (.gitignore once dropped three).
+    folders = {
+        "schema/vectors/judge-prompt-1": FIXTURES / "vectors" / "judge-prompt-1",
+        "examples/datasets/terminal-mini/tasks/regex-log": FIXTURES
+        / "examples"
+        / "regex-log",
+    } | {
+        f"examples/{p.name}": p
+        for p in (FIXTURES / "examples").iterdir()
+        if p.is_dir() and p.name != "regex-log"
+    }
+    for upstream, copy in folders.items():
+        listed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "ls-tree",
+                "-r",
+                "--name-only",
+                source["commit"],
+                upstream,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        assert listed, upstream
+        missing = [f for f in listed if not (copy / f[len(upstream) + 1 :]).is_file()]
+        assert missing == [], missing
