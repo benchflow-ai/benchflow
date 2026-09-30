@@ -987,6 +987,10 @@ def test_a_refused_claude_login_and_an_unreachable_api(tmp_path):
     check = by_id(down)["usage.claude-agent-acp"]
     assert check.status == "warn" and "could not check its usage" in check.summary
     assert CLAUDE_TOKEN not in check.summary  # redacted before it is shortened
+    # The fix names the host the check actually calls, not ANTHROPIC_BASE_URL.
+    assert check.fix == (
+        "Check that api.anthropic.com is reachable; HTTPS_PROXY is honored if set"
+    )
 
 
 def test_no_usage_request_offline_or_for_an_api_key(tmp_path):

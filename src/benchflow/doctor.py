@@ -1256,7 +1256,8 @@ def check_claude_headroom(
         return row(
             "warn",
             f"{who}: could not check its usage ({_first_line(error, secrets=secrets)})",
-            f"Check that {_host(base)} is reachable; HTTPS_PROXY is honored if set",
+            f"Check that {_host(ANTHROPIC_API)} is reachable; "
+            "HTTPS_PROXY is honored if set",
         )
     headroom = parse_unified_headers(headers)
     details: dict[str, Any] = {"http_status": status, "request": request}
