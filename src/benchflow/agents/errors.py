@@ -13,8 +13,9 @@ a caller can catch it and run the rest on another login.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -182,7 +183,54 @@ class UsageLimitError(AgentProtocolError, UserError):
                 window=info.get("window"),
                 resets_at=resets_at,
             )
-        return cls.from_text(text) or cls(text or "usage limit reached")
+        return (
+            _from_description(text)
+            or cls.from_text(text)
+            or cls(text or "usage limit reached")
+        )
+
+
+# What :meth:`UsageLimitError.describe` writes before its ``(<detail>)``.
+_DESCRIBED = re.compile(
+    r"usage limit reached(?: on login (?P<login>.+?))?"
+    r"(?:: (?:(?P<window>[\w -]+) window)?(?:, )?"
+    r"(?:resets (?P<resets>\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC)?)?"
+)
+
+
+def _opening_paren(text: str) -> int | None:
+    """Where the parenthesized group that ends ``text`` opens."""
+    depth = 0
+    for i in range(len(text) - 1, -1, -1):
+        depth += {")": 1, "(": -1}.get(text[i], 0)
+        if depth == 0:
+            return i
+    return None
+
+
+def _from_description(text: str) -> UsageLimitError | None:
+    """The error :meth:`UsageLimitError.describe` wrote ``text`` for, or None.
+
+    A trial records the description as its ``error``; this reads it back
+    when the trial's ``usage_limit_info`` is not at hand.
+    """
+    i = _opening_paren(text) if text.endswith(")") else None
+    if i is None or i < 1 or text[i - 1] != " ":
+        return None
+    described = _DESCRIBED.fullmatch(text[: i - 1])
+    if described is None:
+        return None
+    resets = described["resets"]
+    return UsageLimitError(
+        text[i + 1 : -1],
+        login=described["login"],
+        window=described["window"],
+        resets_at=(
+            datetime.strptime(resets, "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
+            if resets
+            else None
+        ),
+    )
 
 
 def _rebuild_usage_limit(

@@ -307,6 +307,42 @@ def test_from_result_reads_a_saved_trial(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    ("login", "window", "resets_at"),
+    [
+        (
+            "CLAUDE_CODE_OAUTH_TOKEN (environment)",
+            "7-day",
+            datetime(2026, 10, 2, 16, 0, tzinfo=UTC),
+        ),
+        ("claude login (~/.claude/.credentials.json)", "7-day Opus", None),
+        ("CODEX_API_KEY (.env)", None, None),
+        (None, None, None),
+    ],
+)
+def test_from_result_reads_the_description_when_result_json_is_gone(
+    tmp_path, login, window, resets_at
+):
+    """Review finding: with no result.json the login was lost and the message
+    doubled as "usage limit reached (usage limit reached on login ...)"."""
+    original = UsageLimitError(WEEKLY, login=login, window=window, resets_at=resets_at)
+    result = RolloutResult(
+        task_name="t",
+        error=str(original),
+        error_category=USAGE_LIMIT,
+        rollout_dir=tmp_path / "gone",
+    )
+    err = UsageLimitError.from_result(result)
+    assert err is not None
+    assert (err.detail, err.login, err.window, err.resets_at) == (
+        WEEKLY,
+        login,
+        window,
+        resets_at,
+    )
+    assert str(err) == str(original)
+
+
 def test_a_branch_child_on_a_spent_login_is_not_retried():
     """A branch child that fails before its agent does anything is retried
     once in a new sandbox; a usage limit would only repeat."""
