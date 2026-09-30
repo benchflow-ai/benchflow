@@ -244,6 +244,11 @@ def solve_rates(
         caveats.append(
             f"{unscored} unscored trial(s) are left out of n, not counted as failures."
         )
+    if controls_excluded:
+        caveats.append(
+            f"{controls_excluded} control run(s) (oracle, empty/nop) are left out: "
+            "they check the task, not an agent (include_controls=True counts them)."
+        )
     if nonbinary and solve_threshold is None:
         caveats.append(
             f"{nonbinary} scored trial(s) have a reward other than 0 or 1 and count "

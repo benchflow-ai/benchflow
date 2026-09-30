@@ -132,3 +132,30 @@ def test_to_dict_is_json_ready() -> None:
     assert d["pass_at_k"]["1"] == pytest.approx(0.5)
     assert d["pass_hat_k"]["2"] == 0.0
     assert d["ks"] == [1, 2]
+
+
+def test_left_out_control_runs_are_named_in_the_caveats(tmp_path):
+    """``bench eval metrics`` over only an oracle run said ``Score 100%``
+    beside ``Solve rate n/a (0 scored trials)`` with no word on why.
+
+    Guards the dx/sdk fix of a first-run finding (dx/first-run, 2026-09-30):
+    control runs are left out of solve rates, and now the caveats say so.
+    """
+    import json
+
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+
+    trial = tmp_path / "job" / "hello__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps(
+            {"task_name": "hello", "agent": "oracle", "rewards": {"reward": 1.0}}
+        )
+    )
+    out = CliRunner().invoke(app, ["eval", "metrics", str(tmp_path / "job")])
+    assert out.exit_code == 0, out.output
+    assert "1 control run(s) (oracle, empty/nop) are left out" in " ".join(
+        out.output.split()
+    )
