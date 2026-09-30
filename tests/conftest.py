@@ -34,6 +34,19 @@ def isolate_local_dotenv(monkeypatch, tmp_path) -> None:
 
 
 @pytest.fixture(autouse=True)
+def isolate_sandbox_leases(monkeypatch, tmp_path) -> None:
+    """Keep sandbox lease files and image holders out of the real machine-wide folders.
+
+    Tests that start fake sandboxes record them (benchflow.sandbox.leases);
+    in ``~/.cache/benchflow/leases`` the next real rollout group's reaper
+    would try to delete those fake ids. Image holders
+    (benchflow.sandbox._image_holders) go to the test's folder too.
+    """
+    monkeypatch.setenv("BENCHFLOW_LEASE_DIR", str(tmp_path / "sandbox-leases"))
+    monkeypatch.setenv("BENCHFLOW_IMAGE_HOLDER_DIR", str(tmp_path / "image-holders"))
+
+
+@pytest.fixture(autouse=True)
 def skip_update_check(monkeypatch) -> None:
     """Keep the `bench traj` PyPI latest-version check out of unit tests.
 
