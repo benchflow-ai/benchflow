@@ -185,6 +185,9 @@ class TaskVariant:
     script: str
     agent_timeout_sec: float | None = None
     broken_verifier: bool = False
+    # An agent network allowlist (agent.network_mode: allowlist): only these
+    # hosts and the model gateway are reachable for the agent.
+    allowed_hosts: tuple[str, ...] = ()
 
 
 def materialize_task(variant: TaskVariant, dest_root: Path) -> Path:
@@ -200,6 +203,14 @@ def materialize_task(variant: TaskVariant, dest_root: Path) -> Path:
         text, n = re.subn(
             r"(?m)^(agent:\n  timeout_sec: )[0-9.]+$",
             rf"\g<1>{variant.agent_timeout_sec}",
+            text,
+        )
+        assert n == 1, "template task.md must set agent.timeout_sec"
+    if variant.allowed_hosts:
+        hosts = "".join(f"\n  - {host}" for host in variant.allowed_hosts)
+        text, n = re.subn(
+            r"(?m)^(agent:\n  timeout_sec: [0-9.]+)$",
+            rf"\g<1>\n  network_mode: allowlist\n  allowed_hosts:{hosts}",
             text,
         )
         assert n == 1, "template task.md must set agent.timeout_sec"
@@ -259,16 +270,21 @@ POLICY_ROUTES = {
 }
 
 
+# Codex routes: through the proxy wherever the backend runs it, or with the
+# proxy inside the sandbox (a network policy moves it there on every backend).
+CODEX_ROUTES = ("codex", "codex-in-sandbox")
+
+
 def route_model(route: str) -> str:
     """The ``--model`` a route runs with."""
-    if route == "codex":
+    if route in CODEX_ROUTES:
         return CODEX_MODEL
     return POLICY_ROUTES[route][0] if route in POLICY_ROUTES else MODEL
 
 
 def route_agent(route: str) -> str:
-    """The ``--agent`` a route runs (Codex for the ``codex`` route)."""
-    return CODEX_AGENT if route == "codex" else AGENT
+    """The ``--agent`` a route runs (Codex for the codex routes)."""
+    return CODEX_AGENT if route in CODEX_ROUTES else AGENT
 
 
 def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, str]:
@@ -286,12 +302,16 @@ def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, 
             "ANTHROPIC_AUTH_TOKEN": DUMMY_KEY,
             "ANTHROPIC_BASE_URL": IN_SANDBOX_FAKE_URL,
         }
-    if route == "codex":
+    if route in CODEX_ROUTES:
         # The proxy's upstream is the fake's Responses API (openai/ routes
         # append /responses to the base URL).
-        base = IN_SANDBOX_FAKE_URL if proxy_runs_in_sandbox(sandbox) else host_fake_url
+        in_sandbox = route == "codex-in-sandbox" or proxy_runs_in_sandbox(sandbox)
+        base = IN_SANDBOX_FAKE_URL if in_sandbox else host_fake_url
         assert base, "a host LiteLLM proxy needs the host fake provider URL"
-        return {"OPENAI_API_KEY": DUMMY_KEY, "BENCHFLOW_PROVIDER_BASE_URL": base + "/v1"}
+        return {
+            "OPENAI_API_KEY": DUMMY_KEY,
+            "BENCHFLOW_PROVIDER_BASE_URL": base + "/v1",
+        }
     assert route == "proxy", route
     base = IN_SANDBOX_FAKE_URL if proxy_runs_in_sandbox(sandbox) else host_fake_url
     assert base, "a host LiteLLM proxy needs the host fake provider URL"
@@ -362,7 +382,9 @@ def bench_command(
     env = dict(os.environ)
     # A developer's real provider settings must not leak into a scripted run.
     for key in list(env):
-        if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "OPENAI_", "CODEX_")) or key in {
+        if key.startswith(
+            ("ANTHROPIC_", "CLAUDE_CODE_", "OPENAI_", "CODEX_")
+        ) or key in {
             "BENCHFLOW_PROVIDER_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY",
         }:
@@ -471,7 +493,9 @@ def llm_calls(trial_dir: Path) -> list[dict[str, Any]]:
     return calls
 
 
-def _responses_call(request: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
+def _responses_call(
+    request: dict[str, Any], response: dict[str, Any]
+) -> dict[str, Any]:
     """One Responses API exchange (Codex) in :func:`llm_calls`' shape."""
     usage = response.get("usage") or {}
     output = [item for item in response.get("output") or [] if isinstance(item, dict)]

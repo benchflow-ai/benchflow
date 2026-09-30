@@ -20,6 +20,8 @@ The server is stateless. Every reply is a function of the request alone:
   snapshot, or a retried request gets the same reply.
 - Requests without tools (Claude Code's side calls such as title generation)
   get a fixed ``ok`` with ``SIDE_USAGE`` (0 in, 1 out).
+- A step with ``delay_sec`` answers after that many seconds (a slow model,
+  for timeouts that hit a model call rather than a tool).
 
 Every main-loop reply reports fixed usage (``USAGE``) so token and cost fields
 of a rollout are exact. Each request is appended to ``--log`` as JSONL.
@@ -39,6 +41,7 @@ import argparse
 import json
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
@@ -81,6 +84,17 @@ def locate(messages: list[dict[str, Any]]) -> tuple[str | None, int]:
             step = sum(1 for m in messages[index + 1 :] if m.get("role") == "assistant")
             return names[-1], step
     return None, 0
+
+
+def script_delay(
+    messages: list[dict[str, Any]], scripts: dict[str, list[dict[str, Any]]]
+) -> float:
+    """Seconds the step's ``delay_sec`` holds the reply back (a slow model)."""
+    name, step = locate(messages)
+    script = scripts.get(name or "") or []
+    if step < len(script):
+        return float(script[step].get("delay_sec") or 0)
+    return 0.0
 
 
 def _resolve_tool(requested: str, tools: list[dict[str, Any]]) -> str | None:
@@ -785,6 +799,8 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if body.get("tools"):
+            time.sleep(script_delay(body.get("messages") or [], self.scripts))
         reply = plan_reply(body, self.scripts)
         self._log(
             {
@@ -811,6 +827,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def _responses(self, path: str, body: dict[str, Any]) -> None:
+        if body.get("tools"):
+            time.sleep(script_delay(_responses_messages(body), self.scripts))
         response = plan_responses_reply(body, self.scripts)
         self._log(
             {
