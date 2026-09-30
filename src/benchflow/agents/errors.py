@@ -23,6 +23,7 @@ from benchflow.agents.usage_limits import (
     format_reset,
     is_usage_limit_text,
     parse_limit_text,
+    parse_rate_limit_info,
     parse_unified_headers,
 )
 from benchflow.errors import Fault, UserError
@@ -140,6 +141,20 @@ class UsageLimitError(AgentProtocolError, UserError):
             + (f" ({headroom.window} window)" if headroom.window else "")
         )
         return cls(text, window=headroom.window, resets_at=headroom.resets_at)
+
+    @classmethod
+    def from_rate_limit_info(
+        cls, info: Mapping[str, Any] | None, *, detail: str
+    ) -> UsageLimitError | None:
+        """The error a rejected rate-limit record describes, or None.
+
+        The record is Claude Code's ``rate_limit_event`` (see
+        :func:`benchflow.agents.usage_limits.parse_rate_limit_info`).
+        """
+        limit = parse_rate_limit_info(info, detail=detail)
+        if limit is None:
+            return None
+        return cls(limit.detail, window=limit.window, resets_at=limit.resets_at)
 
     @classmethod
     def from_result(cls, result: Any) -> UsageLimitError | None:

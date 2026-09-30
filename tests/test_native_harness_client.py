@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ import pytest
 
 from benchflow._utils.scoring import classify_error
 from benchflow.acp.runtime import execute_prompts
+from benchflow.agents.errors import UsageLimitError
 from benchflow.diagnostics import AgentPromptTimeoutError, TransportClosedError
 from benchflow.native_harness import client as client_module
 from benchflow.native_harness.client import (
@@ -411,6 +413,64 @@ async def test_a_turn_the_cli_reports_as_failed_raises(tmp_path):
     with pytest.raises(NativeHarnessError) as caught:
         await client.prompt("go")
     assert classify_error(str(caught.value)) == "provider_auth"
+
+
+@pytest.mark.asyncio
+async def test_a_spent_subscription_raises_the_typed_usage_limit(tmp_path):
+    """A login with no usage left stops the job as it does on the ACP harness.
+
+    The recorded CLI reports it twice over; the record names the window and
+    the reset, and the error is UsageLimitError, which the scorer files as
+    ``usage_limit`` (unscored, never retried) and which stops an Evaluation.
+    A NativeHarnessError carrying the same words would be neither.
+    """
+    sample = CLAUDE_SAMPLES / "usage-limit.jsonl"
+    client = _client(tmp_path, _LocalSandbox(), _harness(CLAUDE_CODE, tmp_path), sample)
+    with pytest.raises(UsageLimitError) as caught:
+        await client.prompt("go")
+    err = caught.value
+    assert err.window == "7-day"
+    assert err.resets_at == datetime.fromtimestamp(1791050880, UTC)
+    assert err.detail.startswith("You've hit your weekly limit")
+    assert "(HTTP 429)" not in err.detail
+    assert classify_error(str(err)) == "usage_limit"
+
+
+def _failed_turn(tmp_path: Path, text: str) -> Path:
+    sample = tmp_path / "failed.jsonl"
+    event = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "result": text,
+        "session_id": "s",
+        "usage": {},
+        "api_error_status": 429,
+    }
+    sample.write_text(json.dumps(event) + "\n")
+    return sample
+
+
+@pytest.mark.asyncio
+async def test_the_limit_words_alone_are_a_usage_limit_and_an_api_key_429_is_not(
+    tmp_path,
+):
+    """Without a record the CLI's words decide; an API-key 429 has no limit in them."""
+    harness = _harness(CLAUDE_CODE, tmp_path)
+    words = "You've hit your session limit · resets 5:20pm (America/New_York)"
+    client = _client(tmp_path, _LocalSandbox(), harness, _failed_turn(tmp_path, words))
+    with pytest.raises(UsageLimitError) as caught:
+        await client.prompt("go")
+    assert caught.value.window == "5-hour"
+
+    rate_limited = "API Error: Request rejected (429) · Rate limited"
+    client = _client(
+        tmp_path, _LocalSandbox(), harness, _failed_turn(tmp_path, rate_limited)
+    )
+    with pytest.raises(NativeHarnessError) as plain:
+        await client.prompt("go")
+    assert not isinstance(plain.value, UsageLimitError)
+    assert classify_error(str(plain.value)) != "usage_limit"
 
 
 @pytest.mark.asyncio

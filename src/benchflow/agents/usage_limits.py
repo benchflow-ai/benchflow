@@ -297,6 +297,24 @@ def parse_unified_headers(headers: Mapping[str, Any] | None) -> Headroom | None:
     )
 
 
+def parse_rate_limit_info(info: Any, *, detail: str) -> LimitInfo | None:
+    """A rejected rate-limit record, or None.
+
+    The record is Claude Code's ``rate_limit_event`` (the Agent SDK's
+    ``SDKRateLimitInfo``): ``{"status": "rejected", "rateLimitType":
+    "seven_day", "resetsAt": <unix time>}``. Only ``rejected`` is a limit;
+    ``detail`` is the agent's own words for it.
+    """
+    if not isinstance(info, Mapping) or info.get("status") != "rejected":
+        return None
+    kind = info.get("rateLimitType")
+    return LimitInfo(
+        detail=detail,
+        window=CLAIM_WINDOWS.get(str(kind)) if kind else None,
+        resets_at=_epoch(info.get("resetsAt")),
+    )
+
+
 def format_reset(when: datetime | None) -> str:
     """``2026-10-02 16:00 UTC``, or ``an unknown time``."""
     if when is None:

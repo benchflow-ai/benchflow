@@ -32,6 +32,7 @@ from uuid import uuid4
 
 from benchflow.acp.session import ACPSession
 from benchflow.acp.types import McpServerSpec, PromptResult, StopReason
+from benchflow.agents.errors import UsageLimitError
 from benchflow.diagnostics import TransportClosedError
 from benchflow.native_harness.spec import (
     NativeHarness,
@@ -652,6 +653,16 @@ class NativeCLIClient:
         if self._cancel_requested:
             return StopReason.CANCELLED
         if outcome.error is not None:
+            # A spent subscription is the typed UsageLimitError, as on the ACP
+            # harness, so the job stops starting trials: the CLI's own record
+            # names the window and the reset, and its words are the fallback.
+            # An API-key 429 has neither and stays a harness error.
+            words = outcome.agent_text or outcome.error
+            limit = UsageLimitError.from_rate_limit_info(
+                outcome.rate_limit, detail=words
+            ) or UsageLimitError.from_text(words)
+            if limit is not None:
+                raise limit
             raise NativeHarnessError(
                 cli,
                 outcome.error,

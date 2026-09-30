@@ -184,6 +184,32 @@ def test_allowed_headers_are_not_a_limit():
     assert parse_unified_headers({"content-type": "application/json"}) is None
 
 
+def test_a_rejected_rate_limit_record():
+    """Claude Code's ``rate_limit_event``: only ``rejected`` is a limit."""
+    record = {
+        "status": "rejected",
+        "rateLimitType": "seven_day_opus",
+        "resetsAt": 1791050880,
+        "isUsingOverage": False,
+    }
+    err = UsageLimitError.from_rate_limit_info(
+        record, detail="You've hit your Opus limit"
+    )
+    assert err is not None
+    assert err.window == "7-day Opus"
+    assert err.resets_at == datetime.fromtimestamp(1791050880, UTC)
+    assert err.detail == "You've hit your Opus limit"
+    # An unknown type or a missing reset leaves those facts out, not the limit.
+    odd = {"status": "rejected", "rateLimitType": "overage", "resetsAt": "soon"}
+    err = UsageLimitError.from_rate_limit_info(odd, detail="limit")
+    assert err is not None and err.window is None and err.resets_at is None
+    # A warning, a missing record, or a non-mapping is not a limit.
+    warning = {**record, "status": "allowed_warning"}
+    assert UsageLimitError.from_rate_limit_info(warning, detail="x") is None
+    assert UsageLimitError.from_rate_limit_info(None, detail="x") is None
+    assert UsageLimitError.from_rate_limit_info(["rejected"], detail="x") is None  # type: ignore[arg-type]
+
+
 def test_the_login_label_and_the_hierarchy():
     err = UsageLimitError.from_text(
         "You've hit your weekly limit · resets Oct 2, 4pm (UTC)", now=NOW
