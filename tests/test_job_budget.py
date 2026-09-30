@@ -295,3 +295,23 @@ async def test_a_trial_that_raises_stops_counting_sandbox_seconds(
     assert job._budget_guard.spent()["sandbox_seconds"] < 0.5
     budget = _summary(job)["budget"]
     assert budget["stopped"] is False and budget["cancelled"] == []
+
+
+def test_budget_keyword_leaves_the_callers_config_alone(tmp_path: Path) -> None:
+    """``Evaluation(config=cfg, budget=...)`` caps that job only.
+
+    Guards the dx/sdk fix of the regression from bf6e8412 (SDK update), where
+    the keyword wrote the budget into the caller's ``EvaluationConfig``: a
+    config reused for a second Evaluation silently carried the first job's
+    cap, and the caller's object changed under it.
+    """
+    config = EvaluationConfig(agent="oracle")
+    tasks = _tasks(tmp_path, 1)
+    capped = Evaluation(
+        tasks, tmp_path / "jobs", config=config, budget=Budget(max_tokens=10)
+    )
+    uncapped = Evaluation(tasks, tmp_path / "jobs2", config=config)
+
+    assert config.budget is None
+    assert capped._config.budget == Budget(max_tokens=10)
+    assert uncapped._config.budget is None

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -936,7 +937,10 @@ class Evaluation:
     ):
         self._tasks_dir = resolve_task_collection_root(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
-        self._config = config or EvaluationConfig()
+        # A copy: ``budget=`` and the task source's provenance are set on the
+        # job's own config, never on the caller's object, which may be reused
+        # for another Evaluation.
+        self._config = copy.copy(config) if config is not None else EvaluationConfig()
         if budget is not None:
             # A hard per-job cap (benchflow.budget); same as config.budget.
             self._config.budget = Budget.coerce(budget)
