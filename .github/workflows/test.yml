@@ -65,7 +65,7 @@ jobs:
     # model keys, no model cost. Requesting docker explicitly makes a missing
     # daemon fail the job instead of skipping every scenario.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -87,6 +87,7 @@ jobs:
         run: >-
           uv run python -m pytest tests/test_deterministic_integration.py
           tests/test_docker_parallel_isolation.py
+          tests/test_integrity_deterministic.py
           -m deterministic -v -rs --durations=0
         env:
           BENCHFLOW_DETERMINISTIC_SANDBOX: docker
