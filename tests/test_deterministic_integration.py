@@ -459,7 +459,7 @@ def test_agent_timeout_with_passing_file_is_timed_out_and_passed(eval_job):
 
 @needs_sandbox
 def test_agent_crash_is_unscored_and_not_verified(eval_job):
-    """The agent process dies mid-run: no reward, and the verifier is not run."""
+    """Claude Code dies mid-run under a live adapter: no reward, no verifier."""
     trial = eval_job.trial("agent-crash")
     facts = _check_trial(trial, "eval-agent-crash")
     assert facts["outcome"]["execution"] == "errored"

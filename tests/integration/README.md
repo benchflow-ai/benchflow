@@ -34,7 +34,7 @@ The LiteLLM proxy runs inside the sandbox on Daytona and on the host on Docker. 
 | `test_hello_world_passes` | `bench eval run` | reward 1.0; completed · scored; verifier ran; all timing keys |
 | `test_wrong_answer_scores_zero` | `bench eval run` | reward 0.0; completed · scored |
 | `test_agent_timeout_with_passing_file_is_timed_out_and_passed` | `bench eval run`, agent timeout 45 s | timed out · scored 1.0; `agent_timeout_info` names the pending tool call; verifier ran |
-| `test_agent_crash_is_unscored_and_not_verified` | `bench eval run` | the scripted tool call kills the Claude process: errored (`acp_error`) · unscored; no reward; verifier did not run |
+| `test_agent_crash_is_unscored_and_not_verified` | `bench eval run` | the scripted tool call kills the Claude Code CLI (`CLAUDE_CODE_EXECUTABLE`), and the adapter reports it: errored (`acp_error`) · unscored; no reward; verifier did not run |
 | `test_verifier_error_is_an_assessment_error_never_zero` | `bench eval run`, broken `test.sh` | completed · assessment error; `rewards` null, never 0; `verifier_failure` |
 | `test_eval_job_summary` | the same job | `summary.json` counts and categories, token totals |
 | `test_branch_two_children_in_place` | `bench eval branch --checkpoint-after-prompt 1 --child … --child …` | V = 0.5, `value_stderr`, children 1.0 / 0.0 from the verifier, `children_mode`, child folders, parent restored and scored 1.0 |
