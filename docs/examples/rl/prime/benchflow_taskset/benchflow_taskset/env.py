@@ -44,7 +44,7 @@ class BenchFlowEnvConfig(vf.EnvConfig):
     agent: vf.AgentConfig = vf.AgentConfig(
         harness=NullHarnessConfig(id="null"),
         runtime=vf.SubprocessConfig(),
-        max_turns=30,
+        max_turns=10,
     )
     """The policy's seat: its chat loop runs locally; its commands run in the sandbox."""
     timeout: TimeoutConfig = TimeoutConfig(episode=3600.0)

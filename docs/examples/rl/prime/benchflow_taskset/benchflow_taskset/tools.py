@@ -20,41 +20,32 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from benchflow_taskset.session import BenchFlowSession
 
-RUN_BASH_DESCRIPTION = (
-    "Run a bash command in the task sandbox, in the task's working directory. "
-    "Returns the combined standard output and standard error (truncated if long), "
-    "followed by the exit code when it is not zero."
-)
-SUBMIT_DESCRIPTION = (
-    "Submit your final answer and end the episode. The answer, if given, is written "
-    "to {submit_path}, replacing that file; leave it empty if you already wrote the "
-    "file. Call this once, when you are done."
-)
-SUBMIT_DESCRIPTION_NO_PATH = "End the episode. Call this once, when you are done."
+# The tool definitions of BenchFlow's TRL harness (benchflow.integrations.trl
+# .bash_tool_schemas()), which evaluate.py sends too: same names, descriptions and
+# parameters, so the policy trains and is evaluated on the same tools.
+RUN_BASH_DESCRIPTION = "Run a bash command in the task sandbox and return its output (stdout and stderr)."
+RUN_BASH_COMMAND = "The bash command to run in the task's working directory."
+SUBMIT_DESCRIPTION = "Submit the final answer. This ends the task, so call it once, when you are done."
+SUBMIT_ANSWER = "The final answer, written to the task's answer file."
 
 
 def build_server(session: BenchFlowSession, token: str):
+    from typing import Annotated
+
     from mcp.server.mcpserver import MCPServer
     from mcp.server.transport_security import TransportSecuritySettings
+    from pydantic import Field
 
     server = MCPServer("benchflow")
 
-    async def run_bash(command: str) -> str:
+    async def run_bash(command: Annotated[str, Field(description=RUN_BASH_COMMAND)]) -> str:
         return await session.run_bash(command)
 
-    async def submit(answer: str = "") -> str:
+    async def submit(answer: Annotated[str, Field(description=SUBMIT_ANSWER)]) -> str:
         return await session.submit(answer)
 
     server.add_tool(run_bash, name="run_bash", description=RUN_BASH_DESCRIPTION)
-    server.add_tool(
-        submit,
-        name="submit",
-        description=(
-            SUBMIT_DESCRIPTION.format(submit_path=session.submit_path)
-            if session.submit_path
-            else SUBMIT_DESCRIPTION_NO_PATH
-        ),
-    )
+    server.add_tool(submit, name="submit", description=SUBMIT_DESCRIPTION)
     return server.streamable_http_app(
         streamable_http_path=f"/{token}/mcp",
         json_response=True,

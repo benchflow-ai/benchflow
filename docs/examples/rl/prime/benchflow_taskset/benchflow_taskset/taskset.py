@@ -27,11 +27,21 @@ if TYPE_CHECKING:
 
 BRIDGE_SCRIPT = Path(__file__).with_name("bridge.py")
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are solving a task in a Linux sandbox. Use the run_bash tool to run shell "
-    "commands in the task's working directory; each call starts a fresh shell there. "
-    "When you are done, call the submit tool."
+# The shared RL cookbook harness (docs/examples/rl/common/harness.py), copied here
+# because this package cannot import BenchFlow: the same instructions and limits the
+# held-out evaluator (evaluate.py) and the TRL cookbook use, so a policy trained here
+# is evaluated on exactly what it saw. tests/test_prime_cookbook_harness.py keeps the
+# two in step.
+HARNESS_MESSAGE = (
+    "\n\nYou are working in a Linux sandbox. Use the run_bash tool to run shell "
+    "commands; each call starts in /workdir. When you are done, call the submit tool "
+    "once with your final answer: it writes the answer to /workdir/answer.txt for you "
+    "and ends the task. For a code fix, submit the word done."
 )
+BASH_TIMEOUT_SEC = 30
+MAX_OUTPUT_CHARS = 2000
+MAX_TURNS = 10
+SUBMIT_PATH = "/workdir/answer.txt"
 
 
 class BenchFlowInfraError(vf.SandboxError):
@@ -51,13 +61,15 @@ class BenchFlowTaskConfig(vf.TaskConfig):
     """The sandbox user commands run as (``None``: root)."""
     jobs_dir: str = "jobs/benchflow-taskset"
     """Where BenchFlow writes each episode's rollout folder, and ``outcomes.jsonl``."""
-    bash_timeout_sec: int = Field(60, ge=1)
+    bash_timeout_sec: int = Field(BASH_TIMEOUT_SEC, ge=1)
     """Per-command limit. A command that runs out of time is the policy's: the model
-    sees a timeout message and the episode goes on."""
-    max_output_chars: int = Field(4096, ge=256)
-    """Longest tool output the model sees (head and tail kept)."""
-    submit_path: str | None = "/workdir/answer.txt"
-    """Where ``submit(answer)`` writes a non-empty answer (``None``: nowhere)."""
+    sees a timeout error and the episode goes on."""
+    max_output_chars: int = Field(MAX_OUTPUT_CHARS, ge=256)
+    """Longest tool output the model sees (truncated as BenchFlow's TRL harness does)."""
+    submit_path: str = SUBMIT_PATH
+    """Where ``submit(answer)`` writes the answer."""
+    prompt_suffix: str = HARNESS_MESSAGE
+    """Appended to every task prompt: the shared harness instructions."""
     agent_budget_sec: float | None = Field(900.0, gt=0)
     """Wall-clock budget for the policy. When it runs out the episode stops and is
     verified as it stands: a budget stop scores like any other, never dropped."""
@@ -154,6 +166,8 @@ class BenchFlowTask(vf.Task[BenchFlowData, vf.State, BenchFlowTaskConfig]):
             "submitted": session.submitted,
             "rollout_dir": session.rollout_dir,
         }
+        if decision.get("passed") is not None:
+            trace.record_metric("benchflow_passed", float(bool(decision["passed"])))
         trace.record_metric("benchflow_submitted", float(session.submitted))
         trace.record_metric("benchflow_policy_acted", float(session.policy_acted))
         trace.record_metric("benchflow_bash_calls", float(session.stats["bash_calls"]))
@@ -204,8 +218,7 @@ class BenchFlowTaskset(vf.Taskset[BenchFlowTask, BenchFlowConfig]):
             data = BenchFlowData(
                 id=row.get("id") or row["name"],
                 name=row["name"],
-                prompt=row["prompt"],
-                system_prompt=DEFAULT_SYSTEM_PROMPT,
+                prompt=row["prompt"] + self.config.task.prompt_suffix,
                 task_dir=row["task_dir"],
                 metadata=row.get("metadata") or {},
                 verifier_timeout_sec=row.get("verifier_timeout_sec"),

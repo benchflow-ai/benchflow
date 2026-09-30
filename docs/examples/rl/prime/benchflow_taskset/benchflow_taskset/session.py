@@ -198,14 +198,20 @@ class SandboxStartError(RuntimeError):
         self.decision = decision
 
 
+TRUNCATION_MARKER = "\n[benchflow output truncated]\n"
+
+
 def truncate(text: str, limit: int) -> str:
-    """Keep the head and the tail; the middle of a long output matters least."""
+    """Keep the head, as BenchFlow's TRL harness does, so outputs match evaluate.py's."""
     if len(text) <= limit:
         return text
-    marker = f"\n[... {len(text) - limit} characters truncated ...]\n"
-    keep = max(0, limit - len(marker))
-    head = keep // 2
-    return text[:head] + marker + text[len(text) - (keep - head) :]
+    keep = max(0, limit - len(TRUNCATION_MARKER))
+    return f"{text[:keep]}{TRUNCATION_MARKER}"
+
+
+def tool_error(message: str) -> str:
+    """A failed tool call, in the form TRL and evaluate.py give the policy."""
+    return json.dumps({"error": message})
 
 
 class BenchFlowSession:
@@ -222,7 +228,7 @@ class BenchFlowSession:
         jobs_dir: str,
         bash_timeout_sec: int,
         max_output_chars: int,
-        submit_path: str | None,
+        submit_path: str,
         agent_budget_sec: float | None,
         sandbox_setup_timeout_sec: int,
         verify_timeout_sec: float,
@@ -305,19 +311,18 @@ class BenchFlowSession:
 
     def episode_over(self) -> str | None:
         if self.infra_error is not None:
-            return "error: the sandbox bridge failed; the episode is over."
+            return tool_error("the sandbox bridge failed; the episode is over")
         if self.submitted:
-            return "error: the answer was already submitted; the episode is over."
+            return tool_error("the answer was already submitted; the episode is over")
         if self.decision is not None:
-            return "error: the episode is over."
+            return tool_error("the episode is over")
         return None
 
     async def run_bash(self, command: str) -> str:
+        """Run one command; the result reads as BenchFlow's TRL harness would return it."""
         if (over := self.episode_over()) is not None:
             return over
         command = str(command or "")
-        if not command.strip():
-            return "error: empty command"
         self.policy_acted = True
         self.stats["bash_calls"] += 1
         reply = await self._call(
@@ -325,41 +330,36 @@ class BenchFlowSession:
             timeout_sec=self.bash_timeout_sec + REPLY_SLACK_SEC,
         )
         if reply is None:
-            return "error: the sandbox bridge failed; the episode is over."
+            return tool_error("the sandbox bridge failed; the episode is over")
         if not reply.get("ok"):
             self.stats["exec_errors"] += 1
             if reply.get("transient"):
                 self.stats["transient_errors"] += 1
-            return f"error: the sandbox could not run the command: {reply.get('error')}"
-        output = str(reply.get("stdout") or "") + str(reply.get("stderr") or "")
-        output = truncate(output, self.max_output_chars)
-        return_code = reply.get("return_code")
+            return tool_error(str(reply.get("error")))
         if reply.get("timed_out"):
             self.stats["bash_timeouts"] += 1
-            return f"{output}\n[command timed out after {self.bash_timeout_sec} seconds]".lstrip("\n")
-        if return_code not in (0, None):
+            return tool_error(f"Command timed out after {self.bash_timeout_sec} seconds")
+        if reply.get("return_code") not in (0, None):
             self.stats["bash_nonzero"] += 1
-            return f"{output}\n[exit code {return_code}]".lstrip("\n")
-        return output
+        output = str(reply.get("stdout") or "") + str(reply.get("stderr") or "")
+        return truncate(output, self.max_output_chars)
 
-    async def submit(self, answer: str = "") -> str:
+    async def submit(self, answer: str) -> str:
+        """Write the answer to the submit path, as the TRL harness does, and end the episode."""
         if (over := self.episode_over()) is not None:
             return over
-        answer = "" if answer is None else str(answer)
-        if answer and self.submit_path:
-            self.policy_acted = True
-            reply = await self._call(
-                {"op": "write", "path": self.submit_path, "text": answer},
-                timeout_sec=30 + REPLY_SLACK_SEC,
-            )
-            if reply is None:
-                return "error: the sandbox bridge failed; the episode is over."
-            if not reply.get("ok"):
-                self.stats["exec_errors"] += 1
-                return f"error: could not write the answer: {reply.get('error')}"
+        self.policy_acted = True
+        reply = await self._call(
+            {"op": "write", "path": self.submit_path, "text": "" if answer is None else str(answer)},
+            timeout_sec=30 + REPLY_SLACK_SEC,
+        )
+        if reply is None:
+            return tool_error("the sandbox bridge failed; the episode is over")
+        if not reply.get("ok"):
+            self.stats["exec_errors"] += 1
+            return tool_error(f"could not write the answer: {reply.get('error')}")
         self.submitted = True
-        where = f" to {self.submit_path}" if answer and self.submit_path else ""
-        return f"Submitted{where}. The episode is over."
+        return "submission recorded"
 
     # --- the verdict --------------------------------------------------------------------
 

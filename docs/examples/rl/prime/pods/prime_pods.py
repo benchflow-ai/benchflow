@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""Rent Prime Intellect pods, and a watchdog that stops every pod on the account.
+"""Rent Prime Intellect pods, and a watchdog that stops the ones we created.
 
 Standard library only, so it runs on any machine with Python 3.10+. One ledger
-(JSON lines) records every pod the agents sharing a Prime account create: its
-owner, hourly price, and maximum lifetime. The watchdog pass (``watch``), run
-every 5 minutes by ``run_watchdog.sh``, covers every pod on the account, in the
-ledger or not:
+(JSON lines) records every pod the cooperating agents create: its owner, hourly
+price, and maximum lifetime. The watchdog pass (``watch``), run every 5 minutes by
+``run_watchdog.sh``, acts only on *our* pods: those in the ledger under one of the
+policy's ``owners``, or named with one of its ``name_prefixes``. It never touches a
+pod someone else created on the same account; it only logs it. For our pods:
 
 - it terminates any pod older than its maximum lifetime (the ledger's, else the
   policy's; never more than 8 hours);
 - it terminates an owner's pods once that owner's estimated spend reaches its cap
   (``owner_caps`` in ``policy.json``);
-- it terminates every pod once the estimated total reaches the spend cap.
+- it terminates every one of our pods once our estimated total reaches the spend cap.
 
 The estimate is price x hours for every ledger pod, from creation to termination
-(or now), plus every running pod the ledger does not know ("unattributed"). It is
-an estimate, not the bill: ``history`` shows what Prime billed.
+(or now), plus any running pod of ours the ledger lacks (named with our prefix).
+It is an estimate, not the bill: ``history`` shows what Prime billed, and
+``wallet`` the account's balance.
 
 The API key comes from ``PRIME_API_KEY`` or ``~/.config/benchflow/primeintellect.env``
 (``PRIME_ENV_FILE``) and is never printed. State lives in ``--dir`` (default
@@ -56,8 +58,10 @@ from typing import Any
 API = os.environ.get("PRIME_API_URL", "https://api.primeintellect.ai/api/v1")
 HARD_MAX_HOURS = 8.0
 DEFAULT_SPEND_CAP = 1400.0
-# Pods running on the account that no ledger entry names.
+# Our running pods that no ledger entry names (matched by name prefix).
 UNATTRIBUTED = "unattributed"
+DEFAULT_OWNERS = ("rl-prime", "miles")
+DEFAULT_NAME_PREFIXES = ("rl-prime-", "rl-miles-", "miles-")
 # Ledger records written before the owner column existed were all rl-prime's.
 LEGACY_OWNER = "rl-prime"
 # A ledger pod missing from /pods/ counts as ended only after the watchdog saw it
@@ -195,6 +199,9 @@ class Prime:
     def delete(self, pod_id: str) -> Any:
         return self.request("DELETE", f"/pods/{pod_id}")
 
+    def wallet(self) -> dict:
+        return self.request("GET", "/billing/wallet") or {}
+
     def offers(self, gpu_type: str | None = None) -> list[dict]:
         params = {"gpu_type": gpu_type} if gpu_type else None
         page = self.request("GET", "/availability/", params=params) or {}
@@ -272,6 +279,8 @@ class Policy:
     max_hours: float = HARD_MAX_HOURS
     spend_cap: float = DEFAULT_SPEND_CAP
     owner_caps: dict[str, float] = field(default_factory=dict)
+    owners: tuple[str, ...] = DEFAULT_OWNERS
+    name_prefixes: tuple[str, ...] = DEFAULT_NAME_PREFIXES
 
 
 def load_policy(directory: Path, *, max_hours: float, spend_cap: float) -> Policy:
@@ -293,7 +302,19 @@ def load_policy(directory: Path, *, max_hours: float, spend_cap: float) -> Polic
     if data.get("spend_cap") is not None:
         policy.spend_cap = min(policy.spend_cap, float(data["spend_cap"]))
     policy.owner_caps = {str(k): float(v) for k, v in (data.get("owner_caps") or {}).items()}
+    if data.get("owners"):
+        policy.owners = tuple(str(owner) for owner in data["owners"])
+    if data.get("name_prefixes"):
+        policy.name_prefixes = tuple(str(prefix) for prefix in data["name_prefixes"])
     return policy
+
+
+def is_ours(pod: dict, ledger: dict[str, "LedgerPod"], owners: tuple[str, ...], prefixes: tuple[str, ...]) -> bool:
+    """A pod we created: in the ledger under one of our owners, or named with our prefix."""
+    entry = ledger.get(str(pod.get("id")))
+    if entry is not None and entry.owner in owners:
+        return True
+    return str(pod.get("name") or "").startswith(tuple(prefixes)) if prefixes else False
 
 
 # --- the watchdog's decisions (pure, so they are testable offline) ---------------
@@ -315,8 +336,9 @@ def estimate_spend(
 ) -> Spend:
     """Price x hours for every ledger pod, plus every running pod the ledger lacks.
 
-    A ledger pod that is not running counts until its recorded end; with no end
-    recorded it counts until now (the watchdog records the end when it notices).
+    ``active`` should hold only our pods (see ``is_ours``). A ledger pod that is not
+    running counts until its recorded end; with no end recorded it counts until now
+    (the watchdog records the end when it notices).
     """
     active_by_id = {str(pod.get("id")): pod for pod in active}
     ledger_total = 0.0
@@ -363,13 +385,17 @@ def pods_to_terminate(
     spend_cap: float,
     owner_caps: dict[str, float] | None = None,
     stop_all: bool = False,
+    owners: tuple[str, ...] = DEFAULT_OWNERS,
+    name_prefixes: tuple[str, ...] = DEFAULT_NAME_PREFIXES,
 ) -> tuple[list[tuple[str, str]], Spend]:
-    """Which running pods to terminate, each with its reason."""
+    """Which of our running pods to terminate, each with its reason. Pods we did not
+    create are neither counted nor terminated."""
     max_hours = min(max_hours, HARD_MAX_HOURS)
     owner_caps = owner_caps or {}
-    spend = estimate_spend(ledger, active, now)
+    ours = [pod for pod in active if is_ours(pod, ledger, owners, name_prefixes)]
+    spend = estimate_spend(ledger, ours, now)
     doomed: list[tuple[str, str]] = []
-    for pod in active:
+    for pod in ours:
         pod_id = str(pod.get("id"))
         if str(pod.get("status", "")).upper() in {"TERMINATED", "TERMINATING"}:
             continue
@@ -473,7 +499,11 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
         spend_cap=policy.spend_cap,
         owner_caps=policy.owner_caps,
         stop_all=(directory / "STOP_ALL").exists(),
+        owners=policy.owners,
+        name_prefixes=policy.name_prefixes,
     )
+    ours = [pod for pod in active if is_ours(pod, ledger, policy.owners, policy.name_prefixes)]
+    others = [pod for pod in active if pod not in ours]
 
     def label(pod: dict) -> str:
         entry = ledger.get(str(pod.get("id")))
@@ -485,11 +515,27 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
         f"{owner} ${value:.2f}" + (f"/${policy.owner_caps[owner]:.0f}" if owner in policy.owner_caps else "")
         for owner, value in sorted(spend.by_owner.items())
     )
+    not_ours = ", ".join(
+        f"{pod.get('id')}:{pod.get('name') or '-'}:${float(pod.get('priceHr') or 0):.2f}/h" for pod in others
+    )
+    # The account's balance is shared with whoever else uses it: warn, never act on it
+    # (terminating would lose unexported work; the owner stops at a checkpoint instead).
+    wallet_note = ""
+    try:
+        balance = float(prime.wallet().get("balance_usd") or 0.0)
+        burn = sum(float(pod.get("priceHr") or 0.0) for pod in active)
+        runway = balance / burn if burn > 0 else float("inf")
+        wallet_note = f" wallet=${balance:.2f} runway={runway:.1f}h" if burn > 0 else f" wallet=${balance:.2f}"
+        if runway < 1.0:
+            wallet_note += " LOW-WALLET: stop at a checkpoint and export now"
+    except ApiError:
+        wallet_note = " wallet=?"
     log(
         directory,
-        f"pass: running={len(active)} [{', '.join(label(pod) for pod in active)}]"
+        f"pass: ours={len(ours)} [{', '.join(label(pod) for pod in ours)}]"
         f" spend_est=${spend.total:.2f} ({owners or 'none'}) cap=${policy.spend_cap:.0f}"
-        f" max={policy.max_hours:g}h terminate={len(doomed)}",
+        f" max={policy.max_hours:g}h terminate={len(doomed)}{wallet_note}"
+        + (f" | not ours, never touched: [{not_ours}]" if others else ""),
     )
     failures = 0
     for pod_id, reason in doomed:
@@ -707,7 +753,10 @@ def cmd_list(prime: Prime, args: argparse.Namespace) -> int:
 
 
 def cmd_spend(prime: Prime, args: argparse.Namespace) -> int:
-    spend = estimate_spend(ledger_read(args.dir), prime.pods(), utcnow())
+    ledger = ledger_read(args.dir)
+    policy = load_policy(args.dir, max_hours=HARD_MAX_HOURS, spend_cap=DEFAULT_SPEND_CAP)
+    ours = [pod for pod in prime.pods() if is_ours(pod, ledger, policy.owners, policy.name_prefixes)]
+    spend = estimate_spend(ledger, ours, utcnow())
     for line in spend.lines:
         print(line)
     for owner, value in sorted(spend.by_owner.items()):
@@ -730,6 +779,22 @@ def cmd_history(prime: Prime, args: argparse.Namespace) -> int:
                 f" {item.get('createdAt')} -> {item.get('terminatedAt')} billed ${billed:.2f}"
             )
     print(f"billed total ${total:.2f}")
+    return 0
+
+
+def cmd_wallet(prime: Prime, args: argparse.Namespace) -> int:
+    """The account's balance, and how long our running pods can run on it."""
+    wallet = prime.wallet()
+    balance = float(wallet.get("balance_usd") or 0.0)
+    ledger = ledger_read(args.dir)
+    policy = load_policy(args.dir, max_hours=HARD_MAX_HOURS, spend_cap=DEFAULT_SPEND_CAP)
+    pods = prime.pods()
+    burn = sum(float(pod.get("priceHr") or 0.0) for pod in pods)
+    ours = sum(
+        float(pod.get("priceHr") or 0.0) for pod in pods if is_ours(pod, ledger, policy.owners, policy.name_prefixes)
+    )
+    runway = f"{balance / burn:.1f}h" if burn > 0 else "no pod running"
+    print(f"balance ${balance:.2f}; running pods ${burn:.2f}/h (ours ${ours:.2f}/h); runway {runway}")
     return 0
 
 
@@ -833,6 +898,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list")
     sub.add_parser("spend")
+    sub.add_parser("wallet")
     history = sub.add_parser("history")
     history.add_argument("--all", action="store_true", help="every pod on the account, not only the ledger's")
     offers = sub.add_parser("offers")
@@ -854,6 +920,7 @@ def main(argv: list[str] | None = None) -> int:
         "delete": cmd_delete,
         "list": cmd_list,
         "spend": cmd_spend,
+        "wallet": cmd_wallet,
         "history": cmd_history,
         "offers": cmd_offers,
         "ssh-key-register": cmd_ssh_key_register,
