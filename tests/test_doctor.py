@@ -1125,6 +1125,24 @@ def test_the_usage_check_sends_only_a_subscription_token_to_anthropic(tmp_path):
     assert not [c for c in calls if c[0] == "headroom"]
 
 
+def test_a_429_without_usage_headers_still_counts_as_spent(tmp_path):
+    """Second review finding: a login refused for want of quota whose answer
+    carries no `anthropic-ratelimit-unified-*` headers was warned about but
+    left out of "no model agent can run", so doctor said the machine was
+    ready for a login no run could use."""
+    report = run_doctor(
+        probes=make_probes(
+            tmp_path,
+            env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
+            headroom=(429, {}, ""),
+        )
+    )
+    check = by_id(report)["usage.claude-agent-acp"]
+    assert check.status == "warn" and "HTTP 429 and no usage windows" in check.summary
+    assert check.details["blocks_runs"] is True
+    assert by_id(report)["auth.any"].status == "warn"
+
+
 @pytest.mark.parametrize(
     "answer",
     [

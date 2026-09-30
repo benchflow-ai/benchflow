@@ -1285,6 +1285,10 @@ def check_claude_headroom(
                 f"{who} accepted; the answer carried no usage windows ({request})",
                 details=details,
             )
+        if status == 429:
+            # Refused for want of quota, with no window to name: still a
+            # login no run can use, so it counts as unusable like a spent one.
+            details["blocks_runs"] = True
         return row(
             "warn",
             f"{who}: HTTP {status} and no usage windows ({request})",

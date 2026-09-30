@@ -193,8 +193,11 @@ def eval_preflight(
             # The model the job's trials will use (bench eval run resolves the
             # agent's default the same way).
             trial_model = effective_model(agent, model)
-        except ValueError:
-            trial_model = None
+        except ValueError as exc:
+            # An agent with no default model and no --model: the job would
+            # fail on the same error once it started, so say it here.
+            print_error(f"{exc}\nNo job was created.")
+            raise typer.Exit(1) from None
         try:
             check_credentials(
                 [SimpleNamespace(agent=agent, model=trial_model, agent_env=agent_env)]
