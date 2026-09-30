@@ -269,9 +269,14 @@ async def run_jobs(
             cfg = replace(cfg, agent_env={**cfg.agent_env, **token})
             run["account"] = account.name
         try:
-            result = await bf.Evaluation(
-                s.tasks_dir, jobs_dir, config=cfg, job_name="job"
-            ).run()
+            try:
+                result = await bf.Evaluation(
+                    s.tasks_dir, jobs_dir, config=cfg, job_name="job"
+                ).run()
+            except bf.UsageLimitError as exc:
+                # The job stopped on its account's usage limit: its finished
+                # trials are kept, the rest run again on another account.
+                result = exc.result
             budget = getattr(result, "budget", None)
             run["spent"] = budget and float(budget["spent"]["sandbox_seconds"])
             run["quota"] = bool(pooled and quota_failed(jobs_dir))
@@ -289,14 +294,24 @@ async def run_jobs(
 
 
 def quota_failed(jobs_dir: Path) -> list[str]:
-    """The tasks of a job whose last attempt ended on the account's usage limit."""
+    """The tasks of a job that ended on the account's usage limit, or never
+    started because the job stopped on it (summary.json's usage_limit)."""
     try:
         job = bf.load_job(jobs_dir / "job")
     except FileNotFoundError:
         return []
-    return sorted(
-        t.task_name for t in job.agents() if QUOTA.search(t.result.error or "")
-    )
+    limited = {
+        t.task_name
+        for t in job.agents()
+        if t.result.error_category == "usage_limit"
+        or QUOTA.search(t.result.error or "")
+    }
+    try:
+        stop = json.loads((jobs_dir / "job" / "summary.json").read_text())
+    except (OSError, ValueError):
+        stop = {}
+    limited.update((stop.get("usage_limit") or {}).get("not_started") or [])
+    return sorted(limited)
 
 
 def sandbox_seconds(runs: list[dict], rows: list[dict]) -> float:
