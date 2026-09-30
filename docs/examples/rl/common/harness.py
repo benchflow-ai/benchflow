@@ -7,6 +7,8 @@ is evaluated with the same tools, instructions, and limits it trained with.
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -47,3 +49,56 @@ def harness_config(
     }
     settings.update(overrides)
     return BashHarnessConfig(**settings)
+
+
+# ---------------------------------------------------------------------------
+# Sandbox lifetime and cleanup for training and evaluation runs
+
+DAYTONA_LIFETIME_MINS = 30
+
+
+def shorten_daytona_lifetimes(minutes: int = DAYTONA_LIFETIME_MINS) -> None:
+    """Let Daytona stop idle sandboxes, and delete stopped ones, after ``minutes``.
+
+    A run killed before it closes its sandboxes then leaves nothing running
+    for long (BenchFlow's default is a day). Rollouts here last minutes, so
+    half an hour of idleness means the run is gone. An explicit setting in the
+    environment wins.
+    """
+
+    os.environ.setdefault("BENCHFLOW_DAYTONA_AUTO_STOP_MINS", str(minutes))
+    os.environ.setdefault("BENCHFLOW_DAYTONA_AUTO_DELETE_MINS", str(minutes))
+
+
+def run_owner(prefix: str) -> str:
+    """A Daytona owner label unique to this run, so its cleanup touches nothing else."""
+
+    return f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+
+
+def sweep_daytona(owner: str) -> dict[str, int]:
+    """Delete every Daytona sandbox labelled with ``owner``, whatever its state.
+
+    Uses BenchFlow's reaper, which never touches another owner's sandboxes.
+    Call it when a run ends or is interrupted, and after a hard kill.
+    """
+
+    from daytona import Daytona
+
+    from benchflow.sandbox.daytona import reap_stale_sandboxes
+
+    previous = os.environ.get("BENCHFLOW_DAYTONA_OWNER")
+    os.environ["BENCHFLOW_DAYTONA_OWNER"] = owner
+    try:
+        return reap_stale_sandboxes(
+            Daytona(),
+            max_age_minutes=0,
+            failed_max_age_minutes=0,
+            dry_run=False,
+            ignore_age=True,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("BENCHFLOW_DAYTONA_OWNER", None)
+        else:
+            os.environ["BENCHFLOW_DAYTONA_OWNER"] = previous

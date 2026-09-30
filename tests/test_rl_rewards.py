@@ -44,7 +44,7 @@ def _runtime_result(**fields) -> TaskRuntimeResult:
 
 def test_verifier_reward_is_the_reward() -> None:
     decision = reward_from_verify(_runtime_result(reward=1.0, rewards={"reward": 1.0}))
-    assert decision == RewardDecision(reward=1.0, reason="scored")
+    assert decision == RewardDecision(reward=1.0, reason="scored", passed=True)
     assert not decision.dropped
 
 
@@ -93,7 +93,9 @@ def test_verifier_crash_after_the_policy_acted_scores_zero() -> None:
     decision = reward_from_verify(
         _runtime_result(verifier_error="verifier crashed: exit 1"), policy_acted=True
     )
-    assert decision == RewardDecision(0.0, "verifier_error", "verifier crashed: exit 1")
+    assert decision == RewardDecision(
+        0.0, "verifier_error", "verifier crashed: exit 1", passed=False
+    )
 
 
 def test_lost_sandbox_after_the_policy_acted_scores_zero() -> None:
@@ -123,14 +125,16 @@ def test_timeouts_score_zero() -> None:
         _runtime_result(error="prompt exceeded wall-clock budget of 600s")
     )
     assert verifier_timeout == RewardDecision(
-        0.0, "timeout", "verifier timed out after 60s"
+        0.0, "timeout", "verifier timed out after 60s", passed=False
     )
     assert agent_timeout.reward == 0.0
     assert agent_timeout.reason == "timeout"
 
 
 def test_no_reward_and_no_error_scores_zero_after_the_policy_acted() -> None:
-    assert reward_from_verify(_runtime_result()) == RewardDecision(0.0, "no_reward")
+    assert reward_from_verify(_runtime_result()) == RewardDecision(
+        0.0, "no_reward", passed=False
+    )
 
 
 def test_result_json_mapping_is_accepted() -> None:
@@ -231,3 +235,45 @@ def test_summarize_counts_drops_and_zero_reasons() -> None:
     assert summary["zero_reasons"] == {"timeout": 1, "integrity_violation": 1}
     assert summary["mean_reward"] == pytest.approx(0.25)
     assert summarize([sandbox_start_failure()])["mean_reward"] is None
+
+
+def test_partial_credit_reward_keeps_the_verifiers_passed_flag() -> None:
+    """A fraction of checks is the reward; passed says whether all checks passed."""
+
+    partial = reward_from_verify(
+        _runtime_result(reward=0.6667, rewards={"reward": 0.6667, "passed": 0.0})
+    )
+    full = reward_from_verify(
+        _runtime_result(reward=1.0, rewards={"reward": 1.0, "passed": 1.0})
+    )
+    assert partial.reward == pytest.approx(0.6667)
+    assert partial.passed is False
+    assert full.passed is True
+    # Without a passed flag, a reward of 1 is a pass.
+    assert reward_from_verify(_runtime_result(reward=1.0)).passed is True
+    assert reward_from_verify(_runtime_result(reward=0.5)).passed is False
+    summary = summarize([partial, full, sandbox_start_failure()])
+    assert summary["passed"] == 1
+    assert summary["pass_rate"] == pytest.approx(0.5)
+    assert summary["mean_reward"] == pytest.approx((0.6667 + 1.0) / 2)
+
+
+def test_dynamic_sampling_is_off_by_default_but_counts_uniform_groups() -> None:
+    mixed = [rewards.scored(1.0), rewards.scored(0.0)]
+    all_zero = [rewards.scored(0.0), zero("timeout")]
+    lonely = [rewards.scored(1.0), sandbox_start_failure()]
+    groups = {"a": mixed, "b": all_zero, "c": lonely}
+
+    kept, counts = rewards.dynamic_sampling(groups)
+    assert set(kept) == {"a", "b", "c"}
+    assert counts == {"groups": 3, "uniform": 2, "removed": 0}
+
+    kept, counts = rewards.dynamic_sampling(groups, enabled=True)
+    assert set(kept) == {"a"}
+    assert counts == {"groups": 3, "uniform": 2, "removed": 2}
+
+
+def test_dynamic_sampling_never_turns_a_drop_into_a_reward() -> None:
+    group = [rewards.scored(1.0), rewards.scored(0.0), sandbox_start_failure()]
+    kept, _ = rewards.dynamic_sampling({"g": group}, enabled=True)
+    assert kept["g"][2].dropped

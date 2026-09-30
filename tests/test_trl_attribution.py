@@ -315,3 +315,52 @@ def test_tool_schemas_match_what_trl_derives() -> None:
         for name in ("run_bash", "submit")
     ]
     assert bash_tool_schemas() == derived
+
+
+def test_uniform_groups_are_counted_and_masked_only_when_asked(spec) -> None:
+    """Dynamic sampling: off by default; the uniform-group share is always logged."""
+
+    s = spec()
+    envs = [s.environment_factory() for _ in range(4)]
+    for env in envs:
+        env.reset(**s.train_dataset_rows[0])
+    metrics: dict[str, list[float]] = {}
+    ids = ["alpha", "alpha", "beta", "beta"]
+
+    rewards = s.reward_funcs[0](
+        completions=["done"] * 4,
+        environments=envs,
+        benchflow_task_id=ids,
+        log_metric=lambda name, value: metrics.setdefault(name, []).append(value),
+    )
+    assert rewards == [1.0, 1.0, 1.0, 1.0]
+    assert metrics["benchflow/uniform_group_frac"] == [1.0]
+
+    assert s.reward_funcs[0] is benchflow_environment_reward
+    dropping = BenchFlowSpec(
+        tasks_dir=s.config.tasks_dir,
+        bash_harness=s.config.bash_harness,
+        drop_uniform_groups=True,
+    )
+    envs = [dropping.environment_factory() for _ in range(2)]
+    for env in envs:
+        env.reset(**dropping.train_dataset_rows[0])
+    func = dropping.reward_funcs[0]
+    assert func.__name__ == "benchflow_environment_reward"
+    assert func(
+        completions=["a", "b"], environments=envs, benchflow_task_id=["alpha", "alpha"]
+    ) == [None, None]
+
+
+def test_partial_credit_reward_reaches_trl(spec) -> None:
+    _Runtime.verify_outcome = {
+        "reward": 0.6667,
+        "rewards": {"reward": 0.6667, "passed": 0.0},
+    }
+    s = spec()
+    env = s.environment_factory()
+    env.reset(**s.train_dataset_rows[0])
+    env.run_bash("sqlite3 shop.db .tables")
+
+    assert _reward(s, [env]) == [pytest.approx(0.6667)]
+    assert env.decision.passed is False
