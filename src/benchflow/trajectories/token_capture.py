@@ -42,20 +42,42 @@ listed there with a reason, never silently missing. Reason codes:
 
 ``tokens``/``logprobs``/``top_logprobs`` are parallel per sampled token; token
 ids come from the server (``return_token_ids`` on vLLM; SGLang's ``sglext``
-extension, ``return_input_ids_in_sglext`` / ``return_output_ids_in_sglext``)
-and are never re-derived by tokenizing text. ``prompt_token_ids`` is the prompt exactly as the server
+extension, ``return_input_ids_in_sglext`` / ``return_output_ids_in_sglext``;
+failing both, per-token ids the server put in the logprob entries themselves:
+an integer ``token_id``, or vLLM's ``return_tokens_as_token_ids`` form
+``"token_id:<id>"``) and are never re-derived by tokenizing text.
+``prompt_token_ids`` is the prompt exactly as the server
 tokenized it, including the chat template. Streamed calls are assembled from
 the chunks (see ``providers/litellm_token_capture_patch.py``).
+
+Two optional keys ride along when they apply:
+
+- ``digest``: ``sha256:<hex>`` over the prompt ids and each choice's sampled
+  ids and logprobs (:func:`token_digest`), present when all of them were
+  captured. BenchFlow's policy relay computes the same digest from the raw
+  server response, so the two can be compared call by call (attestation).
+- ``completions[i].routing``: MoE expert routing the server returned for the
+  call, passed through unchanged (``{"source", "encoding", "data",
+  "start"}``): vLLM's per-choice ``routed_experts`` (base64 ``.npy`` bytes,
+  shape ``(tokens - 1, layers, experts_per_token)``; server flag
+  ``--enable-return-routed-experts``), SGLang's ``sglext.routed_experts``
+  (base64 int32, ``[tokens, layers, top_k]`` flattened; request field
+  ``return_routed_experts``), or a ``routing_matrices`` list. ``start`` is
+  the first sequence position the data covers (the request's
+  ``routed_experts_start_len`` / ``routed_experts_prompt_start``, else 0).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 TOKEN_CAPTURE_SCHEMA_VERSION = "benchflow.token_capture.v1"
 TOKEN_CAPTURE_METADATA_KEY = "token_capture"
 _FIELDS = ("prompt_token_ids", "completion_token_ids", "logprobs")
 _RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
+_TOKEN_ID_PREFIX = "token_id:"
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -86,7 +108,7 @@ def _split_logprobs(
     for item in content:
         entry = _dict(item)
         value = entry.get("logprob")
-        if not isinstance(value, int | float):
+        if not isinstance(value, int | float) or isinstance(value, bool):
             return None
         tokens.append(str(entry.get("token", "")))
         logprobs.append(float(value))
@@ -98,6 +120,76 @@ def _split_logprobs(
             ]
         )
     return tokens, logprobs, (tops if any(tops) else None)
+
+
+def _entry_token_id(entry: dict[str, Any]) -> int | None:
+    value = entry.get("token_id")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    token = entry.get("token")
+    if isinstance(token, str) and token.startswith(_TOKEN_ID_PREFIX):
+        digits = token[len(_TOKEN_ID_PREFIX) :]
+        if digits.isdigit():
+            return int(digits)
+    return None
+
+
+def _logprob_entry_ids(content: Any) -> list[int] | None:
+    """Sampled ids the server wrote into its own logprob entries, if all have one.
+
+    Some servers put the id next to each logprob instead of in a separate
+    list: an integer ``token_id`` field, or vLLM's ``return_tokens_as_token_ids``
+    form, where ``token`` is ``"token_id:<id>"``. Every entry must carry one;
+    a partial list is no capture at all.
+    """
+    if not isinstance(content, list) or not content:
+        return None
+    ids = [_entry_token_id(_dict(item)) for item in content]
+    if any(i is None for i in ids):
+        return None
+    return [i for i in ids if i is not None]
+
+
+def token_digest(
+    prompt_token_ids: Any, completions: Any
+) -> str | None:
+    """``sha256:<hex>`` of a call's prompt ids and each choice's ids and logprobs.
+
+    The same function runs where the tokens are captured (the gateway store),
+    in BenchFlow's policy relay (the raw server response) and on whatever a
+    trainer received, so equal digests mean identical tokens and logprobs.
+    None unless the prompt ids and, for every choice, sampled ids and one
+    logprob per id are present.
+    """
+    prompt = _int_list(prompt_token_ids)
+    if prompt is None or not isinstance(completions, list) or not completions:
+        return None
+    parts = []
+    for raw in completions:
+        choice = _dict(raw)
+        ids = _int_list(choice.get("token_ids"))
+        logprobs = choice.get("logprobs")
+        if (
+            ids is None
+            or not isinstance(logprobs, list)
+            or len(logprobs) != len(ids)
+            or not all(
+                isinstance(v, int | float) and not isinstance(v, bool)
+                for v in logprobs
+            )
+        ):
+            return None
+        parts.append(
+            {
+                "index": choice.get("index", 0),
+                "token_ids": ids,
+                "logprobs": [float(v) for v in logprobs],
+            }
+        )
+    payload = json.dumps(
+        {"prompt_token_ids": prompt, "completions": parts}, separators=(",", ":")
+    )
+    return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _choice_field(choice: dict[str, Any], *names: str) -> list[int] | None:
@@ -141,11 +233,16 @@ def _prompt_token_ids(
             _choice_field(_dict(choice), "prompt_token_ids")
             for choice in response.get("choices") or []
         ),
+        # Fireworks' ``raw_output`` (requested with ``raw_output: true``).
+        *(
+            _int_list(_dict(_dict(choice).get("raw_output")).get("prompt_token_ids"))
+            for choice in response.get("choices") or []
+        ),
     )
 
 
 def _chat_completions(
-    response: dict[str, Any], stream: dict[str, Any]
+    response: dict[str, Any], stream: dict[str, Any], body: dict[str, Any]
 ) -> list[dict[str, Any]]:
     streamed = _dict(stream.get("choices"))
     completions = []
@@ -153,17 +250,84 @@ def _chat_completions(
         choice = _dict(raw)
         index = choice.get("index", position)
         chunk_data = _dict(streamed.get(str(index)))
-        # vLLM ``token_ids``; SGLang ``response_token_ids``.
+        content = _dict(choice.get("logprobs")).get("content")
+        if content is None:
+            content = chunk_data.get("logprobs")
+        # vLLM ``token_ids``; SGLang ``response_token_ids``; then ids the
+        # server wrote into its logprob entries.
+        raw_output = _dict(choice.get("raw_output"))
         token_ids = _first(
             _choice_field(choice, "token_ids", "response_token_ids"),
             _sglext_output_ids(response, index),
             _int_list(chunk_data.get("token_ids")),
+            _int_list(raw_output.get("completion_token_ids")),
+            _int_list(raw_output.get("token_ids")),
+            _logprob_entry_ids(content),
         )
-        content = _dict(choice.get("logprobs")).get("content")
-        if content is None:
-            content = chunk_data.get("logprobs")
-        completions.append(_completion(index, token_ids, _split_logprobs(content)))
+        completion = _completion(index, token_ids, _split_logprobs(content))
+        routing = _routing(response, choice, chunk_data, stream, body, position)
+        if routing is not None:
+            completion["routing"] = routing
+        completions.append(completion)
     return completions
+
+
+def _routing_start(body: dict[str, Any]) -> int:
+    extra = _dict(body.get("extra_body"))
+    for source in (body, extra):
+        for name in ("routed_experts_start_len", "routed_experts_prompt_start"):
+            value = source.get(name)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+    return 0
+
+
+def _routing(
+    response: dict[str, Any],
+    choice: dict[str, Any],
+    chunk_data: dict[str, Any],
+    stream: dict[str, Any],
+    body: dict[str, Any],
+    position: int,
+) -> dict[str, Any] | None:
+    """MoE routing the server returned for one choice, passed through as is.
+
+    vLLM puts ``routed_experts`` on each choice; SGLang puts one
+    ``routed_experts`` in the response-level ``sglext`` (its first choice's),
+    and in a stream's final ``sglext`` chunk. A per-token ``routing_matrices``
+    list (on the choice or its ``raw_output``) is kept as well.
+    """
+    extra = _dict(choice.get("provider_specific_fields"))
+    raw_output = _dict(choice.get("raw_output"))
+    for source in (choice, extra, chunk_data):
+        value = source.get("routed_experts")
+        if isinstance(value, str) and value:
+            return {
+                "source": "vllm",
+                "encoding": "npy-base64",
+                "data": value,
+                "start": _routing_start(body),
+            }
+    if position == 0:
+        for source in (_sglext(response), _dict(stream.get("sglext"))):
+            value = source.get("routed_experts")
+            if isinstance(value, str) and value:
+                return {
+                    "source": "sglang",
+                    "encoding": "int32-base64",
+                    "data": value,
+                    "start": _routing_start(body),
+                }
+    for source in (choice, extra, raw_output, chunk_data):
+        value = source.get("routing_matrices")
+        if isinstance(value, list) and value:
+            return {
+                "source": "routing_matrices",
+                "encoding": "per-token",
+                "data": list(value),
+                "start": _routing_start(body),
+            }
+    return None
 
 
 def _responses_completions(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -278,10 +442,11 @@ def build_token_capture(record: dict[str, Any]) -> dict[str, Any] | None:
         return capture
 
     stream = _dict(record.get("stream_tokens"))
+    body = _dict(_dict(record.get("request")).get("body"))
     if isinstance(response.get("output"), list):
         capture["completions"] = _responses_completions(response)
     elif isinstance(response.get("choices"), list):
-        capture["completions"] = _chat_completions(response, stream)
+        capture["completions"] = _chat_completions(response, stream, body)
         capture["prompt_token_ids"] = _prompt_token_ids(response, stream)
 
     completions = capture["completions"]
@@ -298,29 +463,45 @@ def build_token_capture(record: dict[str, Any]) -> dict[str, Any] | None:
                 "logprobs" if field == "logprobs" else "token_ids"
             ]
             capture["unavailable"][field] = _missing_reason(field, plan, was_requested)
+    digest = token_digest(capture["prompt_token_ids"], completions)
+    if digest is not None:
+        capture["digest"] = digest
     return capture
 
 
-_TOKEN_ID_FIELDS = ("prompt_token_ids", "token_ids", "response_token_ids")
+_TOKEN_ID_FIELDS = (
+    "prompt_token_ids",
+    "token_ids",
+    "response_token_ids",
+    "completion_token_ids",
+)
+# Routing blobs can be larger than the rest of the call; they are kept once,
+# in ``token_capture.completions[i].routing``.
+_ROUTING_FIELDS = ("routed_experts", "routing_matrices")
 
 
 def _without_token_ids(value: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in value.items() if k not in _TOKEN_ID_FIELDS}
+    return {
+        k: v
+        for k, v in value.items()
+        if k not in _TOKEN_ID_FIELDS and k not in _ROUTING_FIELDS
+    }
 
 
 def strip_captured_token_ids(body: dict[str, Any]) -> dict[str, Any]:
     """Drop token ids already moved into ``token_capture`` from a response body.
 
     Prompt token ids are the bulk of a captured call; keeping them once, in the
-    ``token_capture`` block, avoids doubling ``llm_trajectory.jsonl``. Provider
-    logprobs stay in the raw body as before.
+    ``token_capture`` block, avoids doubling ``llm_trajectory.jsonl``. MoE
+    routing data is moved the same way. Provider logprobs stay in the raw body
+    as before.
     """
     cleaned = _without_token_ids(body)
     if isinstance(body.get("sglext"), dict):
         rest = {
             k: v
             for k, v in body["sglext"].items()
-            if k not in {"input_ids", "output_ids"}
+            if k not in {"input_ids", "output_ids", "routed_experts"}
         }
         if rest:
             cleaned["sglext"] = rest
@@ -333,6 +514,9 @@ def strip_captured_token_ids(body: dict[str, Any]) -> dict[str, Any]:
             extra = choice.get("provider_specific_fields")
             if isinstance(extra, dict):
                 choice["provider_specific_fields"] = _without_token_ids(extra)
+            raw_output = choice.get("raw_output")
+            if isinstance(raw_output, dict):
+                choice["raw_output"] = _without_token_ids(raw_output)
             choices.append(choice)
         cleaned["choices"] = choices
     return cleaned

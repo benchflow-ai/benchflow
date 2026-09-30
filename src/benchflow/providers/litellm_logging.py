@@ -315,6 +315,13 @@ def _token_capture_plan(call_type: Any, model: Any) -> dict[str, Any] | None:
         top_logprobs = int(os.environ.get("BENCHFLOW_CAPTURE_TOP_LOGPROBS", "") or 0)
     except ValueError:
         top_logprobs = 0
+    # MoE routing (opt-in, large): SGLang returns it per request when asked
+    # (``return_routed_experts``); vLLM returns it whenever the server runs
+    # with ``--enable-return-routed-experts``, so nothing is added there.
+    routed_experts = (
+        token_id_style == "sglang"
+        and os.environ.get("BENCHFLOW_CAPTURE_ROUTED_EXPERTS", "").strip().lower() in _TRUTHY
+    )
     return {
         "enabled": True,
         "wire": wire,
@@ -324,6 +331,7 @@ def _token_capture_plan(call_type: Any, model: Any) -> dict[str, Any] | None:
         "top_logprobs": top_logprobs if request is not None and top_logprobs > 0 else None,
         "token_ids": token_ids,
         "token_id_style": token_id_style,
+        "routed_experts": routed_experts,
     }
 
 
@@ -346,6 +354,8 @@ def _apply_token_capture(data: dict[str, Any], plan: dict[str, Any] | None) -> d
                     extra[flag] = True
             else:
                 extra["return_token_ids"] = True
+            if plan.get("routed_experts"):
+                extra["return_routed_experts"] = True
             cleaned["extra_body"] = extra
     elif cleaned.get("input") is None:
         return data

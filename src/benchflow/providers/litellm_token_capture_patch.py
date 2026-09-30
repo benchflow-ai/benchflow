@@ -76,8 +76,11 @@ def record_stream_chunk(details: dict[str, Any], chunk: Any) -> None:
     if isinstance(prompt, list) and "prompt_token_ids" not in stash:
         stash["prompt_token_ids"] = [int(t) for t in prompt]
     # SGLang: one response-level ``sglext`` chunk (``choices: []``) carries
-    # the prompt ids and one sampled-id list per choice.
+    # the prompt ids and one sampled-id list per choice (and, when asked,
+    # the MoE ``routed_experts``).
     sglext = _field(chunk, "sglext")
+    if not isinstance(sglext, dict):
+        sglext = _plain(sglext) if sglext is not None else None
     if isinstance(sglext, dict):
         input_ids = _ints(sglext.get("input_ids"))
         if input_ids is not None and "prompt_token_ids" not in stash:
@@ -87,6 +90,9 @@ def record_stream_chunk(details: dict[str, Any], chunk: Any) -> None:
             choice_ids = _ints(ids)
             if choice_ids is not None:
                 stash["choices"].setdefault(str(index), {})["token_ids"] = choice_ids
+        routed = sglext.get("routed_experts")
+        if isinstance(routed, str) and routed:
+            stash.setdefault("sglext", {})["routed_experts"] = routed
     for choice in _field(chunk, "choices") or []:
         index = _field(choice, "index")
         entry = stash["choices"].setdefault(
@@ -98,6 +104,9 @@ def record_stream_chunk(details: dict[str, Any], chunk: Any) -> None:
         content = _field(_field(choice, "logprobs"), "content")
         if isinstance(content, list):
             entry.setdefault("logprobs", []).extend(_plain(item) for item in content)
+        routed = _field(choice, "routed_experts")
+        if isinstance(routed, str) and routed:
+            entry["routed_experts"] = routed
 
 
 def is_sglext_only_chunk(chunk: Any) -> bool:
