@@ -136,10 +136,12 @@ class RubricCriterion(BaseModel):
 
     @property
     def is_legacy(self) -> bool:
+        """Whether the criterion is from a legacy rubric (no blocker flag)."""
         return self.blocker is None
 
     @property
     def is_blocker(self) -> bool:
+        """Whether a fail on this criterion zeroes the reward."""
         return self.blocker == 1
 
     def metadata(self) -> dict[str, str | int | None]:
@@ -193,6 +195,7 @@ class Rubric(BaseModel):
 
     @property
     def contract(self) -> str:
+        """The rubric contract: weighted (blockers and scored criteria) or legacy."""
         return (
             LEGACY_REVIEW_RUBRIC_CONTRACT
             if self.criteria[0].is_legacy
@@ -201,6 +204,7 @@ class Rubric(BaseModel):
 
     @property
     def is_weighted(self) -> bool:
+        """Whether this is a weighted rubric (not the legacy pass/fail one)."""
         return self.contract == WEIGHTED_REVIEW_RUBRIC_CONTRACT
 
     def metadata(self) -> dict[str, Any]:

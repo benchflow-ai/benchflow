@@ -252,3 +252,36 @@ def test_calls_without_any_tools_stay_one_conversation():
     calls = [_call([1], [2], [-0.1]), _call([1, 2, 3], [4], [-0.1])]
     summary = summarize_token_capture(calls)
     assert summary["threads"] == [{"thread": 0, "kind": "chat", "calls": [0, 1]}]
+
+
+def test_a_logprob_count_that_differs_from_the_token_ids_is_not_training_grade(
+    tmp_path,
+):
+    """A trainer pairs the i-th sampled id with the i-th logprob.
+
+    Guards the dx/sdk fix of the check missing since token coverage was
+    added (bf6e8412, SDK update): a call with two sampled ids and one logprob
+    counted as complete, so the rollout read as training-grade, while the
+    stream's merge refused the call and dropped that conversation's sequence
+    without saying so.
+    """
+    import benchflow as bf
+
+    calls = [
+        _call([1, 2, 3], [4, 5], [-0.1]),  # two ids, one logprob
+        _call([1, 2, 3, 4, 5, 6, 7], [8], [-0.3]),
+    ]
+    summary = summarize_token_capture(calls)
+    assert summary["complete_calls"] == 1
+    assert summary["unavailable"] == {"logprobs:length_mismatch": 1}
+    assert summary["training_grade"] is False
+
+    job = tmp_path / "job"
+    rollout = _rollout(job, "t__1", calls)
+    (rollout / "result.json").write_text(
+        json.dumps({"task_name": "t", "agent": "a", "rewards": {"reward": 1.0}})
+    )
+    [record] = bf.stream_rollouts(job, follow=False)
+    assert record.token_capture["training_grade"] is False
+    assert record.token_capture["unavailable"] == {"logprobs:length_mismatch": 1}
+    assert record.sequences == []

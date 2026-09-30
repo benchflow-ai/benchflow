@@ -238,7 +238,13 @@ def register_eval_results(eval_app: typer.Typer) -> None:
                 escape(trial.result.model or ""),
             ]
             if priced:
-                cells.append("" if trial.cost_usd is None else f"${trial.cost_usd:.4f}")
+                # "~": an estimate from the agent's own session log.
+                estimate = trial.result.price_source == "agent_session_log"
+                cells.append(
+                    ""
+                    if trial.cost_usd is None
+                    else f"{'~' if estimate else ''}${trial.cost_usd:.4f}"
+                )
             if broken:
                 failure = trial.integration_failure
                 cells.append(escape(str(failure.get("cause"))) if failure else "")

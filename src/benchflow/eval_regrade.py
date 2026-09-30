@@ -96,21 +96,26 @@ class RegradeSummary:
 
     @property
     def regraded(self) -> list[TrialRegrade]:
+        """Trials whose stored workspace was scored again."""
         return [t for t in self.trials if t.status == "regraded"]
 
     @property
     def changed(self) -> list[TrialRegrade]:
+        """Regraded trials whose verdict changed."""
         return [t for t in self.trials if t.changed]
 
     @property
     def not_regradable(self) -> list[TrialRegrade]:
+        """Trials that kept no frozen workspace to score again."""
         return [t for t in self.trials if t.status == "not_regradable"]
 
     @property
     def failed(self) -> list[TrialRegrade]:
+        """Trials whose regrade failed."""
         return [t for t in self.trials if t.status == "failed"]
 
     def counts(self) -> dict[str, int]:
+        """How many trials were regraded, changed (and which way), failed or not regradable."""
         changes = [t.change for t in self.changed]
         return {
             "trials": len(self.trials),
@@ -123,6 +128,7 @@ class RegradeSummary:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        """The summary as the JSON document ``bench eval regrade --json`` prints."""
         return {
             "path": self.path,
             "regrade_id": self.regrade_id,
@@ -763,20 +769,26 @@ def regrade(
     sandbox: str | None = None,
     concurrency: int = 4,
     reason: str | None = None,
+    runner: Runner | None = None,
 ) -> RegradeSummary:
     """Re-run each trial's task verifier (from ``tasks_dir`` when given) on
     the trial's frozen final workspace, in a fresh sandbox.
 
     ``path`` is a job folder or one trial folder. ``sandbox`` defaults to the
     backend each trial ran on. The original ``result.json`` is never touched;
-    see the module docstring for what is written.
+    see the module docstring for what is written. Blocking form of
+    :func:`aregrade`, with the same arguments; it also works inside a running
+    event loop, such as a Jupyter cell.
     """
-    return asyncio.run(
-        aregrade(
+    from benchflow.batch import run_blocking
+
+    return run_blocking(
+        lambda: aregrade(
             path,
             tasks_dir=tasks_dir,
             sandbox=sandbox,
             concurrency=concurrency,
             reason=reason,
+            runner=runner,
         )
     )

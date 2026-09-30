@@ -25,7 +25,6 @@
     "advantage",
     "group_complete"
   ],
-  "additionalProperties": false,
   "properties": {
     "schema_version": {
       "const": "benchflow.rollout-stream.v1"
@@ -62,7 +61,7 @@
     },
     "group_id": {
       "type": "string",
-      "description": "Stable id of the group, e.g. 'task=hello|agent=claude-agent-acp|model=vllm/policy'."
+      "description": "Stable id of the group, e.g. 'task=hello|agent=claude-agent-acp|model=vllm/policy|job=2026-01-01__12-00-00'."
     },
     "group": {
       "type": "object",
@@ -227,7 +226,6 @@
           "completion_mask",
           "completion_logprobs"
         ],
-        "additionalProperties": false,
         "properties": {
           "thread": {
             "type": "integer"
@@ -291,6 +289,17 @@
         "null"
       ],
       "description": "group_size only: false when the stream ended before the group filled."
+    },
+    "replaces": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "rollout_path of the earlier attempt of the same trial that this rollout replaces (an Evaluation's retry or resume re-run); that attempt is not a sample."
+    },
+    "retried": {
+      "type": "boolean",
+      "description": "group_size only: true when a later attempt replaced this rollout before its group formed; it joins no group."
     }
   }
 }

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -568,6 +569,59 @@ JOB_MODES = ("parallel-independent", "sequential-shared")
 DEFAULT_JOB_MODE = "parallel-independent"
 
 
+# The job names Evaluation generates: a timestamp, and a -N suffix when the
+# second is already taken (bench eval run --fresh).
+_AUTO_JOB_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}(-\d+)?$")
+
+
+def _is_job_folder(folder: Path) -> bool:
+    """Whether ``folder`` is one job (not, say, a folder of jobs): an
+    auto-generated name, a job record, or a trial folder inside it."""
+    if _AUTO_JOB_NAME.match(folder.name):
+        return True
+    if (folder / EVALUATION_RECORD).is_file() or (folder / "summary.json").is_file():
+        return True
+    return any(
+        (child / "result.json").is_file() or (child / "config.json").is_file()
+        for child in folder.iterdir()
+        if child.is_dir()
+    )
+
+
+def _recorded_run_differs(
+    job_dir: Path, config: EvaluationConfig | None, tasks_dir: Path | None
+) -> str | None:
+    """What of ``config``/``tasks_dir`` the job's ``evaluation.json`` records
+    differently (e.g. "agent='oracle' (this run: 'nop')"), or None when it
+    matches or records nothing to compare."""
+    if config is None:
+        return None
+    try:
+        record = json.loads((job_dir / EVALUATION_RECORD).read_text())
+    except (OSError, ValueError):
+        return None
+    recorded = record.get("config") if isinstance(record, dict) else None
+    if not isinstance(recorded, dict):
+        return None
+    ran = {
+        "agent": (recorded.get("agent"), config.agent),
+        "model": (recorded.get("model"), config.model),
+    }
+    diffs = [
+        f"{key}={old!r} (this run: {new!r})"
+        for key, (old, new) in ran.items()
+        if old != new
+    ]
+    recorded_tasks = record.get("tasks_dir")
+    if (
+        tasks_dir is not None
+        and isinstance(recorded_tasks, str)
+        and Path(recorded_tasks).resolve() != Path(tasks_dir).resolve()
+    ):
+        diffs.append(f"tasks_dir={recorded_tasks!r} (this run: {str(tasks_dir)!r})")
+    return ", ".join(diffs) or None
+
+
 def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
     """Guard against resuming a jobs_dir whose completed tasks ran differently.
 
@@ -602,7 +656,9 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
             f"refusing to resume: this jobs_dir's completed tasks ran "
             f"agent={prev_agent!r}, but this run uses agent={config.agent!r}. "
             f"Mixing them would publish a blended score that belongs to neither. "
-            f"Use a fresh --jobs-dir (the existing results are preserved)."
+            f"Start a new job instead: bench eval run --fresh (or a new "
+            f"--job-name or --jobs-dir); in Python, a new job_name. The existing "
+            f"results are preserved."
         )
     current_loop = loop_block(config.loop_strategy)
     if prev_loop is not None and prev_loop != current_loop:
@@ -761,6 +817,12 @@ class EvaluationConfig:
     # variants runs once per seed; summary.json then carries a `seeded` report
     # (pass@k, variance, reset reproducibility). See docs/embodied.md.
     seeds: list[int] | None = None
+    # Python hooks run in every rollout's sandbox after it starts and before
+    # the agent does (RolloutConfig.pre_agent_hooks): ``async def hook(sandbox)``.
+    # Callables cannot be written to a config file; evaluation.json records
+    # their names, and Evaluation.resume(job_dir, pre_agent_hooks=[...]) takes
+    # them again.
+    pre_agent_hooks: list[Callable[..., Any]] | None = None
 
     def retry_policy(self) -> RetryPolicy | None:
         """The parsed retry policy, or None when not requested."""
@@ -879,7 +941,9 @@ class EvaluationResult:
 
     ``results`` maps each task name to its :class:`RolloutResult` (tasks
     reused on resume are read back from their ``result.json``), and
-    ``job_dir`` is where the job's artifacts and ``summary.json`` live.
+    ``job_dir`` is where the job's artifacts and ``summary.json`` live. For
+    the solve rate with its interval, unscored trials and cost,
+    ``print(bf.load_job(result.job_dir))``.
     """
 
     job_name: str
@@ -910,6 +974,17 @@ class EvaluationResult:
     reused: int = 0
     ran: int = 0
 
+    def __repr__(self) -> str:
+        # The counts, not the config or every task's RolloutResult.
+        job_dir = str(self.job_dir) if self.job_dir is not None else None
+        return (
+            f"EvaluationResult(job_name={self.job_name!r}, total={self.total}, "
+            f"passed={self.passed}, failed={self.failed}, errored={self.errored}, "
+            f"verifier_errored={self.verifier_errored}, score={self.score:.3f}, "
+            f"mean_reward={self.mean_reward!r}, results=<{len(self.results)} "
+            f"task(s)>, job_dir={job_dir!r})"
+        )
+
     def to_records(self) -> list[dict[str, Any]]:
         """One flat dict per task, sorted by task name (``RolloutResult.to_record``)."""
         return [result.to_record() for _, result in sorted(self.results.items())]
@@ -939,6 +1014,37 @@ class EvaluationResult:
 
 EVALUATION_RECORD = "evaluation.json"
 JOB_LOCK = ".evaluation.lock"
+
+
+def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
+    """Every rollout an earlier run of this job left: the result of each
+    attempt that wrote one (``result.json``, else the solver snapshot a
+    reviewed or interrupted attempt keeps), and how many attempt folders
+    wrote neither (killed, or cancelled for the budget)."""
+    from benchflow._utils.result_paths import iter_task_result_paths
+    from benchflow.jobs import _interrupted
+
+    if not job_dir.is_dir():
+        return [], 0
+    results: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for path in iter_task_result_paths(job_dir):
+        seen.add(path.parent)
+        with contextlib.suppress(OSError, ValueError):
+            data = json.loads(path.read_text())
+            if isinstance(data, dict) and data.get("purpose", "task") == "task":
+                results.append(data)
+    for name in ("solver.json", "solver-complete.json"):
+        for path in sorted(job_dir.glob(f"*/{name}")):
+            if path.parent in seen:
+                continue
+            seen.add(path.parent)
+            with contextlib.suppress(OSError, ValueError):
+                data = json.loads(path.read_text())
+                if isinstance(data, dict):
+                    results.append(data)
+    interrupted = [p for p in _interrupted(job_dir) if p not in seen]
+    return results, len(interrupted)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -977,11 +1083,21 @@ def _config_to_record(config: EvaluationConfig) -> dict[str, Any]:
             record[f.name] = None if value is None else value.to_mapping()
         elif f.name == "budget":
             record[f.name] = None if value is None else value.to_dict()
+        elif f.name == "pre_agent_hooks":
+            record[f.name] = (
+                None if not value else [_callable_name(hook) for hook in value]
+            )
         elif isinstance(value, set):
             record[f.name] = sorted(value)
         else:
             record[f.name] = value
     return json.loads(json.dumps(record, default=str))
+
+
+def _callable_name(hook: Any) -> str:
+    """``module.qualname`` of a hook, for the record."""
+    name = getattr(hook, "__qualname__", None) or type(hook).__qualname__
+    return f"{getattr(hook, '__module__', '?')}.{name}"
 
 
 def _config_from_record(
@@ -992,6 +1108,7 @@ def _config_from_record(
 
     known = {f.name for f in dataclasses.fields(EvaluationConfig)}
     kwargs = {k: v for k, v in raw.items() if k in known}
+    kwargs.pop("pre_agent_hooks", None)  # names only; see Evaluation.resume
     missing = sorted(set(raw.get("agent_env_keys") or []) - set(agent_env or {}))
     if missing:
         logger.warning(
@@ -1034,40 +1151,63 @@ class Evaluation:
     """
 
     @staticmethod
-    def _resolve_job_name(jobs_dir: Path) -> str:
+    def _resolve_job_name(
+        jobs_dir: Path,
+        config: EvaluationConfig | None = None,
+        tasks_dir: Path | None = None,
+    ) -> str:
         """Pick a job_name when none was explicitly provided.
 
-        If ``jobs_dir`` already contains exactly one timestamped job
-        directory, reuse it so that a second ``Evaluation.run()`` call
-        resumes into the same directory instead of creating an orphan.
-        When zero job dirs exist (or ``jobs_dir`` itself does not exist),
-        fall back to a fresh timestamp.  When multiple exist, resume into
-        the most recent (alphabetically last).
+        The latest job folder under ``jobs_dir`` (alphabetically last) is
+        reused, so a second ``Evaluation.run()`` (or plain ``bench eval
+        run``) resumes into the same directory instead of creating an orphan.
+        A job folder has an auto-generated (timestamp) name, a job record
+        (``evaluation.json``, ``summary.json``) or trial folders; a folder
+        that is none of these, such as a folder of jobs (``jobs/smoke/``), is
+        never picked. When that job's ``evaluation.json`` records another
+        agent, model or tasks folder than ``config`` and ``tasks_dir``, a new
+        job starts instead (resuming would blend two runs' results); it is
+        named in the log so it can still be resumed by name. Without such a
+        folder: a fresh timestamp.
 
         Guards ENG-160: auto-generated job_name must be stable across
         resume calls.
         """
-        if jobs_dir.is_dir():
-            job_dirs = sorted(
-                d
-                for d in jobs_dir.iterdir()
-                if d.is_dir() and not d.name.startswith(".")
+        fresh = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        if not jobs_dir.is_dir():
+            return fresh
+        job_dirs = sorted(
+            d
+            for d in jobs_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and _is_job_folder(d)
+        )
+        if not job_dirs:
+            return fresh
+        latest = job_dirs[-1]
+        differs = _recorded_run_differs(latest, config, tasks_dir)
+        if differs:
+            name, n = fresh, 1
+            while (jobs_dir / name).exists():
+                n += 1
+                name = f"{fresh}-{n}"
+            logger.warning(
+                f"Starting a new job {name}: the latest job in {jobs_dir} "
+                f"({latest.name}) ran {differs}. Pass job_name={latest.name!r} "
+                f"(bench eval resume {latest}) to add to that job instead."
             )
-            if len(job_dirs) == 1:
-                logger.warning(
-                    f"Resuming into existing job directory: {job_dirs[0].name} "
-                    "(finished tasks are reused; pass a new job_name, or "
-                    "--fresh on the CLI, for a new run)"
-                )
-                return job_dirs[0].name
-            if len(job_dirs) > 1:
-                latest = job_dirs[-1]
-                logger.warning(
-                    f"Multiple job directories found ({len(job_dirs)}); "
-                    f"resuming into most recent: {latest.name}"
-                )
-                return latest.name
-        return datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+            return name
+        if len(job_dirs) == 1:
+            logger.warning(
+                f"Resuming into existing job directory: {latest.name} "
+                "(finished tasks are reused; pass a new job_name, or "
+                "--fresh on the CLI, for a new run)"
+            )
+        else:
+            logger.warning(
+                f"Multiple job directories found ({len(job_dirs)}); "
+                f"resuming into most recent: {latest.name}"
+            )
+        return latest.name
 
     def __init__(
         self,
@@ -1083,7 +1223,10 @@ class Evaluation:
     ):
         self._tasks_dir = resolve_task_collection_root(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
-        self._config = config or EvaluationConfig()
+        # A copy: ``budget=`` and the task source's provenance are set on the
+        # job's own config, never on the caller's object, which may be reused
+        # for another Evaluation.
+        self._config = copy.copy(config) if config is not None else EvaluationConfig()
         if budget is not None:
             # A hard per-job cap (benchflow.budget); same as config.budget.
             self._config.budget = Budget.coerce(budget)
@@ -1096,7 +1239,9 @@ class Evaluation:
             from benchflow._utils.hf_datasets import load_source_sidecar
 
             self._config.source_provenance = load_source_sidecar(self._tasks_dir)
-        self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
+        self._job_name = job_name or self._resolve_job_name(
+            self._jobs_dir, self._config, self._tasks_dir
+        )
         self._on_result = on_result
         # Pre-run checks in run(); the CLI passes False (it runs its own).
         self._preflight = preflight
@@ -1175,6 +1320,11 @@ class Evaluation:
         not written, so each run of the saved config starts a new job.
         """
         cfg = self._config
+        if cfg.pre_agent_hooks:
+            raise ValueError(
+                "pre_agent_hooks are Python callables and cannot be written to a "
+                "config file; save the config without them and pass them in Python"
+            )
         record = _config_to_record(cfg)
         reviewer = cfg.reviewer.to_dict()
         if not include_agent_env:
@@ -1552,6 +1702,13 @@ class Evaluation:
         that PARSES but is structurally incomplete (e.g. a schema-only fixture)
         keeps its existing silent skip.
         """
+        if not self._tasks_dir.is_dir():
+            raise FileNotFoundError(
+                f"Tasks directory not found: {self._tasks_dir} (resolved against "
+                f"{Path.cwd()}); pass a folder of task folders, or one task "
+                "folder (each holds task.md or task.toml)"
+            )
+
         from benchflow.task.formats import detect_task_format, materialize_task_dir
 
         seeds = self._config.seeds
@@ -1963,6 +2120,11 @@ class Evaluation:
             **_budget_overrides(cfg, task_dir),
         )
         rollout_config.checkpoints = cfg.checkpoint_policy()
+        if cfg.pre_agent_hooks:
+            rollout_config.pre_agent_hooks = [
+                *(rollout_config.pre_agent_hooks or []),
+                *cfg.pre_agent_hooks,
+            ]
         rollout_config.freeze_workspace = cfg.freeze_workspace
         rollout_config.integrity = cfg.integrity
         if skill_mode == SKILL_MODE_SELF_GEN:
@@ -1996,8 +2158,14 @@ class Evaluation:
             live_activity.unregister(task_dir.name)
 
     async def _run_task(self, task_dir: Path) -> RunResult:
-        """Run a single task with retries."""
+        """Run a single task with retries.
+
+        With a budget, every attempt's USD and tokens count against it, and a
+        retry starts only while the budget allows another rollout; otherwise
+        the task keeps its last attempt's result.
+        """
         cfg = self._config
+        guard = self._budget_guard
         last_result: RunResult | None = None
 
         for attempt in range(1, cfg.retry.max_retries + 2):
@@ -2008,6 +2176,8 @@ class Evaluation:
                 await self._sweep_docker()
             result = await self._run_single_task(task_dir, cfg)
             last_result = result
+            if guard is not None:
+                guard.attempt_done(task_dir.name, result)
             if result.scoring is not None and not cfg.retry.reruns_unjudged_solver(
                 result.scoring, result.error, category=result.error_category
             ):
@@ -2031,6 +2201,9 @@ class Evaluation:
                 break
 
             if attempt <= cfg.retry.max_retries:
+                if guard is not None and not guard.retry(task_dir.name):
+                    logger.info(f"Not retrying {task_dir.name}: {guard.reason}")
+                    break
                 err_preview = truncate_end(
                     result.error or result.verifier_error or "", 60
                 )
@@ -2123,7 +2296,7 @@ class Evaluation:
                     # this one too.
                     if usage_stop.skip(td.name):
                         return td.name, None
-                if guard is not None and not guard.start(
+                if guard is not None and not await guard.admit(
                     td.name, asyncio.current_task()
                 ):
                     return td.name, None
@@ -2196,7 +2369,7 @@ class Evaluation:
                 return None
             raise
         except Exception:
-            guard.finish(td.name, None)  # stop counting its sandbox time
+            guard.finish(td.name)  # stop counting its sandbox time
             raise
         guard.finish(td.name, result)
         return result
@@ -2255,12 +2428,13 @@ class Evaluation:
                 self._learner_export_dir = export_dir
 
                 guard = self._budget_guard
-                if (guard is not None and guard.stopped) or self._usage_stop.error:
+                if self._usage_stop.error is not None or (
+                    guard is not None and not guard.start(td.name)
+                ):
+                    # A usage limit stopped the job, or a cap was reached (the guard
+                    # records the trial as not started).
                     if self._usage_stop.error is not None:
                         self._usage_stop.skip(td.name)
-                    else:
-                        assert guard is not None
-                        guard.start(td.name)  # records it as not started
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
                     continue
@@ -2272,7 +2446,7 @@ class Evaluation:
                         # Its own task so the budget can cancel the trial
                         # without cancelling the job.
                         trial = asyncio.ensure_future(self._run_budgeted(td, guard))
-                        guard.start(td.name, trial)
+                        guard.attach(td.name, trial)
                         watcher = asyncio.ensure_future(guard.watch())
                         try:
                             maybe = await trial
@@ -2476,7 +2650,8 @@ class Evaluation:
         Reads the ``evaluation.json`` a job writes when it starts (tasks
         directory and config). Running the returned Evaluation reuses the
         finished tasks and runs only the rest. agent_env values are never
-        stored, so pass ``agent_env`` again if the agent needs it;
+        stored, so pass ``agent_env`` again if the agent needs it, and
+        ``pre_agent_hooks`` too (only their names are recorded);
         ``config_overrides`` replace individual config fields (e.g.
         ``concurrency=8``). Jobs started before this record existed need
         ``Evaluation(tasks_dir, jobs_dir=job_dir.parent, config=...,
@@ -2495,6 +2670,14 @@ class Evaluation:
             )
         record = json.loads(record_path.read_text())
         config = _config_from_record(record["config"], agent_env)
+        hooks = record["config"].get("pre_agent_hooks")
+        if hooks and "pre_agent_hooks" not in config_overrides:
+            logger.warning(
+                "The job ran pre_agent_hooks %s, which %s cannot store; pass "
+                "pre_agent_hooks=[...] to Evaluation.resume() to run them again.",
+                ", ".join(map(str, hooks)),
+                EVALUATION_RECORD,
+            )
         if config_overrides:
             config = dataclasses.replace(config, **config_overrides)
         return cls(
@@ -2752,8 +2935,10 @@ class Evaluation:
         self._budget_guard = None
         if cfg.budget is not None:
             self._budget_guard = BudgetGuard(cfg.budget)
-            # A resumed job has already spent what its finished trials used.
-            self._budget_guard.seed(completed.values())
+            # A resumed job has already spent what every earlier rollout used
+            # (retried and re-run attempts included).
+            attempts, interrupted = _recorded_attempts(self._jobs_dir / self._job_name)
+            self._budget_guard.seed(attempts, interrupted=interrupted)
 
         if cfg.job_mode == "sequential-shared":
             pairs = await self._run_sequential_shared(remaining)

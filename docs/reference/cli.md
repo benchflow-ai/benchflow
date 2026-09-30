@@ -298,7 +298,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--environment-manifest` | — | Environment-plane manifest applied to every rollout in the batch: a path to an `environment.toml`, or a `name@version` registry spec resolved via `$BENCHFLOW_ENV_REGISTRY` when set, else the built-in registry shipped with benchflow (`env0@prod`, `env0@outage`; see [Environment plane: Registry](../environment-plane.md#registry-nameversion)). Overrides a task.md `benchflow.environment.manifest` pin |
 | `--state` | — | S-axis environment binding; inline JSON, registry `name@version`, or manifest path. Takes precedence over `--environment-manifest` |
 | `--prompt` | task prompt | Prompt to send to the agent; repeatable for multi-prompt runs |
-| `--config-override` | — | C-axis task config overlay; inline JSON/YAML/TOML or `@file`, deep-merged into each task's resolved config |
+| `--config-override` | — | C-axis task config overlay; inline JSON/YAML/TOML or `@file`, deep-merged into each task's resolved config. It may patch `agent`, `sandbox` and `metadata`, and add `artifacts` (collected besides the task's own, never replacing them), e.g. `{"artifacts": [{"source": "/home/agent/.claude/projects", "destination": "claude-sessions"}]}` |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
 | `--build-concurrency` | `--concurrency` | Max concurrent docker image builds; set lower (e.g. `8`) when `--concurrency` is high to avoid overwhelming the docker daemon |
 | `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |
@@ -312,16 +312,17 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--retry-from-checkpoint` | off | `on-failure`, `on-timeout` or both: when a trial fails or its agent times out, fork one retry child from its last kept checkpoint (needs `--checkpoints`), verified by the same verifier with the snapshot's original pre-agent baseline. The trial's `rewards` are kept; the retry's reward is reported next to them (`retry` in `result.json`, `checkpoint_retries` in `summary.json`, a `retry` fork in `tree.json`). Embodied tasks are not retried (`status: refused`; see [the restore boundary](../embodied.md#the-restore-boundary-branching-checkpoint-restores-and-replay)). See [Branching guide](../branching.md) |
 | `--retry-prompt` | the prompts after the checkpoint | Prompt sent to the retry child, replacing those prompts. `@instruction` expands to the task instruction and `@verifier_feedback` to the failed trial's reward and the last ~3,000 characters of its verifier output, e.g. `--retry-prompt $'@instruction\n\nYour first attempt failed. @verifier_feedback'`. A fresh session knows only this prompt: without `@instruction` (or `--retry-resume-session`) the agent does not know the task. A retry that made no tool calls is logged as a warning and recorded as `no_work: true` (with `tool_calls`) in the `retry` block; the final summary prints a retries line and `summary.json` `checkpoint_retries` counts `no_work` |
 | `--retry-resume-session` | off | The retry child resumes the failed trial's conversation at the checkpoint (ACP `session/load`; agents that keep their session on disk, such as Claude Code) instead of a fresh session; needs a checkpoint that recorded its session id |
-| `--max-cost-usd` | none | Hard job budget in USD over trials that report a cost. At the cap no new trial starts and running ones are cancelled; both are listed in `summary.json` `budget` and not counted as failures. See [Job budget caps](./budget.md) |
-| `--max-sandbox-seconds` | none | Hard job budget in trial wall-clock seconds, running trials included. Same behaviour as `--max-cost-usd` |
-| `--max-tokens` | none | Hard job budget in total tokens over finished trials. Same behaviour as `--max-cost-usd` |
+| `--max-cost-usd` | none | Job budget in USD over rollouts that report a cost, retries included. USD is known when a rollout finishes, so it is enforced between starts: a trial waits while the running ones would reach the cap at the mean so far, and a job passes the cap by about one rollout's cost (more in the first wave, before any rollout has finished). At the cap no rollout starts and running ones are cancelled; both are listed in `summary.json` `budget` and not counted as failures. See [Job budget caps](./budget.md) |
+| `--max-sandbox-seconds` | none | Job budget in trial wall-clock seconds, running trials included and re-checked while they run. Same stop and cancel behaviour as `--max-cost-usd` |
+| `--max-tokens` | none | Job budget in total tokens over finished rollouts, retries included; enforced between starts, like `--max-cost-usd` |
+| `--max-rollouts` | none | Job budget in rollouts started, retries included. At the cap no rollout starts; running ones finish |
 | `--quiet` | off | Suppress live progress output: the Rich dashboard on a TTY and the per-run console progress heartbeat during agent execution |
 | `--jobs-dir` | `jobs` | Output directory |
 | `--fresh` | off | Start a new timestamped job instead of resuming the latest job in `--jobs-dir` (see [Resuming](#resuming)) |
 | `--job-name` | latest job, or a new timestamp | Job folder name under `--jobs-dir`; an existing one is resumed |
 | `--fail-under` | off | Exit 1 when the pass rate (passed / all tasks) is below this rate, e.g. `0.8` |
 | `--fail-on` | off | Exit 1 when any trial ended this way: `timeout` (even when the verifier scored it), `error`, `verifier-error`; comma-separated or repeated |
-| `--summary-out` | off | Write the run's `benchflow.run-summary` JSON: job dir, counts, timeouts, reused/ran, gate result and exit code ([schema](./schemas/benchflow-run-summary.v1.schema.json)) |
+| `--summary-out` | off | Write the run's `benchflow.run-summary` JSON: job dir, counts, timeouts, reused/ran, gate result and exit code ([schema](./schemas/benchflow-run-summary.v1.schema.json)). `--fail-under`, `--fail-on` and `--summary-out` are refused with `--source-env`, whose run vf-eval scores as one mean reward with no trials to count |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--codex-apps-policy` | automatic | `disabled` or `inherit` for managed direct Codex Apps. Scored tasks default to disabled; inherit explicitly opts in without removing any stricter existing managed policy. CLI overrides YAML; unsupported hosted source environments reject an explicit setting. Other harnesses are unchanged. |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
@@ -457,7 +458,7 @@ gate-based pass rates, and recovery without rerunning the solver.
 
 #### Resuming
 
-Rerunning `bench eval run` with the same `--jobs-dir` resumes: it reuses the only job folder there (or the alphabetically latest of several), keeps every task that already has a finished result, and runs only the rest. The final summary says so on stderr, `Resumed job <dir>: N finished task(s) reused, M ran now`, and when nothing was left to run, that the results are the earlier ones. In a CI workspace that keeps `jobs/` between runs, pass `--fresh` (a new timestamped job) or a new `--job-name`, or the rerun reports the old result. With `--config`, the job is resolved under the CLI's `--jobs-dir` when given. `bench eval resume <job_dir>` finishes one job from its folder.
+Rerunning `bench eval run` with the same `--jobs-dir` resumes: it reuses the latest job folder there (alphabetically last), keeps every task that already has a finished result, and runs only the rest. Only a job folder is picked (one with an auto-generated timestamp name, a job record, or trial folders), never a folder of jobs such as `jobs/smoke/`, and only the same run resumes: when that job's `evaluation.json` records another agent, model or tasks folder, a new job starts instead, with a warning naming the job it did not resume. The final summary says so on stderr, `Resumed job <dir>: N finished task(s) reused, M ran now`, and when nothing was left to run, that the results are the earlier ones. In a CI workspace that keeps `jobs/` between runs, pass `--fresh` (a new timestamped job) or a new `--job-name`, or the rerun reports the old result. With `--config`, the job is resolved under the CLI's `--jobs-dir` when given. `bench eval resume <job_dir>` finishes one job from its folder.
 
 #### Exit codes
 
@@ -642,6 +643,8 @@ bench eval list jobs/
 Collect and display metrics (pass/fail/score, memory score, tool calls, duration)
 from a jobs directory. Use `--json` for machine-readable output.
 
+Trials are counted as `bf.load_job` counts them: the attempts of a task that an Evaluation job retried (or re-ran on resume) are one trial, its scored attempt first, then its newest; repeated rollouts of a task, in one `bf.run_batch` folder or in the `trial-NN` folders of `--matrix --trials`, are separate trials. So `Total`, `Passed` and `Score` agree with the solve rate below.
+
 ```bash
 bench eval metrics jobs/
 bench eval metrics jobs/ --json
@@ -794,7 +797,7 @@ bench train convert jobs/run-001 \
 ```
 
 `results.jsonl` remains the canonical scored-rollout artifact regardless of
-trainer. The selected format changes only the converted output. For TRL,
+trainer. Each BenchFlow row carries `info.schema_version`: from version 2, `reward` and `score` are null when the rollout is unscored (an agent, verifier or infrastructure failure), never 0; rows without the field are version 1, which wrote 0.0 there (such a row's `metrics` has no `reward` key, which is how `bf.load_job` still reads it as unscored). The selected format changes only the converted output. For TRL,
 `exchange` mode emits one supervised completion for every primary agent model
 call while excluding captured OpenCode title, summary, compaction, and helper
 calls. `rollout` mode emits only the final primary model call.
@@ -819,7 +822,7 @@ bench train convert jobs/run-001 --out train.jsonl --manifest m.json \
 ```
 
 - `reward_vector`: for a rubric-scored trial, the test gate and every rubric criterion with its kind, weight and 0–1 value (scored = score / 2; blocker pass = 1, fail = 0); otherwise every numeric key the verifier wrote to `rewards`. The scalar `reward` is unchanged.
-- `advantage` and `group`: the reward normalised over the scored rollouts of the same group (`--group-by`, default `task,agent,model`): `grpo` = `(r − mean) / (std + 1e-4)` with the sample std, `loo` = `r − mean(others)`. `group` records the key, normalisation, formula, counts, mean and std. With both options, `advantage_vector` normalises each component the same way.
+- `advantage` and `group`: the reward normalised over the scored rollouts of the same group (`--group-by`, default `task,agent,model,job`: a group stays inside one job unless `job` is left out, since jobs may have run different policy checkpoints; an attempt an Evaluation retried is excluded as `retried`): `grpo` = `(r − mean) / (std + 1e-4)` with the sample std, `loo` = `r − mean(others)`. `group` records the key, normalisation, formula, counts, mean and std. With both options, `advantage_vector` normalises each component the same way.
 - Unscored rollouts (errors, scoring errors, no reward) never enter a baseline; their advantage is null with `excluded: "unscored"`, never 0. A group with one scored rollout has no advantage (`excluded: "single_scored_rollout"`). Groups are computed before `--min-reward` filters rows. The manifest's `training_signal` block lists every group with its members.
 
 TRL conversion never truncates implicitly. The default `full` context policy
@@ -850,7 +853,7 @@ cannot fit.
 | `--subagent-rows` | `false` | Also write Claude subagent calls as separate rows tagged with the spawning tool call |
 | `--reward-vector` | `false` | `prime-sft`/`trl-sft`: add `reward_vector` (rubric criteria or verifier keys, with names and weights) |
 | `--group-advantage` | — | `prime-sft`/`trl-sft`: add `advantage` and `group`; `grpo` (mean/std) or `loo` (leave-one-out) |
-| `--group-by` | `task,agent,model` | Grouping key for `--group-advantage`: any of `task`, `agent`, `model`, `task_digest` |
+| `--group-by` | `task,agent,model,job` | Grouping key for `--group-advantage`: any of `task`, `agent`, `model`, `task_digest`, `job` (leave `job` out to pool the trial jobs of one policy, e.g. `--matrix --trials`) |
 
 ### bench train token-coverage
 

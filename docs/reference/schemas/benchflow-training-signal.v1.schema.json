@@ -136,7 +136,8 @@
               "task",
               "agent",
               "model",
-              "task_digest"
+              "task_digest",
+              "job"
             ]
           }
         },
@@ -154,7 +155,7 @@
         },
         "rollouts": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "scored": {
           "type": "integer",
@@ -184,7 +185,8 @@
         "excluded": {
           "enum": [
             "unscored",
-            "single_scored_rollout"
+            "single_scored_rollout",
+            "retried"
           ]
         }
       }

@@ -210,3 +210,33 @@ def test_run_sync_closes_the_daytona_client_its_loop_created(monkeypatch) -> Non
     assert closed == [True] and manager._client is None
     bf.run_batch([_cfg("a"), _cfg("b")], concurrency=2)
     assert closed == [True, True]
+
+
+def test_run_sync_shows_the_same_arguments_as_arun() -> None:
+    """help(bf.run_sync) and editors showed ``(*args, **kwargs)``: the blocking
+    form now declares arun's parameters, so both read the same."""
+    import inspect
+
+    sync, async_ = inspect.signature(bf.run_sync), inspect.signature(bf.arun)
+    assert list(sync.parameters) == list(async_.parameters)
+    for name, param in async_.parameters.items():
+        assert sync.parameters[name].kind == param.kind
+        assert sync.parameters[name].default == param.default
+
+
+@pytest.mark.asyncio
+async def test_regrade_works_inside_a_running_loop(tmp_path) -> None:
+    """``bf.regrade`` called ``asyncio.run`` and failed in a Jupyter cell,
+    where ``bf.run_sync``, ``bf.run_batch`` and ``Evaluation.run_sync``
+    work; it now blocks the same way, and takes aregrade's ``runner``."""
+    import inspect
+
+    trial = tmp_path / "hello__1"  # a trial that froze no workspace
+    trial.mkdir()
+    (trial / "result.json").write_text('{"task_name": "hello", "rewards": null}')
+    (trial / "config.json").write_text('{"agent": "oracle"}')
+    summary = bf.regrade(tmp_path)
+    assert [t.status for t in summary.trials] == ["not_regradable"]
+    assert list(inspect.signature(bf.regrade).parameters) == list(
+        inspect.signature(bf.aregrade).parameters
+    )

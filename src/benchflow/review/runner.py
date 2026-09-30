@@ -108,6 +108,7 @@ class ReviewReport:
     trials: list[TrialReview] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """The report as ``review_report.json``'s mapping."""
         return {
             "path": self.path,
             "rubric": {

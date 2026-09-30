@@ -24,18 +24,41 @@ OFFLINE = os.environ.get("BF_QUICKSTART_OFFLINE") == "1"
 HAS_CLAUDE = bool(
     os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
 )
-HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
-TASK = HERE.parents[2] / "tests/examples/hello-world-task"
 JOBS = Path("jobs/quickstart")
+
+
+def hello_task(root: Path) -> Path:
+    """A tiny task on a prebuilt image (nothing to build), with its own
+    solution for the oracle and a verifier that writes the reward."""
+    task = root / "hello"
+    (task / "solution").mkdir(parents=True, exist_ok=True)
+    (task / "tests").mkdir(exist_ok=True)
+    (task / "task.md").write_text(
+        "---\nschema_version: '1.3'\n"
+        "sandbox: {docker_image: 'python:3.12-slim', workdir: /app}\n"
+        "---\n\n## prompt\n\nWrite `Hello, world!` to `hello.txt`.\n"
+    )
+    (task / "solution" / "solve.sh").write_text(
+        "#!/bin/bash\necho 'Hello, world!' > /app/hello.txt\n"
+    )
+    (task / "tests" / "test.sh").write_text(
+        "#!/bin/bash\ngrep -qx 'Hello, world!' /app/hello.txt && r=1 || r=0\n"
+        "echo $r > /logs/verifier/reward.txt\n"
+    )
+    return task
+
+
+TASK = hello_task(JOBS / "tasks")
 logging.basicConfig(level=logging.WARNING)  # INFO shows every phase of a run
 print(f"benchflow {bf.__version__}; sandbox {SANDBOX}; offline {OFFLINE}")
 
 # %% [markdown]
 # ## 1. One rollout with the oracle
 # The oracle runs the task's own solution, so this needs no model credentials:
-# it checks that the sandbox, the task and its verifier work. `bf.run_sync`
-# blocks (it also works inside a running notebook loop); in async code use
-# `await bf.arun(...)`.
+# it checks that the sandbox, the task and its verifier work. The task above
+# runs on a prebuilt image, so nothing is built: on Docker this cell takes
+# about 20 seconds. `bf.run_sync` blocks (it also works inside a running
+# notebook loop); in async code use `await bf.arun(...)`.
 
 # %%
 if not OFFLINE:
@@ -49,6 +72,7 @@ if not OFFLINE:
     )
     print(oracle)
     print("reward", oracle.reward, "passed", oracle.passed, "dir", oracle.rollout_dir)
+    print(bf.load_job(oracle.rollout_dir.parent))  # the job's summary
 
 # %% [markdown]
 # ## 2. A real agent, then its trajectory and token usage
@@ -127,6 +151,7 @@ else:
     job_b = JOBS / ("claude" if HAS_CLAUDE else "batch")
 
 a = bf.load_job(job_a)
+print(a)  # solve rate with its interval, unscored trials, cost
 print(a.denominators(include_controls=True))
 for trial in a.trials:
     print(

@@ -629,9 +629,12 @@ def eval_run(
         typer.Option(
             "--max-cost-usd",
             help=(
-                "Hard job budget in USD, over trials that report a cost: when "
-                "reached, no new trials start and running ones are cancelled "
-                "(recorded in summary.json budget, not as failures)"
+                "Job budget in USD over rollouts that report a cost (retries "
+                "included). USD is known when a rollout finishes, so it is "
+                "checked between starts: a rollout waits while the running ones "
+                "would reach the cap at the mean so far, and the job can pass "
+                "it by about one rollout's cost. At the cap no rollout starts "
+                "and running ones are cancelled (summary.json budget, not failures)"
             ),
         ),
     ] = None,
@@ -640,8 +643,9 @@ def eval_run(
         typer.Option(
             "--max-sandbox-seconds",
             help=(
-                "Hard job budget in trial wall-clock seconds, running trials "
-                "included; same stop/cancel behaviour as --max-cost-usd"
+                "Job budget in trial wall-clock seconds, running trials "
+                "included and re-checked as they run; same stop/cancel "
+                "behaviour as --max-cost-usd"
             ),
         ),
     ] = None,
@@ -650,8 +654,18 @@ def eval_run(
         typer.Option(
             "--max-tokens",
             help=(
-                "Hard job budget in total tokens over finished trials; same "
-                "stop/cancel behaviour as --max-cost-usd"
+                "Job budget in total tokens over finished rollouts (retries "
+                "included); checked between starts, like --max-cost-usd"
+            ),
+        ),
+    ] = None,
+    max_rollouts: Annotated[
+        int | None,
+        typer.Option(
+            "--max-rollouts",
+            help=(
+                "Job budget in rollouts started, retries included: at the cap "
+                "no rollout starts and running ones finish"
             ),
         ),
     ] = None,
@@ -1041,6 +1055,7 @@ def eval_run(
         max_cost_usd=max_cost_usd,
         max_sandbox_seconds=max_sandbox_seconds,
         max_tokens=max_tokens,
+        max_rollouts=max_rollouts,
         jobs_dir=jobs_dir,
         fresh=fresh,
         job_name=job_name,
@@ -1481,7 +1496,9 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             # YAML's: from_yaml already picked a name under the YAML's jobs dir.
             if req.jobs_dir is not None:
                 j._jobs_dir = Path(req.jobs_dir)
-            j._job_name = plan.job_name or Evaluation._resolve_job_name(j._jobs_dir)
+            j._job_name = plan.job_name or Evaluation._resolve_job_name(
+                j._jobs_dir, j._config, j._tasks_dir
+            )
             if j._config.job_mode == "sequential-shared":
                 j.learner_store = j._load_or_init_learner_store()
         if req.concurrency is not None:
@@ -1809,9 +1826,11 @@ def eval_metrics(
 ) -> None:
     """Collect and display metrics from a jobs directory.
 
-    pass@k / pass^k pool a task's trials across every job folder under the
-    directory (e.g. the trial-NN folders of --matrix --trials); unscored
-    trials and control runs are left out.
+    One row per trial, as bf.load_job counts them: a retried task of an
+    Evaluation job counts once, and repeated rollouts (a bf.run_batch
+    folder, the trial-NN folders of --matrix --trials) count as separate
+    trials. pass@k / pass^k pool a task's trials across every job folder
+    under the directory; unscored trials and control runs are left out.
     """
     import benchflow as bf
     from benchflow.metrics import collect_metrics

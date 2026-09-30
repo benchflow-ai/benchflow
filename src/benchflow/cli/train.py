@@ -186,10 +186,12 @@ def register_train(app: typer.Typer) -> None:
                 "--group-by",
                 help=(
                     "Grouping key for --group-advantage, comma-separated from "
-                    "task, agent, model, task_digest"
+                    "task, agent, model, task_digest, job. A group stays inside "
+                    "one job unless job is left out (jobs may have run different "
+                    "policy checkpoints)"
                 ),
             ),
-        ] = "task,agent,model",
+        ] = "task,agent,model,job",
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
         _ensure_training_format(format_name)
@@ -494,7 +496,7 @@ def register_train(app: typer.Typer) -> None:
             typer.Option(
                 "--group-by",
                 help="Grouping key, comma-separated from task, agent, model, "
-                "task_digest (default task,agent,model)",
+                "task_digest, job (default task,agent,model,job)",
             ),
         ] = None,
     ) -> None:

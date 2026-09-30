@@ -4,6 +4,7 @@ import json
 from datetime import datetime as real_datetime
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
@@ -332,3 +333,63 @@ def test_run_prime_disables_version_check(monkeypatch):
     out = prime_env_list()
     assert out == '{"environments": []}'
     assert captured["env"]["PRIME_DISABLE_VERSION_CHECK"] == "1"
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--fail-under", "0.9"],
+        ["--fail-under", "0"],
+        ["--fail-on", "error"],
+        ["--summary-out", "summary.json"],
+    ],
+)
+def test_source_env_refuses_ci_gates_it_cannot_apply(tmp_path, monkeypatch, flags):
+    """``--source-env`` with a CI gate stops before running anything.
+
+    Guards the dx/sdk fix of the gap from bf6e8412 (SDK update), where the
+    hosted path never read ``--fail-under``, ``--fail-on`` or
+    ``--summary-out``: a run under the gate exited 0 and wrote no summary,
+    so a CI job passed on a check it never made.
+    """
+    ran: list[HostedEnvRunConfig] = []
+
+    def fake_run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
+        ran.append(config)
+        return HostedEnvRunResult(
+            source_env=config.source_env,
+            run_dir=tmp_path / "run",
+            command=["vf-eval"],
+            returncode=0,
+            stdout="",
+            stderr="",
+            model=config.model,
+            normalized_model=normalize_verifiers_model(config.model),
+            reward=0.1,
+        )
+
+    monkeypatch.setattr("benchflow.hosted_env.run_hosted_env", fake_run_hosted_env)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--source-env",
+            "primeintellect/general-agent",
+            "--source-env-version",
+            "0.1.1",
+            "--model",
+            "gemini-3.1-flash-lite-preview",
+            "--jobs-dir",
+            str(tmp_path),
+            *flags,
+        ],
+        terminal_width=200,
+    )
+
+    assert result.exit_code == 1, result.output
+    assert f"{flags[0]} is not supported with --source-env" in result.output
+    assert ran == []
+    assert not (tmp_path / "summary.json").exists()

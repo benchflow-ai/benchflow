@@ -344,3 +344,49 @@ async def test_rollout_verify_collects_artifacts_after_freeze_before_verifier(
 
     assert await rollout.verify() == {"reward": 1.0}
     assert order == ["freeze", "artifacts", "verifier"]
+
+
+@pytest.mark.asyncio
+async def test_a_rollout_whose_agent_errored_keeps_its_artifacts(tmp_path):
+    """Cleanup collects what an agent left when verification never ran.
+
+    Artifacts were collected only when the verifier phase started, which an
+    agent error skips, so a crashed trial kept no session log and its cost
+    stayed unknown (the hill-climb demo's gap, docs/examples/hillclimb).
+    """
+    from datetime import datetime
+
+    from benchflow._utils.task_authoring import task_digest
+    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.task import RolloutPaths, Task
+
+    _logs, workspace, trial = _layout(tmp_path)
+    (workspace / "session.jsonl").write_text('{"type": "assistant"}\n')
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text(
+        f'version = "1.0"\nartifacts = ["{workspace / "session.jsonl"}"]\n'
+    )
+    (task / "instruction.md").write_text("Produce a file.")
+
+    class Box(LocalTransport):
+        stopped = False
+
+        async def stop(self, *, delete: bool = True) -> None:
+            Box.stopped = True
+
+    rollout = Rollout(RolloutConfig(task_path=task, task_digest=task_digest(task)))
+    rollout._task = Task(task)
+    rollout._rollout_dir = trial
+    rollout._started_at = datetime.now()
+    rollout._rollout_paths = RolloutPaths(rollout_dir=trial)
+    rollout._env = Box()
+    rollout._agent_cwd = str(workspace)
+
+    await rollout.cleanup()  # the agent errored: verify() never ran
+
+    assert (trial / "artifacts" / "session.jsonl").read_text() == (
+        '{"type": "assistant"}\n'
+    )
+    assert json.loads((trial / MANIFEST_NAME).read_text())["total_files"] == 1
+    assert Box.stopped

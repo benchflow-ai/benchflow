@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ComparisonRowExport": {
-      "additionalProperties": false,
       "properties": {
         "checks": {
           "items": {
@@ -96,7 +95,6 @@
       "type": "object"
     },
     "ComparisonSideExport": {
-      "additionalProperties": false,
       "properties": {
         "denominators": {
           "$ref": "#/$defs/DenominatorsExport"
@@ -130,7 +128,6 @@
       "type": "object"
     },
     "ComparisonSummaryExport": {
-      "additionalProperties": false,
       "properties": {
         "b_higher": {
           "title": "B Higher",
@@ -201,7 +198,6 @@
       "type": "object"
     },
     "DenominatorsExport": {
-      "additionalProperties": false,
       "properties": {
         "assessment_errors": {
           "title": "Assessment Errors",
@@ -309,7 +305,6 @@
       "type": "object"
     },
     "SettingCheckExport": {
-      "additionalProperties": false,
       "properties": {
         "a": {
           "anyOf": [
@@ -362,7 +357,6 @@
       "type": "object"
     },
     "SettingMismatchExport": {
-      "additionalProperties": false,
       "properties": {
         "a": {
           "items": {},
@@ -393,7 +387,6 @@
       "type": "object"
     },
     "SolveRatesExport": {
-      "additionalProperties": false,
       "description": "pass@k, pass^k and the solve rate (``benchflow.pass_at_k``).",
       "properties": {
         "caveats": {
@@ -465,6 +458,35 @@
           ],
           "title": "Solve Rate"
         },
+        "solve_rate_interval": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "95% interval of solve_rate, [low, high] (1.3); see solve_rate_interval_method",
+          "title": "Solve Rate Interval"
+        },
+        "solve_rate_interval_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "wilson (one scored trial per task) or wilson-clustered (Wilson on the design-effect sample size, for repeated trials) (1.3)",
+          "title": "Solve Rate Interval Method"
+        },
         "solve_threshold": {
           "anyOf": [
             {
@@ -535,7 +557,6 @@
   },
   "$id": "https://benchflow.ai/schemas/benchflow-comparison.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "a": {
       "$ref": "#/$defs/ComparisonSideExport"
@@ -606,7 +627,7 @@
       "type": "array"
     },
     "schema_minor": {
-      "default": 2,
+      "default": 3,
       "description": "optional fields added within schema_version; see the changelog",
       "title": "Schema Minor",
       "type": "integer"

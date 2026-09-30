@@ -12,7 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchflow._utils.result_paths import iter_task_result_paths
+from benchflow._utils.result_paths import (
+    attempt_rank,
+    holds_attempts,
+    iter_task_result_paths,
+)
 from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
     classify_error,
@@ -119,18 +123,22 @@ class BenchmarkMetrics:
 
     @property
     def total(self) -> int:
+        """Trials counted (one per trial; see collect_metrics)."""
         return len(self.tasks)
 
     @property
     def passed(self) -> int:
+        """Trials whose score outcome is a pass."""
         return sum(1 for t in self.tasks if t.passed)
 
     @property
     def failed(self) -> int:
+        """Trials scored below a pass."""
         return sum(1 for t in self.tasks if t.failed)
 
     @property
     def errored(self) -> int:
+        """Trials that ended with an agent error and no score."""
         return sum(1 for t in self.tasks if t.errored)
 
     @property
@@ -211,22 +219,27 @@ class BenchmarkMetrics:
 
     @property
     def total_input_tokens(self) -> int:
+        """Input tokens over completed trials with trusted usage."""
         return sum(t.input_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_output_tokens(self) -> int:
+        """Output tokens over completed trials with trusted usage."""
         return sum(t.output_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_cache_read_tokens(self) -> int:
+        """Prompt-cache read tokens over completed trials with trusted usage."""
         return sum(t.cache_read_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_cache_creation_tokens(self) -> int:
+        """Prompt-cache write tokens over completed trials with trusted usage."""
         return sum(t.cache_creation_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_tokens(self) -> int:
+        """All tokens over completed trials with trusted usage."""
         return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
 
     @property
@@ -238,6 +251,7 @@ class BenchmarkMetrics:
 
     @property
     def avg_cost_per_trial_usd(self) -> float | None:
+        """Mean USD over the trials that reported a cost; None when none did."""
         priced = [t for t in self.telemetry_tasks if t.cost_usd is not None]
         total = self.total_cost_usd
         if total is None or not priced:
@@ -246,6 +260,7 @@ class BenchmarkMetrics:
 
     @property
     def telemetry_coverage(self) -> float:
+        """Fraction of completed trials with trusted token usage."""
         completed = self.telemetry_completed_tasks
         if not completed:
             return 0.0
@@ -253,6 +268,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_scores(self) -> dict[str, float]:
+        """Memory score per task, for trials that have one."""
         return {
             t.task_name: t.memory_score
             for t in self.tasks
@@ -261,6 +277,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_score(self) -> float | None:
+        """Mean memory score over the tasks that have one; None when none do."""
         scores = list(self.memory_scores.values())
         if not scores:
             return None
@@ -268,6 +285,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_summary(self) -> dict[str, Any]:
+        """Memory scores in summary form: count, mean and formatted mean."""
         avg = self.memory_score
         return {
             "scored": len(self.memory_scores),
@@ -330,11 +348,13 @@ class BenchmarkMetrics:
             "error_breakdown": self.error_breakdown,
             "verifier_error_breakdown": self.verifier_error_breakdown,
             "integration_failures": self.integration_failures,
-            "passed_tasks": sorted(t.task_name for t in self.tasks if t.passed),
-            "failed_tasks": sorted(t.task_name for t in self.tasks if t.failed),
-            "errored_tasks": sorted(t.task_name for t in self.tasks if t.errored),
+            # Task names, once each: a task with several trials (a batch, or
+            # --matrix --trials) is listed under every outcome it had.
+            "passed_tasks": sorted({t.task_name for t in self.tasks if t.passed}),
+            "failed_tasks": sorted({t.task_name for t in self.tasks if t.failed}),
+            "errored_tasks": sorted({t.task_name for t in self.tasks if t.errored}),
             "verifier_errored_tasks": sorted(
-                t.task_name for t in self.tasks if t.score_verifier_errored
+                {t.task_name for t in self.tasks if t.score_verifier_errored}
             ),
         }
 
@@ -381,16 +401,6 @@ def _with_integration_failure(
     }
 
 
-def _result_rank(result: dict[str, Any]) -> tuple[bool, bool, float]:
-    """Prefer a scored pass, then quality, without selecting stale error rewards."""
-    reward = extract_reward(result)
-    return (
-        reward is not None,
-        classify_score_outcome(result) == "passed",
-        reward if isinstance(reward, (int, float)) else 0.0,
-    )
-
-
 def collect_metrics(
     results_dir: str | Path,
     benchmark: str = "",
@@ -399,29 +409,41 @@ def collect_metrics(
 ) -> BenchmarkMetrics:
     """Collect metrics from a results directory.
 
-    Reads all result.json files, picks the best result per task, agent and
-    model (rewards > no rewards, higher reward preferred).
+    Reads every result.json under it, one row per trial, selected the way
+    ``bf.load_job`` selects them: the attempts of one task, agent and model
+    in an Evaluation job folder (retries, and re-runs on resume) are one
+    trial, its scored attempt first, then its newest; rollouts in any other
+    folder (``bf.run_batch``) and in separate job folders (``--matrix
+    --trials``) are separate trials. ``total``, ``passed`` and ``score``
+    therefore agree with ``bf.load_job(results_dir).solve_rates()``.
     """
     results_dir = Path(results_dir)
-    # One result per task, agent and model: a retried task counts once, but a
-    # folder holding several agents' jobs keeps each agent's result.
-    best: dict[tuple[str, str, str], dict] = {}
+    folders: dict[Path, bool] = {}
+    best: dict[tuple[Any, ...], tuple[tuple[bool, float, str], dict]] = {}
 
     for rfile in iter_task_result_paths(results_dir):
         try:
             r = _with_integration_failure(json.loads(rfile.read_text()), rfile.parent)
-            key = (
+            folder = rfile.parent.parent
+            if folder not in folders:
+                folders[folder] = holds_attempts(folder)
+            key: tuple[Any, ...] = (
                 r["task_name"],
+                str(folder),
                 str(r.get("agent_name") or r.get("agent") or ""),
                 str(r.get("model") or ""),
             )
-            if key not in best or _result_rank(r) > _result_rank(best[key]):
-                best[key] = r
+            if not folders[folder]:
+                key = (r["task_name"], str(rfile))
+            rank = attempt_rank(rfile, scored=extract_reward(r) is not None)
+            if key not in best or rank >= best[key][0]:
+                best[key] = (rank, r)
         except Exception as e:
             logger.debug(f"Skipping corrupt result file {rfile}: {e}")
 
     tasks = []
-    for (task_name, _agent, _model), r in sorted(best.items()):
+    for key, (_rank, r) in sorted(best.items(), key=lambda item: item[0]):
+        task_name = key[0]
         reward = extract_reward(r)
         # Calculate duration
         duration = 0.0

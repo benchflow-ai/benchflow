@@ -8,9 +8,15 @@ same keyword arguments of the Prime-SFT and TRL exporters) add, per row:
   rubric criterion (normalised to 0-1); any other trial gives the numeric keys
   its verifier wrote.
 - ``advantage`` and ``group``: the rollout's reward normalised against the
-  other scored rollouts of its group (same task, agent and model by default),
-  GRPO-style ``(r - mean) / (std + eps)`` or leave-one-out ``r - mean(others)``,
-  with the grouping key and normalisation recorded.
+  other scored rollouts of its group (same task, agent and model in the same
+  job by default), GRPO-style ``(r - mean) / (std + eps)`` or leave-one-out
+  ``r - mean(others)``, with the grouping key and normalisation recorded.
+
+A group never spans jobs unless ``group_by`` leaves ``job`` out: two jobs may
+have run different policy checkpoints under one model name, and their rewards
+must not share a baseline. Within an Evaluation job, an attempt that a retry
+(or a resume) replaced is not a sample: it enters no group (``excluded:
+"retried"``), the rule ``bf.load_job`` uses to keep one attempt per task.
 - ``advantage_vector`` (both options): the same normalisation per component.
 
 Unscored rollouts never enter a baseline and never get a number: their
@@ -34,8 +40,8 @@ from benchflow._utils.scoring import extract_reward, finite_reward
 
 GroupAdvantage = Literal["grpo", "loo"]
 GROUP_ADVANTAGES: tuple[str, ...] = ("grpo", "loo")
-GROUP_BY_KEYS: tuple[str, ...] = ("task", "agent", "model", "task_digest")
-DEFAULT_GROUP_BY: tuple[str, ...] = ("task", "agent", "model")
+GROUP_BY_KEYS: tuple[str, ...] = ("task", "agent", "model", "task_digest", "job")
+DEFAULT_GROUP_BY: tuple[str, ...] = ("task", "agent", "model", "job")
 EPS = 1e-4
 STD_DDOF = 1
 
@@ -206,14 +212,74 @@ def reward_vector(rollout_dir: Path, result: dict[str, Any]) -> dict[str, Any] |
     }
 
 
-def _key_value(result: dict[str, Any], rollout_dir: Path, name: str) -> Any:
+def _key_value(
+    result: dict[str, Any], rollout_dir: Path, name: str, *, job: str | None = None
+) -> Any:
     if name == "task":
         return result.get("task_name") or rollout_dir.name.rsplit("__", 1)[0]
     if name == "agent":
         return result.get("agent")
     if name == "model":
         return result.get("model")
+    if name == "job":
+        return job if job is not None else Path(rollout_dir).parent.name
     return result.get("task_digest")
+
+
+def job_labels(rollout_dirs: Iterable[Path]) -> dict[Path, str]:
+    """A label for each rollout's job folder: its name when all rollouts share
+    one job, else its path below the job folders' common parent (job names
+    can repeat, e.g. ``trial-01/job`` and ``trial-02/job``)."""
+    import os
+
+    folders = sorted({Path(d).parent for d in rollout_dirs})
+    if len(folders) <= 1:
+        return {f: f.name for f in folders}
+    common = Path(os.path.commonpath([str(f) for f in folders]))
+    return {f: f.relative_to(common).as_posix() or f.name for f in folders}
+
+
+def replaced_attempts(
+    rollouts: Iterable[tuple[Path, dict[str, Any] | None]],
+) -> set[Path]:
+    """Rollouts that a later attempt of the same trial replaced.
+
+    In an Evaluation job folder (``evaluation.json`` or ``summary.json``) the
+    rollouts of one task, agent and model are attempts of one trial, whose
+    result is the scored attempt, then the newest (``bf.load_job``'s rule);
+    the others are returned. Rollouts in other folders are samples, never
+    replaced.
+    """
+    from benchflow._utils.result_paths import attempt_rank, holds_attempts
+
+    folders: dict[Path, bool] = {}
+    chains: dict[tuple[Any, ...], list[Path]] = {}
+    ranks: dict[Path, tuple[bool, float, str]] = {}
+    for rollout_dir, result in rollouts:
+        if not isinstance(result, dict):
+            continue
+        root = Path(rollout_dir)
+        folder = root.parent
+        if folder not in folders:
+            folders[folder] = holds_attempts(folder)
+        if not folders[folder]:
+            continue
+        key = (
+            folder,
+            _key_value(result, root, "task"),
+            result.get("agent"),
+            result.get("model"),
+        )
+        chains.setdefault(key, []).append(root)
+        ranks[root] = attempt_rank(
+            root / "result.json", scored=scored_reward(result) is not None
+        )
+    replaced: set[Path] = set()
+    for chain in chains.values():
+        if len(chain) > 1:
+            final = max(chain, key=lambda d: ranks[d])
+            replaced.update(d for d in chain if d != final)
+    return replaced
 
 
 def _group_id(key: dict[str, Any]) -> str:
@@ -250,6 +316,8 @@ class _Member:
     advantage: float | None = None
     advantage_vector: list[float | None] | None = None
     excluded: str | None = None
+    # A later attempt of the same trial replaced it: not a sample.
+    retried: bool = False
 
 
 @dataclass
@@ -295,15 +363,20 @@ def compute_training_signals(
     )
     if not signals.enabled:
         return signals
+    pairs = [(Path(d), r) for d, r in rollouts if isinstance(r, dict)]
+    labels = job_labels(d for d, _ in pairs)
+    replaced = replaced_attempts(pairs)
     grouped: dict[str, tuple[dict[str, Any], list[_Member]]] = {}
-    for rollout_dir, result in rollouts:
-        if not isinstance(result, dict):
-            continue
-        key = {k: _key_value(result, rollout_dir, k) for k in keys}
+    for rollout_dir, result in pairs:
+        key = {
+            k: _key_value(result, rollout_dir, k, job=labels.get(rollout_dir.parent))
+            for k in keys
+        }
         member = _Member(
-            rollout_dir=Path(rollout_dir),
+            rollout_dir=rollout_dir,
             reward=scored_reward(result),
             vector=reward_vector_or_none(rollout_dir, result),
+            retried=rollout_dir in replaced,
         )
         grouped.setdefault(_group_id(key), (key, []))[1].append(member)
 
@@ -328,26 +401,30 @@ def _fill_group(
     members: list[_Member],
 ) -> None:
     method = signals.group_advantage
-    rewards = [m.reward for m in members]
+    samples = [m for m in members if not m.retried]
+    rewards = [m.reward for m in samples]
     scored = [r for r in rewards if r is not None]
-    names_seen = {tuple(m.vector["names"]) for m in members if m.vector}
+    names_seen = {tuple(m.vector["names"]) for m in samples if m.vector}
     group_block: dict[str, Any] | None = None
     if method is not None:
-        for member, adv in zip(members, _advantages(rewards, method), strict=True):
+        for member, adv in zip(samples, _advantages(rewards, method), strict=True):
             member.advantage = adv
             if member.reward is None:
                 member.excluded = "unscored"
             elif adv is None:
                 member.excluded = "single_scored_rollout"
+        for member in members:
+            if member.retried:
+                member.excluded = "retried"
         if signals.reward_vector:
-            _fill_vector_advantages(members, method)
+            _fill_vector_advantages(samples, method)
         group_block = {
             "id": gid,
             "by": list(signals.group_by),
             "key": key,
             "normalisation": method,
             "formula": _FORMULAS[method],
-            "rollouts": len(members),
+            "rollouts": len(samples),
             "scored": len(scored),
             "mean": _mean(scored) if scored else None,
             "std": _sample_std(scored) if len(scored) >= 2 else None,
@@ -528,14 +605,14 @@ SCHEMA: dict[str, Any] = {
                 "key": {"type": "object"},
                 "normalisation": {"enum": list(GROUP_ADVANTAGES)},
                 "formula": {"type": "string"},
-                "rollouts": {"type": "integer", "minimum": 1},
+                "rollouts": {"type": "integer", "minimum": 0},
                 "scored": {"type": "integer", "minimum": 0},
                 "mean": _OPT_NUM,
                 "std": _OPT_NUM,
                 "std_ddof": {"const": STD_DDOF},
                 "eps": {"type": "number"},
                 "vector_names_differ": {"type": "boolean"},
-                "excluded": {"enum": ["unscored", "single_scored_rollout"]},
+                "excluded": {"enum": ["unscored", "single_scored_rollout", "retried"]},
             },
         },
     },

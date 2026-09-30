@@ -366,6 +366,11 @@ async def run_sharded_evaluation(
     worker_start_stagger_sec: float,
 ) -> EvaluationResult:
     """Run a batch as isolated worker subprocesses and aggregate their summaries."""
+    if config.pre_agent_hooks:
+        raise ValueError(
+            "pre_agent_hooks are Python callables and cannot reach worker "
+            "processes; run without worker_concurrency (--worker-concurrency)"
+        )
     discovery = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config)
     task_dirs = discovery._get_task_dirs()
     task_names = [task_dir.name for task_dir in task_dirs]

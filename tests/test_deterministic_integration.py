@@ -169,6 +169,20 @@ def branch_parallel(det_root, fake_url) -> h.CliRun:
 
 
 @pytest.fixture(scope="session")
+def native_eval(det_root, fake_url) -> h.CliRun:
+    """One unbranched trial on the subscription (native) route."""
+    return _run(
+        det_root,
+        "native-eval",
+        ["eval", "run"],
+        [h.TaskVariant("native-hello", "hello-pass")],
+        fake_url,
+        route="native",
+        extra=["--retry-attempts", "0"],
+    )
+
+
+@pytest.fixture(scope="session")
 def checkpoint_retry(det_root, fake_url):
     run = _run(
         det_root,
@@ -321,12 +335,25 @@ def _check_trial(
         assert agent_result["usage_source"] == "provider_response"
     else:
         # Native route: no proxy; Claude Code reports the fake's usage over
-        # ACP, and a subscription run has no price.
+        # ACP, and the gateway has no price for it.
         assert calls == []
         main = [{"kind": "main"}] * n_agent_messages
         usage = h.expected_usage(main)
-        assert agent_result["cost_usd"] is None and metrics["total_cost_usd"] is None
         assert agent_result["usage_source"] == "agent_native_acp"
+        if agent_result.get("price_source") == "agent_session_log":
+            # An unbranched run is priced from Claude Code's own session log,
+            # an estimate; Claude Code's session-title call may be in it.
+            estimate = agent_result["usage_details"]["cost_estimate"]
+            assert estimate["source"] == "claude-code-session-log", estimate
+            assert (trial_dir / estimate["path"]).is_dir()
+            assert agent_result["cost_usd"] == pytest.approx(
+                usage["cost_usd"], abs=1e-4
+            )
+            assert metrics["total_cost_usd"] == agent_result["cost_usd"]
+        else:
+            # A branched run is not: its children share the session log.
+            assert agent_result["cost_usd"] is None
+            assert metrics["total_cost_usd"] is None
     tracking = result["usage_tracking"]
     assert tracking["usage_source"] == agent_result["usage_source"]
     assert tracking["environment"] == SANDBOX
@@ -468,6 +495,21 @@ def test_agent_crash_is_unscored_and_not_verified(eval_job):
     assert facts["outcome"]["reward"] is None
     assert facts["result"]["rewards"] is None
     assert not _verifier_ran(trial)
+
+
+@needs_sandbox
+def test_a_subscription_run_is_priced_from_claude_codes_session_log(native_eval):
+    """No gateway price: the USD is Claude Code's own, from its session log.
+
+    The native route is a subscription run (Claude Code calls the model
+    itself); BenchFlow used to record its tokens with cost_usd null.
+    """
+    trial = native_eval.trial("native-hello")
+    facts = _check_trial(trial, None, route="native")
+    result = h.read_json(trial / "result.json")
+    assert result["agent_result"]["price_source"] == "agent_session_log"
+    assert facts["outcome"]["reward"] == 1.0
+    assert list((trial / "agent" / "claude-sessions").rglob("*.jsonl"))
 
 
 @needs_sandbox

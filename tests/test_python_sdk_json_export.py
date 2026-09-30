@@ -114,3 +114,64 @@ def test_fork_kind_and_costs_are_exported(tmp_path: Path) -> None:
     assert (
         f["children"][0]["cost"] == {"usd": 0.01} and f["children"][1]["cost"] is None
     )
+
+
+def _with_later_fields(document: object, schema: dict, root: dict) -> object:
+    """``document`` with a new optional field in every record object (a
+    schema node with ``properties``), as a later minor release of the same
+    schema_version may write. Maps (``additionalProperties`` schemas) keep
+    their typed values."""
+    if "$ref" in schema:
+        schema = root["$defs"][schema["$ref"].rsplit("/", 1)[-1]]
+    for branch in schema.get("anyOf") or schema.get("oneOf") or []:
+        if isinstance(document, dict) and ("properties" in branch or "$ref" in branch):
+            return _with_later_fields(document, branch, root)
+        if isinstance(document, list) and branch.get("type") == "array":
+            return _with_later_fields(document, branch, root)
+    if isinstance(document, dict) and "properties" in schema:
+        props = schema["properties"]
+        out = {
+            k: _with_later_fields(v, props[k], root) if k in props else v
+            for k, v in document.items()
+        }
+        return {**out, "added_in_a_later_minor": {"any": "value"}}
+    if isinstance(document, list) and isinstance(schema.get("items"), dict):
+        return [_with_later_fields(v, schema["items"], root) for v in document]
+    return document
+
+
+def test_a_later_minor_still_validates_against_the_committed_schemas(
+    tmp_path: Path,
+) -> None:
+    """A reader's copy of a v1 schema accepts optional fields added later.
+
+    The docs promise that a new optional field keeps ``schema_version``;
+    guards the dx/sdk fix of the schemas committed since bf6e8412 (SDK
+    update), which set ``additionalProperties: false`` at every level, so a
+    reader validating with them refused every document that gained a field.
+    """
+    from benchflow.trajectories import rollout_stream as rs
+    from tests.trajectories.test_rollout_stream import TITO_CALLS, write_rollout
+
+    d = _trial(tmp_path / "jobs" / "j", "hello")
+    _tree(d)
+    a = _job(tmp_path, "a", {"t1": 1.0, "t2": None})
+    b = _job(tmp_path, "b", {"t1": 0.0, "t2": 1.0})
+    documents = {
+        "trial": bf.load_trial(d).to_json_dict(),
+        "job": bf.load_job(a).to_json_dict(),
+        "comparison": bf.compare(a, b).to_json_dict(),
+    }
+    for kind, document in documents.items():
+        schema = json.loads((SCHEMAS / job_export.schema_filename(kind)).read_text())
+        later = _with_later_fields(document, schema, schema)
+        assert later != document
+        _validate(later, kind)  # type: ignore[arg-type]
+
+    stream_job = tmp_path / "stream"
+    write_rollout(stream_job, "hello__a", calls=TITO_CALLS)
+    committed = json.loads((SCHEMAS / rs.SCHEMA_FILE).read_text())
+    for record in rs.stream_rollouts(stream_job, follow=False):
+        later = _with_later_fields(record.to_json_dict(), committed, committed)
+        assert later != record.to_json_dict()
+        jsonschema.validate(later, committed, cls=jsonschema.Draft202012Validator)

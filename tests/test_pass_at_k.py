@@ -132,3 +132,55 @@ def test_to_dict_is_json_ready() -> None:
     assert d["pass_at_k"]["1"] == pytest.approx(0.5)
     assert d["pass_hat_k"]["2"] == 0.0
     assert d["ks"] == [1, 2]
+
+
+def test_left_out_control_runs_are_named_in_the_caveats(tmp_path):
+    """``bench eval metrics`` over only an oracle run said ``Score 100%``
+    beside ``Solve rate n/a (0 scored trials)`` with no word on why.
+
+    Guards the dx/sdk fix of a first-run finding (dx/first-run, 2026-09-30):
+    control runs are left out of solve rates, and now the caveats say so.
+    """
+    import json
+
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+
+    trial = tmp_path / "job" / "hello__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps(
+            {"task_name": "hello", "agent": "oracle", "rewards": {"reward": 1.0}}
+        )
+    )
+    out = CliRunner().invoke(app, ["eval", "metrics", str(tmp_path / "job")])
+    assert out.exit_code == 0, out.output
+    assert "1 control run(s) (oracle, empty/nop) are left out" in " ".join(
+        out.output.split()
+    )
+
+
+def test_the_solve_rate_comes_with_a_95_percent_interval():
+    """``Job.solve_rates()`` gave a point estimate only, so every reader (the
+    hill-climb demo, docs/examples/hillclimb) carried its own bootstrap."""
+    from benchflow.pass_at_k import Sample, solve_rates
+
+    once = solve_rates([Sample(f"t{i}", 1.0 if i < 9 else 0.0) for i in range(20)])
+    assert once.interval_method == "wilson"
+    assert once.interval == pytest.approx((0.2582, 0.6579), abs=1e-3)
+
+    # Four tasks, five trials each, two always solved and two never: about
+    # three independent observations, not twenty.
+    rows = [
+        Sample(t, 1.0 if t in ("a", "b") else 0.0) for t in "abcd" for _ in range(5)
+    ]
+    clustered = solve_rates(rows)
+    assert clustered.solve_rate == 0.5
+    assert clustered.interval_method == "wilson-clustered"
+    low, high = clustered.interval
+    assert low < 0.2 and high > 0.8
+    solved = solve_rates([Sample(t, 1.0) for t in "ab" for _ in range(5)])
+    assert solved.interval[1] == 1.0 and solved.interval[0] < 0.5
+    assert solve_rates([Sample("a", None)]).interval is None
+    assert clustered.to_dict()["solve_rate_interval"] == list(clustered.interval)

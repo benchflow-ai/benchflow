@@ -149,20 +149,24 @@ class TaskRuntime:
 
     @property
     def rollout(self) -> Any:
+        """The underlying rollout; raises until :meth:`start` ran."""
         if self._rollout is None:
             raise RuntimeError("TaskRuntime.start() must run first")
         return self._rollout
 
     @property
     def env(self) -> Any:
+        """The task's sandbox."""
         return self.rollout.env
 
     @property
     def workspace(self) -> str:
+        """The agent's working directory in the sandbox."""
         return self.rollout._agent_cwd or "/app"
 
     @property
     def rollout_dir(self) -> Path:
+        """The rollout's artifact folder on the host."""
         rollout_dir = self.rollout._rollout_dir
         if not isinstance(rollout_dir, Path):
             raise RuntimeError("TaskRuntime.start() did not initialize artifacts")
