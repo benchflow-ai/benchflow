@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.agents.errors import UsageLimitError
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
@@ -148,6 +149,11 @@ async def execute_prompts_session_factory(
             stop_reason = await asyncio.wait_for(
                 session.prompt(prompt), timeout=timeout
             )
+        except UsageLimitError:
+            # A spent login is not the agent's failure: raised as is, it is an
+            # unscored usage_limit; wrapped below it would be a scored timeout.
+            # The steps so far are kept by the rollout's disconnect capture.
+            raise
         except TimeoutError as exc:
             # One-shot agent: on budget exhaustion there is no pending tool-call
             # stream, so the snapshot is terminal-complete with 0 tool calls.

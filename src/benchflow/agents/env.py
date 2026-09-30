@@ -437,6 +437,62 @@ def uses_native_subscription_auth(
     return False
 
 
+_LOGIN_LABEL_ENV = "BENCHFLOW_LOGIN_LABEL"
+# The credentials each family reads, in the order its CLI prefers them (an
+# API key wins over a subscription token in Claude Code and in codex-acp).
+_LOGIN_KEYS_BY_FAMILY: dict[str, tuple[str, ...]] = {
+    "ANTHROPIC_API_KEY": (
+        "ANTHROPIC_API_KEY",
+        _CLAUDE_CODE_OAUTH_TOKEN_ENV,
+        _CLAUDE_OAUTH_TOKEN_ENV,
+        "ANTHROPIC_AUTH_TOKEN",
+    ),
+    "OPENAI_API_KEY": (
+        "OPENAI_API_KEY",
+        _CODEX_API_KEY_ENV,
+        _CODEX_ACCESS_TOKEN_ENV,
+        _CODEX_AUTH_JSON_ENV,
+    ),
+}
+
+
+def login_label(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+    explicit_env: dict[str, str] | None = None,
+) -> str | None:
+    """Which login the agent runs on, as a label: never a credential's value.
+
+    ``BENCHFLOW_LOGIN_LABEL`` in the agent's environment (for example the
+    name of a pooled account) wins. Otherwise the variable the credential is
+    in and where it came from (``CLAUDE_CODE_OAUTH_TOKEN (agent_env)`` for one
+    passed with ``--agent-env``/``agent_env``, ``(environment)`` for one
+    inherited from the shell or ``.env``), or the host login file BenchFlow
+    copied in (``host login (~/.claude/.credentials.json)``).
+    """
+    custom = " ".join((agent_env.get(_LOGIN_LABEL_ENV) or "").split())
+    if custom:
+        return custom[:80]
+    explicit_env = explicit_env or {}
+    cfg = AGENTS.get(agent)
+    family = (
+        cfg.subscription_auth.replaces_env
+        if cfg is not None and cfg.subscription_auth is not None
+        else (infer_env_key_for_model(model) if model else None)
+    )
+    keys = _LOGIN_KEYS_BY_FAMILY.get(family or "", (family,) if family else ())
+    for key in keys:
+        if agent_env.get(key):
+            where = "agent_env" if explicit_env.get(key) else "environment"
+            return f"{key} ({where})"
+    if agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1":
+        if cfg is not None and cfg.subscription_auth is not None:
+            return f"host login ({cfg.subscription_auth.detect_file})"
+        return "host login"
+    return None
+
+
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
     """Inject ADC credentials and defaults for Vertex AI models."""
     if not is_vertex_model(model):

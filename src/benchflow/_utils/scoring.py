@@ -51,6 +51,12 @@ SUSPECTED_API_ERROR = "suspected_api_error"
 # The agent did nothing useful because its integration broke (install, login,
 # launch); set by benchflow.integration_health with a named cause, unscored.
 AGENT_INTEGRATION = "agent_integration"
+# The login the agent runs on has used up its subscription usage (Claude's
+# 5-hour or 7-day window, a Codex plan limit): a typed
+# benchflow.agents.errors.UsageLimitError. Unscored, never retried (every
+# retry on that login fails the same way until the reset), and it stops an
+# Evaluation from starting more trials.
+USAGE_LIMIT = "usage_limit"
 
 # Matched case-insensitively against the error string. Covers the
 # human-authored markers plus the sanitized "provider auth failed (HTTP 401)"
@@ -114,6 +120,7 @@ ERROR_CATEGORIES = frozenset(
         API_ERROR,
         SUSPECTED_API_ERROR,
         AGENT_INTEGRATION,
+        USAGE_LIMIT,
         OTHER_ERROR,
     }
 )
@@ -217,6 +224,14 @@ def classify_error(error: str | None) -> str | None:
     # First: the evidence quoted after it may contain any other marker.
     if lower.startswith("agent integration failure"):
         return AGENT_INTEGRATION
+    if lower.startswith("usage limit reached"):
+        return USAGE_LIMIT
+    from benchflow.agents.usage_limits import is_usage_limit_text
+
+    if is_usage_limit_text(error):
+        # An agent's own words ("You've hit your weekly limit · resets ..."),
+        # possibly wrapped in "ACP error -32603: Internal error:".
+        return USAGE_LIMIT
     if "agent idle for" in lower:
         return IDLE_TIMEOUT
     if "install failed" in lower:

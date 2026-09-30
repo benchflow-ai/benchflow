@@ -58,6 +58,7 @@ from benchflow._utils.scoring import (
     PROVIDER_REJECTED,
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
+    USAGE_LIMIT,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -295,6 +296,10 @@ class RetryConfig:
         """Check if an error is retryable."""
         category = category or classify_error(error)
         if not category:
+            return False
+        if category == USAGE_LIMIT:
+            # Whatever exclude_categories says: every retry on the same login
+            # fails the same way until the window resets.
             return False
         if category in self.exclude_categories:
             return False

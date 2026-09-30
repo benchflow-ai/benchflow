@@ -79,6 +79,7 @@ from benchflow.agents.codex_connector_policy import (
     enforce_codex_apps_policy,
 )
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.errors import UsageLimitError
 from benchflow.agents.registry import (
     AGENTS,
     infer_env_key_for_model,
@@ -100,6 +101,7 @@ from benchflow.diagnostics import (
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
+    UsageLimitDiagnostic,
 )
 from benchflow.loop_strategies import (
     LoopStrategyUser,
@@ -3095,6 +3097,21 @@ class Rollout:
             diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
+        if isinstance(e, UsageLimitError):
+            # Name the login (a label, never the token) and record the typed
+            # diagnostic: the trial is an unscored usage_limit, never retried.
+            from benchflow.agents.env import login_label
+
+            named = e.with_login(
+                login_label(
+                    self._config.primary_agent,
+                    self._config.primary_model,
+                    self._agent_env,
+                    self._config.agent_env,
+                )
+            )
+            self._diagnostics.set(UsageLimitDiagnostic.from_error(named))
+            return str(named)
         # The base AgentProtocolError only annotates `message: str` without
         # assigning it, so a base instance has no `.message` (AttributeError
         # risk); ACPError subclasses do set it. Fall back to str(e) defensively.
