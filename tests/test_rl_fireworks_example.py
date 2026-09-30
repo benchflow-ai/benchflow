@@ -227,3 +227,33 @@ def test_usage_counts_only_this_deployment(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["accelerator_seconds"] == 3600
     assert out["usd"] == 8.0
+
+
+def test_an_interrupt_finishes_running_episodes_and_cancels_the_queue(monkeypatch):
+    pytest.importorskip("benchflow.integrations.trl")
+    import io
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    import fireworks_rl
+
+    started = []
+    lock = threading.Lock()
+
+    def fake_episode(row, sample, policy, args, meta):
+        with lock:
+            started.append((row["benchflow_task_id"], sample))
+            first = len(started) == 1
+        if first:
+            raise KeyboardInterrupt
+        time.sleep(0.2)
+        raise RuntimeError("a running episode finishes; its result is not needed")
+
+    monkeypatch.setattr(fireworks_rl, "run_episode", fake_episode)
+    rows = [{"benchflow_task_id": f"t{i}"} for i in range(5)]
+    args = SimpleNamespace(group_size=4, concurrency=2)
+    with pytest.raises(KeyboardInterrupt):
+        fireworks_rl.run_groups(rows, None, args, {}, io.StringIO(), step=0)
+    # Without cancelling, all 20 queued episodes would start.
+    assert len(started) <= 4

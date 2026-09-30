@@ -217,7 +217,8 @@ def run_groups(
     lock = threading.Lock()
     work = [(g, s) for g in range(len(rows)) for s in range(args.group_size)]
     done = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency)
+    try:
         futures = {
             pool.submit(run_episode, rows[g], s, policy, args, meta.get(rows[g]["benchflow_task_id"], {})): (g, s)
             for g, s in work
@@ -243,6 +244,12 @@ def run_groups(
                     f"reward={d.reward if d else None} turns={episode.turns} ended={episode.ended}",
                     flush=True,
                 )
+    except BaseException:
+        # Ctrl-C or an error: let running episodes finish (they close their
+        # sandboxes), and never start the queued ones.
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     return [[r for r in group if r is not None] for group in groups]
 
 
