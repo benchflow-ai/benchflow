@@ -39,6 +39,10 @@ class UserError(Exception):
 class MissingCredentialError(ValueError, UserError):
     """The agent's model needs a login or an API key that is not set."""
 
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint or "`bench doctor` lists the logins and keys it finds"
+
 
 def user_message(exc: BaseException) -> str:
     """One line for an expected error: its message, then its next step."""

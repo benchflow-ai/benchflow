@@ -547,6 +547,39 @@ _HOST_CHECKED: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+def check_credentials(configs: Sequence[Any]) -> None:
+    """Raise ``MissingCredentialError`` now for an agent whose login is missing.
+
+    The same resolution each trial makes at setup (``resolve_agent_env``), made
+    once before a job exists, so a missing login is one clear error rather
+    than a traceback in every trial. Only a missing credential is raised here;
+    anything else the resolution rejects still surfaces in the trial.
+    """
+    from benchflow.agents.env import resolve_agent_env
+    from benchflow.errors import MissingCredentialError
+    from benchflow.evaluation import effective_model
+
+    seen: set[tuple[str, str | None]] = set()
+    for config in configs:
+        pairs: list[tuple[str, str | None]] = [(config.agent, config.model)] + [
+            (role.agent, role.model)
+            for scene in getattr(config, "scenes", None) or []
+            for role in scene.roles
+        ]
+        for agent, model in pairs:
+            if not agent or agent in ("oracle", "nop") or (agent, model) in seen:
+                continue
+            seen.add((agent, model))
+            try:
+                resolve_agent_env(
+                    agent, effective_model(agent, model), dict(config.agent_env or {})
+                )
+            except MissingCredentialError:
+                raise
+            except Exception:
+                continue
+
+
 def check_host(configs: Sequence[Any]) -> None:
     """The host checks ``bench eval run`` makes before a job, for SDK callers.
 
@@ -573,6 +606,7 @@ def check_host(configs: Sequence[Any]) -> None:
     from benchflow._utils.config import normalize_agent_name
     from benchflow.cli.doctor import _expired_claude_login
 
+    check_credentials(configs)
     probes = doctor_mod.DoctorProbes.from_host()
     if any(c.environment == "docker" for c in configs):
         failed = [

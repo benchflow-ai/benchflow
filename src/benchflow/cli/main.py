@@ -29,6 +29,7 @@ from rich.table import Table
 from benchflow import __version__
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli._errors import install_recent_log
 from benchflow.cli._live_progress import (
     LiveEvalProgress,
     live_session,
@@ -117,6 +118,8 @@ def _log_settings(environ: Mapping[str, str]) -> tuple[int, str]:
 
 _level, _format = _log_settings(os.environ)
 logging.basicConfig(level=_level, format=_format)
+# The last log lines, for the crash log of an unexpected error (cli/_errors.py).
+install_recent_log()
 
 _TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
 
@@ -1833,5 +1836,12 @@ register_environment(app)
 register_monitor(app)
 
 
+def main() -> None:
+    """The ``bench`` / ``benchflow`` console script (see ``benchflow.cli._errors``)."""
+    from benchflow.cli._errors import run_cli
+
+    run_cli(app)
+
+
 if __name__ == "__main__":
-    app()
+    main()

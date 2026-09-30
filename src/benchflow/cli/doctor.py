@@ -181,6 +181,19 @@ def eval_preflight(
             raise typer.Exit(1) from None
     if os.environ.get(PREFLIGHT_OPT_OUT_ENV, "").strip().lower() in _OPT_OUT_VALUES:
         return
+    if agent:
+        from types import SimpleNamespace
+
+        from benchflow.errors import MissingCredentialError, user_message
+        from benchflow.runtime import check_credentials
+
+        try:
+            check_credentials(
+                [SimpleNamespace(agent=agent, model=model, agent_env=agent_env)]
+            )
+        except MissingCredentialError as exc:
+            print_error(f"{user_message(exc)}\nNo job was created.")
+            raise typer.Exit(1) from None
     from benchflow import doctor as doctor_mod
 
     probes = doctor_mod.DoctorProbes.from_host()

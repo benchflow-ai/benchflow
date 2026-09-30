@@ -125,8 +125,8 @@ deepagents = [
 ]
 
 [project.scripts]
-benchflow = "benchflow.cli.main:app"
-bench = "benchflow.cli.main:app"
+benchflow = "benchflow.cli.main:main"
+bench = "benchflow.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/benchflow-ai/benchflow"

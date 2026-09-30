@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from benchflow.errors import UserError
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox._compose import COMPOSE_REMOTE_BASE_PATH
 from benchflow.sandbox.docker import (
@@ -50,7 +51,7 @@ _DISK_FULL = re.compile(r"no space left on device", re.IGNORECASE)
 _LIST_TIMEOUT_SEC = 30
 
 
-class RemoteDockerConfigError(ValueError):
+class RemoteDockerConfigError(ValueError, UserError):
     """The remote Docker host is not configured, or configured unsafely."""
 
 

@@ -103,6 +103,7 @@ from benchflow.diagnostics import (
     SuspectedApiErrorDiagnostic,
     UsageLimitDiagnostic,
 )
+from benchflow.errors import UserError, user_message
 from benchflow.loop_strategies import (
     LoopStrategyUser,
     collect_loop_metadata,
@@ -2790,7 +2791,12 @@ class Rollout:
                 self._verifier_error = f"[solver-preserved] post-solver stage failed: {describe_exception(e)}"
             else:
                 self._error = describe_exception(e)
-            logger.error("Run failed", exc_info=True)
+            if isinstance(e, UserError):
+                # Expected (a missing login, a task file that does not
+                # parse): its message says it all, a traceback would not.
+                logger.error(f"Run failed: {user_message(e)}")
+            else:
+                logger.error("Run failed", exc_info=True)
         finally:
             try:
                 await self.cleanup()

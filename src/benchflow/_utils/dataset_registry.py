@@ -17,6 +17,7 @@ from urllib.request import urlopen
 
 from benchflow._utils import benchmark_repos
 from benchflow._utils.task_authoring import task_digest
+from benchflow.errors import UserError
 
 DEFAULT_REGISTRY_SOURCE = (
     "https://raw.githubusercontent.com/benchflow-ai/skillsbench/main/registry.json"
@@ -27,7 +28,7 @@ _GITHUB_URL_RE = re.compile(
 )
 
 
-class DatasetResolutionError(ValueError):
+class DatasetResolutionError(ValueError, UserError):
     """A dataset spec could not be resolved against the registry."""
 
 

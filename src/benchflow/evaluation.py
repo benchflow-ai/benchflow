@@ -80,6 +80,7 @@ from benchflow.budget import Budget, BudgetGuard
 from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest, load_manifest
+from benchflow.errors import UserError
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -189,7 +190,7 @@ def _task_parse_error(path: Path) -> tuple[Path, str] | None:
     return None
 
 
-class EmptyTaskSelectionError(ValueError):
+class EmptyTaskSelectionError(ValueError, UserError):
     """Raised when task discovery + include/exclude filters resolve to zero tasks.
 
     Failing fast is preferred over silently writing a 0/0 summary.json that
@@ -197,7 +198,7 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
-class ResumeMismatchError(ValueError):
+class ResumeMismatchError(ValueError, UserError):
     """Raised when resuming a jobs_dir whose completed tasks ran a different agent.
 
     A jobs_dir holds one (agent, model) run. Folding a *different* agent's cached
@@ -209,7 +210,7 @@ class ResumeMismatchError(ValueError):
     """
 
 
-class MalformedTaskError(ValueError):
+class MalformedTaskError(ValueError, UserError):
     """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
     but fails to parse (#3).
 
@@ -217,6 +218,8 @@ class MalformedTaskError(ValueError):
     as a clean red message + exit 1. The message names the offending file —
     silently treating a typo'd task.md as "not a task" would make the task vanish.
     """
+
+    fault = "task"
 
 
 @dataclass

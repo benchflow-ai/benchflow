@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchflow.checkpoints import CheckpointPolicy, after_prompt
+from benchflow.errors import UserError
 from benchflow.review.persistence import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ _CHILD_KEYS = ("label", "parent", "prompt", "prompt-file")
 _MAX_LABEL = 200
 
 
-class BranchPlanError(ValueError):
+class BranchPlanError(ValueError, UserError):
     """The branch request is inconsistent; nothing was started."""
 
 

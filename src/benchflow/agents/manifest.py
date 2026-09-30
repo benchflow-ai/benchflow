@@ -33,6 +33,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from benchflow.agents.registry import AgentConfig
+from benchflow.errors import UserError
 
 # This loader speaks contract major version 1. A manifest declaring a different
 # major is rejected (its shape may be incompatible); a different minor/patch is
@@ -123,7 +124,7 @@ def _merge_core_shim_only(
     return replace(manifest_config, **{f: getattr(core_config, f) for f in _SHIM_ONLY})
 
 
-class AgentManifestError(ValueError):
+class AgentManifestError(ValueError, UserError):
     """A manifest.toml is unreadable, missing a required field, declares an
     unsupported contract major version, or collides with an existing agent."""
 
