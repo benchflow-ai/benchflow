@@ -41,6 +41,7 @@ VALID_API_PROTOCOLS = {
 }
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "aws", "none"}
+VALID_MODEL_INPUTS = {"text", "image"}
 VALID_ACP_MODEL_FORMATS = {
     "bare",
     "provider/model",
@@ -452,6 +453,30 @@ def test_provider_models_and_credentials(name, cfg):
     for cf in cfg.credential_files:
         assert cf.get("path"), f"credential_files entry missing path: {cf}"
         assert cf.get("env_source"), f"credential_files entry missing env_source: {cf}"
+
+
+@pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))
+def test_provider_model_input_and_max_images(name, cfg):
+    """``input`` lists known modalities; ``maxImages`` is a positive int cap.
+
+    Callers read ``maxImages`` through ``max_images()`` to decide how many
+    images a request may carry, so it only makes sense on image-input models.
+    """
+    for m in cfg.models:
+        inputs = m.get("input", ["text"])
+        assert isinstance(inputs, list) and set(inputs) <= VALID_MODEL_INPUTS, (
+            f"{name!r}/{m.get('id')!r}: input {inputs!r} not a subset of "
+            f"{sorted(VALID_MODEL_INPUTS)}"
+        )
+        if "maxImages" in m:
+            cap = m["maxImages"]
+            assert isinstance(cap, int) and not isinstance(cap, bool) and cap > 0, (
+                f"{name!r}/{m.get('id')!r}: maxImages must be a positive int"
+            )
+            assert "image" in inputs, (
+                f"{name!r}/{m.get('id')!r}: maxImages set on a model without "
+                "image input"
+            )
 
 
 @pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))

@@ -10,6 +10,8 @@ from benchflow.agents.providers import (
     PROVIDERS,
     ProviderConfig,
     find_provider,
+    max_images,
+    model_metadata,
     resolve_auth_env,
     resolve_base_url,
     strip_provider_prefix,
@@ -347,6 +349,16 @@ class TestProviderModels:
         """Each model entry should have at least id and name."""
         for cfg in PROVIDERS.values():
             assert all("id" in m and "name" in m for m in cfg.models)
+
+    def test_model_metadata_looks_up_provider_prefixed_id(self):
+        meta = model_metadata("zai/glm-5.1")
+        assert meta is not None and meta["name"] == "GLM-5.1"
+        assert model_metadata("zai/not-a-declared-model") is None
+        assert model_metadata("anthropic/claude-sonnet-4-6") is None
+
+    def test_max_images_is_none_when_undeclared(self):
+        assert max_images("zai/glm-5.1") is None
+        assert max_images("openrouter/some/model") is None
 
 
 # strip_provider_prefix

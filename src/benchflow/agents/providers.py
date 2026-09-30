@@ -45,6 +45,10 @@ Common optional fields
 - ``models``           Optional list of model metadata dicts (id, name,
                        contextWindow, etc.) consumed by agent shims. ``id``
                        is required and must be unique within the provider.
+                       ``input`` lists the accepted modalities (``"text"``,
+                       ``"image"``). ``maxImages`` caps the images one
+                       request may carry (image-input models only); read
+                       it with ``max_images()``.
 - ``model_prefixes``   Bare-model-name family tokens this provider owns
                        (e.g. ``["deepseek"]``), used by
                        ``find_provider_for_bare_model()`` to route
@@ -529,6 +533,31 @@ def strip_provider_prefix(model: str) -> str:
     if result:
         return model[len(result[0]) + 1 :]
     return model
+
+
+def model_metadata(model: str) -> dict | None:
+    """Return the registry ``models`` entry for a provider-prefixed model id.
+
+    ``"baseten/zai-org/GLM-5.3"`` → the ``zai-org/GLM-5.3`` entry of
+    ``baseten``. Returns None for unregistered providers or undeclared models.
+    """
+    result = find_provider(model)
+    if result is None:
+        return None
+    _, cfg = result
+    bare = strip_provider_prefix(model)
+    for meta in cfg.models:
+        if meta.get("id") == bare:
+            return meta
+    return None
+
+
+def max_images(model: str) -> int | None:
+    """Most images one request to *model* may carry, or None when undeclared."""
+    meta = model_metadata(model)
+    if meta is None:
+        return None
+    return meta.get("maxImages")
 
 
 def resolve_auth_env(model: str) -> str | None:
