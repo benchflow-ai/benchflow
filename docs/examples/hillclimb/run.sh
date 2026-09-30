@@ -6,7 +6,7 @@
 #
 # Knobs (environment variables): WORK, SANDBOX, CONCURRENCY, AGENT_MODEL,
 # PROPOSER_MODEL, TRIALS, MIN_GAIN, TEST_FRAC, SEED, ROUNDS, MAX_COST_USD,
-# MAX_ROLLOUTS, MAX_SANDBOX_HOURS, SKILLSBENCH_SHA.
+# MAX_ROLLOUTS, MAX_SANDBOX_HOURS, OAUTH_POOL, SKILLSBENCH_SHA.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,13 +27,21 @@ MAX_COST_USD="${MAX_COST_USD:-250}"
 # BenchFlow): rollouts that call a model, and sandbox wall-clock hours.
 MAX_ROLLOUTS="${MAX_ROLLOUTS:-610}"
 MAX_SANDBOX_HOURS="${MAX_SANDBOX_HOURS:-150}"
+# A file of CC_OAUTH_<NAME>=<token> lines: each job runs on the Claude
+# subscription with the most headroom (hillclimb_pool.py).
+OAUTH_POOL="${OAUTH_POOL:-}"
 
 # Both agents are Claude Code (claude-agent-acp). Credentials come from the
-# environment, never the command line: a Claude subscription token from
-# `claude setup-token` (the demo then prices each rollout from Claude Code's
-# own session log), or an API key (priced by BenchFlow's model proxy).
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "set CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY" >&2
+# environment or the pool file, never the command line: a pool of Claude
+# subscriptions (OAUTH_POOL), one subscription token from `claude setup-token`
+# (the demo then prices each rollout from Claude Code's own session log), or
+# an API key (priced by BenchFlow's model proxy).
+pool=()
+if [ -n "$OAUTH_POOL" ]; then
+  [ -r "$OAUTH_POOL" ] || { echo "OAUTH_POOL: cannot read $OAUTH_POOL" >&2; exit 2; }
+  pool=(--oauth-pool "$OAUTH_POOL")
+elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "set OAUTH_POOL, CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY" >&2
   exit 2
 fi
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
@@ -89,4 +97,4 @@ uv run python "$HERE/hillclimb.py" \
   --proposer-agent claude-agent-acp --proposer-model "$PROPOSER_MODEL" \
   --sandbox "$SANDBOX" --concurrency "$CONCURRENCY" \
   --test-frac "$TEST_FRAC" --seed "$SEED" \
-  "${extra[@]}"
+  ${pool[@]+"${pool[@]}"} "${extra[@]}"

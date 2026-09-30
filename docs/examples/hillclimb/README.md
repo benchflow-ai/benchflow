@@ -20,7 +20,7 @@ In the post, the optimizer is trusted to keep away from the test set. Here the t
 
 | Primitive | For |
 |---|---|
-| `bf.Evaluation` with `bf.EvaluationConfig(skills_dir=..., skill_mode="with-skill", include_tasks=..., config_override=...)` | Each split, once per trial, as a normal BenchFlow job with the skills deployed and a setup command that keeps Claude Code's session log (see [Cost](#cost)); `agent="oracle"` and `agent="nop"` for the grader checks |
+| `bf.Evaluation` with `bf.EvaluationConfig(skills_dir=..., skill_mode="with-skill", include_tasks=..., config_override=..., agent_env=...)` | Each split, once per trial, as a normal BenchFlow job with the skills deployed, a setup command that keeps Claude Code's session log (see [Cost](#cost)), and, with a pool, the leased account's token (see [A pool of subscriptions](#a-pool-of-subscriptions)); `agent="oracle"` and `agent="nop"` for the grader checks |
 | `bf.Budget(max_cost_usd=..., max_sandbox_seconds=...)`, `bf.RetryConfig` | Every job's share of the caps; retries of infrastructure errors |
 | `bf.load_job`, `Job.agents()`, `Job.solve_rates()`, `Trial.assessment`, `Trial.cost_usd`, `Trial.timing` | Reading trials back; pass@1; leaving unscored trials out; cost and sandbox time |
 | `bf.run(bf.RolloutConfig(uploads=..., pre_agent_hooks=...))` | The optimizer, as a rollout of a task folder the demo writes (its `artifacts:` keep Claude Code's session log) |
@@ -91,6 +91,10 @@ Three caps stop the climb before a step it cannot afford, and every job gets its
 | `--max-sandbox-seconds` | sandbox wall-clock of every trial and optimizer run, the grader checks included | yes, inside every job too |
 | `--max-rollouts` | rollouts that call a model: evaluation trials and optimizer runs | yes, between steps (`bf.Budget` has no rollout count) |
 
+### A pool of subscriptions
+
+`OAUTH_POOL=<file>` (`--oauth-pool`) spreads the climb over several Claude subscriptions: a file of `CC_OAUTH_<NAME>=<token>` lines, read by the demo and never put on a command line. Before each evaluation job and each optimizer run, [`hillclimb_pool.py`](hillclimb_pool.py) probes the accounts (one 8-token `claude-haiku-4-5-20251001` request per token with Claude Code's system prompt and OAuth headers, cached five minutes; the reply's `anthropic-ratelimit-unified-*` headers give the share of the 5-hour and 7-day windows used, the enforced `7d_oi` window when present, and their resets) and leases the account with the most 5-hour headroom that no running job holds. An account is left out when the probe is refused, when less than 15% of its 7-day window is left, when more than 70% of its 5-hour window is used, or when the job would take it past 80% at the rate earlier jobs used accounts (learned from probes before and after each job); a job waits for a held account to free up, or up to 45 minutes for a window to reset. The job runs with the token as its `CLAUDE_CODE_OAUTH_TOKEN` (`EvaluationConfig.agent_env`, or the optimizer's `RolloutConfig.agent_env`). A trial that ends on Claude Code's usage-limit message ("You've hit your ... limit") marks its account spent until the window resets and runs again on another account, in `trial-NN/retry-N/`, up to twice; the trial keeps its scored attempt. `hillclimb.json` names the account of every job (`jobs` in each split, `accounts` for each optimizer run) and has usage per account (`accounts`: jobs, rollouts, USD from the session logs, usage-limit hits, the last probe), which the report shows. Token values are never written: records name the account, and the tokens are scrubbed from the collected session logs.
+
 ## Outputs
 
 ```
@@ -114,6 +118,7 @@ Every job folder opens with `bench eval view`, and `bench eval metrics evals/<id
 | `hillclimb_proposer.py` | The optimizer's sandbox: the train-only workspace, the mount check and manifest, the task it runs |
 | `hillclimb_stats.py` | Bootstrap intervals, paired deltas, rerun noise, the noise gate |
 | `hillclimb_cost.py` | What each rollout cost, from Claude Code's session log |
+| `hillclimb_pool.py` | A pool of Claude subscriptions: which account runs each job |
 | `hillclimb_report.py` | The HTML report |
 | `hillclimb.schema.json` | The schema of `hillclimb.json` |
 | `run.sh`, `tasks.txt`, `office-skills/` | The SkillsBench recipe |
