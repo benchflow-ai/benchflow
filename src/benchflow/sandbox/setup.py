@@ -806,14 +806,21 @@ def _create_sandbox_environment(
             )
             env_config.storage_mb = _DAYTONA_MAX_STORAGE_MB
 
+        from benchflow.sandbox.leases import daytona_lifetime
+
+        # Idle auto-stop and stopped-sandbox auto-delete: one day each unless
+        # the rollout (bf.rollout_group) or BENCHFLOW_DAYTONA_AUTO_STOP_MIN /
+        # BENCHFLOW_DAYTONA_AUTO_DELETE_MIN say otherwise. They bound how long
+        # a sandbox outlives a process killed before its teardown.
+        auto_stop_min, auto_delete_min = daytona_lifetime()
         return DaytonaSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,
             rollout_paths=rollout_paths,
             task_env_config=env_config,
-            auto_stop_interval_mins=1440,
-            auto_delete_interval_mins=1440,
+            auto_stop_interval_mins=auto_stop_min,
+            auto_delete_interval_mins=auto_delete_min,
             persistent_env=manifest_env or None,
         )
     elif sandbox_type == "modal":

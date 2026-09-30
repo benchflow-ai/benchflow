@@ -717,6 +717,26 @@ def _classify_integration_failure(rollout: Any) -> bool:
     return True
 
 
+def _uses_oracle_files(config: RolloutConfig) -> bool:
+    """Whether this rollout needs the task's oracle files in its sandbox.
+
+    The oracle agent runs ``solve.sh``; a simulated user with
+    ``oracle_access`` reads it before hiding it. Any other agent must never
+    find the solution in its sandbox.
+    """
+    if config.oracle_access:
+        return True
+    agents = {config.primary_agent}
+    try:
+        scenes = config.effective_scenes or []
+    except ValueError:  # self-gen runs through the runtime orchestrator
+        scenes = []
+    for scene in scenes:
+        for role in getattr(scene, "roles", None) or []:
+            agents.add(getattr(role, "agent", None))
+    return "oracle" in agents
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -1307,6 +1327,10 @@ class Rollout:
             uploads=self._config.uploads,
             # A sandbox created from a branch snapshot already holds them.
             upload_task_files=not self._from_branch_snapshot,
+            # Only the oracle (and a simulated user given oracle access) reads
+            # the task's solution; every other agent never sees it, not even
+            # as root (#oracle-root).
+            upload_oracle=_uses_oracle_files(self._config),
         )
 
         for hook in self._config.pre_agent_hooks or []:

@@ -95,6 +95,11 @@ def _acp_handshake_timeout_sec() -> float:
     positive-float validation, warn-and-fall-back) is shared with the other
     transport timeout knobs in :mod:`benchflow.sandbox.process._base`.
     """
+    from benchflow._utils.startup_timeouts import acp_handshake_override
+
+    override = acp_handshake_override()
+    if override is not None:
+        return override
     return _timeout_sec_from_env(
         _ACP_HANDSHAKE_TIMEOUT_ENV,
         _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC,

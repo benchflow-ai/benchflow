@@ -15,6 +15,7 @@ logic without a fork. The Daytona client + reaper deliberately resolve through
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -282,6 +283,42 @@ def sandbox_cleanup(
         raise typer.Exit(2)
     cleaned_any = False
     backend_failed = False
+
+    # Sandboxes (Docker projects, Daytona sandboxes) that a BenchFlow process
+    # on this machine started and was killed before tearing down: its lease
+    # file still lists them (benchflow.sandbox.leases).
+    from benchflow.sandbox.leases import lease_dir, lease_state
+
+    dead = []
+    for path in sorted(lease_dir().glob("*.json")) if lease_dir().is_dir() else []:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and lease_state(data.get("process")) == "gone":
+            dead.append(data)
+    if dead:
+        cleaned_any = True
+        listed = [r for d in dead for r in d.get("resources") or [] if isinstance(r, dict)]
+        if dry_run:
+            for resource in listed:
+                console.print(
+                    f"  [dim]{escape(str(resource.get('provider')))}:"
+                    f"{escape(str(resource.get('id')))}[/dim] "
+                    "(left by a killed process) [red](delete)[/red]"
+                )
+            console.print(
+                f"Sandboxes left by killed processes: {len(listed)} would be deleted"
+            )
+        else:
+            from benchflow.sandbox.leases import reap_dead_leases
+
+            reaped = reap_dead_leases()
+            console.print(
+                f"Sandboxes left by killed processes: {len(reaped['deleted'])} deleted"
+                + (f", {len(reaped['failed'])} failed" if reaped["failed"] else "")
+            )
+            backend_failed = backend_failed or bool(reaped["failed"])
 
     if _daytona_sdk_available():
         from benchflow.cli import main as cli_main

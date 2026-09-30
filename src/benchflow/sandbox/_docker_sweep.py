@@ -68,15 +68,26 @@ _live_lock = threading.Lock()
 
 
 def claim_project(project: str) -> None:
-    """Mark this process's compose *project* as in use: the sweep keeps it."""
+    """Mark this process's compose *project* as in use: the sweep keeps it.
+
+    The project is also recorded in this process's sandbox lease
+    (:mod:`benchflow.sandbox.leases`), so it is deleted even if the process
+    is killed before its teardown runs.
+    """
     with _live_lock:
         _live_projects.add(project)
+    from benchflow.sandbox import leases
+
+    leases.record("docker", project)
 
 
 def release_project(project: str) -> None:
     """*project*'s sandbox is torn down; the sweep may remove what it left."""
     with _live_lock:
         _live_projects.discard(project)
+    from benchflow.sandbox import leases
+
+    leases.release("docker", project)
 
 
 def live_projects() -> frozenset[str]:

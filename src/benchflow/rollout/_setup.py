@@ -323,11 +323,18 @@ async def _start_env_and_upload(
     on_started: Callable[[], Awaitable[None] | None] | None = None,
     uploads: dict[str, str] | None = None,
     upload_task_files: bool = True,
+    upload_oracle: bool = True,
 ) -> None:
     """Start environment and upload task files.
 
     ``upload_task_files=False`` only starts the sandbox: one created from a
     branch snapshot already holds the instruction, the solution and uploads.
+
+    ``upload_oracle=False`` leaves the task's oracle (``oracle/`` or legacy
+    ``solution/``) out of the sandbox. A rollout passes it for every agent
+    but the oracle itself: path lockdown hides ``/oracle`` only from a
+    non-root sandbox user, so for an agent running as root (Terminal-Bench
+    and TMax tasks need root) the only safe oracle is an absent one.
 
     ``skip_start=True`` is used when the sandbox was created and started
     by the caller (Runtime with a live Environment, #388) — we still
@@ -381,7 +388,7 @@ async def _start_env_and_upload(
     from benchflow.task.paths import SandboxPaths, TaskPaths
 
     paths = TaskPaths(task_path)
-    if paths.solution_dir.is_dir():
+    if upload_oracle and paths.solution_dir.is_dir():
         sandbox_paths = SandboxPaths()
         target_dir = (
             sandbox_paths.oracle_dir

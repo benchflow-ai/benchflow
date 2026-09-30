@@ -309,9 +309,12 @@ class TestIsBenchflowOwned:
         monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "gpt56 max / openhands")
         labels = _benchflow_owned_labels()
 
+        from benchflow.sandbox.leases import lease_token
+
         assert labels == {
             "benchflow.managed": "1:gpt56-max-openhands",
             "benchflow.owner": "gpt56-max-openhands",
+            "benchflow.lease": lease_token(),
         }
         assert _is_benchflow_owned(SimpleNamespace(labels=labels))
         assert not _is_benchflow_owned(

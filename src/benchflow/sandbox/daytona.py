@@ -570,6 +570,11 @@ class DaytonaSandbox(BaseSandbox):
         ``on_started`` callback still runs after ``start()`` returns as an
         idempotent fallback.
         """
+        sandbox_id = self.sandbox_id
+        if sandbox_id:
+            from benchflow.sandbox import leases
+
+            leases.record("daytona", sandbox_id)
         if self.rollout_paths is None:
             return
         persist_sandbox_info(self, self.rollout_paths.rollout_dir)
@@ -752,6 +757,8 @@ class DaytonaSandbox(BaseSandbox):
     async def _stop_sandbox(self) -> None:
         if not self._sandbox:
             return
+        from benchflow.sandbox import leases
+
         try:
             await self._sandbox.delete()
         except Exception as exc:
@@ -765,6 +772,7 @@ class DaytonaSandbox(BaseSandbox):
                 f"Daytona sandbox {self._sandbox.id} is already deleted: "
                 f"{_one_line_error(exc)}"
             )
+        leases.release("daytona", self._sandbox.id)
 
     @stamp_transient_transport
     @_SDK_RETRY

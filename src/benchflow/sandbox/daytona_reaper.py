@@ -68,10 +68,15 @@ def _benchflow_owned_labels() -> dict[str, str]:
     in place (it injects the language label), so a shared dict would leak that
     mutation across creation sites.
     """
+    from benchflow.sandbox.leases import lease_labels
+
     owner = _benchflow_owner_scope()
     labels = {_BENCHFLOW_MANAGED_LABEL: _benchflow_managed_value()}
     if owner is not None:
         labels[_BENCHFLOW_OWNER_LABEL] = owner
+    # The process that started it, and its lease expiry when one is set, so
+    # a sandbox outliving a killed process is reaped (benchflow.sandbox.leases).
+    labels.update(lease_labels())
     return labels
 
 
@@ -180,6 +185,27 @@ def _parse_sandbox_timestamp(raw: Any) -> Any | None:
     return parsed
 
 
+def _lease_reap_reason(sb: Any, now: Any) -> str | None:
+    """Why an owned sandbox's lease says to delete it now, or None.
+
+    ``benchflow.expires`` (unix seconds) has passed, or ``benchflow.lease``
+    names a process on this machine that is provably gone
+    (:func:`benchflow.sandbox.leases.lease_state`).
+    """
+    from benchflow.sandbox.leases import EXPIRES_LABEL, LEASE_LABEL, lease_state
+
+    labels = getattr(sb, "labels", None)
+    if not isinstance(labels, dict):
+        return None
+    expires = labels.get(EXPIRES_LABEL)
+    if isinstance(expires, str) and expires.isdigit() and int(expires) <= now.timestamp():
+        return "its lease expired"
+    lease = labels.get(LEASE_LABEL)
+    if isinstance(lease, str) and lease_state(lease) == "gone":
+        return f"the process that started it ({lease}) is gone"
+    return None
+
+
 def reap_stale_sandboxes(
     client: Any | None = None,
     *,
@@ -272,6 +298,28 @@ def reap_stale_sandboxes(
         if ignore_age:
             if on_decision is not None:
                 on_decision(sb, 0.0, True)
+            if dry_run:
+                counts["deleted"] += 1
+                continue
+            try:
+                client.delete(sb)
+                counts["deleted"] += 1
+            except Exception:
+                logger.warning("Failed to delete sandbox %s", getattr(sb, "id", "?"))
+                counts["failed"] += 1
+            continue
+        lease_reason = _lease_reap_reason(sb, now)
+        if lease_reason is not None:
+            # The process that started it is provably gone (same machine), or
+            # its lease expired: nothing will ever delete it otherwise, and
+            # the activity guard cannot protect a run whose owner is dead.
+            created = _parse_sandbox_timestamp(getattr(sb, "created_at", None))
+            age = (now - created).total_seconds() / 60 if created else 0.0
+            logger.info(
+                "Daytona sandbox %s: %s; deleting", getattr(sb, "id", "?"), lease_reason
+            )
+            if on_decision is not None:
+                on_decision(sb, age, True)
             if dry_run:
                 counts["deleted"] += 1
                 continue

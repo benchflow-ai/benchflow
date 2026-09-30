@@ -239,6 +239,11 @@ def classify_error(error: str | None) -> str | None:
         if any(m in lower for m in _PROVIDER_REJECTED_MARKERS):
             return PROVIDER_REJECTED
         return ACP_ERROR
+    if "timed out" in lower and "before the first prompt" in lower:
+        # The ACP handshake (initialize, session/new) outlived its timeout:
+        # the agent never started, so this is a startup failure, not an agent
+        # that ran out of time (which would be a scored timeout).
+        return ACP_ERROR
     if (
         "sandbox startup" in lower
         or "sandbox creation" in lower

@@ -790,6 +790,63 @@ def _agent_endpoint_for_environment(
     )
 
 
+SANDBOX_BASE_URL_ENV = "BENCHFLOW_PROVIDER_BASE_URL_SANDBOX"
+
+
+def route_for_sandbox_gateway(
+    route: LiteLLMRoute, agent_env: dict[str, str], environment: str
+) -> LiteLLMRoute:
+    """The route a gateway running *inside* the sandbox can reach.
+
+    A self-hosted endpoint is often given as a loopback URL on the host
+    (``http://127.0.0.1:8000/v1``). That works for a gateway on the host;
+    inside a sandbox, loopback is the sandbox itself. So when the gateway runs
+    in the sandbox (no-network and denylist tasks on Docker, and every run on
+    Daytona and other remote providers):
+
+    - ``BENCHFLOW_PROVIDER_BASE_URL_SANDBOX``, when set, replaces the URL
+      (``bf.Policy`` sets it to its relay's address for that sandbox);
+    - on Docker, a loopback host becomes the host as containers see it (the
+      bridge gateway on Linux, ``host.docker.internal`` elsewhere); the
+      server must listen there, which the policy relay does;
+    - on a remote provider a loopback URL cannot work, so this refuses with
+      the fix instead of letting every call fail inside the sandbox.
+    """
+    import dataclasses
+
+    from benchflow.training.relay import is_loopback_url, with_host
+
+    api_base = route.litellm_params.get("api_base")
+    if not isinstance(api_base, str) or not api_base:
+        return route
+    override = (agent_env.get(SANDBOX_BASE_URL_ENV) or "").strip()
+    if override:
+        new_base = override
+    elif not is_loopback_url(api_base):
+        return route
+    elif environment == "docker":
+        new_base = with_host(api_base, _docker_host_address())
+        logger.info(
+            "The model endpoint %s is on the host's loopback; the gateway runs "
+            "inside the Docker sandbox, so it uses %s (the server must listen "
+            "on that address)",
+            api_base,
+            new_base,
+        )
+    else:
+        raise ValueError(
+            f"the model endpoint {api_base} is on this machine's loopback, but "
+            f"on {environment!r} the model gateway runs inside the sandbox, "
+            "which cannot reach it. Give a URL the sandbox can reach, or run the "
+            "policy through bf.Policy with relay_public_url"
+        )
+    if new_base == api_base:
+        return route
+    return dataclasses.replace(
+        route, litellm_params={**route.litellm_params, "api_base": new_base}
+    )
+
+
 def _route_env(route: LiteLLMRoute) -> dict[str, str]:
     """Route facts exported to the proxy process for token capture."""
     return {
@@ -900,9 +957,20 @@ def _health_deadline_sec() -> float:
 _HEALTH_DEADLINE_SEC = _health_deadline_sec()
 
 
+def _effective_health_deadline(deadline_s: float | None) -> float:
+    """The gateway health wait: the caller's, this rollout's override, or the default."""
+    if deadline_s is not None:
+        return deadline_s
+    from benchflow._utils.startup_timeouts import gateway_health_override
+
+    override = gateway_health_override()
+    return override if override is not None else _HEALTH_DEADLINE_SEC
+
+
 async def _poll_host_health(
-    process: HostLiteLLMProcess, deadline_s: float = _HEALTH_DEADLINE_SEC
+    process: HostLiteLLMProcess, deadline_s: float | None = None
 ) -> None:
+    deadline_s = _effective_health_deadline(deadline_s)
     last_error = ""
     loop = asyncio.get_running_loop()
     start = loop.time()
@@ -1189,8 +1257,9 @@ async def _wait_for_sandbox_state(
     *,
     state_path: str,
     stderr_path: str,
-    deadline_s: float = _HEALTH_DEADLINE_SEC,
+    deadline_s: float | None = None,
 ) -> dict[str, Any]:
+    deadline_s = _effective_health_deadline(deadline_s)
     last_output = ""
     loop = asyncio.get_running_loop()
     start = loop.time()
@@ -1227,8 +1296,9 @@ async def _poll_sandbox_health(
     python: str,
     port: int,
     stderr_path: str,
-    deadline_s: float = _HEALTH_DEADLINE_SEC,
+    deadline_s: float | None = None,
 ) -> None:
+    deadline_s = _effective_health_deadline(deadline_s)
     probe = (
         f"{shlex.quote(python)} - <<'PY'\n"
         "import sys, urllib.request\n"
@@ -1500,6 +1570,7 @@ def _provider_models_for_proxy_alias(
 # whatever upstream base_url it needs in its own env / baked config.
 _PROVIDER_ENDPOINT_ENV_NAMES = frozenset(
     {
+        "BENCHFLOW_PROVIDER_BASE_URL_SANDBOX",
         "LLM_BASE_URL",
         "OPENAI_BASE_URL",
         "OPENAI_API_BASE",
@@ -1813,6 +1884,8 @@ async def ensure_litellm_runtime(
 
     try:
         route = resolve_litellm_route(model, agent_env)
+        if sandbox_local:
+            route = route_for_sandbox_gateway(route, agent_env, environment)
     except ValueError as exc:
         await _raise_litellm_unavailable(
             runtime=runtime,
