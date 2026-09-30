@@ -1270,6 +1270,7 @@ def check_claude_headroom(
             }
         )
     if status in (401, 403):
+        details["blocks_runs"] = True
         return row(
             "warn",
             f"{who} was refused (HTTP {status}): the login is invalid or expired",
@@ -1296,6 +1297,7 @@ def check_claude_headroom(
         if (text := _window_text(headroom, window, now)) is not None
     ]
     if headroom.limited:
+        details["blocks_runs"] = True
         spent = headroom.window or ", ".join(headroom.rejected) or "a"
         when = format_reset(headroom.resets_at)
         return row(
@@ -1590,7 +1592,9 @@ def run_doctor(
         net_checks, unreachable = check_network(probes, required, optional)
         checks.extend(net_checks)
 
-    claude_spent = headroom is not None and headroom.status == "warn"
+    # Only a spent or refused login stops Claude runs; a nearly spent window,
+    # a network blip or a 5xx does not.
+    claude_spent = headroom is not None and bool(headroom.details.get("blocks_runs"))
     usable = [
         a
         for a in auths.values()

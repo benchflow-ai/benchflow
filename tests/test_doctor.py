@@ -1120,3 +1120,27 @@ def test_the_usage_check_sends_only_a_subscription_token_to_anthropic(tmp_path):
     assert check.status == "skip" and "gateway.example.com" in check.summary
     assert not [c for c in calls if c[0] == "headroom"]
 
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (
+            200,
+            {**ALLOWED_HEADERS, "anthropic-ratelimit-unified-5h-utilization": "0.93"},
+            "",
+        ),
+        (None, {}, "ConnectError: connection reset"),
+        (503, {}, ""),
+    ],
+    ids=["nearly-spent", "network", "5xx"],
+)
+def test_only_a_spent_or_refused_login_counts_as_unable_to_run(tmp_path, answer):
+    """Review finding: any warning on the usage line (a window 90% used, a
+    network blip, a 5xx) made doctor say no model agent could run."""
+    report = run_doctor(
+        probes=make_probes(
+            tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN}, headroom=answer
+        )
+    )
+    assert by_id(report)["usage.claude-agent-acp"].status == "warn"
+    assert "auth.any" not in by_id(report)
