@@ -444,7 +444,9 @@ async def test_every_episode_is_kept_for_audit(tasks: Path, tmp_path: Path):
     outcome, _ = await _run(tasks, tmp_path, [submit])
     record = json.loads((tmp_path / "jobs" / "rollouts.jsonl").read_text())
     assert record["exit_status"] == "Submitted" and record["reward"] == 1.0
-    assert record["messages"][-1]["tool_calls"][0]["function"]["name"] == "submit"
+    assistant, tool = record["messages"][-2:]
+    assert assistant["tool_calls"][0]["function"]["name"] == "submit"
+    assert tool == {"role": "tool", "tool_call_id": "c1", "content": "submission recorded"}
     saved = json.loads((outcome.rollout_dir / "policy" / "messages.json").read_text())
     assert saved["episode_id"] == outcome.episode_id
 
