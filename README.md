@@ -11,114 +11,51 @@
 
 ## What
 
-BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
+BenchFlow runs AI agents on tasks in sandboxes and scores them, with one hardened runtime for evaluation and training. **A benchmark is just a frozen environment**: point BenchFlow at a benchmark's tasks, drive them with any [ACP](https://agentclientprotocol.com) agent (Claude Code, Codex, Gemini CLI, OpenHands and more), and read rewards, costs and full trajectories from every run. The same tasks run single-agent, multi-agent or multi-round, on Docker, Daytona or Modal.
 
-## Quick start: 1. Submit a trajectory
+## Quick start
 
-**Send these to your coding agent.** Copy
-the block below and paste it as a message to Claude Code, Codex, OpenCode, or
-Cursor. That is the $2,000 eval prize path. No BenchFlow account, API key, or
-Azure login.
+You need [Docker](https://docs.docker.com/get-started/get-docker/) running and [uv](https://docs.astral.sh/uv/getting-started/installation/). Steps 1 and 2 need no model and no API key.
 
-> Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, on this laptop) to the BenchFlow eval prize.
->
-> 1. First make sure the latest benchflow CLI is installed: uv tool install --python 3.12 --upgrade --force benchflow
->
-> 2. Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, and upload only after I (the human) review it.
-
-The agent finds sessions on this machine, opens the viewer, and uploads after
-you like what you see.
-
-The prompt has the agent install the latest BenchFlow first (`uv tool
-install --python 3.12 --upgrade --force benchflow`). The `bench traj` commands
-also print a one-line upgrade hint when a newer release is available.
-
-Prefer the terminal instead? The guided upload inspects before anything leaves
-your machine — it renders a redacted trajectory report (step counts, masked
-secrets, preview) and asks for confirmation:
+**1. Install BenchFlow and check the machine.**
 
 ```bash
 uv tool install --python 3.12 --upgrade benchflow
-bench traj upload
+bench doctor    # Docker, agent logins, network: one PASS/WARN/FAIL line each, with a fix
 ```
 
-Detected secret values are replaced locally with
-`<XXX-benchflow-key-values-XXX>` before upload, and the full redacted report is
-retained in the uploaded `manifest.json`. See the
-[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md) or the
-[trajectory upload guide](./docs/traj-upload.md).
+Until you log in to an agent, `bench doctor` reports that no agent can run. The oracle in step 2 needs no login.
 
-Optional — set the skill up once, then keep talking to the agent:
+**2. Run a benchmark task with the oracle.** The oracle agent runs the task's own reference solution, so this checks the sandbox, the task and its verifier without a model:
 
 ```bash
-npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload
-# or, if BenchFlow is already installed:
-bench traj setup
+bench eval run --source-repo benchflow-ai/skillsbench --source-path tasks/citation-check \
+  --agent oracle --sandbox docker --jobs-dir jobs/oracle
 ```
 
-`npx skills add` asks which agents to install for. `bench traj setup` copies
-the skill into this project and prints the same agent prompt. See the
-[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md).
+BenchFlow downloads only that task from the [SkillsBench](https://github.com/benchflow-ai/skillsbench) repository (a few megabytes), builds its image (a couple of minutes the first time) and ends with `Score: 1/1`.
 
-## Quick start: 2. Run with a ChatGPT or Claude subscription
-
-No OpenAI or Anthropic API key is required. Start Docker, install BenchFlow,
-then run **one** of these options. BenchFlow detects the saved host login and
-makes it available to the agent inside the sandbox.
+**3. Run an agent on your Claude subscription.** No API key is needed. `claude setup-token` comes with [Claude Code](https://code.claude.com/docs/en/quickstart) and prints a login token that lasts a year:
 
 ```bash
-uv tool install --python 3.12 --upgrade benchflow
-bench doctor      # checks Docker, logins and network; prints a fix for each problem
-bench eval smoke  # runs a bundled hello-world task with every agent you are logged in to
-```
-
-`bench doctor` shows which login each agent would use and when it expires, never the secret itself. `bench eval smoke` runs one agent at a time and prints reward, time and trajectory path for each; see [Run everything](./docs/getting-started.md#run-everything-doctor-smoke-eval).
-
-### ChatGPT subscription via Codex
-
-Install the [Codex CLI](https://github.com/openai/codex), then:
-
-```bash
-codex login
-unset OPENAI_API_KEY CODEX_API_KEY  # ensure subscription auth is used
-
-bench eval run \
-  --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/citation-check \
-  --agent codex \
-  --model gpt-5.5 \
-  --sandbox docker
-```
-
-### Claude subscription via Claude Code
-
-Install [Claude Code](https://code.claude.com/docs/en/quickstart), then:
-
-```bash
-claude auth login
-unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN  # ensure subscription auth is used
-
-bench eval run \
-  --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/citation-check \
-  --agent claude \
-  --model claude-sonnet-4-6 \
-  --sandbox docker
-```
-
-On macOS, `claude auth login` keeps the live login in the Keychain, and BenchFlow reads `~/.claude/.credentials.json`, which that login does not refresh. If `bench doctor` reports that file as expired, use a long-lived token instead:
-
-```bash
-claude setup-token                        # prints a token valid for one year
+claude setup-token
 export CLAUDE_CODE_OAUTH_TOKEN=<token>
+bench eval run --source-repo benchflow-ai/skillsbench --source-path tasks/citation-check \
+  --agent claude --model claude-haiku-4-5-20251001 --sandbox docker --jobs-dir jobs/claude
 ```
 
-The first `--source-repo` run clones the whole SkillsBench repository once (over 1 GB, about a minute) into `.cache/datasets/`, and later runs reuse it. To download only the one task, use the sparse checkout in [Run your first eval](./docs/getting-started.md#run-your-first-eval) and pass `--tasks-dir`.
+The agent may pass or fail; either way the evaluation completed. `bench eval smoke` runs a bundled hello-world task once with every agent you are logged in to, which checks each login in about a minute. For a ChatGPT subscription, run `codex login` and use `--agent codex`; see [Auth](./docs/getting-started.md#auth-oauth-long-lived-token-or-api-key) for API keys and other agents.
 
-The agent may pass or fail the benchmark task; either result means the
-evaluation completed. Each run writes rewards, token usage, and the full
-trajectory under `jobs/`. See [Getting started](./docs/getting-started.md) for
-other agents, models, and sandboxes.
+**4. Read the results.**
+
+```bash
+bench eval metrics jobs/      # pass rate, tokens and time of every run under jobs/
+bench eval view jobs/claude   # trajectory, verifier output and score, in your browser
+```
+
+Each run writes its rewards, token usage and full trajectory under its `--jobs-dir`. Running the same command again resumes that job: finished tasks are kept, not rerun. Add `--fresh` to start a new run.
+
+Next, [write your own task](./docs/task-authoring.md) with `bench tasks init`, or run a whole benchmark (`--source-path tasks --concurrency 8`). [Getting started](./docs/getting-started.md) walks the whole path. Existing users: see [What's new in 0.8](./docs/whats-new-0.8.md). Here for the trajectory prize? See [Contribute trajectory captures](./docs/traj-upload.md).
 
 ## Install
 
@@ -137,13 +74,7 @@ uv tool install --python 3.12 --upgrade benchflow
 
 Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --python 3.12 --prerelease allow --upgrade benchflow`).
 
-**Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); the
-`--python 3.12` flag lets it provision a compatible interpreter for the tool
-install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal;
-export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use
-subscription auth (`claude auth login` / `codex login`). Provider-prefixed models
-may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` +
-`AZURE_API_ENDPOINT`.
+**Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); the `--python 3.12` flag lets it provision a compatible interpreter for the tool install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal; export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use subscription auth (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or `codex login`). Provider-prefixed models may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` + `AZURE_API_ENDPOINT`.
 
 ## Documentation
 
@@ -152,6 +83,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
+| Upgrade from 0.7: what changed and what to do differently | [What's new in 0.8](./docs/whats-new-0.8.md) |
 | Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
 | Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
 | Run an agent from the public agents repo (goose, qwen-code, prime-agent, …) | [Running external agents](./docs/external-agents.md) |
@@ -164,7 +96,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Fork a run at a checkpoint into children (compare prompts, parallel or nested children, retry from a checkpoint, branch-tree training data) | [Branching guide](./docs/branching.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
 | Read or score a physical robot trial (`trial-record.json`) | [Physical robot trials](./docs/robotics.md) |
-| Contribute a trajectory capture | [Trajectory upload](./docs/traj-upload.md) |
+| Contribute a trajectory capture (the eval prize) | [Trajectory upload](./docs/traj-upload.md) |
 | Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
 | Use public vs internal preview SDK releases | [Release channels](./docs/release.md) |
 | CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
@@ -206,7 +138,7 @@ bench eval run \
     --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
-Repos are cloned and cached locally under `.cache/datasets/` on first use.
+Repos are cached under `.cache/datasets/` (in the enclosing git repository's root, or the current directory outside one). With a source path, only that path is downloaded (a sparse clone that fetches no other file), and each later path joins the same cache; a source without a path, or a folder that holds no BenchFlow task, gets the whole repository.
 
 Hosted environments are another source type. Instead of a repo, pass
 `--source-env` with the environment's pinned source version to run an external
