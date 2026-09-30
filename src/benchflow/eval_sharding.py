@@ -141,6 +141,7 @@ def _config_payload(
         "checkpoints": config.checkpoints,
         "checkpoint_keep": config.checkpoint_keep,
         "freeze_workspace": config.freeze_workspace,
+        "integrity": config.integrity,
         "retry_from_checkpoint": config.retry_from_checkpoint,
         "retry_prompt": config.retry_prompt,
         "retry_resume_session": config.retry_resume_session,

@@ -576,6 +576,20 @@ def eval_run(
             ),
         ),
     ] = False,
+    integrity: Annotated[
+        str | None,
+        typer.Option(
+            "--integrity",
+            help=(
+                "Reward integrity: off, audit or strict. audit records what the "
+                "agent did and checks it against the task's contract (every "
+                "sandbox); strict also runs the verifier in a separate verifier "
+                "sandbox. Each trial gets integrity/claim_verdict.json: Checked, "
+                "VectorExposed, AgentViolation or Rejected. Rewards are never "
+                "changed."
+            ),
+        ),
+    ] = None,
     retry_from_checkpoint: Annotated[
         str | None,
         typer.Option(
@@ -1009,6 +1023,7 @@ def eval_run(
         checkpoints=checkpoints,
         checkpoint_keep=checkpoint_keep,
         freeze_workspace=freeze_workspace,
+        integrity=integrity,
         retry_from_checkpoint=retry_from_checkpoint,
         retry_prompt=retry_prompt,
         retry_resume_session=retry_resume_session,
@@ -1083,6 +1098,14 @@ def eval_run(
     if (source_path or source_ref) and not source_repo:
         print_error("--source-path/--source-ref require --source-repo")
         raise typer.Exit(1)
+    if integrity is not None:
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        try:
+            normalize_integrity_mode(integrity)
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
     if checkpoints or retry_from_checkpoint:
         from benchflow.checkpoint_retry import parse_retry_policy
         from benchflow.checkpoints import parse_checkpoint_policy
@@ -1468,6 +1491,15 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # run-config file was a no-op.
         if plan.eval_config_override is not None:
             j._config.config_override = plan.eval_config_override
+        # --integrity likewise wins over the YAML. It is a safety flag, so a
+        # silent drop fails in the unsafe direction: the operator believes the
+        # trials are audited and they are not. (--checkpoints,
+        # --freeze-workspace and --retry-* share this file-config gap; they
+        # are left as they are, see docs/integrity.md.)
+        if req.integrity is not None:
+            from benchflow.integrity.trial import normalize_integrity_mode
+
+            j._config.integrity = normalize_integrity_mode(req.integrity)
         if plan.eval_budget is not None:
             j._config.budget = plan.eval_budget
     except subprocess.CalledProcessError as e:

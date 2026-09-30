@@ -99,6 +99,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--checkpoints": _sdk(f"{_EC}.checkpoints"),
     "--checkpoint-keep": _sdk(f"{_EC}.checkpoint_keep"),
     "--freeze-workspace": _sdk(f"{_EC}.freeze_workspace"),
+    "--integrity": _sdk(f"{_EC}.integrity"),
     "--quiet": _cli("console output only; Python reports through the logging module"),
     "--jobs-dir": _sdk(f"{_EV}.__init__(jobs_dir)"),
     "--fresh": _sdk(f"{_EV}.__init__(job_name)", "pass a new job_name"),

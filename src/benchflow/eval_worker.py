@@ -71,6 +71,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         checkpoints=raw.get("checkpoints"),
         checkpoint_keep=int(raw.get("checkpoint_keep") or 3),
         freeze_workspace=bool(raw.get("freeze_workspace", False)),
+        integrity=raw.get("integrity") or "off",
         retry_from_checkpoint=raw.get("retry_from_checkpoint"),
         retry_prompt=raw.get("retry_prompt"),
         retry_resume_session=bool(raw.get("retry_resume_session", False)),

@@ -1090,6 +1090,26 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
+        if cfg.integrity == "strict":
+            # Strict integrity runs the verifier in the separate verifier
+            # sandbox (benchflow.integrity): refused here, before any sandbox
+            # exists, where that sandbox cannot run this task.
+            from benchflow.integrity.trial import (
+                force_separate_verifier,
+                strict_launch_issues,
+            )
+
+            issues = strict_launch_issues(
+                self._task.config, sandbox=cfg.environment, task_dir=cfg.task_path
+            )
+            if issues:
+                raise ValueError(
+                    "integrity=strict runs the verifier in a separate verifier "
+                    "sandbox, which this task cannot use here:\n- "
+                    + "\n- ".join(issues)
+                )
+            self._task.config = force_separate_verifier(self._task.config)
+
         prepare_terminal_review(self)
         if cfg.task_digest is None:
             from benchflow._utils.task_authoring import task_digest
@@ -1266,6 +1286,7 @@ class Rollout:
             purpose=cfg.purpose,
             parent_rollout=cfg.parent_rollout,
             freeze_workspace=cfg.freeze_workspace,
+            integrity=cfg.integrity,
         )
 
         self._phase = "setup"
@@ -2555,6 +2576,11 @@ class Rollout:
         if result.rollout_name and self._rollout_dir is not None:
             with scoring_lock(self._rollout_dir):
                 result = await self._finish_scoring_locked(result)
+                # Synchronous CPU and file IO over the whole trajectory (about
+                # 0.4 ms per recorded tool call), so it runs off the event loop:
+                # it is outside the hard deadline and inside the scoring lock,
+                # and every other trial in this process would stall for it.
+                await asyncio.to_thread(self._write_integrity, result)
             if result.rollout_dir is None:
                 result.rollout_dir = self._rollout_dir
             return result
@@ -2628,6 +2654,20 @@ class Rollout:
             result = await finish_terminal_review(self, result=result, lock_held=True)
         self._completed_result = result
         return result
+
+    def _write_integrity(self, result: RolloutResult) -> None:
+        """Audit the finished trial (``integrity`` audit/strict); rewards untouched.
+
+        Runs after verifier recovery and review, so it sees the final scoring.
+        Reviewer rollouts are never audited.
+        """
+        if self._config.integrity == "off" or self._config.purpose != "task":
+            return
+        from benchflow.integrity.trial import write_rollout_integrity
+
+        verdict = write_rollout_integrity(self, result)
+        if verdict is not None:
+            result.integrity = verdict.as_dict()
 
     async def finalize(self) -> RolloutResult:
         """Finish a manually driven rollout, including required rubric review."""

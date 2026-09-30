@@ -5,7 +5,7 @@ Frontier agents will reward-hack any verifier they can. [BenchJack](https://rdi.
 
 benchflow's verifier hardening blocks these patterns by default. Tasks opt out individually when their legitimate test setup requires a hook the cleanup would otherwise delete (e.g. qutebrowser's `conftest.py` resolves a real circular import).
 
-Tasks that declare `[verifier] environment_mode = "separate"` go further: the verifier runs in a fresh sandbox that receives only the frozen workspace, declared artifacts and `/logs/artifacts`, so nothing the agent planted elsewhere exists there. The hardening below still runs in that sandbox. See [Separate verifier sandboxes](./separate-verifier.md).
+Tasks that declare `[verifier] environment_mode = "separate"` go further: the verifier runs in a fresh sandbox that receives only the frozen workspace, declared artifacts and `/logs/artifacts`, so nothing the agent planted elsewhere exists there. The hardening below still runs in that sandbox. See [Separate verifier sandboxes](./separate-verifier.md). To find out whether an agent tried these paths, not only to block them, run with `--integrity audit` or `strict` (see [Reward integrity](./integrity.md)).
 
 ## What gets hardened
 
