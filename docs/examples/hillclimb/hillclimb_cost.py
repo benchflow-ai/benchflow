@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from pathlib import Path
 
 SESSIONS = "claude-sessions"  # under the trial's artifacts/
@@ -76,10 +77,11 @@ def session_logs(trial_dir: Path | str | None) -> list[Path]:
     return sorted(root.rglob("*.jsonl")) if root and root.is_dir() else []
 
 
-def scrub(trial_dir: Path | str | None) -> int:
-    """Replace any credential from the environment in the trial's session logs;
-    return how many files changed."""
-    secrets = [v for n in SECRET_ENV if len(v := os.environ.get(n, "")) >= 8]
+def scrub(trial_dir: Path | str | None, extra: Iterable[str] = ()) -> int:
+    """Replace any credential from the environment, and the ``extra`` ones (a
+    pool's tokens), in the trial's session logs; return how many files changed."""
+    found = [os.environ.get(n, "") for n in SECRET_ENV] + list(extra)
+    secrets = [v for v in found if len(v) >= 8]
     changed = 0
     for path in session_logs(trial_dir) if secrets else []:
         text = path.read_text(errors="replace")

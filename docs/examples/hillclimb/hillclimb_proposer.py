@@ -333,7 +333,7 @@ async def run_optimizer(
         return {"status": "failed", "error": f"optimizer rollout failed: {exc}"}
     finally:
         _read_only(evidence, False)
-    scrub(result.rollout_dir)
+    scrub(result.rollout_dir, settings.agent_env.values())  # a pool's token too
     cost = trial_cost(result.rollout_dir, result.cost_usd)
     out = {
         "status": "failed",

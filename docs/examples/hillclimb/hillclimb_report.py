@@ -299,6 +299,33 @@ def spending(doc: dict) -> str:
     )
 
 
+def accounts(doc: dict) -> str:
+    """Usage per Claude account of the pool: names, never tokens."""
+    usage = doc.get("accounts") or {}
+    used = {n: u for n, u in usage.items() if u["jobs"] or u["optimizer_runs"]}
+    if not used:
+        return ""
+
+    def pct(value) -> str:
+        return "n/a" if value is None else f"{value:.0%}"
+
+    rows = "".join(
+        f"<tr><td>{e(name)}</td><td class=num>{u['jobs']}</td><td class=num>{u['optimizer_runs']}</td>"
+        f"<td class=num>{u['rollouts']}</td><td class=num>${u.get('usd', 0.0):,.2f}</td>"
+        f"<td class=num>{pct(u['util_5h'])}</td><td class=num>{pct(u['util_7d'])}</td>"
+        f"<td class=num>{u['quota_failures']}</td><td>{e(u['out'] or '')}</td></tr>"
+        for name, u in sorted(used.items())
+    )
+    idle = len(usage) - len(used)
+    return (
+        "<h2>Claude accounts</h2><div class=card><p class=sub>Each job ran on the account of the pool "
+        "with the most 5-hour headroom that no other running job held; the windows are as last probed. "
+        f"{idle} other account(s) of the pool were not used.</p><table><tr><th>Account</th><th>Jobs</th>"
+        "<th>Optimizer runs</th><th>Rollouts</th><th>Cost</th><th>5-hour window used</th>"
+        f"<th>7-day window used</th><th>Usage-limit hits</th><th>Out</th></tr>{rows}</table></div>"
+    )
+
+
 def decisions(doc: dict) -> str:
     rows = []
     for r in doc["rounds"]:
@@ -415,6 +442,7 @@ def write_report(doc: dict, path: Path) -> Path:
         )
         + f"<h2>Decisions</h2><div class=card>{decisions(doc)}</div>"
         + mounts(doc)
+        + accounts(doc)
         + analysis(doc)
         + diffs(doc)
         + (

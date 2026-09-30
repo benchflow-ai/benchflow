@@ -29,13 +29,16 @@ import argparse
 import asyncio
 import difflib
 import json
+import os
 import random
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hillclimb_cost import CAPTURE, scrub, summary, trial_cost
+from hillclimb_pool import QUOTA, NoHeadroom, Pool
 from hillclimb_proposer import ProposerSettings, mounted, run_optimizer, write_workspace
 from hillclimb_report import write_report
 from hillclimb_stats import bootstrap, noise_gate, paired_delta
@@ -75,6 +78,10 @@ class Settings:
     max_rollouts: int | None = None
     max_sandbox_seconds: float | None = None
     session_logs: bool = True  # copy Claude Code's session log into each trial
+    # Claude subscriptions to spread the jobs over (hillclimb_pool); a trial
+    # that ends on an account's usage limit runs again on another, this often.
+    pool: Pool | None = None
+    quota_retries: int = 2
     max_infra_error_rate: float = 0.25
     retry_attempts: int = 2
     force: bool = False
@@ -237,28 +244,65 @@ class Scores:
 
 
 async def run_jobs(
-    s: Settings, configs: list[tuple[Path, bf.EvaluationConfig]]
-) -> list[float | None]:
-    """One Evaluation per (folder, config), all at once; return each job's
-    sandbox-seconds as its budget counted them (retried attempts included),
-    None without a budget."""
-    jobs = [
-        bf.Evaluation(s.tasks_dir, jobs_dir, config=cfg, job_name="job")
-        for jobs_dir, cfg in configs
-    ]
-    results = await asyncio.gather(*(job.run() for job in jobs))
-    return [
-        float(r.budget["spent"]["sandbox_seconds"])
-        if getattr(r, "budget", None)
-        else None
-        for r in results
-    ]
+    s: Settings, rec: Record, configs: list[tuple[Path, bf.EvaluationConfig]]
+) -> list[dict]:
+    """One Evaluation per (folder, config), all at once. With an account pool
+    (hillclimb_pool), an agent job first leases an account and runs on its
+    token. Per job: its folder, its sandbox-seconds as its budget counted them
+    (retried attempts included; None without a budget), its account's name,
+    and whether it ended on that account's usage limit."""
+
+    async def one(jobs_dir: Path, cfg: bf.EvaluationConfig) -> dict:
+        run = {"job": jobs_dir, "spent": None, "account": None, "quota": False}
+        account, pooled = None, s.pool and cfg.agent not in ("oracle", "nop")
+        if pooled:
+            label = jobs_dir.relative_to(s.out).as_posix()
+            try:
+                account = await s.pool.lease(
+                    label, kind="agent", rollouts=len(cfg.include_tasks)
+                )
+            except NoHeadroom as exc:
+                rec.warn(f"{label} not run: no Claude account has headroom ({exc})")
+                return run
+            token = {"CLAUDE_CODE_OAUTH_TOKEN": account.token}
+            cfg = replace(cfg, agent_env={**cfg.agent_env, **token})
+            run["account"] = account.name
+        try:
+            result = await bf.Evaluation(
+                s.tasks_dir, jobs_dir, config=cfg, job_name="job"
+            ).run()
+            budget = getattr(result, "budget", None)
+            run["spent"] = budget and float(budget["spent"]["sandbox_seconds"])
+            run["quota"] = bool(pooled and quota_failed(jobs_dir))
+        finally:
+            if account:
+                await s.pool.release(
+                    account,
+                    kind="agent",
+                    rollouts=len(cfg.include_tasks),
+                    quota=run["quota"],
+                )
+        return run
+
+    return list(await asyncio.gather(*(one(d, c) for d, c in configs)))
 
 
-def sandbox_seconds(spent: list[float | None], rows: list[dict]) -> float:
+def quota_failed(jobs_dir: Path) -> list[str]:
+    """The tasks of a job whose last attempt ended on the account's usage limit."""
+    try:
+        job = bf.load_job(jobs_dir / "job")
+    except FileNotFoundError:
+        return []
+    return sorted(
+        t.task_name for t in job.agents() if QUOTA.search(t.result.error or "")
+    )
+
+
+def sandbox_seconds(runs: list[dict], rows: list[dict]) -> float:
     """The larger of what the jobs' budgets counted (retried attempts included;
     only with a budget) and the final trials' own wall-clock."""
-    return max(sum(x for x in spent if x is not None), sum(r["seconds"] for r in rows))
+    spent = sum(r["spent"] for r in runs if r["spent"] is not None)
+    return max(spent, sum(r["seconds"] for r in rows))
 
 
 def session_capture(s: Settings, rec: Record, names: list[str]) -> bool:
@@ -306,30 +350,56 @@ async def evaluate(
         if session_capture(s, rec, train + test)
         else None,
     }
-    spent = await run_jobs(
+
+    def jobs(folders: list[tuple[Path, list[str]]]) -> list:
+        return [
+            (d, config(s, names, budget=rec.job_budget(len(names) / planned), **deploy))
+            for d, names in folders
+        ]
+
+    runs = await run_jobs(
         s,
-        [
-            (
-                root / split / f"trial-{k:02d}",
-                config(s, names, budget=rec.job_budget(len(names) / planned), **deploy),
-            )
-            for split, names in (("train", train), ("test", test))
-            for k in range(1, s.trials + 1)
-        ],
+        rec,
+        jobs(
+            [
+                (root / split / f"trial-{k:02d}", names)
+                for split, names in (("train", train), ("test", test))
+                for k in range(1, s.trials + 1)
+            ]
+        ),
     )
+    # A trial that ended on an account's usage limit runs again on another
+    # account, in trial-NN/retry-N/ (trial_rows keeps its last attempt).
+    last = runs
+    for n in range(1, s.quota_retries + 1):
+        again = [
+            (trial / f"retry-{n}", tasks)
+            for r in last
+            if r["quota"] and (tasks := quota_failed(r["job"]))
+            for trial in [r["job"] if n == 1 else r["job"].parent]
+        ]
+        if not again:
+            break
+        last = await run_jobs(s, rec, jobs(again))
+        runs += last
     values, rows, doc = {}, {}, {"id": eval_id, "version": skills.name}
-    for i, (split, names) in enumerate((("train", train), ("test", test))):
+    for split, names in (("train", train), ("test", test)):
         try:
             job = bf.load_job(root / split)
         except FileNotFoundError:  # every trial was cancelled (budget)
             job = None
-        rows[split] = trial_rows(job, names, s.trials)
+        secrets = s.pool.secrets() if s.pool else ()
+        rows[split] = trial_rows(job, names, s.trials, secrets)
         ran = [r for r in rows[split] if r["path"]]
         cost = summary([r["cost"] for r in ran])
-        seconds = sandbox_seconds(spent[i * s.trials : (i + 1) * s.trials], ran)
+        mine = [r for r in runs if (root / split) in r["job"].parents]
+        seconds = sandbox_seconds(mine, ran)
+        account = {r["job"]: r["account"] for r in mine}  # a trial's job folder's
+        for row in ran:
+            rec.charge(account.get(Path(row["path"]).parent.parent), row["cost"]["usd"])
         rec.spend(
             agent=cost["usd"] or 0.0,
-            rollouts=len(ran),
+            rollouts=len(job.agents()) if job else 0,  # quota-retried attempts too
             seconds=seconds,
             costs=[r["cost"] for r in ran],
         )
@@ -358,6 +428,15 @@ async def evaluate(
             "cost_source": cost["source"],
             "cost_sources": cost["sources"],
             "sandbox_seconds": round(seconds, 1),
+            # Which account ran each job (its name, never its token).
+            "jobs": [
+                {
+                    "job": r["job"].relative_to(root / split).as_posix(),
+                    "account": r["account"],
+                    "quota": r["quota"],
+                }
+                for r in mine
+            ],
             "per_task": [
                 {"task": t, "solved": values[split][t], "trials": s.trials}
                 for t in names
@@ -366,38 +445,47 @@ async def evaluate(
     return Scores(eval_id, doc["version"], values, rows, doc)
 
 
-def trial_rows(job: bf.Job | None, names: list[str], trials: int) -> list[dict]:
+def trial_rows(
+    job: bf.Job | None, names: list[str], trials: int, secrets: Iterable[str] = ()
+) -> list[dict]:
     """One row per (task, trial): a scored trial, an unscored one, or one that
-    never ran; with what it cost (hillclimb_cost) and its sandbox wall-clock."""
-    rows, seen = [], set()
+    never ran; with what it cost (hillclimb_cost) and its sandbox wall-clock.
+    A trial that ran again after a usage limit (trial-NN/retry-N/) keeps its
+    scored attempt, else its last one."""
+    best: dict[tuple[str, int], dict] = {}
     for t in job.agents() if job else []:
-        k = int(
-            t.path.parent.parent.name.split("-")[1]
-        )  # .../trial-NN/job/<task>__<id>
+        # .../trial-NN/job/<task>__<id> or .../trial-NN/retry-N/job/<task>__<id>
+        k = next(int(p[6:]) for p in t.path.parts if p.startswith("trial-"))
         scored = t.assessment == "scored"
         error = (
             None
             if scored
+            else "usage limit"
+            if QUOTA.search(t.result.error or "")
             else (
                 t.result.error_category
                 or t.result.verifier_error_category
                 or "unscored"
             )
         )
-        scrub(t.path)
-        rows.append(
-            {
-                "task": t.task_name,
-                "trial": k,
-                "reward": t.reward if scored else None,
-                "passed": bool(t.passed) if scored else None,
-                "error": error,
-                "path": str(t.path),
-                "cost": trial_cost(t.path, t.cost_usd),
-                "seconds": float(t.timing.get("total") or t.duration_sec or 0.0),
-            }
-        )
-        seen.add((t.task_name, k))
+        scrub(t.path, secrets)
+        row = {
+            "task": t.task_name,
+            "trial": k,
+            "reward": t.reward if scored else None,
+            "passed": bool(t.passed) if scored else None,
+            "error": error,
+            "path": str(t.path),
+            "cost": trial_cost(t.path, t.cost_usd),
+            "seconds": float(t.timing.get("total") or t.duration_sec or 0.0),
+        }
+        old = best.get((t.task_name, k))
+        if old is None or (scored, row["path"]) > (
+            old["reward"] is not None,
+            old["path"],
+        ):
+            best[(t.task_name, k)] = row
+    rows, seen = list(best.values()), set(best)
     rows += [
         {
             "task": n,
@@ -436,8 +524,9 @@ async def check_graders(
     # Each control job's share of the caps: two control runs, then the
     # baseline's trials, each about one control run's worth.
     share = 1 / (2 + s.trials)
-    spent = await run_jobs(
+    runs = await run_jobs(
         s,
+        rec,
         [
             (
                 root / agent,
@@ -447,10 +536,10 @@ async def check_graders(
         ],
     )
     results = {}
-    for i, agent in enumerate(("oracle", "nop")):
+    for run, agent in zip(runs, ("oracle", "nop"), strict=True):
         trials = bf.load_job(root / agent).trials
         timing = [{"seconds": float(t.timing.get("total") or 0.0)} for t in trials]
-        rec.spend(seconds=sandbox_seconds(spent[i : i + 1], timing))
+        rec.spend(seconds=sandbox_seconds([run], timing))
         results[agent] = {
             t.task_name: t.reward if t.assessment == "scored" else None for t in trials
         }
@@ -503,14 +592,7 @@ async def propose(
         history=rec.history(),
     )
     seen = check_mounts(s, rec, uploads, tasks, test, work)
-    out = await run_optimizer(
-        "propose",
-        uploads,
-        settings=replace(s.proposer, timeout_sec=rec.proposer_timeout()),
-        task_dir=work / "task",
-        jobs_dir=work,
-    )
-    rec.spend_optimizer(out)
+    out = await optimize(s, rec, "propose", uploads, work)
     proposal = out.get("output") or {}
     cand = {
         "id": cid,
@@ -521,6 +603,7 @@ async def propose(
         "cost_usd": out.get("cost_usd"),
         "cost_source": out.get("cost_source"),
         "sandbox_seconds": out.get("sandbox_seconds"),
+        "accounts": out["accounts"],
         "mounted": seen,
         **{k: proposal.get(k) for k in ("root_cause", "change", "rationale")},
     }
@@ -583,14 +666,7 @@ async def analyze(
         history=rec.history(),
     )
     seen = check_mounts(s, rec, uploads, tasks, test, work)
-    out = await run_optimizer(
-        "analyze",
-        uploads,
-        settings=replace(s.proposer, timeout_sec=rec.proposer_timeout()),
-        task_dir=work / "task",
-        jobs_dir=work,
-    )
-    rec.spend_optimizer(out)
+    out = await optimize(s, rec, "analyze", uploads, work)
     data = out.get("output") or {}
     failures = [
         f
@@ -601,11 +677,52 @@ async def analyze(
         "status": out["status"],
         "error": out["error"],
         "mounted": seen,
+        "accounts": out["accounts"],
         "summary": data.get("summary"),
         "failures": failures,
         "counts": {c: sum(f["category"] == c for f in failures) for c in CATEGORIES},
         "recommendations": [str(x) for x in data.get("recommendations") or []],
     }
+
+
+async def optimize(
+    s: Settings, rec: Record, mode: str, uploads: dict[str, str], work: Path
+) -> dict:
+    """One optimizer rollout (hillclimb_proposer.run_optimizer), counted. With an
+    account pool it runs on a leased account, and a run that ends on the
+    account's usage limit runs again on another."""
+    settings = replace(s.proposer, timeout_sec=rec.proposer_timeout())
+    accounts: list[str] = []
+    for _ in range(1 + (s.quota_retries if s.pool else 0)):
+        account = None
+        if s.pool:
+            try:
+                account = await s.pool.lease(
+                    f"proposer/{work.name}", kind="optimizer", rollouts=1
+                )
+            except NoHeadroom as exc:
+                return {
+                    "status": "failed",
+                    "error": f"no Claude account has headroom ({exc})",
+                    "accounts": accounts,
+                }
+            token = {"CLAUDE_CODE_OAUTH_TOKEN": account.token}
+            settings = replace(settings, agent_env={**s.proposer.agent_env, **token})
+            accounts.append(account.name)
+        quota = False
+        try:
+            out = await run_optimizer(
+                mode, uploads, settings=settings, task_dir=work / "task", jobs_dir=work
+            )
+            quota = bool(QUOTA.search(out.get("error") or ""))
+        finally:
+            if account:
+                await s.pool.release(account, kind="optimizer", rollouts=1, quota=quota)
+        rec.spend_optimizer(out)
+        rec.charge(account and account.name, out.get("cost_usd"))
+        if not quota:
+            break
+    return {**out, "accounts": accounts}
 
 
 def check_mounts(
@@ -747,6 +864,7 @@ class Record:
         )
         self.rollouts, self.sandbox_seconds, self.last_proposer_seconds = 0, 0.0, 0.0
         self.costs: list[dict] = []  # hillclimb_cost.trial_cost of every rollout
+        self.account_usd: dict[str, float] = {}  # per account of the pool
         self.baseline: Scores | None = None  # set once the baseline has run
         self.current: Scores | None = None  # the version rounds build on
         now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -772,6 +890,7 @@ class Record:
                 "max_rollouts": s.max_rollouts,
                 "max_sandbox_seconds": s.max_sandbox_seconds,
                 "session_logs": s.session_logs,
+                "oauth_pool": sorted(s.pool.accounts) if s.pool else None,
                 "force": s.force,
                 "proposer": {
                     "agent": s.proposer.agent,
@@ -795,6 +914,7 @@ class Record:
             "noise_gate": None,
             "rounds": [],
             "analysis": None,
+            "accounts": None,
             "best": None,
             "stop": None,
             "cost": {},
@@ -816,6 +936,11 @@ class Record:
         self.rollouts += rollouts
         self.sandbox_seconds += seconds
         self.costs += costs or []
+
+    def charge(self, account: str | None, usd: float | None) -> None:
+        """Add a rollout's USD to the account of the pool it ran on."""
+        if account and usd is not None:
+            self.account_usd[account] = self.account_usd.get(account, 0.0) + usd
 
     def spend_optimizer(self, out: dict) -> None:
         """Count one optimizer rollout (run_optimizer's outcome)."""
@@ -958,6 +1083,15 @@ class Record:
             "sandbox_seconds": round(self.sandbox_seconds, 1),
             "max_sandbox_seconds": self.s.max_sandbox_seconds,
         }
+        # Per account of the pool: jobs, rollouts, USD, usage-limit hits, last probe.
+        self.doc["accounts"] = (
+            {
+                name: {**use, "usd": round(self.account_usd.get(name, 0.0), 6)}
+                for name, use in self.s.pool.usage().items()
+            }
+            if self.s.pool
+            else None
+        )
         (self.s.out / "hillclimb.json").write_text(
             json.dumps(self.doc, indent=2) + "\n"
         )
@@ -1051,6 +1185,12 @@ def main() -> None:
         action="store_true",
         help="do not copy Claude Code's session log into each trial (no cost from it)",
     )
+    p.add_argument(
+        "--oauth-pool",
+        type=Path,
+        help="a file of CC_OAUTH_<NAME>=<token> lines: run each job on the Claude "
+        "subscription with the most headroom (hillclimb_pool)",
+    )
     p.add_argument("--max-infra-error-rate", type=float, default=0.25)
     p.add_argument(
         "--force", action="store_true", help="climb although the noise gate refuses"
@@ -1067,6 +1207,13 @@ def main() -> None:
     p.add_argument("--proposer-timeout", type=int, default=1800)
     a = p.parse_args()
     via_env = a.proposer_model_env and a.proposer_model
+    if a.oauth_pool and any(
+        os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    ):
+        raise SystemExit(
+            "--oauth-pool: unset ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, which "
+            "Claude Code would use instead of the pool's subscriptions"
+        )
     s = Settings(
         tasks_dir=a.tasks_dir,
         skills=a.skills,
@@ -1087,6 +1234,7 @@ def main() -> None:
         max_rollouts=a.max_rollouts,
         max_sandbox_seconds=a.max_sandbox_seconds,
         session_logs=not a.no_session_logs,
+        pool=Pool.from_file(a.oauth_pool) if a.oauth_pool else None,
         max_infra_error_rate=a.max_infra_error_rate,
         force=a.force,
         skip_controls=a.skip_controls,

@@ -21,6 +21,7 @@ import pytest
 import benchflow as bf
 from tests._hillclimb_example_fakes import (
     FakeAgent,
+    FakeLimits,
     FakeOptimizer,
     append_rule,
     instruction_of,
@@ -33,6 +34,7 @@ DEMO = Path(__file__).resolve().parents[1] / "docs" / "examples" / "hillclimb"
 sys.path.insert(0, str(DEMO))
 import hillclimb  # noqa: E402
 import hillclimb_cost  # noqa: E402
+import hillclimb_pool  # noqa: E402
 import hillclimb_stats  # noqa: E402
 from hillclimb_proposer import ProposerSettings  # noqa: E402
 
@@ -359,6 +361,93 @@ def test_session_log_pricing_and_scrubbing(tmp_path, monkeypatch):
     log.write_text('{"echo": "sk-ant-oat01-secret-value"}\n')
     assert hillclimb_cost.scrub(trial) == 1
     assert "secret-value" not in log.read_text()
+
+
+def test_the_pool_leases_the_free_account_with_the_most_headroom(tmp_path):
+    pool_file = tmp_path / "pool.env"
+    pool_file.write_text(
+        "CC_OAUTH_A=tok-a\nCC_OAUTH_B=tok-b\nCC_OAUTH_C=tok-c\n"
+        "CC_OAUTH_D=revoked\nCC_OAUTH_E=tok-e\n# a comment\n"
+    )
+    api = FakeLimits(
+        {
+            "tok-a": (0.20, 0.30),
+            "tok-b": (0.10, 0.90),  # 7-day window nearly used up
+            "tok-c": (0.75, 0.10),  # 5-hour window over 70%
+            "tok-e": (0.05, 0.20),
+        }
+    )
+    pool = hillclimb_pool.Pool.from_file(pool_file, opener=api)
+
+    async def scenario():
+        first = await pool.lease("j1", kind="agent", rollouts=10)
+        second = await pool.lease("j2", kind="agent", rollouts=10)
+        third = asyncio.create_task(pool.lease("j3", kind="agent", rollouts=10))
+        await asyncio.sleep(0.05)
+        waited = not third.done()  # A and E are held; B, C and D do not fit
+        await pool.release(first, kind="agent", rollouts=10, quota=False)
+        third = await third
+        await pool.release(second, kind="agent", rollouts=10, quota=False)
+        return first.name, second.name, waited, third.name
+
+    assert asyncio.run(scenario()) == ("E", "A", True, "E")
+    why = pool.describe()
+    assert "B: 7-day window 90% used" in why and "C: 5-hour window 75% used" in why
+    assert "D: HTTP 401" in why and "tok-" not in why + repr(pool.usage())
+    # Nor may a job take an account past 80% of its 5-hour window, at the rate
+    # jobs used it: two jobs that moved no window halved the first guess twice.
+    assert pool.rate["agent"] == pytest.approx(0.0025)
+    assert pool.why_not(pool.accounts["A"], "agent", 400) == (
+        "5-hour window 20% used, the job would pass 80%"
+    )
+
+
+def test_a_trial_on_a_used_up_account_runs_again_on_another(tmp_path, monkeypatch):
+    """The first job leases ALPHA (the most headroom), whose subscription turns
+    out to be used up: its trials end on the usage limit, ALPHA is marked spent,
+    and they run again on BETA. The record names accounts, never tokens."""
+    agent = FakeAgent(lambda task, skills, trial: 1.0, limited={"tok-alpha"}).install(
+        monkeypatch
+    )
+    optimizer = FakeOptimizer([append_rule("FIX: a rule")], root=tmp_path).install(
+        monkeypatch
+    )
+    api = FakeLimits({"tok-alpha": (0.10, 0.10), "tok-beta": (0.20, 0.20)})
+    pool = hillclimb_pool.Pool({"ALPHA": "tok-alpha", "BETA": "tok-beta"}, opener=api)
+    doc = climb(settings(tmp_path, pool=pool))
+    base = doc["baseline"]
+    assert (
+        base["train"]["score"]["value"] == 1.0 and base["test"]["score"]["value"] == 1.0
+    )
+    assert base["train"]["infra_errors"] == 0 and base["test"]["infra_errors"] == 0
+    jobs = base["train"]["jobs"] + base["test"]["jobs"]
+    failed = [j for j in jobs if j["quota"]]
+    assert [j["account"] for j in failed] == ["ALPHA"]
+    retried = [j for j in jobs if "/retry-1" in j["job"]]
+    assert retried and all(j["account"] == "BETA" for j in retried)
+    assert {c["token"] for c in agent.calls if c["agent"] not in ("oracle", "nop")} == {
+        "tok-alpha",
+        "tok-beta",
+    }
+    assert doc["accounts"]["ALPHA"]["quota_failures"] == 1
+    assert doc["accounts"]["ALPHA"]["out"] == "hit its 5h limit"
+    assert doc["rounds"][0]["candidate"]["accounts"] == ["BETA"]
+    assert doc["cost"]["rollouts"] > 20 + 1  # the attempts ALPHA refused count too
+    assert optimizer.runs and doc["settings"]["oauth_pool"] == ["ALPHA", "BETA"]
+    kept = (tmp_path / "run" / "hillclimb.json").read_text()
+    report = (tmp_path / "run" / "report.html").read_text()
+    assert "tok-" not in kept + report and "Claude accounts" in report
+
+
+def test_no_account_with_headroom_stops_before_any_trial_runs(tmp_path, monkeypatch):
+    agent = FakeAgent(lambda task, skills, trial: 1.0).install(monkeypatch)
+    FakeOptimizer().install(monkeypatch)
+    api = FakeLimits({"tok-a": (0.95, 0.10)})
+    pool = hillclimb_pool.Pool({"A": "tok-a"}, opener=api)
+    doc = climb(settings(tmp_path, pool=pool))
+    assert doc["status"] == "stopped" and doc["stop"]["reason"] == "infra"
+    assert not [c for c in agent.calls if c["agent"] not in ("oracle", "nop")]
+    assert any("no Claude account has headroom" in w for w in doc["warnings"])
 
 
 def test_the_demo_uses_only_public_benchflow_names():

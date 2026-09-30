@@ -4,6 +4,7 @@
   "description": "The record the hill-climb demo writes. Unknown fields are allowed, so a newer demo's optional fields do not fail an older reader.",
   "type": "object",
   "required": [
+    "accounts",
     "analysis",
     "baseline",
     "best",
@@ -356,6 +357,13 @@
               "items": {
                 "type": "string"
               }
+            },
+            "accounts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The accounts it ran on, in order (a run that hit a usage limit ran again on the next)."
             }
           }
         },
@@ -517,6 +525,82 @@
       "items": {
         "type": "string"
       }
+    },
+    "accounts": {
+      "description": "Per Claude account of the --oauth-pool (its name, never its token): jobs, optimizer runs, rollouts, USD from the session logs, usage-limit hits, and the last probe of its windows; null without a pool.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "jobs",
+              "optimizer_runs",
+              "rollouts",
+              "quota_failures",
+              "usd",
+              "util_5h",
+              "util_7d"
+            ],
+            "properties": {
+              "jobs": {
+                "type": "integer"
+              },
+              "optimizer_runs": {
+                "type": "integer"
+              },
+              "rollouts": {
+                "type": "integer"
+              },
+              "quota_failures": {
+                "type": "integer"
+              },
+              "usd": {
+                "type": "number"
+              },
+              "util_5h": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "util_7d": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "reset_5h": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "reset_7d": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "probed_at": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "out": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "$defs": {
@@ -668,6 +752,32 @@
         },
         "sandbox_seconds": {
           "type": "number"
+        },
+        "jobs": {
+          "type": "array",
+          "description": "The split's jobs (trial-NN, and trial-NN/retry-N for trials rerun after a usage limit) and the account each ran on.",
+          "items": {
+            "type": "object",
+            "required": [
+              "job",
+              "account",
+              "quota"
+            ],
+            "properties": {
+              "job": {
+                "type": "string"
+              },
+              "account": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "quota": {
+                "type": "boolean"
+              }
+            }
+          }
         }
       }
     },
@@ -878,6 +988,13 @@
             "number",
             "null"
           ]
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The accounts it ran on, in order (a run that hit a usage limit ran again on the next)."
         }
       }
     },

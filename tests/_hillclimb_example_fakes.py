@@ -16,6 +16,8 @@ import json
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -98,6 +100,9 @@ class FakeAgent:
     # much (a subscription login, where BenchFlow reports no USD: usd=None).
     session_usd: float | None = None
     seconds: float = 30.0  # each trial's sandbox wall-clock (timing.json)
+    # Tokens (CLAUDE_CODE_OAUTH_TOKEN) whose subscription is used up: a trial
+    # run on one ends on Claude Code's usage-limit message.
+    limited: set[str] = field(default_factory=set)
     calls: list[dict] = field(default_factory=list)
 
     def install(self, monkeypatch) -> FakeAgent:
@@ -115,6 +120,10 @@ class FakeAgent:
             "oracle": lambda: self.oracle(task),
             "nop": lambda: self.nop(task),
         }.get(cfg.agent, lambda: self.reward(task, skills, trial))()
+        token = cfg.agent_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+        limited = token in self.limited
+        if limited:
+            reward = None
         self.calls.append(
             {
                 "task": task,
@@ -124,6 +133,7 @@ class FakeAgent:
                 "dir": str(ev._jobs_dir),
                 "config_override": cfg.config_override,
                 "budget": cfg.budget,
+                "token": token,
             }
         )
         name = f"{task}__{uuid.uuid4().hex[:8]}"
@@ -131,7 +141,15 @@ class FakeAgent:
         (out / "verifier").mkdir(parents=True)
         (out / "trajectory").mkdir()
         (out / "timing.json").write_text(json.dumps({"total": self.seconds}))
-        error = None if reward is not None else "sandbox setup failed (scripted)"
+        error = (
+            None
+            if reward is not None
+            else "ACP error -32603: Internal error: You've hit your session limit · "
+            "resets 5pm (UTC)"
+            if limited
+            else "sandbox setup failed (scripted)"
+        )
+        category = "acp_error" if limited else "sandbox_setup"
         rewards = None if reward is None else {"reward": reward}
         scripted = cfg.agent in ("oracle", "nop")
         cost = None if scripted else self.usd
@@ -148,7 +166,7 @@ class FakeAgent:
                     "model": cfg.model,
                     "rewards": rewards,
                     "error": error,
-                    "error_category": "sandbox_setup" if error else None,
+                    "error_category": category if error else None,
                     "n_tool_calls": 3,
                     "agent_result": {"cost_usd": cost},
                 }
@@ -168,9 +186,52 @@ class FakeAgent:
             n_tool_calls=3,
             cost_usd=cost,
             error=error,
-            error_category="sandbox_setup" if error else None,
+            error_category=category if error else None,
             rollout_dir=out,
         )
+
+
+class FakeLimits:
+    """The Messages API as the pool's probe sees it: per token, the share of the
+    5-hour and 7-day windows used; a token in ``limited`` answers 429, rejected."""
+
+    def __init__(self, util: dict[str, tuple[float, float]], limited=()):
+        self.util, self.limited, self.probes = util, set(limited), []
+
+    def __call__(self, request, timeout):
+        token = request.get_header("Authorization").removeprefix("Bearer ")
+        self.probes.append(token)
+        h5, d7 = self.util.get(token, (0.0, 0.0))
+        rejected = token in self.limited
+        headers = {
+            "anthropic-ratelimit-unified-5h-utilization": "1.0"
+            if rejected
+            else str(h5),
+            "anthropic-ratelimit-unified-5h-reset": str(int(time.time()) + 3600),
+            "anthropic-ratelimit-unified-7d-utilization": str(d7),
+            "anthropic-ratelimit-unified-7d-reset": str(int(time.time()) + 86400),
+            "anthropic-ratelimit-unified-status": "rejected" if rejected else "allowed",
+            "anthropic-ratelimit-unified-5h-status": "rejected"
+            if rejected
+            else "allowed",
+        }
+        if token == "revoked":
+            raise urllib.error.HTTPError(API, 401, "unauthorized", headers, None)
+        if rejected:
+            raise urllib.error.HTTPError(API, 429, "rate limited", headers, None)
+        return FakeReply(200, headers)
+
+
+@dataclass
+class FakeReply:
+    status: int
+    headers: dict
+
+    def close(self) -> None:
+        pass
+
+
+API = "https://api.anthropic.com/v1/messages"
 
 
 def append_rule(text: str) -> Callable[[Path], dict]:
