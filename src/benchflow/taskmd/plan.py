@@ -904,20 +904,31 @@ def _agent(
                 "the oracle and controls run as it; an agent must run with --sandbox-user set to it",
             )
         elif key == "network":
+            # BenchFlow's firewall binds the agent's uid, so the agent's phase can be
+            # narrower than the container's but never wider (src/benchflow/task/
+            # runtime_capabilities.py refuses an agent allowlist only over a sandbox
+            # that is offline or on a denylist).
             if value == sandbox_network:
                 plan.honor(where, "the sandbox's network")
-            elif sandbox_network == "open" and isinstance(value, list) and value:
+            elif value == "none" and sandbox_network != "none":
+                out["network_mode"] = "no-network"
+                plan.honor(
+                    where,
+                    "the agent's phase runs offline in an online sandbox "
+                    "(agent.network_mode = no-network)",
+                )
+            elif isinstance(value, list) and value and sandbox_network != "none":
                 out["network_mode"] = "allowlist"
                 out["allowed_hosts"] = list(value)
                 plan.honor(
                     where,
-                    "an agent allowlist over an open sandbox (agent.network_mode = allowlist)",
+                    "an agent allowlist over an online sandbox (agent.network_mode = allowlist)",
                 )
             else:
                 plan.refuse(
                     where,
                     f"{value!r} differs from [sandbox] network ({sandbox_network!r}); BenchFlow enforces "
-                    "the sandbox's network, and per phase only an agent allowlist over an open sandbox",
+                    "the sandbox's network, and per phase only an agent network narrower than it",
                 )
         elif key == "network_reason":
             plan.honor(where, "reviewer documentation; nothing to do at run time")
@@ -1067,8 +1078,20 @@ def _shared_verifier_network(
                 "open: the verifier runs as root, outside the agent's allowlist",
             )
         return
+    if inherited:
+        # The package never asked for a filtered verifier: [sandbox] network's host
+        # list reached [verifier] through the spec's inheritance. BenchFlow's firewall
+        # binds the agent's uid, so a shared verifier is outside it and runs open --
+        # which is also what BenchFlow's native path does with the same host list
+        # (src/benchflow/task/config.py leaves verifier.network_mode at its default).
+        plan.honor(
+            where + source,
+            "the host list binds the agent's uid; the shared verifier runs as root, "
+            "outside it, and so reaches the network the container has",
+        )
+        return
     plan.refuse(
-        where + source,
+        where,
         f"{network!r}: BenchFlow holds only the agent's uid to a host list, and a shared verifier "
         'runs as root, unfiltered. Set [verifier] network = "open" or "none"',
     )

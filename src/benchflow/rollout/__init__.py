@@ -2530,7 +2530,15 @@ class Rollout:
         recorded = (recorded or dict(self._rewards)) | {
             "timed_out": bool(getattr(self, "_agent_ran_out_of_time", False))
         }
-        path.write_text(json.dumps(recorded, indent=2) + "\n")
+        # A verifier that ran as root in the container leaves reward.json root-owned,
+        # so the host cannot open it for writing; replacing it needs only a writable
+        # folder. Recording timed_out must never fail a trial that has its rewards.
+        try:
+            tmp = path.with_name(path.name + ".timed-out.tmp")
+            tmp.write_text(json.dumps(recorded, indent=2) + "\n")
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.warning(f"Cannot record timed_out in {path}: {e}")
 
     def _record_agent_timeout(self, e: TimeoutError, *, agent_phase: bool) -> None:
         """Record a timed-out agent run on the rollout's error state.

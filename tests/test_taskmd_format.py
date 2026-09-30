@@ -291,11 +291,9 @@ def test_a_shared_verifier_network_that_benchflow_enforces(
             '[sandbox]\nnetwork = "none"\n\n[verifier]\nnetwork = "open"\n',
             "[verifier] network",
         ),
-        # A shared verifier runs as root, outside the agent's allowlist.
-        (
-            '[sandbox]\nnetwork = ["pypi.org"]\n',
-            "[verifier] network (inherited from [sandbox] network)",
-        ),
+        # A shared verifier runs as root, outside the agent's allowlist. An
+        # inherited host list is honored instead (the package never asked for a
+        # filtered verifier); only a list written for the verifier is refused.
         (
             '[verifier]\nnetwork = ["pypi.org"]\n',
             "[verifier] network",
@@ -317,6 +315,45 @@ def test_a_verifier_network_that_benchflow_cannot_enforce_is_refused(
 ) -> None:
     _, plan = _verifier_decision(tmp_path, config)
     assert field in [f.field for f in plan.refused], plan.refused
+
+
+@pytest.mark.parametrize(
+    ("config", "agent_config"),
+    [
+        # [sandbox] network defaults to "open" (docs/keys.md:57), so an agent
+        # network that is narrower than the sandbox's is the agent's uid firewall,
+        # which BenchFlow enforces natively.
+        ('[agent]\nnetwork = "none"\n', {"network_mode": "no-network"}),
+        (
+            '[sandbox]\nnetwork = "open"\n\n[agent]\nnetwork = ["pypi.org"]\n',
+            {"network_mode": "allowlist", "allowed_hosts": ["pypi.org"]},
+        ),
+        (
+            '[sandbox]\nnetwork = ["pypi.org", "files.pythonhosted.org"]\n\n'
+            '[agent]\nnetwork = ["pypi.org"]\n',
+            {"network_mode": "allowlist", "allowed_hosts": ["pypi.org"]},
+        ),
+    ],
+)
+def test_an_agent_network_narrower_than_the_sandbox_is_honored(
+    tmp_path, config, agent_config
+) -> None:
+    _, plan = _verifier_decision(tmp_path, config)
+    assert not plan.refused, plan.refused
+    assert plan.frontmatter.get("agent", {}) | agent_config == plan.frontmatter["agent"]
+
+
+def test_an_agent_network_wider_than_the_sandbox_is_refused(tmp_path) -> None:
+    _, plan = _verifier_decision(
+        tmp_path, '[sandbox]\nnetwork = "none"\n\n[agent]\nnetwork = "open"\n'
+    )
+    assert "[agent] network" in [f.field for f in plan.refused], plan.refused
+
+
+def test_a_host_list_inherited_by_a_shared_verifier_is_honored(tmp_path) -> None:
+    """The package asked [sandbox] for the list; only the agent's uid is bound by it."""
+    _, plan = _verifier_decision(tmp_path, '[sandbox]\nnetwork = ["pypi.org"]\n')
+    assert not plan.refused, plan.refused
 
 
 @pytest.mark.parametrize(
@@ -398,12 +435,11 @@ def test_separate_verifier_offline_and_judge_time() -> None:
             [
                 "[sandbox] clock",
                 "[world]",
-                "[agent] network",
                 "bar-chart",
                 "verifier/behaviors.json",
             ],
         ),
-        ("flaky-retry", ["[agent] network", "extends", "verifier/behaviors.json"]),
+        ("flaky-retry", ["extends", "verifier/behaviors.json"]),
         (
             "ising-exponent",
             [
