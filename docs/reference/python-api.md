@@ -13,14 +13,32 @@ The CLI install (`uv tool install --python 3.12 --upgrade benchflow`) is isolate
 
 ## Quick Start
 
-Run one task with the oracle agent (the task's own solution, no model credentials needed) and read the result. `bf.run_sync` blocks until the rollout finishes; it also works inside a running event loop such as a Jupyter cell:
+Run one task with the oracle agent (the task's own solution, so no model credentials) and read the result. This snippet writes a tiny task on a prebuilt image, so nothing is built either; with Docker running it takes about 20 seconds (a first run also pulls `python:3.12-slim`). `bf.run_sync` blocks until the rollout finishes; it also works inside a running event loop such as a Jupyter cell:
 
 ```python
+import pathlib, tempfile
 import benchflow as bf
 
-result = bf.run_sync(bf.RolloutConfig(task_path="tasks/my-task", agent="oracle", environment="docker"))
-print(result.reward, result.passed, result.rollout_dir)
+task = pathlib.Path(tempfile.mkdtemp()) / "hello"
+(task / "solution").mkdir(parents=True)
+(task / "tests").mkdir()
+(task / "task.md").write_text(
+    "---\nschema_version: '1.3'\n"
+    "sandbox: {docker_image: 'python:3.12-slim', workdir: /app}\n"
+    "---\n\n## prompt\n\nWrite `Hello, world!` to `hello.txt`.\n"
+)
+(task / "solution" / "solve.sh").write_text("#!/bin/bash\necho 'Hello, world!' > /app/hello.txt\n")
+(task / "tests" / "test.sh").write_text(
+    "#!/bin/bash\ngrep -qx 'Hello, world!' /app/hello.txt && r=1 || r=0\n"
+    "echo $r > /logs/verifier/reward.txt\n"
+)
+
+result = bf.run_sync(bf.RolloutConfig(task_path=task, agent="oracle", environment="docker"))
+print(result.reward, result.passed, result.rollout_dir)   # 1.0 True jobs/<timestamp>/hello__<id>
+print(bf.load_job(result.rollout_dir.parent))              # the job's summary
 ```
+
+For your own tasks, pass their folder as `task_path`.
 
 In async code, `await bf.arun(...)` takes the same arguments (`bf.run` is the same async function under its older name, so existing `await bf.run(...)` code keeps working).
 

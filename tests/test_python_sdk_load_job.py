@@ -406,6 +406,13 @@ def test_printing_a_job_summarises_it(tmp_path: Path) -> None:
     assert "Cost: $0.0400 over 4 rollout(s) (1 estimated" in text
     assert repr(loaded).startswith("Job(path=")
 
+    oracle_only = tmp_path / "oracle"
+    _trial(oracle_only, "t1", agent="oracle", model=None, cost=None)
+    text = str(bf.load_job(oracle_only))
+    assert "1 trial(s) of 1 task(s); oracle · no model (only control runs" in text
+    assert "Solve rate: 100.0%" in text
+    assert "Cost: none (control runs call no model)" in text
+
 
 def test_an_evaluation_result_prints_on_one_line() -> None:
     from benchflow.evaluation import EvaluationConfig, EvaluationResult

@@ -770,6 +770,9 @@ class Job:
         marked).
         """
         agents = self.agents()
+        only_controls = not agents and bool(self.trials)
+        if only_controls:  # an oracle or nop job: count what it holds
+            agents = self.trials
         tasks = {t.task_name for t in agents}
         pairs = sorted({f"{t.agent} · {t.model or 'no model'}" for t in agents})
         shown = ", ".join(pairs[:3]) + (
@@ -777,9 +780,11 @@ class Job:
         )
         lines = [
             f"**{self.path}** ({self.kind}): {len(agents)} trial(s) of "
-            f"{len(tasks)} task(s)" + (f"; {shown}" if shown else "")
+            f"{len(tasks)} task(s)"
+            + (f"; {shown}" if shown else "")
+            + (" (only control runs, so they are counted)" if only_controls else "")
         ]
-        rates = self.solve_rates(ks=[1])
+        rates = self.solve_rates(ks=[1], include_controls=only_controls)
         if rates.solve_rate is None:
             lines.append("- Solve rate: n/a (no scored trial)")
         else:
@@ -795,7 +800,7 @@ class Job:
                 f"scored trials, {rates.success_rule}){interval}"
             )
             if rates.max_trials_per_task > 1:
-                many = self.solve_rates()
+                many = self.solve_rates(include_controls=only_controls)
                 lines += [f"- {line}" for line in many.lines()]
         unscored = [t for t in agents if t.assessment != "scored"]
         if unscored:
@@ -813,7 +818,7 @@ class Job:
                 f"- Unscored: {len(unscored)} of {len(agents)} trial(s): "
                 + "; ".join(parts)
             )
-        controls = self.controls()
+        controls = [] if only_controls else self.controls()
         if controls:
             kinds = ", ".join(sorted({t.control or "" for t in controls}))
             lines.append(
@@ -1007,10 +1012,9 @@ def _cost_line(rollouts: list[Trial]) -> str:
     estimated = [t for t in priced if t.result.price_source == "agent_session_log"]
     unknown = len(rollouts) - len(priced)
     if not priced:
-        return (
-            f"Cost: unknown ({len(rollouts)} rollout(s) reported no USD; a "
-            "subscription run has none unless its agent's session log prices it)"
-        )
+        if rollouts and all(t.control is not None for t in rollouts):
+            return "Cost: none (control runs call no model)"
+        return f"Cost: unknown (none of {len(rollouts)} rollout(s) reported USD)"
     usd = math.fsum(t.cost_usd or 0.0 for t in priced)
     line = f"Cost: ${usd:.4f} over {len(priced)} rollout(s)"
     if estimated:

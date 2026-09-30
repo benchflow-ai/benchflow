@@ -4,7 +4,7 @@ Runnable scripts for the Python API ([reference](../../reference/python-api.md))
 
 | Example | Shows | Needs |
 |---|---|---|
-| `quickstart.py` | A tour in `# %%` cells (open it in VS Code, PyCharm or Jupytext, or run it top to bottom): one oracle rollout, a Claude rollout and its trajectory, a small batch, then reading the jobs back and comparing them. `BF_QUICKSTART_OFFLINE=1` runs only the reading and comparing cells, on stand-in data. | A sandbox; Claude for the agent cell |
+| `quickstart.py` | A tour in `# %%` cells (open it in VS Code, PyCharm or Jupytext, or run it top to bottom): one oracle rollout on a tiny task it writes on a prebuilt image (no key, no image build: about 20 seconds on Docker), a Claude rollout and its trajectory, a small batch, then reading the jobs back (`print(job)` summarises one) and comparing them. `BF_QUICKSTART_OFFLINE=1` runs only the reading and comparing cells, on stand-in data. | A sandbox; Claude for the agent cell |
 | `run-oracle.py` | One rollout with the oracle agent and the typed result (`reward`, `passed`, `score_outcome`, `rollout_dir`). | A sandbox |
 | `run-agent.py` | One rollout with a real agent; walks the trajectory, prints token usage, reads the rollout back with `RolloutResult.load`. | A sandbox, agent credentials |
 | `run-many.py` | Several `AGENT[:MODEL]` combinations on one task with `bf.run_batch` (no asyncio), progress as each finishes, CSV and JSONL export. | A sandbox; credentials for real agents |
