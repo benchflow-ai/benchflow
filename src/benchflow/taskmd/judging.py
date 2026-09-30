@@ -40,6 +40,7 @@ import json
 import math
 import os
 import secrets
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -195,6 +196,56 @@ def model_for(role: str, settings: dict[str, Any], env: dict[str, str] | None = 
                 return model.strip()
     model = settings.get("model")
     return model if isinstance(model, str) and model else None
+
+
+# Compiling judge-prompt@1 --------------------------------------------------------------------------
+
+_FENCE_LOCK = threading.Lock()
+
+
+def compile_sessions(
+    package: Path,
+    shared: dict[str, str] | None,
+    evidence: Path | None,
+    *,
+    hmac_key: bytes | None = None,
+) -> list[dict[str, Any]]:
+    """Every judge session of a draft 2 package, compiled by the reference compiler.
+
+    Each session's ``prompt`` is judge-prompt@1's parts 1 to 3 with ``{fence}``
+    and ``{budget}`` as written, the bytes ``prompt_sha256`` covers. With
+    ``evidence``, a folder laid out as the session's file system, an ``llm``
+    session also gets its fourth part and ``message_sha256``, and every session
+    ``evidence_sha256``.
+    """
+    with _FENCE_LOCK:
+        return jp.sessions(package, shared=shared or None, evidence=evidence, hmac_key=hmac_key)
+
+
+def session_prompt(session: dict[str, Any], package: Path, *, fence: str, budget: str) -> str:
+    """The prompt a session receives: parts 1 to 3 with this session's fence and budget."""
+    brief = jp.normalize_brief((package / session["brief"]).read_bytes()) if session.get("brief") else None
+    return jp.prompt_text(brief, session["assignment"], fence=fence, budget=budget)
+
+
+def evidence_with_fence(assignment: dict[str, Any], root: Path) -> Callable[[str], str]:
+    """The fourth part with a session's fence in its delimiters.
+
+    The reference compiler writes the ``{fence}`` mask into the delimiters; this
+    builds the part with the session's own code instead, so the solver's text is
+    never rewritten, even where it holds the string ``{fence}`` itself.
+    """
+
+    def build(fence: str) -> str:
+        with _FENCE_LOCK:
+            saved = jp.FENCE
+            jp.FENCE = fence
+            try:
+                return jp.evidence_part(assignment, root)[0]
+            finally:
+                jp.FENCE = saved
+
+    return build
 
 
 # What a session can read ----------------------------------------------------------------------------

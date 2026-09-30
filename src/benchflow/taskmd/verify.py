@@ -28,7 +28,6 @@ import contextlib
 import json
 import shlex
 import shutil
-import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -42,7 +41,6 @@ from benchflow.taskmd.materialize import judge_package_dir, shared_rubrics, task
 JUDGE_DIR = "taskmd-judge"
 RUNNER_UID = 65534
 KEPT_CAPS = {"bytes": 104_857_600, "files": 10_000, "depth": 32}
-_FENCE_LOCK = threading.Lock()
 
 
 class TaskMdVerifierError(RuntimeError):
@@ -251,22 +249,6 @@ if [ "$size" -le 16384 ]; then base64 -w0 /run/taskmd-judge/out; echo; else head
             tail = base64.b64decode(lines[2])
             output = head + b"\0" * (size - len(head) - len(tail)) + tail
         return code, code == 124, output
-
-
-def _evidence_with_fence(assignment: dict[str, Any], root: Path) -> Any:
-    """judgeprompt's evidence part with a given fence, not the mask: the delimiters carry the
-    session's code, and the solver's own text is never rewritten, even where it holds "{fence}"."""
-
-    def build(fence: str) -> str:
-        with _FENCE_LOCK:
-            saved = jp.FENCE
-            jp.FENCE = fence
-            try:
-                return jp.evidence_part(assignment, root)[0]
-            finally:
-                jp.FENCE = saved
-
-    return build
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -478,18 +460,25 @@ async def _run_judges(
     files = judging.JudgeFiles(root=fs_root, kept=kept, separate_verifier=separate, scripted_mounts=mounts)
     tests_by_id = {t["id"]: t for t in json.loads((judge_root / "tests.json").read_text())["tests"]}
     by_id = {c["id"]: c for c in criteria}
-    with _FENCE_LOCK:
-        sessions = jp.sessions(pkg, shared=shared, evidence=fs_root)
+    sessions = judging.compile_sessions(pkg, shared, fs_root)
+    seat_visible = bool(mounts) and _seat_visible(files, mounts)
+    # Criteria decided without a session (docs/runtime/judging.md, "Missing evidence").
+    decided = {
+        c["id"]: found
+        for c in criteria
+        if c.get("judge") in ("llm", "agent") and c["id"] not in skip
+        and (found := _evidence_missing(c, fs_root, workdir, refused)) is not None and found[1] is not None
+    }
+    used_roles = sorted({c.get("judge") for c in criteria} & {"llm", "agent"})
     setup: dict[str, Any] | None = None
     samples: dict[str, list[dict[str, Any]]] = {}
-    sample_flags: dict[str, set[str]] = {}
     usage_total = {"sessions": 0, "prompt_tokens": 0, "completion_tokens": 0, "tool_calls": 0, "seconds": 0.0}
     runner: SandboxRunner | None = None
     submission = jp.submission_tree(fs_root)
     judged_meta: dict[str, dict[str, Any]] = {}
     for session in sessions:
         role = session["role"]
-        ids = [i for i in session["criteria"] if i not in skip]
+        ids = [i for i in session["criteria"] if i not in skip and i not in decided]
         if not ids:
             continue
         settings, _ = ref.resolve_judge(document.config, role, None, pkg)
@@ -501,7 +490,12 @@ async def _run_judges(
         if not model.startswith(("claude-", "anthropic/")):
             raise TaskMdVerifierError(f"judge model {model!r}: BenchFlow runs judge-loop@1 over the Anthropic Messages API only")
         if setup is None:
-            setup = jp.judge_setup(pkg, shared=shared, models={r: judging.model_for(r, ref.resolve_judge(document.config, r, None, pkg)[0]) for r in ("llm", "agent", "vlm")}, config=document.config)
+            models = {}
+            for used in used_roles:
+                chosen_model = judging.model_for(used, ref.resolve_judge(document.config, used, None, pkg)[0])
+                if chosen_model is not None:
+                    models[used] = chosen_model
+            setup = jp.judge_setup(pkg, shared=shared, models=models, config=document.config)
         seconds = int(-(-(ref.duration_s(settings.get("timeout")) or 120) // 1))
         budget = settings.get("budget") if isinstance(settings.get("budget"), dict) else {}
         tokens = ref.count_value(budget.get("tokens")) if budget.get("tokens") is not None else None
@@ -535,7 +529,7 @@ async def _run_judges(
             files.views = views
             runner = SandboxRunner(sandbox=sandbox, kept=kept, views=views)
             await runner.setup()
-        evidence = _evidence_with_fence(session["assignment"], fs_root) if role in ("llm",) else None
+        evidence = judging.evidence_with_fence(session["assignment"], fs_root) if role == "llm" else None
         n_samples = int(settings.get("samples", 1))
         client = judging.MessagesClient(credentials)
         unit_meta = {
@@ -597,12 +591,16 @@ async def _run_judges(
                     tests=tests_by_id,
                     instruction=instruction_bytes,
                     workdir=workdir if isinstance(workdir, str) else None,
-                    reasoning_served=any(e.startswith("trajectory:/judge/trajectory-reasoning.jsonl") for e in session["assignment"]["criteria"][0]["evidence"]) if session["assignment"]["criteria"] else False,
+                    reasoning_served=any(
+                        str(e).startswith(jp.RUNTIME_KINDS["trajectory:reasoning"])
+                        for criterion in session["assignment"]["criteria"]
+                        for e in criterion["evidence"]
+                    ),
                 )
                 cites = [judging.check_citation(c, ctx, res.judge_steps) for c in raw.get("citations", [])]
                 verdict = {**raw, "citations": cites}
                 verdict, flags = judging.apply_citation_rules(crit, verdict)
-                if mounts and _seat_visible(files, mounts):
+                if seat_visible:
                     flags.append("seat-visible")
                 entry: dict[str, Any] = {
                     "verdict": verdict["verdict"],
@@ -617,7 +615,6 @@ async def _run_judges(
                     entry["value"] = verdict["value"]
                 if flags:
                     entry["flags"] = flags
-                    sample_flags.setdefault(ident, set()).update(flags)
                 entry["_raw"] = verdict
                 samples.setdefault(ident, []).append(entry)
         for ident in ids:
@@ -637,6 +634,20 @@ async def _run_judges(
                 "flags": ["lazy"],
                 "rationale": "a gate decided by a test failed, so no judge session ran for this criterion (lazy)",
                 "_value": grading.skip_value(c),
+            }
+            continue
+        if ident in decided:
+            flag, label, value = decided[ident]
+            out[ident] = {
+                "verdict": label,
+                "judge": judge_record,
+                "flags": [flag],
+                "rationale": (
+                    "an output this criterion names was refused, so it fails without a judge session"
+                    if flag == "output-refused"
+                    else "the solver saved none of the files this criterion names, so it is decided without a judge session"
+                ),
+                "_value": value,
             }
             continue
         unit = judged_meta.get(ident, {})
@@ -683,14 +694,9 @@ async def _run_judges(
             record_out["level"] = str(verdict["level"])
         if verdict["verdict"] == "value":
             record_out["value"] = verdict["value"]
-        flags = sorted(sample_flags.get(ident, set()) & set(chosen.get("flags", [])))
+        flags = list(chosen.get("flags", []))
         if missing_file is not None:
-            flags.append(missing_file[0])
-            if missing_file[1] is not None:
-                value = missing_file[1]
-                record_out["verdict"] = "fail" if value is False else "skip"
-                record_out.pop("level", None)
-                record_out.pop("value", None)
+            flags.append(missing_file[0])  # judged on what remains (a bad outcome)
         if flags:
             record_out["flags"] = flags
         if aggregate == "mean" and numbers:
@@ -700,26 +706,32 @@ async def _run_judges(
     return out, setup_hash, usage_total
 
 
-def _evidence_missing(criterion: dict[str, Any], fs_root: Path, workdir: Any, refused: dict[str, str]) -> tuple[str, Any] | None:
-    """docs/runtime/judging.md, "Missing evidence": a criterion whose every item is a file the solver never saved."""
+def _evidence_missing(criterion: dict[str, Any], fs_root: Path, workdir: Any, refused: dict[str, str]) -> tuple[str, str | None, Any] | None:
+    """docs/runtime/judging.md, "Missing evidence": (flag, verdict, the score() input), or None.
+
+    A criterion that names a refused output fails without a session, whatever
+    its outcome. One whose every item is a file the solver never saved fails
+    without a session when its outcome is good; a bad one is judged on what
+    remains (None as its input), or skipped with ``missing = "no-penalty"``.
+    """
     items = [str(i).split("#", 1)[0] for i in criterion.get("evidence") or []]
     files = [i for i in items if i not in jp.RUNTIME_KINDS and not i.startswith("diff:")]
-    if not files or len(files) != len(items):
-        return None
     paths = []
     for item in files:
         try:
             paths.append(jp.normalize_path(item, workdir if isinstance(workdir, str) else None))
         except jp.JudgePromptError:
             return None
-    if any(p in refused for p in paths):
-        return ("output-refused", False)
+    if any(p == r or p.startswith(r.rstrip("/") + "/") for p in paths for r in refused):
+        return ("output-refused", "fail", False)
+    if not files or len(files) != len(items):
+        return None
     if all(not (fs_root / p.lstrip("/")).exists() for p in paths):
         if criterion.get("outcome", "good") == "good":
-            return ("evidence-missing", False)
+            return ("evidence-missing", "fail", False)
         if criterion.get("missing") == "no-penalty":
-            return ("evidence-missing", grading.skip_value(criterion))
-        return ("evidence-missing", None)
+            return ("evidence-missing", "skip", grading.skip_value(criterion))
+        return ("evidence-missing", None, None)
     return None
 
 
