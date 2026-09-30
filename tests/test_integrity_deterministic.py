@@ -167,7 +167,14 @@ def test_audit_flags_a_protected_read_and_leaves_the_reward(tmp_path: Path) -> N
     result = json.loads((trial / "result.json").read_text())
     assert result["rewards"] == {"reward": 1.0}
     assert claim["reward"] == 1.0 and claim["reward_effect"] == "none"
-    assert result["integrity"]["verdict"] == "AgentViolation"
+    # result.json is written before the audit and left alone; the verdict is
+    # read back from integrity/ through the public reader.
+    assert "integrity" not in result
+    import benchflow as bf
+
+    verdict = bf.load_trial(trial).integrity
+    assert verdict is not None and verdict.exploited
+    assert verdict.verdict == "AgentViolation"
     # The event stream is present and hash-chained (audit accepted).
     conformance = json.loads((trial / "integrity" / "conformance.json").read_text())
     assert conformance["audit"]["status"] == "accepted"
