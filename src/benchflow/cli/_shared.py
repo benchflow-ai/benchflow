@@ -14,7 +14,7 @@ wiring module while preserving identical output.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -38,6 +38,22 @@ console = Console()
 # stderr console for out-of-band notices (deprecations) so they never corrupt
 # stdout consumers like `--json` (e.g. `environment list --json`).
 err_console = Console(stderr=True)
+
+
+def stopped_run_result(exc: BaseException) -> Any:
+    """The ``EvaluationResult`` a job that stopped on a usage limit carries.
+
+    ``Evaluation.run`` raises ``UsageLimitError`` once its running trials
+    finish; the report then shows what finished. With no result attached
+    (the job never started), print the error and exit 1.
+    """
+    from benchflow.errors import user_message
+
+    result = getattr(exc, "result", None)
+    if result is None:
+        print_error(user_message(exc))
+        raise typer.Exit(1)
+    return result
 
 
 def print_error(message: str) -> None:

@@ -12,12 +12,15 @@ a caller can catch it and run the rest on another login.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any, ClassVar
 
 from benchflow.agents.usage_limits import (
     format_reset,
+    is_usage_limit_text,
     parse_limit_text,
     parse_unified_headers,
 )
@@ -136,6 +139,50 @@ class UsageLimitError(AgentProtocolError, UserError):
             + (f" ({headroom.window} window)" if headroom.window else "")
         )
         return cls(text, window=headroom.window, resets_at=headroom.resets_at)
+
+    @classmethod
+    def from_result(cls, result: Any) -> UsageLimitError | None:
+        """The usage limit a finished trial ended on, or None.
+
+        ``result`` is a ``RolloutResult`` (``bf.run``, ``Evaluation`` results,
+        ``bf.load_trial(...).result``) or a ``result.json`` mapping. The
+        login, window and reset come from the trial's ``usage_limit_info``.
+        """
+        if isinstance(result, Mapping):
+            data: Mapping[str, Any] = result
+            rollout_dir = None
+        else:
+            data = {
+                "error": getattr(result, "error", None),
+                "error_category": getattr(result, "error_category", None),
+            }
+            rollout_dir = getattr(result, "rollout_dir", None)
+        error = data.get("error")
+        text = error if isinstance(error, str) else ""
+        if data.get("error_category") != cls.category and not (
+            text.lower().startswith("usage limit reached") or is_usage_limit_text(text)
+        ):
+            return None
+        info = data.get("usage_limit_info")
+        if not isinstance(info, Mapping) and rollout_dir is not None:
+            try:
+                saved = json.loads((Path(rollout_dir) / "result.json").read_text())
+            except (OSError, ValueError):
+                saved = {}
+            info = saved.get("usage_limit_info") if isinstance(saved, dict) else None
+        if isinstance(info, Mapping):
+            resets = info.get("resets_at")
+            try:
+                resets_at = datetime.fromisoformat(resets) if resets else None
+            except (TypeError, ValueError):
+                resets_at = None
+            return cls(
+                str(info.get("detail") or text or "usage limit reached"),
+                login=info.get("login"),
+                window=info.get("window"),
+                resets_at=resets_at,
+            )
+        return cls.from_text(text) or cls(text or "usage limit reached")
 
 
 def _rebuild_usage_limit(

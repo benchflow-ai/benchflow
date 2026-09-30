@@ -42,6 +42,7 @@ from benchflow.cli._shared import (
     console,
     err_console,
     print_error,
+    stopped_run_result,
 )
 from benchflow.cli._termination import run_until_terminated
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
@@ -1213,6 +1214,7 @@ def run_batch_eval(
     Promoted from the ``eval_run`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
+    from benchflow.agents.errors import UsageLimitError
     from benchflow.eval_sharding import ShardWorkerError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
     from benchflow.task.discovery import resolve_task_collection_root
@@ -1271,6 +1273,10 @@ def run_batch_eval(
                     worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
                 )
             )
+    except UsageLimitError as e:
+        # The job stopped on its login's usage limit: report what finished;
+        # the summary names the login, the window and the reset.
+        result = stopped_run_result(e)
     except EmptyTaskSelectionError as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None
@@ -1292,6 +1298,7 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
 
     import yaml
 
+    from benchflow.agents.errors import UsageLimitError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
 
     req = plan.request
@@ -1405,6 +1412,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     )
     try:
         result = run_until_terminated(j.run())
+    except UsageLimitError as e:
+        result = stopped_run_result(e)
     except (EmptyTaskSelectionError, ValueError) as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None

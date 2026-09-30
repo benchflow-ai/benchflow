@@ -75,6 +75,7 @@ from benchflow._utils.scoring import (
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
+from benchflow.agents.errors import UsageLimitError
 from benchflow.budget import Budget, BudgetGuard
 from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
@@ -440,6 +441,40 @@ class ApiErrorCircuitBreaker:
             f"skipped: api-error circuit breaker open "
             f"([{self._fingerprint}] x{self._streak} consecutive)"
         )
+
+
+class UsageLimitStop:
+    """Stop starting trials once one ends on its login's usage limit.
+
+    Every trial of an Evaluation runs on the same login, so once one reports
+    the limit the rest would fail the same way until the window resets.
+    Running trials finish; trials not yet started are left out of the job
+    (not counted as results) for a resume on another login or after the
+    reset. ``Evaluation.run`` raises the first ``UsageLimitError`` at the end.
+    """
+
+    def __init__(self) -> None:
+        self.error: UsageLimitError | None = None
+        self.not_started: list[str] = []
+
+    def record(self, result: RunResult) -> None:
+        if self.error is not None:
+            return
+        self.error = UsageLimitError.from_result(result)
+        if self.error is not None:
+            logger.error(f"{self.error}; starting no more trials (running ones finish)")
+
+    def skip(self, name: str) -> bool:
+        """True (and recorded) when ``name`` must not start."""
+        if self.error is None:
+            return False
+        self.not_started.append(name)
+        return True
+
+    def summary(self) -> dict[str, Any] | None:
+        if self.error is None:
+            return None
+        return {**self.error.to_dict(), "not_started": list(self.not_started)}
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -946,6 +981,7 @@ class Evaluation:
             # A hard per-job cap (benchflow.budget); same as config.budget.
             self._config.budget = Budget.coerce(budget)
         self._budget_guard: BudgetGuard | None = None
+        self._usage_stop = UsageLimitStop()
         # agent_env names a loaded config declared without values; to_dict
         # keeps listing them so a second save does not forget them.
         self._declared_env_keys: list[str] = []
@@ -1895,11 +1931,14 @@ class Evaluation:
 
         breaker = ApiErrorCircuitBreaker()
         guard = self._budget_guard
+        usage_stop = self._usage_stop
 
         async def bounded(td: Path) -> tuple[str, RunResult | None]:
             async with sem:
                 if guard is not None and guard.stopped:
                     guard.start(td.name)  # records it as not started
+                    return td.name, None
+                if usage_stop.skip(td.name):
                     return td.name, None
                 if breaker.tripped:
                     result = RunResult(task_name=td.name, error=breaker.skip_error())
@@ -1923,6 +1962,7 @@ class Evaluation:
                 result = await self._run_budgeted(td, guard)
                 if result is None:
                     return td.name, None
+                usage_stop.record(result)
                 breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
@@ -2046,8 +2086,12 @@ class Evaluation:
                 self._learner_export_dir = export_dir
 
                 guard = self._budget_guard
-                if guard is not None and guard.stopped:
-                    guard.start(td.name)  # records it as not started
+                if (guard is not None and guard.stopped) or self._usage_stop.error:
+                    if self._usage_stop.error is not None:
+                        self._usage_stop.skip(td.name)
+                    else:
+                        assert guard is not None
+                        guard.start(td.name)  # records it as not started
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
                     continue
@@ -2080,6 +2124,7 @@ class Evaluation:
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
 
+                self._usage_stop.record(result)
                 self._log_and_report(td, result)
                 pairs.append((td.name, result))
 
@@ -2534,6 +2579,7 @@ class Evaluation:
 
         start = time.time()
 
+        self._usage_stop = UsageLimitStop()
         self._budget_guard = None
         if cfg.budget is not None:
             self._budget_guard = BudgetGuard(cfg.budget)
@@ -2674,6 +2720,11 @@ class Evaluation:
             **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
             **({"budget": job_result.budget} if job_result.budget is not None else {}),
+            **(
+                {"usage_limit": stop}
+                if (stop := self._usage_stop.summary()) is not None
+                else {}
+            ),
             **summary_source_fields(cfg.source_provenance, all_results),
             **(
                 {
@@ -2773,4 +2824,10 @@ class Evaluation:
         )
 
         self.result = job_result
+        if self._usage_stop.error is not None:
+            # The job stopped on its login's usage limit: raise the typed
+            # error (with this result) so a caller can switch logins and
+            # resume; summary.json and every finished trial are written.
+            self._usage_stop.error.result = job_result
+            raise self._usage_stop.error
         return job_result
