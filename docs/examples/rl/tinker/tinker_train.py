@@ -27,7 +27,12 @@ if str(HERE) not in sys.path:
 import tinker_env as te  # noqa: E402
 from tinker_cookbook import model_info  # noqa: E402
 from tinker_cookbook.rl import train as rl_train  # noqa: E402
-from tinker_episode import EpisodeSettings, close_all_live  # noqa: E402
+from tinker_episode import (  # noqa: E402
+    BASH_TIMEOUT_SEC,
+    MAX_TURNS,
+    EpisodeSettings,
+    close_all_live,
+)
 
 log = logging.getLogger("tinker_train")
 
@@ -51,9 +56,11 @@ def add_env_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="tinker-cookbook renderer (default: the model's recommended one)",
     )
-    g.add_argument("--max-turns", type=int, default=12)
     g.add_argument(
-        "--max-tokens", type=int, default=2048, help="sampled tokens per turn"
+        "--max-turns", type=int, default=MAX_TURNS, help="tool-calling turns"
+    )
+    g.add_argument(
+        "--max-tokens", type=int, default=4096, help="sampled tokens per turn"
     )
     g.add_argument("--max-trajectory-tokens", type=int, default=32768)
     g.add_argument("--temperature", type=float, default=1.0)
@@ -63,7 +70,10 @@ def add_env_args(parser: argparse.ArgumentParser) -> None:
         "--max-sandboxes", type=int, default=16, help="live sandboxes at once"
     )
     s.add_argument(
-        "--command-timeout", type=int, default=60, help="seconds per run_bash"
+        "--command-timeout",
+        type=int,
+        default=BASH_TIMEOUT_SEC,
+        help="seconds per run_bash",
     )
     s.add_argument(
         "--episode-timeout",
@@ -205,6 +215,10 @@ def summarize(args: argparse.Namespace) -> dict:
 
 async def train(args: argparse.Namespace) -> None:
     config = build_config(args)
+    builder = config.dataset_builder
+    parity = te.chat_template_parity(builder.train_tasks[0], builder.config)
+    log.info("first prompt vs the model's chat template: %s", parity)
+    (args.log_path / "chat_template_parity.txt").write_text(parity + "\n")
     try:
         await rl_train.main(config)
     finally:

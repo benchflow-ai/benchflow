@@ -69,15 +69,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def exits_of(builder: te.BenchFlowEnvGroupBuilder) -> Counter[str]:
-    """Exit statuses of the episodes that ran (spare, never-started envs aside)."""
+def reasons_of(builder: te.BenchFlowEnvGroupBuilder) -> Counter[str]:
+    """Decision reasons and endings of the episodes that ran (spares aside)."""
     counts: Counter[str] = Counter()
-    for env in builder._envs:
-        outcome = env.episode.outcome
-        if outcome is not None and (
-            env.episode.started or outcome.exit == "prompt_too_long"
-        ):
-            counts[outcome.exit] += 1
+    for env in builder.envs:
+        decision = env.episode.decision
+        if env.episode.started and decision is not None and not decision.dropped:
+            counts[f"{decision.reason}/{env.episode.ended}"] += 1
     return counts
 
 
@@ -114,16 +112,17 @@ async def evaluate_policy(
             rewards = []
         episodes = [
             {
-                "exit": env.episode.outcome.exit,
-                "reward": env.episode.outcome.reward,
+                "reason": env.episode.decision.reason,
+                "ended": env.episode.ended,
+                "reward": env.episode.decision.reward,
                 "rollout_dir": str(env.episode.rollout_dir)
                 if env.episode.rollout_dir
                 else None,
             }
-            for env in builder._envs
-            if env.episode.started and env.episode.outcome is not None
+            for env in builder.envs
+            if env.episode.started and env.episode.decision is not None
         ]
-        return task.name, rewards, exits_of(builder), episodes
+        return task.name, rewards, reasons_of(builder), episodes
 
     done = await asyncio.gather(*(one(task) for task in tasks))
     results = {name: rewards for name, rewards, _, _ in done}
@@ -145,7 +144,7 @@ async def evaluate_policy(
         "label": label,
         "summary": summary,
         "rewards": results,
-        "exits": dict(exits),
+        "reasons": dict(exits),
         "infrastructure_drops": dict(Counter(te.DROPS.counts) - drops_before),
         "episodes": {name: eps for name, _, _, eps in done},
     }
@@ -209,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{ev['label']}: solve rate {s['solve_rate']:.3f} "
             f"(95% CI {s['ci95_low']:.3f}-{s['ci95_high']:.3f}), "
-            f"{s['solved']}/{s['episodes']} episodes over {s['tasks']} tasks; exits {ev['exits']}"
+            f"{s['solved']}/{s['episodes']} episodes over {s['tasks']} tasks; reasons {ev['reasons']}"
         )
     for c in doc["comparisons"]:
         print(

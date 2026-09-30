@@ -1,26 +1,32 @@
 """A BenchFlow environment for tinker-cookbook's RL framework.
 
-Each `BenchFlowEnv` is one episode on one BenchFlow task: `initial_observation`
-starts the task sandbox (`tinker_episode.Episode`), the model acts through two
-tools in its native tool-calling format (rendered and parsed by the cookbook's
-renderer), and the episode ends when the model submits, stops calling tools,
-runs out of turns, breaks the protocol, or runs past its wall-clock budget.
-The verifier runs on the first three; the others score 0 under the training
-rule (see tinker_episode.py). The sandbox is closed on every path, and
-`BenchFlowEnvGroupBuilder.cleanup()` closes whatever an interrupted episode
-left open.
+Each `BenchFlowEnv` is one episode on one BenchFlow task (`tinker_episode.Episode`),
+with the shared RL harness: the task prompt plus the harness message, and the
+`run_bash` and `submit` tools, rendered and parsed in the model's native
+tool-calling format by the cookbook's renderer. For Qwen3.5/3.6 the first
+prompt is token-identical to what Tinker's OpenAI-compatible endpoint renders
+for the held-out evaluator (see `chat_template_parity`).
+
+An episode ends when the model submits, replies without a tool call, runs out
+of turns, or breaks the protocol (a malformed tool call, a turn cut off at
+`max_tokens`, a conversation past `max_trajectory_tokens`); the verifier then
+scores the sandbox as the policy left it. Past its wall-clock budget an
+episode scores 0 without a verifier run. The sandbox is closed on every path,
+and `BenchFlowEnvGroupBuilder.cleanup()` closes whatever an interrupted
+episode left open.
 
 A group is `group_size` episodes of one task, so the cookbook's advantages
 (reward minus the group mean) are GRPO-style. `DropInfrastructureFailures`
 drops and counts the episodes the policy could not have caused to fail,
-replaces them while its retry budget lasts, and lets any other exception
-stop the run: a harness bug must not quietly drop the episodes it touches.
+replaces them while its retry budget lasts, and lets any other exception stop
+the run: a harness bug must not quietly drop the episodes it touches.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import random
 from collections.abc import Sequence
@@ -34,7 +40,7 @@ from tinker_cookbook import tokenizer_utils
 from tinker_cookbook.completers import TokenCompleter
 from tinker_cookbook.exceptions import AllTrajectoriesFailedError
 from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import Message, Renderer, ToolSpec
+from tinker_cookbook.renderers.base import Message, Renderer
 from tinker_cookbook.rl import types
 from tinker_cookbook.rl.message_env import EnvFromMessageEnv
 from tinker_cookbook.rl.rollout_limits import ParseErrorPolicy, RolloutLimits
@@ -44,47 +50,75 @@ from tinker_cookbook.tool_use import (
     AgentToolMessageEnv,
     ToolInput,
     ToolResult,
-    error_tool_result,
     simple_tool_result,
 )
 from tinker_episode import (
-    EXITS,
-    INFRASTRUCTURE,
-    POLICY_FAILURE,
+    HARNESS_MESSAGE,
+    MAX_TURNS,
     SCORED,
+    ZERO_REASONS,
+    Decision,
     DropLog,
     Episode,
     EpisodeSettings,
     InfrastructureError,
-    Outcome,
     SandboxSlots,
-    VerifierCrashOnCleanRun,
 )
 
 import benchflow as bf
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
-    "You are an agent working in a Linux sandbox on the task the user gives you. "
-    "Use the run_bash tool to run shell commands: each call starts a fresh bash "
-    "shell in the task's working directory, so chain related commands with && "
-    "or write scripts to files. When the task is complete, call the submit tool "
-    "once; the task's checks then run on the sandbox as you left it."
-)
+# The run_bash and submit tools, as benchflow.integrations.trl.bash_tool_schemas()
+# defines them for TRL and the held-out evaluator.
+RUN_BASH_SPEC: dict[str, Any] = {
+    "name": "run_bash",
+    "description": "Run a bash command in the task sandbox and return its output (stdout and stderr).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The bash command to run in the task's working directory.",
+            }
+        },
+        "required": ["command"],
+    },
+}
+SUBMIT_SPEC: dict[str, Any] = {
+    "name": "submit",
+    "description": "Submit the final answer. This ends the task, so call it once, when you are done.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "description": "The final answer, written to the task's answer file.",
+            }
+        },
+        "required": ["answer"],
+    },
+}
 
-RUN_BASH_DESCRIPTION = (
-    "Run a bash command in the task sandbox and return its exit code, stdout and "
-    "stderr. Each call starts a fresh shell in the task's working directory; "
-    "commands time out after {timeout} seconds and long output is cut."
-)
-SUBMIT_DESCRIPTION = (
-    "Submit your work: the task's checks run on the sandbox as it is now and the "
-    "episode ends. Call it once, when the task is complete."
-)
+# Renderers that print each tool spec as they get it, whose Hugging Face chat
+# template (the one Tinker's OpenAI-compatible endpoint applies) prints the
+# OpenAI wrapper {"type": "function", "function": ...}: they get the wrapper.
+WRAPPED_TOOL_SPEC_RENDERERS = frozenset({"qwen3_5", "qwen3_5_disable_thinking"})
+
+# How an episode ended, from the cookbook's stop reason.
+ENDED = {
+    types.StopReason.TOOL_STOPPED: "submitted",
+    types.StopReason.COMPLETED: "no_tool_call",
+    types.StopReason.MAX_TURNS: "turn_limit",
+    types.StopReason.MAX_TOOL_CALLS: "turn_limit",
+    types.StopReason.PARSE_ERROR: "parse_error",
+    types.StopReason.MAX_TOKENS: "max_tokens",
+    types.StopReason.CONTEXT_OVERFLOW: "context_overflow",
+    types.StopReason.ROLLOUT_TIMEOUT: "timeout",
+}
 
 
-# -- configuration -----------------------------------------------------------
+# -- configuration -------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -94,12 +128,15 @@ class EnvConfig:
     model_name: str
     renderer_name: str
     episode: EpisodeSettings = field(default_factory=EpisodeSettings)
-    max_turns: int = 12  # model turns; the verifier runs when they run out
-    max_tokens: int = 2048  # sampled tokens per turn
+    max_turns: int = (
+        MAX_TURNS  # tool-calling turns; the verifier runs when they run out
+    )
+    max_tokens: int = 4096  # sampled tokens per turn
     max_trajectory_tokens: int = 32768  # prompt plus generation, per episode
-    parse_retries: int = 2  # malformed tool calls answered with a correction
-    sampling_timeout_sec: float = 300.0  # one sampling call; beyond it: infrastructure
-    system_prompt: str = SYSTEM_PROMPT
+    sampling_timeout_sec: float = (
+        300.0  # one sampling call; past it: dropped (endpoint)
+    )
+    prompt_suffix: str = HARNESS_MESSAGE  # appended to the task prompt
 
 
 @dataclass(frozen=True)
@@ -143,7 +180,7 @@ def _is_task_dir(path: Path) -> bool:
     return (path / "task.md").is_file() or (path / "task.toml").is_file()
 
 
-# -- process-wide state ------------------------------------------------------
+# -- process-wide state ----------------------------------------------------------
 
 _SLOTS = SandboxSlots(16)
 DROPS = DropLog()
@@ -167,84 +204,137 @@ def cached_renderer(model_name: str, renderer_name: str) -> Renderer:
     return get_renderer(renderer_name, tokenizer_utils.get_tokenizer(model_name))
 
 
-# -- tools -------------------------------------------------------------------
+def tool_specs(renderer_name: str) -> list[dict[str, Any]]:
+    specs = [RUN_BASH_SPEC, SUBMIT_SPEC]
+    if renderer_name in WRAPPED_TOOL_SPEC_RENDERERS:
+        return [{"type": "function", "function": spec} for spec in specs]
+    return specs
+
+
+def initial_messages(
+    task: TaskSpec, config: EnvConfig, renderer: Renderer
+) -> list[Message]:
+    """The tools prefix (no system prompt) and the task prompt plus the harness message."""
+    prefix = renderer.create_conversation_prefix_with_tools(
+        tools=tool_specs(config.renderer_name),  # type: ignore[arg-type]
+        system_prompt="",
+    )
+    return [
+        *prefix,
+        {"role": "user", "content": task.instruction + config.prompt_suffix},
+    ]
+
+
+def chat_template_parity(task: TaskSpec, config: EnvConfig) -> str:
+    """Compare the first prompt with the model's Hugging Face chat template.
+
+    Tinker's OpenAI-compatible endpoint (which the held-out evaluator calls)
+    renders with that template; 'identical' means training and evaluation
+    start from the same tokens.
+    """
+    renderer = cached_renderer(config.model_name, config.renderer_name)
+    tokenizer = tokenizer_utils.get_tokenizer(config.model_name)
+    ours = [
+        t
+        for chunk in renderer.build_generation_prompt(
+            initial_messages(task, config, renderer)
+        ).chunks
+        for t in getattr(chunk, "tokens", [])
+    ]
+    try:
+        theirs = tokenizer.apply_chat_template(
+            [{"role": "user", "content": task.instruction + config.prompt_suffix}],
+            tools=[
+                {"type": "function", "function": s}
+                for s in (RUN_BASH_SPEC, SUBMIT_SPEC)
+            ],
+            add_generation_prompt=True,
+            tokenize=True,
+        )
+    except Exception as exc:  # no chat template, or one without tools
+        return f"not checked ({type(exc).__name__}: {exc})"
+    if hasattr(theirs, "keys"):
+        theirs = theirs["input_ids"]
+    theirs = list(theirs)
+    if ours == theirs:
+        return f"identical ({len(ours)} tokens)"
+    at = next(
+        (i for i, (a, b) in enumerate(zip(ours, theirs, strict=False)) if a != b), None
+    )
+    at = min(len(ours), len(theirs)) if at is None else at
+    return f"differs at token {at} ({len(ours)} vs {len(theirs)} tokens)"
+
+
+# -- tools -------------------------------------------------------------------------
+
+
+def _argument(input: ToolInput, name: str) -> str:
+    # The shared harness reads arguments[name]; a missing one is a KeyError
+    # whose text becomes {"error": "'name'"}.
+    return str(input.arguments[name])
 
 
 class RunBash:
     """The `run_bash` tool (tinker-cookbook's Tool protocol)."""
 
     name = "run_bash"
+    description: ClassVar[str] = RUN_BASH_SPEC["description"]
+    parameters_schema: ClassVar[dict[str, Any]] = RUN_BASH_SPEC["parameters"]
 
     def __init__(self, episode: Episode) -> None:
         self.episode = episode
-        self.description = RUN_BASH_DESCRIPTION.format(
-            timeout=episode.settings.command_timeout_sec
-        )
-        self.parameters_schema: dict[str, Any] = {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The bash command to run."}
-            },
-            "required": ["command"],
-        }
 
-    def to_spec(self) -> ToolSpec:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters_schema,
-        }
+    def to_spec(self) -> dict[str, Any]:
+        return RUN_BASH_SPEC
 
     async def run(self, input: ToolInput) -> ToolResult:
-        call_id = input.call_id or ""
-        command = input.arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return error_tool_result(
-                "run_bash needs a non-empty string argument `command`",
-                call_id=call_id,
-                name=self.name,
-                error_type="validation_failed",
-            )
-        text = await self.episode.run_bash(command)
-        # A lost sandbox ends the episode (it scores 0: see tinker_episode.py).
-        return simple_tool_result(
-            text, call_id=call_id, name=self.name, should_stop=self.episode.lost
-        )
+        if self.episode.submitted:
+            # The evaluator runs nothing after submit; neither does training.
+            text = "not run: the task was already submitted"
+        else:
+            try:
+                command = _argument(input, "command")
+            except KeyError as exc:
+                text = json.dumps({"error": str(exc)})
+            else:
+                text = await self.episode.run_bash(command)
+        return simple_tool_result(text, call_id=input.call_id or "", name=self.name)
 
 
 class Submit:
-    """The `submit` tool: ends the episode; the verifier runs next."""
+    """The `submit` tool: writes the answer file and ends the episode."""
 
     name = "submit"
-    description = SUBMIT_DESCRIPTION
-    parameters_schema: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {},
-        "required": [],
-    }
+    description: ClassVar[str] = SUBMIT_SPEC["description"]
+    parameters_schema: ClassVar[dict[str, Any]] = SUBMIT_SPEC["parameters"]
 
     def __init__(self, episode: Episode) -> None:
         self.episode = episode
 
-    def to_spec(self) -> ToolSpec:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters_schema,
-        }
+    def to_spec(self) -> dict[str, Any]:
+        return SUBMIT_SPEC
 
     async def run(self, input: ToolInput) -> ToolResult:
-        first = not self.episode.submitted
-        self.episode.submitted = True
-        text = (
-            "Submitted; the task's checks run now." if first else "Already submitted."
-        )
+        call_id = input.call_id or ""
+        if self.episode.submitted:
+            return simple_tool_result(
+                "submission recorded", call_id=call_id, name=self.name, should_stop=True
+            )
+        try:
+            answer = _argument(input, "answer")
+        except KeyError as exc:
+            return simple_tool_result(
+                json.dumps({"error": str(exc)}), call_id=call_id, name=self.name
+            )
+        error = await self.episode.submit(answer)
+        if error is not None:  # the answer was not written: the episode goes on
+            return simple_tool_result(error, call_id=call_id, name=self.name)
         return simple_tool_result(
-            text, call_id=input.call_id or "", name=self.name, should_stop=True
+            "submission recorded", call_id=call_id, name=self.name, should_stop=True
         )
 
 
-# -- the environment ---------------------------------------------------------
+# -- the environment ---------------------------------------------------------------
 
 
 class BenchFlowEnv(types.Env):
@@ -270,18 +360,16 @@ class BenchFlowEnv(types.Env):
             runtime_factory=runtime_factory,
         )
         tools = [RunBash(self.episode), Submit(self.episode)]
-        prefix = renderer.create_conversation_prefix_with_tools(
-            tools=[t.to_spec() for t in tools], system_prompt=config.system_prompt
-        )
-        # Parse errors cost nothing extra: the training rule scores them 0.
-        parse_policy = ParseErrorPolicy(max_consecutive=config.parse_retries)
+        # A malformed tool call ends the episode, as in the evaluator, where
+        # the endpoint returns it as a reply without tool calls.
+        no_retries = ParseErrorPolicy(max_consecutive=0)
         self.messages = AgentToolMessageEnv(
             tools=tools,
-            initial_messages=[*prefix, {"role": "user", "content": task.instruction}],
+            initial_messages=initial_messages(task, config, renderer),
             max_turns=config.max_turns,
             reward_fn=self._grade,
             failed_parse_reward=0.0,
-            parse_error_policy=parse_policy,
+            parse_error_policy=no_retries,
             tool_execution="sequential",
         )
         self.inner = EnvFromMessageEnv(
@@ -291,14 +379,13 @@ class BenchFlowEnv(types.Env):
             max_trajectory_tokens=config.max_trajectory_tokens,
             max_generation_tokens=config.max_tokens,
             context_overflow_reward=0.0,
-            parse_error_policy=parse_policy,
+            parse_error_policy=no_retries,
         )
-        # Read by the cookbook's rollout runner: a hung sampling call raises,
-        # and DropInfrastructureFailures drops that episode.
+        # Read by the cookbook's rollout runner: a sampling call that hangs
+        # raises, and DropInfrastructureFailures drops the episode.
         self.rollout_limits = RolloutLimits(
             sampling_turn_timeout_seconds=config.sampling_timeout_sec
         )
-        self.stop_reason: str | None = None
         self._recorded = False
 
     async def initial_observation(
@@ -308,16 +395,12 @@ class BenchFlowEnv(types.Env):
     ):
         first = await self.inner.initial_observation()
         if isinstance(first, types.InitialObservationOverflow):
-            # The prompt alone overflows the budget: no sandbox is started.
-            await self.episode.abandon("prompt_too_long", str(first.logs))
-            self.stop_reason = types.StopReason.MAX_TOKENS
-            self._record()
-            return types.InitialObservationOverflow(
-                reward=0.0,
-                metrics={**first.metrics, **outcome_metrics(self.episode.outcome)},
-                logs=first.logs,
+            # A configuration error, not something to train on.
+            raise ValueError(
+                f"{self.task.name}: the prompt does not fit max_trajectory_tokens="
+                f"{self.config.max_trajectory_tokens} with max_tokens={self.config.max_tokens}"
             )
-        await self.episode.start()  # SandboxStartError: dropped by the strategy
+        await self.episode.start()  # InfrastructureError: dropped by the strategy
         return first
 
     async def step(
@@ -326,19 +409,20 @@ class BenchFlowEnv(types.Env):
         result = await self.inner.step(action, extra=extra)
         if result.episode_done:
             reason = stop_reason_of(result.metrics)
-            if self.episode.outcome is None:
-                # Ended before any grading: a parse error, a turn cut at
-                # max_tokens, or a context overflow. The policy did it: 0.
-                await self.episode.abandon(reason or "ended")
-            self.stop_reason = reason
-            result.reward = _reward_of(self.episode.outcome)
-            result.metrics.update(outcome_metrics(self.episode.outcome))
+            self.episode.ended = ENDED.get(reason or "", reason or "ended")
+            if self.episode.decision is None:
+                # Ended before grading: a malformed tool call, a turn cut off at
+                # max_tokens, a context overflow. Score what the policy left.
+                await self._decide()
+            result.reward = self._reward()
+            result.metrics.update(
+                decision_metrics(self.episode.decision, self.episode.ended)
+            )
             self._record()
             return result
         if self.episode.past_deadline():
-            timeout = self.config.episode.episode_timeout_sec
-            await self.episode.abandon("timeout", f"still running after {timeout:g} s")
-            self.stop_reason = types.StopReason.ROLLOUT_TIMEOUT
+            await self.episode.time_out()
+            self.episode.ended = "timeout"
             self._record()
             return types.StepResult(
                 reward=0.0,
@@ -348,46 +432,52 @@ class BenchFlowEnv(types.Env):
                 metrics={
                     **result.metrics,
                     f"{types.STOP_METRIC_PREFIX}{types.StopReason.ROLLOUT_TIMEOUT}": 1.0,
-                    **outcome_metrics(self.episode.outcome),
+                    **decision_metrics(self.episode.decision, "timeout"),
                 },
                 logs=result.logs,
             )
         return result
 
     async def _grade(self, history: list[Message]) -> tuple[float, dict[str, float]]:
-        """The cookbook's reward_fn: submit, no tool call, or out of turns."""
-        outcome = await self.episode.finish()
-        if outcome.status == INFRASTRUCTURE:
+        """The cookbook's reward_fn: on submit, no tool call, or the turn limit."""
+        await self._decide()
+        return self._reward(), {}
+
+    async def _decide(self) -> Decision:
+        decision = await self.episode.finish()
+        if decision.dropped:
+            if self.episode.ended is None:
+                self.episode.ended = "submitted" if self.episode.submitted else "graded"
             self._record()
-            raise VerifierCrashOnCleanRun(outcome.detail, task=self.task.name)
-        return _reward_of(outcome), {}
+            raise InfrastructureError(decision, task=self.task.name)
+        return decision
+
+    def _reward(self) -> float:
+        decision = self.episode.decision
+        return (
+            decision.reward
+            if decision is not None and decision.reward is not None
+            else 0.0
+        )
 
     async def close(self) -> None:
-        """Close the sandbox if the episode was cut off before it ended."""
+        """Close the sandbox if the rollout was cut off before the episode ended."""
         if not self.episode.closed:
-            await self.episode.abandon(
-                "cut_off", "the rollout ended from outside the episode"
-            )
+            self.episode.ended = self.episode.ended or "cut_off"
+            await self.episode.close()
         self._record()
 
     def _record(self) -> None:
-        if self._recorded or self.episode.rollout_dir is None:
+        if self._recorded or not self.episode.started:
             return
         self._recorded = True
         self.episode.write_record(
             self.episode.record(
-                stop_reason=self.stop_reason,
+                [openai_message(m) for m in self.messages.history],
                 model=self.config.model_name,
                 renderer=self.config.renderer_name,
-                messages=[_jsonable_message(m) for m in self.messages.history],
             )
         )
-
-
-def _reward_of(outcome: Outcome | None) -> float:
-    if outcome is None or outcome.reward is None:
-        return 0.0
-    return outcome.reward
 
 
 def stop_reason_of(metrics: dict[str, Any]) -> str | None:
@@ -395,40 +485,63 @@ def stop_reason_of(metrics: dict[str, Any]) -> str | None:
     return next((k.removeprefix(prefix) for k in metrics if k.startswith(prefix)), None)
 
 
-def outcome_metrics(outcome: Outcome | None) -> dict[str, float]:
+def decision_metrics(decision: Decision | None, ended: str | None) -> dict[str, float]:
     """Per-episode numbers the cookbook averages into env/all/... metrics.
 
-    Every exit key is present (0 or 1): the cookbook averages a key only over
-    the episodes that report it, so a one-hot key alone would always read 1.
+    Every key is present (0 or 1): the cookbook averages a key only over the
+    episodes that report it, so a one-hot key alone would always read 1.
     """
-    if outcome is None:
+    if decision is None:
         return {}
     metrics = {
-        "bf/solved": float(outcome.solved),
-        "bf/scored": float(outcome.status == SCORED),
-        "bf/policy_failure": float(outcome.status == POLICY_FAILURE),
+        "bf/solved": float(decision.solved),
+        "bf/scored": float(decision.reason == SCORED),
     }
-    for exit in (*EXITS, outcome.exit):
-        metrics[f"bf/exit/{exit}"] = float(exit == outcome.exit)
+    for reason in (SCORED, *ZERO_REASONS):
+        metrics[f"bf/reason/{reason}"] = float(decision.reason == reason)
+    for how in dict.fromkeys(ENDED.values()):
+        metrics[f"bf/ended/{how}"] = float(ended == how)
     return metrics
 
 
-def _jsonable_message(message: Message) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in message.items():
-        if key == "tool_calls" and value:
-            out[key] = [
-                call.model_dump() if hasattr(call, "model_dump") else str(call)
-                for call in value
-            ]
-        elif isinstance(value, str | int | float | bool) or value is None:
-            out[key] = value
-        else:
-            out[key] = value if isinstance(value, list | dict) else str(value)
+def openai_message(message: Message) -> dict[str, Any]:
+    """A renderer message as an OpenAI-style chat message, for the audit record."""
+    out: dict[str, Any] = {"role": message["role"]}
+    content = message.get("content")
+    if isinstance(content, str):
+        out["content"] = content
+    else:
+        parts = content or []
+        out["content"] = "".join(
+            p.get("text", "") for p in parts if p.get("type") == "text"
+        )
+        thinking = "".join(
+            p.get("thinking", "") for p in parts if p.get("type") == "thinking"
+        )
+        if thinking:
+            out["reasoning_content"] = thinking
+    calls = message.get("tool_calls") or []
+    if calls:
+        out["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            for call in calls
+        ]
+    for key in ("tool_call_id", "name"):
+        if message.get(key):
+            out[key] = message[key]
+    if message.get("unparsed_tool_calls"):
+        out["unparsed_tool_calls"] = [str(c) for c in message["unparsed_tool_calls"]]
     return out
 
 
-# -- groups, datasets --------------------------------------------------------
+# -- groups, datasets ----------------------------------------------------------------
 
 
 class BenchFlowEnvGroupBuilder(types.EnvGroupBuilder):
@@ -459,6 +572,10 @@ class BenchFlowEnvGroupBuilder(types.EnvGroupBuilder):
         ]
         self._envs.extend(envs)
         return envs
+
+    @property
+    def envs(self) -> list[BenchFlowEnv]:
+        return list(self._envs)
 
     async def cleanup(self) -> None:
         results = await asyncio.gather(
@@ -542,10 +659,11 @@ class BenchFlowDatasetBuilder(types.RLDatasetBuilder):
         return train, None
 
 
-# -- rollout strategy --------------------------------------------------------
+# -- rollout strategy ------------------------------------------------------------------
 
-# Sampler failures the policy cannot cause. Auth, billing and bad-request
-# errors are not here: retrying cannot fix them, so they stop the run.
+# Sampler failures the policy cannot cause (the "model endpoint" drop). Auth,
+# billing and bad-request errors are not here: a retry cannot fix them, so
+# they stop the run.
 _SAMPLER_INFRASTRUCTURE: tuple[type[BaseException], ...] = (
     SamplingTurnTimeoutError,
     tinker.APIConnectionError,
@@ -584,6 +702,7 @@ class DropInfrastructureFailures(RolloutStrategy):
         envs = list(await env_group_builder.make_envs())
         floor = min(self.min_group_size, len(envs))
         task_name = getattr(getattr(env_group_builder, "task", None), "name", "?")
+        where = getattr(env_group_builder, "job_name", "")
         running = {
             asyncio.create_task(do_single_rollout(policy, env)): env for env in envs
         }
@@ -609,11 +728,7 @@ class DropInfrastructureFailures(RolloutStrategy):
                     if not is_infrastructure(exc):
                         raise exc
                     # Raises TooManyInfrastructureFailures past the streak limit.
-                    DROPS.add(
-                        exc,
-                        task=task_name,
-                        where=getattr(env_group_builder, "job_name", ""),
-                    )
+                    DROPS.add(exc, task=task_name, where=where)
                     errors.append(types.RolloutError(type(exc).__name__, str(exc)))
                     if retries > 0:
                         retries -= 1
