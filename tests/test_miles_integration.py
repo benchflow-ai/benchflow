@@ -420,9 +420,12 @@ async def test_a_502_is_retried_as_the_latest_turn(tasks: Path, tmp_path: Path):
         ),
         (
             httpx.Response(400, json={"error": "messages are not append-only"}),
-            "AgentError",
+            "RequestRejected",
         ),
-        (httpx.Response(500, json={"error": "TITO prefix mismatch"}), "AgentError"),
+        (
+            httpx.Response(500, json={"error": "TITO prefix mismatch"}),
+            "RequestRejected",
+        ),
     ],
 )
 async def test_refusals_the_policy_can_cause_end_the_episode_and_are_scored(

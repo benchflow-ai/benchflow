@@ -106,7 +106,7 @@ _ENDED_EXIT_STATUS = {
     TURN_LIMIT: "TurnLimitExceeded",
     RESPONSE_TRUNCATED: "SequenceLengthLimitExceeded",
     CONTEXT_EXHAUSTED: "SequenceLengthLimitExceeded",
-    REQUEST_REJECTED: "AgentError",
+    REQUEST_REJECTED: "RequestRejected",
     TIME_LIMIT: "TimeLimitExceeded",
 }
 # Miles exit_status for a failure scored 0, by the attribution reason.
