@@ -8,7 +8,8 @@ deterministic fake model (``tests/integration/deterministic``) on the host,
 launches each CLI exactly as the harness does (its command builder), and
 writes four samples per CLI into ``<cli>-<version>/``: a first turn, a resumed
 second turn, a failing tool call, and a turn cancelled with SIGINT while its
-tool runs. Paths and ids that change per run are replaced with placeholders;
+tool runs (40 s in, so Claude Code's tool heartbeat is in it). Paths and ids
+that change per run are replaced with placeholders;
 ``tests/test_native_harness_parsers.py`` reads the result.
 
 No model credentials are involved: the fake answers every request.
@@ -56,7 +57,9 @@ def _fake(scripts: dict) -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_address[1]}"
 
 
-def _run(argv: list[str], prompt: str, env: dict, cwd: Path, cancel_after: float | None):
+def _run(
+    argv: list[str], prompt: str, env: dict, cwd: Path, cancel_after: float | None
+):
     with tempfile.TemporaryFile("w+") as stdin:
         stdin.write(prompt)
         stdin.seek(0)
@@ -105,7 +108,9 @@ def record(cli: str, prefix: Path, out_root: Path) -> None:
         def argv(turn: NativeTurn) -> list[str]:
             return [executable, *claude_code_launch(turn).argv]
 
-        first = NativeTurn(cwd=str(work), new_session_id="11111111-2222-4333-8444-555555555555")
+        first = NativeTurn(
+            cwd=str(work), new_session_id="11111111-2222-4333-8444-555555555555"
+        )
         resume = NativeTurn(cwd=str(work), resume_id=first.new_session_id)
     else:
         executable = str(prefix / "bin" / "codex")
@@ -132,19 +137,36 @@ def record(cli: str, prefix: Path, out_root: Path) -> None:
         resume = None
     out_dir = out_root / f"{cli}-{version}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    replacements = {str(work): "/work", str(home): "/home/agent", url: "http://fake-llm"}
+    replacements = {
+        str(work): "/work",
+        str(home): "/home/agent",
+        url: "http://fake-llm",
+    }
     samples = {}
-    text, err, rc = _run(argv(first), "Create hello.txt. [[fake-llm:hello]]", env, work, None)
+    text, err, rc = _run(
+        argv(first), "Create hello.txt. [[fake-llm:hello]]", env, work, None
+    )
     samples["turn"] = (text, err, rc)
     if resume is None:
         thread = json.loads(text.splitlines()[0])["thread_id"]
         resume = NativeTurn(cwd=str(work), resume_id=thread)
-    samples["resumed"] = _run(argv(resume), "Append a line. [[fake-llm:second]]", env, work, None)
-    samples["tool-error"] = _run(argv(NativeTurn(cwd=str(work))), "Fail. [[fake-llm:fail]]", env, work, None)
-    samples["cancelled"] = _run(argv(NativeTurn(cwd=str(work))), "Sleep. [[fake-llm:sleep]]", env, work, 8.0)
+    samples["resumed"] = _run(
+        argv(resume), "Append a line. [[fake-llm:second]]", env, work, None
+    )
+    samples["tool-error"] = _run(
+        argv(NativeTurn(cwd=str(work))), "Fail. [[fake-llm:fail]]", env, work, None
+    )
+    # Cancelled 40 s in: past the first of Claude Code's 30 s heartbeats for
+    # a running tool (tool_progress), which a long tool call produces.
+    samples["cancelled"] = _run(
+        argv(NativeTurn(cwd=str(work))), "Sleep. [[fake-llm:sleep]]", env, work, 40.0
+    )
     for name, (text, err, rc) in samples.items():
         (out_dir / f"{name}.jsonl").write_text(_scrub(text, replacements))
-        print(f"{cli} {name}: exit {rc}, {len(text.splitlines())} lines" + (f", stderr: {err.strip()[:200]}" if err.strip() else ""))
+        print(
+            f"{cli} {name}: exit {rc}, {len(text.splitlines())} lines"
+            + (f", stderr: {err.strip()[:200]}" if err.strip() else "")
+        )
     server.shutdown()
     shutil.rmtree(work, ignore_errors=True)
     shutil.rmtree(home, ignore_errors=True)

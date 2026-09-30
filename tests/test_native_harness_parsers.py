@@ -84,7 +84,10 @@ def test_claude_turn_maps_like_the_acp_adapter():
             "title": "printf 'Hello, world!\\n' > hello.txt && echo wrote",
             "status": "completed",
             "content": [
-                {"type": "content", "content": {"type": "text", "text": "Write hello.txt"}},
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": "Write hello.txt"},
+                },
                 {
                     "type": "content",
                     "content": {"type": "text", "text": "```console\nwrote\n```"},
@@ -137,7 +140,9 @@ def test_claude_resumed_turn_reports_its_own_usage():
 
 
 def test_claude_tool_error_is_a_failed_call_with_fenced_output():
-    trajectory, outcome = _replay(ClaudeCodeParser("/work"), CLAUDE / "tool-error.jsonl")
+    trajectory, outcome = _replay(
+        ClaudeCodeParser("/work"), CLAUDE / "tool-error.jsonl"
+    )
     call = trajectory[1]
     assert call["status"] == "failed"
     assert call["content"][1]["content"]["text"].startswith("```\nExit code 2\n")
@@ -149,6 +154,37 @@ def test_claude_sigint_result_is_an_error_the_client_turns_into_cancelled():
     assert outcome.completed and outcome.stop_reason is None
     assert outcome.error and "stop_reason=tool_use" in outcome.error
     assert trajectory[1]["status"] == "failed"
+
+
+def test_claude_tool_heartbeat_marks_the_running_call_in_progress():
+    """A running tool's 30 s beats reach its call as the adapter sends them.
+
+    They are activity for the idle watchdog's per-call grace, and the ACP
+    trajectory records the call as in progress.
+    """
+    events = _events(CLAUDE / "cancelled.jsonl")
+    beats = [e for e in events if e.get("type") == "tool_progress"]
+    assert beats, "the cancelled sample runs its tool past the first heartbeat"
+    assert beats[0]["tool_use_id"] != beats[0]["parent_tool_use_id"]
+    parser = ClaudeCodeParser("/work")
+    running = [
+        u for e in events for u in parser.feed(e) if u.get("status") == "in_progress"
+    ]
+    assert running[0] == {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "toolu_fake_sleep_0",
+        "status": "in_progress",
+        "_meta": {
+            "claudeCode": {
+                "toolName": "Bash",
+                "toolResponse": {"elapsedTimeSeconds": 30},
+            }
+        },
+    }
+    # The SIGINT result closed the call: a late beat reopens nothing, and a
+    # beat for a call never seen is dropped.
+    assert parser.feed(beats[0]) == []
+    assert parser.feed({**beats[0], "parent_tool_use_id": "toolu_other"}) == []
 
 
 def test_claude_init_event_names_the_pinned_cli():
@@ -168,7 +204,11 @@ def _result(**fields) -> dict:
     ("result", "stop", "error"),
     [
         (_result(subtype="success", stop_reason="end_turn"), StopReason.END_TURN, None),
-        (_result(subtype="success", stop_reason="max_tokens"), StopReason.MAX_TOKENS, None),
+        (
+            _result(subtype="success", stop_reason="max_tokens"),
+            StopReason.MAX_TOKENS,
+            None,
+        ),
         (_result(subtype="success", stop_reason="refusal"), StopReason.REFUSAL, None),
         (_result(subtype="error_max_turns"), StopReason.MAX_TURN_REQUESTS, None),
         (
@@ -219,7 +259,12 @@ def test_claude_subagent_updates_carry_their_parent():
                 "id": "m1",
                 "content": [
                     {"type": "text", "text": "child says"},
-                    {"type": "tool_use", "id": "toolu_child", "name": "Read", "input": {}},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_child",
+                        "name": "Read",
+                        "input": {},
+                    },
                 ],
             },
         }
@@ -234,7 +279,10 @@ def test_claude_plan_tools_are_not_tool_calls():
     """The adapter renders TodoWrite/Task* as ACP plans, which BenchFlow drops."""
     parser = ClaudeCodeParser()
     todo = {"type": "tool_use", "id": "t1", "name": "TodoWrite", "input": {"todos": []}}
-    assert parser.feed({"type": "assistant", "message": {"id": "m", "content": [todo]}}) == []
+    assert (
+        parser.feed({"type": "assistant", "message": {"id": "m", "content": [todo]}})
+        == []
+    )
     result = {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
     assert parser.feed({"type": "user", "message": {"content": [result]}}) == []
 
@@ -244,13 +292,28 @@ def test_claude_plan_tools_are_not_tool_calls():
     [
         ("Bash", {"command": "ls"}, "ls", "execute"),
         ("Bash", {}, "Terminal", "execute"),
-        ("Read", {"file_path": "/work/a.py", "offset": 3, "limit": 2}, "Read a.py (3 - 4)", "read"),
+        (
+            "Read",
+            {"file_path": "/work/a.py", "offset": 3, "limit": 2},
+            "Read a.py (3 - 4)",
+            "read",
+        ),
         ("Read", {"file_path": "/etc/x"}, "Read /etc/x", "read"),
         ("Write", {"file_path": "/work/b.txt", "content": "x"}, "Write b.txt", "edit"),
         ("Write", {}, "Preparing file…", "edit"),
-        ("Edit", {"file_path": "/work/c.py", "old_string": "a", "new_string": "b"}, "Edit c.py", "edit"),
+        (
+            "Edit",
+            {"file_path": "/work/c.py", "old_string": "a", "new_string": "b"},
+            "Edit c.py",
+            "edit",
+        ),
         ("Glob", {"pattern": "*.py", "path": "src"}, "Find `src` `*.py`", "search"),
-        ("Grep", {"pattern": "foo", "-i": True, "output_mode": "count"}, 'grep -i -c "foo"', "search"),
+        (
+            "Grep",
+            {"pattern": "foo", "-i": True, "output_mode": "count"},
+            'grep -i -c "foo"',
+            "search",
+        ),
         ("WebFetch", {"url": "https://x"}, "Fetch https://x", "fetch"),
         ("WebSearch", {"query": "q"}, 'Search "q"', "fetch"),
         ("Agent", {"description": "Explore", "prompt": "go"}, "Explore", "think"),
@@ -272,12 +335,20 @@ def test_edit_result_diff_comes_from_the_structured_patch():
         {
             "filePath": "/work/c.py",
             "structuredPatch": [
-                {"oldStart": 1, "newStart": 1, "oldLines": 1, "newLines": 1, "lines": ["-a", "+b"]}
+                {
+                    "oldStart": 1,
+                    "newStart": 1,
+                    "oldLines": 1,
+                    "newLines": 1,
+                    "lines": ["-a", "+b"],
+                }
             ],
         },
     )
     assert update == {
-        "content": [{"type": "diff", "path": "/work/c.py", "oldText": "a", "newText": "b"}]
+        "content": [
+            {"type": "diff", "path": "/work/c.py", "oldText": "a", "newText": "b"}
+        ]
     }
 
 
@@ -306,7 +377,13 @@ def test_agent_result_strips_the_model_directed_trailer():
 
 def test_claude_first_turn_names_its_session_and_streams_partial_messages():
     argv = claude_code_launch(NativeTurn(cwd="/app", new_session_id="u-1")).argv
-    assert argv[:5] == ("-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages")
+    assert argv[:5] == (
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    )
     assert "--forward-subagent-text" in argv
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert argv[argv.index("--session-id") + 1] == "u-1"
@@ -315,7 +392,12 @@ def test_claude_first_turn_names_its_session_and_streams_partial_messages():
 
 def test_claude_later_turns_resume_and_pass_model_and_effort():
     argv = claude_code_launch(
-        NativeTurn(cwd="/app", resume_id="u-1", model="claude-haiku-4-5", reasoning_effort="high")
+        NativeTurn(
+            cwd="/app",
+            resume_id="u-1",
+            model="claude-haiku-4-5",
+            reasoning_effort="high",
+        )
     ).argv
     assert argv[argv.index("--resume") + 1] == "u-1"
     assert "--session-id" not in argv
@@ -329,10 +411,17 @@ def test_claude_mcp_servers_become_one_mcp_config_document():
         McpServerSpec(name="web", type="http", url="http://h/mcp", headers={"A": "b"}),
     )
     argv = claude_code_launch(NativeTurn(cwd="/app", mcp_servers=servers)).argv
-    assert json.loads(argv[argv.index("--mcp-config") + 1]) == claude_code_mcp_config(servers)
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == claude_code_mcp_config(
+        servers
+    )
     assert claude_code_mcp_config(servers) == {
         "mcpServers": {
-            "fs": {"type": "stdio", "command": "npx", "args": ["srv"], "env": {"K": "v"}},
+            "fs": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["srv"],
+                "env": {"K": "v"},
+            },
             "web": {"type": "http", "url": "http://h/mcp", "headers": {"A": "b"}},
         }
     }
@@ -344,8 +433,14 @@ def test_claude_mcp_servers_become_one_mcp_config_document():
 
 
 def test_codex_turn_maps_items_to_tool_calls_and_messages():
-    trajectory, outcome = _replay(CodexExecParser("/work", turn=1), CODEX / "turn.jsonl")
-    assert [e["type"] for e in trajectory] == ["agent_message", "tool_call", "agent_message"]
+    trajectory, outcome = _replay(
+        CodexExecParser("/work", turn=1), CODEX / "turn.jsonl"
+    )
+    assert [e["type"] for e in trajectory] == [
+        "agent_message",
+        "tool_call",
+        "agent_message",
+    ]
     call = trajectory[1]
     assert call["tool_call_id"] == "turn1-item_1"
     assert call["kind"] == "execute" and call["status"] == "completed"
@@ -408,7 +503,9 @@ def test_codex_file_changes_arrive_completed():
         }
     )
     assert updates[0]["sessionUpdate"] == "tool_call"
-    assert updates[0]["status"] == "completed" and updates[0]["title"] == "Edit /app/a.py"
+    assert (
+        updates[0]["status"] == "completed" and updates[0]["title"] == "Edit /app/a.py"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +536,10 @@ def test_codex_exec_takes_every_setting_from_codex_config():
     assert argv[-1] == "-"
     overrides = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
     assert 'model_provider="benchflow-litellm"' in overrides
-    assert 'model_providers.benchflow-litellm.base_url="http://127.0.0.1:4000/v1"' in overrides
+    assert (
+        'model_providers.benchflow-litellm.base_url="http://127.0.0.1:4000/v1"'
+        in overrides
+    )
     assert 'web_search="disabled"' in overrides
     # As codex-acp asks for reasoning summaries on every turn.
     assert 'model_reasoning_summary="auto"' in overrides
@@ -464,15 +564,19 @@ def test_exec_commands_are_unwrapped_from_their_shell(reported, script):
 
 
 def test_codex_resume_continues_the_thread():
-    argv = codex_launch(NativeTurn(cwd="/app", resume_id="t-1", reasoning_effort="high"), _CONFIG).argv
+    argv = codex_launch(
+        NativeTurn(cwd="/app", resume_id="t-1", reasoning_effort="high"), _CONFIG
+    ).argv
     assert argv[:3] == ("exec", "resume", "t-1")
-    assert "model_reasoning_effort=\"high\"" in argv
+    assert 'model_reasoning_effort="high"' in argv
 
 
 def test_codex_mcp_servers_become_config_tables():
     servers = (McpServerSpec(name="fs", command="npx", args=["srv"], tools=["read"]),)
     assert codex_mcp_overrides(servers) == {
-        "mcp_servers": {"fs": {"command": "npx", "args": ["srv"], "enabled_tools": ["read"]}}
+        "mcp_servers": {
+            "fs": {"command": "npx", "args": ["srv"], "enabled_tools": ["read"]}
+        }
     }
 
 
@@ -481,4 +585,7 @@ def test_codex_config_overrides_refuse_what_they_cannot_write():
         codex_config_overrides({"model_providers": {"a.b": {"base_url": "x"}}})
     with pytest.raises(ValueError, match="TOML"):
         codex_config_overrides({"model": None})
-    assert codex_config_overrides({"a": {"b": [1, 2]}, "c": True}) == ["a.b=[1, 2]", "c=true"]
+    assert codex_config_overrides({"a": {"b": [1, 2]}, "c": True}) == [
+        "a.b=[1, 2]",
+        "c=true",
+    ]

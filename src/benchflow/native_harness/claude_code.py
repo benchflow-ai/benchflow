@@ -698,6 +698,8 @@ class ClaudeCodeParser:
         # tool_use id -> (name, input) of calls surfaced to the session
         self._tool_uses: dict[str, tuple[str, Any]] = {}
         self._emitted: set[str] = set()
+        # Emitted calls with no result yet (the adapter's emittedToolCalls)
+        self._open: set[str] = set()
         # (message id, block kind) pairs whose text already streamed
         self._streamed: set[tuple[str, str]] = set()
         self._block_ids: dict[int, str] = {}
@@ -721,6 +723,8 @@ class ClaudeCodeParser:
             return self._assistant(event)
         if kind == "user":
             return self._user(event)
+        if kind == "tool_progress":
+            return self._tool_progress(event)
         if kind == "result":
             self._result = event
             return self._result_text(event)
@@ -768,7 +772,46 @@ class ClaudeCodeParser:
         if not refine:
             update["status"] = "pending"
         self._emitted.add(tool_id)
+        self._open.add(tool_id)
         return self._with_parent(update, parent)
+
+    def _tool_progress(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """A running tool's heartbeat, as the adapter forwards it.
+
+        Claude Code reports a long tool call every 30 s (``tool_progress``,
+        ``heartbeat``) under a derived id (``<tool_use_id>-heartbeat-<n>``)
+        with the call's own id as ``parent_tool_use_id``. The adapter sends an
+        ``in_progress`` update for the open call it resolves to, which is
+        activity for the idle watchdog's per-call grace. (The adapter also
+        attributes a beat to a background subagent's spawning call; no
+        background subagent is tracked here.)
+        """
+        tool_id = event.get("tool_use_id")
+        if tool_id not in self._open:
+            tool_id = event.get("parent_tool_use_id")
+        if not isinstance(tool_id, str) or tool_id not in self._open:
+            return []
+        response: dict[str, Any] = {}
+        for source, target in (
+            ("elapsed_time_seconds", "elapsedTimeSeconds"),
+            ("subagent_type", "subagentType"),
+            ("subagent_retry", "subagentRetry"),
+        ):
+            if event.get(source) is not None:
+                response[target] = event[source]
+        return [
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_id,
+                "status": "in_progress",
+                "_meta": {
+                    "claudeCode": {
+                        "toolName": event.get("tool_name"),
+                        "toolResponse": response,
+                    }
+                },
+            }
+        ]
 
     def _stream_event(self, event: dict[str, Any]) -> list[dict[str, Any]]:
         raw = _obj(event.get("event"))
@@ -850,6 +893,7 @@ class ClaudeCodeParser:
             tool_id = block.get("tool_use_id")
             if not isinstance(tool_id, str):
                 continue
+            self._open.discard(tool_id)
             status = "failed" if block.get("is_error") else "completed"
             known = self._tool_uses.get(tool_id)
             if known is None:
