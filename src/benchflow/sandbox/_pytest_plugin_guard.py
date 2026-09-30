@@ -483,7 +483,9 @@ def _validate(names, *, entry_points=True):
             )
             message += (
                 "; the verifier installed it after the agent stopped, "
-                "so the run is not scored"
+                "so the run is not scored. A task problem: install verifier "
+                "plugins with uvx or into the image; `bench tasks check` "
+                "flags this task"
             )
         raise Rejected(message)
 

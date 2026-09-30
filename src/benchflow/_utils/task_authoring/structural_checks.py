@@ -80,21 +80,25 @@ def _check_ctrf_path(test_sh: Path) -> list[str]:
 
 
 # Workspace plugin installs. The verifier's pytest plugin guard
-# (sandbox/_pytest_plugin_guard.py) refuses plugin code in the agent's
-# workspace and in /tmp: the agent could have planted or shadowed it there. A
-# verifier script that builds its own Python environment in the working
-# directory (the image WORKDIR, normally the workspace) and installs a pytest
+# (sandbox/_pytest_plugin_guard.py) refuses plugin code from any place the
+# agent could write: its workspace, its home, /tmp, /var/tmp, /logs and
+# /testbed (lockdown._blocked_verifier_path_prefixes). A verifier script that
+# builds its own Python environment in one of them and installs a pytest
 # plugin into it therefore has that plugin refused every time, and because
 # test.sh installed it after the agent stopped, every trial ends unscored
 # (Terminal-Bench 2's mailman: ``uv venv .tb`` then ``uv pip install
 # pytest-json-ctrf``; SkillsBench's powerlifting-coef-calc: ``uv init`` and
-# ``uv add pytest-json-ctrf``).
+# ``uv add pytest-json-ctrf`` in its WORKDIR /root, the workspace; the same
+# holds for an explicit /root/.venv or ~/.venv there).
 _SCRIPT_COMMENT_RE = re.compile(r"^\s*#(?!!).*$|\s#.*$", re.MULTILINE)
 _SCRIPT_COMMAND_SPLIT_RE = re.compile(r"\n|;|&&|\|\||\|")
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _PYTEST_PLUGIN_RE = re.compile(r"^pytest[-_][A-Za-z0-9][A-Za-z0-9_.-]*")
-# Absolute places the guard also refuses in the agent's sandbox.
-_GUARD_REFUSED_PREFIXES = ("/tmp", "/var/tmp")
+# Absolute places the guard refuses in the agent's sandbox whatever the image:
+# BenchFlow's runtime directories and the sandbox user's home (/home/agent).
+_GUARD_REFUSED_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed", "/home")
+# The verifier runs as root, so its $HOME and ~ are /root.
+_VERIFIER_HOME = "/root"
 # Options of the environment-making commands that take a value.
 _VENV_VALUE_OPTIONS = frozenset(
     {"-p", "--python", "--prompt", "--index-url", "--seed", "--relocatable"}
@@ -102,16 +106,89 @@ _VENV_VALUE_OPTIONS = frozenset(
 _TARGET_OPTIONS = ("--target", "-t", "--prefix")
 
 
-def _guard_refuses_path(path: str) -> bool:
-    """A path the plugin guard refuses code from: relative (the workspace) or /tmp."""
-    if not path or path.startswith(("$HOME", "${HOME}", "~")):
+def _resolve_script_path(path: str) -> str | None:
+    """``path`` as the verifier sees it: ``$HOME``/``~`` expanded, or None when unknown."""
+    for home in ("${HOME}", "$HOME", "~"):
+        if path == home or path.startswith(home + "/"):
+            return _VERIFIER_HOME + path[len(home) :]
+    if path.startswith("$"):
+        return None  # another variable: unknown
+    return path
+
+
+def _guard_refuses_path(path: str, workspace: str | None = None) -> bool:
+    """A path the plugin guard refuses code from.
+
+    Relative paths are the working directory (the image WORKDIR, normally the
+    workspace); absolute ones are refused under the workspace (when known),
+    the agent's home, /tmp, /var/tmp, /logs or /testbed.
+    """
+    resolved = _resolve_script_path(path) if path else None
+    if not resolved:
         return False
-    if path.startswith("/"):
-        return any(
-            path == prefix or path.startswith(prefix + "/")
-            for prefix in _GUARD_REFUSED_PREFIXES
+    if not resolved.startswith("/"):
+        return True
+    prefixes = (*_GUARD_REFUSED_PREFIXES, *((workspace,) if workspace else ()))
+    return any(
+        resolved == prefix or resolved.startswith(prefix.rstrip("/") + "/")
+        for prefix in prefixes
+    )
+
+
+def _environment_of(python_or_bin: str) -> str:
+    """The environment a ``.../bin/python`` or ``.../bin/pip`` belongs to."""
+    head, sep, _tail = python_or_bin.rpartition("/bin/")
+    return head if sep else python_or_bin
+
+
+_WORKDIR_RE = re.compile(r"^\s*WORKDIR\s+(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_FROM_RE = re.compile(r"^\s*FROM\s+(\S+)", re.IGNORECASE | re.MULTILINE)
+# Images whose WORKDIR is /, where BenchFlow makes /root the workspace.
+_PLAIN_BASE_RE = re.compile(
+    r"^(?:docker\.io/)?(?:library/)?(?:ubuntu|debian|python|alpine|node|golang|rust|"
+    r"fedora|centos|rockylinux|almalinux|amazonlinux|buildpack-deps)(?:[:@]|$)"
+)
+
+
+def task_workspace(task_dir: Path) -> str | None:
+    """The agent's workspace for a task, or None when it cannot be told statically.
+
+    ``sandbox.workdir`` when the task declares one; else the Dockerfile's
+    last WORKDIR (BenchFlow makes /root the workspace when it is /, as it is
+    for plain distribution images). A prebuilt image's WORKDIR is unknown.
+    """
+    try:
+        from benchflow.task.runtime_view import TaskRuntimeView
+
+        workdir = getattr(
+            getattr(TaskRuntimeView.from_task_dir(task_dir).config, "sandbox", None),
+            "workdir",
+            None,
         )
-    return not path.startswith("$")
+    except Exception:
+        workdir = None
+    if isinstance(workdir, str) and workdir.strip().startswith("/"):
+        return workdir.strip().rstrip("/") or None
+    dockerfile = task_dir / "environment" / "Dockerfile"
+    try:
+        text = dockerfile.read_text(errors="replace")
+    except OSError:
+        return None
+    stages = _FROM_RE.split(text)
+    if len(stages) < 3:
+        return None
+    base, last = stages[-2], stages[-1]
+    current: str | None = None
+    for match in _WORKDIR_RE.finditer(last):
+        value = match.group(1).strip().strip("'\"")
+        if value.startswith("$"):
+            return None
+        current = (
+            value if value.startswith("/") else f"{current or ''}/{value}"
+        ).rstrip("/") or "/"
+    if current is None:
+        return _VERIFIER_HOME if _PLAIN_BASE_RE.match(base) else None
+    return _VERIFIER_HOME if current == "/" else current
 
 
 def _command_words(command: str) -> list[str]:
@@ -136,45 +213,86 @@ def _first_argument(words: list[str]) -> str | None:
     return None
 
 
-def _install_target(words: list[str]) -> str | None:
-    for option in _TARGET_OPTIONS:
-        if option in words[:-1]:
-            target = words[words.index(option) + 1]
-            if _guard_refuses_path(target):
-                return f"--target {target}" if option == "-t" else f"{option} {target}"
+def _option_value(words: list[str], options: tuple[str, ...]) -> tuple[str, str] | None:
+    """The first ``--opt VALUE`` or ``--opt=VALUE`` among ``options``: (option, value)."""
+    for i, word in enumerate(words):
+        for option in options:
+            if word == option and i + 1 < len(words):
+                return option, words[i + 1]
+            if option.startswith("--") and word.startswith(option + "="):
+                return option, word.split("=", 1)[1]
     return None
 
 
-def workspace_plugin_installs(text: str) -> tuple[list[str], list[str]]:
+def _install_target(
+    words: list[str], workspace: str | None = None, made: set[str] | None = None
+) -> str | None:
+    found = _option_value(words, _TARGET_OPTIONS)
+    if found is not None:
+        option, target = found
+        if _guard_refuses_path(target, workspace):
+            return f"--target {target}" if option == "-t" else f"{option} {target}"
+    found = _option_value(words, ("--python", "-p"))
+    if found is not None:
+        env = _environment_of(found[1])
+        if _guard_refuses_path(env, workspace) and env.rstrip("/") not in (made or ()):
+            return f"{found[0]} {found[1]}"
+    return None
+
+
+def workspace_plugin_installs(
+    text: str, *, workspace: str | None = None
+) -> tuple[list[str], list[str]]:
     """What in a verifier script puts pytest plugins where the plugin guard refuses them.
 
-    Returns the commands that make or fill a Python environment in the working
-    directory or /tmp, and the pytest plugins the script installs with
-    anything but ``uvx`` (uv's cache, which BenchFlow moves to a directory
-    the guard trusts). A script needs both to be flagged.
+    Returns the commands that make, activate or fill a Python environment in
+    a place the agent could write (the working directory, ``workspace`` when
+    known, the agent's home, /tmp, /var/tmp, /logs, /testbed; ``$HOME`` and
+    ``~`` are the verifier's, /root), and the pytest plugins the script
+    installs with anything but ``uvx`` (uv's cache, which BenchFlow moves to
+    a directory the guard trusts). A script needs both to be flagged.
     """
     text = _SCRIPT_COMMENT_RE.sub("", text.replace("\\\n", " "))
     places: list[str] = []
     plugins: list[str] = []
+    made: set[str] = set()  # environments a recorded command made
+
+    def refused(path: str) -> bool:
+        return _guard_refuses_path(path, workspace)
+
+    def made_here(path: str) -> None:
+        made.add(path.rstrip("/"))
+
+    def new_place(env: str) -> bool:
+        """An environment the script uses but no recorded command made."""
+        return refused(env) and env.rstrip("/") not in made
+
     for command in _SCRIPT_COMMAND_SPLIT_RE.split(text):
         words = _command_words(command.strip())
         if not words:
             continue
         program = words[0].rsplit("/", 1)[-1]
-        if program == "uv" and len(words) > 1:
+        if program in {"source", "."} and len(words) > 1:
+            if words[1].endswith("/bin/activate") and new_place(
+                _environment_of(words[1])
+            ):
+                places.append(f"{program} {words[1]}")
+        elif program == "uv" and len(words) > 1:
             subcommand, rest = words[1], words[2:]
             if subcommand == "venv":
                 target = _first_argument(rest) or ".venv"
-                if _guard_refuses_path(target):
+                if refused(target):
                     places.append(f"uv venv {target}")
+                    made_here(target)
             elif subcommand in {"init", "add", "sync"}:
-                if not any(w.startswith(("--project", "--directory")) for w in rest):
+                project = _option_value(rest, ("--project", "--directory"))
+                if project is None or refused(project[1]):
                     places.append(f"uv {subcommand}")
                 if subcommand == "add":
                     plugins += [w for w in rest if _PYTEST_PLUGIN_RE.match(w)]
             elif subcommand == "pip" and rest[:1] == ["install"]:
                 plugins += [w for w in rest[1:] if _PYTEST_PLUGIN_RE.match(w)]
-                if target := _install_target(rest):
+                if target := _install_target(rest, workspace, made):
                     places.append(f"uv pip install {target}")
         elif program.startswith("pip") or (
             program.startswith("python") and words[1:3] == ["-m", "pip"]
@@ -182,18 +300,20 @@ def workspace_plugin_installs(text: str) -> tuple[list[str], list[str]]:
             rest = words[1:] if program.startswith("pip") else words[3:]
             if rest[:1] == ["install"]:
                 plugins += [w for w in rest[1:] if _PYTEST_PLUGIN_RE.match(w)]
-                if target := _install_target(rest):
+                if target := _install_target(rest, workspace, made):
                     places.append(f"pip install {target}")
-                if "/" in words[0] and _guard_refuses_path(words[0]):
+                if "/" in words[0] and refused(_environment_of(words[0])):
                     places.append(words[0])
         elif program.startswith("python") and words[1:3] == ["-m", "venv"]:
             target = _first_argument(words[3:])
-            if target and _guard_refuses_path(target):
+            if target and refused(target):
                 places.append(f"python -m venv {target}")
+                made_here(target)
         elif program == "virtualenv":
             target = _first_argument(words[1:])
-            if target and _guard_refuses_path(target):
+            if target and refused(target):
                 places.append(f"virtualenv {target}")
+                made_here(target)
     return list(dict.fromkeys(places)), list(dict.fromkeys(plugins))
 
 
@@ -204,15 +324,17 @@ _CLEARS_PYTEST_ADDOPTS_RE = re.compile(
 )
 
 
-def _check_workspace_plugin_installs(verifier_dir: Path, *, label: str) -> list[str]:
-    """Warn when a verifier script installs pytest plugins into the workspace."""
+def _check_workspace_plugin_installs(
+    verifier_dir: Path, *, label: str, workspace: str | None = None
+) -> list[str]:
+    """Warn when a verifier script installs pytest plugins where the agent could write."""
     warnings = []
     for script in sorted(verifier_dir.glob("*.sh")):
         try:
             text = script.read_text(errors="replace")
         except OSError:
             continue
-        places, plugins = workspace_plugin_installs(text)
+        places, plugins = workspace_plugin_installs(text, workspace=workspace)
         if not (places and plugins):
             continue
         if _CLEARS_PYTEST_ADDOPTS_RE.search(_SCRIPT_COMMENT_RE.sub("", text)):
@@ -228,10 +350,11 @@ def _check_workspace_plugin_installs(verifier_dir: Path, *, label: str) -> list[
                 ": the verifier's pytest plugin guard refuses plugin code "
                 "there, so every trial ends unscored"
             )
+        where = f"; the workspace is {workspace}" if workspace else ""
         warnings.append(
             f"{label}/{script.name} installs pytest plugins "
-            f"({', '.join(plugins)}) into a Python environment in the workspace "
-            f"or /tmp ({', '.join(places)}){effect}. Install them with uvx "
+            f"({', '.join(plugins)}) into a Python environment the agent could "
+            f"write ({', '.join(places)}{where}){effect}. Install them with uvx "
             "into uv's default cache, which BenchFlow moves to a directory the "
             f"guard trusts (for example `uvx --with {plugins[0]} pytest ...`), "
             "or into the image"
