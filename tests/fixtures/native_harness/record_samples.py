@@ -8,7 +8,10 @@ deterministic fake model (``tests/integration/deterministic``) on the host,
 launches each CLI exactly as the harness does (its command builder), and
 writes four samples per CLI into ``<cli>-<version>/``: a first turn, a resumed
 second turn, a failing tool call, and a turn cancelled with SIGINT while its
-tool runs (40 s in, so Claude Code's tool heartbeat is in it). Paths and ids
+tool runs (40 s in, so Claude Code's tool heartbeat is in it). Claude Code
+gets a fifth, ``usage-limit``: a subscription login whose usage is spent, from
+a server that answers the API's HTTP 429 with the
+``anthropic-ratelimit-unified-*`` headers of a rejected claim. Paths and ids
 that change per run are replaced with placeholders;
 ``tests/test_native_harness_parsers.py`` reads the result.
 
@@ -28,7 +31,8 @@ import sys
 import tempfile
 import threading
 import time
-from http.server import ThreadingHTTPServer
+from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -52,6 +56,50 @@ def _fake(scripts: dict) -> tuple[ThreadingHTTPServer, str]:
     fake._Handler.scripts = scripts
     fake._Handler.log_path = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), fake._Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+class _LimitHandler(BaseHTTPRequestHandler):
+    """Answers every call the way the API answers a spent subscription."""
+
+    resets_at = 0
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        body = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": "This request would exceed your account's rate limit",
+                },
+            }
+        ).encode()
+        self.send_response(429)
+        self.send_header("content-type", "application/json")
+        self.send_header("anthropic-ratelimit-unified-status", "rejected")
+        self.send_header(
+            "anthropic-ratelimit-unified-representative-claim", "seven_day"
+        )
+        self.send_header("anthropic-ratelimit-unified-reset", str(self.resets_at))
+        self.send_header("anthropic-ratelimit-unified-7d-status", "rejected")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST
+
+
+def _limit_server() -> tuple[ThreadingHTTPServer, str]:
+    # A fixed reset, so the sample does not change from one recording to the
+    # next: 2026-10-03 18:08 UTC, the time the recorded text names.
+    _LimitHandler.resets_at = int(datetime(2026, 10, 3, 18, 8, tzinfo=UTC).timestamp())
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LimitHandler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}"
@@ -161,6 +209,21 @@ def record(cli: str, prefix: Path, out_root: Path) -> None:
     samples["cancelled"] = _run(
         argv(NativeTurn(cwd=str(work))), "Sleep. [[fake-llm:sleep]]", env, work, 40.0
     )
+    if cli == "claude-code":
+        # A spent subscription. The words depend on the login being a
+        # subscription (CLAUDE_CODE_OAUTH_TOKEN): with an API key the same 429
+        # is retried ten times and reported as a plain "API Error: Request
+        # rejected (429) ...", with no limit or reset in it.
+        limit_srv, limit_url = _limit_server()
+        limit_env = {k: v for k, v in env.items() if k != "ANTHROPIC_AUTH_TOKEN"}
+        limit_env["ANTHROPIC_BASE_URL"] = limit_url
+        limit_env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat01-fake"
+        limit_env["TZ"] = "UTC"
+        samples["usage-limit"] = _run(
+            argv(NativeTurn(cwd=str(work))), "Create hello.txt.", limit_env, work, None
+        )
+        limit_srv.shutdown()
+        replacements[limit_url] = "http://fake-llm"
     for name, (text, err, rc) in samples.items():
         (out_dir / f"{name}.jsonl").write_text(_scrub(text, replacements))
         print(

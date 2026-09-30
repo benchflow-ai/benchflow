@@ -652,7 +652,12 @@ class NativeCLIClient:
         if self._cancel_requested:
             return StopReason.CANCELLED
         if outcome.error is not None:
-            raise NativeHarnessError(cli, outcome.error)
+            raise NativeHarnessError(
+                cli,
+                outcome.error,
+                agent_text=outcome.agent_text,
+                rate_limit=outcome.rate_limit,
+            )
         if outcome.completed and outcome.stop_reason is not None:
             return outcome.stop_reason
         # The stream ended with no final event. If the sandbox answers, the

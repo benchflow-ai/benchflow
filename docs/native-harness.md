@@ -62,6 +62,14 @@ A native CLI reaches a model only through BenchFlow's route, and `connect_native
 
 The deterministic tier checks that every model call a native CLI makes reaches the proxy (the model responses in the CLI's own stream equal the calls the proxy captured), and runs native Codex on a task whose agent network is an allowlist (`example.com` only): the run passes, and the egress proxy records no attempt to reach api.openai.com, chatgpt.com or any other host.
 
+## A login with no usage left
+
+A Claude Code subscription run can end because the login's usage is spent rather than because the task was hard, and the native harness keeps enough to tell the two apart. The failed turn carries three things: the CLI's own words (`NativeHarnessError.agent_text`, for example `You've hit your weekly limit · resets Oct 3, 6:08pm (UTC)`), the same message with the HTTP status appended (`.message`, what the rollout files), and the CLI's machine-readable record of the limit (`.rate_limit`: `{"status": "rejected", "rateLimitType": "seven_day", "resetsAt": <unix time>, "isUsingOverage": false}`), which names the window and the reset without reading the message. `tests/fixtures/native_harness/claude-code-2.1.280/usage-limit.jsonl` is that exchange, recorded from the pinned CLI against a server that answers the API's HTTP 429 with the `anthropic-ratelimit-unified-*` headers of a rejected claim.
+
+This is a Claude Code path only. Native Codex runs solely through BenchFlow's proxy on an API key (`CODEX_ACCESS_TOKEN`, `CODEX_AUTH_JSON` and `CODEX_API_KEY` are removed from its environment), so it has no subscription to run out of; a 429 there is an ordinary provider rate limit.
+
+How the CLI reports it depends on the login, which matters for anything matching on the words: on a subscription login (`CLAUDE_CODE_OAUTH_TOKEN`) it fails at once with the limit text and the record above, while with an API key the same 429 is an ordinary rate limit — retried ten times over about three minutes inside the CLI, then reported as `API Error: Request rejected (429) ...`, with no limit, window or reset in it and no `rate_limit_event`.
+
 ## Pins
 
 | CLI | Pin | Where |

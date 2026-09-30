@@ -31,7 +31,7 @@ from benchflow.native_harness.codex import (
     codex_mcp_overrides,
     unwrap_shell,
 )
-from benchflow.native_harness.spec import NativeTurn
+from benchflow.native_harness.spec import NativeHarnessError, NativeTurn
 from benchflow.trajectories._capture import _capture_session_trajectory
 
 FIXTURES = Path(__file__).parent / "fixtures" / "native_harness"
@@ -59,13 +59,12 @@ def _replay(parser, path: Path) -> tuple[list[dict], object]:
 
 def test_samples_exist_for_the_pinned_versions():
     """A pin bump without re-recorded samples fails here, not in a rollout."""
-    for directory in (CLAUDE, CODEX):
-        assert sorted(p.name for p in directory.glob("*.jsonl")) == [
-            "cancelled.jsonl",
-            "resumed.jsonl",
-            "tool-error.jsonl",
-            "turn.jsonl",
-        ], directory
+    common = ["cancelled.jsonl", "resumed.jsonl", "tool-error.jsonl", "turn.jsonl"]
+    # Claude Code has a fifth: a subscription login with no usage left.
+    assert sorted(p.name for p in CLAUDE.glob("*.jsonl")) == sorted(
+        [*common, "usage-limit.jsonl"]
+    )
+    assert sorted(p.name for p in CODEX.glob("*.jsonl")) == common
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +184,60 @@ def test_claude_tool_heartbeat_marks_the_running_call_in_progress():
     # beat for a call never seen is dropped.
     assert parser.feed(beats[0]) == []
     assert parser.feed({**beats[0], "parent_tool_use_id": "toolu_other"}) == []
+
+
+def test_claude_usage_limit_keeps_the_clis_words_and_its_record():
+    """A spent subscription: the turn fails, and says which window and when.
+
+    Claude Code reports a login with no usage left twice over: as the words
+    it shows the user, and as a ``rate_limit_event`` record. The client keeps
+    both, undecorated, so a caller can tell a usage limit from any other
+    failed turn without reading the message: ``error`` carries the HTTP
+    status this package appends, ``agent_text`` does not.
+    """
+    trajectory, outcome = _replay(
+        ClaudeCodeParser("/work"), CLAUDE / "usage-limit.jsonl"
+    )
+    assert outcome.completed and outcome.stop_reason is None
+    assert outcome.agent_text == (
+        "You've hit your weekly limit \u00b7 resets Oct 3, 6:08pm (UTC)"
+    )
+    # The message the rollout files adds the status; the agent's words do not.
+    assert outcome.error == f"{outcome.agent_text} (HTTP 429)"
+    assert outcome.rate_limit == {
+        "status": "rejected",
+        "rateLimitType": "seven_day",
+        "resetsAt": 1791050880,
+        "isUsingOverage": False,
+    }
+    # The refusal reached the trajectory as the assistant's own message.
+    assert trajectory == [{"type": "agent_message", "text": outcome.agent_text}]
+
+
+def test_claude_usage_limit_reaches_the_caller_on_the_error():
+    """``NativeHarnessError`` carries the words and the record, not just the text.
+
+    ``message`` is wrapped (``Native harness error (...)``) and suffixed, so a
+    reader that matches on wording must use ``agent_text``; ``rate_limit``
+    names the window and the reset with no parsing at all.
+    """
+    parser = ClaudeCodeParser("/work")
+    for event in _events(CLAUDE / "usage-limit.jsonl"):
+        parser.feed(event)
+    outcome = parser.outcome()
+    err = NativeHarnessError(
+        "claude-code",
+        outcome.error,
+        agent_text=outcome.agent_text,
+        rate_limit=outcome.rate_limit,
+    )
+    assert err.message.startswith("Native harness error (claude-code): You've hit")
+    assert err.agent_text.startswith("You've hit your weekly limit")
+    assert "(HTTP 429)" not in err.agent_text
+    assert err.rate_limit["rateLimitType"] == "seven_day"
+    # Without one, the words are the message's own (no rate-limit record).
+    plain = NativeHarnessError("claude-code", "the turn failed")
+    assert plain.agent_text == "the turn failed" and plain.rate_limit is None
 
 
 def test_claude_init_event_names_the_pinned_cli():

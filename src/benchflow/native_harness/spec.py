@@ -45,9 +45,24 @@ class NativeHarnessError(AgentProtocolError):
     to it as for an ACP error).
     """
 
-    def __init__(self, cli: str, message: str, *, exit_code: int | None = None):
+    def __init__(
+        self,
+        cli: str,
+        message: str,
+        *,
+        exit_code: int | None = None,
+        agent_text: str | None = None,
+        rate_limit: dict[str, Any] | None = None,
+    ):
         self.cli = cli
         self.exit_code = exit_code
+        # The CLI's own words, unwrapped and undecorated: a caller that
+        # classifies a failure by its wording (a subscription usage limit)
+        # must read this, not ``message``, which is prefixed and suffixed.
+        self.agent_text = agent_text if agent_text is not None else message
+        # The CLI's record of a rejected usage limit, when it reported one
+        # (see NativeTurnOutcome.rate_limit).
+        self.rate_limit = rate_limit
         self.message = f"Native harness error ({cli}): {message}"
         super().__init__(self.message)
 
@@ -93,7 +108,14 @@ class NativeTurnOutcome:
     ``usage_total`` and leaves ``usage`` None; the client takes the turn's
     share from consecutive totals. ``cost_usd`` is the CLI's own list-price
     estimate; it is kept for evidence, never used as the run's cost.
-    ``error`` is set when the CLI reported a failed turn.
+    ``error`` is set when the CLI reported a failed turn. ``agent_text`` is
+    the same failure in the CLI's own words, before this package adds anything
+    to it (Claude Code's ``(HTTP 429)``), for a reader that matches on what the
+    agent said. ``rate_limit`` is the CLI's own record of a rejected usage
+    limit when it reports one (Claude Code's ``rate_limit_event``:
+    ``{"status": "rejected", "rateLimitType": "seven_day", "resetsAt":
+    <unix time>}``), which names the window and the reset without reading the
+    message (``You've hit your weekly limit · resets ...``).
     """
 
     stop_reason: StopReason | None = None
@@ -101,6 +123,8 @@ class NativeTurnOutcome:
     usage_total: dict[str, int] | None = None
     cost_usd: float | None = None
     error: str | None = None
+    agent_text: str | None = None
+    rate_limit: dict[str, Any] | None = None
     session_id: str | None = None
     completed: bool = False
 

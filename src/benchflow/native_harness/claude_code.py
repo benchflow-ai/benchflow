@@ -695,6 +695,8 @@ class ClaudeCodeParser:
         self._session_id: str | None = None
         self.init: dict[str, Any] | None = None
         self._result: dict[str, Any] | None = None
+        # The last rejected rate_limit_event's rate_limit_info, if any
+        self._rate_limit: dict[str, Any] | None = None
         # tool_use id -> (name, input) of calls surfaced to the session
         self._tool_uses: dict[str, tuple[str, Any]] = {}
         self._emitted: set[str] = set()
@@ -725,6 +727,15 @@ class ClaudeCodeParser:
             return self._user(event)
         if kind == "tool_progress":
             return self._tool_progress(event)
+        if kind == "rate_limit_event":
+            # Claude Code reports a spent subscription as a record, not only
+            # as words: {"status": "rejected", "rateLimitType": "seven_day",
+            # "resetsAt": <unix time>}. It is kept so a caller can say which
+            # window ran out and when it resets without parsing the message.
+            info = event.get("rate_limit_info")
+            if isinstance(info, dict) and info.get("status") == "rejected":
+                self._rate_limit = info
+            return []
         if kind == "result":
             self._result = event
             return self._result_text(event)
@@ -981,6 +992,12 @@ class ClaudeCodeParser:
             outcome.error = detail
         else:
             outcome.stop_reason = StopReason.END_TURN
-        if outcome.error is not None and result.get("api_error_status"):
-            outcome.error += f" (HTTP {result['api_error_status']})"
+        if outcome.error is not None:
+            # Keep the CLI's own words before the HTTP status is added: a
+            # usage limit is recognised by its exact wording, and the suffix
+            # sits where the reset time would be read from.
+            outcome.agent_text = outcome.error
+            outcome.rate_limit = self._rate_limit
+            if result.get("api_error_status"):
+                outcome.error += f" (HTTP {result['api_error_status']})"
         return outcome
