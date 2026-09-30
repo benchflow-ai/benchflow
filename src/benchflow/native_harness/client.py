@@ -103,14 +103,15 @@ def _process_functions(run_id: str) -> str:
 
     Marked processes are those whose initial environment holds this turn's
     ``BENCHFLOW_NATIVE_RUN``: the CLI, the shells around it and every tool
-    subprocess the CLI starts. Needs only ``/proc``, ``tr``, ``grep``,
-    ``sed`` and ``cut``.
+    subprocess the CLI starts. One ``grep`` reads every environment (the run
+    id is a unique 32-digit hex string), so the scan costs one process
+    however many run in the sandbox. Needs ``/proc``, ``grep``, ``sed`` and
+    ``cut``.
     """
     marker = shlex.quote(f"{RUN_ENV}={run_id}")
     return (
-        "marked() { for e in /proc/[0-9]*/environ; do p=${e#/proc/}; p=${p%/environ}; "
-        f"tr '\\0' '\\n' < \"$e\" 2>/dev/null | grep -qxF {marker} && echo \"$p\"; "
-        "done; }; "
+        f"marked() {{ grep -lF {marker} /proc/[0-9]*/environ 2>/dev/null | "
+        "sed -n 's#^/proc/\\([0-9][0-9]*\\)/environ$#\\1#p'; }; "
         "leaders() { for p in $(marked); do "
         "g=$(sed 's/^.*) //' /proc/$p/stat 2>/dev/null | cut -d' ' -f3); "
         '[ "$g" = "$p" ] && echo "$p"; done; }; '
@@ -127,11 +128,12 @@ def kill_script(run_id: str, *, grace_sec: int) -> str:
     shared with anything else (a CLI started without job control) is never
     hit; every marked process is then killed by pid.
     """
+    # Polls every 0.2 s (every second where sleep takes whole seconds only).
     return (
         _process_functions(run_id)
         + "for g in $(leaders); do kill -INT -- -$g 2>/dev/null; done; "
-        f'i=0; while [ $i -lt {int(grace_sec)} ] && [ -n "$(alive)" ]; do '
-        "sleep 1; i=$((i+1)); done; "
+        f'i=0; while [ $i -lt {int(grace_sec) * 5} ] && [ -n "$(alive)" ]; do '
+        "sleep 0.2 2>/dev/null || { sleep 1; i=$((i+4)); }; i=$((i+1)); done; "
         "for g in $(leaders); do kill -KILL -- -$g 2>/dev/null; done; "
         "for p in $(marked); do kill -KILL $p 2>/dev/null; done; "
         "true"
@@ -232,6 +234,7 @@ class NativeCLIClient:
         self._totals: dict[str, int] = dict.fromkeys(_USAGE_FIELDS, 0)
         self._last_total: dict[str, int] | None = None
         self._exit_code: int | None = None
+        self._kill_task: asyncio.Future[None] | None = None
         self._closed = False
         agent_dir = rollout_dir / "agent"
         self._stream_path = agent_dir / f"{harness.cli}.jsonl"
@@ -367,6 +370,11 @@ class NativeCLIClient:
             stderr = getattr(process, "stderr_tail", "")
             if isinstance(stderr, str) and stderr.strip():
                 self._log(redact_trajectory_text(stderr.rstrip()))
+        if self._kill_task is not None and not self._kill_task.done():
+            # A cancel is stopping this turn's processes: return once they
+            # are gone.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._kill_task)
         outcome = parser.outcome()
         exit_code = self._exit_code
         if exit_code is None and end is not None:
@@ -430,7 +438,14 @@ class NativeCLIClient:
         if run_id is None:
             return
         self._cancel_requested = True
-        await self._kill(run_id, grace_sec=CANCEL_GRACE_SEC)
+        # The prompt waits for this kill before it returns (see prompt()), so
+        # a turn reported cancelled has no process left, even when the kernel
+        # stops waiting for cancel() itself once the prompt has returned.
+        if self._kill_task is None or self._kill_task.done():
+            self._kill_task = asyncio.ensure_future(
+                self._kill(run_id, grace_sec=CANCEL_GRACE_SEC)
+            )
+        await asyncio.shield(self._kill_task)
 
     async def close(self) -> None:
         """Kill any running turn and release the transport and logs."""

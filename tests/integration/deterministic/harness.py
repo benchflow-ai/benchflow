@@ -54,6 +54,11 @@ IN_SANDBOX_FAKE_URL = "http://127.0.0.1:8911"
 
 AGENT = "claude-agent-acp"
 MODEL = "claude-haiku-4-5"
+# Codex runs against the fake's Responses API route through the proxy. gpt-5.4
+# is in the model catalog of the Codex release both harnesses pin (0.156.1),
+# so Codex offers its full tool surface.
+CODEX_AGENT = "codex-acp"
+CODEX_MODEL = "gpt-5.4"
 # Not a credential: the fake provider accepts any key. The LiteLLM route needs
 # one to be present, and it never leaves the sandbox/host proxy.
 DUMMY_KEY = "fake-deterministic-key"
@@ -256,7 +261,14 @@ POLICY_ROUTES = {
 
 def route_model(route: str) -> str:
     """The ``--model`` a route runs with."""
+    if route == "codex":
+        return CODEX_MODEL
     return POLICY_ROUTES[route][0] if route in POLICY_ROUTES else MODEL
+
+
+def route_agent(route: str) -> str:
+    """The ``--agent`` a route runs (Codex for the ``codex`` route)."""
+    return CODEX_AGENT if route == "codex" else AGENT
 
 
 def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, str]:
@@ -274,6 +286,12 @@ def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, 
             "ANTHROPIC_AUTH_TOKEN": DUMMY_KEY,
             "ANTHROPIC_BASE_URL": IN_SANDBOX_FAKE_URL,
         }
+    if route == "codex":
+        # The proxy's upstream is the fake's Responses API (openai/ routes
+        # append /responses to the base URL).
+        base = IN_SANDBOX_FAKE_URL if proxy_runs_in_sandbox(sandbox) else host_fake_url
+        assert base, "a host LiteLLM proxy needs the host fake provider URL"
+        return {"OPENAI_API_KEY": DUMMY_KEY, "BENCHFLOW_PROVIDER_BASE_URL": base + "/v1"}
     assert route == "proxy", route
     base = IN_SANDBOX_FAKE_URL if proxy_runs_in_sandbox(sandbox) else host_fake_url
     assert base, "a host LiteLLM proxy needs the host fake provider URL"
@@ -290,11 +308,12 @@ def check_route_is_hermetic(route: str, agent_env: dict[str, str]) -> None:
     from benchflow.agents.env import resolve_agent_env, uses_native_subscription_auth
 
     model = route_model(route)
-    resolved = resolve_agent_env(AGENT, model, dict(agent_env))
+    agent = route_agent(route)
+    resolved = resolve_agent_env(agent, model, dict(agent_env))
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in resolved, (
         "would upload host credentials"
     )
-    native = uses_native_subscription_auth(AGENT, model, resolved)
+    native = uses_native_subscription_auth(agent, model, resolved)
     assert native == (route == "native"), (route, native)
     if route == "native":
         assert resolved.get("ANTHROPIC_BASE_URL") == IN_SANDBOX_FAKE_URL
@@ -330,7 +349,7 @@ def bench_command(
         "--tasks-dir",
         str(tasks_dir),
         "--agent",
-        AGENT,
+        route_agent(route),
         "--model",
         route_model(route),
         "--sandbox",
@@ -343,13 +362,15 @@ def bench_command(
     env = dict(os.environ)
     # A developer's real provider settings must not leak into a scripted run.
     for key in list(env):
-        if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "OPENAI_")) or key in {
+        if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "OPENAI_", "CODEX_")) or key in {
             "BENCHFLOW_PROVIDER_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY",
         }:
             env.pop(key)
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env["BENCHFLOW_SKIP_UPDATE_CHECK"] = "1"
+    # Every request each harness sends into the proxy, for wire parity.
+    env["BENCHFLOW_LITELLM_WIRE_LOG_DIR"] = str(jobs_dir / "wire")
     saved = {k: os.environ.pop(k) for k in list(os.environ) if k not in env}
     try:
         check_route_is_hermetic(route, agent_env)
@@ -420,6 +441,9 @@ def llm_calls(trial_dir: Path) -> list[dict[str, Any]]:
     for row in read_jsonl(path):
         request = (row.get("request") or {}).get("body") or {}
         response = (row.get("response") or {}).get("body") or {}
+        if isinstance(response.get("output"), list):
+            calls.append(_responses_call(request, response))
+            continue
         usage = response.get("usage") or {}
         choice = (response.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -445,6 +469,36 @@ def llm_calls(trial_dir: Path) -> list[dict[str, Any]]:
             }
         )
     return calls
+
+
+def _responses_call(request: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
+    """One Responses API exchange (Codex) in :func:`llm_calls`' shape."""
+    usage = response.get("usage") or {}
+    output = [item for item in response.get("output") or [] if isinstance(item, dict)]
+    texts = [
+        part.get("text", "")
+        for item in output
+        if item.get("type") == "message"
+        for part in item.get("content") or []
+        if isinstance(part, dict)
+    ]
+    calls = [item for item in output if item.get("type") == "function_call"]
+    return {
+        "kind": "main" if request.get("tools") else "side",
+        "n_messages": len(request.get("input") or []),
+        "finish_reason": "tool_calls" if calls else "stop",
+        "text": "".join(texts) or None,
+        "tool_calls": [
+            {
+                "id": call.get("call_id"),
+                "name": call.get("name"),
+                "arguments": json.loads(call.get("arguments") or "{}"),
+            }
+            for call in calls
+        ],
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+    }
 
 
 def expected_usage(calls: list[dict[str, Any]]) -> dict[str, Any]:

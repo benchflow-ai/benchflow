@@ -26,6 +26,7 @@ prefixed with the turn number.
 from __future__ import annotations
 
 import json
+import shlex
 from typing import Any
 
 from benchflow.acp.types import McpServerSpec, StopReason
@@ -46,17 +47,23 @@ _FLAGS = (
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",
 )
-# Settings that keep Codex off the network apart from its model provider.
-# Measured on 0.156.1 through a logging HTTPS proxy: at startup Codex opens
-# github.com, api.github.com and chatgpt.com (twice) for its plugin
-# marketplace (gone with features.plugins=false) and ab.chatgpt.com for
-# analytics (gone with analytics.enabled=false). Neither changes what the model
-# is offered. Feedback and the update check are off for the same reason.
-_OFFLINE_OVERRIDES = (
+# Settings every native Codex turn runs with, before the run's CODEX_CONFIG
+# (a later -c wins, so the run's config can still override them):
+# - Codex off the network apart from its model provider. Measured on 0.156.1
+#   through a logging HTTPS proxy: at startup Codex opens github.com,
+#   api.github.com and chatgpt.com (twice) for its plugin marketplace (gone
+#   with features.plugins=false) and ab.chatgpt.com for analytics (gone with
+#   analytics.enabled=false). Neither changes the model request. Feedback and
+#   the update check are off for the same reason.
+# - Reasoning summaries on, as codex-acp asks for them on every turn
+#   (CodexAcpClient.sendPrompt, summary "auto"), so both harnesses send the
+#   same request and the summaries reach the trajectory as thoughts.
+_EXEC_OVERRIDES = (
     "features.plugins=false",
     "analytics.enabled=false",
     "feedback.enabled=false",
     "check_for_update_on_startup=false",
+    'model_reasoning_summary="auto"',
 )
 
 
@@ -98,7 +105,7 @@ def codex_launch(turn: NativeTurn, codex_config: dict[str, Any]) -> NativeLaunch
     if turn.resume_id:
         argv += ["resume", turn.resume_id]
     argv += list(_FLAGS)
-    for override in (*_OFFLINE_OVERRIDES, *codex_config_overrides(config)):
+    for override in (*_EXEC_OVERRIDES, *codex_config_overrides(config)):
         argv += ["-c", override]
     argv.append("-")
     return NativeLaunch(tuple(argv))
@@ -137,11 +144,23 @@ def codex_usage(usage: Any) -> dict[str, int] | None:
     return snapshot
 
 
-def _console(output: str) -> list[dict[str, Any]]:
-    if not output.strip():
-        return []
-    text = f"```console\n{output.rstrip()}\n```"
-    return [{"type": "content", "content": {"type": "text", "text": text}}]
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash"})
+
+
+def unwrap_shell(command: str) -> str:
+    """The script of ``/bin/bash -lc '<script>'``, the form exec reports a
+    model's shell command in; any other command unchanged."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    if (
+        len(parts) == 3
+        and parts[0].rsplit("/", 1)[-1] in _SHELLS
+        and parts[1] in ("-lc", "-c")
+    ):
+        return parts[2]
+    return command
 
 
 _TERMINAL = {"completed": "completed", "failed": "failed", "declined": "failed"}
@@ -230,7 +249,7 @@ class CodexExecParser:
             # codex-acp sends the to-do list as an ACP plan, which BenchFlow's
             # ACP session does not record.
             return []
-        call = self._tool_call(kind, item)
+        call = self._tool_call(kind, item, call_id)
         if call is None:
             return []
         title, tool_kind, raw_input, raw_output, content, status = call
@@ -246,13 +265,13 @@ class CodexExecParser:
                     "kind": tool_kind,
                     "status": "in_progress",
                     "rawInput": raw_input,
+                    "content": content,
                 }
             ]
         update: dict[str, Any] = {
             "toolCallId": call_id,
             "status": status,
             "rawOutput": raw_output,
-            "content": content,
         }
         if call_id in self._started:
             return [{"sessionUpdate": "tool_call_update", **update}]
@@ -264,24 +283,33 @@ class CodexExecParser:
                 "title": title,
                 "kind": tool_kind,
                 "rawInput": raw_input,
+                "content": content,
                 **update,
             }
         ]
 
-    @staticmethod
     def _tool_call(
-        kind: Any, item: dict[str, Any]
+        self, kind: Any, item: dict[str, Any], call_id: str
     ) -> tuple[str, str, Any, Any, list[dict[str, Any]], str] | None:
-        """(title, kind, raw input, raw output, content, terminal status)."""
+        """(title, kind, raw input, raw output, content, terminal status).
+
+        Commands take codex-acp 1.13.1's shape: the title and raw input are
+        the command the model asked for (exec reports it wrapped in the shell
+        that ran it), the content a terminal reference, and the raw output
+        ``{formatted_output, exit_code}``.
+        """
         if kind == "command_execution":
-            command = str(item.get("command") or "")
+            command = unwrap_shell(str(item.get("command") or ""))
             output = str(item.get("aggregated_output") or "")
+            raw_input: dict[str, Any] = {"command": command}
+            if self._cwd:
+                raw_input["cwd"] = self._cwd
             return (
                 command or "Terminal",
                 "execute",
-                {"command": command},
-                {"output": output, "exit_code": item.get("exit_code")},
-                _console(output),
+                raw_input,
+                {"formatted_output": output, "exit_code": item.get("exit_code")},
+                [{"type": "terminal", "terminalId": call_id}],
                 _TERMINAL.get(str(item.get("status")), "completed"),
             )
         if kind == "file_change":

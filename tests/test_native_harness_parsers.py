@@ -29,6 +29,7 @@ from benchflow.native_harness.codex import (
     CodexExecParser,
     codex_launch,
     codex_mcp_overrides,
+    unwrap_shell,
 )
 from benchflow.native_harness.spec import NativeTurn
 from benchflow.trajectories._capture import _capture_session_trajectory
@@ -348,10 +349,12 @@ def test_codex_turn_maps_items_to_tool_calls_and_messages():
     call = trajectory[1]
     assert call["tool_call_id"] == "turn1-item_1"
     assert call["kind"] == "execute" and call["status"] == "completed"
-    assert call["raw_output"] == {"output": "wrote\n", "exit_code": 0}
-    assert call["content"] == [
-        {"type": "content", "content": {"type": "text", "text": "```console\nwrote\n```"}}
-    ]
+    # codex-acp 1.13.1's shape: the model's command (exec reports it wrapped
+    # in /bin/bash -lc), a terminal reference, {formatted_output, exit_code}.
+    assert call["title"] == "printf 'Hello, world!\\n' > hello.txt && echo wrote"
+    assert call["raw_input"] == {"command": call["title"], "cwd": "/work"}
+    assert call["raw_output"] == {"formatted_output": "wrote\n", "exit_code": 0}
+    assert call["content"] == [{"type": "terminal", "terminalId": "turn1-item_1"}]
     assert outcome.stop_reason is StopReason.END_TURN
     assert outcome.usage is None
     assert outcome.usage_total["input_tokens"] == 2000
@@ -438,10 +441,26 @@ def test_codex_exec_takes_every_setting_from_codex_config():
     assert 'model_provider="benchflow-litellm"' in overrides
     assert 'model_providers.benchflow-litellm.base_url="http://127.0.0.1:4000/v1"' in overrides
     assert 'web_search="disabled"' in overrides
+    # As codex-acp asks for reasoning summaries on every turn.
+    assert 'model_reasoning_summary="auto"' in overrides
     # The built-in provider points at the gateway too.
     assert 'openai_base_url="http://127.0.0.1:4000/v1"' in overrides
     # Nothing phones home: plugin marketplace sync and analytics are off.
     assert {"features.plugins=false", "analytics.enabled=false"} <= set(overrides)
+
+
+@pytest.mark.parametrize(
+    ("reported", "script"),
+    [
+        ("/bin/bash -lc 'ls -la'", "ls -la"),
+        ("/bin/bash -lc \"printf 'a\"'!'\"'\"", "printf 'a!'"),
+        ("bash -c 'x'", "x"),
+        ("python3 -c 'print(1)'", "python3 -c 'print(1)'"),
+        ("unbalanced 'quote", "unbalanced 'quote"),
+    ],
+)
+def test_exec_commands_are_unwrapped_from_their_shell(reported, script):
+    assert unwrap_shell(reported) == script
 
 
 def test_codex_resume_continues_the_thread():

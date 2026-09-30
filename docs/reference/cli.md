@@ -291,6 +291,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
+| `--harness` | `acp` | How the agent runs: `acp` (its ACP adapter) or `native` (its own CLI in headless JSON mode: `claude -p --output-format stream-json`, `codex exec --json`; `claude-agent-acp` and `codex-acp` only). See [Native harness](../native-harness.md) |
 | `--sandbox` | `docker` | Sandbox: docker, remote-docker, daytona, modal, apple-container, or agentcore |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Environment-plane manifest applied to every rollout in the batch: a path to an `environment.toml`, or a `name@version` registry spec resolved via `$BENCHFLOW_ENV_REGISTRY` when set, else the built-in registry shipped with benchflow (`env0@prod`, `env0@outage`; see [Environment plane: Registry](../environment-plane.md#registry-nameversion)). Overrides a task.md `benchflow.environment.manifest` pin |
@@ -488,6 +489,7 @@ bench eval branch --tasks-dir tests/examples/hello-world-task \
 | `--include` | all | Only these task names; repeatable. |
 | `--agent` | `claude-agent-acp` | Agent, or `oracle` (children run `solve.sh`, no prompts). With `--from-checkpoint`: the source trial's agent. |
 | `--model`, `--reasoning-effort` | agent default | As for `bench eval run`. |
+| `--harness` | `acp` | As for `bench eval run`. With `--from-checkpoint`: the source trial's harness. |
 | `--sandbox` | `docker` | `docker` or `daytona` (direct mode). With `--from-checkpoint`: the snapshot's provider. |
 | `--prompt` | the task's prompts | Parent prompt; repeatable, sent in order. `@instruction` is the task instruction. |
 | `--checkpoint-after-prompt` | `1` (`0` for the oracle and with `--from-checkpoint`) | Branch after this many parent prompts. |
@@ -657,7 +659,7 @@ bench eval inspect jobs/my-run/2026-01-01__12-00-00 --json --no-verifier --out j
 
 ### bench eval compare
 
-Pair two finished jobs by task, the same way `bf.compare` does: per-task rewards and deltas (B - A), attempted/scored/verifier-error/unscored counts per side with control runs left out, and a check that both sides ran with comparable settings (task digest, model, harness, dataset, reasoning effort, sandbox, sandbox user, timeout, agent variables, prompts). Each side is a job folder, a trial, or a glob of folders (one arm of a paired run kept per task). Prints a markdown report, or with `--json` the `benchflow.comparison` document. Warnings go to stderr.
+Pair two finished jobs by task, the same way `bf.compare` does: per-task rewards and deltas (B - A), attempted/scored/verifier-error/unscored counts per side with control runs left out, and a check that both sides ran with comparable settings (task digest, model, harness, dataset, reasoning effort, harness mode (`acp` or `native`), sandbox, sandbox user, timeout, agent variables, prompts). Each side is a job folder, a trial, or a glob of folders (one arm of a paired run kept per task). Prints a markdown report, or with `--json` the `benchflow.comparison` document. Warnings go to stderr.
 
 ```bash
 bench eval compare jobs/run-a jobs/run-b
@@ -669,7 +671,7 @@ bench eval compare jobs/haiku jobs/sonnet --vary model --on-mismatch raise
 |------|---------|-------------|
 | `--json` | off | Print the JSON document instead of the markdown report. |
 | `--labels A B` | folder names | Names for the two sides. |
-| `--vary` | none | A setting the comparison is about (repeatable), e.g. `model`; it is not reported as a mismatch. `harness` or `model` also covers `agent_variable_names`. |
+| `--vary` | none | A setting the comparison is about (repeatable), e.g. `model`; it is not reported as a mismatch. `harness` or `model` also covers `agent_variable_names`. `harness` is the agent; `harness_mode` is `--harness` (`acp` or `native`), so an ACP-versus-native comparison takes `--vary harness_mode`. |
 | `--on-mismatch` | `warn` | `warn`, `raise` (exit 1) or `ignore` an undeclared setting difference. |
 | `--include-controls` | off | Keep control runs (oracle, empty) in the counts and rows. |
 | `--attempts` | `best` | `best` or `all`, as for `inspect`. |

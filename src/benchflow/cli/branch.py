@@ -435,7 +435,7 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
 
             try:
                 harness_name = normalize_harness(
-                    harness if harness is not None else recorded.get("harness")
+                    harness if harness is not None else recorded.get("harness_mode")
                 )
                 check_harness(harness_name, [agent_name])
             except ValueError as exc:
