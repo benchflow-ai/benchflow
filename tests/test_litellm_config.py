@@ -313,7 +313,9 @@ def test_baseten_codex_goes_through_responses_bridge():
 
     assert route.upstream_model == "openai/moonshotai/Kimi-K3"
     assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
-    assert route.responses_model == "benchflow-baseten-moonshotai-Kimi-K3-responses-bridge"
+    assert (
+        route.responses_model == "benchflow-baseten-moonshotai-Kimi-K3-responses-bridge"
+    )
     by_name = {
         e["model_name"]: e
         for e in litellm_proxy_config(route, master_key="sk-local")["model_list"]
@@ -502,7 +504,9 @@ def test_responses_model_uses_bridge_when_provider_asks(monkeypatch):
         ),
     )
     env = {"BRIDGE_TEST_API_KEY": "k"}
-    route = resolve_litellm_route("bridge-test/org/m-1", env, protocol="openai-responses")
+    route = resolve_litellm_route(
+        "bridge-test/org/m-1", env, protocol="openai-responses"
+    )
 
     assert route.responses_bridge is True
     assert route.responses_model == f"{route.model_alias}-responses-bridge"

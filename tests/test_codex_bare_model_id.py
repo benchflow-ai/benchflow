@@ -97,7 +97,10 @@ def test_launch_owns_model_with_the_responses_bridge():
     """Providers served through the chat bridge hand Codex the bridge name."""
     agent_env = {
         CODEX_CONFIG_ENV: json.dumps(
-            {"model": f"{ALIAS}-responses-bridge", "model_provider": "benchflow-litellm"}
+            {
+                "model": f"{ALIAS}-responses-bridge",
+                "model_provider": "benchflow-litellm",
+            }
         ),
         "BENCHFLOW_PROVIDER_MODEL": ALIAS,
         "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
