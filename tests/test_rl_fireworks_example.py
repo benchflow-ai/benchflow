@@ -98,7 +98,7 @@ class FakeTokenizer:
 
     def decode(self, ids, skip_special_tokens=False):
         back = {v: k for k, v in self.SPECIAL.items()}
-        return "".join(back.get(i, chr(i - 1000)) for i in ids)
+        return "".join(back[i] if i in back else chr(i - 1000) for i in ids)
 
     def apply_chat_template(self, messages, tools=None, tokenize=False, add_generation_prompt=False, **kwargs):
         self.calls.append((messages, tools, kwargs))
