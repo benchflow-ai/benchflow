@@ -38,7 +38,6 @@ from benchflow.sandbox._compose import COMPOSE_REMOTE_BASE_PATH
 from benchflow.sandbox.docker import (
     DockerSandbox,
     _is_retryable_docker_build_error,
-    _sanitize_docker_compose_project_name,
 )
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.paths import SandboxPaths
@@ -273,7 +272,7 @@ class RemoteDockerSandbox(DockerSandbox):
 
     @property
     def _project_name(self) -> str:
-        return _sanitize_docker_compose_project_name(self.session_id)
+        return self.compose_project_name
 
     # --- where docker calls go ------------------------------------------------
 

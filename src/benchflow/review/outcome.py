@@ -15,6 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from benchflow._utils.scoring import TIMED_OUT, classify_error, finite_reward
 from benchflow.review.scoring import ReviewScoring
 
+# A scoring error whose reviewer lost its sandbox transport (a Daytona PTY
+# websocket closed, 1006/1008) before a verdict, even after the transport
+# retry: infrastructure, as opposed to a reviewer that ran and produced
+# nothing (#1144).
+REVIEWER_TRANSPORT = "reviewer_transport"
+
 
 class ScoringResult(BaseModel):
     """A complete verdict or a scoring failure, never a fabricated zero."""
@@ -35,6 +41,8 @@ class ScoringResult(BaseModel):
         default=None, pattern=r"^scoring/[A-Za-z0-9_-]+[.]json$"
     )
     error: str | None = None
+    # Why an error is an error, when that is infrastructure (REVIEWER_TRANSPORT).
+    error_category: Literal["reviewer_transport"] | None = None
 
     @field_validator("schema_version", mode="before")
     @classmethod
@@ -53,7 +61,7 @@ class ScoringResult(BaseModel):
                     "incomplete scoring cannot claim a pass or quality score"
                 )
             return self
-        if self.error is not None:
+        if self.error is not None or self.error_category is not None:
             raise ValueError("complete scoring cannot contain a scoring error")
         if self.tests_pass is None or self.all_blockers_pass is None:
             raise ValueError("complete scoring requires both gate verdicts")
@@ -85,8 +93,15 @@ class ScoringResult(BaseModel):
         }
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the public result.json scoring block."""
-        return self.model_dump(mode="json")
+        """Serialize the public result.json scoring block.
+
+        ``error_category`` appears only when set, so scoring blocks without
+        one keep the shape older readers validate.
+        """
+        data = self.model_dump(mode="json")
+        if data.get("error_category") is None:
+            data.pop("error_category", None)
+        return data
 
 
 def complete_scoring(
@@ -111,6 +126,7 @@ def scoring_error(
     tests_pass: bool | None = None,
     verifier_reward: float | None = None,
     reviewer_run: str | None = None,
+    error_category: Literal["reviewer_transport"] | None = None,
 ) -> ScoringResult:
     """Retain available evidence while withholding a final capability score."""
     return ScoringResult(
@@ -119,6 +135,7 @@ def scoring_error(
         verifier_reward=verifier_reward,
         reviewer_run=reviewer_run,
         error=error,
+        error_category=error_category,
     )
 
 

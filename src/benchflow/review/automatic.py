@@ -214,6 +214,7 @@ async def finish_review(plan: PreparedReview, rollout_dir: Path) -> ScoringResul
                 tests_pass=tests_pass,
                 verifier_reward=verifier_reward,
                 reviewer_run=reviewer_run,
+                error_category=trial.error_category,
             )
         else:
             outcome = complete_scoring(

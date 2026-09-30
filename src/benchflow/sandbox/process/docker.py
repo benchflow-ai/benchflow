@@ -8,6 +8,7 @@ import os
 import shlex
 from typing import Any
 
+from benchflow.sandbox.process._acp_lines import filter_command
 from benchflow.sandbox.process._base import _BUFFER_LIMIT, SubprocessLiveProcess
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,11 @@ class DockerProcess(SubprocessLiveProcess):
         may run the agent in a dedicated attacker container — e.g. a Kali
         service — while keeping target containers separate (#248).
         """
-        project_name = env.session_id.lower().replace(".", "-")
+        # The sandbox's own project (DockerSandbox.compose_project_name);
+        # an environment without one names its project after the session.
+        project_name = getattr(env, "compose_project_name", None)
+        if not isinstance(project_name, str) or not project_name:
+            project_name = env.session_id.lower().replace(".", "-")
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
         client_env = getattr(env, "_docker_client_env", None)
@@ -152,6 +157,8 @@ class DockerProcess(SubprocessLiveProcess):
         cwd: str | None = None,
     ) -> None:
         proc_env = await asyncio.to_thread(self._host_env)
+        # Lines over the ACP limit are rewritten in the container (#1138).
+        command = filter_command(command)
 
         # Write env vars to a file inside the container, then source it
         # in the main command. This keeps secrets off `ps aux` on the host

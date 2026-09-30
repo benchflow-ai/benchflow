@@ -231,12 +231,16 @@ def test_remote_base_compose_file_has_no_bind_mounts_and_keeps_limits():
     doc = yaml.safe_load(COMPOSE_REMOTE_BASE_PATH.read_text())
     main = doc["services"]["main"]
     assert "volumes" not in main
-    assert main["labels"] == {"benchflow.owned": "true"}
+    labels = {
+        "benchflow.owned": "process",
+        "benchflow.process": "${BENCHFLOW_PROCESS:-}",
+    }
+    assert main["labels"] == labels
     assert main["deploy"]["resources"]["limits"] == {
         "cpus": "${CPUS}",
         "memory": "${MEMORY}",
     }
-    assert doc["networks"]["default"]["labels"] == {"benchflow.owned": "true"}
+    assert doc["networks"]["default"]["labels"] == labels
 
 
 async def test_no_network_task_keeps_the_network_none_overlay(
@@ -278,7 +282,8 @@ async def test_failed_down_force_removes_everything_with_the_project_label(
     )
     await sandbox.stop(delete=True)
     assert fake.script["leftovers"] == {"containers": [], "networks": [], "volumes": []}
-    label = "label=com.docker.compose.project=remote-task__abc123"
+    assert sandbox.compose_project_name.startswith("remote-task__abc123-")
+    label = f"label=com.docker.compose.project={sandbox.compose_project_name}"
     listed = [a for a in fake.argvs() if label in a]
     assert any(a[:2] == ["volume", "ls"] for a in listed)
     assert {c["DOCKER_HOST"] for c in fake.calls()} == {SSH_URL}
@@ -303,7 +308,8 @@ async def test_unreachable_host_at_teardown_names_the_cleanup_command(
         await sandbox.stop(delete=True)
     text = caplog.text
     assert "remote-task__abc123" in text
-    assert "docker compose -p remote-task__abc123 down --volumes" in text
+    project = sandbox.compose_project_name
+    assert f"docker compose -p {project} down --volumes" in text
     assert SECRET_USER not in text
 
 

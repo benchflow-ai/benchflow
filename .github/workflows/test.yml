@@ -86,6 +86,7 @@ jobs:
       - name: Deterministic integration tier
         run: >-
           uv run python -m pytest tests/test_deterministic_integration.py
+          tests/test_docker_parallel_isolation.py
           -m deterministic -v -rs --durations=0
         env:
           BENCHFLOW_DETERMINISTIC_SANDBOX: docker

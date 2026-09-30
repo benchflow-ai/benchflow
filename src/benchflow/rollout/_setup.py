@@ -34,6 +34,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchflow._utils.text import describe_exception
 from benchflow.contracts import RolloutPlanes, default_rollout_planes
 from benchflow.diagnostics import VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest, resolve_manifest_image
@@ -490,7 +491,14 @@ async def _publish_trajectory_for_verifier(
     payload = redact_acp_trajectory_jsonl(trajectory) + "\n"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "acp_trajectory.jsonl").write_text(payload)
-    await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
+    # Only defensive: mounted backends already have /logs/agent from the bind
+    # mount, and remote ones fail loudly on the upload below if it is missing.
+    # Publishing runs after the agent finished, so a slow or failing exec here
+    # must not discard an otherwise complete rollout.
+    try:
+        await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
+    except Exception as exc:
+        logger.warning(f"Could not pre-create /logs/agent, publishing anyway: {exc}")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         f.write(payload)
         tmp_path = f.name
@@ -505,15 +513,27 @@ _VERIFIER_START_GRACE_SEC = 30.0
 
 
 async def _verifier_started(env: Any, verifier: Any) -> bool | None:
-    """Whether the command wrote its start receipt; ``None`` when unknown."""
+    """Whether the command wrote its start receipt; ``None`` when unknown.
+
+    A missing receipt is marked abandoned in the same shell command, and the
+    test command checks for that mark right after writing its receipt: a
+    command that starts after this probe gave up on it exits without running
+    the tests, so it cannot race the retry (or recovery) on the verifier's
+    outputs.
+    """
     receipt = getattr(verifier, "execution_receipt", None)
     if not isinstance(receipt, tuple) or len(receipt) != 2:
         return None
     path, service = receipt
+    quoted = shlex.quote(path)
+    abandoned = shlex.quote(f"{path}.abandoned")
     try:
         probe = await asyncio.wait_for(
             env.exec(
-                f"cat {shlex.quote(path)}", service=service, user="root", timeout_sec=10
+                f"if [ -e {quoted} ]; then cat {quoted}; else : > {abandoned}; fi",
+                service=service,
+                user="root",
+                timeout_sec=10,
             ),
             timeout=15,
         )
@@ -525,35 +545,68 @@ async def _verifier_started(env: Any, verifier: Any) -> bool | None:
         return None
 
 
-async def _await_verifier(env: Any, verifier: Any, timeout: float) -> Any:
-    """Bound command startup separately from legitimately quiet execution."""
+class _NeverStarted(Exception):
+    """The test command's start receipt was missing: it never ran (#1136)."""
+
+
+class _UnprobedTimeout(TimeoutError):
+    """The budget ran out without a start receipt to ask (not a script
+    verifier, or its receipt directory could not be made)."""
+
+
+# How often an attempt looks for the start receipt the verifier names when it
+# issues the test command; the grace runs from that moment, not from the
+# verifier's start, so a slow tests upload is never mistaken for a wedge.
+_VERIFIER_RECEIPT_POLL_SEC = 1.0
+
+
+async def _verifier_attempt(env: Any, verifier: Any, timeout: float) -> Any:
+    """Run ``verifier.verify()`` once, bounding command startup separately.
+
+    Raises :class:`_NeverStarted` when the start receipt is still missing
+    ``_VERIFIER_START_GRACE_SEC`` after the test command was issued (or at the
+    deadline, when that comes first), :class:`_UnprobedTimeout` when the
+    budget ends with no receipt to ask, and ``TimeoutError`` when a verifier
+    that did start (or whose start could not be probed) runs out of budget.
+    """
     from benchflow.rollout._deadline import _swallow_abandoned_outcome
 
     running = asyncio.create_task(verifier.verify())
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    issued_at: float | None = None
     try:
         while True:
-            remaining = max(0, deadline - loop.time())
-            done, _ = await asyncio.wait(
-                {running}, timeout=min(remaining, _VERIFIER_START_GRACE_SEC)
-            )
+            now = loop.time()
+            if issued_at is None and getattr(verifier, "execution_receipt", None):
+                issued_at = now
+            if issued_at is None:
+                wait = min(deadline - now, _VERIFIER_RECEIPT_POLL_SEC)
+            else:
+                wait = min(deadline, issued_at + _VERIFIER_START_GRACE_SEC) - now
+            done, _ = await asyncio.wait({running}, timeout=max(0.0, wait))
             if done:
                 return running.result()
+            now = loop.time()
+            if issued_at is None:
+                if now >= deadline:
+                    raise _UnprobedTimeout
+                continue
+            if now < deadline and now < issued_at + _VERIFIER_START_GRACE_SEC:
+                continue
             started = await _verifier_started(env, verifier)
             if started is False:
-                raise RuntimeError(
-                    "verifier_wedge: execution start could not be confirmed"
-                )
+                raise _NeverStarted
             if started is True:
                 done, _ = await asyncio.wait(
-                    {running}, timeout=max(0, deadline - loop.time())
+                    {running}, timeout=max(0.0, deadline - loop.time())
                 )
                 if done:
                     return running.result()
                 raise TimeoutError
             if loop.time() >= deadline:
                 raise TimeoutError
+            issued_at = loop.time()  # unknown: probe again one grace later
     finally:
         if not running.done():
             running.cancel()
@@ -562,6 +615,56 @@ async def _await_verifier(env: Any, verifier: Any, timeout: float) -> Any:
                 _swallow_abandoned_outcome(running)
             else:
                 running.add_done_callback(_swallow_abandoned_outcome)
+
+
+async def _await_verifier(
+    env: Any, verifier: Any, timeout: float, *, retry_in_place: bool = True
+) -> Any:
+    """Run the verifier; retry once, in place, a test command that never started.
+
+    A script verifier's command writes a start receipt first (#1136). A
+    receipt still missing ``_VERIFIER_START_GRACE_SEC`` after the command was
+    issued means the exec layer lost the command (a wedged Daytona session
+    after a long agent phase): the attempt is abandoned and the command runs
+    once more with a fresh budget, and a second missing receipt raises
+    ``verifier_wedge:``, an infrastructure error. Before receipts, such a
+    verifier waited out its whole budget, then (with no output) once more.
+
+    ``retry_in_place=False`` (a task with a verifier-only recovery contract)
+    reports the first missing receipt at once, for recovery in a fresh
+    sandbox. A verifier with no receipt to ask keeps PR #949's rule: after a
+    timeout with no output it is retried once in place.
+    """
+    try:
+        return await _verifier_attempt(env, verifier, timeout)
+    except _NeverStarted:
+        if not retry_in_place:
+            raise RuntimeError(
+                "verifier_wedge: execution start could not be confirmed"
+            ) from None
+        why = f"no start receipt after {_VERIFIER_START_GRACE_SEC:g}s"
+    except _UnprobedTimeout:
+        if not retry_in_place or not await _verifier_wedged_without_output(env):
+            raise TimeoutError from None
+        why = "timed out with no output"
+    logger.warning(
+        f"Verifier test command never started ({why}): exec-layer wedge "
+        "suspected; retrying it once"
+    )
+    await _kill_orphan_verifier(env)
+    # The first attempt's receipt names a command that never ran; the retry's
+    # command names a fresh one when it is issued.
+    with contextlib.suppress(AttributeError):
+        verifier.execution_receipt = None
+    try:
+        return await _verifier_attempt(env, verifier, timeout)
+    except _NeverStarted:
+        raise RuntimeError(
+            "verifier_wedge: execution start could not be confirmed "
+            "(the test command did not start in two attempts)"
+        ) from None
+    except _UnprobedTimeout:
+        raise TimeoutError from None
 
 
 async def _verify_rollout(
@@ -582,9 +685,10 @@ async def _verify_rollout(
     diagnostic is non-``None`` only when the verifier exceeded its timeout
     budget — the agent-error channel is unused (issue #503).
 
-    ``recovery_eligible`` tasks (#1136) use command start receipts and leave a
-    lost start to fresh-sandbox recovery; every other task keeps the one-time
-    in-place retry of a zero-output timeout (PR #949).
+    Every script verifier's command writes a start receipt (#1136): a command
+    that never started is retried once in place and then reported as
+    ``verifier_wedge:`` (:func:`_await_verifier`). ``recovery_eligible`` tasks
+    leave the first lost start to fresh-sandbox recovery instead.
 
     ``agent_paths`` marks a separate verifier sandbox and lists the paths its
     transfer wrote; hardening distrusts only those there.
@@ -601,22 +705,15 @@ async def _verify_rollout(
             harden["agent_paths"] = agent_paths
         await planes.harden_before_verify(env, task, sandbox_user, **harden)
         logger.info("Running verifier...")
-        verifier_kwargs: dict[str, Any] = {
-            "task": task,
-            "rollout_paths": rollout_paths,
-            "sandbox": env,
-        }
-        if recovery_eligible:
-            # Only _await_verifier reads a start receipt; every other verifier
-            # runs test.sh exactly as it did before receipts existed.
-            verifier_kwargs["execution_receipt"] = True
-        verifier = planes.verifier(**verifier_kwargs)
-        if recovery_eligible:
-            verifier_result = await _await_verifier(env, verifier, timeout_budget)
-        else:
-            verifier_result = await _verify_with_wedge_retry(
-                env, verifier, timeout_budget
-            )
+        verifier = planes.verifier(
+            task=task,
+            rollout_paths=rollout_paths,
+            sandbox=env,
+            execution_receipt=True,
+        )
+        verifier_result = await _await_verifier(
+            env, verifier, timeout_budget, retry_in_place=not recovery_eligible
+        )
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
         logger.info(f"Rewards: {rewards}")
@@ -633,34 +730,16 @@ async def _verify_rollout(
         logger.error(verifier_error)
     except Exception as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        verifier_error = f"verifier crashed: {e}"
+        # describe_exception, not str(e), for the reason the agent-side funnel
+        # already documents: an exception raised with no args stringifies to
+        # nothing, so the recorded error names neither the failure nor the fact
+        # that it had no detail. A teardown ProcessLookupError landing here is
+        # exactly that shape, and it arrives in place of the timeout it
+        # displaced (#1065).
+        verifier_error = f"verifier crashed: {describe_exception(e)}"
         rewards = None
         logger.error(verifier_error)
     return rewards, verifier_error, verifier_timeout
-
-
-async def _verify_with_wedge_retry(env: Any, verifier: Any, timeout: float) -> Any:
-    try:
-        return await asyncio.wait_for(verifier.verify(), timeout=timeout)
-    except TimeoutError:
-        # A verifier that times out having produced NO output never
-        # actually started its tests — the exec-layer session wedged
-        # (on Daytona a test.sh that finishes in under a second when it
-        # runs can still burn the full verifier budget with an empty
-        # test-stdout.txt). That is
-        # an infra wedge, not a slow verifier, and test.sh is a
-        # stateless scoring script over the frozen workspace — so one
-        # retry is safe and turns a lost rollout into a real score. A
-        # timeout WITH output is a genuinely slow/hung verifier and is
-        # never retried.
-        if not await _verifier_wedged_without_output(env):
-            raise
-    logger.warning(
-        "Verifier timed out with no output — exec-layer wedge "
-        "suspected; retrying verifier once"
-    )
-    await _kill_orphan_verifier(env)
-    return await asyncio.wait_for(verifier.verify(), timeout=timeout)
 
 
 async def _verifier_wedged_without_output(env: Any) -> bool:

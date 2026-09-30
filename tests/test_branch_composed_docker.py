@@ -39,6 +39,8 @@ async def test_composed_children_and_parent_roundtrip(tmp_path, child_fails):
         rollout_paths=paths,
         task_env_config=SandboxConfig(),
     )
+    # The containers below are made by hand under this exact project name.
+    sandbox._compose_project = project
     snapshots = []
     original_snapshot = sandbox.snapshot
 

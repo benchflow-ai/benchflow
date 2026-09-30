@@ -130,3 +130,69 @@ async def test_an_ordinary_reviewer_error_is_not_retried(tmp_path, monkeypatch):
     trial = await _review(tmp_path)
     assert len(fake.configs) == 1
     assert not trial.review_valid
+
+
+@pytest.mark.asyncio
+async def test_a_peer_close_from_the_liveness_check_is_retried(tmp_path, monkeypatch):
+    """With the PTY liveness check a closed reviewer websocket reads as "PTY
+    closed by the peer" (tests/test_daytona_pty_liveness.py), no longer as a
+    readline timeout, so the retry fires."""
+    flaky = _FlakyTransport(
+        failures=1,
+        raw_message=(
+            "Agent connection lost: PTY closed by the peer: websocket closed "
+            "(close_code=1006)"
+        ),
+    )
+    monkeypatch.setattr(benchflow, "run", flaky)
+    trial = await _review(tmp_path)
+    assert flaky.calls == 2
+    assert trial.review_valid and trial.error_category is None
+
+
+@pytest.mark.asyncio
+async def test_a_reviewer_that_keeps_losing_its_transport_is_categorized(
+    tmp_path, monkeypatch
+):
+    """#1144: drivers tell a lost transport from a reviewer that ran and
+    produced nothing by ``reviewer_transport``."""
+    flaky = _FlakyTransport(failures=5)
+    monkeypatch.setattr(benchflow, "run", flaky)
+    trial = await _review(tmp_path)
+    assert trial.error_category == "reviewer_transport"
+    silent = _FlakyTransport(
+        failures=5, raw_message="Agent connection lost: PTY readline timeout (900s)"
+    )
+    monkeypatch.setattr(benchflow, "run", silent)
+    assert (await _review(tmp_path / "silent")).error_category is None
+    fake = FakeRun(review_payload=None, error="reviewer timed out")
+    monkeypatch.setattr(benchflow, "run", fake)
+    assert (await _review(tmp_path / "ordinary")).error_category is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("idle", "expected"), [(None, 600), (3600, 3600), (0, None)])
+async def test_the_reviewer_rollout_gets_the_reviewer_idle_timeout(
+    tmp_path, monkeypatch, idle, expected
+):
+    """#1143: the reviewer inherited the rollout's 600 s idle budget with no
+    way to change it; --reviewer-idle-timeout (ReviewerConfig.idle_timeout_sec)
+    now sets it, 0 disabling the watchdog."""
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(benchflow, "run", fake)
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    rubric_path = task / "verifier/rubric.json"
+    config = ReviewerConfig(agent="codex-acp", model="azure/gpt-5.6-sol")
+    if idle is not None:
+        config = config.model_copy(update={"idle_timeout_sec": idle})
+    await run_review(
+        source,
+        task,
+        load_rubric(rubric_path),
+        rubric_path,
+        config,
+        tmp_path / "review-output",
+        deterministic_pass=True,
+    )
+    assert fake.configs[0].agent_idle_timeout == expected

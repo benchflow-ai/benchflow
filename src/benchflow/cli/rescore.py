@@ -19,12 +19,14 @@ from benchflow.cli.reviewer_options import (
     ReviewerConcurrencyOption,
     ReviewerEffortOption,
     ReviewerEnvOption,
+    ReviewerIdleTimeoutOption,
     ReviewerImageOption,
     ReviewerModelOption,
     ReviewerNetworkOption,
     ReviewerSandboxOption,
     ReviewerTimeoutOption,
     reviewer_from_cli,
+    reviewer_idle_timeout,
 )
 from benchflow.review.outcome import scoring_from_result
 from benchflow.review.persistence import write_json_atomic
@@ -74,6 +76,7 @@ def eval_score(
     reviewer_reasoning_effort: ReviewerEffortOption = None,
     reviewer_sandbox: ReviewerSandboxOption = None,
     reviewer_timeout_sec: ReviewerTimeoutOption = None,
+    reviewer_idle_timeout_sec: ReviewerIdleTimeoutOption = None,
     reviewer_concurrency: ReviewerConcurrencyOption = None,
     reviewer_image: ReviewerImageOption = None,
     reviewer_agent_env: ReviewerEnvOption = None,
@@ -87,6 +90,7 @@ def eval_score(
         reasoning_effort=reviewer_reasoning_effort,
         environment=reviewer_sandbox,
         timeout_sec=reviewer_timeout_sec,
+        idle_timeout_sec=reviewer_idle_timeout(reviewer_idle_timeout_sec),
         concurrency=reviewer_concurrency,
         image=reviewer_image,
         agent_env=_parse_agent_env(reviewer_agent_env) if reviewer_agent_env else None,

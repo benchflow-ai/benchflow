@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import shlex
@@ -11,6 +12,7 @@ import tempfile
 import uuid
 from typing import Any
 
+from benchflow.sandbox.process._acp_lines import filter_command
 from benchflow.sandbox.process._base import (
     _BOOTSTRAP_DONE,
     _BUFFER_LIMIT,
@@ -36,6 +38,73 @@ def _daytona_pty_readline_timeout_sec(silence_floor: float | None = None) -> flo
         _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC,
         silence_floor,
     )
+
+
+def _watch_pty(pty: Any) -> asyncio.Task[Any] | None:
+    """A task that finishes when the SDK's PTY handle loses its websocket.
+
+    ``AsyncPtyHandle.wait()`` returns once the handle's websocket reader has
+    ended: a close frame (agent exit, a server-side 1006/1008), a socket
+    error, or a missed heartbeat pong. None when the handle has no such
+    coroutine (fakes, other SDKs): reads then wait on the line queue alone.
+    """
+    wait = getattr(pty, "wait", None)
+    if not callable(wait):
+        return None
+    try:
+        awaitable = wait()
+    except Exception:
+        return None
+    if not inspect.isawaitable(awaitable):
+        return None
+    task = asyncio.ensure_future(awaitable)
+    # disconnect() cancels the reader, which ends wait() with CancelledError
+    # or an SDK error; retrieve it so it is never reported as unhandled.
+    task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return task
+
+
+def _pty_connected(pty: Any) -> bool | None:
+    """``AsyncPtyHandle.is_connected()``: False as soon as the SDK has seen
+    the websocket close, a few loop turns before ``wait()`` returns. None
+    when the handle cannot say."""
+    is_connected = getattr(pty, "is_connected", None)
+    if not callable(is_connected):
+        return None
+    try:
+        state = is_connected()
+    except Exception:
+        return None
+    if inspect.iscoroutine(state):  # a mock, not the SDK's plain method
+        state.close()
+        return None
+    return state if isinstance(state, bool) else None
+
+
+def _pty_closed_reason(pty: Any) -> tuple[str, int | None]:
+    """Why the PTY's websocket is gone, with its close code; and the exit code."""
+    exit_code = getattr(pty, "exit_code", None)
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        exit_code = None
+    error = getattr(pty, "error", None)
+    ws = getattr(pty, "_ws", None)  # the SDK keeps no public close code
+    close_code = getattr(ws, "close_code", None)
+    socket_error = None
+    exception = getattr(ws, "exception", None)
+    if callable(exception):
+        with contextlib.suppress(Exception):
+            socket_error = exception()
+    details = []
+    if isinstance(close_code, int) and not isinstance(close_code, bool):
+        details.append(f"close_code={close_code}")
+    if isinstance(socket_error, BaseException):
+        details.append(f"socket error: {socket_error!r}")
+    detail = f" ({', '.join(details)})" if details else ""
+    if isinstance(error, str) and error:
+        return f"{error}{detail}", exit_code
+    if exit_code is not None:
+        return f"agent process exited with code {exit_code}{detail}", exit_code
+    return f"websocket closed{detail}", exit_code
 
 
 async def _cleanup_daytona_remote_env_file(
@@ -280,6 +349,9 @@ class DaytonaProcess(SubprocessLiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        # Lines over the ACP limit are rewritten in the sandbox: Daytona
+        # closes the PTY websocket (1008) on a multi-MB message (#1138).
+        command = filter_command(command)
         remote_env_path = None
 
         if self._is_dind:
@@ -410,6 +482,8 @@ class DaytonaPtyProcess(LiveProcess):
         self._compose_cmd_prefix = compose_cmd_prefix
         self._compose_cmd_base = compose_cmd_base
         self._pty = None
+        # Done once the PTY's websocket is gone (_watch_pty).
+        self._pty_gone: asyncio.Task[Any] | None = None
         self._line_buffer = asyncio.Queue()
         self._partial = b""
         self._closed = False
@@ -482,6 +556,9 @@ class DaytonaPtyProcess(LiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        # Lines over the ACP limit are rewritten in the sandbox: Daytona
+        # closes the PTY websocket (1008) on a multi-MB message (#1138).
+        command = filter_command(command)
         remote_env_path = None
         session_id = f"acp-{uuid.uuid4().hex[:8]}"
         pty_env = {}
@@ -498,6 +575,7 @@ class DaytonaPtyProcess(LiveProcess):
                 envs=pty_env if pty_env else None,
             )
             await self._pty.wait_for_connection()
+            self._pty_gone = _watch_pty(self._pty)
             logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
 
             if env:
@@ -577,7 +655,7 @@ class DaytonaPtyProcess(LiveProcess):
             while True:
                 try:
                     line = await asyncio.wait_for(
-                        self._line_buffer.get(),
+                        self._next_line(),
                         timeout=self._START_MARKER_TIMEOUT_SEC,
                     )
                     decoded = line.decode(errors="replace").strip()
@@ -626,7 +704,7 @@ class DaytonaPtyProcess(LiveProcess):
             )
         timeout = _daytona_pty_readline_timeout_sec(self._silence_floor_sec)
         try:
-            line = await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
+            line = await asyncio.wait_for(self._next_line(), timeout=timeout)
             return line
         except TimeoutError as e:
             msg = f"PTY readline timeout ({timeout:g}s)"
@@ -636,6 +714,8 @@ class DaytonaPtyProcess(LiveProcess):
                     raw_message=msg, transport_diagnosis="pty_error"
                 ),
             ) from e
+        except TransportClosedError:
+            raise
         except Exception as e:
             msg = f"PTY readline error: {e}"
             raise TransportClosedError(
@@ -645,16 +725,83 @@ class DaytonaPtyProcess(LiveProcess):
                 ),
             ) from e
 
+    async def _next_line(self) -> bytes:
+        """The next line from the agent.
+
+        Lines the websocket delivered before it went away are still read;
+        after them, a gone websocket raises at once instead of leaving the
+        read to wait out its timeout (#1143, #1144): a closed channel used to
+        surface only as ``PTY readline timeout``, up to the prompt's whole
+        silence budget later, and the reviewer's transport retry skips that.
+        """
+        gone = self._pty_gone
+        if gone is None:
+            return await self._line_buffer.get()
+        while True:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                return self._line_buffer.get_nowait()
+            # The local task, not self._pty_gone: close() clears that while a
+            # read may still be waiting here.
+            if self._closed or gone.done() or _pty_connected(self._pty) is False:
+                raise self._peer_closed_error()
+            get = asyncio.ensure_future(self._line_buffer.get())
+            try:
+                await asyncio.wait({get, gone}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if not get.done():
+                    get.cancel()
+            if get.done() and not get.cancelled():
+                return get.result()
+
+    def _peer_closed_error(self) -> Exception:
+        from benchflow.diagnostics import (
+            TransportClosedDiagnostic,
+            TransportClosedError,
+        )
+
+        if self._closed:  # our own close() ended the reader
+            return TransportClosedError(
+                "PTY closed",
+                TransportClosedDiagnostic(
+                    raw_message="PTY closed", transport_diagnosis="pty_error"
+                ),
+            )
+        reason, exit_code = _pty_closed_reason(self._pty)
+        msg = f"PTY closed by the peer: {reason}"
+        return TransportClosedError(
+            msg,
+            TransportClosedDiagnostic(
+                raw_message=msg[:500],
+                process_exit_code=exit_code,
+                transport_diagnosis="pty_closed",
+            ),
+        )
+
+    def _peer_gone(self) -> bool:
+        if self._pty_gone is None:
+            return False
+        return self._pty_gone.done() or _pty_connected(self._pty) is False
+
     def expect_silence(self, seconds: float) -> None:
         self._silence_floor_sec = seconds
 
     async def writeline(self, data: str) -> None:
         if not self._pty or self._closed:
             raise RuntimeError("PTY not started")
-        await self._pty.send_input(data + "\n")
+        if self._peer_gone():
+            raise self._peer_closed_error()
+        try:
+            await self._pty.send_input(data + "\n")
+        except Exception as exc:
+            if self._peer_gone():
+                raise self._peer_closed_error() from exc
+            raise
 
     async def close(self) -> None:
         self._closed = True
+        gone, self._pty_gone = self._pty_gone, None
+        if gone is not None and not gone.done():
+            gone.cancel()
         try:
             if self._pty:
                 # kill/disconnect go over the PTY's websocket; on a dead or
@@ -673,4 +820,4 @@ class DaytonaPtyProcess(LiveProcess):
 
     @property
     def is_running(self) -> bool:
-        return self._pty is not None and not self._closed
+        return self._pty is not None and not self._closed and not self._peer_gone()

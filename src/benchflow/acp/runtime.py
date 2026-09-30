@@ -31,7 +31,11 @@ from benchflow.acp.timeout_cleanup import (
     cancel_prompt_after_timeout,
 )
 from benchflow.acp.types import McpServerSpec, PromptResult
-from benchflow.acp.watchdog import IdleWatchdog
+from benchflow.acp.watchdog import (
+    PENDING_GRACE_MULTIPLIER,
+    IdleWatchdog,
+    pending_grace_from_env,
+)
 from benchflow.agents.codex_config import apply_codex_launch_config
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
@@ -792,6 +796,29 @@ async def connect_acp(
 _SILENCE_GUARD_SLACK_SEC = 60
 
 
+def transport_silence_budget(
+    timeout: int, idle_timeout: int | None, pending_tool_grace: int | None = None
+) -> int:
+    """The longest silence a prompt allows its transport, plus one poll.
+
+    With the idle watchdog on, a pending tool call defers the idle abort for
+    its grace: ``pending_tool_grace`` when given, else
+    BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC, else ``PENDING_GRACE_MULTIPLIER``
+    idle budgets (acp/watchdog.py). A silent tool call may legitimately run
+    that long, and silence up to the idle budget is always allowed, so the read
+    guard covers the longer of the two and must not cut either first (#1143).
+    Without the watchdog the wall budget decides. A long guard is safe because
+    a closed Daytona websocket fails the read at once (DaytonaPtyProcess), not
+    at the guard.
+    """
+    if idle_timeout is None:
+        return timeout + _SILENCE_GUARD_SLACK_SEC
+    grace = pending_tool_grace if pending_tool_grace is not None else pending_grace_from_env()
+    if grace is None:
+        grace = PENDING_GRACE_MULTIPLIER * idle_timeout
+    return max(grace, idle_timeout) + _SILENCE_GUARD_SLACK_SEC
+
+
 async def execute_prompts(
     acp_client: ACPClient,
     session,
@@ -812,15 +839,14 @@ async def execute_prompts(
                    else 3x idle_timeout (IdleWatchdog).
 
     The transport's read guard is raised to the silence this call allows
-    (the idle budget, else the wall budget) plus one watchdog poll, so the
-    watchdog, not a fixed transport timeout, decides when silence is too
-    long (#1143).
+    plus one watchdog poll, so the watchdog, not a fixed transport timeout,
+    decides when silence is too long (#1143): see
+    :func:`transport_silence_budget`.
     """
     expect_silence = getattr(acp_client, "expect_silence", None)
     if callable(expect_silence):
         expect_silence(
-            (idle_timeout if idle_timeout is not None else timeout)
-            + _SILENCE_GUARD_SLACK_SEC
+            transport_silence_budget(timeout, idle_timeout, pending_tool_grace)
         )
     for i, prompt in enumerate(prompts):
         logger.info(

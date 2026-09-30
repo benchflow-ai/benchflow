@@ -30,6 +30,10 @@ from abc import ABC, abstractmethod
 logger = logging.getLogger(__name__)
 
 _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
+# A line longer than _BUFFER_LIMIT is read in pieces up to this size and
+# returned whole (the transport shrinks it, #1138); only a longer one is
+# skipped, as every oversized line used to be.
+_OVERSIZED_LINE_CAP = 256 * 1024 * 1024
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
 _STDERR_TAIL_LIMIT = 64 * 1024  # bounded stderr retained for rollout diagnostics
 _STDERR_DRAIN_TIMEOUT_SEC = 2
@@ -100,6 +104,38 @@ async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
     except Exception:
         logger.debug("Could not find next newline after buffer overflow")
     return skipped
+
+
+async def read_whole_line(
+    reader: asyncio.StreamReader, cap: int = _OVERSIZED_LINE_CAP
+) -> bytes | None:
+    """``reader.readline()``, also for a line longer than the reader's limit.
+
+    ``StreamReader.readline`` discards such a line, and with it an ACP
+    tool call's final update (#1138); ``readuntil`` leaves it in the buffer,
+    so it is read in pieces here. Returns b"" at end of stream (or the last
+    partial line), and None for a line longer than *cap*, which is consumed
+    and skipped. A reader that is not a ``StreamReader`` is read with its
+    own ``readline``.
+    """
+    if not isinstance(reader, asyncio.StreamReader):
+        return await reader.readline()
+    parts: list[bytes] = []
+    size = 0
+    while True:
+        done = True
+        try:
+            part = await reader.readuntil(b"\n")
+        except asyncio.IncompleteReadError as exc:
+            part = exc.partial  # end of stream
+        except asyncio.LimitOverrunError as exc:
+            part = await reader.readexactly(exc.consumed)
+            done = False
+        size += len(part)
+        if size <= cap:
+            parts.append(part)
+        if done:
+            return b"".join(parts) if size <= cap else None
 
 
 class LiveProcess(ABC):
@@ -206,12 +242,9 @@ class SubprocessLiveProcess(LiveProcess):
         """Read one line from stdout."""
         if not self._process or not self._process.stdout:
             raise RuntimeError("Process not started")
-        try:
-            line = await self._process.stdout.readline()
-        except (ValueError, asyncio.LimitOverrunError) as e:
-            # Buffer overflow — line exceeds _BUFFER_LIMIT.
-            skipped = await drain_oversized_line(self._process.stdout)
-            logger.warning(f"Skipped oversized line ({skipped} bytes): {e}")
+        line = await read_whole_line(self._process.stdout)
+        if line is None:
+            logger.warning("Skipped an output line over %d bytes", _OVERSIZED_LINE_CAP)
             # Return empty line — caller will retry readline
             return b""
         if not line:
@@ -289,11 +322,16 @@ class SubprocessLiveProcess(LiveProcess):
                 with contextlib.suppress(OSError):  # already closed
                     self._process.stdin.close()
             if self._process.returncode is None:
-                self._process.terminate()
+                with contextlib.suppress(ProcessLookupError):
+                    self._process.terminate()
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=5)
                 except TimeoutError:
-                    self._process.kill()
+                    # The returncode check above cannot cover this branch: the
+                    # grace period is an await, so the child may exit and be
+                    # reaped before the escalation lands (#1065).
+                    with contextlib.suppress(ProcessLookupError):
+                        self._process.kill()
                     await self._process.wait()
             await self._finish_stderr_drain(cancel_on_timeout=True)
             logger.info("Process terminated")

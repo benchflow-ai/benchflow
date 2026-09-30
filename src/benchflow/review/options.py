@@ -16,6 +16,9 @@ REVIEWER_IMAGE = (
 )
 
 REVIEWER_AGENT_TIMEOUT_SEC = 1800
+# The reviewer's ACP idle watchdog: 600 s, the rollout default reviewers used
+# to inherit with no way to change it (#1143). 0 disables it.
+REVIEWER_IDLE_TIMEOUT_SEC = 600
 
 
 class ReviewerConfig(BaseModel):
@@ -32,6 +35,9 @@ class ReviewerConfig(BaseModel):
     reasoning_effort: str | None = None
     environment: str = "docker"
     timeout_sec: int = Field(default=REVIEWER_AGENT_TIMEOUT_SEC, gt=0)
+    # Idle seconds before a reviewer prompt is aborted; 0 disables the
+    # watchdog and leaves timeout_sec in charge.
+    idle_timeout_sec: int = Field(default=REVIEWER_IDLE_TIMEOUT_SEC, ge=0)
     concurrency: int = Field(default=4, gt=0)
     image: str = REVIEWER_IMAGE
     agent_env: dict[str, str] = Field(default_factory=dict, repr=False)

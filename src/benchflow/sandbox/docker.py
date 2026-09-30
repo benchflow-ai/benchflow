@@ -39,6 +39,14 @@ from benchflow.sandbox._compose import (
     docker_daemon_unreachable_reason,
     is_compose_up_network_race_error,
 )
+from benchflow.sandbox._docker_sweep import (
+    OWNED_LABEL,
+    PROCESS_ENV,
+    PROCESS_LABEL,
+    claim_project,
+    process_token,
+    release_project,
+)
 from benchflow.sandbox._recovery_baseline import (
     DockerRecoveryBaseline,
     capture_baseline,
@@ -127,6 +135,20 @@ def _sanitize_docker_compose_project_name(name: str) -> str:
     return name
 
 
+def _unique_compose_project_name(session_id: str) -> str:
+    """A Compose project name no other sandbox on the daemon uses.
+
+    The session id is the rollout name, and several callers fix it: branch
+    children are ``n<k>``, regrade's verifier ``verifier``, robotics
+    ``agent``, and SDK callers pass their own. Two sandboxes with one project
+    name share containers and networks: ``start()``'s ``compose down
+    --remove-orphans`` and teardown's ``compose down`` of one delete the
+    other's. The random suffix keeps concurrent sandboxes (any job, process
+    or host on the daemon) apart; the session id stays readable in front.
+    """
+    return f"{_sanitize_docker_compose_project_name(session_id)}-{uuid.uuid4().hex[:8]}"
+
+
 def _is_retryable_docker_build_error(message: str) -> bool:
     return any(pattern.search(message) for pattern in _DOCKER_BUILD_RETRYABLE_ERRORS)
 
@@ -135,8 +157,9 @@ def _is_compose_up_network_race_error(message: str) -> bool:
     return is_compose_up_network_race_error(message)
 
 
-# The benchflow.owned label the leak sweeper filters on (evaluation.py).
-_BENCHFLOW_OWNED_LABEL = "benchflow.owned"
+# The labels the leftover sweep (_docker_sweep.py) filters and judges on.
+_BENCHFLOW_OWNED_LABEL = OWNED_LABEL
+_BENCHFLOW_PROCESS_LABEL = PROCESS_LABEL
 
 # HostConfig keys restore reproduces below. Anything else must hold an unset
 # value, so a setting restore cannot rebuild -- including one a newer Docker
@@ -308,6 +331,35 @@ def _replayed_run_args(container: dict[str, Any], *, default_network: str) -> li
     return args
 
 
+_TIMEOUT_TEARDOWN_GRACE_SEC = 5
+
+
+async def _drain_timed_out_process(
+    process: asyncio.subprocess.Process,
+) -> tuple[bytes | None, bytes | None]:
+    """Stop a child that overran its timeout and return whatever it emitted.
+
+    Signalling races the child's own exit: ``asyncio`` reaps as soon as the
+    process ends, and ``terminate``/``kill`` on a reaped child raise
+    ``ProcessLookupError`` — unlike ``subprocess.Popen``, which polls first and
+    swallows the same race (CPython bpo-38630, bpo-40550). Callers here are in
+    ``except TimeoutError`` blocks about to raise a description of the timeout,
+    so an escaping ``ProcessLookupError`` would replace that description with an
+    exception carrying no args at all, and ``_verify_rollout`` would record the
+    rollout as ``verifier crashed:`` with nothing after the colon (#1065).
+    """
+    with contextlib.suppress(ProcessLookupError):
+        process.terminate()
+    try:
+        return await asyncio.wait_for(
+            process.communicate(), timeout=_TIMEOUT_TEARDOWN_GRACE_SEC
+        )
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        return await process.communicate()
+
+
 class DockerSandboxEnvVars(BaseModel):
     main_image_name: str
     context_dir: str
@@ -459,6 +511,19 @@ class DockerSandbox(BaseSandbox):
                 )
 
     @property
+    def compose_project_name(self) -> str:
+        """This sandbox's own Compose project (:func:`_unique_compose_project_name`).
+
+        Fixed on first use, so every compose, ``docker`` and live-process
+        call of the sandbox names the same project.
+        """
+        project = getattr(self, "_compose_project", None)
+        if project is None:
+            project = _unique_compose_project_name(self.session_id)
+            self._compose_project = project
+        return project
+
+    @property
     def _uses_compose(self) -> bool:
         return self._environment_docker_compose_path.exists()
 
@@ -573,6 +638,9 @@ class DockerSandbox(BaseSandbox):
             env.update(self._compose_task_env)
         if self._persistent_env:
             env.update(self._persistent_env)
+        # Last, so no task variable can hide which process owns the
+        # containers and networks (the leftover sweep, _docker_sweep.py).
+        env[PROCESS_ENV] = process_token()
         return env
 
     def _write_mounts_compose_file(self) -> Path:
@@ -604,7 +672,7 @@ class DockerSandbox(BaseSandbox):
             "docker",
             "compose",
             "--project-name",
-            _sanitize_docker_compose_project_name(self.session_id),
+            self.compose_project_name,
             "--project-directory",
             str(self.environment_dir.resolve().absolute()),
         ]
@@ -630,14 +698,7 @@ class DockerSandbox(BaseSandbox):
             else:
                 stdout_bytes, stderr_bytes = await process.communicate()
         except TimeoutError:
-            process.terminate()
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(), timeout=5
-                )
-            except TimeoutError:
-                process.kill()
-                stdout_bytes, stderr_bytes = await process.communicate()
+            await _drain_timed_out_process(process)
             raise RuntimeError(
                 f"Command timed out after {timeout_sec} seconds"
             ) from None
@@ -682,14 +743,7 @@ class DockerSandbox(BaseSandbox):
                 process.communicate(), timeout=timeout_sec
             )
         except TimeoutError:
-            process.terminate()
-            try:
-                stdout_bytes, _ = await asyncio.wait_for(
-                    process.communicate(), timeout=5
-                )
-            except TimeoutError:
-                process.kill()
-                stdout_bytes, _ = await process.communicate()
+            stdout_bytes, _ = await _drain_timed_out_process(process)
             output = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
             raise RuntimeError(
                 f"Pre-compose hook timed out after {timeout_sec} seconds for "
@@ -768,6 +822,9 @@ class DockerSandbox(BaseSandbox):
         self._recovery_baseline = baseline
 
     async def start(self, force_build: bool) -> None:
+        # Before Compose creates anything: from here until stop() the
+        # leftover sweep of any Evaluation in this process keeps the project.
+        claim_project(self.compose_project_name)
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
 
@@ -887,7 +944,7 @@ class DockerSandbox(BaseSandbox):
                 self.logger.debug(
                     "Skipped teardown of %s: Docker is unavailable (%s) and no "
                     "container was started.",
-                    _sanitize_docker_compose_project_name(self.session_id),
+                    self.compose_project_name,
                     unavailable,
                 )
             else:
@@ -895,6 +952,10 @@ class DockerSandbox(BaseSandbox):
                     f"Docker compose down hung/failed ({e}); force-killing project."
                 )
                 await self._force_kill_project()
+        finally:
+            if not self._keep_containers:
+                # Whatever teardown left is now garbage the sweep may remove.
+                release_project(self.compose_project_name)
         self._snapshot_credentials.clear()
         await self._delete_deferred_snapshots()
 
@@ -928,7 +989,7 @@ class DockerSandbox(BaseSandbox):
         rm -f`s them, then prunes the matching network. We don't propagate
         errors — by the time we're here, the batch just needs to move on.
         """
-        project = _sanitize_docker_compose_project_name(self.session_id)
+        project = self.compose_project_name
         label = f"label=com.docker.compose.project={project}"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1119,12 +1180,18 @@ class DockerSandbox(BaseSandbox):
     async def restore(self, image: SandboxImage) -> None:
         """Restore the ``main`` container from a previously committed image.
 
-        Inspects the live ``main`` container, stops and removes it, then
-        ``docker run``s a replacement from ``image.ref`` with the inspected host
+        Inspects the live ``main`` container, removes it, then ``docker run``s
+        a replacement from ``image.ref`` with the inspected host
         configuration. The bind mounts matter most: without them the rollout's
         ``verifier``/``agent``/``artifacts`` output stays inside the container
         and a verifier reward is silently lost. Sibling compose services are
         untouched, matching the container-only scope of the Sandbox layer.
+
+        The old container is removed with ``docker rm -f`` straight from
+        running: a ``docker stop`` first only waited out the 10 s grace of a
+        ``sleep`` that ignores SIGTERM, and left a stopped container that an
+        older BenchFlow's prune on the same daemon could start removing
+        ("removal of container ... is already in progress").
 
         Raises :class:`~benchflow.sandbox.protocol.SandboxRestoreHostConfigUnavailable`
         before removing anything when the live container cannot be resolved or
@@ -1137,7 +1204,7 @@ class DockerSandbox(BaseSandbox):
                 "across providers."
             )
 
-        project_name = _sanitize_docker_compose_project_name(self.session_id)
+        project_name = self.compose_project_name
         default_network = f"{project_name}_default"
 
         container_id = await self._main_container_id()
@@ -1175,8 +1242,7 @@ class DockerSandbox(BaseSandbox):
             if owned is not None
             else []
         )
-        await self._docker_cli(["stop", container_id])
-        await self._docker_cli(["rm", "-f", container_id])
+        await self._remove_replaced_container(container_id)
 
         new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
 
@@ -1190,6 +1256,10 @@ class DockerSandbox(BaseSandbox):
             "--label",
             "com.docker.compose.service=main",
             *owned_label,
+            # This process owns the replacement, whatever the snapshot image
+            # carried over from the container it was committed from.
+            "--label",
+            f"{_BENCHFLOW_PROCESS_LABEL}={process_token()}",
             *replayed,
             image.ref,
             "sleep",
@@ -1210,6 +1280,27 @@ class DockerSandbox(BaseSandbox):
         stash = self._snapshot_credentials.get(image.ref)
         if stash:
             await put_back_credentials(self._credential_ops(new_name), stash)
+
+    async def _remove_replaced_container(self, container_id: str) -> None:
+        """``docker rm -f`` the container restore replaces.
+
+        Gone already, or already being removed by someone else, is the same
+        outcome; any other failure raises before the replacement is made.
+        """
+        result = await self._docker_cli(["rm", "-f", container_id], check=False)
+        if result.return_code == 0:
+            return
+        message = f"{result.stderr} {result.stdout}".lower()
+        if "no such container" in message or "already in progress" in message:
+            self.logger.info(
+                "Container %s was already gone or being removed: %s",
+                container_id,
+                (result.stderr or result.stdout).strip(),
+            )
+            return
+        raise RuntimeError(
+            f"docker rm -f {container_id} failed: {result.stderr or result.stdout}"
+        )
 
     async def adopt_snapshot(self, image: SandboxImage) -> None:
         """Remember the live container's credential files for ``image``, a
@@ -1405,7 +1496,7 @@ class DockerSandbox(BaseSandbox):
                 ["-f", shlex.quote(str(path.resolve().absolute()))]
             )
 
-        project_name = _sanitize_docker_compose_project_name(self.session_id)
+        project_name = self.compose_project_name
         compose_base = [
             "docker",
             "compose",

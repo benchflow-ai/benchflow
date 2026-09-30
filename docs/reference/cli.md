@@ -437,6 +437,7 @@ solver options; credentials resolve through the same API-key/OAuth machinery.
 | `--reviewer-reasoning-effort` | Reviewer inference effort. |
 | `--reviewer-sandbox` | Separate reviewer backend (default `docker`). |
 | `--reviewer-timeout-sec` | Reviewer model timeout (default 1800 seconds). |
+| `--reviewer-idle-timeout` | Abort a reviewer prompt after this many idle seconds (default 600); `0` or `none` disables the idle watchdog. On Daytona the PTY read guard follows it: at least 3 × idle + 60 seconds, the longest a pending tool call may stay silent. |
 | `--reviewer-concurrency` | Reviewer concurrency within a worker (default 4). |
 | `--reviewer-image` | Reviewer sandbox image; defaults to the pinned review image. |
 | `--reviewer-agent-env` | Repeatable reviewer-only `KEY=VALUE` overrides. |
