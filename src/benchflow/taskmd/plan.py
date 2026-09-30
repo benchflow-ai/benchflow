@@ -195,7 +195,7 @@ SUPPORT: list[tuple[str, str, str]] = [
     (
         "[sandbox] gpu_types, tpu",
         PARTIAL,
-        "gpu_types to sandbox.gpu_types; tpu is refused",
+        "gpu_types to sandbox.gpu_types; a TPU is refused",
     ),
     (
         "[sandbox] network",
@@ -210,11 +210,19 @@ SUPPORT: list[tuple[str, str, str]] = [
     ),
     (
         "[sandbox] skills",
-        REFUSED,
-        "BenchFlow installs task skills only in its with-skill mode",
+        AGENT_REFUSED,
+        "BenchFlow installs task skills only in its with-skill mode; the oracle and nop run without them",
     ),
-    ("[sandbox] mcp", REFUSED, "not mapped yet"),
-    ("[sandbox] mounts", REFUSED, "task files are not mounted at start yet"),
+    (
+        "[sandbox] mcp",
+        HONORED,
+        "sandbox.mcp_servers (Harbor's server tables, which an import keeps)",
+    ),
+    (
+        "[sandbox] mounts",
+        PARTIAL,
+        "empty; task files are not mounted at start yet",
+    ),
     (
         "[sandbox] services, [[sandbox.services]] name, image, build, command, env, ready",
         PARTIAL,
@@ -271,7 +279,8 @@ SUPPORT: list[tuple[str, str, str]] = [
     (
         "[verifier] sandbox, [verifier.sandbox] <key>",
         PARTIAL,
-        "image, cpus, memory, disk, workdir, env, build_timeout; the rest is refused",
+        "image, os, cpus, gpus, gpu_types, memory, disk, workdir, env, build_timeout, and empty mcp; the rest is "
+        "refused. The image is found in the spec's order: [verifier.sandbox] image, verifier/Dockerfile, the task's image",
     ),
     (
         "[verifier] snapshot, [[verifier.snapshot]] run, reads, service, timeout, user",
@@ -657,7 +666,18 @@ def _sandbox(walker: _Walker, sandbox: dict[str, Any], fm: dict[str, Any]) -> An
                     where,
                     f"only {COMPOSE_PATH} is supported: BenchFlow reads the Compose file beside the agent's Dockerfile",
                 )
-        elif key in ("skills", "mcp", "mounts", "tpu", "clock", "timezone"):
+        elif key == "mcp":
+            servers = _mcp_servers(plan, where, value)
+            if servers:
+                out["mcp_servers"] = servers
+        elif key == "skills":
+            # Skills are for an agent: a scripted seat (the oracle, nop) runs the same with or without them.
+            plan.refuse_agent(where, _REFUSED_SANDBOX[key])
+        elif key == "mounts" and value == []:
+            plan.honor(where, "no files are mounted at start")
+        elif key == "tpu" and value in (None, 0, {}, []):
+            plan.honor(where, "no TPU")
+        elif key in ("mounts", "tpu", "clock", "timezone"):
             plan.refuse(where, _REFUSED_SANDBOX[key])
         else:
             walker.unknown(where)
@@ -673,12 +693,45 @@ def _sandbox(walker: _Walker, sandbox: dict[str, Any], fm: dict[str, Any]) -> An
 
 _REFUSED_SANDBOX = {
     "skills": "BenchFlow installs a task's skills only in its with-skill mode, and a task.md run always installs them",
-    "mcp": "MCP servers are not mapped yet",
     "mounts": "task files are not mounted at start yet",
     "tpu": "TPUs are not mapped yet",
     "clock": "BenchFlow sets no clock: the agent would see the real time",
     "timezone": "BenchFlow cannot check that the image holds the zone's data, and without it the zone falls back to UTC without an error",
 }
+
+
+def _mcp_servers(plan: Plan, where: str, value: Any) -> list[dict[str, Any]]:
+    """``[sandbox] mcp`` as native ``sandbox.mcp_servers``.
+
+    A Harbor import keeps Harbor's ``mcp_servers`` entries, which are
+    BenchFlow's own server tables; each entry must validate as one.
+    """
+    if value in (None, []):
+        plan.honor(where, "no MCP servers")
+        return []
+    if not isinstance(value, list):
+        plan.refuse(where, "a list of MCP server tables")
+        return []
+    from pydantic import ValidationError
+
+    from benchflow.task.config import MCPServerConfig
+
+    servers: list[dict[str, Any]] = []
+    for n, entry in enumerate(value):
+        try:
+            MCPServerConfig.model_validate(entry)
+        except ValidationError as exc:
+            problems = "; ".join(
+                f"{'.'.join(str(p) for p in e['loc']) or 'entry'}: {e['msg']}"
+                for e in exc.errors()
+            )
+            plan.refuse(
+                f"{where}[{n}]", f"not an MCP server BenchFlow can start ({problems})"
+            )
+            return []
+        servers.append(_table(entry))
+    plan.honor(where, f"sandbox.mcp_servers ({len(servers)})")
+    return servers
 
 
 def _healthcheck(plan: Plan, where: str, value: Any) -> dict[str, Any] | None:
@@ -967,17 +1020,74 @@ def _verifier(
             plan.refuse(where, "human assessment is not supported")
         else:
             walker.unknown(where)
-    if (
-        isolation == "separate"
-        and isinstance(verifier.get("sandbox"), dict)
-        and "image" not in verifier["sandbox"]
-    ):
-        plan.refuse(
-            "[verifier.sandbox]",
-            "without an image, BenchFlow would build the verifier's sandbox from verifier/Dockerfile only; give it an image",
-        )
+    if isolation == "separate":
+        _separate_verifier_image(plan, verifier, out, network)
     if out:
         fm["verifier"] = out
+
+
+def _separate_verifier_image(
+    plan: Plan, verifier: dict[str, Any], out: dict[str, Any], network: Any
+) -> None:
+    """The separate verifier's image in the spec's order, as BenchFlow will choose it.
+
+    docs/document.md, "Discovery and the verifier's image": (1) an image in
+    ``[verifier.sandbox]``; (2) else ``verifier/Dockerfile``, built with
+    ``verifier/`` as the context; (3) else the task's own image. BenchFlow's
+    ``plan_verifier_image`` takes a declared ``verifier.sandbox``'s image,
+    then ``tests/Dockerfile`` (the materialized verifier folder), and only an
+    undeclared verifier sandbox falls back to the agent's image or
+    ``environment/Dockerfile``; so the native config declares one exactly
+    when that picks the spec's image.
+    """
+    declared = _table(verifier.get("sandbox"))
+    folder = plan.task_dir / "verifier"
+    native = out.get("sandbox") or {}
+    if "image" in declared:
+        return  # (1): verifier.sandbox.docker_image
+    if (folder / "docker-compose.yaml").is_file() and not (
+        folder / "Dockerfile"
+    ).is_file():
+        plan.refuse(
+            "verifier/docker-compose.yaml",
+            "BenchFlow builds a verifier's own sandbox from a Dockerfile, not a Compose file",
+        )
+        return
+    mapped = network_setting(network)
+    if (folder / "Dockerfile").is_file():
+        # (2): declaring the verifier's sandbox makes BenchFlow build tests/Dockerfile
+        # rather than reuse the agent's [sandbox] image.
+        if mapped is not None:
+            native.setdefault("network_mode", mapped[0])
+            if mapped[1]:
+                native.setdefault("allowed_hosts", mapped[1])
+        out["sandbox"] = native
+        plan.honor(
+            "verifier/Dockerfile",
+            "the separate verifier's image, built with verifier/ as the context",
+        )
+        return
+    if plan.image:
+        # (3) with a prebuilt image.
+        if native:
+            native["docker_image"] = plan.image
+        plan.honor("[verifier.sandbox] image", "the task's image, [sandbox] image")
+        return
+    # (3) with the image built from sandbox/Dockerfile: BenchFlow builds environment/Dockerfile
+    # for a separate verifier only when the task declares no verifier sandbox of its own.
+    if {k for k in native if k not in ("network_mode", "allowed_hosts")}:
+        plan.refuse(
+            "[verifier.sandbox]",
+            "BenchFlow gives a verifier its own sandbox settings only with an image or verifier/Dockerfile; "
+            "without them it runs the verifier in a fresh container built from sandbox/Dockerfile with the "
+            "agent's settings. Remove these settings or give the verifier an image",
+        )
+        return
+    out.pop("sandbox", None)
+    plan.honor(
+        "[verifier.sandbox] image",
+        "the task's image, built from sandbox/Dockerfile",
+    )
 
 
 def _verifier_sandbox(
@@ -991,6 +1101,8 @@ def _verifier_sandbox(
         elif key == "image":
             out["docker_image"] = str(value)
             plan.honor(where, "verifier.sandbox.docker_image")
+        elif key == "os" and value == "linux":
+            plan.honor(where, "linux")
         elif (
             key == "cpus"
             and isinstance(value, int)
@@ -999,6 +1111,21 @@ def _verifier_sandbox(
         ):
             out["cpus"] = value
             plan.honor(where, "verifier.sandbox.cpus")
+        elif (
+            key == "gpus"
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        ):
+            out["gpus"] = value
+            plan.honor(where, "verifier.sandbox.gpus")
+        elif (
+            key == "gpu_types"
+            and isinstance(value, list)
+            and all(isinstance(v, str) for v in value)
+        ):
+            out["gpu_types"] = list(value)
+            plan.honor(where, "verifier.sandbox.gpu_types")
         elif key in ("memory", "disk") and megabytes(value) is not None:
             out["memory_mb" if key == "memory" else "storage_mb"] = megabytes(value)
             plan.honor(where, f"verifier.sandbox.{key}")
@@ -1015,6 +1142,10 @@ def _verifier_sandbox(
             plan.honor(where, "verifier.sandbox.build_timeout_sec")
         elif key == "network" and value == sandbox_network:
             plan.honor(where, "the sandbox's network")
+        elif key == "mcp" and value in (None, []):
+            plan.honor(where, "no MCP servers")
+        elif key in ("mounts", "tpu") and value in (None, 0, {}, []):
+            plan.honor(where, "none")
         else:
             plan.refuse(where, "not mapped for a verifier's own sandbox yet")
     mapped = network_setting(sandbox_network)

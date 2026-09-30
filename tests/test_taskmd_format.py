@@ -169,6 +169,97 @@ def test_harbor_import_keeps_its_mounts_and_prebuilt_image() -> None:
     assert taskmd_metadata(native)["grading"] == "script"
 
 
+def test_mcp_servers_map_and_an_empty_list_means_none(tmp_path) -> None:
+    from benchflow.task import Task
+
+    empty = _package(
+        tmp_path / "empty",
+        "Do it.\n\n```toml task\n[sandbox]\nmcp = []\ngpus = 0\n```\n",
+    )
+    assert Task(materialize_task_dir(empty)).config.sandbox.mcp_servers == []
+    served = _package(
+        tmp_path / "served",
+        "Do it.\n\n```toml task\n[[sandbox.mcp]]\n"
+        'name = "mcp-server"\ntransport = "streamable-http"\nurl = "http://mcp-server:8000/mcp"\n```\n',
+    )
+    servers = Task(materialize_task_dir(served)).config.sandbox.mcp_servers
+    assert [(s.name, s.transport, s.url) for s in servers] == [
+        ("mcp-server", "streamable-http", "http://mcp-server:8000/mcp")
+    ]
+    broken = _package(
+        tmp_path / "broken",
+        'Do it.\n\n```toml task\n[[sandbox.mcp]]\nname = "x"\ntransport = "stdio"\n```\n',
+    )
+    with pytest.raises(TaskMdError, match=r"\[sandbox\] mcp\[0\].*command"):
+        materialize_task_dir(broken)
+
+
+def test_skills_leave_scripted_seats_alone_and_refuse_an_agent(tmp_path) -> None:
+    from benchflow.taskmd.launch import TaskMdLaunchRefused, check_launch
+
+    package = _package(
+        tmp_path / "skills",
+        'Do it.\n\n```toml task\n[sandbox]\nskills = "/skills"\n```\n',
+    )
+    native = materialize_task_dir(package)
+    check_launch(native, primary_agent="oracle", sandbox_user=None)
+    check_launch(native, primary_agent="nop", sandbox_user=None)
+    with pytest.raises(TaskMdLaunchRefused, match=r"\[sandbox\] skills"):
+        check_launch(native, primary_agent="claude-agent-acp", sandbox_user=None)
+
+
+@pytest.mark.parametrize(
+    ("image", "verifier_dockerfile", "declared", "source"),
+    [
+        # verifier/Dockerfile comes before the task's image, declared or not.
+        (True, True, True, "tests/Dockerfile"),
+        (True, True, False, "tests/Dockerfile"),
+        (False, True, False, "tests/Dockerfile"),
+        # Without one, the task's image: prebuilt ...
+        (True, False, True, "verifier.sandbox.docker_image"),
+        (True, False, False, "sandbox.docker_image"),
+        # ... or built from sandbox/Dockerfile.
+        (False, False, False, "environment/Dockerfile"),
+    ],
+)
+def test_a_separate_verifier_runs_in_the_image_the_spec_names(
+    tmp_path, image, verifier_dockerfile, declared, source
+) -> None:
+    """docs/document.md, "Discovery and the verifier's image", as BenchFlow's own planner picks it."""
+    from benchflow.task import Task
+    from benchflow.task.verifier_sandbox import plan_verifier_image
+
+    config = '[verifier]\nisolation = "separate"\nmount = "/tests"\n'
+    if image:
+        config = '[sandbox]\nimage = "ubuntu:24.04"\n\n' + config
+    if declared:
+        config += "\n[verifier.sandbox]\ncpus = 2\n"
+    package = _package(tmp_path / "p", f"Do it.\n\n```toml task\n{config}```\n")
+    if verifier_dockerfile:
+        _write(
+            package / "verifier" / "Dockerfile",
+            "FROM ubuntu:24.04\nCOPY test.sh /tests/test.sh\n",
+        )
+    native = materialize_task_dir(package)
+    chosen = plan_verifier_image(Task(native).config, native)
+    assert chosen.source == source
+    if source.endswith("docker_image"):
+        assert chosen.sandbox.docker_image == "ubuntu:24.04"
+    if declared:
+        assert chosen.sandbox.cpus == 2
+
+
+def test_a_separate_verifier_with_its_own_settings_needs_an_image(tmp_path) -> None:
+    package = _package(
+        tmp_path / "p",
+        'Do it.\n\n```toml task\n[verifier]\nisolation = "separate"\n\n[verifier.sandbox]\ncpus = 2\n```\n',
+    )
+    with pytest.raises(
+        TaskMdError, match=r"\[verifier.sandbox\]: BenchFlow gives a verifier"
+    ):
+        materialize_task_dir(package)
+
+
 def test_separate_verifier_offline_and_judge_time() -> None:
     from benchflow.task import Task
 

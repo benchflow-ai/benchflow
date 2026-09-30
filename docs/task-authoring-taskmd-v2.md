@@ -99,13 +99,13 @@ A trial's `verifier/` holds what the spec asks the verifier to write: `ctrf.json
 | [sandbox] cpus, memory, disk | Honored | sandbox.cpus, memory_mb, storage_mb (a whole number of CPUs) |
 | [sandbox] build_timeout | Honored | sandbox.build_timeout_sec |
 | [sandbox] gpus | Honored | sandbox.gpus |
-| [sandbox] gpu_types, tpu | Partly | gpu_types to sandbox.gpu_types; tpu is refused |
+| [sandbox] gpu_types, tpu | Partly | gpu_types to sandbox.gpu_types; a TPU is refused |
 | [sandbox] network | Partly | "none" (no-network), "open" (public), a host list (allowlist); { block = [...] } is refused |
 | [sandbox] workdir | Honored | sandbox.workdir |
 | [sandbox] env | Partly | literal values to sandbox.env; ${VAR} values are refused |
-| [sandbox] skills | Refused | BenchFlow installs task skills only in its with-skill mode |
-| [sandbox] mcp | Refused | not mapped yet |
-| [sandbox] mounts | Refused | task files are not mounted at start yet |
+| [sandbox] skills | Refused for agents | BenchFlow installs task skills only in its with-skill mode; the oracle and nop run without them |
+| [sandbox] mcp | Honored | sandbox.mcp_servers (Harbor's server tables, which an import keeps) |
+| [sandbox] mounts | Partly | empty; task files are not mounted at start yet |
 | [sandbox] services, [[sandbox.services]] name, image, build, command, env, ready | Partly | Compose services beside main; refused with network = "none", or a build folder outside sandbox/ |
 | [sandbox] compose | Partly | only sandbox/docker-compose.yaml |
 | [sandbox] ready, [sandbox.ready] run, interval, timeout, start_period, start_interval, retries | Honored | sandbox.healthcheck |
@@ -119,7 +119,7 @@ A trial's `verifier/` holds what the spec asks the verifier to write: `ctrf.json
 | [verifier] env | Partly | literal values to verifier.env; ${VAR} values are refused |
 | [verifier] network | Partly | equal to [sandbox] network; a shared verifier is taken offline for "none" |
 | [verifier] isolation | Honored | "shared", or "separate" (verifier.sandbox_mode: separate) |
-| [verifier] sandbox, [verifier.sandbox] <key> | Partly | image, cpus, memory, disk, workdir, env, build_timeout; the rest is refused |
+| [verifier] sandbox, [verifier.sandbox] <key> | Partly | image, os, cpus, gpus, gpu_types, memory, disk, workdir, env, build_timeout, and empty mcp; the rest is refused. The image is found in the spec's order: [verifier.sandbox] image, verifier/Dockerfile, the task's image |
 | [verifier] snapshot, [[verifier.snapshot]] run, reads, service, timeout, user | Refused | snapshot commands are not run |
 | [verifier] combine_stages, unreached_stages | Honored | no stage is graded on its own, so the task's verifier alone decides the reward |
 | [verifier] mount | Partly | "/verifier" or "/tests" |
