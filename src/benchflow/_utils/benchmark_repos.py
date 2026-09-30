@@ -13,14 +13,17 @@ downloads no file contents up front (``--filter=blob:none``) and checks out
 the path alone (``--sparse``), so one SkillsBench task costs a few megabytes,
 not the whole repository. Each later path is added to the same checkout. A
 path whose directory holds no BenchFlow task (a foreign benchmark that a
-source adapter converts from files elsewhere in the repo), a symlinked path
-and a source with no path get the whole repository, as before.
+source adapter converts from files elsewhere in the repo), a symlinked path,
+a source with no path, and git older than 2.26 get the whole repository, as
+before.
 """
 
 import difflib
+import functools
 import logging
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import time
@@ -188,6 +191,25 @@ def _repo_url(org: str, repo: str) -> str:
     return f"https://github.com/{org}/{repo}.git"
 
 
+@functools.cache
+def _git_can_sparse() -> bool:
+    """Whether git has ``sparse-checkout add`` (2.26+); older git clones fully.
+
+    Assumes it does when the version cannot be read.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "version"], capture_output=True, text=True, check=False
+        ).stdout
+    except Exception:
+        # No readable version: the clone itself reports what is wrong with git.
+        return True
+    match = re.search(r"(\d+)\.(\d+)", out or "")
+    if match is None:
+        return True
+    return (int(match.group(1)), int(match.group(2))) >= (2, 26)
+
+
 def _git_quiet(root: Path, *args: str) -> None:
     """Run a git command in ``root``; its errors still reach stderr."""
     subprocess.run(
@@ -294,7 +316,8 @@ def _clone_repo_unlocked(
         return cache
 
     url = _repo_url(org, repo)
-    if path:
+    sparse = bool(path) and _git_can_sparse()
+    if sparse:
         logger.info("Fetching %s from %s/%s (%s) ...", path, org, repo, url)
     else:
         logger.info("Cloning %s/%s from %s ...", org, repo, url)
@@ -308,7 +331,7 @@ def _clone_repo_unlocked(
         # console pre-dashboard is noise; the "Cloning …" log line above is
         # the one-line summary. Errors still print (git keeps stderr on fail).
         cmd = ["git", "clone", "--quiet", "--depth", "1"]
-        if path:
+        if sparse:
             # Only what the path needs: no file contents up front, and a
             # checkout of the repository's top-level files alone until
             # _widen_sparse_checkout adds the path.
@@ -319,7 +342,7 @@ def _clone_repo_unlocked(
         subprocess.run(cmd, check=True)
         if ref and _looks_like_commit_sha(ref):
             _checkout_fetched_ref(clone_tmp, ref)
-        if path:
+        if sparse:
             _widen_sparse_checkout(clone_tmp, path)
         if cache.exists():
             shutil.rmtree(cache)

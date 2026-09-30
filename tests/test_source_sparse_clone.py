@@ -198,3 +198,38 @@ def test_the_sparse_fetch_prints_nothing(bench, capfd):
     out, err = capfd.readouterr()
     assert out == ""
     assert err == ""
+
+
+def test_git_older_than_2_26_clones_the_whole_repository(bench, monkeypatch):
+    """git before 2.26 has no `sparse-checkout add`: keep the full clone."""
+    monkeypatch.setattr(br, "_git_can_sparse", lambda: False)
+
+    path = br.resolve_source("acme/bench", path="tasks/court-form")
+
+    assert (path / "big.bin").is_file()
+    assert (bench / "docs/guide.md").is_file()
+    assert not br._is_sparse_checkout(bench)
+    assert not _missing_blobs(bench)
+
+
+@pytest.mark.parametrize(
+    ("version", "can_sparse"),
+    [
+        ("git version 2.25.1\n", False),
+        ("git version 2.26.0\n", True),
+        ("git version 2.34.1\n", True),
+        ("git version 2.50.1 (Apple Git-155)\n", True),
+        ("", True),
+    ],
+)
+def test_git_can_sparse_reads_the_version(monkeypatch, version, can_sparse):
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["git", "version"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=version, stderr="")
+
+    br._git_can_sparse.cache_clear()
+    monkeypatch.setattr(br.subprocess, "run", fake_run)
+    try:
+        assert br._git_can_sparse() is can_sparse
+    finally:
+        br._git_can_sparse.cache_clear()
