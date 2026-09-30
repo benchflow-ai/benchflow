@@ -1764,7 +1764,14 @@ class Evaluation:
         )
         for d in children:
             if detect_task_format(d) is not None:
-                selected.extend(materialize(d))
+                from benchflow.taskmd import TaskMdError
+
+                try:
+                    selected.extend(materialize(d))
+                except TaskMdError as exc:
+                    # A task.md draft 2 package BenchFlow refuses must not
+                    # vanish from a batch silently, nor stop the healthy ones.
+                    logger.warning("Skipping task %r: %s", d.name, exc)
                 continue
             if _is_task_dir(d):
                 if seeds:

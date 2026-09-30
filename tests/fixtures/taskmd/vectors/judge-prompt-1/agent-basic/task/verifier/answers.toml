@@ -1,0 +1,6 @@
+# Reference values, verifier-only.
+t_c = 2.269  # not used by this rubric
+
+[fit]
+alpha = 2.50   # the exponent the generator used, kept as written
+x_min = 12

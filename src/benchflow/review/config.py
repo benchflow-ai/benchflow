@@ -52,6 +52,7 @@ WEIGHTED_REVIEW_RUBRIC_CONTRACT = "v0.2"
 # contracts should use the explicit LEGACY_* and WEIGHTED_* constants.
 REVIEW_RUBRIC_CONTRACT = LEGACY_REVIEW_RUBRIC_CONTRACT
 REVIEW_RUBRIC_FILENAME = "rubric.json"
+TASKMD_RUBRIC_SCHEMA_PREFIX = "https://task.md/schema/rubric-"
 REVIEW_RESULT_FILENAME = "review-result.json"
 
 DEFAULT_RUBRIC_PATH = Path(__file__).parent / "default-rubric.json"
@@ -301,6 +302,11 @@ def is_review_rubric_file(path: Path) -> bool:
         return True
     if not isinstance(data, dict):
         return True
+    schema = data.get("$schema")
+    if isinstance(schema, str) and schema.startswith(TASKMD_RUBRIC_SCHEMA_PREFIX):
+        # A task.md draft 2 rubric: its package's own verifier grades it
+        # (benchflow.taskmd), so automatic review leaves it alone.
+        return False
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         return True

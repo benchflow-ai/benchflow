@@ -1,0 +1,17 @@
+{
+  "repository": "task.md",
+  "branch": "draft2",
+  "commit": "99052af827073133a7af47c3dfa16af1022ff4f3",
+  "files_last_changed_in": "89a40940ff7182c91945e0d22148968de9cfc78b",
+  "files": {
+    "taskmd.py": {
+      "source": "tools/taskmd.py",
+      "sha256": "65ee759d3ba952c849d5ca6f8eaf47da6a02e3a125f30cc0ff5816d5015b2880"
+    },
+    "judgeprompt.py": {
+      "source": "tools/judgeprompt.py",
+      "sha256": "9f6b6300d719e0d55e363b002539bb32a0865ad36ce11c1da551a0a64af04bfc"
+    }
+  },
+  "note": "Verbatim copies of the task.md draft 2 reference parser and judge-prompt@1 compiler. Never edit them here: re-vendor from the pinned repository and update this file (tests/test_taskmd_vendor.py checks both)."
+}

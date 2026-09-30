@@ -1,0 +1,126 @@
+{
+  "format": "judge-prompt@1",
+  "role": "llm",
+  "unit": "rubric",
+  "criteria": [
+    "root-cause",
+    "usefulness"
+  ],
+  "behaviors": [
+    "integrity.verifier-probing"
+  ],
+  "brief": "verifier/llm-brief.md",
+  "shared": {},
+  "fixed_text_sha256": "48319d0879fed0881dfa67f401106d0dd7e1859141b9f7cb6c220a80279a7f94",
+  "prompt_bytes": 3662,
+  "prompt_sha256": "565992076c3dc0055705033f9aa59579cd030c563980d0b27498480b3c76034b",
+  "hmac_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "published_prompt_sha256": "565992076c3dc0055705033f9aa59579cd030c563980d0b27498480b3c76034b",
+  "message_bytes": 5829,
+  "message_sha256": "97bd10d763d147db9ea34284a93ba0c5f1134453c5f570afe63309e0cf846302",
+  "evidence_sha256": "384254e7aa1ea3809bb31e5a88d44c23dda783edd7bb3712e2b00798285c4e69",
+  "submission_tree": "sha256:62c962a0d85dbc70cbe21b4a68ff4ccb4f14a0cc6e56b62611001db021dda8b0",
+  "seeds": [
+    {
+      "sample": 1,
+      "attempt": 1,
+      "text": "sha256:62c962a0d85dbc70cbe21b4a68ff4ccb4f14a0cc6e56b62611001db021dda8b0//llm/rubric/1/1",
+      "seed": 2011182751
+    },
+    {
+      "sample": 2,
+      "attempt": 1,
+      "text": "sha256:62c962a0d85dbc70cbe21b4a68ff4ccb4f14a0cc6e56b62611001db021dda8b0//llm/rubric/2/1",
+      "seed": 89120864
+    },
+    {
+      "sample": 3,
+      "attempt": 1,
+      "text": "sha256:62c962a0d85dbc70cbe21b4a68ff4ccb4f14a0cc6e56b62611001db021dda8b0//llm/rubric/3/1",
+      "seed": 155680830
+    },
+    {
+      "sample": 1,
+      "attempt": 2,
+      "text": "sha256:62c962a0d85dbc70cbe21b4a68ff4ccb4f14a0cc6e56b62611001db021dda8b0//llm/rubric/1/2",
+      "seed": 1785614953
+    }
+  ],
+  "judge_setup": {
+    "format": "judge-setup@1",
+    "judges": {
+      "agent": {
+        "model": "claude-opus-5-5",
+        "effort": null,
+        "samples": 1,
+        "aggregate": "median",
+        "min_samples": 1,
+        "per": "rubric",
+        "brief": null,
+        "timeout": 1200,
+        "budget": {
+          "tokens": null,
+          "tool_calls": null
+        },
+        "resources": {
+          "cpus": null,
+          "memory": null,
+          "disk": null,
+          "gpus": 0,
+          "gpu_types": null,
+          "tpu": null
+        },
+        "services": false,
+        "views": []
+      },
+      "llm": {
+        "model": "claude-sonnet-5",
+        "effort": null,
+        "samples": 3,
+        "aggregate": "median",
+        "min_samples": 3,
+        "per": "rubric",
+        "brief": "verifier/llm-brief.md",
+        "timeout": 120,
+        "budget": {
+          "tokens": null,
+          "tool_calls": null
+        }
+      }
+    },
+    "lazy": true,
+    "briefs": {
+      "agent": null,
+      "llm": "55008de7d3c1964217ea5c045fc61d337a044594c1a00fcd668b9c677e0229b6"
+    },
+    "harness": {
+      "agent": "judge-loop@1",
+      "llm": "judge-loop@1"
+    },
+    "tools": "judge-tools@1",
+    "sampling": {
+      "agent": {
+        "max_tokens": 32000,
+        "seed": "judge-seed@1"
+      },
+      "llm": {
+        "max_tokens": 32000,
+        "seed": "judge-seed@1"
+      }
+    }
+  },
+  "judge_setup_sha256": "4df68da98bab5eb7dbaddae2c32eb50c85657163dbc4878bc11a1eee5b8e6e81",
+  "reward_fn": {
+    "format": "reward-fn@1",
+    "verifier": "sha256:6a898d22c52aea1d3858aba800ecdec9ec9d0f8e229c986fb9568a1da72bbbab",
+    "stages": {},
+    "shared_rubrics": {},
+    "judge_setup": {
+      "": "sha256:4df68da98bab5eb7dbaddae2c32eb50c85657163dbc4878bc11a1eee5b8e6e81"
+    },
+    "images": {
+      "python:3.12-slim": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "reward_fn_sha256": "5b8fd918c905967901a5a425a4d2635cb4d0ad64ff40e8a204a307347b71810c"
+}

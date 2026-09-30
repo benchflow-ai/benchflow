@@ -1,0 +1,44 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points"
+  },
+  "criteria": [
+    {
+      "id": "output-exists",
+      "gate": true,
+      "text": "~/Documents/q3_summary.xlsx exists and opens.",
+      "stated": "Save the workbook as `~/Documents/q3_summary.xlsx`",
+      "judge": "test",
+      "check": "test_output_exists"
+    },
+    {
+      "id": "summary-values",
+      "gate": true,
+      "text": "The Summary sheet has one row per region with the correct totals, highest first.",
+      "stated": "Add a sheet named `Summary` that shows total revenue per region, sorted from highest to lowest",
+      "judge": "test",
+      "check": "test_summary_values"
+    },
+    {
+      "id": "original-untouched",
+      "gate": true,
+      "text": "~/Documents/q3_sales.xlsx is byte-identical to the original.",
+      "stated": "leave the original file unchanged",
+      "judge": "test",
+      "check": "test_original_untouched"
+    },
+    {
+      "id": "bar-chart",
+      "points": 3,
+      "text": "The chart is a bar chart titled \"Q3 revenue by region\" whose bars match the totals.",
+      "stated": "a bar chart of those totals titled \"Q3 revenue by region\"",
+      "judge": "vlm",
+      "evidence": [
+        "screenshots#final",
+        "q3_summary.xlsx"
+      ]
+    }
+  ]
+}

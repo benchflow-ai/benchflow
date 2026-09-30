@@ -52,13 +52,38 @@ def _task_document_scenes(
     *,
     prompts: list[str | None] | None,
     skill_mode: str,
+    agent: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[Scene]:
-    """Load scene declarations from ``task.md`` when it is the task entrypoint."""
+    """Load scene declarations from ``task.md`` when it is the task entrypoint.
+
+    A materialized task.md draft 2 package declares no scenes. Its stages that
+    unlock one after another become turns of the run's own agent, in one
+    session: the instruction, then each stage's prompt after the agent ends its
+    previous turn (``benchflow.taskmd``). A scripted seat (oracle, nop) runs
+    its script instead.
+    """
     if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
         return []
     document_path = task_path / "task.md"
     if not document_path.exists():
         return []
+    from benchflow.taskmd.materialize import taskmd_metadata
+
+    taskmd = taskmd_metadata(task_path)
+    if taskmd is not None:
+        turns = [str(t.get("prompt", "")) for t in taskmd.get("turns") or []]
+        if not turns or agent is None or agent in ("oracle", "nop"):
+            return []
+        return [
+            Scene.single(
+                agent=agent,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                prompts=[None, *turns],
+            )
+        ]
 
     from benchflow.task.document import TaskDocument
     from benchflow.task.prompts import materialize_prompt_plan_scenes
@@ -272,6 +297,9 @@ class RolloutConfig:
                 self.task_path,
                 prompts=self.prompts,
                 skill_mode=self.skill_mode,
+                agent=self.agent,
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
             )
         if self.allow_document_user is None:
             self.allow_document_user = not explicit_scenes
@@ -413,11 +441,18 @@ class RolloutConfig:
         **kwargs: Any,
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
+        from benchflow.task.formats import materialize_task_dir
+
+        # A task-format folder reads as its native package from here on.
+        task_path = materialize_task_dir(Path(task_path))
         mode = normalize_skill_mode(skill_mode)
         document_scenes = _task_document_scenes(
             Path(task_path),
             prompts=prompts,
             skill_mode=mode,
+            agent=agent,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         if mode == SKILL_MODE_SELF_GEN:
             scenes = []

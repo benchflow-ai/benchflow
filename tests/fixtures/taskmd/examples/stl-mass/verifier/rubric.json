@@ -1,0 +1,30 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "2.0.0",
+  "scoring": {
+    "method": "points",
+    "headline": "strict"
+  },
+  "criteria": [
+    {
+      "id": "file-exists",
+      "gate": true,
+      "judge": "test",
+      "check": "test_file_exists",
+      "text": "/root/mass_report.json exists and parses as JSON.",
+      "stated": "save the result to `/root/mass_report.json`"
+    },
+    {
+      "id": "values",
+      "gate": true,
+      "judge": "test",
+      "check": "test_values_correct",
+      "text": "material_id is the material of the largest connected component, and main_part_mass is within 0.1% of the reference under either reading of the STL's units (millimetres or centimetres).",
+      "stated": [
+        "identify the **largest connected component**",
+        "Calculate the mass based on the formula `Volume * Density`",
+        "within **0.1% accuracy**"
+      ]
+    }
+  ]
+}
