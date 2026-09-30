@@ -110,11 +110,14 @@ def test_every_script_step_is_well_formed():
     for name, steps in SCRIPTS.items():
         assert steps, name
         for step in steps:
-            assert set(step) <= {"text", "tool", "input"}, (name, step)
+            assert set(step) <= {"text", "tool", "input", "delay_sec"}, (name, step)
             # Text on every step: the scenario checks count one agent
             # message per model call.
             assert step.get("text"), (name, step)
             assert ("input" in step) == ("tool" in step), (name, step)
+            # A slow model's pause (fake_llm.script_delay)
+            delay = step.get("delay_sec", 0)
+            assert isinstance(delay, int | float) and delay >= 0, (name, step)
 
 
 def _post(url: str, body: dict) -> tuple[int, str, str]:
