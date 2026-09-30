@@ -366,9 +366,12 @@ def _length_mismatch(capture: dict[str, Any]) -> bool:
     completions = capture.get("completions")
     for choice in completions if isinstance(completions, list) else []:
         ids, logprobs = _dict(choice).get("token_ids"), _dict(choice).get("logprobs")
-        if isinstance(ids, list) and isinstance(logprobs, list):
-            if len(ids) != len(logprobs):
-                return True
+        if (
+            isinstance(ids, list)
+            and isinstance(logprobs, list)
+            and len(ids) != len(logprobs)
+        ):
+            return True
     return False
 
 

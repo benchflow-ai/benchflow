@@ -360,7 +360,7 @@ async def test_a_rollout_whose_agent_errored_keeps_its_artifacts(tmp_path):
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.task import RolloutPaths, Task
 
-    logs, workspace, trial = _layout(tmp_path)
+    _logs, workspace, trial = _layout(tmp_path)
     (workspace / "session.jsonl").write_text('{"type": "assistant"}\n')
     task = tmp_path / "task"
     task.mkdir()
