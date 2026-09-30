@@ -1,0 +1,55 @@
+{
+  "hello": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > hello.txt && echo wrote",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created hello.txt."
+    }
+  ],
+  "second": [
+    {
+      "text": "Appending.",
+      "tool": "Bash",
+      "input": {
+        "command": "echo again >> hello.txt",
+        "description": "Append a line"
+      }
+    },
+    {
+      "text": "Appended."
+    }
+  ],
+  "fail": [
+    {
+      "text": "Running a failing command.",
+      "tool": "Bash",
+      "input": {
+        "command": "ls /nonexistent-dir",
+        "description": "List a missing directory"
+      }
+    },
+    {
+      "text": "It failed as expected."
+    }
+  ],
+  "sleep": [
+    {
+      "text": "Sleeping.",
+      "tool": "Bash",
+      "input": {
+        "command": "sleep 300",
+        "description": "Wait",
+        "timeout": 600000
+      }
+    },
+    {
+      "text": "Done sleeping."
+    }
+  ]
+}
