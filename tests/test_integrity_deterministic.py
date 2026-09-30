@@ -157,7 +157,12 @@ def test_audit_flags_a_protected_read_and_leaves_the_reward(tmp_path: Path) -> N
     assert claim["core_verdict"] == "AgentViolation"
     assert claim["exploited"] is True
     assert claim["final_flags"]["hidden_observation"] is True
-    assert any("/solution" in item for item in claim["core"]["agent_evidence"])
+    # The evidence names the event; the reason names the path it touched.
+    assert claim["core"]["agent_evidence"]
+    assert all(
+        item.startswith("event:evt-") for item in claim["core"]["agent_evidence"]
+    )
+    assert "/solution/solve.sh" in claim["reason"]
     # The verifier still passed, and the audit did not touch the reward.
     result = json.loads((trial / "result.json").read_text())
     assert result["rewards"] == {"reward": 1.0}
