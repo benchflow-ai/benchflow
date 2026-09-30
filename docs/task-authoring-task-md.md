@@ -49,7 +49,7 @@ fi
 echo "$REWARD" > /logs/verifier/reward.txt
 ```
 
-Scaffold this shape with the CLI (task.md is the default format):
+`bench tasks init` scaffolds this shape plus the optional files, each with `[REPLACE: ...]` placeholders: `oracle/solve.sh`, `verifier/test_outputs.py` (skip it with `--no-pytest`), `verifier/verifier.md` and `verifier/rubrics/`. `bench tasks check` fails until every placeholder is replaced; delete the optional verifier files you do not use to get back to the three files above. [Task authoring](./task-authoring.md) walks through it.
 
 ```bash
 bench tasks init my-task                    # task.md, environment/, verifier/, oracle/
@@ -274,7 +274,7 @@ legacy alias; `oracle/` wins when both exist). Native oracles are uploaded to
 of an agent with `--agent oracle`:
 
 ```bash
-bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker
+bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker --jobs-dir jobs/my-task-oracle
 ```
 
 A correct task scores `1.0` on its oracle run before any model sees it.
@@ -282,8 +282,10 @@ A correct task scores `1.0` on its oracle run before any model sees it.
 The empty control proves the other half: `--agent nop` installs and runs nothing, so the verifier scores the untouched workspace, and a sound verifier gives it `0.0` (well below `1.0` at least). It needs no model or credentials and takes about as long as the verifier:
 
 ```bash
-bench eval run --tasks-dir tasks/my-task --agent nop --sandbox docker
+bench eval run --tasks-dir tasks/my-task --agent nop --sandbox docker --jobs-dir jobs/my-task-nop
 ```
+
+Give each agent its own `--jobs-dir`: a plain `bench eval run` looks for the latest job in its jobs dir to resume, and separate folders keep the oracle's and the empty control's results apart.
 
 `bf.load_job` and `bench eval inspect` count oracle and `nop` runs as control runs, apart from agent runs.
 
