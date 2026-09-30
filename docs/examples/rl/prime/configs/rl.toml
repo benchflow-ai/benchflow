@@ -1,0 +1,70 @@
+# prime-rl on BenchFlow tasks: GRPO with LoRA on Qwen3-4B-Instruct-2507, on ONE GPU.
+#
+#   CUDA_VISIBLE_DEVICES=0,0 uv run rl @ rl.toml --output-dir /root/bf-rl/outputs --run.name <name>
+#
+# One H200 (141 GB) holds both processes: prime-rl's launcher reads CUDA_VISIBLE_DEVICES
+# literally, so "0,0" gives inference local GPU 0 and the trainer local GPU 1, both
+# physical GPU 0. vLLM takes 45% of the memory; the LoRA trainer fits in the rest. With
+# two GPUs, drop the CUDA_VISIBLE_DEVICES trick and gpu_memory_utilization.
+#
+# The env, and every path below, assume the pod layout of setup_pod.sh (/root/bf-rl).
+# The Daytona key comes from the launch environment (run_on_pod.sh), never from here.
+
+max_steps = 20
+seq_len = 16384
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[trainer.optim]
+lr = 2e-5
+weight_decay = 0.0
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+dropout = 0.0
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[orchestrator]
+# 8 tasks x 8 rollouts per step.
+batch_size = 64
+max_off_policy_steps = 4
+
+[orchestrator.concurrency]
+# At most 32 episodes, so at most 32 Daytona sandboxes (the env caps them too).
+max_inflight = 32
+initial_inflight = 32
+
+[orchestrator.model.lora]
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.sampling]
+# The shared harness's per-call limit (evaluate.py --max-tokens).
+max_completion_tokens = 1024
+temperature = 1.0
+
+[[orchestrator.train.source]]
+name = "benchflow"
+# Train only on groups whose rewards differ: an all-0 or all-1 group has no advantage.
+curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
+env.taskset.id = "benchflow-taskset"
+env.taskset.tasks_dir = "/root/bf-rl/tasks-v1/train"
+env.taskset.task.benchflow_python = "/root/bf-rl/benchflow/.venv/bin/python"
+env.taskset.task.jobs_dir = "/root/bf-rl/jobs/train"
+env.taskset.task.max_sandboxes = 32
+env.agent.max_turns = 10
+
+[ckpt]
+interval = 5
+
+[inference.vllm]
+tool_call_parser = "hermes"
+gpu_memory_utilization = 0.45
+max_model_len = 16384
