@@ -12,6 +12,7 @@ from benchflow.rollout import RolloutConfig, Scene, _resolve_prompts
 from benchflow.sandbox.user import DocumentNudgeUser, ModelDocumentNudgeUser
 from benchflow.scenes import compile_scenes_to_steps, scene_step_prompt, scene_step_role
 from benchflow.task import Task, TaskConfig, TaskDocument, TaskDocumentParseError
+from benchflow.task._document_profiles import _TASK_AUTHORING_PROFILES
 from benchflow.task.config import (
     MultiStepRewardStrategy,
     NetworkMode,
@@ -1387,3 +1388,29 @@ verifier:
 Do it.
 """
         )
+
+
+def test_multi_agent_profile_reviewer_model_is_one_the_pinned_adapter_accepts() -> None:
+    """The `multi-agent` profile's reviewer must name a live Claude model id.
+
+    The profile paired `agent: claude-agent-acp` with `model:
+    claude-sonnet-4-6`. The adapter pinned in `benchflow.agents.registry`
+    (`@agentclientprotocol/claude-agent-acp@0.81.2`, with Claude Code 2.1.280)
+    refuses that id: a zero-token `initialize` + `session/new` +
+    `session/set_config_option` probe against the real adapter answered
+    `-32603 Internal error` for `claude-sonnet-4-6`, `claude-sonnet-4-5` and
+    `claude-opus-4-8`, and accepted `claude-sonnet-5`, `claude-opus-5-5` and
+    `claude-haiku-4-5[-20251001]`. So every task generated from this profile
+    got a reviewer that failed on each run, after the full retry budget, with
+    an opaque `acp_error`. The model API itself still serves the refused ids,
+    which is why this only bites through the ACP adapter.
+    """
+    roles = _TASK_AUTHORING_PROFILES["multi-agent"]["agents"]["roles"]
+    reviewer = roles["reviewer"]
+
+    assert reviewer["agent"] == "claude-agent-acp"
+    assert reviewer["model"] not in {
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-opus-4-8",
+    }
