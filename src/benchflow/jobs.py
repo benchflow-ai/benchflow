@@ -220,6 +220,21 @@ class Trial:
     # a results.jsonl row (then ``path`` is that file and ``row`` its index).
     source: Literal["result.json", "results.jsonl"] = "result.json"
     row: int | None = None
+    # The attempts of this trial's task in its Evaluation job (set by load_job).
+    _attempts: list[Trial] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def attempts(self) -> list[Trial]:
+        """Every rollout of this trial, oldest first, this one included.
+
+        An Evaluation job retries a task in its own folder (and a resume
+        re-runs it there), so a trial can take several rollouts: this lists
+        them, for counting what a job ran or spent
+        (``sum(len(t.attempts) for t in job.trials)``). One element when the
+        task ran once, in a folder of independent rollouts (``bf.run_batch``),
+        or when the trial was read on its own with :func:`load_trial`.
+        """
+        return list(self._attempts) if self._attempts else [self]
 
     @property
     def task_name(self) -> str:
@@ -464,6 +479,7 @@ class Trial:
             "control": self.control,
             "execution": self.execution,
             "assessment": self.assessment,
+            "attempts": len(self.attempts),
             "forks": len(self.forks),
             "review_valid": self.review.review_valid if self.review else None,
             "source": self.source,
@@ -901,7 +917,7 @@ def _final_attempts(trials: list[Trial]) -> list[Trial]:
 
     folders: dict[Path, bool] = {}
     kept: list[Trial] = []
-    best: dict[tuple[str, Path, str, str | None], Trial] = {}
+    chains: dict[tuple[str, Path, str, str | None], list[Trial]] = {}
     for t in trials:
         folder = t.path.parent
         if folder not in folders:
@@ -909,10 +925,29 @@ def _final_attempts(trials: list[Trial]) -> list[Trial]:
         if not folders[folder]:
             kept.append(t)
             continue
-        key = (t.task_name, folder, t.agent, t.model)
-        if key not in best or _rank(t) >= _rank(best[key]):
-            best[key] = t
-    return kept + list(best.values())
+        chains.setdefault((t.task_name, folder, t.agent, t.model), []).append(t)
+    for chain in chains.values():
+        chain.sort(key=_started)
+        best = chain[0]
+        for t in chain:
+            t._attempts = chain
+            if _rank(t) >= _rank(best):  # ties go to the newer attempt
+                best = t
+        kept.append(best)
+    return kept
+
+
+def _started(trial: Trial) -> tuple[str, float, str, int]:
+    """Chronological order of attempts: start time, then when result.json was
+    written (an attempt starts after the one before it ended), then the row
+    of a results.jsonl file."""
+    started = trial.result.started_at
+    return (
+        started.isoformat() if started is not None else "",
+        _rank(trial)[1],
+        str(trial.path),
+        trial.row or 0,
+    )
 
 
 def load_job(
@@ -932,7 +967,8 @@ def load_job(
     so there the attempts of one task, agent and model are one trial. With
     ``attempts="best"`` (the default) that trial is its best attempt: the
     scored one first, then the newest, the rule resume and ``summary.json``
-    use. ``attempts="all"`` keeps every attempt. Rollouts in any other folder
+    use; its :attr:`Trial.attempts` lists every attempt, oldest first.
+    ``attempts="all"`` keeps every attempt as a trial. Rollouts in any other folder
     (``bf.run_batch``, ``bf.run`` calls sharing a job name) are independent
     samples and are always all kept, so repeated rollouts of one task count
     as repeated trials in :meth:`Job.solve_rates`.
@@ -978,10 +1014,11 @@ def load_job(
             f"no trial (a folder with result.json) under {path}; pass a job "
             "directory such as jobs/<job_name>"
         )
-    if attempts == "best":
-        trials = _final_attempts(trials)
-    elif attempts != "all":
+    if attempts not in ("best", "all"):
         raise ValueError(f"attempts is 'best' or 'all', got {attempts!r}")
+    kept = _final_attempts(trials)
+    if attempts == "best":
+        trials = kept
     trials.sort(key=lambda t: (t.task_name, str(t.path)))
     return Job(
         path=path,

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 1
 #: Bumped when optional fields are added within a schema_version; the
 #: changelog is in docs/reference/json-export.md.
-SCHEMA_MINOR: dict[str, int] = {"trial": 2, "job": 2, "comparison": 2, "run-summary": 0}
+SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 3, "comparison": 2, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -266,6 +266,11 @@ class TrialExport(_Model):
     assessment: Literal["scored", "error", "unscored"]
     control: Literal["oracle", "empty"] | None = Field(
         description="control runs check the task, not an agent"
+    )
+    attempts: int = Field(
+        1,
+        description="rollouts this trial took: 1, plus each retry (or resume "
+        "re-run) of its task in an Evaluation job (1.3)",
     )
     error: str | None
     error_category: str | None
@@ -674,6 +679,7 @@ def trial_export(
         execution=trial.execution,
         assessment=trial.assessment,
         control=trial.control,
+        attempts=len(trial.attempts),
         error=r.error,
         error_category=r.error_category,
         verifier_error=r.verifier_error,

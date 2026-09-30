@@ -333,3 +333,41 @@ def test_load_job_merges_several_directories(tmp_path: Path) -> None:
     cmp = bf.compare(arm_a, arm_b, labels=("a", "b"))
     assert cmp.summary.b_lower == 2
     assert "| Task | a | b |" in cmp.to_markdown()
+
+
+def test_a_retried_trial_lists_its_attempts(tmp_path: Path) -> None:
+    """``Trial.attempts`` exposes the rollouts an Evaluation's retries made.
+
+    The hill-climb demo (docs/examples/hillclimb) had to count trials
+    instead of rollouts because ``bf.load_job`` kept only each task's best
+    attempt and gave no way to reach the attempts it retried.
+    """
+    job = tmp_path / "job"
+    now = time.time()
+    first = _trial(
+        job, "t", reward=None, error="pipe closed", suffix="00000001", mtime=now - 30
+    )
+    second = _trial(
+        job, "t", reward=None, error="pipe closed", suffix="00000002", mtime=now - 20
+    )
+    last = _trial(job, "t", reward=1.0, suffix="00000003", mtime=now - 10)
+    _trial(job, "u", reward=0.0, suffix="00000004", mtime=now)
+    (job / "evaluation.json").write_text("{}")
+
+    loaded = bf.load_job(job)
+    t, u = loaded.trials
+    assert [a.path for a in t.attempts] == [first, second, last]
+    assert t.attempts[-1] is t and t.reward == 1.0
+    assert u.attempts == [u]
+    assert sum(len(trial.attempts) for trial in loaded.trials) == 4
+    assert {r["task_name"]: r["attempts"] for r in loaded.to_records()} == {
+        "t": 3,
+        "u": 1,
+    }
+    exported = {d["task_name"]: d["attempts"] for d in loaded.to_json_dict()["trials"]}
+    assert exported == {"t": 3, "u": 1}
+
+    every = bf.load_job(job, attempts="all")
+    assert len(every.trials) == 4
+    assert all(len(x.attempts) == 3 for x in every.trials if x.task_name == "t")
+    assert bf.load_trial(last).attempts[0].path == last  # read alone: itself
