@@ -326,25 +326,42 @@ class RetryConfig:
             return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
+    def reruns_on_resume(
+        self, error: str | None, *, category: str | None = None
+    ) -> bool:
+        """Whether a resumed job runs an unscored trial again.
+
+        Everything ``should_retry`` retries, and a trial that ended on its
+        login's usage limit: never retried within the run (the same login
+        would only hit it again), but a resume is how a caller runs it again
+        on another login or after the reset.
+        """
+        category = category or classify_error(error)
+        return category == USAGE_LIMIT or self.should_retry(error, category=category)
+
     def reruns_unjudged_solver(
         self,
         scoring: ScoringResult | None,
         error: str | None,
         *,
         category: str | None = None,
+        on_resume: bool = False,
     ) -> bool:
         """Whether a rubric trial's solver runs again despite its scoring block.
 
         A rubric trial commits a scoring block even when its solver failed on
         the sandbox or transport and nothing was judged: a scoring error with
         no verifier reward. That is a retryable infrastructure failure like
-        any other (#1059), not a verdict that pins the trial.
+        any other (#1059), not a verdict that pins the trial. ``on_resume``
+        also runs again a solver that ended on a usage limit
+        (:meth:`reruns_on_resume`).
         """
+        again = self.reruns_on_resume if on_resume else self.should_retry
         return (
             scoring is not None
             and scoring.status == "error"
             and scoring.verifier_reward is None
-            and self.should_retry(error, category=category)
+            and again(error, category=category)
         )
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
@@ -1599,11 +1616,12 @@ class Evaluation:
                 if (
                     rerun_ok
                     and pending.get("rewards") is None
-                    and self._config.retry.should_retry(
+                    and self._config.retry.reruns_on_resume(
                         pending.get("error"), category=pending.get("error_category")
                     )
                 ):
-                    # Its solver failed on infrastructure: nothing to review.
+                    # Its solver failed on infrastructure or ended on a usage
+                    # limit: nothing to review.
                     continue
                 latest[name] = {
                     **pending,
@@ -1621,7 +1639,10 @@ class Evaluation:
             # unless the solver failed on infrastructure and nothing was judged.
             if r.get("scoring") is not None:
                 if rerun_ok and self._config.retry.reruns_unjudged_solver(
-                    _scoring_block(r), r.get("error"), category=r.get("error_category")
+                    _scoring_block(r),
+                    r.get("error"),
+                    category=r.get("error_category"),
+                    on_resume=True,
                 ):
                     logger.info(
                         f"Re-running task whose solver failed on infrastructure "
