@@ -298,6 +298,8 @@ class EpisodeOutcome:
     clipped_replies: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Prompt plus reply tokens of the latest call: the episode's context length.
+    context_tokens: int = 0
     rollout_dir: Path | None = None
     verifier: dict[str, Any] = field(default_factory=dict)
     integrity: Any = None
@@ -334,6 +336,7 @@ class EpisodeOutcome:
             "clipped_replies": self.clipped_replies,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "context_tokens": self.context_tokens,
             "total_time": t.get("total_sec"),
             "env_setup_time": t.get("sandbox_start_sec"),
             "agent_run_time": t.get("agent_sec"),
@@ -380,6 +383,7 @@ class EpisodeOutcome:
             "clipped_replies": self.clipped_replies,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "context_tokens": self.context_tokens,
             "timings": {k: round(v, 3) for k, v in self.timings.items()},
             "integrity": _jsonable(self.integrity),
             "messages": self.messages,
@@ -455,6 +459,10 @@ class _Episode:
         self.runtime: Any = None
         self.out = EpisodeOutcome(episode_id=request.episode_id, task_id=task_id)
         self.out.messages = [dict(message) for message in request.prompt]
+        # Miles passes --max-seq-len in the sample metadata: the most tokens of
+        # one episode it will train on.
+        self.max_seq_len = _positive_int(request.metadata.get("max_seq_len"))
+        self.reply_budget = _positive_int(request.request_kwargs.get("max_tokens")) or 0
 
     async def run(self, sandbox_slots: asyncio.Semaphore | None) -> EpisodeOutcome:
         out = self.out
@@ -539,6 +547,11 @@ class _Episode:
         # max_turns tool-calling turns, and one more model call whose tool calls
         # are not run.
         for turn in range(max_turns + 1):
+            if turn and self._context_full():
+                # The next request could outgrow what Miles trains on: stop, and
+                # let the verifier score the sandbox as the policy left it.
+                out.ended = CONTEXT_EXHAUSTED
+                return
             choice = await self._chat()
             message = choice.get("message") or {}
             out.messages.append(_replayable(message))
@@ -570,6 +583,24 @@ class _Episode:
                 if done:
                     out.ended = SUBMITTED
                     return
+
+    def _context_full(self) -> bool:
+        """Whether the next request, with its reply, could pass ``max_seq_len``.
+
+        Counts the tokens of the latest call as the server reported them, the
+        tool results appended since (about 3 characters per token, rounded up
+        to stay on the safe side), and a full reply.
+        """
+
+        if not self.max_seq_len or not self.out.context_tokens:
+            return False
+        pending = 0
+        for message in reversed(self.out.messages):
+            if message.get("role") == "assistant":
+                break
+            pending += len(str(message.get("content") or "")) // 3 + 8
+        used = self.out.context_tokens + pending + self.reply_budget
+        return used > self.max_seq_len
 
     async def _chat(self) -> dict[str, Any]:
         out = self.out
@@ -620,8 +651,11 @@ class _Episode:
             except Exception as exc:
                 raise _ModelServerFailure(f"malformed chat response: {exc}") from exc
             usage = data.get("usage") or {}
-            self.out.prompt_tokens += int(usage.get("prompt_tokens") or 0)
-            self.out.completion_tokens += int(usage.get("completion_tokens") or 0)
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            self.out.prompt_tokens += prompt_tokens
+            self.out.completion_tokens += completion_tokens
+            self.out.context_tokens = prompt_tokens + completion_tokens
             return choice
         text = response.text[:500]
         if status == 400 and any(marker in text.lower() for marker in _CONTEXT_MARKERS):
@@ -749,6 +783,14 @@ def _replayable(message: Mapping[str, Any]) -> dict[str, Any]:
     if message.get("tool_calls"):
         replay["tool_calls"] = message["tool_calls"]
     return replay
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _jsonable(value: Any) -> Any:

@@ -200,11 +200,20 @@ def _request(**metadata: Any) -> EpisodeRequest:
     )
 
 
-async def _run(tasks: Path, tmp_path: Path, script: list[Any], **settings: Any):
+async def _run(
+    tasks: Path,
+    tmp_path: Path,
+    script: list[Any],
+    *,
+    metadata: dict[str, Any] | None = None,
+    **settings: Any,
+):
     sessions = _Sessions(script)
     async with sessions.client() as client:
         outcome = await run_episode(
-            _request(), _settings(tasks, tmp_path, **settings), client=client
+            _request(**(metadata or {})),
+            _settings(tasks, tmp_path, **settings),
+            client=client,
         )
     return outcome, sessions
 
@@ -324,6 +333,28 @@ async def test_bad_tool_arguments_are_fed_back_like_the_trl_adapter(
     assert tool_message["role"] == "tool"
     assert json.loads(tool_message["content"]) == {"error": "'command'"}
     assert outcome.tool_errors == 1 and not outcome.policy_acted
+
+
+async def test_the_episode_stops_before_its_context_outgrows_max_seq_len(
+    tasks: Path, tmp_path: Path
+):
+    """Miles trains on at most --max-seq-len tokens per episode (sample metadata)."""
+
+    acted = _reply("", [_tool_call("run_bash", {"command": "ls"}, "c1")])
+    # usage 100 + 10 tokens, a 64-token reply budget, and the tool result: > 150.
+    outcome, sessions = await _run(
+        tasks, tmp_path, [acted], metadata={"max_seq_len": 150}
+    )
+    assert len(sessions.requests) == 1
+    assert outcome.exit_status == "SequenceLengthLimitExceeded"
+    assert outcome.response()["eval_report"]["ended"] == "context_exhausted"
+    assert _Runtime.created[0].verified == 1
+    # With room to spare the episode goes on.
+    _Runtime.created.clear()
+    outcome, sessions = await _run(
+        tasks, tmp_path, [acted, _reply("done")], metadata={"max_seq_len": 4096}
+    )
+    assert len(sessions.requests) == 2 and outcome.exit_status == "NoToolCall"
 
 
 # --- the failure contract --------------------------------------------------------
