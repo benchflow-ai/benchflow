@@ -300,6 +300,7 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         console.print(
             f"[dim]  (details: {escape(str(artifact_pointer))})[/dim]", soft_wrap=True
         )
+    _report_outcomes(result, job_dir)
     if job_dir is not None:
         console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}", soft_wrap=True)
         console.print(
@@ -309,6 +310,134 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         console.print(
             f"[dim]View:     [/dim] bench eval view {escape(str(job_dir))}",
             soft_wrap=True,
+        )
+
+
+# Task names shown per cause before "and N more".
+_MAX_CAUSE_TASKS = 5
+
+
+def _duration(seconds: float) -> str:
+    whole = max(0, round(seconds))
+    hours, rest = divmod(whole, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m {secs}s" if minutes else f"{secs}s"
+
+
+def _report_outcomes(result: object, job_dir: Path | None) -> None:
+    """Scored, unscored and errored trials, by cause, with whose fault and what next.
+
+    Then the run's cost and time. ``result.results`` (one RolloutResult per
+    task) feeds it; a result without them (sharded runs, older callers)
+    prints nothing here.
+    """
+    import json
+
+    from benchflow.failures import cause_of, task_dir_for
+
+    results = getattr(result, "results", None)
+    if not isinstance(results, dict) or not results:
+        return
+    groups: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+    counts = {"passed": 0, "failed": 0, "unscored": 0, "errored": 0}
+    for name, trial in sorted(results.items()):
+        cause = cause_of(
+            trial,
+            job_dir=job_dir,
+            task_dir=task_dir_for(job_dir, name) if job_dir else None,
+        )
+        if cause is None:
+            passed = getattr(trial, "score_outcome", None) == "passed"
+            counts["passed" if passed else "failed"] += 1
+            continue
+        bucket = "errored" if getattr(trial, "error", None) else "unscored"
+        counts[bucket] += 1
+        groups.setdefault((bucket, cause.headline(), cause.key), []).append(
+            (name, cause.next_step)
+        )
+    scored = counts["passed"] + counts["failed"]
+    console.print(
+        f"Outcomes: {scored} scored ({counts['passed']} passed, {counts['failed']} "
+        f"failed), {counts['unscored']} unscored, {counts['errored']} errored",
+        highlight=False,
+        soft_wrap=True,
+    )
+    for bucket in ("unscored", "errored"):
+        for (group_bucket, headline, _key), members in groups.items():
+            if group_bucket != bucket:
+                continue
+            names = [name for name, _ in members]
+            shown = ", ".join(names[:_MAX_CAUSE_TASKS])
+            if len(names) > _MAX_CAUSE_TASKS:
+                shown += f" and {len(names) - _MAX_CAUSE_TASKS} more"
+            steps = list(dict.fromkeys(step for _, step in members))
+            step = (
+                steps[0] if len(steps) == 1 else steps[0] + " (and likewise for each)"
+            )
+            style = "yellow" if bucket == "unscored" else "red"
+            console.print(
+                f"  [{style}]{len(names)} {bucket}[/{style}]: {escape(headline)}: "
+                f"{escape(shown)}",
+                highlight=False,
+                soft_wrap=True,
+            )
+            console.print(
+                f"      [cyan]next:[/cyan] {escape(step)}",
+                highlight=False,
+                soft_wrap=True,
+            )
+    summary: dict = {}
+    if job_dir is not None:
+        try:
+            loaded = json.loads((job_dir / "summary.json").read_text())
+            summary = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            summary = {}
+    stop = summary.get("usage_limit")
+    if isinstance(stop, dict) and stop.get("not_started"):
+        where = str(job_dir) if job_dir is not None else "<job dir>"
+        console.print(
+            f"  {len(stop['not_started'])} not started: the login's usage limit "
+            f"stopped the job; `bench eval resume {escape(where)}` runs them on "
+            "another login or after the reset",
+            highlight=False,
+            soft_wrap=True,
+        )
+    costs = [
+        c
+        for trial in results.values()
+        if isinstance(c := getattr(trial, "cost_usd", None), int | float)
+        and not isinstance(c, bool)
+    ]
+    tokens = [
+        t
+        for trial in results.values()
+        if isinstance(t := getattr(trial, "total_tokens", None), int)
+        and not isinstance(t, bool)
+    ]
+    token_text = f", {sum(tokens):,} tokens" if tokens else ""
+    if costs:
+        missing = len(results) - len(costs)
+        note = (
+            f" ({missing} of {len(results)} trials reported no cost)" if missing else ""
+        )
+        console.print(
+            f"[dim]Cost:     [/dim] ${sum(costs):.2f}{token_text}{note}", soft_wrap=True
+        )
+    else:
+        console.print(
+            "[dim]Cost:     [/dim] not reported (subscription logins and unpriced "
+            f"models report no USD){token_text}",
+            soft_wrap=True,
+        )
+    elapsed = getattr(result, "elapsed_sec", None)
+    if isinstance(elapsed, int | float) and not isinstance(elapsed, bool):
+        reused = int(getattr(result, "reused", 0) or 0)
+        tail = f" (this run; {reused} task(s) reused from before)" if reused else ""
+        console.print(
+            f"[dim]Time:     [/dim] {_duration(elapsed)}{tail}", soft_wrap=True
         )
 
 
