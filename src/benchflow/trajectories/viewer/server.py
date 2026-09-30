@@ -1,7 +1,6 @@
 """HTTP serving: single-trajectory pages (with --confirm) and browse mode."""
 
 import hmac
-import json
 import secrets
 import sys
 from pathlib import Path
