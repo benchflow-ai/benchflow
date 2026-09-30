@@ -229,7 +229,15 @@ def classify_error(error: str | None) -> str | None:
         return SUSPECTED_API_ERROR
     if "provider api error" in lower:
         return API_ERROR
-    if "acp error" in lower or "was rejected as invalid" in lower:
+    # A native-harness CLI error (benchflow.native_harness) is the same kind
+    # of failure as an ACP adapter's error response: the agent reported a
+    # failed turn, or died mid-turn. One category keeps the two harnesses'
+    # outcomes comparable.
+    if (
+        "acp error" in lower
+        or "native harness error" in lower
+        or "was rejected as invalid" in lower
+    ):
         if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
             return PROVIDER_AUTH
         if any(m in lower for m in _PROVIDER_RATE_LIMIT_MARKERS):

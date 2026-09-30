@@ -57,6 +57,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         model=raw.get("model"),
         reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
         reasoning_effort=raw.get("reasoning_effort"),
+        harness=raw.get("harness") or "acp",
         environment=raw.get("environment") or "docker",
         concurrency=int(raw.get("concurrency") or 1),
         prompts=raw.get("prompts"),

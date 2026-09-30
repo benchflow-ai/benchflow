@@ -131,6 +131,11 @@ class RolloutConfig:
     # budget without editing every task definition (#378).
     timeout: int | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
+    # How the agent runs: "acp" (default) through its ACP adapter, or "native"
+    # through its own CLI in headless JSON mode (benchflow.native_harness;
+    # Claude Code and Codex). One option for the whole run: every role's agent
+    # must have a native harness when it is "native".
+    harness: str = "acp"
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -297,6 +302,18 @@ class RolloutConfig:
                 role.reasoning_effort = normalize_reasoning_effort(
                     role.reasoning_effort
                 )
+        from benchflow.native_harness.harnesses import (
+            check_harness,
+            normalize_harness,
+        )
+
+        self.harness = normalize_harness(self.harness)
+        check_harness(
+            self.harness,
+            [role.agent for scene in self.effective_scenes for role in scene.roles]
+            if self.skill_mode != SKILL_MODE_SELF_GEN
+            else [self.agent],
+        )
 
     def _resolve_user(self) -> None:
         """The single user-materialization point for every construction path.

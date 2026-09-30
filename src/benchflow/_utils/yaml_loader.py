@@ -128,6 +128,7 @@ def rollout_config_from_dict(
         agent_idle_timeout=raw.get(
             "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
         ),
+        harness=raw.get("harness", "acp"),
         context_root=raw.get("context_root"),
         base_image_override=raw.get("base_image_override"),
         agent=raw.get("agent", "claude-agent-acp"),
@@ -265,6 +266,7 @@ def rollout_config_to_dict(
             "jobs_dir": str(config.jobs_dir),
             "concurrency": config.concurrency,
             "agent_idle_timeout_sec": config.agent_idle_timeout,
+            "harness": config.harness,
             "timeout": config.timeout,
             "context_root": str(config.context_root) if config.context_root else None,
             "base_image_override": config.base_image_override,

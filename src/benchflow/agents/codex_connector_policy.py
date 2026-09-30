@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.agents.codex_config import disable_codex_apps
-from benchflow.agents.registry import CODEX_ACP_BUILTIN_LAUNCH, pinned_npm_package
+from benchflow.agents.registry import (
+    CODEX_ACP_BUILTIN_LAUNCH,
+    CODEX_CLI_EXECUTABLE_PATH,
+    pinned_npm_package,
+)
 from benchflow.sandbox.lockdown import build_priv_drop_cmd
 
 _ADAPTER = "/opt/benchflow/bin/codex-acp"
@@ -104,11 +108,15 @@ async def enforce_codex_apps_policy(
     requested: str | None,
     rollout_dir: Path,
     timeout_sec: int = 60,
+    harness: str = "acp",
 ) -> dict[str, str]:
     """Fail before ACP initialization unless the supported native policy holds.
 
     `inherit` leaves any existing stricter managed policy intact. The receipt
     proves configuration enforcement only, never authenticated tool absence.
+    With ``harness="native"`` the checks run against the pinned Codex CLI the
+    native harness launches instead of the ACP adapter; the managed
+    requirements file is the same, since every Codex build reads it.
     """
     if agent != "codex-acp":
         return agent_env
@@ -129,7 +137,8 @@ async def enforce_codex_apps_policy(
             raise CodexAppsPolicyRefused(
                 "Disabled Codex Apps requires a non-root sandbox user"
             )
-        if agent_launch != CODEX_ACP_BUILTIN_LAUNCH:
+        native = harness == "native"
+        if not native and agent_launch != CODEX_ACP_BUILTIN_LAUNCH:
             raise CodexAppsPolicyRefused(
                 "Codex Apps policy requires the managed Codex ACP launcher"
             )
@@ -163,39 +172,55 @@ async def enforce_codex_apps_policy(
             raise CodexAppsPolicyRefused(
                 "Disabled Codex Apps requires a verified non-root UID"
             )
-        package, pinned = pinned_npm_package("codex-acp")
-        adapter = await probe_native(f"{_ADAPTER} --version")
-        if (
-            adapter.return_code != 0
-            or (adapter.stdout or "").strip() != f"{package} {pinned}"
-        ):
-            raise CodexAppsPolicyRefused(
-                f"Codex Apps policy requires verified Codex ACP {pinned}"
+        if native:
+            # The native harness runs the pinned Codex CLI itself.
+            pinned = None
+            _, cli_pinned = pinned_npm_package("codex")
+            version = await probe_native(f"{CODEX_CLI_EXECUTABLE_PATH} --version")
+            reported = re.search(r"codex-cli (\S+)\s*$", (version.stdout or "").strip())
+            native_version = reported.group(1) if reported else ""
+            if version.return_code != 0 or native_version != cli_pinned:
+                raise CodexAppsPolicyRefused(
+                    f"Codex Apps policy requires the pinned Codex CLI {cli_pinned}"
+                )
+            codex = CODEX_CLI_EXECUTABLE_PATH
+        else:
+            package, pinned = pinned_npm_package("codex-acp")
+            adapter = await probe_native(f"{_ADAPTER} --version")
+            if (
+                adapter.return_code != 0
+                or (adapter.stdout or "").strip() != f"{package} {pinned}"
+            ):
+                raise CodexAppsPolicyRefused(
+                    f"Codex Apps policy requires verified Codex ACP {pinned}"
+                )
+            manifest = await root_node(
+                _MANIFEST % json.dumps(f"{_NODE_MODULES}/{package}/package.json")
             )
-        manifest = await root_node(
-            _MANIFEST % json.dumps(f"{_NODE_MODULES}/{package}/package.json")
-        )
-        try:
-            declared = json.loads(manifest.stdout or "")
-        except ValueError:
-            declared = None
-        if (
-            manifest.return_code != 0
-            or not isinstance(declared, dict)
-            or (declared.get("name"), declared.get("version")) != (package, pinned)
-            or not isinstance(declared.get("codex"), str)
-        ):
-            raise CodexAppsPolicyRefused(
-                f"Codex Apps policy requires the native Codex range declared by Codex ACP {pinned}"
-            )
-        version = await probe_native(f"{_ADAPTER} cli -V")
-        reported = re.fullmatch(r"codex-cli (\S+)", (version.stdout or "").strip())
-        native = reported.group(1) if reported else ""
-        if version.return_code != 0 or not _satisfies(native, declared["codex"]):
-            raise CodexAppsPolicyRefused(
-                f"Codex Apps policy requires verified native Codex {declared['codex']}"
-                f" as declared by Codex ACP {pinned}"
-            )
+            try:
+                declared = json.loads(manifest.stdout or "")
+            except ValueError:
+                declared = None
+            if (
+                manifest.return_code != 0
+                or not isinstance(declared, dict)
+                or (declared.get("name"), declared.get("version")) != (package, pinned)
+                or not isinstance(declared.get("codex"), str)
+            ):
+                raise CodexAppsPolicyRefused(
+                    f"Codex Apps policy requires the native Codex range declared by Codex ACP {pinned}"
+                )
+            version = await probe_native(f"{_ADAPTER} cli -V")
+            reported = re.fullmatch(r"codex-cli (\S+)", (version.stdout or "").strip())
+            native_version = reported.group(1) if reported else ""
+            if version.return_code != 0 or not _satisfies(
+                native_version, declared["codex"]
+            ):
+                raise CodexAppsPolicyRefused(
+                    f"Codex Apps policy requires verified native Codex {declared['codex']}"
+                    f" as declared by Codex ACP {pinned}"
+                )
+            codex = f"{_ADAPTER} cli"
         installed = await root_node(_INSTALL)
         if installed.return_code != 0:
             raise CodexAppsPolicyRefused(
@@ -216,9 +241,7 @@ async def enforce_codex_apps_policy(
             ) from exc
         # An explicit CLI enable must remain false under requirements. This also
         # rejects an existing valid policy which lacks the required restriction.
-        probe = await probe_native(
-            f"{_ADAPTER} cli -c features.apps=true features list"
-        )
+        probe = await probe_native(f"{codex} -c features.apps=true features list")
         apps_rows = [
             line.split()
             for line in (probe.stdout or "").splitlines()
@@ -233,8 +256,9 @@ async def enforce_codex_apps_policy(
                 "Codex Apps managed requirements conflict or enforcement probe failed"
             )
         receipt.update(
+            harness=harness,
             adapter_version=pinned,
-            native_version=native,
+            native_version=native_version,
             requirements_sha256=digest,
             effective_apps=False,
             override_probe="cli_true_remains_false",

@@ -278,6 +278,8 @@ class BranchPlan:
     retain_snapshots: bool = False
     prompts: list[str] | None = None
     reasoning_effort: str | None = None
+    # "acp" or "native" (benchflow.native_harness), as for bench eval run.
+    harness: str = "acp"
     agent_env: dict[str, str] = field(default_factory=dict)
     jobs_dir: Path = Path("jobs")
     job_name: str = "branch"
@@ -688,6 +690,7 @@ async def run_branch_trial(
         agent=plan.agent,
         model=plan.model,
         reasoning_effort=plan.reasoning_effort,
+        harness=plan.harness,
         # '@instruction' is the task instruction (None in RolloutConfig).
         prompts=[None if p == INSTRUCTION else p for p in plan.prompts]
         if plan.prompts

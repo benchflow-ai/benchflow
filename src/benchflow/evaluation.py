@@ -566,6 +566,9 @@ class EvaluationConfig:
     agent: str = DEFAULT_AGENT
     model: str | None = None
     reasoning_effort: str | None = None
+    # "acp" (default) or "native": run the agent through its own CLI in
+    # headless JSON mode instead of its ACP adapter (benchflow.native_harness).
+    harness: str = "acp"
     environment: str = "docker"
     concurrency: int = 4
     build_concurrency: int | None = None
@@ -664,6 +667,13 @@ class EvaluationConfig:
         # bare IDs fail before sandbox work; explicit commands remain supported.
         self.agent = normalize_agent_name(self.agent)
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
+        from benchflow.native_harness.harnesses import (
+            check_harness,
+            normalize_harness,
+        )
+
+        self.harness = normalize_harness(self.harness)
+        check_harness(self.harness, [self.agent])
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         if self.codex_apps_policy not in (None, "disabled", "inherit"):
             raise ValueError("codex_apps_policy must be disabled, inherit, or None")
@@ -1037,6 +1047,7 @@ class Evaluation:
             "agent": cfg.agent,
             "model": cfg.model,
             "reasoning_effort": cfg.reasoning_effort,
+            "harness": cfg.harness,
             "environment": cfg.environment,
             "concurrency": cfg.concurrency,
             "build_concurrency": cfg.build_concurrency,
@@ -1228,6 +1239,7 @@ class Evaluation:
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
             reasoning_effort=raw.get("reasoning_effort"),
+            harness=raw.get("harness", "acp"),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             build_concurrency=raw.get("build_concurrency"),
@@ -1348,6 +1360,7 @@ class Evaluation:
             reasoning_effort=agent_cfg.get(
                 "reasoning_effort", raw.get("reasoning_effort")
             ),
+            harness=agent_cfg.get("harness", raw.get("harness", "acp")),
             environment=environment,
             concurrency=concurrency,
             agent_env=agent_env,
@@ -1729,6 +1742,7 @@ class Evaluation:
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
+            harness=cfg.harness,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             reviewer=cfg.reviewer,

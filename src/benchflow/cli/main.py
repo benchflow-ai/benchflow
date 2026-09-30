@@ -34,7 +34,12 @@ from benchflow.cli._live_progress import (
     live_session,
     progress_enabled,
 )
-from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
+from benchflow.cli._options import (
+    AgentOption,
+    HarnessOption,
+    ModelOption,
+    SkillModeOption,
+)
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _parse_agent_env,
@@ -395,6 +400,7 @@ def eval_run(
             help="Agent reasoning/thinking effort when the agent exposes one (e.g. max)",
         ),
     ] = None,
+    harness: HarnessOption = None,
     environment: Annotated[
         str | None,
         typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}"),
@@ -913,6 +919,7 @@ def eval_run(
         agent=agent,
         model=model,
         reasoning_effort=reasoning_effort,
+        harness=harness,
         environment=environment,
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
@@ -1317,6 +1324,11 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             j._config.model = effective_model(j._config.agent, j._config.model)
         if req.reasoning_effort is not None:
             j._config.reasoning_effort = plan.eval_reasoning_effort
+        if req.harness is not None:
+            from benchflow.native_harness.harnesses import check_harness
+
+            check_harness(plan.eval_harness, [j._config.agent])
+            j._config.harness = plan.eval_harness
         if req.environment is not None:
             j._config.environment = plan.eval_environment
         if req.codex_apps_policy is not None:

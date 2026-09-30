@@ -399,6 +399,10 @@ class Trial:
             "dataset_name": self.raw.get("dataset_name"),
             "dataset_version": self.raw.get("dataset_version"),
             "reasoning_effort": self.config.get("reasoning_effort"),
+            # acp or native (older trials predate the option: acp).
+            "harness_mode": self.config.get("harness_mode", "acp")
+            if self.config
+            else None,
             "environment": self.config.get("environment"),
             "sandbox_user": self.config.get("sandbox_user"),
             "timeout_sec": self.config.get("timeout_sec"),
@@ -988,6 +992,7 @@ SETTINGS = (
     "dataset_name",
     "dataset_version",
     "reasoning_effort",
+    "harness_mode",
     "environment",
     "sandbox_user",
     "timeout_sec",
