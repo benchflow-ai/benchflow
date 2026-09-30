@@ -342,6 +342,7 @@ def strip_captured_token_ids(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _complete(capture: dict[str, Any]) -> bool:
+    """Prompt ids, and for every choice sampled ids with one logprob each."""
     completions = capture.get("completions")
     return (
         _int_list(capture.get("prompt_token_ids")) is not None
@@ -352,7 +353,23 @@ def _complete(capture: dict[str, Any]) -> bool:
             and isinstance(_dict(c).get("logprobs"), list)
             for c in completions
         )
+        and not _length_mismatch(capture)
     )
+
+
+def _length_mismatch(capture: dict[str, Any]) -> bool:
+    """Whether a choice has sampled token ids and logprobs of different lengths.
+
+    A trainer pairs the i-th sampled id with the i-th logprob, so such a call
+    cannot be trained on; it is counted as ``logprobs:length_mismatch``.
+    """
+    completions = capture.get("completions")
+    for choice in completions if isinstance(completions, list) else []:
+        ids, logprobs = _dict(choice).get("token_ids"), _dict(choice).get("logprobs")
+        if isinstance(ids, list) and isinstance(logprobs, list):
+            if len(ids) != len(logprobs):
+                return True
+    return False
 
 
 def _tool_names(exchange: dict[str, Any]) -> tuple[str, ...]:
@@ -411,7 +428,8 @@ def summarize_token_capture(exchanges: list[dict[str, Any]]) -> dict[str, Any]:
     """Coverage of the ``token_capture`` blocks in one ``llm_trajectory.jsonl``.
 
     ``complete_calls`` have prompt token ids and, for every choice, sampled
-    token ids and logprobs. ``prefix`` checks the token-in/token-out property
+    token ids and one logprob per sampled id (a choice whose counts differ is
+    counted in ``unavailable`` as ``logprobs:length_mismatch``). ``prefix`` checks the token-in/token-out property
     an RL trainer relies on, within each conversation (``threads``, see
     :func:`conversation_threads`): each complete call's prompt should start
     with the previous complete call's prompt of the same conversation
@@ -439,6 +457,9 @@ def summarize_token_capture(exchanges: list[dict[str, Any]]) -> dict[str, Any]:
             providers.add(str(capture["provider"]))
         for field, why in _dict(capture.get("unavailable")).items():
             key = f"{field}:{_dict(why).get('reason', 'unknown')}"
+            unavailable[key] = unavailable.get(key, 0) + 1
+        if _length_mismatch(capture):
+            key = "logprobs:length_mismatch"
             unavailable[key] = unavailable.get(key, 0) + 1
         if not _complete(capture):
             continue

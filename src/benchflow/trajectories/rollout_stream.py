@@ -369,6 +369,14 @@ def read_rollout(
         summary["status"] = "captured" if calls else "capture_off"
     summary["path"] = _capture_path(calls)
     sequences = _sequences(calls, summary) if summary.get("training_grade") else []
+    if summary.get("training_grade") and len(sequences) != len(
+        summary.get("threads") or []
+    ):
+        # A conversation that cannot be merged into one token stream is never
+        # dropped silently: the rollout is not training-grade, and says why.
+        summary["training_grade"] = False
+        summary["reason"] = "a conversation's calls could not be merged into one sequence"
+        sequences = []
     try:
         rollout_path = str(root.relative_to(job_root))
     except ValueError:
