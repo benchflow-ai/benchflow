@@ -52,7 +52,9 @@ def wilson(k: int, n: int, z: float = 1.959964) -> list[float] | None:
     return [round(max(0.0, c - h), 6), round(min(1.0, c + h), 6)]
 
 
-def bootstrap_ci(values: list[float], n_boot: int = 2000, seed: int = 0) -> list[float] | None:
+def bootstrap_ci(
+    values: list[float], n_boot: int = 2000, seed: int = 0
+) -> list[float] | None:
     """95% percentile bootstrap interval of the mean (fixed seed: reports are reproducible)."""
     import random
 
@@ -63,7 +65,10 @@ def bootstrap_ci(values: list[float], n_boot: int = 2000, seed: int = 0) -> list
     rng = random.Random(seed)
     n = len(values)
     means = sorted(statistics.fmean(rng.choices(values, k=n)) for _ in range(n_boot))
-    return [round(means[int(0.025 * n_boot)], 6), round(means[int(0.975 * n_boot) - 1], 6)]
+    return [
+        round(means[int(0.025 * n_boot)], 6),
+        round(means[int(0.975 * n_boot) - 1], 6),
+    ]
 
 
 def reduce(values: list[float], how: str) -> float | None:
@@ -193,7 +198,7 @@ def seed_report(job_dir: str | Path, rows: list[dict] | None = None) -> dict:
         )
         out_tasks[name] = entry
     ks = sorted({int(k) for e in out_tasks.values() for k in e["pass_at_k"]})
-    summary = {
+    summary: dict[str, Any] = {
         "tasks": len(out_tasks),
         "trials": len(rows),
         "mean_reward": statistics.fmean(
@@ -215,9 +220,7 @@ def seed_report(job_dir: str | Path, rows: list[dict] | None = None) -> dict:
             for k in ks
         },
     }
-    all_scored = [
-        r for r in rows if r["reward"] is not None and not r["error"]
-    ]
+    all_scored = [r for r in rows if r["reward"] is not None and not r["error"]]
     passes = sum(1 for r in all_scored if r["reward"] >= 1.0)
     summary["pass_rate"] = round(passes / len(all_scored), 6) if all_scored else None
     summary["pass_rate_ci95"] = wilson(passes, len(all_scored))
@@ -262,8 +265,12 @@ def format_report(report: dict) -> str:
     )
     if s.get("pass_rate") is not None:
         ci = s.get("pass_rate_ci95") or [None, None]
-        lines.append(f"pass rate {s['pass_rate']:.3f} (95% Wilson interval {ci[0]:.3f}-{ci[1]:.3f})")
+        lines.append(
+            f"pass rate {s['pass_rate']:.3f} (95% Wilson interval {ci[0]:.3f}-{ci[1]:.3f})"
+        )
     for mode, m in (s.get("by_mode") or {}).items():
         ci = m["pass_rate_ci95"]
-        lines.append(f"  {mode}: {m['trials']} trials, pass rate {m['pass_rate']:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]")
+        lines.append(
+            f"  {mode}: {m['trials']} trials, pass rate {m['pass_rate']:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]"
+        )
     return "\n".join(lines)

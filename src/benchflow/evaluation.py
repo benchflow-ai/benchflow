@@ -207,7 +207,6 @@ class ResumeMismatchError(ValueError):
     """
 
 
-
 def _budget_overrides(cfg: Any, task_dir: Path) -> dict[str, Any]:
     """Per-rollout overrides from ``--timeout-multiplier`` and ``--extra-instruction``."""
     out: dict[str, Any] = {}
@@ -215,7 +214,7 @@ def _budget_overrides(cfg: Any, task_dir: Path) -> dict[str, Any]:
         from benchflow.task import Task
 
         base = Task(task_dir).config.agent.timeout_sec or 900
-        out["timeout"] = max(1, int(round(float(base) * float(cfg.timeout_multiplier))))
+        out["timeout"] = max(1, round(float(base) * float(cfg.timeout_multiplier)))
     if cfg.extra_instruction:
         out["prompt_suffix"] = cfg.extra_instruction
     return out
@@ -252,6 +251,7 @@ def sample_task_dirs(
     import random
 
     return sorted(random.Random(seed).sample(tasks, n_tasks))
+
 
 class MalformedTaskError(ValueError):
     """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
@@ -1490,12 +1490,15 @@ class Evaluation:
         # silent skip.
         selected: list[Path] = []
         children = [
-            d for d in sorted(self._tasks_dir.iterdir()) if d.is_dir() and picked(d.name)
+            d
+            for d in sorted(self._tasks_dir.iterdir())
+            if d.is_dir() and picked(d.name)
         ]
         children = sample_task_dirs(
-            children, self._config.n_tasks, self._config.sample_seed, is_task=lambda d: (
-                detect_task_format(d) is not None or _is_task_dir(d)
-            )
+            children,
+            self._config.n_tasks,
+            self._config.sample_seed,
+            is_task=lambda d: detect_task_format(d) is not None or _is_task_dir(d),
         )
         for d in children:
             if detect_task_format(d) is not None:
