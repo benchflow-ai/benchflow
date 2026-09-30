@@ -145,3 +145,44 @@ def test_a_square_opens_its_trial_and_back_returns(browser, job: Path) -> None:
     page.wait_for_selector(".jgrid")
     assert page.locator("#view-job").is_visible()
     assert errors == []
+
+
+def test_a_late_build_does_not_draw_over_an_open_trial(
+    browser, job: Path, monkeypatch
+) -> None:
+    """Open Outcomes on a job still building, go to Runs and open a trial:
+    when the build lands, the trial stays alone on screen."""
+    from benchflow.trajectories.viewer import jobviews
+    from benchflow.trajectories.viewer.server import serve
+
+    real = jobviews.build_for_roots
+
+    def slow(*args, **kwargs):
+        time.sleep(2.0)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(jobviews, "build_for_roots", slow)
+    port = _free_port()
+    threading.Thread(target=serve, args=(str(job), port), daemon=True).start()
+    base = f"http://localhost:{port}/"
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            urllib.request.urlopen(base, timeout=1).read()
+            break
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
+    errors: list[str] = []
+    page = _page(browser, errors)
+    page.goto(base + "?view=outcomes")
+    page.wait_for_selector("#view-job .jnote")  # still building
+    page.get_by_role("button", name="Runs").click()
+    page.locator(".runrow").first.click()
+    page.wait_for_selector("#content:not(.hidden)")
+    page.wait_for_timeout(3500)  # the build lands meanwhile
+    assert page.locator("#view-job").is_hidden()
+    assert page.locator("#view-index").is_hidden()
+    assert page.locator("#content").is_visible()
+    assert errors == []

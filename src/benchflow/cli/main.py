@@ -1984,8 +1984,9 @@ def eval_view(
             help=(
                 "Write the jobs' Outcomes, Pareto and Training views to one "
                 "self-contained HTML file for sharing, and exit. Secret-shaped "
-                "values are masked as in `bench traj upload`; trial links, "
-                "trajectories and absolute paths are left out."
+                "values are masked as in `bench traj upload`; trial links and "
+                "trajectories are left out, and the served folders' paths and "
+                "home folders are replaced (other paths in error lines stay)."
             ),
         ),
     ] = None,

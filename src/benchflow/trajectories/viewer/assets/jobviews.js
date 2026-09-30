@@ -162,8 +162,18 @@ BF.jobviews = (() => {
         doc = body;
       })
       .catch((error) => { loadError = error.message; })
-      .finally(() => { loading = null; show(); });
+      .finally(() => {
+        loading = null;
+        // Draw only if the job view is still what is on screen: the user may
+        // have opened a trial or gone back to the run list meanwhile.
+        if (onJobView()) show();
+      });
     return loading;
+  }
+
+  function onJobView() {
+    if (!enabled || state.view === "runs") return false;
+    return mode === "export" || document.getElementById("content").classList.contains("hidden");
   }
 
   // Show the current view (called after the catalog is shown, and on tab clicks).
@@ -329,7 +339,11 @@ BF.jobviews = (() => {
     search.placeholder = "filter rows…";
     search.value = state.query;
     search.setAttribute("aria-label", "Filter rows");
-    search.addEventListener("input", () => { state.query = search.value; renderGrid(); });
+    let typing = null;
+    search.addEventListener("input", () => {
+      clearTimeout(typing);
+      typing = setTimeout(() => { state.query = search.value; renderGrid(); }, 150);
+    });
     controls.appendChild(search);
     main.appendChild(controls);
     main.appendChild(legend());

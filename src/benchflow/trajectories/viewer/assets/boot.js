@@ -52,6 +52,11 @@ BF.navigation = (() => {
       const url = "/api/rollout?id=" + encodeURIComponent(runId)
         + (branch ? "&branch=" + encodeURIComponent(branch) : "");
       const response = await fetch(url, { signal: controller.signal });
+      if (response.status === 404 && !branch && !BF.catalog.hasRun(runId)) {
+        if (transition !== generation) return;
+        BF.detail.showError(BF.catalog.unknownRunMessage(runId));
+        return;
+      }
       if (!response.ok) throw new Error("HTTP " + response.status + " loading run " + label);
       const body = await response.text();
       let payload;
@@ -92,7 +97,11 @@ BF.navigation = (() => {
     if (runId && runKey(runId, branch) === loadedRun && !document.getElementById("content").classList.contains("hidden")) {
       return;
     }
-    if (runId && BF.catalog.hasRun(runId)) openRun(runId, false, null, branch);
+    // A run the job views link to may lie past the catalog's cap; the
+    // server resolves it (or answers 404, shown as an error).
+    if (runId && (BF.catalog.hasRun(runId) || (BF.jobviews && BF.jobviews.isEnabled()))) {
+      openRun(runId, false, null, branch);
+    }
     else if (runId) showUnknownRun(runId);
     else showCatalog(false);
   }

@@ -22,9 +22,18 @@ from .outcomes import build_outcomes
 from .render import _render_shell
 
 
-def has_trials(path: Path) -> bool:
-    """Whether a result.json exists anywhere under ``path`` (stops at the first)."""
-    return next(iter(path.rglob("result.json")), None) is not None
+def has_trials(path: Path, max_depth: int = 8) -> bool:
+    """Whether a result.json exists within ``max_depth`` folders of ``path``
+    (stops at the first; hidden folders are skipped)."""
+    base = len(path.parts)
+    for folder, subdirs, files in os.walk(path):
+        if "result.json" in files:
+            return True
+        if len(Path(folder).parts) - base >= max_depth:
+            subdirs.clear()
+        else:
+            subdirs[:] = [d for d in subdirs if not d.startswith(".")]
+    return False
 
 
 def build_for_roots(
@@ -89,7 +98,9 @@ class OutcomesCache:
 
 
 # A user's home folder named anywhere in a string: /home/<user> or /Users/<user>.
-_USER_HOME = re.compile(r"/(?:home|Users)/[^/\s\"'<>]+")
+_USER_HOME = re.compile(
+    r"/(?:home|Users)/[^/\s\"'<>]+|\b[A-Za-z]:\\+Users\\+[^\\\s\"'<>]+"
+)
 
 
 def redact_for_export(
@@ -148,10 +159,19 @@ def export_html(paths: list[Path], out: Path) -> tuple[Path, Counter[str], int]:
 
     roots = BrowseRoots(paths)
     doc = build_for_roots(roots)
+    if not doc["n"]:
+        raise FileNotFoundError(
+            "no trial (a folder with result.json) under "
+            + ", ".join(str(p) for p in paths)
+            + "; nothing to export"
+        )
     shared, categories = redact_for_export(doc, paths)
     shared["redaction"] = format_redaction_breakdown(categories) if categories else None
-    title = " + ".join(label or p.name for label, p in roots.pairs())
-    page = _render_shell(f"{title} - outcomes", {"mode": "export", "outcomes": shared})
+    # The title comes from the redacted document, like everything else.
+    page = _render_shell(
+        " + ".join(shared["roots"]) + " - outcomes",
+        {"mode": "export", "outcomes": shared},
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
     return out, categories, int(doc["n"])

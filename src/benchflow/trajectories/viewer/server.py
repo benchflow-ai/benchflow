@@ -33,6 +33,8 @@ from .sources import (
 )
 
 _CONFIRM_TOKEN_HEADER = "X-BenchFlow-Confirm-Token"
+# Browse-mode requests within this many seconds share one folder scan.
+_SCAN_MAX_AGE = 2.0
 _MAX_DECISION_BYTES = 32
 
 
@@ -446,7 +448,7 @@ def _serve_browse(
         def _scan(self) -> tuple[list[tuple[str, Path]], bool]:
             """Fresh (id, folder) list plus whether the cap truncated it."""
             cap = _runs_cap()
-            found = list(roots.scan(cap + 1).items())
+            found = list(roots.scan(cap + 1, max_age=_SCAN_MAX_AGE).items())
             return found[:cap], len(found) > cap
 
         def _resolve(self, rid: str | None) -> Path | None:
@@ -454,10 +456,10 @@ def _serve_browse(
             scan, or a trial the outcomes document links to)."""
             if rid is None:
                 return None
-            found = roots.scan(_runs_cap())
-            if rid in found:
-                return found[rid]
-            return outcomes.linked(rid) if outcomes is not None else None
+            linked = outcomes.linked(rid) if outcomes is not None else None
+            if linked is not None:
+                return linked
+            return roots.scan(_runs_cap(), max_age=_SCAN_MAX_AGE).get(rid)
 
         def do_GET(self):
             if not self._has_expected_host():

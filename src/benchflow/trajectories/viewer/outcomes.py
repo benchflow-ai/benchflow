@@ -42,7 +42,7 @@ import time
 import zlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -66,7 +66,8 @@ DIMENSIONS: dict[str, str] = {
 OUTCOMES = ("passed", "partial credit", "failed", "unscored")
 EXECUTIONS = ("completed", "errored", "timed_out", "integration_failed")
 ROLES = ("agent", "control", "optimizer")
-VERDICTS = ("Checked", "VectorExposed", "AgentViolation", "Rejected")
+# "other" is a verdict string this version does not know (never shown as Rejected).
+VERDICTS = ("Checked", "VectorExposed", "AgentViolation", "Rejected", "other")
 X_METRICS = {
     "usd": "cost (USD)",
     "tokens": "tokens",
@@ -77,6 +78,9 @@ PARETO_GROUPS = ("model", "agent", "harness", "step", "job", "seed", "split")
 PARETO_PARTITIONS = ("dataset", "split", "none")
 UNRECORDED = "(unrecorded)"
 BOOTSTRAP_SAMPLES = 200
+# Pareto resamples shrink toward this floor when the job is large (_pareto).
+MIN_BOOTSTRAP_SAMPLES = 50
+BOOTSTRAP_BUDGET = 12_000_000
 _MAX_EXTRA_REWARDS = 6
 _DETAIL_CHARS = 240
 _SPLIT_WORDS = {
@@ -167,8 +171,9 @@ def _rollout_steps_at(ctx: _Context, folder: Path) -> dict[str, Any] | None:
 
 
 def _ancestors(path: Path, root: Path) -> list[Path]:
-    """``path``'s parents from nearest to ``root`` inclusive, then up to two
-    folders above ``root`` (a job served from inside a hill-climb run)."""
+    """``path``'s parents from nearest to ``root`` inclusive, then up to six
+    folders above ``root`` (a job served from inside a hill-climb run, as
+    deep as ``evals/<version>/<split>/trial-NN/job``)."""
     out = []
     for parent in path.parents:
         out.append(parent)
@@ -176,14 +181,27 @@ def _ancestors(path: Path, root: Path) -> list[Path]:
             break
     else:
         return out
-    out.extend(list(root.parents)[:2])
+    out.extend(list(root.parents)[:6])
     return out
 
 
-def _named_folder(path: Path) -> str | None:
-    """The nearest folder name in ``path`` that is not tasks/train/test."""
-    for part in reversed(path.parts):
-        if part not in ("/", "") and part.lower() not in _GENERIC_DIRS:
+def _named_folder(folder: str) -> str | None:
+    """A dataset name from the folder holding tasks: the nearer of its last
+    two folder names that is not tasks/train/test and the like.
+
+    A home folder prefix (``$HOME``, ``/home/<user>``, ``/Users/<user>``,
+    ``C:\\Users\\<user>``) is removed first, so a user name is never taken
+    for a dataset: ``~/tasks/<task>`` has none.
+    """
+    pure = PureWindowsPath(folder) if "\\" in folder else PurePosixPath(folder)
+    parts = [p for p in pure.parts if p != pure.anchor]
+    home = [p for p in PurePosixPath(str(Path.home())).parts if p != "/"]
+    if home and parts[: len(home)] == home:
+        parts = parts[len(home) :]
+    elif len(parts) >= 2 and parts[0] in ("home", "Users"):
+        parts = parts[2:]
+    for part in reversed(parts[-2:]):
+        if part not in ("~", ".", "..") and part.lower() not in _GENERIC_DIRS:
             return part
     return None
 
@@ -193,8 +211,12 @@ def _dataset_of(trial: Trial, ctx: _Context) -> tuple[str | None, str | None]:
     if name:
         return str(name), "recorded dataset_name"
     task_path = trial.config.get("task_path")
-    if isinstance(task_path, str) and len(Path(task_path).parts) > 1:
-        folder = _named_folder(Path(task_path).parent)
+    if isinstance(task_path, str) and len(PurePosixPath(task_path).parts) > 1:
+        folder = _named_folder(
+            str(PureWindowsPath(task_path).parent)
+            if "\\" in task_path
+            else str(PurePosixPath(task_path).parent)
+        )
         if folder:
             return folder, "the folder holding the task"
     job_dir = trial.path.parent
@@ -204,7 +226,7 @@ def _dataset_of(trial: Trial, ctx: _Context) -> tuple[str | None, str | None]:
             evaluation.get("tasks_dir") if isinstance(evaluation, dict) else None
         )
         ctx.tasks_dirs[job_dir] = (
-            _named_folder(Path(tasks_dir)) if isinstance(tasks_dir, str) else None
+            _named_folder(tasks_dir) if isinstance(tasks_dir, str) else None
         )
     if ctx.tasks_dirs[job_dir]:
         return ctx.tasks_dirs[job_dir], "the job's tasks_dir (evaluation.json)"
@@ -249,7 +271,8 @@ def _outcome_code(trial: Trial) -> tuple[int, float | None]:
     reward = sample.reward
     if reward is None:
         return 3, None
-    passed = sample.passed if sample.passed is not None else reward >= 1
+    # The pass rule of benchflow.pass_at_k: the review gate's verdict, else reward == 1.
+    passed = sample.passed if sample.passed is not None else reward == 1
     if passed:
         return 0, reward
     return (1 if reward > 0 else 2), reward
@@ -398,12 +421,13 @@ def _trial_facts(
                 break
     if split is None:
         task_path = trial.config.get("task_path")
-        if isinstance(task_path, str):
-            for part in Path(task_path).parts[:-1]:
-                if part.lower() in _SPLIT_WORDS:
-                    split = part.lower()
-                    ctx.note("split", "a train/test folder in the task's path")
-                    break
+        # Only the folder holding the task (tasks/<tier>/train/<task>): a
+        # split-like name higher up, such as ~/dev/..., is not a split.
+        if isinstance(task_path, str) and len(PurePosixPath(task_path).parts) > 1:
+            parent = PurePosixPath(task_path).parent.name.lower()
+            if parent in _SPLIT_WORDS:
+                split = parent
+                ctx.note("split", "a train/test folder holding the task")
     facts["split"] = _label(split)
 
     # step
@@ -649,7 +673,9 @@ def build_outcomes(
             cols.integrity.append(-1)
         else:
             vcode = (
-                VERDICTS.index(verdict.verdict) if verdict.verdict in VERDICTS else 3
+                VERDICTS.index(verdict.verdict)
+                if verdict.verdict in VERDICTS[:4]
+                else VERDICTS.index("other")
             )
             cols.integrity.append(vcode)
             integrity_details[str(i)] = {
@@ -734,14 +760,15 @@ def build_outcomes(
     for k in extra:
         per_trial[f"reward:{k}"] = [cols.extra_rewards[i].get(k) for i in range(n)]
 
-    pareto = _pareto(
+    pareto, pareto_samples = _pareto(
         dims, agents, per_trial, list(y_metrics), bootstrap_samples=bootstrap_samples
     )
     firsts: dict[str, float] = {}
     for i in agents:
         value = dims["step"].values[dims["step"].codes[i]]
         firsts[value] = min(firsts.get(value, math.inf), started_at[i])
-    steps = _order_steps(dims["step"].values, firsts, hill_order)
+    # Steps of agent runs only: a control run's step is not a training step.
+    steps = _order_steps(list(firsts), firsts, hill_order)
     training = _training(dims, agents, samples, per_trial, steps, bootstrap_samples)
     if training is None:
         notes.append(
@@ -796,6 +823,7 @@ def build_outcomes(
         "x_metrics": X_METRICS,
         "y_metrics": y_metrics,
         "pareto": pareto,
+        "pareto_samples": pareto_samples,
         "training": training,
         "sources": {k: sorted(v) for k, v in ctx.sources.items()},
         "notes": notes,
@@ -813,16 +841,22 @@ def _pareto(
     y_names: list[str],
     *,
     bootstrap_samples: int,
-) -> dict[str, Any]:
-    """Points per (group dimension, partition dimension), with frontiers."""
+) -> tuple[dict[str, Any], int]:
+    """Points per (group dimension, partition dimension), with frontiers,
+    and the resample count used.
+
+    Every point's clusters are gathered first; the resample count is then
+    lowered from ``bootstrap_samples`` (to no fewer than
+    :data:`MIN_BOOTSTRAP_SAMPLES`) so the whole build stays within
+    :data:`BOOTSTRAP_BUDGET` cluster-metric draws, however large the job.
+    """
     tasks = dims["task"].codes
     metrics = [*X_METRICS, *y_names]
-    out: dict[str, Any] = {}
+    plan: list[tuple[str, str, list[tuple[str, str, list[int], list[Any]]]]] = []
     for group in PARETO_GROUPS:
         g = dims[group]
         if group != "model" and len({g.codes[i] for i in agents}) < 2:
             continue
-        out[group] = {}
         for part in PARETO_PARTITIONS:
             if part != "none":
                 p = dims[part]
@@ -832,51 +866,67 @@ def _pareto(
             for i in agents:
                 pv = "all" if part == "none" else dims[part].values[dims[part].codes[i]]
                 members.setdefault((pv, g.values[g.codes[i]]), []).append(i)
-            points = []
-            for (pv, gv), idx in sorted(members.items()):
-                seed = zlib.crc32(f"{group}|{part}|{pv}|{gv}".encode())
-                values = bootstrap_ratios(
-                    _clusters(idx, tasks, per_trial),
-                    metrics,
-                    seed=seed,
-                    samples=bootstrap_samples,
+            plan.append(
+                (
+                    group,
+                    part,
+                    [
+                        (pv, gv, idx, _clusters(idx, tasks, per_trial))
+                        for (pv, gv), idx in sorted(members.items())
+                    ],
                 )
-                points.append(
-                    {
-                        "group": gv,
-                        "partition": pv,
-                        "trials": len(idx),
-                        "tasks": len({tasks[i] for i in idx}),
-                        "m": {
-                            k: [
-                                _round(v["v"]),
-                                _round(v["lo"]),
-                                _round(v["hi"]),
-                                v["n"],
-                            ]
-                            for k, v in values.items()
-                        },
-                    }
-                )
-            frontiers: dict[str, dict[str, list[int]]] = {}
-            for x in X_METRICS:
-                for y in y_names:
-                    by_part: dict[str, list[int]] = {}
-                    for pv in sorted({pt["partition"] for pt in points}):
-                        idx = [
-                            j
-                            for j, pt in enumerate(points)
-                            if pt["partition"] == pv
-                            and pt["m"][x][0] is not None
-                            and pt["m"][y][0] is not None
+            )
+    units = sum(len(c) for _, _, pts in plan for _, _, _, c in pts) * len(metrics)
+    samples = bootstrap_samples
+    if units and units * samples > BOOTSTRAP_BUDGET:
+        samples = max(
+            min(MIN_BOOTSTRAP_SAMPLES, bootstrap_samples), BOOTSTRAP_BUDGET // units
+        )
+    out: dict[str, Any] = {}
+    for group, part, planned in plan:
+        points = []
+        for pv, gv, idx, clusters in planned:
+            seed = zlib.crc32(f"{group}|{part}|{pv}|{gv}".encode())
+            values = bootstrap_ratios(
+                clusters,
+                metrics,
+                seed=seed,
+                samples=samples,
+            )
+            points.append(
+                {
+                    "group": gv,
+                    "partition": pv,
+                    "trials": len(idx),
+                    "tasks": len({tasks[i] for i in idx}),
+                    "m": {
+                        k: [
+                            _round(v["v"]),
+                            _round(v["lo"]),
+                            _round(v["hi"]),
+                            v["n"],
                         ]
-                        coords = [
-                            (points[j]["m"][x][0], points[j]["m"][y][0]) for j in idx
-                        ]
-                        by_part[pv] = [idx[k] for k in pareto_frontier(coords)]
-                    frontiers[f"{x}|{y}"] = by_part
-            out[group][part] = {"points": points, "frontiers": frontiers}
-    return out
+                        for k, v in values.items()
+                    },
+                }
+            )
+        frontiers: dict[str, dict[str, list[int]]] = {}
+        for x in X_METRICS:
+            for y in y_names:
+                by_part: dict[str, list[int]] = {}
+                for pv in sorted({pt["partition"] for pt in points}):
+                    idx = [
+                        j
+                        for j, pt in enumerate(points)
+                        if pt["partition"] == pv
+                        and pt["m"][x][0] is not None
+                        and pt["m"][y][0] is not None
+                    ]
+                    coords = [(points[j]["m"][x][0], points[j]["m"][y][0]) for j in idx]
+                    by_part[pv] = [idx[k] for k in pareto_frontier(coords)]
+                frontiers[f"{x}|{y}"] = by_part
+        out.setdefault(group, {})[part] = {"points": points, "frontiers": frontiers}
+    return out, samples
 
 
 def _round(value: Any) -> Any:
@@ -902,16 +952,16 @@ def _training(
     groups = sorted({gd.values[gd.codes[i]] for i in agents})
     step_of = {v: k for k, v in enumerate(steps)}
     tasks = dims["task"].codes
+    # One pass buckets the agent trials by (group, step).
+    by_cell: dict[tuple[str, str], list[int]] = {}
+    for i in agents:
+        key = (gd.values[gd.codes[i]], step_dim.values[step_dim.codes[i]])
+        by_cell.setdefault(key, []).append(i)
     series = []
     for group in groups:
         rows = []
         for step in steps:
-            idx = [
-                i
-                for i in agents
-                if gd.values[gd.codes[i]] == group
-                and step_dim.values[step_dim.codes[i]] == step
-            ]
+            idx = by_cell.get((group, step), [])
             if not idx:
                 rows.append(None)
                 continue

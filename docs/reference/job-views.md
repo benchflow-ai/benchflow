@@ -17,7 +17,7 @@ One square per trial. Rows are tasks, datasets, or all trials; columns group by 
 
 ## Pareto
 
-Each point is one model (or agent, harness, step, job, seed or split), per dataset or split. x is the mean per trial of cost in USD, tokens, sandbox seconds or wall time, retries included; y is the mean reward, the solve rate or any other key of the trials' `rewards`. Both come with 95% bootstrap intervals that resample tasks (200 resamples, a fixed seed per point, so a page shows the same bars every time). The dashed line per dataset or split is its Pareto frontier: the points no other point beats on both cost and reward.
+Each point is one model (or agent, harness, step, job, seed or split), per dataset or split. x is the mean per trial of cost in USD, tokens, sandbox seconds or wall time, retries included; y is the mean reward, the solve rate or any other key of the trials' `rewards`. Both come with 95% bootstrap intervals that resample tasks (200 resamples, fewer on very large jobs but never below 50, `pareto_samples` in the document; a fixed seed per point, so a page shows the same bars every time). The dashed line per dataset or split is its Pareto frontier: the points no other point beats on both cost and reward.
 
 USD comes from the provider's price, or from the Claude Code session log when a subscription run was priced at the end of the run (`price_source: agent_session_log`, marked "estimated" on hover). Points with no USD recorded are listed under the chart instead of being drawn at zero.
 
@@ -35,8 +35,8 @@ Numeric steps sort as numbers. The rollout stream (`benchflow.rollout-stream.v1`
 
 | Dimension | Read from |
 | --- | --- |
-| dataset | `dataset_name` in the result or config; else the folder holding the task (`task_path`), or the job's `tasks_dir` in `evaluation.json`, skipping folders named `tasks`, `train`, `test` and the like |
-| split | a hill-climb's `split`; a recorded `split`; a `train`/`test`/`val`/`heldout` folder in the trial's path or its task's path |
+| dataset | `dataset_name` in the result or config; else the nearer of the two folders above the task (`task_path`) or of the job's `tasks_dir` (`evaluation.json`) that is not named `tasks`, `train`, `test` and the like, after removing a home folder prefix |
+| split | a hill-climb's `split`; a recorded `split`; a `train`/`test`/`val`/`heldout` folder in the trial's path under the job, or the folder directly holding the task |
 | seed | a recorded `seed`; else a `trial-NN` repeat folder |
 | harness | `harness_mode` in `config.json` (older trials: acp) |
 | job | the trial's folder relative to the job you passed |
@@ -45,7 +45,7 @@ The page names the sources it used under each view.
 
 ## Sharing
 
-`bench eval view <job> [<job> ...] --export outcomes.html` writes one self-contained HTML file (no network requests) and prints what it masked. Before writing, every string in the data goes through the same redaction `bench traj upload` applies (secret-shaped values such as API keys, bearer tokens and URL credentials become `<XXX-benchflow-key-values-XXX>`); the served folders' absolute paths become `<job>` and your home folder `~`. The file holds no trajectories and no trial links, only what the three views draw: task, model and folder names, rewards, costs, causes and the first line of each error.
+`bench eval view <job> [<job> ...] --export outcomes.html` writes one self-contained HTML file (no network requests) and prints what it masked. Before writing, every string in the data goes through the same redaction `bench traj upload` applies (secret-shaped values such as API keys, bearer tokens and URL credentials become `<XXX-benchflow-key-values-XXX>`); the served folders' absolute paths become `<job>`, and any home folder (`$HOME`, `/home/<user>`, `/Users/<user>`, `C:\Users\<user>`) becomes `~`. Other absolute paths an error line names, such as `/tmp/...` or `/mnt/...`, are kept, so read the Outcomes tooltips of a file before you share it outside your team. The file holds no trajectories and no trial links, only what the three views draw: task, model and folder names, rewards, costs, causes and the first line of each error. A dataset name is never taken from a home folder's name. An export of folders holding no trial fails instead of writing an empty file.
 
 ## Size
 

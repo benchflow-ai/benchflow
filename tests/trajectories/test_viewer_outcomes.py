@@ -530,3 +530,172 @@ def test_a_job_without_trajectories_still_gets_its_views(
     )
     assert server.serve(str(job), port=0) is None
     assert seen["n"] == 0 and seen["roots"].paths == [job]
+
+
+# ── review fixes ──────────────────────────────────────────────────────────
+
+
+def test_a_home_folder_never_names_a_dataset(tmp_path: Path) -> None:
+    """~/tasks/<task> used to give the user name as the dataset, in exports too."""
+    job = tmp_path / "job"
+    homes = {
+        "alpha": "/home/alice/tasks/alpha",
+        "beta": "/Users/alice/tasks/beta",
+        "gamma": "C:\\Users\\alice\\tasks\\gamma",
+        "delta": str(Path.home() / "tasks" / "delta"),
+        "kept": "/home/alice/benchmarks/skillsbench/tasks/kept",
+    }
+    for task, task_path in homes.items():
+        _trial(job / f"{task}__1", task, config={"task_path": task_path})
+    doc = build_outcomes([("", job)], bootstrap_samples=20)
+    names = _by_name(doc)
+    datasets = _values(doc, "dataset")
+    for task in ("alpha", "beta", "gamma", "delta"):
+        assert datasets[names[f"{task}__1"]] == "(unrecorded)", task
+    assert datasets[names["kept__1"]] == "skillsbench"
+    out, _, _ = export_html([job], tmp_path / "o.html")
+    assert "alice" not in out.read_text()
+    assert Path.home().name not in json.dumps(doc["dims"]["dataset"]["values"])
+
+
+def test_a_tasks_dir_under_home_gives_no_dataset(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "evaluation.json").write_text(json.dumps({"tasks_dir": "/home/alice/tasks"}))
+    _trial(job / "alpha__1", "alpha")
+    doc = build_outcomes([("", job)], bootstrap_samples=20)
+    assert _values(doc, "dataset") == ["(unrecorded)"]
+
+
+def test_only_the_folder_holding_the_task_marks_a_split(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _trial(job / "a__1", "a", config={"task_path": "/srv/dev/suite/tasks/a"})
+    _trial(job / "b__1", "b", config={"task_path": "/data/v2/hard/train/b"})
+    doc = build_outcomes([("", job)], bootstrap_samples=20)
+    names = _by_name(doc)
+    splits = _values(doc, "split")
+    assert splits[names["a__1"]] == "(unrecorded)"  # ~/dev/... is not a split
+    assert splits[names["b__1"]] == "train"
+
+
+def test_control_runs_add_no_training_step(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    for step in (1, 2):
+        _trial(job / f"a__{step}", "a", config={"policy_version": step})
+    _trial(job / "a__oracle", "a", agent="oracle", model="", config={"step": 99})
+    doc = build_outcomes([("", job)], bootstrap_samples=20)
+    assert doc["training"]["steps"] == ["1", "2"]
+
+
+def test_an_unknown_verdict_is_not_shown_as_rejected(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    t = _trial(job / "a__1", "a")
+    (t / "integrity").mkdir()
+    (t / "integrity" / "claim_verdict.json").write_text(
+        json.dumps({"core_verdict": "SomethingNew"})
+    )
+    doc = build_outcomes([("", job)], bootstrap_samples=20)
+    assert doc["vocab"]["integrity"][doc["columns"]["integrity"][0]] == "other"
+    assert doc["integrity_details"]["0"]["verdict"] == "SomethingNew"
+
+
+def test_the_square_and_the_solve_rate_use_one_pass_rule(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _trial(job / "a__1", "a", reward=1.5)
+    doc = build_outcomes([("", job)], bootstrap_samples=20)
+    assert OUTCOMES[doc["columns"]["outcome"][0]] != "passed"
+    assert doc["stats"]["task"][0]["solve_rate"] == 0.0
+
+
+def test_exporting_no_trial_fails(tmp_path: Path) -> None:
+    from benchflow.cli.main import app
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match="nothing to export"):
+        export_html([empty], tmp_path / "o.html")
+    result = CliRunner().invoke(
+        app, ["eval", "view", str(empty), "--export", str(tmp_path / "o.html")]
+    )
+    assert result.exit_code == 1
+    assert not (tmp_path / "o.html").exists()
+
+
+def test_export_title_and_windows_paths_are_redacted(tmp_path: Path) -> None:
+    job = tmp_path / f"job-{FAKE_KEY}"
+    _trial(
+        job / "a__1",
+        "a",
+        reward=None,
+        error="cannot open C:\\Users\\bob\\jobs\\x\\result.json",
+        error_category="other",
+    )
+    out, _, _ = export_html([job], tmp_path / "o.html")
+    html = out.read_text()
+    title = html.split("<title>", 1)[1].split("</title>", 1)[0]
+    assert FAKE_KEY not in title
+    assert FAKE_KEY not in html
+    assert "bob" not in html
+
+
+def test_has_trials_is_bounded(tmp_path: Path) -> None:
+    from benchflow.trajectories.viewer.jobviews import has_trials
+
+    deep = tmp_path / "deep"
+    folder = deep.joinpath(*[f"d{n}" for n in range(10)])
+    folder.mkdir(parents=True)
+    (folder / "result.json").write_text("{}")
+    assert not has_trials(deep)
+    assert has_trials(deep, max_depth=12)
+    shallow = tmp_path / "shallow" / "t"
+    shallow.mkdir(parents=True)
+    (shallow / "result.json").write_text("{}")
+    assert has_trials(tmp_path / "shallow")
+
+
+def test_discovery_stops_at_a_trial_folder(tmp_path: Path) -> None:
+    from benchflow.trajectories.viewer.catalog import _discover_rollouts
+
+    job = tmp_path / "job"
+    _trial(job / "plain__1", "plain")  # result.json only
+    _trial(job / "plain__1" / "agent" / "copy", "copy", trajectory=True)
+    _trial(job / "real__1", "real", trajectory=True)
+    assert _discover_rollouts(job) == ["real__1"]
+
+
+def test_pareto_resamples_shrink_on_large_jobs(two_models: Path, monkeypatch) -> None:
+    from benchflow.trajectories.viewer import outcomes
+
+    doc = build_outcomes([("", two_models)])
+    assert doc["pareto_samples"] == outcomes.BOOTSTRAP_SAMPLES
+    monkeypatch.setattr(outcomes, "BOOTSTRAP_BUDGET", 1)
+    small = build_outcomes([("", two_models)])
+    assert small["pareto_samples"] == outcomes.MIN_BOOTSTRAP_SAMPLES
+    point = small["pareto"]["model"]["none"]["points"][0]["m"]["mean_reward"]
+    assert point[1] is not None and point[1] <= point[0] <= point[2]
+
+
+def test_a_linked_trial_past_the_run_cap_resolves(tmp_path: Path, monkeypatch) -> None:
+    from benchflow.trajectories.viewer.server import serve
+
+    monkeypatch.setenv("BENCHFLOW_VIEWER_MAX_RUNS", "1")
+    job = tmp_path / "job"
+    _trial(job / "a__1", "a", trajectory=True)
+    _trial(job / "b__1", "b", trajectory=True)
+    port = _free_port()
+    threading.Thread(target=serve, args=(str(job), port), daemon=True).start()
+    base = f"http://localhost:{port}/"
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            _get(base)
+            break
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
+    _, body = _get(base)
+    assert b"b__1" not in body  # capped out of the run list
+    assert _get(base + "api/outcomes")[0] == 200
+    assert _get(base + "api/rollout?id=b__1")[0] == 200  # linked by the outcomes
+    assert _get(base + "api/rollout?id=c__1")[0] == 404

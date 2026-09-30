@@ -1,6 +1,8 @@
 """Run discovery and sidebar summaries for browse mode."""
 
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +43,8 @@ def _discover_rollouts(
         if _is_acp_rollout_dir(d):
             found.append(d.relative_to(base).as_posix())
             return  # rollout dirs don't nest
-        if depth >= max_depth:
-            return
+        if depth >= max_depth or (d / "result.json").is_file():
+            return  # a trial without a trajectory: nothing below it to list
         try:
             children = sorted(p for p in d.iterdir() if p.is_dir())
         except OSError:
@@ -128,6 +130,8 @@ class BrowseRoots:
     def __init__(self, paths: list[Path]) -> None:
         self.paths = paths
         self.labels = [""] if len(paths) == 1 else root_labels(paths)
+        self._last: tuple[float, int, dict[str, Path]] | None = None
+        self._lock = threading.Lock()
 
     def pairs(self) -> list[tuple[str, Path]]:
         return list(zip(self.labels, self.paths, strict=True))
@@ -137,8 +141,23 @@ class BrowseRoots:
             return rel
         return label if rel in ("", ".") else f"{label}/{rel}"
 
-    def scan(self, cap: int) -> dict[str, Path]:
-        """Rollout id -> folder, at most ``cap`` of them, in root order."""
+    def scan(self, cap: int, max_age: float = 0.0) -> dict[str, Path]:
+        """Rollout id -> folder, at most ``cap`` of them, in root order.
+
+        ``max_age`` reuses a scan at least as large made that many seconds
+        ago (the server's requests within one page load share one walk).
+        """
+        if max_age > 0:
+            with self._lock:
+                last = self._last
+            if last and time.monotonic() - last[0] <= max_age and last[1] >= cap:
+                return dict(list(last[2].items())[:cap])
+        found = self._walk(cap)
+        with self._lock:
+            self._last = (time.monotonic(), cap, found)
+        return dict(found)
+
+    def _walk(self, cap: int) -> dict[str, Path]:
         found: dict[str, Path] = {}
         for label, base in self.pairs():
             if len(found) >= cap:
