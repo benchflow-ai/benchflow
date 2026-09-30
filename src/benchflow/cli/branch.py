@@ -36,14 +36,20 @@ _EXAMPLE = (
 
 def _select_tasks(tasks_dir: Path, include: list[str] | None) -> list[Path]:
     from benchflow.evaluation import _is_task_dir
+    from benchflow.task.formats import detect_task_format, materialize_task_dir
 
-    if _is_task_dir(tasks_dir):
+    def is_task(path: Path) -> bool:
+        return detect_task_format(path) is not None or _is_task_dir(path)
+
+    if is_task(tasks_dir):
         tasks = [tasks_dir]
     else:
-        tasks = sorted(p for p in tasks_dir.iterdir() if p.is_dir() and _is_task_dir(p))
+        tasks = sorted(p for p in tasks_dir.iterdir() if p.is_dir() and is_task(p))
     if include:
         tasks = [task for task in tasks if task.name in set(include)]
-    return tasks
+    # A folder in a registered task format runs as the native package it
+    # materializes, as in bench eval run.
+    return [materialize_task_dir(task) for task in tasks]
 
 
 def _policy(spec: str | None, keep: int):

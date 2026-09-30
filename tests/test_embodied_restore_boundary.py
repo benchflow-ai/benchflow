@@ -206,3 +206,26 @@ def test_continue_still_replays_a_software_task(tmp_path):
         tmp_path / "run", exchanges=[exchange(completion(content="a"))]
     )
     assert load_run_folder(folder).agent == "openhands"
+
+
+def test_bench_eval_branch_selects_a_task_format_folder_and_refuses_it(
+    tmp_path, monkeypatch
+):
+    """bench eval branch picks up a source folder a task format claims (as bench
+    eval run does) and refuses the embodied package before any sandbox starts."""
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+    from benchflow.task import formats
+
+    monkeypatch.setenv(formats.CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setattr(formats, "_registered", [ToyFormat()])
+    monkeypatch.setattr(formats, "_entry_point_formats", [])
+    monkeypatch.setenv("BENCHFLOW_SKIP_PREFLIGHT", "1")
+    src = _toy_task(tmp_path / "suite")
+    args = ["eval", "branch", "--tasks-dir", str(src), "--agent", "oracle"]
+    args += ["--child", "label=a", "--child", "label=b"]
+    args += ["--jobs-dir", str(tmp_path / "jobs"), "--job-name", "j"]
+    result = CliRunner().invoke(app, args, terminal_width=200)
+    assert result.exit_code == 1, result.output
+    assert "toy-reach" in result.output and "branch refused" in result.output
