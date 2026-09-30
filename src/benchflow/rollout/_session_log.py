@@ -46,9 +46,24 @@ def _runs_claude_code(agent: str) -> bool:
 
 
 def _secrets(rollout: Any) -> list[str]:
-    """Credential values the agent was given, to scrub from its log."""
+    """Credential values the agent was given, to scrub from its log.
+
+    Only the credential-bearing entries, by the same rule that keeps them out
+    of the rollout's ``config.json``. Scrubbing every value instead would take
+    the public ones with it -- a model name passed as ``ANTHROPIC_MODEL``, a
+    base URL -- and the estimate reads the model of every logged response, so
+    a scrubbed model name leaves it unpriceable.
+    """
+    from benchflow._utils.config_redaction import _should_record_env_entry
+
     env = getattr(rollout, "_agent_env", None) or {}
-    values: list[str] = [v for v in env.values() if isinstance(v, str) and len(v) >= 8]
+    values: list[str] = [
+        value
+        for name, value in env.items()
+        if isinstance(value, str)
+        and len(value) >= 8
+        and not _should_record_env_entry(str(name), value)
+    ]
     values.sort(key=len, reverse=True)  # longest first: no partial replacement
     return values
 
@@ -111,8 +126,15 @@ async def price_from_session_log(rollout: Any) -> None:
     """Estimate an unpriced Claude Code rollout's USD from its session log.
 
     Does nothing when the gateway priced the rollout, the agent is not
-    Claude Code, the rollout branched (its children's sessions share the
-    log), or no log is found. Never fails the rollout.
+    Claude Code, the rollout's sandbox holds another rollout's turns, or no
+    log is found. Never fails the rollout.
+
+    A rollout is left out when its turns cannot be told apart from turns
+    someone else is already charged for: a fork's in-place child writes into
+    the parent's own log, and a rollout whose sandbox came from a snapshot --
+    an isolated branch child, or a run continued from a kept checkpoint --
+    finds the source rollout's session file already in it, so it would be
+    charged for turns the source's own record already carries.
     """
     metrics = getattr(rollout, "_usage_metrics", None) or {}
     cfg = rollout._config
@@ -123,8 +145,12 @@ async def price_from_session_log(rollout: Any) -> None:
     paths = getattr(rollout, "_rollout_paths", None)
     if rollout._env is None or paths is None:
         return
-    if getattr(rollout, "_branch_child_active", False) or getattr(
-        rollout, "_branch_forks", None
+    if (
+        getattr(rollout, "_branch_child_active", False)
+        or getattr(rollout, "_branch_forks", None)
+        # Started from a snapshot (an isolated branch child, or a continued
+        # checkpoint): the sandbox carries the source rollout's session log.
+        or getattr(rollout, "_from_branch_snapshot", False)
     ):
         return
     target = paths.agent_dir / SESSION_DIR
