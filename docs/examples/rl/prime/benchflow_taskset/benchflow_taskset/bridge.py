@@ -51,6 +51,16 @@ from typing import Any
 # that runs out of time comes back as exit code 124 rather than an exec error.
 EXEC_GRACE_SEC = 15
 MAX_STREAM_CHARS = 256_000
+# Episodes last minutes: let Daytona stop an idle sandbox, and delete a stopped one,
+# after this long, so one orphaned by a hard kill does not live for BenchFlow's
+# default day. The same default as the shared harness (docs/examples/rl/common).
+SANDBOX_LIFETIME_MINS = 30
+
+
+def shorten_sandbox_lifetimes(minutes: int = SANDBOX_LIFETIME_MINS) -> None:
+    """Default BenchFlow's Daytona auto-stop and auto-delete; an explicit setting wins."""
+    os.environ.setdefault("BENCHFLOW_DAYTONA_AUTO_STOP_MINS", str(minutes))
+    os.environ.setdefault("BENCHFLOW_DAYTONA_AUTO_DELETE_MINS", str(minutes))
 
 
 def _clip(text: str, limit: int = MAX_STREAM_CHARS) -> str:
@@ -277,6 +287,7 @@ class Session:
 
 
 async def serve_session(idle_timeout: float) -> int:
+    shorten_sandbox_lifetimes()
     # Replies go to the real stdout; anything BenchFlow or its dependencies print goes
     # to stderr, so it can never corrupt the protocol.
     reply_fd = os.dup(1)

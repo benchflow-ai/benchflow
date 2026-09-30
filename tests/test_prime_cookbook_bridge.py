@@ -114,6 +114,14 @@ def verified(reward=None, *, verifier_error=None, error=None, error_category=Non
     )
 
 
+def test_sandboxes_get_short_lifetimes_unless_set(monkeypatch) -> None:
+    monkeypatch.delenv("BENCHFLOW_DAYTONA_AUTO_STOP_MINS", raising=False)
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_AUTO_DELETE_MINS", "90")
+    bridge.shorten_sandbox_lifetimes()
+    assert os.environ["BENCHFLOW_DAYTONA_AUTO_STOP_MINS"] == "30"
+    assert os.environ["BENCHFLOW_DAYTONA_AUTO_DELETE_MINS"] == "90"
+
+
 def test_tasks_are_listed_with_benchflows_own_loader() -> None:
     (row,) = bridge.list_tasks(DEMO_TASK, [], [])
     assert row["name"] == "demo_task"

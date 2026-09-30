@@ -27,5 +27,5 @@ setsid nohup bash -c $(printf '%q' "$quoted") > \"\$WORK/logs/$name.log\" 2>&1 <
 echo \$! > \"\$WORK/logs/$name.pid\"
 echo \"started $name (pid \$!)\""
 
-grep -m1 '^DAYTONA_API_KEY=' "$key_file" | cut -d= -f2- | tr -d "\"'" \
+sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}DAYTONA_API_KEY=//p' "$key_file" | head -n 1 | tr -d "\"'" \
   | ssh "${ssh_opts[@]}" "$host" "bash -c $(printf '%q' "$remote")"
