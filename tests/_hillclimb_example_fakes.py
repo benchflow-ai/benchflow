@@ -56,6 +56,36 @@ def skills_text(skills_dir) -> str:
     )
 
 
+def session_log(usd: float, model: str = "claude-haiku-4-5-20251001") -> str:
+    """A Claude Code session log: one response and a cost-state line counting it."""
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 200,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    state = {
+        model: {
+            "inputTokens": 1000,
+            "outputTokens": 200,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "costUSD": usd,
+        }
+    }
+    return "\n".join(
+        json.dumps(line)
+        for line in (
+            {
+                "type": "assistant",
+                "requestId": "req_1",
+                "message": {"id": "msg_1", "model": model, "usage": usage},
+            },
+            {"type": "cost-state", "totalCostUSD": usd, "modelUsage": state},
+        )
+    )
+
+
 @dataclass
 class FakeAgent:
     reward: Callable[
@@ -63,6 +93,11 @@ class FakeAgent:
     ]  # (task, skills text, trial) -> reward; None = infra error
     oracle: Callable[[str], float] = lambda task: 1.0
     nop: Callable[[str], float] = lambda task: 0.0
+    usd: float | None = 0.01  # what BenchFlow reports for each agent trial
+    # Each agent trial leaves a Claude Code session log that says it cost this
+    # much (a subscription login, where BenchFlow reports no USD: usd=None).
+    session_usd: float | None = None
+    seconds: float = 30.0  # each trial's sandbox wall-clock (timing.json)
     calls: list[dict] = field(default_factory=list)
 
     def install(self, monkeypatch) -> FakeAgent:
@@ -87,15 +122,23 @@ class FakeAgent:
                 "agent": cfg.agent,
                 "skills": skills,
                 "dir": str(ev._jobs_dir),
+                "config_override": cfg.config_override,
+                "budget": cfg.budget,
             }
         )
         name = f"{task}__{uuid.uuid4().hex[:8]}"
         out = ev._jobs_dir / ev._job_name / name
         (out / "verifier").mkdir(parents=True)
         (out / "trajectory").mkdir()
+        (out / "timing.json").write_text(json.dumps({"total": self.seconds}))
         error = None if reward is not None else "sandbox setup failed (scripted)"
         rewards = None if reward is None else {"reward": reward}
-        cost = None if cfg.agent in ("oracle", "nop") else 0.01
+        scripted = cfg.agent in ("oracle", "nop")
+        cost = None if scripted else self.usd
+        if self.session_usd is not None and not scripted:
+            log = out / "artifacts" / "claude-sessions" / "-app" / "s1.jsonl"
+            log.parent.mkdir(parents=True)
+            log.write_text(session_log(self.session_usd) + "\n")
         (out / "result.json").write_text(
             json.dumps(
                 {

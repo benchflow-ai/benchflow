@@ -20,7 +20,10 @@ The task's ``tests/test.sh`` copies ``/app/surface`` and the optimizer's
 ``/app/proposal.json`` to ``/logs/verifier``, where BenchFlow collects them
 into the trial folder, and checks their shape, so the rollout's reward only
 means "a well-formed proposal exists". In analysis mode (after a stall) the
-optimizer sorts the remaining train failures by root cause instead.
+optimizer sorts the remaining train failures by root cause instead. The task
+also declares the sandbox user's ``~/.claude/projects`` an artifact, so the
+rollout folder keeps Claude Code's session log, which prices the run
+(hillclimb_cost).
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ import shutil
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from hillclimb_cost import SESSIONS, scrub, trial_cost
 
 import benchflow as bf
 
@@ -86,6 +91,8 @@ Categories, one per failure:
 Write `/app/analysis.json`: {"summary": "three to five sentences on what limits the score now", "failures": [{"id": "<task>/trial-NN", "category": "capability_gap", "explanation": "..."}], "recommendations": ["..."]}
 """
 
+# The rollout also keeps Claude Code's session log (the sandbox user's
+# ~/.claude/projects), the demo's source for what the optimizer cost.
 TASK_MD = """---
 schema_version: '1.3'
 verifier:
@@ -99,6 +106,9 @@ sandbox:
   cpus: 1
   memory_mb: 2048
   storage_mb: 4096
+artifacts:
+- source: /home/agent/.claude/projects
+  destination: {sessions}
 ---
 
 """
@@ -256,6 +266,17 @@ def _read_only(root: Path, on: bool) -> None:
         path.chmod(mode & ~0o222 if on else mode | stat.S_IWUSR)
 
 
+def _seconds(result: bf.RolloutResult) -> float:
+    """The rollout's wall-clock seconds, sandbox creation included."""
+    if result.started_at and result.finished_at:
+        return (result.finished_at - result.started_at).total_seconds()
+    try:
+        timing = json.loads((Path(result.rollout_dir) / "timing.json").read_text())
+        return float(timing["total"])
+    except (OSError, TypeError, ValueError, KeyError):
+        return 0.0
+
+
 async def _lock_evidence(sandbox) -> None:
     """Pre-agent hook: the evidence becomes root-owned and read-only."""
     result = await sandbox.exec(
@@ -284,6 +305,7 @@ async def run_optimizer(
             timeout=float(settings.timeout_sec),
             image=bf.ReviewerConfig().image,  # the rubric reviewer's pinned Python image
             network="" if settings.open_network else "\n  allow_internet: false",
+            sessions=SESSIONS,
         )
         + (PROPOSE if mode == "propose" else ANALYZE)
         + settings.extra_instructions
@@ -311,11 +333,16 @@ async def run_optimizer(
         return {"status": "failed", "error": f"optimizer rollout failed: {exc}"}
     finally:
         _read_only(evidence, False)
+    scrub(result.rollout_dir)
+    cost = trial_cost(result.rollout_dir, result.cost_usd)
     out = {
         "status": "failed",
         "error": result.error,
         "rollout_dir": str(result.rollout_dir) if result.rollout_dir else None,
-        "cost_usd": result.cost_usd,
+        "cost_usd": cost["usd"],
+        "cost_source": cost["source"],
+        "cost_models": cost["models"],
+        "sandbox_seconds": _seconds(result),
     }
     verifier = Path(result.rollout_dir or jobs_dir) / "verifier"
     try:
