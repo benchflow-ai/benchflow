@@ -638,7 +638,11 @@ ACP_AGENT_NAME = "@agentclientprotocol/claude-agent-acp"
 CODEX_VARIANTS = {
     "codex-hello-pass": h.TaskVariant("codex-hello-pass", "hello-pass"),
     "codex-wrong-answer": h.TaskVariant("codex-wrong-answer", "hello-wrong"),
-    "codex-agent-crash": h.TaskVariant("codex-agent-crash", "codex-crash"),
+    # codex-acp does not notice its Codex process dying: this runs to the
+    # agent timeout on the ACP side (see _CODEX_CRASH).
+    "codex-agent-crash": h.TaskVariant(
+        "codex-agent-crash", "codex-crash", agent_timeout_sec=60.0
+    ),
     "codex-slow-model": h.TaskVariant(
         "codex-slow-model", "slow-model", agent_timeout_sec=45.0
     ),
@@ -912,42 +916,109 @@ def test_native_branch_children_resume_the_cli_session(native_branch_resume):
 
 # ----- wire parity ---------------------------------------------------------
 
-# The written list of expected request differences, as (harness, JSON path
-# pattern, why). A request pair may differ only at these paths; the rest of
-# every request (model, system prompt, messages, tools, thinking, limits,
-# identifying headers) must be byte-identical after ids are normalized.
+# The written list of expected request differences: where the two harnesses'
+# requests may differ, and why. Each one is removed by exactly one
+# normalization below (_normalize_claude, _normalize_codex); after them, and
+# after ids are normalized, every request pair must be identical: model,
+# system prompt, messages, tool definitions, thinking, limits and identifying
+# headers.
 WIRE_EXPECTED_DIFFERENCES: dict[str, list[tuple[str, str]]] = {
     "claude-code": [
         (
-            r"headers\.user-agent",
-            "Claude Code names its entrypoint: sdk-ts (the Agent SDK inside "
-            "claude-agent-acp) or sdk-cli (print mode)",
+            "headers.user-agent",
+            "Claude Code names its entrypoint: sdk-ts and the Agent SDK version "
+            "(the SDK inside claude-agent-acp), or sdk-cli (print mode)",
         ),
         (
-            r"body\.system\[0\]\.text",
-            "the same entrypoint in the billing header (cc_entrypoint)",
+            "body.system[0].text",
+            "the same entrypoint in the billing line (cc_entrypoint)",
         ),
         (
-            r"body\.tools",
+            "body.tools",
             "the ACP session starts in the default permission mode, whose "
             "EnterPlanMode and ExitPlanMode tools bypassPermissions does not "
             "offer; the other tool definitions are identical, in order",
         ),
         (
-            r"body\.messages\[\d+\]\.content\[\d+\]\.content",
+            "body.messages[*].content[*].content",
             "the adapter hands the SDK the session directory as an additional "
             "working directory, which adds an 'Environment update' reminder "
-            "to the first tool result",
+            "(Additional working directories added: /app) to the first tool "
+            "result",
         ),
     ],
     "codex": [
         (
-            r"headers\.(originator|user-agent)",
-            "codex-acp names the ACP client (benchflow); exec names itself "
-            "(codex_exec)",
+            "headers.originator, headers.user-agent",
+            "codex-acp names the ACP client (benchflow, with its version); exec "
+            "names itself (codex_exec)",
         ),
     ],
 }
+_CLAUDE_UA_ENTRYPOINT = re.compile(
+    r"\(external, sdk-(?:ts|cli)(?:, agent-sdk/[\w.]+)?\)"
+)
+_CLAUDE_BILLING_ENTRYPOINT = re.compile(r"cc_entrypoint=sdk-(?:ts|cli);")
+_ACP_ONLY_TOOLS = ["EnterPlanMode", "ExitPlanMode"]
+_ACP_ENVIRONMENT_UPDATE = re.compile(
+    r"\n\n<system-reminder>\n# Environment update\n"
+    r" - Additional working directories added:\n(?:  - [^\n]*\n)+</system-reminder>"
+)
+_CODEX_CLIENT_NAME = re.compile(
+    r"^(?:benchflow|codex_exec)/|\((?:benchflow|codex_exec); [\w.]+\)$"
+)
+
+
+def _normalize_claude(request: dict[str, Any], *, acp: bool) -> dict[str, Any]:
+    """Remove the written Claude Code differences (and only those)."""
+    headers = request["headers"]
+    headers["user-agent"] = _CLAUDE_UA_ENTRYPOINT.sub(
+        "(external, <entrypoint>)", headers.get("user-agent", "")
+    )
+    body = request["body"]
+    system = body.get("system")
+    if isinstance(system, list) and system and isinstance(system[0], dict):
+        system[0]["text"] = _CLAUDE_BILLING_ENTRYPOINT.sub(
+            "cc_entrypoint=<entrypoint>;", system[0].get("text", "")
+        )
+    if acp:
+        tools = body.get("tools") or []
+        assert [t["name"] for t in tools if t["name"] in _ACP_ONLY_TOOLS] == (
+            _ACP_ONLY_TOOLS
+        )
+        body["tools"] = [t for t in tools if t["name"] not in _ACP_ONLY_TOOLS]
+        for message in body.get("messages") or []:
+            content = message.get("content")
+            for block in content if isinstance(content, list) else []:
+                if block.get("type") == "tool_result" and isinstance(
+                    block.get("content"), str
+                ):
+                    block["content"] = _ACP_ENVIRONMENT_UPDATE.sub("", block["content"])
+    return request
+
+
+def _tool_results(request: dict[str, Any]) -> list[str]:
+    return [
+        block["content"]
+        for message in request["body"].get("messages") or []
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result" and isinstance(block.get("content"), str)
+    ]
+
+
+def _normalize_codex(request: dict[str, Any]) -> dict[str, Any]:
+    """Remove the written Codex difference (the client's name and version)."""
+    headers = request["headers"]
+    if headers.get("originator") in ("benchflow", "codex_exec"):
+        headers["originator"] = "<client>"
+    headers["user-agent"] = _CODEX_CLIENT_NAME.sub(
+        lambda m: "<client>/" if m.group(0).endswith("/") else "(<client>)",
+        headers.get("user-agent", ""),
+    )
+    return request
+
+
 _WIRE_VOLATILE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|"
     r"[0-9a-f]{64}|Chunk ID: [0-9a-f]+"
@@ -982,11 +1053,6 @@ def _json_diff(a: Any, b: Any, path: str = "") -> list[str]:
     return [] if a == b else [path]
 
 
-def _unexpected(diffs: list[str], cli: str) -> list[str]:
-    allowed = [re.compile(pattern) for pattern, _ in WIRE_EXPECTED_DIFFERENCES[cli]]
-    return [d for d in diffs if not any(p.match(d) for p in allowed)]
-
-
 def _drop_volatile_keys(request: dict[str, Any]) -> dict[str, Any]:
     body = request["body"]
     body.pop("metadata", None)  # Claude: user_id carries device and session ids
@@ -1006,15 +1072,15 @@ def test_claude_code_wire_parity(eval_job, native_eval_job, variant):
     acp = [r for r in acp if r["body"].get("tools")]
     native = [r for r in native if r["body"].get("tools")]
     assert len(acp) == len(native) > 0
+    # The adapter's reminder is really there, in a tool result.
+    assert any(
+        _ACP_ENVIRONMENT_UPDATE.search(text) for r in acp for text in _tool_results(r)
+    )
     for a, n in zip(acp, native, strict=True):
-        assert _unexpected(_json_diff(a, n), "claude-code") == []
-        # The tool lists differ only by the ACP permission-mode tools.
-        names = lambda r: [t["name"] for t in r["body"]["tools"]]  # noqa: E731
-        assert [t for t in names(a) if t not in names(n)] == [
-            "EnterPlanMode",
-            "ExitPlanMode",
-        ]
-        assert [t for t in names(a) if t in names(n)] == names(n)
+        assert (
+            _json_diff(_normalize_claude(a, acp=True), _normalize_claude(n, acp=False))
+            == []
+        )
 
 
 @needs_sandbox
@@ -1025,7 +1091,7 @@ def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
     native = [_drop_volatile_keys(r) for r in _wire(codex_native_job, marker)]
     assert len(acp) == len(native) > 0
     for a, n in zip(acp, native, strict=True):
-        assert _unexpected(_json_diff(a, n), "codex") == []
+        assert _json_diff(_normalize_codex(a), _normalize_codex(n)) == []
 
 
 # ----- Codex: both harnesses on the same scenarios -------------------------
@@ -1033,8 +1099,18 @@ def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
 _CODEX_OUTCOMES = {
     "codex-hello-pass": ("completed", "scored", 1.0),
     "codex-wrong-answer": ("completed", "scored", 0.0),
-    "codex-agent-crash": ("errored", "unscored", None),
-    "codex-slow-model": ("timed_out", "scored", 0.0),
+    # No model response before the agent timeout (no tool call, no usage):
+    # an integration failure, never a score.
+    "codex-slow-model": ("integration_failed", "unscored", None),
+}
+# The one written outcome difference. When the Codex process dies mid-turn
+# (its own tool call kills it here), codex-acp 1.13.1 does not report it: the
+# prompt runs to the agent timeout and the verifier scores the untouched
+# workspace. The native harness reports the CLI's death at once as an agent
+# error, as both harnesses do for Claude Code (the agent-crash golden).
+_CODEX_CRASH = {
+    "acp": ("timed_out", "scored", 0.0),
+    "native": ("errored", "unscored", None),
 }
 
 
@@ -1090,16 +1166,31 @@ def test_codex_native_matches_codex_acp(codex_acp_job, codex_native_job, variant
     acp_trial = codex_acp_job.trial(variant)
     native_trial = codex_native_job.trial(variant)
     acp, native = _codex_facts(acp_trial), _codex_facts(native_trial)
-    execution, assessment, reward = _CODEX_OUTCOMES[variant]
-    assert acp["outcome"] == {
-        "execution": execution,
-        "assessment": assessment,
-        "reward": reward,
-    }
-    assert native == acp
+    labels = ("execution", "assessment", "reward")
+    if variant == "codex-agent-crash":
+        assert acp["outcome"] == dict(zip(labels, _CODEX_CRASH["acp"], strict=True))
+        assert native["outcome"] == dict(
+            zip(labels, _CODEX_CRASH["native"], strict=True)
+        )
+        error = h.read_json(native_trial / "result.json")["error"]
+        assert error.startswith("Native harness error (codex)"), error
+        assert "exit code 137" in error
+        # Up to the crash the two runs are the same: the one model call, its
+        # usage, the trajectory before ACP's timeout event.
+        assert native["usage"] == acp["usage"]
+        assert native["trajectory"] == [
+            e for e in acp["trajectory"] if e["type"] != "agent_timeout"
+        ]
+    else:
+        assert acp["outcome"] == dict(
+            zip(labels, _CODEX_OUTCOMES[variant], strict=True)
+        )
+        assert native == acp
     _check_native_contract(native_trial, "codex")
-    # Usage and cost come from the proxy on both harnesses.
-    assert native["usage"]["usage_source"] == "provider_response"
+    # Usage and cost come from the proxy on both harnesses (the slow model
+    # never answered, so there is none).
+    source = "unavailable" if variant == "codex-slow-model" else "provider_response"
+    assert native["usage"]["usage_source"] == source
     assert h.trial_document_problems(native_trial) == []
 
 
