@@ -198,7 +198,11 @@ def _lease_reap_reason(sb: Any, now: Any) -> str | None:
     if not isinstance(labels, dict):
         return None
     expires = labels.get(EXPIRES_LABEL)
-    if isinstance(expires, str) and expires.isdigit() and int(expires) <= now.timestamp():
+    if (
+        isinstance(expires, str)
+        and expires.isdigit()
+        and int(expires) <= now.timestamp()
+    ):
         return "its lease expired"
     lease = labels.get(LEASE_LABEL)
     if isinstance(lease, str) and lease_state(lease) == "gone":

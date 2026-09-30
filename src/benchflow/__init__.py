@@ -15,6 +15,10 @@ docs/examples/python-sdk/, starting with quickstart.py):
 - Branch a run into scored children: ``branch(task, agent=..., children={...})``.
 - Read and compare finished jobs: ``load_job(path)``, ``load_trial(path)``,
   ``compare(job_a, job_b)``.
+- Train on a policy you serve: ``rollout_group(config, n=8, policy=Policy(...))``
+  runs N rollouts of a task and yields each ``TrainingRollout`` as it
+  finishes: reward, attribution (score or mask), per-test results and exact
+  token segments with action masks and policy versions.
 - Train on a job while it runs: ``stream_rollouts(job_dir)`` /
   ``astream_rollouts`` yield each finished rollout with reward, group id and
   captured token ids (``bench train stream``).
@@ -198,6 +202,13 @@ from benchflow.task import (
     VerifierResult,
     render_task_md_from_legacy,
 )
+from benchflow.training.policy import Policy
+from benchflow.training.rollouts import (
+    RolloutGroup,
+    TokenSegment,
+    TrainingRollout,
+    rollout_group,
+)
 from benchflow.trajectories.rollout_stream import (
     StreamedRollout,
     astream_rollouts,
@@ -294,6 +305,11 @@ __all__ = [
     "stream_rollouts",
     "astream_rollouts",
     "StreamedRollout",
+    "Policy",
+    "rollout_group",
+    "RolloutGroup",
+    "TrainingRollout",
+    "TokenSegment",
     "load_trial",
     "load_results_jsonl",
     "SettingCheck",

@@ -161,7 +161,9 @@ def _unusable_reason(capture: Mapping[str, Any] | None) -> str | None:
         return "logprobs:missing"
     if len(ids) != len(logprobs):
         return "logprobs:length_mismatch"
-    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in logprobs):
+    if not all(
+        isinstance(v, int | float) and not isinstance(v, bool) for v in logprobs
+    ):
         return "logprobs:not_numeric"
     return None
 
@@ -436,8 +438,12 @@ def segment_rollout(
             calls[index]["retry_of"] = earlier[-1]
             for failed_index in earlier:
                 calls[failed_index]["retried_by"] = index
-    retried = sum(1 for c in calls if c["status"] == "failed" and c["retried_by"] is not None)
-    unretried = sum(1 for c in calls if c["status"] == "failed" and c["retried_by"] is None)
+    retried = sum(
+        1 for c in calls if c["status"] == "failed" and c["retried_by"] is not None
+    )
+    unretried = sum(
+        1 for c in calls if c["status"] == "failed" and c["retried_by"] is None
+    )
 
     # Conversations over the successful calls.
     ok = [c for c in calls if c["status"] == "ok"]
@@ -539,9 +545,7 @@ def segment_rollout(
         segment["excluded"] = excluded
     dropped.sort(key=lambda d: d["call"])
 
-    trainable_dropped = [
-        d for d in dropped if by_index[d["call"]]["kind"] in kinds
-    ]
+    trainable_dropped = [d for d in dropped if by_index[d["call"]]["kind"] in kinds]
     trainable_segments = [s for s in segments if s["trainable"]]
     if not trainable_segments:
         status = "none"

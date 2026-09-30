@@ -150,9 +150,7 @@ def _logprob_entry_ids(content: Any) -> list[int] | None:
     return [i for i in ids if i is not None]
 
 
-def token_digest(
-    prompt_token_ids: Any, completions: Any
-) -> str | None:
+def token_digest(prompt_token_ids: Any, completions: Any) -> str | None:
     """``sha256:<hex>`` of a call's prompt ids and each choice's ids and logprobs.
 
     The same function runs where the tokens are captured (the gateway store),
@@ -174,8 +172,7 @@ def token_digest(
             or not isinstance(logprobs, list)
             or len(logprobs) != len(ids)
             or not all(
-                isinstance(v, int | float) and not isinstance(v, bool)
-                for v in logprobs
+                isinstance(v, int | float) and not isinstance(v, bool) for v in logprobs
             )
         ):
             return None

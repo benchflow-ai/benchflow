@@ -299,7 +299,9 @@ def sandbox_cleanup(
             dead.append(data)
     if dead:
         cleaned_any = True
-        listed = [r for d in dead for r in d.get("resources") or [] if isinstance(r, dict)]
+        listed = [
+            r for d in dead for r in d.get("resources") or [] if isinstance(r, dict)
+        ]
         if dry_run:
             for resource in listed:
                 console.print(

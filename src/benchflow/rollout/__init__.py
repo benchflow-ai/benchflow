@@ -726,7 +726,7 @@ def _uses_oracle_files(config: RolloutConfig) -> bool:
     """
     if config.oracle_access:
         return True
-    agents = {config.primary_agent}
+    agents: set[str | None] = {config.primary_agent}
     try:
         scenes = config.effective_scenes or []
     except ValueError:  # self-gen runs through the runtime orchestrator

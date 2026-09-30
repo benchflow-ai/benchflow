@@ -73,7 +73,7 @@ import math
 import re
 import secrets
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -144,7 +144,11 @@ _MODEL_ENDPOINT_CATEGORIES = frozenset(
 )
 _AGENT_SETUP_CATEGORIES = frozenset({INSTALL_FAILED, AGENT_INTEGRATION})
 _VERIFIER_INFRA_CATEGORIES = frozenset({VERIFIER_INFRA, VERIFIER_DEP_INSTALL})
-_ENDPOINT_MARKERS = ("provider unavailable", "http 503", "litellm proxy failed to start")
+_ENDPOINT_MARKERS = (
+    "provider unavailable",
+    "http 503",
+    "litellm proxy failed to start",
+)
 _STARTUP_DIAGNOSES = {
     "acp_initialize_timeout": "acp_initialize",
     "acp_session_new_timeout": "acp_session_new",
@@ -166,6 +170,8 @@ class RolloutGroupError(RuntimeError):
 @dataclass(frozen=True)
 class TestResult:
     """One test the verifier reported (its CTRF report, ``verifier/ctrf.json``)."""
+
+    __test__ = False  # not a pytest test class
 
     name: str
     status: str  # passed | failed | skipped | pending | other
@@ -209,7 +215,7 @@ def read_tests(rollout_dir: str | Path | None) -> tuple[TestResult, ...]:
     return tuple(out)
 
 
-def tests_pass_fraction(tests: Iterable[TestResult]) -> float | None:
+def pass_fraction(tests: Iterable[TestResult]) -> float | None:
     """Passed over passed + failed tests (skipped ones do not count); None without any."""
     counted = [t for t in tests if t.status in {"passed", "failed"}]
     if not counted:
@@ -362,7 +368,10 @@ def startup_failure(result: Mapping[str, Any]) -> str | None:
         return "sandbox"
     if category == INSTALL_FAILED:
         return "agent_install"
-    if "litellm proxy failed to start" in error or "litellm proxy is mandatory" in error:
+    if (
+        "litellm proxy failed to start" in error
+        or "litellm proxy is mandatory" in error
+    ):
         return "gateway"
     if "before the first prompt" in error:
         return "acp_initialize" if "initialize" in error else "acp_session_new"
@@ -386,9 +395,9 @@ def attribute(
     error = result.get("error")
     verifier_error = result.get("verifier_error")
     category = result.get("error_category") or classify_error(error)
-    verifier_category = result.get("verifier_error_category") or classify_verifier_error(
-        verifier_error
-    )
+    verifier_category = result.get(
+        "verifier_error_category"
+    ) or classify_verifier_error(verifier_error)
     if reward is not None:
         if endpoint_failed and not _passed(result):
             # The model endpoint failed on the rollout's last call: the agent
@@ -641,7 +650,9 @@ def _read_integrity(rollout_dir: Path | None) -> dict[str, Any] | None:
     if rollout_dir is None:
         return None
     try:
-        claim = json.loads((rollout_dir / "integrity" / "claim_verdict.json").read_text())
+        claim = json.loads(
+            (rollout_dir / "integrity" / "claim_verdict.json").read_text()
+        )
     except (OSError, ValueError):
         return None
     if not isinstance(claim, dict):
@@ -660,7 +671,10 @@ def _verdict_dict(verdict: Any) -> dict[str, Any] | None:
     if isinstance(verdict, Mapping):
         exploited, reason = verdict.get("exploited"), verdict.get("reason")
     else:
-        exploited, reason = getattr(verdict, "exploited", None), getattr(verdict, "reason", None)
+        exploited, reason = (
+            getattr(verdict, "exploited", None),
+            getattr(verdict, "reason", None),
+        )
     if not isinstance(exploited, bool):
         raise ValueError("an integrity verdict needs a boolean 'exploited'")
     return {"exploited": exploited, "reason": str(reason or "")}
@@ -713,8 +727,14 @@ class RolloutGroup:
             raise ValueError("concurrency must be at least 1")
         if not (integrity in {"auto", "off"} or callable(integrity)):
             raise ValueError("integrity must be 'auto', 'off' or a callable")
-        if config.scenes and policy is not None and any(
-            role.model != policy.model for scene in config.scenes for role in scene.roles
+        if (
+            config.scenes
+            and policy is not None
+            and any(
+                role.model != policy.model
+                for scene in config.scenes
+                for role in scene.roles
+            )
         ):
             raise ValueError(
                 "rollout_group runs one agent against the policy: leave "
@@ -874,7 +894,10 @@ class RolloutGroup:
             return self._result
         from benchflow.trajectories.training_signal import _advantages
 
-        members = [m if m is not None else self._cancelled(i) for i, m in enumerate(self._members)]
+        members = [
+            m if m is not None else self._cancelled(i)
+            for i, m in enumerate(self._members)
+        ]
         rewards = [m.reward for m in members]
         scored = [r for r in rewards if r is not None]
         mean = sum(scored) / len(scored) if scored else None
@@ -890,7 +913,9 @@ class RolloutGroup:
         elif self.drop_zero_variance and zero_variance:
             dropped = "zero_variance"
         if self.advantage is not None and dropped is None:
-            for member, value in zip(members, _advantages(rewards, self.advantage), strict=True):
+            for member, value in zip(
+                members, _advantages(rewards, self.advantage), strict=True
+            ):
                 member.advantage = value
         result = GroupResult(
             group_id=self.group_id,
@@ -907,7 +932,12 @@ class RolloutGroup:
         return result
 
     def _write_group_record(self, result: GroupResult) -> None:
-        path = Path(self.config.jobs_dir) / self.job_name / "groups" / f"{self.group_id}.json"
+        path = (
+            Path(self.config.jobs_dir)
+            / self.job_name
+            / "groups"
+            / f"{self.group_id}.json"
+        )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(result.to_dict(), indent=2, default=str))
@@ -1004,11 +1034,15 @@ class RolloutGroup:
             rollout.outcome = "failed"
         return rollout
 
-    def _attempt_config(self, index: int, attempt: int, agent_env: dict[str, str]) -> Any:
+    def _attempt_config(
+        self, index: int, attempt: int, agent_env: dict[str, str]
+    ) -> Any:
         config = copy.copy(self.config)
         config.agent_env = {**(self.config.agent_env or {}), **agent_env}
         config.job_name = self.job_name
-        config.rollout_name = f"{_safe(self.task)}__{self.group_id}-r{index:02d}-a{attempt}"
+        config.rollout_name = (
+            f"{_safe(self.task)}__{self.group_id}-r{index:02d}-a{attempt}"
+        )
         if self.policy is not None:
             config.model = self.policy.model
         if self.startup_timeouts.sandbox_sec is not None:
@@ -1026,7 +1060,9 @@ class RolloutGroup:
             grant = self.policy.relay.grant(
                 f"{self.task}/{self.group_id}/{index}/{attempt}"
             )
-            agent_env = await self.policy.agent_env(grant.token, self.config.environment)
+            agent_env = await self.policy.agent_env(
+                grant.token, self.config.environment
+            )
         config = self._attempt_config(index, attempt, agent_env)
         started = datetime.now()
         relay_calls: list[Any] = []
@@ -1040,9 +1076,11 @@ class RolloutGroup:
             ):
                 result = await self._run_rollout(config)
         finally:
-            if grant is not None:
+            if grant is not None and self.policy is not None:
                 relay_calls = self.policy.relay.revoke(grant)
-        return await self._build(index, attempt, config, result, relay_calls, version, started)
+        return await self._build(
+            index, attempt, config, result, relay_calls, version, started
+        )
 
     async def _run_rollout(self, config: Any) -> Any:
         from benchflow.models import RolloutResult
@@ -1081,7 +1119,9 @@ class RolloutGroup:
         if not raw:
             raw = result.to_record() if hasattr(result, "to_record") else {}
             raw["rewards"] = getattr(result, "rewards", None)
-        relay_dicts = [c.to_dict() if hasattr(c, "to_dict") else dict(c) for c in relay_calls]
+        relay_dicts = [
+            c.to_dict() if hasattr(c, "to_dict") else dict(c) for c in relay_calls
+        ]
         if rollout_dir is not None and relay_dicts:
             with contextlib.suppress(OSError):
                 path = rollout_dir / "trajectory" / "policy_relay.jsonl"
@@ -1090,10 +1130,14 @@ class RolloutGroup:
                     "".join(json.dumps(c, default=str) + "\n" for c in relay_dicts)
                 )
         ok_calls = [c for c in relay_dicts if c.get("status") == "ok"]
-        endpoint_failed = bool(relay_dicts) and relay_dicts[-1].get("status") != "ok" and (
-            relay_dicts[-1].get("http_status") is None
-            or int(relay_dicts[-1].get("http_status") or 0) >= 500
-            or relay_dicts[-1].get("http_status") == 429
+        endpoint_failed = (
+            bool(relay_dicts)
+            and relay_dicts[-1].get("status") != "ok"
+            and (
+                relay_dicts[-1].get("http_status") is None
+                or int(relay_dicts[-1].get("http_status") or 0) >= 500
+                or relay_dicts[-1].get("http_status") == 429
+            )
         )
         tool_calls = int(getattr(result, "n_tool_calls", 0) or 0)
         policy_acted = bool(ok_calls) or tool_calls > 0
@@ -1101,7 +1145,11 @@ class RolloutGroup:
             raw, policy_acted=policy_acted, endpoint_failed=endpoint_failed
         )
 
-        exchanges = await asyncio.to_thread(read_llm_trajectory, rollout_dir) if rollout_dir else None
+        exchanges = (
+            await asyncio.to_thread(read_llm_trajectory, rollout_dir)
+            if rollout_dir
+            else None
+        )
         report = segment_rollout(
             exchanges or [],
             relay_calls=relay_dicts if self.policy is not None else None,
@@ -1116,10 +1164,12 @@ class RolloutGroup:
         reward_source = "none"
         if attribution == "score":
             reward, reward_source = (
-                (verifier_reward, "verifier") if verifier_reward is not None else (0.0, reason)
+                (verifier_reward, "verifier")
+                if verifier_reward is not None
+                else (0.0, reason)
             )
             if self.reward_mode == "tests" and reason == SCORED:
-                fraction = tests_pass_fraction(tests)
+                fraction = pass_fraction(tests)
                 if fraction is not None:
                     reward, reward_source = fraction, "tests"
         passed = bool(raw) and _passed(raw)
@@ -1141,7 +1191,9 @@ class RolloutGroup:
             rollout_dir=rollout_dir,
             reward=reward,
             verifier_reward=verifier_reward,
-            rewards=raw.get("rewards") if isinstance(raw.get("rewards"), dict) else None,
+            rewards=raw.get("rewards")
+            if isinstance(raw.get("rewards"), dict)
+            else None,
             reward_source=reward_source,
             passed=passed,
             outcome=outcome,
@@ -1196,7 +1248,8 @@ class RolloutGroup:
             "phases_sec": {
                 k: v
                 for k, v in timing.items()
-                if k in {"environment_setup", "agent_setup"} and isinstance(v, int | float)
+                if k in {"environment_setup", "agent_setup"}
+                and isinstance(v, int | float)
             },
         }
 
@@ -1307,5 +1360,5 @@ __all__ = [
     "read_tests",
     "rollout_group",
     "startup_failure",
-    "tests_pass_fraction",
+    "pass_fraction",
 ]

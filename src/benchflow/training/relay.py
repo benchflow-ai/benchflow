@@ -32,6 +32,7 @@ process, next to the server:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -169,7 +170,25 @@ def _capture_record(
     return record
 
 
-def _summarise_capture(record: dict[str, Any]) -> tuple[str | None, int | None, int | None]:
+def _load_stream_tools() -> tuple[str, Callable[[dict[str, Any], Any], None]]:
+    """The gateway's stream-chunk recorder (importing it loads LiteLLM: run off-loop)."""
+    from benchflow.providers.litellm_token_capture_patch import (
+        STREAM_TOKENS_KEY,
+        record_stream_chunk,
+    )
+
+    return STREAM_TOKENS_KEY, record_stream_chunk
+
+
+def _docker_address() -> str:
+    from benchflow.providers.litellm_runtime import _docker_host_address
+
+    return _docker_host_address()
+
+
+def _summarise_capture(
+    record: dict[str, Any],
+) -> tuple[str | None, int | None, int | None]:
     from benchflow.trajectories.token_capture import build_token_capture
 
     capture = build_token_capture(record) or {}
@@ -246,6 +265,8 @@ class PolicyRelay:
         self._urls: dict[str, str] = {}
         self._docker_url: str | None = None
         self._lock = asyncio.Lock()
+        self._stream_key = ""
+        self._record_chunk: Callable[[dict[str, Any], Any], None] = lambda d, c: None
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -259,6 +280,11 @@ class PolicyRelay:
             return
         from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 
+        # The stream recorder lives with the gateway's LiteLLM patch; loading
+        # it imports LiteLLM, which takes seconds: never on a request.
+        self._stream_key, self._record_chunk = await asyncio.to_thread(
+            _load_stream_tools
+        )
         app = web.Application(client_max_size=self._max_body)
         app.router.add_route("*", "/{tail:.*}", self._handle)
         runner = web.AppRunner(app, access_log=None)
@@ -266,7 +292,9 @@ class PolicyRelay:
         try:
             site = web.TCPSite(runner, self._host, self._port)
             await site.start()
-            self._urls["host"] = f"http://{self._format_host(self._host)}:{self._bound_port(site)}/v1"
+            self._urls["host"] = (
+                f"http://{self._format_host(self._host)}:{self._bound_port(site)}/v1"
+            )
             if self._public_bind is not None:
                 host, _, port = self._public_bind.rpartition(":")
                 public = web.TCPSite(
@@ -353,9 +381,7 @@ class PolicyRelay:
 
         from aiohttp import web
 
-        from benchflow.providers.litellm_runtime import _docker_host_address
-
-        address = await asyncio.to_thread(_docker_host_address)
+        address = await asyncio.to_thread(_docker_address)
         port = int(urlsplit(self._urls["host"]).port or 0)
         try:
             socket.inet_aton(address)
@@ -418,9 +444,9 @@ class PolicyRelay:
         from aiohttp import web
 
         path = request.path
-        allowed = (
-            request.method == "POST" and path in _FORWARDED_POST_PATHS
-        ) or (request.method == "GET" and path in _FORWARDED_GET_PATHS)
+        allowed = (request.method == "POST" and path in _FORWARDED_POST_PATHS) or (
+            request.method == "GET" and path in _FORWARDED_GET_PATHS
+        )
         if not allowed:
             return web.Response(
                 status=404,
@@ -496,7 +522,7 @@ class PolicyRelay:
             content_type="application/json",
         )
 
-    def _new_call(self, path: str, stream: bool) -> tuple[int, float, Any]:
+    def _new_call(self) -> tuple[int, float, Any]:
         self._seq += 1
         return self._seq, time.time(), self._version()
 
@@ -510,13 +536,9 @@ class PolicyRelay:
     ) -> Any:
         from aiohttp import ClientError, web
 
-        from benchflow.providers.litellm_token_capture_patch import (
-            STREAM_TOKENS_KEY,
-            record_stream_chunk,
-        )
-
+        stream_key, record_stream_chunk = self._stream_key, self._record_chunk
         stream = body.get("stream") is True
-        seq, started, version = self._new_call(path, stream)
+        seq, started, version = self._new_call()
         clock = time.monotonic()
 
         def finish(
@@ -529,7 +551,9 @@ class PolicyRelay:
             digest = prompt_tokens = completion_tokens = None
             if record is not None and status == "ok":
                 try:
-                    digest, prompt_tokens, completion_tokens = _summarise_capture(record)
+                    digest, prompt_tokens, completion_tokens = _summarise_capture(
+                        record
+                    )
                 except Exception:  # a capture problem must never fail the call
                     logger.debug("Policy relay: capture failed", exc_info=True)
             grant.calls.append(
@@ -572,9 +596,7 @@ class PolicyRelay:
                     except ValueError:
                         parsed = None
                     if isinstance(parsed, dict):
-                        record = _capture_record(
-                            body, self._provider, response=parsed
-                        )
+                        record = _capture_record(body, self._provider, response=parsed)
                 finish(
                     "ok" if ok else "error",
                     upstream.status,
@@ -588,7 +610,10 @@ class PolicyRelay:
                 )
             out = web.StreamResponse(
                 status=upstream.status,
-                headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                },
             )
             await out.prepare(request)
             parser = _SSE()
@@ -608,16 +633,14 @@ class PolicyRelay:
                 record=_capture_record(
                     body,
                     self._provider,
-                    stream_tokens=details.get(STREAM_TOKENS_KEY) or {},
+                    stream_tokens=details.get(stream_key) or {},
                 )
                 if ok
                 else None,
                 error=failed or (None if ok else f"HTTP {upstream.status}"),
             )
-            try:
+            with contextlib.suppress(ConnectionResetError, RuntimeError):
                 await out.write_eof()
-            except (ConnectionResetError, RuntimeError):
-                pass
             return out
         finally:
             await upstream_cm.__aexit__(None, None, None)

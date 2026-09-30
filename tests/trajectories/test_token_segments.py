@@ -265,8 +265,16 @@ def test_relay_records_attest_calls_and_tag_policy_versions():
     first = call([1, 2], [10])
     second = call([1, 2, 10, 50], [11])
     relay = [
-        {"status": "ok", "digest": first["metadata"]["token_capture"]["digest"], "version": 3},
-        {"status": "ok", "digest": second["metadata"]["token_capture"]["digest"], "version": 4},
+        {
+            "status": "ok",
+            "digest": first["metadata"]["token_capture"]["digest"],
+            "version": 3,
+        },
+        {
+            "status": "ok",
+            "digest": second["metadata"]["token_capture"]["digest"],
+            "version": 4,
+        },
     ]
     report = segment_rollout([first, second], relay_calls=relay)
     assert report["attestation"]["status"] == "attested"
@@ -280,9 +288,15 @@ def test_a_call_the_relay_never_served_is_a_mismatch_and_not_trained():
     first = call([1, 2], [10])
     second = call([1, 2, 10, 50], [11])
     # The server really sampled 12 with another logprob; the store says 11.
-    served = token_digest([1, 2, 10, 50], [{"index": 0, "token_ids": [12], "logprobs": [-0.3]}])
+    served = token_digest(
+        [1, 2, 10, 50], [{"index": 0, "token_ids": [12], "logprobs": [-0.3]}]
+    )
     relay = [
-        {"status": "ok", "digest": first["metadata"]["token_capture"]["digest"], "version": 1},
+        {
+            "status": "ok",
+            "digest": first["metadata"]["token_capture"]["digest"],
+            "version": 1,
+        },
         {"status": "ok", "digest": served, "version": 1},
     ]
     report = segment_rollout([first, second], relay_calls=relay)
@@ -298,7 +312,11 @@ def test_relay_calls_the_store_missed_make_attestation_partial():
     first = call([1, 2], [10])
     extra = token_digest([9], [{"index": 0, "token_ids": [9], "logprobs": [-1.0]}])
     relay = [
-        {"status": "ok", "digest": first["metadata"]["token_capture"]["digest"], "version": 1},
+        {
+            "status": "ok",
+            "digest": first["metadata"]["token_capture"]["digest"],
+            "version": 1,
+        },
         {"status": "ok", "digest": extra, "version": 1},
         {"status": "error", "digest": None, "version": 1},
     ]
@@ -315,7 +333,12 @@ def test_no_relay_means_attestation_unavailable():
 
 
 def test_routing_passes_through_to_the_segment():
-    routing = {"source": "sglang", "encoding": "int32-base64", "data": "AAAA", "start": 0}
+    routing = {
+        "source": "sglang",
+        "encoding": "int32-base64",
+        "data": "AAAA",
+        "start": 0,
+    }
     first = call([1, 2], [10], routing=routing)
     second = call([1, 2, 10, 5], [11], routing=dict(routing, data="BBBB"))
     report = segment_rollout([first, second])
@@ -437,7 +460,11 @@ def test_sglang_routed_experts_from_a_stream():
         details,
         {
             "choices": [
-                {"index": 0, "delta": {"content": "a"}, "logprobs": {"content": [{"token": "a", "logprob": -0.1}]}}
+                {
+                    "index": 0,
+                    "delta": {"content": "a"},
+                    "logprobs": {"content": [{"token": "a", "logprob": -0.1}]},
+                }
             ]
         },
     )
@@ -445,7 +472,11 @@ def test_sglang_routed_experts_from_a_stream():
         details,
         {
             "choices": [],
-            "sglext": {"input_ids": [1, 2], "output_ids": [[10]], "routed_experts": "i32-b64"},
+            "sglext": {
+                "input_ids": [1, 2],
+                "output_ids": [[10]],
+                "routed_experts": "i32-b64",
+            },
         },
     )
     capture = build_token_capture(

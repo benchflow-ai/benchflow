@@ -112,7 +112,9 @@ def _env_minutes(name: str, default: int) -> int:
     try:
         value = int(raw)
     except ValueError:
-        logger.warning("%s=%r is not a whole number of minutes; using %d", name, raw, default)
+        logger.warning(
+            "%s=%r is not a whole number of minutes; using %d", name, raw, default
+        )
         return default
     return max(value, 0)
 
@@ -219,7 +221,11 @@ def _write_lease_file() -> None:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(
             json.dumps(
-                {"process": lease_token(), "written_at": time.time(), "resources": resources},
+                {
+                    "process": lease_token(),
+                    "written_at": time.time(),
+                    "resources": resources,
+                },
                 indent=1,
             )
         )
@@ -336,7 +342,11 @@ def delete_resources(
         for sandbox_id, ok in _delete_daytona(daytona).items():
             results[f"daytona:{sandbox_id}"] = ok
 
-    jobs = [job for job, needed in ((_docker_all, docker), (_daytona_all, daytona)) if needed]
+    jobs = [
+        job
+        for job, needed in ((_docker_all, docker), (_daytona_all, daytona))
+        if needed
+    ]
     if jobs:
         pool = ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="bf-lease")
         futures = [pool.submit(job) for job in jobs]
@@ -460,7 +470,9 @@ def reap_dead_leases(*, timeout_sec: float = 180.0) -> dict[str, Any]:
         resources = [
             r
             for r in data.get("resources") or []
-            if isinstance(r, dict) and r.get("provider") in {"docker", "daytona"} and r.get("id")
+            if isinstance(r, dict)
+            and r.get("provider") in {"docker", "daytona"}
+            and r.get("id")
         ]
         report["leases"] += 1
         outcome = delete_resources(resources, timeout_sec=timeout_sec)
@@ -468,7 +480,9 @@ def reap_dead_leases(*, timeout_sec: float = 180.0) -> dict[str, Any]:
         report["failed"] += outcome["failed"]
         if outcome["failed"]:
             kept = [
-                r for r in resources if f"{r['provider']}:{r['id']}" in outcome["failed"]
+                r
+                for r in resources
+                if f"{r['provider']}:{r['id']}" in outcome["failed"]
             ]
             with contextlib.suppress(OSError):
                 path.write_text(json.dumps({**data, "resources": kept}, indent=1))

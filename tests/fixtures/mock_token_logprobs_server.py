@@ -25,8 +25,15 @@ LiteLLM gateway can be tested end to end without a GPU or network:
 
 Tokenization is deterministic: each character of the reply is one token whose
 id is ``1000 + ord(char)``; prompt ids are ``ord`` of each character of the
-concatenated message text. Every request body is kept in ``requests`` so tests
-can assert what the gateway sent upstream.
+concatenated message text. Every request body is kept in ``requests`` (with
+its ``Authorization`` header) so tests can assert what reached the server.
+
+Two switches serve the policy-relay tests: ``fail_next`` is a list of HTTP
+statuses answered (and consumed) before any real answer, and with
+``routed_experts=True`` the server returns MoE routing the way each engine
+does: vLLM on every choice (``routed_experts``, as with
+``--enable-return-routed-experts``), SGLang in ``sglext.routed_experts`` when
+the request asks with ``return_routed_experts``.
 """
 
 from __future__ import annotations
@@ -86,7 +93,13 @@ def _sglext(body: dict[str, Any]) -> dict[str, Any] | None:
     return ext or None
 
 
-def chat_completion(body: dict[str, Any], flavor: str = "vllm") -> dict[str, Any]:
+ROUTING_VLLM = "bnB5LXJvdXRpbmc="  # an opaque blob; the relay never decodes it
+ROUTING_SGLANG = "aW50MzItcm91dGluZw=="
+
+
+def chat_completion(
+    body: dict[str, Any], flavor: str = "vllm", *, routed_experts: bool = False
+) -> dict[str, Any]:
     top_n = int(body.get("top_logprobs") or 0)
     choice: dict[str, Any] = {
         "index": 0,
@@ -112,6 +125,8 @@ def chat_completion(body: dict[str, Any], flavor: str = "vllm") -> dict[str, Any
     }
     if flavor == "sglang":
         ext = _sglext(body)
+        if routed_experts and body.get("return_routed_experts"):
+            ext = {**(ext or {}), "routed_experts": ROUTING_SGLANG}
         if ext:
             response["sglext"] = ext
         if body.get("return_token_ids"):
@@ -120,11 +135,13 @@ def chat_completion(body: dict[str, Any], flavor: str = "vllm") -> dict[str, Any
     elif body.get("return_token_ids"):
         response["prompt_token_ids"] = prompt_token_ids(body)
         choice["token_ids"] = [token_id(char) for char in REPLY]
+    if flavor == "vllm" and routed_experts:
+        choice["routed_experts"] = ROUTING_VLLM
     return response
 
 
 def chat_completion_chunks(
-    body: dict[str, Any], flavor: str = "vllm"
+    body: dict[str, Any], flavor: str = "vllm", *, routed_experts: bool = False
 ) -> list[dict[str, Any]]:
     top_n = int(body.get("top_logprobs") or 0)
     base = {
@@ -175,6 +192,8 @@ def chat_completion_chunks(
         }
     )
     ext = _sglext(body) if flavor == "sglang" else None
+    if flavor == "sglang" and routed_experts and body.get("return_routed_experts"):
+        ext = {**(ext or {}), "routed_experts": ROUTING_SGLANG}
     if ext:
         chunks.append({**base, "choices": [], "sglext": ext})
     return chunks
@@ -239,6 +258,8 @@ class MockTokenServer(ThreadingHTTPServer):
             raise ValueError(f"unknown flavor {flavor!r}")
         self.flavor = flavor
         self.requests: list[dict[str, Any]] = []
+        self.fail_next: list[int] = []
+        self.routed_experts = False
         self._lock = threading.Lock()
 
     @property
@@ -246,9 +267,17 @@ class MockTokenServer(ThreadingHTTPServer):
         host, port = self.server_address[:2]
         return f"http://{host!s}:{port}"
 
-    def record(self, path: str, body: dict[str, Any]) -> None:
+    def record(
+        self, path: str, body: dict[str, Any], authorization: str | None = None
+    ) -> None:
         with self._lock:
-            self.requests.append({"path": path, "body": body})
+            self.requests.append(
+                {"path": path, "body": body, "authorization": authorization}
+            )
+
+    def take_failure(self) -> int | None:
+        with self._lock:
+            return self.fail_next.pop(0) if self.fail_next else None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -286,8 +315,16 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         path = self.path.split("?", 1)[0].rstrip("/")
-        self.server.record(path, body)
+        self.server.record(path, body, self.headers.get("Authorization"))
         flavor = self.server.flavor
+        routed = self.server.routed_experts
+        failure = self.server.take_failure()
+        if failure is not None:
+            self._send_json(
+                {"error": {"message": f"injected failure {failure}", "code": failure}},
+                status=failure,
+            )
+            return
         if path.endswith("/chat/completions"):
             if (
                 flavor == "sglang"
@@ -305,9 +342,11 @@ class _Handler(BaseHTTPRequestHandler):
                     status=400,
                 )
             elif body.get("stream"):
-                self._send_sse(chat_completion_chunks(body, flavor))
+                self._send_sse(
+                    chat_completion_chunks(body, flavor, routed_experts=routed)
+                )
             else:
-                self._send_json(chat_completion(body, flavor))
+                self._send_json(chat_completion(body, flavor, routed_experts=routed))
         elif path.endswith("/responses"):
             self._send_json(responses_response(body))
         elif path.endswith("/messages"):
