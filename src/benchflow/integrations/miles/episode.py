@@ -823,6 +823,10 @@ def _positive_int(value: Any) -> int | None:
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool | list | dict):
         return value
+    if callable(
+        getattr(value, "as_dict", None)
+    ):  # benchflow.integrity.IntegrityVerdict
+        return value.as_dict()
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     if hasattr(value, "__dict__"):

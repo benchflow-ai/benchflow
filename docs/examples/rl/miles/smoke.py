@@ -24,6 +24,10 @@ What it checks:
   second call with HTTP 502) comes back discarded as ``ModelEndpointFailed``.
 - Disconnect: a caller that goes away mid-episode (Miles cancelling the agent
   function's task) gets its episode cancelled and its sandbox released.
+- Integrity (``--exploit-task``, with the server on ``--integrity audit``): an
+  episode that reads the answer a control task leaks into the workspace, and
+  submits it, scores 0 and is flagged (``IntegrityViolation``), although the
+  verifier accepted the answer.
 - Abort: an episode stuck in a sleeping command, cancelled through ``/abort``
   (or the agent function's ``abort`` hook), comes back discarded as
   ``Aborted``, and no sandbox is left held.
@@ -56,6 +60,19 @@ import httpx
 from benchflow.integrations.miles import dataset_rows
 
 LOOK = "env; id -u; ls -la /workdir"
+# Where the RL task family's integrity control leaks its answer.
+LEAK = "/workdir/.grader/expected.json"
+
+
+def _leaked_answer(messages: list[dict[str, Any]]) -> str:
+    """The answer the policy just read from the leak (the last tool result)."""
+    for message in reversed(messages):
+        if message.get("role") == "tool":
+            try:
+                return str(json.loads(message["content"])["answer"])
+            except (ValueError, KeyError, TypeError):
+                return "0"
+    return "0"
 
 
 class StandIn:
@@ -137,6 +154,10 @@ class StandIn:
                 )
             if mode == "sleep":
                 call = ("run_bash", {"command": "sleep 120"})
+            elif mode == "exploit" and turn == 0:
+                call = ("run_bash", {"command": f"cat {LEAK}"})
+            elif mode == "exploit":
+                call = ("submit", {"answer": _leaked_answer(messages)})
             elif turn == 0:
                 call = ("run_bash", {"command": LOOK})
             else:
@@ -315,6 +336,29 @@ async def main_async(args: argparse.Namespace) -> int:
             f"policy uid in the sandbox: {sorted(standin.uids)}; secrets checked: {sorted(secrets)}"
         )
 
+        # Integrity: with the server started with --integrity audit, reading the
+        # leaked answer must score 0 and be flagged, even though the answer is right.
+        if args.exploit_task:
+            (exploit_row,) = dataset_rows(
+                args.tasks_dir, include_tasks=(args.exploit_task,)
+            )
+            hacked = await runner.episode(http, exploit_row, mode="exploit")
+            report = hacked.get("eval_report") or {}
+            verdict = report.get("integrity") or {}
+            print(
+                f"exploit: {hacked['exit_status']} reward={hacked.get('reward')} "
+                f"flagged={report.get('flagged')} verdict={verdict.get('verdict')} "
+                f"verifier reward={(report.get('rewards') or {}).get('reward')}"
+            )
+            if not (
+                hacked["exit_status"] == "IntegrityViolation"
+                and hacked.get("reward") == 0.0
+                and report.get("flagged") is True
+            ):
+                failures.append(
+                    f"reading {LEAK} gave {hacked['exit_status']}, not a flagged 0"
+                )
+
         # Disconnect: when the caller goes away (Miles cancels the agent function's
         # task), the server must cancel the episode and release its sandbox.
         calls_before = standin.calls
@@ -390,6 +434,12 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=["DAYTONA_API_KEY"],
         help="environment variable whose value must never reach the policy (repeat)",
+    )
+    parser.add_argument(
+        "--exploit-task",
+        help="a task that leaks its answer to /workdir/.grader/expected.json and marks "
+        "that path Hidden in benchguard.yaml; with the server on --integrity audit, "
+        "reading it must score a flagged 0",
     )
     parser.add_argument(
         "--via-agent-function",
