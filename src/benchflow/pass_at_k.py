@@ -17,6 +17,15 @@ failure and does not enter ``n``; it is reported as ``unscored``. Control
 runs (oracle, empty/nop) are left out by the callers
 (:meth:`benchflow.Job.solve_rates`, :func:`benchflow.compare`).
 
+Interval. ``solve_rate`` comes with a 95% interval (``interval``). With at
+most one scored trial per task it is the Wilson score interval over the
+trials (``wilson``). With repeated trials, a task's trials are correlated,
+so the interval is Wilson's on the effective sample size: the scored trials
+divided by the design effect, the between-task variance of the solve rate
+over its variance under independent trials (at least 1; with every trial
+solved or none, the number of tasks) (``wilson-clustered``). It needs no
+random resampling, so the same trials always give the same interval.
+
 Success rule. By default a trial succeeds when it *passed*: reward = 1, or
 the integrated-review gate verdict when the trial has one; this is the rule
 behind every other pass count. For non-binary rewards pass a
@@ -44,7 +53,9 @@ __all__ = [
     "default_ks",
     "pass_at_k",
     "pass_hat_k",
+    "solve_rate_interval",
     "solve_rates",
+    "wilson_interval",
 ]
 
 
@@ -121,8 +132,12 @@ class SolveRates:
     at_k: list[PassAtK] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
     controls_excluded: int = 0
+    # The solve rate's 95% interval and how it was computed (module docstring).
+    interval: tuple[float, float] | None = None
+    interval_method: str | None = None
 
     def get(self, k: int) -> PassAtK | None:
+        """The pass@k / pass^k entry for ``k``, or None when it was not computed."""
         return next((p for p in self.at_k if p.k == k), None)
 
     def to_dict(self) -> dict[str, Any]:
@@ -137,6 +152,8 @@ class SolveRates:
             "min_trials_per_task": self.min_trials_per_task,
             "max_trials_per_task": self.max_trials_per_task,
             "solve_rate": self.solve_rate,
+            "solve_rate_interval": list(self.interval) if self.interval else None,
+            "solve_rate_interval_method": self.interval_method,
             "nonbinary_rewards": self.nonbinary_rewards,
             "ks": [p.k for p in self.at_k],
             "pass_at_k": {str(p.k): p.pass_at_k for p in self.at_k},
@@ -159,6 +176,41 @@ class SolveRates:
                 f"({p.tasks} tasks{short})"
             )
         return out
+
+
+def wilson_interval(successes: float, n: float, z: float = 1.96) -> tuple[float, float]:
+    """The Wilson score interval for ``successes`` out of ``n`` (``n > 0``;
+    ``n`` may be an effective, non-integer sample size)."""
+    p = successes / n
+    denominator = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denominator
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def solve_rate_interval(
+    counts: list[tuple[int, int]],
+) -> tuple[tuple[float, float], str] | None:
+    """The 95% interval of the pooled solve rate over ``(n, c)`` per task:
+    ``(interval, method)``, or None without a scored trial (module docstring)."""
+    counts = [(n, c) for n, c in counts if n > 0]
+    total = sum(n for n, _ in counts)
+    if not total:
+        return None
+    solved = sum(c for _, c in counts)
+    if max(n for n, _ in counts) <= 1 or len(counts) < 2:
+        return wilson_interval(solved, total), "wilson"
+    p = solved / total
+    tasks = len(counts)
+    independent = p * (1 - p) / total
+    if independent == 0:
+        effective = float(tasks)  # every trial solved, or none
+    else:
+        clustered = (
+            tasks / (tasks - 1) * math.fsum((c - p * n) ** 2 for n, c in counts)
+        ) / (total * total)
+        effective = total / max(1.0, clustered / independent)
+    return wilson_interval(p * effective, effective), "wilson-clustered"
 
 
 def _finite(value: object) -> float | None:
@@ -244,6 +296,11 @@ def solve_rates(
         caveats.append(
             f"{unscored} unscored trial(s) are left out of n, not counted as failures."
         )
+    if controls_excluded:
+        caveats.append(
+            f"{controls_excluded} control run(s) (oracle, empty/nop) are left out: "
+            "they check the task, not an agent (include_controls=True counts them)."
+        )
     if nonbinary and solve_threshold is None:
         caveats.append(
             f"{nonbinary} scored trial(s) have a reward other than 0 or 1 and count "
@@ -251,6 +308,7 @@ def solve_rates(
             "partial credit."
         )
     total = sum(n for n, _ in counts)
+    interval = solve_rate_interval(counts)
     return SolveRates(
         success_rule=(
             "passed (reward = 1)"
@@ -268,4 +326,6 @@ def solve_rates(
         at_k=at_k,
         caveats=caveats,
         controls_excluded=controls_excluded,
+        interval=interval[0] if interval else None,
+        interval_method=interval[1] if interval else None,
     )

@@ -46,16 +46,19 @@ class ReviewerConfig(BaseModel):
     @field_validator("agent")
     @classmethod
     def normalize_agent(cls, value: str) -> str:
+        """Resolve an agent alias to its registry name."""
         return normalize_agent_name(value)
 
     @field_validator("reasoning_effort")
     @classmethod
     def normalize_effort(cls, value: str | None) -> str | None:
+        """Normalize the reasoning effort label."""
         return normalize_reasoning_effort(value)
 
     @field_validator("environment")
     @classmethod
     def validate_environment(cls, value: str) -> str:
+        """Refuse an unknown sandbox provider."""
         if not is_known_provider(value):
             raise ValueError(f"Reviewer sandbox must be one of: {providers_phrase()}")
         return value
@@ -63,12 +66,14 @@ class ReviewerConfig(BaseModel):
     @field_validator("image")
     @classmethod
     def validate_image(cls, value: str) -> str:
+        """Refuse an empty image reference or one with whitespace."""
         if not value or any(char.isspace() for char in value):
             raise ValueError("Reviewer image must be a non-empty image reference")
         return value
 
     @classmethod
     def coerce(cls, value: object = None) -> Self:
+        """A ReviewerConfig from itself, a mapping, or None (the defaults)."""
         if value is None:
             return cls()
         if isinstance(value, cls):
@@ -76,9 +81,11 @@ class ReviewerConfig(BaseModel):
         return cls.model_validate(value)
 
     def to_dict(self) -> dict:
+        """The config as a JSON-ready mapping (agent_env values included)."""
         return self.model_dump(mode="json")
 
     def to_config_artifact(self) -> dict:
+        """The config as recorded in a trial's config.json: agent_env keys, and only values safe to record."""
         result = self.model_dump(mode="json", exclude={"agent_env"})
         result["agent_env"] = {
             name: value

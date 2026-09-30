@@ -631,24 +631,29 @@ class Trajectory(BaseModel):
 
     @property
     def total_input_tokens(self) -> int:
+        """Input tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).input_tokens for ex in self.exchanges)
 
     @property
     def total_output_tokens(self) -> int:
+        """Output tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).output_tokens for ex in self.exchanges)
 
     @property
     def total_cache_read_tokens(self) -> int:
+        """Prompt-cache read tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).cache_read_tokens for ex in self.exchanges)
 
     @property
     def total_cache_creation_tokens(self) -> int:
+        """Prompt-cache write tokens over the captured exchanges."""
         return sum(
             _exchange_token_usage(ex).cache_creation_tokens for ex in self.exchanges
         )
 
     @property
     def total_provider_tokens(self) -> int:
+        """All tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).total_tokens for ex in self.exchanges)
 
     @property

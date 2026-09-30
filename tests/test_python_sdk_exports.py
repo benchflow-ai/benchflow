@@ -51,7 +51,11 @@ def test_records_reconcile_tokens_and_carry_settings_and_job(tmp_path: Path) -> 
 def test_best_attempt_keeps_one_trial_per_agent_and_model(tmp_path: Path) -> None:
     """bf.run_batch of an oracle and another agent on one task
     writes both into one job folder, and load_job(attempts='best') silently
-    kept only one of them (the key was task + folder)."""
+    kept only one of them (the key was task + folder).
+
+    A batch folder holds no retries, so every rollout is kept (dx/sdk fix of
+    the collapse from bf6e8412); in an Evaluation job, whose retries share its
+    folder, attempts collapse, still one trial per agent and model."""
     job = tmp_path / "job"
     _trial(job, "t1", agent="oracle", model=None, suffix="00000001")
     _trial(
@@ -67,6 +71,14 @@ def test_best_attempt_keeps_one_trial_per_agent_and_model(tmp_path: Path) -> Non
         error="x",
         suffix="00000004",
     )
+    loaded = bf.load_job(job)
+    assert sorted(t.agent for t in loaded.trials) == [
+        "claude-agent-acp",
+        "codex-acp",
+        "codex-acp",
+        "oracle",
+    ]
+    (job / "evaluation.json").write_text("{}")
     loaded = bf.load_job(job)
     assert sorted(t.agent for t in loaded.trials) == [
         "claude-agent-acp",

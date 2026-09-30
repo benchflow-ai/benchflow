@@ -111,7 +111,10 @@ from benchflow.review.automatic import PreparedReview
 from benchflow.review.outcome import ScoringResult, scoring_from_result
 from benchflow.review.persistence import scoring_lock
 from benchflow.rollout import _deadline as _deadline
-from benchflow.rollout._artifacts import collect_rollout_artifacts
+from benchflow.rollout._artifacts import (
+    collect_rollout_artifacts,
+    collect_unverified_rollout_artifacts,
+)
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
@@ -135,6 +138,7 @@ from benchflow.rollout._review import (
     prepare_terminal_review,
 )
 from benchflow.rollout._separate_verifier import run_separate_verifier
+from benchflow.rollout._session_log import price_from_session_log
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -930,10 +934,12 @@ class Rollout:
 
     @property
     def env(self) -> Any:
+        """The rollout's sandbox, once :meth:`setup` created it."""
         return self._env
 
     @property
     def acp_client(self) -> Any:
+        """The agent's ACP client while connected, else None."""
         return self._acp_client
 
     def activity_snapshot(self) -> ActivitySnapshot:
@@ -984,6 +990,7 @@ class Rollout:
 
     @property
     def trajectory(self) -> list[dict]:
+        """The ACP events captured so far."""
         return self._trajectory
 
     def record_external_tool_call(
@@ -1027,10 +1034,12 @@ class Rollout:
 
     @property
     def timing(self) -> dict[str, float]:
+        """Seconds per phase so far."""
         return self._timing
 
     @property
     def result(self) -> RolloutResult | None:
+        """The final result once the rollout is verified or finished, else None."""
         if self._completed_result is not None:
             return self._completed_result
         if self._phase not in ("verified", "cleaned"):
@@ -2361,9 +2370,14 @@ class Rollout:
     # Phase 5: CLEANUP
 
     async def cleanup(self) -> None:
-        """Close ACP client and stop the environment."""
+        """Close ACP client and stop the environment.
+
+        A rollout that never reached its verifier (the agent errored) has its
+        artifacts collected here, before the sandbox stops.
+        """
         self._capture_partial_acp_trajectory()
         await self.disconnect()
+        await collect_unverified_rollout_artifacts(self)
 
         if self._env and self._config.export_generated_skills_to:
             try:
@@ -2440,6 +2454,9 @@ class Rollout:
                 logger.warning(f"Egress denylist proxy stop failed: {e}")
 
         self._finalize_usage_metrics()
+        # Unpriced Claude Code usage (a subscription): estimate its USD from
+        # Claude Code's session log while the sandbox is still up.
+        await price_from_session_log(self)
         self._enforce_required_usage_tracking()
 
         if self._environment is not None:

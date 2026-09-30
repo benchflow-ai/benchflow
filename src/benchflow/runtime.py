@@ -115,15 +115,18 @@ class Environment:
 
     @property
     def task(self) -> Any:
+        """The task this environment runs (a :class:`benchflow.Task`)."""
         from benchflow.task import Task
 
         return Task(self.task_path)
 
     async def start(self, force_build: bool = False) -> None:
+        """Start the sandbox (``force_build=True`` rebuilds its image first)."""
         await self._inner.start(force_build=force_build)
         self._started = True
 
     async def stop(self, delete: bool = True) -> None:
+        """Stop the sandbox if it was started (``delete=False`` keeps it)."""
         if self._started:
             await self._inner.stop(delete=delete)
             self._started = False
@@ -147,6 +150,7 @@ class Environment:
         return await self._inner.exec(cmd, service=service, **kwargs)
 
     async def upload_file(self, src: str | Path, dst: str) -> None:
+        """Copy a host file into the sandbox at ``dst``."""
         await self._inner.upload_file(src, dst)
 
     async def upload_dir(
@@ -160,6 +164,7 @@ class Environment:
         await self._inner.upload_dir(src, dst, service=service)
 
     async def download_file(self, src: str, dst: str | Path) -> None:
+        """Copy the sandbox file ``src`` to the host path ``dst``."""
         await self._inner.download_file(src, dst)
 
     async def download_dir(
@@ -193,6 +198,7 @@ class Agent:
 
     @property
     def config(self) -> AgentConfig | None:
+        """The registry entry for this agent, or None for a raw command."""
         try:
             return resolve_agent(self.name)
         except KeyError:
@@ -200,6 +206,7 @@ class Agent:
 
     @property
     def launch_cmd(self) -> str:
+        """The command that starts the agent; raises KeyError for an unknown agent."""
         config = self.config
         if config is None:
             if is_explicit_raw_agent_command(self.name):
@@ -317,6 +324,7 @@ class RuntimeResult:
 
     @property
     def passed(self) -> bool:
+        """Whether the scoring outcome is a pass."""
         from benchflow._utils.scoring import classify_result_outcome
 
         return (
@@ -335,6 +343,7 @@ class RuntimeResult:
 
     @property
     def verified(self) -> bool:
+        """Deprecated: whether the run was scored (passed or failed)."""
         from benchflow._utils.scoring import classify_result_outcome
 
         return classify_result_outcome(

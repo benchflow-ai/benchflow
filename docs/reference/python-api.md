@@ -13,14 +13,32 @@ The CLI install (`uv tool install --python 3.12 --upgrade benchflow`) is isolate
 
 ## Quick Start
 
-Run one task with the oracle agent (the task's own solution, no model credentials needed) and read the result. `bf.run_sync` blocks until the rollout finishes; it also works inside a running event loop such as a Jupyter cell:
+Run one task with the oracle agent (the task's own solution, so no model credentials) and read the result. This snippet writes a tiny task on a prebuilt image, so nothing is built either; with Docker running it takes about 20 seconds (a first run also pulls `python:3.12-slim`). `bf.run_sync` blocks until the rollout finishes; it also works inside a running event loop such as a Jupyter cell:
 
 ```python
+import pathlib, tempfile
 import benchflow as bf
 
-result = bf.run_sync(bf.RolloutConfig(task_path="tasks/my-task", agent="oracle", environment="docker"))
-print(result.reward, result.passed, result.rollout_dir)
+task = pathlib.Path(tempfile.mkdtemp()) / "hello"
+(task / "solution").mkdir(parents=True)
+(task / "tests").mkdir()
+(task / "task.md").write_text(
+    "---\nschema_version: '1.3'\n"
+    "sandbox: {docker_image: 'python:3.12-slim', workdir: /app}\n"
+    "---\n\n## prompt\n\nWrite `Hello, world!` to `hello.txt`.\n"
+)
+(task / "solution" / "solve.sh").write_text("#!/bin/bash\necho 'Hello, world!' > /app/hello.txt\n")
+(task / "tests" / "test.sh").write_text(
+    "#!/bin/bash\ngrep -qx 'Hello, world!' /app/hello.txt && r=1 || r=0\n"
+    "echo $r > /logs/verifier/reward.txt\n"
+)
+
+result = bf.run_sync(bf.RolloutConfig(task_path=task, agent="oracle", environment="docker"))
+print(result.reward, result.passed, result.rollout_dir)   # 1.0 True jobs/<timestamp>/hello__<id>
+print(bf.load_job(result.rollout_dir.parent))              # the job's summary
 ```
+
+For your own tasks, pass their folder as `task_path`.
 
 In async code, `await bf.arun(...)` takes the same arguments (`bf.run` is the same async function under its older name, so existing `await bf.run(...)` code keeps working).
 
@@ -59,6 +77,7 @@ Every form (`bf.arun`/`bf.run`/`bf.run_sync` with a `RolloutConfig`, an agent na
 | `trajectory_source` | `"acp"` (captured over ACP), `"partial_acp"`, `"scraped"` (agent-writable, untrusted) or `"hosted_env"`. |
 | `n_tool_calls`, `n_prompts` | Counts from the run. |
 | `n_input_tokens`, `n_output_tokens`, `total_tokens`, `cost_usd`, `usage_source` | Provider usage; `None` when the provider reported none (`usage_source == "unavailable"`). |
+| `price_source` | Who priced `cost_usd`: `"litellm"` (BenchFlow's model gateway), or `"agent_session_log"`, an estimate: a Claude subscription run bypasses the gateway, so its USD is Claude Code's own figure from its session log (copied to `agent/claude-sessions/`), or the logged usage at list prices; `usage_details["cost_estimate"]` says which. `None` when nothing priced it. |
 | `task_name`, `rollout_name`, `agent`, `model` | Identity of the run. |
 | `started_at`, `finished_at` | Local wall-clock times (naive `datetime`). |
 | `rollout_dir` | The rollout's artifact directory, or `None` if the run failed before it was created. |
@@ -119,6 +138,22 @@ async for name, result in evaluation.stream():
     print(name, result.reward)
 print(evaluation.result.score)
 ```
+
+To run Python in every trial's sandbox before its agent starts, give the job hooks, `async def hook(sandbox)`, as for a single rollout (`RolloutConfig.pre_agent_hooks`); to keep more files from every trial, add artifacts through the config overlay, collected besides each task's own:
+
+```python
+async def lock_inputs(sandbox):
+    await sandbox.exec("chmod -R a-w /data", user="root", timeout_sec=60)
+
+config = bf.EvaluationConfig(
+    agent="claude-agent-acp",
+    pre_agent_hooks=[lock_inputs],
+    config_override={"artifacts": [{"source": "/home/agent/.claude/projects",
+                                    "destination": "claude-sessions"}]},
+)
+```
+
+Hooks are Python objects: a config file cannot hold them (`to_dict`/`to_yaml` refuse), `evaluation.json` records their names, and `Evaluation.resume(job_dir, pre_agent_hooks=[...])` takes them again.
 
 A job records its tasks directory and config in `<job_dir>/evaluation.json` when it starts (the names of `agent_env` keys, never their values). To finish an interrupted job from its directory alone:
 
@@ -183,9 +218,11 @@ report.to_json("comparison.json")        # the versioned JSON document
 
 `compare` also checks that both sides ran with comparable settings (task digest, model, harness, dataset, reasoning effort, sandbox, sandbox user, timeout, agent variables, prompts). Name the settings the comparison is about with `vary=("model",)`; any other difference warns (`on_mismatch="raise"` refuses, `"ignore"` stays quiet) and is listed in `report.mismatches`. `trial.review` is the `bench review` rubric verdict when one exists, and a folder with only `results.jsonl` rows loads too (`trial.source == "results.jsonl"`). `to_json_dict()` / `to_json()` on a trial, job or comparison give the versioned documents in [JSON export](./json-export.md); `bench eval inspect` and `bench eval compare` are the same functions on the command line.
 
-Counting follows the viewer. `execution` is `completed`, `errored` or `timed_out`; `assessment` is `scored`, `error` (the verifier failed) or `unscored`; a timed-out run can still be scored. Control runs (the oracle, an empty run with `agent="nop"`, which runs nothing so the verifier scores the untouched workspace, and task copies suffixed `__o` (oracle) or `__e` (empty solution)) check the task, not an agent, so `denominators()` and `compare()` leave them out unless `include_controls=True`. A retried task keeps its best attempt (scored first, then newest) unless `attempts="all"`. Branch children are part of their parent trial's `forks`, not extra trials. `compare` pairs tasks by name, gives means over each side's scored runs, and adds an n = 1 caveat when each side has one run per task; it computes no significance.
+Counting follows the viewer. `execution` is `completed`, `errored` or `timed_out`; `assessment` is `scored`, `error` (the verifier failed) or `unscored`; a timed-out run can still be scored. Control runs (the oracle, an empty run with `agent="nop"`, which runs nothing so the verifier scores the untouched workspace, and task copies suffixed `__o` (oracle) or `__e` (empty solution)) check the task, not an agent, so `denominators()` and `compare()` leave them out unless `include_controls=True`. A task that an Evaluation job retried keeps its best attempt (scored first, then newest) unless `attempts="all"`, and `trial.attempts` lists every attempt, oldest first (so `sum(len(t.attempts) for t in job.trials)` counts the rollouts a job ran); repeated rollouts of a task in a `bf.run_batch` folder are separate trials, never collapsed. Branch children are part of their parent trial's `forks`, not extra trials. `compare` pairs tasks by name, gives means over each side's scored runs, and adds an n = 1 caveat when each side has one run per task; it computes no significance.
 
-`job.solve_rates(ks=None, solve_threshold=None)` gives pass@k, pass^k and the solve rate over repeated trials (a task's trials in separate job folders are separate samples; unscored trials and controls are left out; a task with fewer than k scored trials is left out of that k and named in the caveats); `compare(..., ks=, solve_threshold=)` computes them for both sides (`report.solve_rates_a`, `report.solve_rates_b`). See [pass@k, pass^k and solve rates](./pass-at-k.md).
+`print(job)` (or `job.to_markdown()`, which a notebook shows for a bare `job`) summarises it: trials, tasks and agents, the solve rate with its 95% interval, unscored trials by reason, control runs left out, and what the rollouts cost (retried attempts included; estimates from an agent's session log marked). `repr(job)` stays one line.
+
+`job.solve_rates(ks=None, solve_threshold=None)` gives pass@k, pass^k and the solve rate (with its 95% `interval`) over repeated trials (a task's trials in separate job folders are separate samples; unscored trials and controls are left out; a task with fewer than k scored trials is left out of that k and named in the caveats); `compare(..., ks=, solve_threshold=)` computes them for both sides (`report.solve_rates_a`, `report.solve_rates_b`). See [pass@k, pass^k and solve rates](./pass-at-k.md).
 
 ## Saving configs
 
@@ -600,4 +637,4 @@ evaluation = Evaluation(tasks_dir="tasks", jobs_dir="jobs/my-run", config=config
 eval_result: EvaluationResult = await evaluation.run()
 ```
 
-`Evaluation(..., budget=bf.Budget(max_cost_usd=..., max_sandbox_seconds=..., max_tokens=...))` caps the job: at the cap no new trial starts and running ones are cancelled, and `eval_result.budget` / `summary.json` `budget` list them (never as failures). See [Job budget caps](./budget.md).
+`Evaluation(..., budget=bf.Budget(max_cost_usd=..., max_sandbox_seconds=..., max_tokens=..., max_rollouts=...))` caps the job: at a cap no new rollout starts (retries included), running ones are cancelled for the spend caps, and `eval_result.budget` / `summary.json` `budget` list them (never as failures). USD and tokens are known when a rollout finishes, so they are enforced between starts. See [Job budget caps](./budget.md).

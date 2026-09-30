@@ -164,6 +164,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     ),
     "--max-sandbox-seconds": _sdk("benchflow.Budget.max_sandbox_seconds"),
     "--max-tokens": _sdk("benchflow.Budget.max_tokens"),
+    "--max-rollouts": _sdk("benchflow.Budget.max_rollouts"),
     "--retry-policy": _cli("reserved: only recorded in the --run-config-out file"),
     "--retry-attempts": _sdk(
         "benchflow.RetryConfig.max_retries", "EvaluationConfig.retry"

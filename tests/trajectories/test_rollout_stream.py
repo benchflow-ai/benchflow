@@ -121,7 +121,7 @@ def test_finished_job_streams_every_rollout_with_reward_group_and_tokens(tmp_pat
     a = records["hello__a"]
     assert a.job == "job"
     assert a.reward == 1.0 and a.scored and a.outcome == "passed"
-    assert a.group_id == "task=hello|agent=claude-agent-acp|model=vllm/policy"
+    assert a.group_id == "task=hello|agent=claude-agent-acp|model=vllm/policy|job=job"
     assert a.token_capture["training_grade"] is True
     assert a.token_capture["path"] == "vllm"
     assert [c["prompt_token_ids"] for c in a.calls] == [
@@ -391,3 +391,64 @@ def test_agent_loop_and_helper_call_get_one_sequence_each(tmp_path):
         ("helper", [2]),
     ]
     assert record.sequences[1]["completion_ids"] == [42]
+
+
+def _evaluation_job(job: Path, max_retries: int = 2) -> None:
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "evaluation.json").write_text(
+        json.dumps({"config": {"retry": {"max_retries": max_retries}}})
+    )
+
+
+def test_a_retried_attempt_does_not_fill_a_group(tmp_path):
+    """The stream's group size counts final rollouts, not retried attempts.
+
+    Guards the dx/sdk fix of the stream from bf6e8412 (SDK update): an
+    Evaluation's retried attempt counted toward ``group_size`` and entered
+    the baseline, so a group of 3 closed on (failed attempt, u, v) and the
+    retry that replaced the failed attempt fell into a short group.
+    """
+    job = tmp_path / "job"
+    _evaluation_job(job)
+    first = write_rollout(job, "t__1", task="t", reward=None, error="ACP error -32603")
+    result = json.loads((first / "result.json").read_text())
+    result["error_category"] = "acp_error"
+    (first / "result.json").write_text(json.dumps(result))
+    write_rollout(job, "u__1", task="u", reward=1.0)
+    write_rollout(job, "v__1", task="v", reward=0.0)
+    write_rollout(job, "t__2", task="t", reward=1.0)
+    for i, name in enumerate(["t__1", "u__1", "v__1", "t__2"]):
+        stamp = 1_800_000_000 + i
+        __import__("os").utime(job / name / "result.json", (stamp, stamp))
+
+    records = {
+        r.rollout: r
+        for r in rs.stream_rollouts(
+            job, follow=False, group_by="agent,model", group_size=3
+        )
+    }
+
+    assert records["t__1"].retried is True and records["t__1"].advantage is None
+    assert records["t__2"].replaces == "t__1"
+    complete = {n for n, r in records.items() if r.group_complete}
+    assert complete == {"u__1", "v__1", "t__2"}
+    assert records["t__2"].advantage == pytest.approx(0.5773, abs=1e-3)
+
+
+def test_groups_do_not_span_jobs_by_default(tmp_path):
+    """Two jobs may have run different policy checkpoints under one model
+    name, so a group stays inside its job unless group_by leaves job out."""
+    root = tmp_path / "jobs"
+    write_rollout(root / "step-1", "hello__a", reward=1.0)
+    write_rollout(root / "step-2", "hello__b", reward=0.0)
+
+    split = list(rs.stream_rollouts(root, follow=False, group_size=2))
+    assert {r.group_complete for r in split} == {False}
+    assert {r.group["job"] for r in split} == {"step-1", "step-2"}
+
+    pooled = list(
+        rs.stream_rollouts(
+            root, follow=False, group_size=2, group_by="task,agent,model"
+        )
+    )
+    assert {r.group_complete for r in pooled} == {True}

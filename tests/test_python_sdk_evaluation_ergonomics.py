@@ -244,3 +244,63 @@ async def test_cancelling_a_stream_consumer_stops_the_job(tmp_path: Path) -> Non
     await asyncio.sleep(0.3)
     assert job._run_single_task.await_count <= 2
     assert not (job._jobs_dir / job._job_name / ".evaluation.lock").exists()
+
+
+async def _lock_evidence(sandbox) -> None:
+    """A pre-agent hook (it would lock a folder before the agent starts)."""
+
+
+def test_pre_agent_hooks_reach_every_rollout_of_an_evaluation(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """``EvaluationConfig(pre_agent_hooks=[...])`` runs them in every rollout.
+
+    An Evaluation had no hooks (only ``RolloutConfig`` did), so a job that
+    needed to prepare each sandbox had to give up retries, resume and the
+    summary and loop over ``bf.run`` itself. Hooks cannot be stored: config
+    files refuse them, evaluation.json names them, a resume asks for them.
+    """
+    from benchflow.eval_sharding import run_sharded_evaluation
+
+    seen = []
+
+    async def fake_create(config):
+        seen.append(config)
+
+        class FakeRollout:
+            async def run(self):
+                return RolloutResult(
+                    task_name=config.task_path.name, rewards={"reward": 1.0}
+                )
+
+        return FakeRollout()
+
+    monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+    config = EvaluationConfig(agent="oracle", pre_agent_hooks=[_lock_evidence])
+    job = Evaluation(
+        _tasks(tmp_path, 2), tmp_path / "jobs", config=config, preflight=False
+    )
+    asyncio.run(job.run())
+
+    assert [c.pre_agent_hooks for c in seen] == [[_lock_evidence], [_lock_evidence]]
+    record = json.loads((job.job_dir / "evaluation.json").read_text())
+    assert record["config"]["pre_agent_hooks"] == [f"{__name__}._lock_evidence"]
+    with pytest.raises(ValueError, match="pre_agent_hooks"):
+        job.to_dict()
+    with caplog.at_level("WARNING"):
+        resumed = Evaluation.resume(job.job_dir)
+    assert "pass pre_agent_hooks" in caplog.text
+    assert resumed._config.pre_agent_hooks is None
+    again = Evaluation.resume(job.job_dir, pre_agent_hooks=[_lock_evidence])
+    assert again._config.pre_agent_hooks == [_lock_evidence]
+    with pytest.raises(ValueError, match="worker"):
+        asyncio.run(
+            run_sharded_evaluation(
+                tasks_dir=_tasks(tmp_path / "w", 1),
+                jobs_dir=tmp_path / "wjobs",
+                config=config,
+                worker_concurrency=1,
+                worker_retries=0,
+                worker_start_stagger_sec=0.0,
+            )
+        )

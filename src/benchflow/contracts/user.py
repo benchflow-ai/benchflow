@@ -50,6 +50,7 @@ class PassthroughUser(BaseUser):
         instruction: str,
         round_result: RoundResult | None = None,
     ) -> str | None:
+        """Round 0 sends the instruction; later rounds end the loop."""
         if round == 0:
             return instruction
         return None
@@ -73,6 +74,7 @@ class FunctionUser(BaseUser):
         instruction: str,
         round_result: RoundResult | None = None,
     ) -> str | None:
+        """Call the wrapped function (sync or async) for this round's prompt; None ends the loop."""
         result = self._fn(round, instruction, round_result)
         if inspect.isawaitable(result):
             return cast(str | None, await result)
@@ -114,6 +116,7 @@ class DocumentNudgeUser(BaseUser):
         instruction: str,
         round_result: RoundResult | None = None,
     ) -> str | None:
+        """Round 0 sends the instruction; later rounds nudge the agent from the task document until it passes."""
         if round == 0:
             return instruction
         if round_result is None or not self.private_facts:
@@ -171,6 +174,7 @@ class ModelDocumentNudgeUser(BaseUser):
         instruction: str,
         round_result: RoundResult | None = None,
     ) -> str | None:
+        """Round 0 sends the instruction; later rounds ask a model for the next nudge."""
         if round == 0:
             return instruction
         if round_result is None:

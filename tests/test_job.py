@@ -912,3 +912,70 @@ class TestJobRunOrchestration:
         assert summary["agent_execution_time_sec"] == 0.0
         assert summary["avg_agent_execution_time_sec"] is None
         assert summary["max_agent_execution_time_sec"] is None
+
+
+class TestResolveJobNameSkipsOtherRuns:
+    """A plain run resumes only its own kind of job.
+
+    Guards the dx/sdk fix of two first-run findings (dx/first-run, 2026-09-30):
+    ``bench eval run`` after ``bench eval smoke`` resumed into ``jobs/smoke``
+    (a folder of jobs, picked as the alphabetically last folder) and blended
+    a hello-world pass into a citation-check score; and the documented
+    oracle-then-nop pair refused its second command, having auto-resumed the
+    oracle job.
+    """
+
+    @staticmethod
+    def _job(jobs_dir, name, *, agent="oracle", model=None, tasks_dir="tasks"):
+        folder = jobs_dir / name
+        folder.mkdir(parents=True)
+        (folder / "evaluation.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "tasks_dir": str(tasks_dir),
+                    "job_name": name,
+                    "config": {"agent": agent, "model": model},
+                }
+            )
+        )
+        return folder
+
+    def test_a_folder_of_jobs_is_never_resumed(self, tmp_path):
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / "smoke" / "2026-09-30__05-00-00").mkdir(parents=True)
+        self._job(jobs_dir, "2026-09-30__04-00-00", tasks_dir=tmp_path / "tasks")
+        name = Evaluation._resolve_job_name(
+            jobs_dir, EvaluationConfig(agent="oracle"), tmp_path / "tasks"
+        )
+        assert name == "2026-09-30__04-00-00"
+        only_smoke = tmp_path / "only"
+        (only_smoke / "smoke" / "2026-09-30__05-00-00").mkdir(parents=True)
+        assert Evaluation._resolve_job_name(only_smoke) != "smoke"
+
+    def test_another_agent_starts_a_new_job(self, tmp_path, caplog):
+        jobs_dir = tmp_path / "jobs"
+        self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "tasks")
+        with caplog.at_level("WARNING"):
+            name = Evaluation._resolve_job_name(
+                jobs_dir, EvaluationConfig(agent="nop"), tmp_path / "tasks"
+            )
+        assert name != "2026-09-30__05-21-59" and "__" in name
+        assert "agent='oracle' (this run: 'nop')" in caplog.text
+        assert "2026-09-30__05-21-59" in caplog.text
+
+    def test_other_tasks_start_a_new_job(self, tmp_path):
+        jobs_dir = tmp_path / "jobs"
+        self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "a")
+        name = Evaluation._resolve_job_name(
+            jobs_dir, EvaluationConfig(agent="oracle"), tmp_path / "b"
+        )
+        assert name != "2026-09-30__05-21-59"
+
+    def test_the_same_run_resumes(self, tmp_path):
+        jobs_dir = tmp_path / "jobs"
+        self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "tasks")
+        name = Evaluation._resolve_job_name(
+            jobs_dir, EvaluationConfig(agent="oracle"), tmp_path / "tasks"
+        )
+        assert name == "2026-09-30__05-21-59"

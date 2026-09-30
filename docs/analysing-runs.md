@@ -63,7 +63,7 @@ Trials are paired by task name. The headline uses `cmp.a_paired` / `cmp.b_paired
 
 ## Pitfalls
 
-- A task retried several times keeps one trial per agent and model: the scored one, then the newest (`attempts="best"`, the default). Pass `attempts="all"` to see every attempt.
+- A task that an Evaluation job retried keeps one trial per agent and model: the scored attempt, then the newest (`attempts="best"`, the default). Pass `attempts="all"` to see every attempt; either way `trial.attempts` lists a trial's attempts, oldest first, itself included. Rollouts of one task in a folder that is not an Evaluation job (a `bf.run_batch` batch) are separate trials, each a sample.
 - `bf.load_job` wants a job folder or a `results.jsonl` file. It refuses `summary.json` or `result.json` paths and names the folder to pass instead.
 - With n = 1 per task, agent variance alone can flip a pass to a fail; treat a difference as something to investigate, not as an effect size.
 - Folders where an attempt started but never wrote `result.json` (a crash or a kill) are in `job.interrupted`, not in `job.trials`.

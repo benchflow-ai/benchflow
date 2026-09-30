@@ -207,8 +207,64 @@ def test_retried_attempts_keep_the_best_by_default(tmp_path: Path) -> None:
     now = time.time()
     _trial(job, "t", reward=None, error="infra", suffix="00000001", mtime=now - 100)
     _trial(job, "t", reward=1.0, suffix="00000002", mtime=now - 50)
+    # Retries happen inside an Evaluation job, which records evaluation.json.
+    (job / "evaluation.json").write_text("{}")
     assert [t.reward for t in bf.load_job(job).trials] == [1.0]
     assert len(bf.load_job(job, attempts="all").trials) == 2
+
+
+def test_run_batch_rollouts_of_one_task_are_all_samples(tmp_path: Path) -> None:
+    """Four rollouts of one task in one ``bf.run_batch`` folder are four trials.
+
+    Guards the dx/sdk fix of the regression from bf6e8412 (SDK update):
+    ``load_job`` kept one trial per task and folder, so a batch folder with
+    rewards 1, 0, 1, 0 (newest last) gave a solve rate of 0.0 where
+    ``attempts="all"`` gave 0.5, and ``bench eval metrics`` said 100% (it
+    kept the best of the four) on the same folder.
+    """
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+    from benchflow.metrics import collect_metrics
+
+    job = tmp_path / "2026-01-01__12-00-00"  # a batch writes no evaluation.json
+    now = time.time()
+    for i, reward in enumerate([1.0, 0.0, 1.0, 0.0]):
+        _trial(job, "hello", reward=reward, suffix=f"0000000{i}", mtime=now + i)
+
+    loaded = bf.load_job(job)
+    assert len(loaded.trials) == 4
+    assert loaded.solve_rates().solve_rate == 0.5
+    assert bf.load_job(job, attempts="all").solve_rates().solve_rate == 0.5
+    metrics = collect_metrics(job)
+    assert (metrics.total, metrics.passed, metrics.score) == (4, 2, 0.5)
+    out = CliRunner().invoke(app, ["eval", "metrics", str(job), "--json"])
+    assert out.exit_code == 0, out.output
+    summary = json.loads(out.output)
+    assert summary["score_ratio"] == summary["solve_rates"]["solve_rate"] == 0.5
+    assert summary["passed_tasks"] == summary["failed_tasks"] == ["hello"]
+
+
+def test_metrics_and_load_job_pick_the_same_attempt(tmp_path: Path) -> None:
+    """A retried task whose two attempts are both scored counts as its newest.
+
+    An idle-timeout attempt is scored (its verifier ran) and retried, so an
+    Evaluation job can hold two scored attempts of one task. The job's own
+    summary and ``bf.load_job`` keep the newest; ``collect_metrics`` (the
+    ``bench eval metrics`` table) used to keep the passing one, so the two
+    disagreed on the same job. Guards the same dx/sdk fix as above.
+    """
+    from benchflow.metrics import collect_metrics
+
+    job = tmp_path / "job"
+    now = time.time()
+    _trial(job, "t", reward=1.0, error="idle", suffix="00000001", mtime=now - 100)
+    _trial(job, "t", reward=0.0, suffix="00000002", mtime=now - 50)
+    (job / "evaluation.json").write_text("{}")
+
+    assert [t.reward for t in bf.load_job(job).trials] == [0.0]
+    metrics = collect_metrics(job)
+    assert (metrics.total, metrics.passed, metrics.failed) == (1, 0, 1)
 
 
 def test_branch_children_are_lineage_not_extra_trials(tmp_path: Path) -> None:
@@ -277,3 +333,104 @@ def test_load_job_merges_several_directories(tmp_path: Path) -> None:
     cmp = bf.compare(arm_a, arm_b, labels=("a", "b"))
     assert cmp.summary.b_lower == 2
     assert "| Task | a | b |" in cmp.to_markdown()
+
+
+def test_a_retried_trial_lists_its_attempts(tmp_path: Path) -> None:
+    """``Trial.attempts`` exposes the rollouts an Evaluation's retries made.
+
+    The hill-climb demo (docs/examples/hillclimb) had to count trials
+    instead of rollouts because ``bf.load_job`` kept only each task's best
+    attempt and gave no way to reach the attempts it retried.
+    """
+    job = tmp_path / "job"
+    now = time.time()
+    first = _trial(
+        job, "t", reward=None, error="pipe closed", suffix="00000001", mtime=now - 30
+    )
+    second = _trial(
+        job, "t", reward=None, error="pipe closed", suffix="00000002", mtime=now - 20
+    )
+    last = _trial(job, "t", reward=1.0, suffix="00000003", mtime=now - 10)
+    _trial(job, "u", reward=0.0, suffix="00000004", mtime=now)
+    (job / "evaluation.json").write_text("{}")
+
+    loaded = bf.load_job(job)
+    t, u = loaded.trials
+    assert [a.path for a in t.attempts] == [first, second, last]
+    assert t.attempts[-1] is t and t.reward == 1.0
+    assert u.attempts == [u]
+    assert sum(len(trial.attempts) for trial in loaded.trials) == 4
+    assert {r["task_name"]: r["attempts"] for r in loaded.to_records()} == {
+        "t": 3,
+        "u": 1,
+    }
+    exported = {d["task_name"]: d["attempts"] for d in loaded.to_json_dict()["trials"]}
+    assert exported == {"t": 3, "u": 1}
+
+    every = bf.load_job(job, attempts="all")
+    assert len(every.trials) == 4
+    assert all(len(x.attempts) == 3 for x in every.trials if x.task_name == "t")
+    assert bf.load_trial(last).attempts[0].path == last  # read alone: itself
+
+
+def test_printing_a_job_summarises_it(tmp_path: Path) -> None:
+    """``print(job)`` says what a notebook user asks first.
+
+    ``repr(job)`` and ``str(job)`` were one line with the path and a trial
+    count: no solve rate, no reason for unscored trials, no cost.
+    """
+    job = tmp_path / "job"
+    _trial(job, "t1", reward=1.0, suffix="00000001")
+    _trial(job, "t2", reward=0.0, suffix="00000002")
+    crashed = _trial(
+        job,
+        "t3",
+        reward=None,
+        error="ACP error",
+        error_category="acp_error",
+        suffix="00000003",
+    )
+    _trial(job, "zz", agent="oracle", model=None, suffix="0000oracl")
+    result = json.loads((crashed / "result.json").read_text())
+    result["agent_result"]["price_source"] = "agent_session_log"
+    (crashed / "result.json").write_text(json.dumps(result))
+
+    loaded = bf.load_job(job)
+    text = str(loaded)
+    assert text == loaded.to_markdown() == loaded._repr_markdown_()
+    assert "3 trial(s) of 3 task(s); claude-agent-acp · claude-haiku-4-5" in text
+    assert "Solve rate: 50.0% (1 of 2 scored trials" in text
+    assert "95% interval" in text
+    assert "Unscored: 1 of 3 trial(s): acp_error x1 (t3)" in text
+    assert "Control runs left out: 1 (oracle)" in text
+    assert "Cost: $0.0400 over 4 rollout(s) (1 estimated" in text
+    assert repr(loaded).startswith("Job(path=")
+
+    oracle_only = tmp_path / "oracle"
+    _trial(oracle_only, "t1", agent="oracle", model=None, cost=None)
+    text = str(bf.load_job(oracle_only))
+    assert "1 trial(s) of 1 task(s); oracle · no model (only control runs" in text
+    assert "Solve rate: 100.0%" in text
+    assert "Cost: none (control runs call no model)" in text
+
+
+def test_an_evaluation_result_prints_on_one_line() -> None:
+    from benchflow.evaluation import EvaluationConfig, EvaluationResult
+    from benchflow.models import RolloutResult
+
+    result = EvaluationResult(
+        job_name="j",
+        config=EvaluationConfig(agent="oracle"),
+        total=2,
+        passed=1,
+        failed=1,
+        mean_reward=0.5,
+        results={
+            "a": RolloutResult("a", rewards={"reward": 1.0}),
+            "b": RolloutResult("b", rewards={"reward": 0.0}),
+        },
+    )
+    assert repr(result) == (
+        "EvaluationResult(job='j', passed=1/2 (50.0%), failed=1, errored=0, "
+        "verifier_errored=0, mean_reward=0.500, job_dir=None)"
+    )

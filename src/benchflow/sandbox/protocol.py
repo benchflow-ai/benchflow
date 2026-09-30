@@ -124,7 +124,9 @@ class Sandbox(Protocol):
 
     async def exec(
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
-    ) -> ExecResult: ...
+    ) -> ExecResult:
+        """Run a shell command in the sandbox as ``user``; returns its exit code and output."""
+        ...
 
     async def upload_file(
         self, src: Path, dst: str, *, mode: str | None = None
@@ -132,14 +134,25 @@ class Sandbox(Protocol):
         """Upload one file; ``mode`` chmods it (e.g. ``"600"`` for secrets)."""
         ...
 
-    async def upload_dir(self, src: Path, dst: str, service: str = "main") -> None: ...
-    async def download_file(self, src: str, dst: Path) -> None: ...
-    async def download_dir(
-        self, src: str, dst: Path, service: str = "main"
-    ) -> None: ...
+    async def upload_dir(self, src: Path, dst: str, service: str = "main") -> None:
+        """Copy a host directory into the sandbox at ``dst``."""
+        ...
 
-    async def start(self) -> None: ...
-    async def stop(self, *, delete: bool = True) -> None: ...
+    async def download_file(self, src: str, dst: Path) -> None:
+        """Copy the sandbox file ``src`` to the host path ``dst``."""
+        ...
+
+    async def download_dir(self, src: str, dst: Path, service: str = "main") -> None:
+        """Copy the sandbox directory ``src`` to the host path ``dst``."""
+        ...
+
+    async def start(self) -> None:
+        """Create and start the sandbox."""
+        ...
+
+    async def stop(self, *, delete: bool = True) -> None:
+        """Stop the sandbox, deleting it unless ``delete=False``."""
+        ...
 
     # container-level roll-back (the substrate Branch runs on)
     async def snapshot(self, name: str | None = None) -> SandboxImage:
@@ -169,7 +182,9 @@ class Sandbox(Protocol):
         ...
 
     @property
-    def host(self) -> str: ...
+    def host(self) -> str:
+        """The host where the sandbox's exposed ports are reachable."""
+        ...
 
     @property
     def expose_ports(self) -> list[int]:
@@ -198,5 +213,10 @@ class ImageConfig:
 class ImageBuilder(Protocol):
     """Build-only: produces image refs from Dockerfiles/configs."""
 
-    async def build(self, config: ImageConfig) -> ImageRef: ...
-    async def cached(self, config: ImageConfig) -> ImageRef | None: ...
+    async def build(self, config: ImageConfig) -> ImageRef:
+        """Build the image ``config`` describes and return its reference."""
+        ...
+
+    async def cached(self, config: ImageConfig) -> ImageRef | None:
+        """The reference of an already-built image for ``config``, or None."""
+        ...
