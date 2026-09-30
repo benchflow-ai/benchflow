@@ -922,7 +922,7 @@ _WIRE_VOLATILE = re.compile(
 def _wire(job: h.CliRun, marker: str) -> list[dict[str, Any]]:
     """The proxy-entry requests of the task with ``marker``, ids normalized."""
     rows = []
-    for path in sorted((job.jobs_dir / "wire").glob("wire-*.jsonl")):
+    for path in sorted(job.wire_dir.glob("wire-*.jsonl")):
         rows += h.read_jsonl(path)
     picked = [r for r in rows if marker in json.dumps(r["body"])]
     return [json.loads(_WIRE_VOLATILE.sub("<id>", json.dumps(r))) for r in picked]

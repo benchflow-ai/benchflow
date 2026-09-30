@@ -255,6 +255,16 @@ class CliRun:
         )
         return matches[0]
 
+    @property
+    def wire_dir(self) -> Path:
+        return wire_dir(self.jobs_dir)
+
+
+def wire_dir(jobs_dir: Path) -> Path:
+    """Where the proxy writes a run's requests (beside the jobs folder, not in
+    it, so the folder holds only jobs)."""
+    return jobs_dir.with_name(f"{jobs_dir.name}-wire")
+
 
 def bench_executable() -> str:
     sibling = Path(sys.executable).with_name("bench")
@@ -392,7 +402,7 @@ def bench_command(
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env["BENCHFLOW_SKIP_UPDATE_CHECK"] = "1"
     # Every request each harness sends into the proxy, for wire parity.
-    env["BENCHFLOW_LITELLM_WIRE_LOG_DIR"] = str(jobs_dir / "wire")
+    env["BENCHFLOW_LITELLM_WIRE_LOG_DIR"] = str(wire_dir(jobs_dir))
     saved = {k: os.environ.pop(k) for k in list(os.environ) if k not in env}
     try:
         check_route_is_hermetic(route, agent_env)
