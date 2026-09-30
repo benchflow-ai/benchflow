@@ -35,6 +35,7 @@ _EXAMPLE = (
 
 
 def _select_tasks(tasks_dir: Path, include: list[str] | None) -> list[Path]:
+    from benchflow.branch_run import BranchPlanError
     from benchflow.evaluation import _is_task_dir
     from benchflow.task.formats import detect_task_format, materialize_task_dir
 
@@ -49,7 +50,13 @@ def _select_tasks(tasks_dir: Path, include: list[str] | None) -> list[Path]:
         tasks = [task for task in tasks if task.name in set(include)]
     # A folder in a registered task format runs as the native package it
     # materializes, as in bench eval run.
-    return [materialize_task_dir(task) for task in tasks]
+    natives = []
+    for task in tasks:
+        try:
+            natives.append(materialize_task_dir(task))
+        except (ValueError, RuntimeError) as exc:
+            raise BranchPlanError(f"{task}: {exc}") from None
+    return natives
 
 
 def _policy(spec: str | None, keep: int):

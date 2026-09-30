@@ -114,17 +114,19 @@ Examples of backend skills: `base.navigate_to(obj)`, `grasp(obj)`, `place_on_top
 
 ### The restore boundary: branching, checkpoint restores and replay
 
-BenchFlow can roll back only state it owns: a container snapshot, a workspace, declared environment state, or a recorded LLM session replayed into a fresh sandbox. A simulator's state lives in the episode server's process, which no container snapshot captures, and a real robot's arm and scene are not software state at all: restoring a container cannot put a block back in a cup, and a replay re-sends recorded motion commands to real hardware. So every embodied task (task metadata with an `embodied` block, which every `EmbodiedTaskFormat` package has) is refused branching (`Rollout.branch()`, `bench eval branch`, `bf.branch`, `--from-checkpoint`), retries from checkpoints (`--retry-from-checkpoint`, recorded as `status: refused`) and replay (`benchflow continue`), before any sandbox starts or anything is checkpointed, restored or replayed. A task says otherwise only in `metadata.embodied`:
+BenchFlow can roll back only state it owns: a container snapshot, a workspace, declared environment state, or a recorded LLM session replayed into a fresh sandbox. A simulator's state lives in the episode server's process, which no container snapshot captures, and a real robot's arm and scene are not software state at all: restoring a container cannot put a block back in a cup, and a replay re-sends recorded motion commands to real hardware. So every embodied task (task metadata with an `embodied` block, which every `EmbodiedTaskFormat` package has) is refused, before anything is restored or replayed: branching (`bench eval branch`, `bf.branch` and `--from-checkpoint` refuse before any sandbox starts, `Rollout.branch()` before anything is quiesced or checkpointed), retries from checkpoints (`--retry-from-checkpoint` records `status: refused`), regrades (`bench eval regrade` reports the trial as not regradable) and replay (`benchflow continue`). A task says otherwise only in `metadata.embodied`:
 
 ```yaml
 metadata:
   embodied:
-    mode: sim             # sim (the default) | real | hil-mock, as in the embodiment spec
+    mode: sim             # sim (the default) | real | hil-mock, the embodiment spec's modes
     world_restore: true   # restoring a checkpoint returns the simulator to the checkpointed state
     action_replay: true   # re-executing recorded actions affects only that restorable world
 ```
 
-Both capabilities default to false. A `real` embodiment, or a `hil-mock` that stands in for one, cannot declare either; the package is refused when it is written. The sidecar format keeps a source task's own `metadata.embodied` and adds its variant (`format`, `base_task`, `seed`, `noop`) to it. `metadata.embodiment`, an earlier key for the same rule, is not read: a task that still has it is refused rather than treated as restorable. Checked by `benchflow.embodied.spec.restore_boundary`.
+Both capabilities default to false. A `real` embodiment, or a `hil-mock` that stands in for one, cannot declare either; the package is refused when it is written. BenchFlow does not check `mode` against the backend's embodiment spec, so a task on a real robot must say `mode: real` itself. The sidecar format keeps a source task's own `metadata.embodied` and adds its variant (`format`, `base_task`, `seed`, `seed_override`, `noop`) to it. `metadata.embodiment`, an earlier key for the same rule, is not read: a task that still has it is refused rather than treated as restorable. Checked by `benchflow.embodied.spec.restore_boundary`.
+
+A finished trial's own episode record (`verifier/episode/episode.json`, or `trainer/embodied_episode.json`) counts too, for `benchflow continue` and `bench eval regrade`: it marks the trial embodied, and when it names a `real` or `hil-mock` embodiment it wins over whatever the task declares (`benchflow.embodied.trials.trial_restore_boundary`).
 
 ## 2. The agent protocol and the `robo` command
 

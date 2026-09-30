@@ -401,3 +401,42 @@ def test_bench_eval_branch_selects_a_task_format_folder_and_refuses_it(
     result = CliRunner().invoke(app, args, terminal_width=200)
     assert result.exit_code == 1, result.output
     assert "toy-reach" in result.output and "branch refused" in result.output
+
+
+def test_bench_eval_branch_reports_a_bad_declaration_without_a_traceback(
+    tmp_path, monkeypatch
+):
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+    from benchflow.task import formats
+
+    monkeypatch.setenv(formats.CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setattr(formats, "_registered", [ToyFormat()])
+    monkeypatch.setattr(formats, "_entry_point_formats", [])
+    monkeypatch.setenv("BENCHFLOW_SKIP_PREFLIGHT", "1")
+    src = _toy_task(tmp_path / "suite")
+    _declare(tmp_path / "suite", "    mode: real\n    world_restore: true\n")
+    args = ["eval", "branch", "--tasks-dir", str(src), "--agent", "oracle"]
+    args += ["--child", "label=a", "--child", "label=b"]
+    args += ["--jobs-dir", str(tmp_path / "jobs"), "--job-name", "j"]
+    result = CliRunner().invoke(app, args, terminal_width=200)
+    assert result.exit_code == 2, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "cannot declare world_restore" in result.output
+
+
+async def test_a_retired_key_refusal_is_a_warning_not_a_traceback(tmp_path, caplog):
+    class Retired(ScriptedRollout):
+        async def setup(self) -> None:
+            await super().setup()
+            self._task = _task({"embodiment": "physical"})
+
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "instruction.md").write_text("Do it.")
+    plan = _plan(tmp_path, task_paths=[task], prompts=["Draft first.", "@instruction"])
+    outcome = await run_branch_trial(plan, task, rollout_factory=Retired)
+    assert outcome.error is not None and "metadata.embodiment" in outcome.error
+    [record] = [r for r in caplog.records if "metadata.embodiment" in r.getMessage()]
+    assert record.levelname == "WARNING" and record.exc_info is None

@@ -678,7 +678,11 @@ async def run_branch_trial(
         except Exception:
             logger.warning("on_event callback failed for %s", event, exc_info=True)
 
-    from benchflow.embodied.spec import RestoreRefused, task_restore_boundary
+    from benchflow.embodied.spec import (
+        RestoreRefused,
+        SpecError,
+        task_restore_boundary,
+    )
     from benchflow.evaluation import _environment_manifest_from_task_document
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.rollout_branch import restore_sandbox_with_services
@@ -687,7 +691,15 @@ async def run_branch_trial(
 
     # A task-format folder (bf.branch(task_path=...)) runs as the native
     # package it materializes; the task document below is read from it.
-    task_path = materialize_task_dir(task_path)
+    try:
+        task_path = materialize_task_dir(task_path)
+    except Exception as exc:
+        failed = BranchTrialOutcome(task=task_path.name)
+        if plan.source is not None:
+            failed.source = plan.source.to_record()
+        failed.error = f"{type(exc).__name__}: {exc}"
+        logger.warning("Branch trial for %s: %s", task_path.name, failed.error)
+        return failed
     config = RolloutConfig(
         task_path=task_path,
         agent=plan.agent,
@@ -802,7 +814,7 @@ async def run_branch_trial(
             outcome.parent_reward = (rewards or {}).get("reward")
             emit("parent_finished", reward=outcome.parent_reward)
     except Exception as exc:
-        if isinstance(exc, RestoreRefused):
+        if isinstance(exc, RestoreRefused | SpecError):
             # An expected refusal, not a crash: no traceback.
             logger.warning("Branch trial for %s: %s", task_path.name, exc)
         else:
