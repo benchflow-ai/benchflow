@@ -24,11 +24,6 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.embodied.spec import RestoreBoundary, RestoreRefused, restore_boundary
-from benchflow.embodiment import (
-    PhysicalRestoreRefused,
-    recorded_embodiment,
-    require_action_replay,
-)
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -213,12 +208,8 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
     # real robot that would move hardware again from an unreset scene; on a
     # simulator it would act on a world the replay never restored.
     try:
-        # A rollout nested in a robotics-runner trial (its trial record).
-        recorded = recorded_embodiment(path)
-        if recorded is not None:
-            require_action_replay(recorded, "benchflow continue")
         run_restore_boundary(config).require_action_replay("benchflow continue")
-    except (PhysicalRestoreRefused, RestoreRefused, ValueError) as exc:
+    except (RestoreRefused, ValueError) as exc:
         raise RunFolderError(str(exc)) from exc
     result = _read_json(path / "result.json", required=False)
     prompts = _load_prompts(path / "prompts.json")

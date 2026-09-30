@@ -159,8 +159,8 @@ def assessment_status(result: Mapping[str, Any]) -> str | None:
     """The result's outcome-assessment status, or None when it declares none.
 
     ``assessment`` may be a status string or a mapping with ``status``. A
-    legacy ``benchflow.robotics`` manifest row (``status:
-    "awaiting_assessment"``) is pending. An unrecognised value is reported as
+    legacy row with ``status: "awaiting_assessment"`` (an older physical-trial
+    manifest) is pending. An unrecognised value is reported as
     ``"unassessable"`` so it can never unlock a score.
     """
     assessment = result.get("assessment")

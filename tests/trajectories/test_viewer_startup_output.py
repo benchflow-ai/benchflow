@@ -61,32 +61,6 @@ def test_viewer_url_reaches_a_pipe_while_serving(tmp_path, mode):
     assert "http://localhost:" in line
 
 
-@pytest.mark.parametrize("layout", ["trial", "parent"])
-def test_physical_trials_get_a_pointer_instead_of_a_dead_end(tmp_path, capsys, layout):
-    """`bench eval view <physical trial>` said only "No trajectories found":
-    the viewer does not render trial records yet, and
-    nothing pointed at the robotics commands that read them."""
-    from benchflow.trajectories.viewer import serve
-
-    trial = tmp_path / "physical-trials" / "20260101T000000Z-0123456789"
-    trial.mkdir(parents=True)
-    (trial / "manifest.json").write_text(
-        json.dumps({"trial_id": trial.name, "kind": "physical_trial"})
-    )
-    (trial / "trial-record.json").write_text(
-        json.dumps({"kind": "benchflow-embodied-trial"})
-    )
-    target = trial if layout == "trial" else tmp_path
-    with pytest.raises(SystemExit) as exc:
-        serve(str(target), 0)
-    assert exc.value.code == 1
-    out = capsys.readouterr().out
-    assert "No trajectories found" in out
-    assert "physical robot trial" in out
-    assert "python -m benchflow.robotics index" in out
-    assert "python -m benchflow.robotics report" in out
-
-
 def _interrupt(self):
     raise KeyboardInterrupt
 

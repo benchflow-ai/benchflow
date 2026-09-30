@@ -2,7 +2,7 @@
 
 Guards the fix for concurrent Docker runs sharing Compose projects: the
 project name was the rollout name, and branch children (``n<k>``), regrade
-(``verifier``), robotics (``agent``) and SDK callers fix that name, so two
+(``verifier``) and SDK callers fix that name, so two
 such sandboxes on one daemon shared a project and each one's ``compose down``
 deleted the other's containers. It also guards the claim that keeps the
 leftover sweep (tests/test_docker_sweep.py) off a live sandbox's resources.
