@@ -112,11 +112,11 @@ Each `bf.TokenSegment` is one span of one conversation in which every prompt ext
 - `policy_versions`, aligned with `calls`; `call_spans`, where each call's sampled tokens sit;
 - `start_reason`: why a segment after the first began (`rerender` when the next prompt rewrote the sampled turn, `compaction` when it rewrote the history before it, `after_dropped_call`);
 - `routing`: MoE routing per call when the server returned it, passed through as returned (`source`, `encoding`, `data`, `start`, `sequence_length`);
-- `digest`, and `verify()` to check the lists are the ones BenchFlow built.
+- `digest`, and `verify()` to check that `prompt_ids`, `completion_ids`, `action_mask` and `logprobs` are the lists BenchFlow built (the digest covers those four, not `call_spans`, `routing` or `policy_versions`).
 
 Calls that offer tools are grouped by tool set: the first tool set is the agent loop (`agent`), another is a subagent (`subagent`). A tool-less call in a run that uses tools, or a call the gateway labelled `title`, `summary` or `helper`, is a `helper` (Claude Code's side prompts, OpenCode's title generator); a `compaction` call summarises the agent's history. A failed provider call is never in a segment; when the agent sent the same request again, `tokens.calls` links the failure and its retry (`retried_by`, `retry_of`). A call without prompt ids, sampled ids or logprobs, or with a different number of ids and logprobs, is listed in `tokens.dropped` with its reason, never dropped silently.
 
-`tokens.attestation` compares each stored call with the relay's record of the server's raw answer by token digest: `attested` when every stored call matches, `mismatch` when a stored call holds tokens the server never sent (its segment is not trainable), `partial` when the relay served calls the store does not have.
+`tokens.attestation` compares each stored call with the relay's record of the server's raw answer by token digest: `attested` when every stored call matches, `mismatch` when a stored call holds tokens the server never sent (its segment is not trainable), `partial` when the relay served calls the store does not have (the rollout's `tokens.status` is then `partial` too, since a missing policy turn may sit inside a segment as masked context).
 
 ## Sandboxes
 

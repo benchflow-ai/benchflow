@@ -76,7 +76,7 @@ async def test_non_streamed_call_passes_through_and_is_digested(server):
                 json=BODY,
                 headers={"Authorization": f"Bearer {grant.token}"},
             )
-        calls = relay.revoke(grant)
+        calls = await relay.revoke(grant)
     assert answer.status_code == 200
     data = answer.json()
     assert data["prompt_token_ids"] == [ord("h"), ord("i")]
@@ -108,7 +108,7 @@ async def test_streamed_call_is_relayed_unbuffered_and_digests_like_the_body(ser
             plain = await client.post(
                 f"{server.base_url}/v1/chat/completions", json=BODY
             )
-        [call] = relay.revoke(grant)
+        [call] = await relay.revoke(grant)
     assert relayed.status_code == 200
     assert relayed.headers["content-type"].startswith("text/event-stream")
     assert relayed.text == direct.text  # byte for byte
@@ -135,7 +135,7 @@ async def test_sglang_stream_digest_uses_the_sglext_chunk(sglang_server):
                 json=body,
                 headers={"Authorization": f"Bearer {grant.token}"},
             )
-        [call] = relay.revoke(grant)
+        [call] = await relay.revoke(grant)
     reply_ids = [1000 + ord(c) for c in "ok!"]
     assert call.digest == token_digest(
         [ord("h"), ord("i")],
@@ -182,7 +182,7 @@ async def test_models_route_and_revocation(server):
         headers = {"Authorization": f"Bearer {grant.token}"}
         async with httpx.AsyncClient() as client:
             models = await client.get(f"{relay.host_url}/models", headers=headers)
-            relay.revoke(grant)
+            await relay.revoke(grant)
             after = await client.post(
                 f"{relay.host_url}/chat/completions", json=BODY, headers=headers
             )
@@ -203,7 +203,7 @@ async def test_upstream_failures_are_recorded_and_never_name_the_server(server):
             ok = await client.post(
                 f"{relay.host_url}/chat/completions", json=BODY, headers=headers
             )
-        calls = relay.revoke(grant)
+        calls = await relay.revoke(grant)
     assert failed.status_code == 503 and ok.status_code == 200
     assert [(c.status, c.http_status) for c in calls] == [("error", 503), ("ok", 200)]
     assert calls[0].digest is None
@@ -217,7 +217,7 @@ async def test_upstream_failures_are_recorded_and_never_name_the_server(server):
                 json=BODY,
                 headers={"Authorization": f"Bearer {grant.token}"},
             )
-        [call] = dead.revoke(grant)
+        [call] = await dead.revoke(grant)
     assert answer.status_code == 502
     assert "127.0.0.1:9" not in answer.text
     assert call.status == "error" and call.http_status is None
@@ -291,7 +291,7 @@ async def test_policy_hands_rollouts_a_credential_not_the_key(server, monkeypatc
                 json=BODY,
                 headers={"Authorization": f"Bearer {grant.token}"},
             )
-        [call] = policy.relay.revoke(grant)
+        [call] = await policy.relay.revoke(grant)
     assert call.version == 3
     assert server.requests[-1]["authorization"] == "Bearer server-secret"
 
@@ -307,3 +307,75 @@ def test_policy_validation(monkeypatch):
         policy._resolve_key()
     assert Policy("sglang/p", base_url="http://x/v1").captures_token_ids
     assert not Policy("openai/p", base_url="http://x/v1").captures_token_ids
+
+
+class _RawUpstream:
+    """A one-route upstream that answers with raw bytes after a delay."""
+
+    def __init__(self, answer: bytes, delay: float = 0.0) -> None:
+        self.answer, self.delay = answer, delay
+
+    async def __aenter__(self) -> str:
+        import asyncio
+
+        async def handle(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            await asyncio.sleep(self.delay)
+            writer.write(self.answer)
+            await writer.drain()
+            writer.close()
+
+        self._server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        return f"http://127.0.0.1:{port}/v1"
+
+    async def __aexit__(self, *exc) -> None:
+        self._server.close()
+
+
+async def test_an_answer_cut_off_mid_body_is_recorded_not_lost():
+    truncated = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        b'Content-Length: 1000\r\n\r\n{"id": "cut'
+    )
+    async with _RawUpstream(truncated) as url:
+        relay = PolicyRelay(url, model="vllm/mock-policy", version=lambda: 3)
+        async with relay:
+            grant = relay.grant("task/g/0/1")
+            async with httpx.AsyncClient() as client:
+                answer = await client.post(
+                    f"{relay.host_url}/chat/completions",
+                    json=BODY,
+                    headers={"Authorization": f"Bearer {grant.token}"},
+                )
+            [call] = await relay.revoke(grant)
+    assert answer.status_code == 502
+    assert call.status == "error" and call.error
+
+
+async def test_revoking_waits_for_a_call_in_flight():
+    import asyncio
+
+    body = json.dumps({"id": "x", "choices": []}).encode()
+    slow = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode()
+        + body
+    )
+    async with _RawUpstream(slow, delay=0.5) as url:
+        relay = PolicyRelay(url, model="vllm/mock-policy", version=lambda: 3)
+        async with relay:
+            grant = relay.grant("task/g/0/1")
+            async with httpx.AsyncClient() as client:
+                request = asyncio.create_task(
+                    client.post(
+                        f"{relay.host_url}/chat/completions",
+                        json=BODY,
+                        headers={"Authorization": f"Bearer {grant.token}"},
+                    )
+                )
+                while grant.in_flight == 0:
+                    await asyncio.sleep(0.01)
+                calls = await relay.revoke(grant)
+                await request
+    assert [c.status for c in calls] == ["ok"]

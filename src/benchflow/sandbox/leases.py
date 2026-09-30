@@ -194,6 +194,21 @@ def lease_state(token: str | None) -> str:
     return "alive"
 
 
+def lease_on_this_boot(token: str | None) -> bool:
+    """Whether a lease names a process of this machine's current boot.
+
+    A lease label on a Daytona sandbox may come from any machine, and two
+    machines can share a host name (``localhost``, cloned images); the boot
+    id tells them apart. Only such a lease can be proven dead from here.
+    """
+    parts = (token or "").split(":")
+    if len(parts) != 4 or not parts[2]:
+        return False
+    me = _process()
+    my_host = re.sub(r"[^A-Za-z0-9_.-]+", "-", me.host)[:40]
+    return parts[0] == my_host and bool(me.boot) and me.boot.startswith(parts[2])
+
+
 # --- the registry and this process's lease file ------------------------------
 
 
@@ -409,6 +424,8 @@ def _on_signal(signum: int, frame: Any) -> None:
 def install_signal_cleanup() -> Callable[[], None]:
     """Delete this process's live sandboxes on SIGTERM, SIGINT and SIGHUP.
 
+    A signal the process ignores (``nohup`` ignores SIGHUP) is left alone.
+
     The previous handlers run afterwards, so asyncio's Ctrl-C cancellation
     and a caller's own handlers still work. Nested installs are counted;
     the returned function uninstalls one. Outside the main thread signals
@@ -420,6 +437,12 @@ def install_signal_cleanup() -> Callable[[], None]:
     with _lock:
         if _installed == 0:
             for sig in _HANDLED_SIGNALS:
+                current = signal.getsignal(sig)
+                if current is signal.SIG_IGN or current is None:
+                    # Ignored (a trainer under nohup ignores SIGHUP) or set
+                    # outside Python: the signal does not end this process,
+                    # so it must not delete sandboxes still in use.
+                    continue
                 try:
                     _previous[sig] = signal.signal(sig, _on_signal)
                 except (OSError, ValueError):

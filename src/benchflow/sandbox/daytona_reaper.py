@@ -189,10 +189,16 @@ def _lease_reap_reason(sb: Any, now: Any) -> str | None:
     """Why an owned sandbox's lease says to delete it now, or None.
 
     ``benchflow.expires`` (unix seconds) has passed, or ``benchflow.lease``
-    names a process on this machine that is provably gone
-    (:func:`benchflow.sandbox.leases.lease_state`).
+    names a process of this machine's current boot that is provably gone
+    (:func:`benchflow.sandbox.leases.lease_state`); a lease from another
+    machine, or from before a reboot, is left to the sandbox's auto-stop.
     """
-    from benchflow.sandbox.leases import EXPIRES_LABEL, LEASE_LABEL, lease_state
+    from benchflow.sandbox.leases import (
+        EXPIRES_LABEL,
+        LEASE_LABEL,
+        lease_on_this_boot,
+        lease_state,
+    )
 
     labels = getattr(sb, "labels", None)
     if not isinstance(labels, dict):
@@ -205,7 +211,11 @@ def _lease_reap_reason(sb: Any, now: Any) -> str | None:
     ):
         return "its lease expired"
     lease = labels.get(LEASE_LABEL)
-    if isinstance(lease, str) and lease_state(lease) == "gone":
+    if (
+        isinstance(lease, str)
+        and lease_on_this_boot(lease)
+        and lease_state(lease) == "gone"
+    ):
         return f"the process that started it ({lease}) is gone"
     return None
 

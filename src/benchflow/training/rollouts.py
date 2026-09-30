@@ -276,7 +276,9 @@ class TokenSegment:
         return sum(self.action_mask)
 
     def verify(self) -> bool:
-        """Recompute the digest over these lists: True when they are the ones BenchFlow built."""
+        """True when ``prompt_ids``, ``completion_ids``, ``action_mask`` and ``logprobs``
+        are the lists BenchFlow built (the digest covers those four only, not
+        ``call_spans``, ``routing`` or ``policy_versions``)."""
         return (
             len(self.completion_ids) == len(self.action_mask) == len(self.logprobs)
             and segment_digest(
@@ -828,6 +830,9 @@ class RolloutGroup:
         for index, member in enumerate(self._members):
             if member is None:
                 self._members[index] = self._cancelled(index)
+                # A member cancelled before its body ran never reported
+                # itself: tell a waiting iterator, or it would wait forever.
+                self._finished.put_nowait(index)
         self._release()
 
     # --- results ----------------------------------------------------------------------
@@ -974,10 +979,13 @@ class RolloutGroup:
         try:
             for attempt in range(1, self.attempts + 1):
                 async with contextlib.AsyncExitStack() as stack:
+                    # The group's own cap first: a member waiting for its
+                    # group must not hold one of the policy's slots, which
+                    # other groups could use meanwhile.
+                    await stack.enter_async_context(self._gate)
                     gate = getattr(self.policy, "_gate", None)
                     if gate is not None:
                         await stack.enter_async_context(gate)
-                    await stack.enter_async_context(self._gate)
                     rollout = await self._attempt(index, attempt)
                 # A spent subscription fails every retry the same way until
                 # its reset (benchflow.errors.UsageLimitError): never retried.
@@ -1000,7 +1008,9 @@ class RolloutGroup:
                 break
         except asyncio.CancelledError:
             if self._members[index] is None:
-                self._members[index] = self._cancelled(index)
+                cancelled = self._cancelled(index)
+                cancelled.attempts = tuple(failures)
+                self._members[index] = cancelled
             raise
         except RolloutGroupError as exc:
             self._error = exc
@@ -1049,17 +1059,17 @@ class RolloutGroup:
         grant = None
         agent_env: dict[str, str] = {}
         version = getattr(self.policy, "version", None)
-        if self.policy is not None:
-            grant = self.policy.relay.grant(
-                f"{self.task}/{self.group_id}/{index}/{attempt}"
-            )
-            agent_env = await self.policy.agent_env(
-                grant.token, self.config.environment
-            )
-        config = self._attempt_config(index, attempt, agent_env)
         started = datetime.now()
         relay_calls: list[Any] = []
         try:
+            if self.policy is not None:
+                grant = self.policy.relay.grant(
+                    f"{self.task}/{self.group_id}/{index}/{attempt}"
+                )
+                agent_env = await self.policy.agent_env(
+                    grant.token, self.config.environment
+                )
+            config = self._attempt_config(index, attempt, agent_env)
             with (
                 startup_timeout_overrides(
                     acp_handshake_sec=self.startup_timeouts.acp_handshake_sec,
@@ -1070,7 +1080,7 @@ class RolloutGroup:
                 result = await self._run_rollout(config)
         finally:
             if grant is not None and self.policy is not None:
-                relay_calls = self.policy.relay.revoke(grant)
+                relay_calls = await self.policy.relay.revoke(grant)
         return await self._build(
             index, attempt, config, result, relay_calls, version, started
         )

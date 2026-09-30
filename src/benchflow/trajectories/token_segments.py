@@ -381,7 +381,7 @@ def segment_rollout(
 
         {"schema_version", "status": "exact" | "partial" | "none",
          "calls": [{"index", "status", "purpose", "kind", "thread", "digest",
-                    "unusable", "retry_of", "retried_by", "segment",
+                    "unusable", "retry_of", "retried_by", "segment", "unused_choices",
                     "attested", "policy_version"}, ...],
          "segments": [{"segment", "thread", "kind", "trainable",
                        "excluded", "calls", "start", "prompt_ids",
@@ -393,8 +393,8 @@ def segment_rollout(
          "attestation": {...}}
 
     ``status`` is ``exact`` when every successful call of a trainable kind
-    is inside a segment, ``partial`` when some were dropped but a trainable
-    segment remains, and ``none`` when no trainable segment exists.
+    is inside a segment, ``partial`` when some were dropped (or the relay
+    served calls the store does not have) but a trainable segment remains, and ``none`` when no trainable segment exists.
     """
     kinds = frozenset(trainable_kinds)
     unknown = kinds - set(KINDS)
@@ -418,6 +418,13 @@ def segment_rollout(
                 "retry_of": None,
                 "retried_by": None,
                 "segment": None,
+                # Choices after the first (n > 1): sampled, but not part of
+                # the conversation the segments follow, so never in one.
+                "unused_choices": max(
+                    len((capture or {}).get("completions") or []) - 1, 0
+                )
+                if isinstance((capture or {}).get("completions"), list)
+                else 0,
             }
         )
         if calls[-1]["digest"] is None and capture is not None and not failed:
@@ -549,8 +556,12 @@ def segment_rollout(
     trainable_segments = [s for s in segments if s["trainable"]]
     if not trainable_segments:
         status = "none"
-    elif trainable_dropped or any(
-        not s["trainable"] and s["kind"] in kinds for s in segments
+    elif (
+        trainable_dropped
+        or any(not s["trainable"] and s["kind"] in kinds for s in segments)
+        # The relay served calls the store never got: a missing policy turn
+        # may sit inside a segment as masked context, so it is not exact.
+        or (attestation or {}).get("relay_only")
     ):
         status = "partial"
     else:

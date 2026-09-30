@@ -324,6 +324,9 @@ def test_relay_calls_the_store_missed_make_attestation_partial():
     assert report["attestation"]["status"] == "partial"
     assert report["attestation"]["relay_only"] == 1
     assert report["segments"][0]["trainable"] is True
+    # A policy call the store never got may be inside the segment as masked
+    # context: the rollout's tokens are not exact.
+    assert report["status"] == "partial"
 
 
 def test_no_relay_means_attestation_unavailable():
@@ -496,3 +499,14 @@ def test_sglang_routed_experts_from_a_stream():
         "start": 1,
     }
     assert capture["digest"].startswith("sha256:")
+
+
+def test_choices_after_the_first_are_counted_not_lost():
+    exchange = call([1, 2], [10, 11])
+    capture = exchange["metadata"]["token_capture"]
+    extra = dict(capture["completions"][0], index=1, token_ids=[12])
+    capture["completions"].append(extra)
+    report = segment_rollout([exchange])
+    assert report["calls"][0]["unused_choices"] == 1
+    [segment] = report["segments"]
+    assert segment["completion_ids"] == [10, 11]

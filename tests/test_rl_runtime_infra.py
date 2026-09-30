@@ -281,6 +281,24 @@ def test_sigterm_deletes_live_sandboxes_before_the_process_ends(lease_home, tmp_
     assert list(lease_home.glob("*.json")) == []
 
 
+def test_an_ignored_signal_stays_ignored():
+    """A trainer under nohup ignores SIGHUP; closing its terminal must not
+    delete the sandboxes its rollouts are still using."""
+    import signal
+
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        uninstall = leases.install_signal_cleanup()
+        try:
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+            assert signal.getsignal(signal.SIGTERM) is leases._on_signal
+        finally:
+            uninstall()
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, before)
+
+
 def test_daytona_lifetime_from_the_rollout_then_the_environment(monkeypatch):
     monkeypatch.delenv(leases.DAYTONA_AUTO_STOP_ENV, raising=False)
     monkeypatch.delenv(leases.DAYTONA_AUTO_DELETE_ENV, raising=False)
@@ -333,6 +351,13 @@ def test_daytona_reaper_deletes_expired_and_orphaned_leases(monkeypatch):
         SimpleNamespace(
             id="live",
             labels={**managed, leases.LEASE_LABEL: leases.lease_token()},
+            created_at=now,
+            state="started",
+        ),
+        SimpleNamespace(
+            # Same host name, another machine (or boot): not provably dead.
+            id="other-boot",
+            labels={**managed, leases.LEASE_LABEL: f"{me[0]}:99999999:0000beef:1"},
             created_at=now,
             state="started",
         ),

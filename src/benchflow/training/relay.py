@@ -408,10 +408,19 @@ class PolicyRelay:
         self._grants[gid] = grant
         return grant
 
-    def revoke(self, grant: RelayGrant) -> list[RelayCall]:
-        """End a grant; returns the calls it made, oldest first."""
+    async def revoke(
+        self, grant: RelayGrant, *, drain_sec: float = 10.0
+    ) -> list[RelayCall]:
+        """End a grant; returns the calls it made, oldest first.
+
+        New calls are refused at once; calls already in flight get up to
+        ``drain_sec`` to finish so they are in the list, not lost.
+        """
         grant.active = False
         self._grants.pop(grant.id, None)
+        deadline = time.monotonic() + drain_sec
+        while grant.in_flight > 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
         return list(grant.calls)
 
     def _authorize(self, header: str) -> RelayGrant | None:
@@ -540,6 +549,7 @@ class PolicyRelay:
         stream = body.get("stream") is True
         seq, started, version = self._new_call()
         clock = time.monotonic()
+        recorded = False
 
         def finish(
             status: str,
@@ -548,6 +558,10 @@ class PolicyRelay:
             record: dict[str, Any] | None = None,
             error: str | None = None,
         ) -> None:
+            nonlocal recorded
+            if recorded:  # one record per call, whichever path ends it
+                return
+            recorded = True
             digest = prompt_tokens = completion_tokens = None
             if record is not None and status == "ok":
                 try:
@@ -642,6 +656,14 @@ class PolicyRelay:
             with contextlib.suppress(ConnectionResetError, RuntimeError):
                 await out.write_eof()
             return out
+        except (ClientError, TimeoutError) as exc:
+            # Reading a non-streamed answer failed: record it, answer 502.
+            finish("error", upstream.status, error=type(exc).__name__)
+            return self._unreachable(exc)
+        except BaseException as exc:
+            # Cancelled (the client went away) or a bug: still one record.
+            finish("error", upstream.status, error=type(exc).__name__)
+            raise
         finally:
             await upstream_cm.__aexit__(None, None, None)
 
