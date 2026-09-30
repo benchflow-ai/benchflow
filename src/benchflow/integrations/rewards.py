@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -95,6 +95,9 @@ class RewardDecision:
     reason: str
     detail: str | None = None
     flagged: bool = False
+    # Whether every check passed, when the verifier says so (a partial-credit
+    # reward can be below 1 on a run that is still useful to train on).
+    passed: bool | None = None
 
     def __post_init__(self) -> None:
         if self.flagged != (self.reason == INTEGRITY_VIOLATION) or (
@@ -126,13 +129,17 @@ class RewardDecision:
             "reason": self.reason,
             "detail": self.detail,
             "flagged": self.flagged,
+            "passed": self.passed,
         }
 
 
-def scored(reward: float) -> RewardDecision:
-    """A verifier reward."""
+def scored(reward: float, *, passed: bool | None = None) -> RewardDecision:
+    """A verifier reward. ``passed`` defaults to whether the reward is 1."""
 
-    return RewardDecision(reward=float(reward), reason=SCORED)
+    reward = float(reward)
+    return RewardDecision(
+        reward=reward, reason=SCORED, passed=reward >= 1.0 if passed is None else passed
+    )
 
 
 def zero(reason: str, detail: object = None) -> RewardDecision:
@@ -142,7 +149,9 @@ def zero(reason: str, detail: object = None) -> RewardDecision:
         raise ValueError(
             f"unknown zero reason {reason!r}; use one of {sorted(ZERO_REASONS)}"
         )
-    return RewardDecision(reward=0.0, reason=reason, detail=_short(detail))
+    return RewardDecision(
+        reward=0.0, reason=reason, detail=_short(detail), passed=False
+    )
 
 
 def dropped(reason: str, detail: object = None) -> RewardDecision:
@@ -206,14 +215,18 @@ def apply_integrity(decision: RewardDecision, verdict: Any) -> RewardDecision:
         _field(verdict, "reason") or "integrity audit: the policy exploited the grader"
     )
     return RewardDecision(
-        reward=0.0, reason=INTEGRITY_VIOLATION, detail=_short(reason), flagged=True
+        reward=0.0,
+        reason=INTEGRITY_VIOLATION,
+        detail=_short(reason),
+        flagged=True,
+        passed=False,
     )
 
 
 def _decide(result: Any, *, policy_acted: bool) -> RewardDecision:
     reward = _finite_reward(result)
     if reward is not None:
-        return scored(reward)
+        return scored(reward, passed=_passed(result, reward))
 
     error = _field(result, "error")
     verifier_error = _field(result, "verifier_error")
@@ -257,7 +270,52 @@ def summarize(decisions: Iterable[RewardDecision]) -> dict[str, Any]:
             Counter(d.reason for d in decisions if d.reason in ZERO_REASONS)
         ),
         "mean_reward": (sum(kept) / len(kept)) if kept else None,
+        "passed": sum(1 for d in decisions if d.passed),
+        "pass_rate": (
+            sum(1 for d in decisions if d.passed and not d.dropped) / len(kept)
+        )
+        if kept
+        else None,
     }
+
+
+def dynamic_sampling(
+    groups: Mapping[Any, Sequence[RewardDecision]], *, enabled: bool = False
+) -> tuple[dict[Any, list[RewardDecision]], dict[str, int]]:
+    """Leave out groups whose kept rewards are all equal (DAPO's dynamic sampling).
+
+    ``groups`` maps a group id (for GRPO, one prompt's rollouts) to its
+    decisions. A group whose kept rewards are all the same, or that has fewer
+    than two kept rollouts, gives group-relative advantages of zero: no
+    learning signal. Off by default. The counts are returned either way:
+    ``groups``, ``uniform`` (groups with no signal), and ``removed`` (uniform
+    groups actually left out, 0 unless ``enabled``). Dropped rollouts inside a
+    kept group stay dropped; this never turns a drop into a reward.
+    """
+
+    kept: dict[Any, list[RewardDecision]] = {}
+    uniform = 0
+    for group, decisions in groups.items():
+        rewards = [d.reward for d in decisions if d.reward is not None]
+        is_uniform = len(rewards) < 2 or max(rewards) - min(rewards) < 1e-12
+        uniform += is_uniform
+        if not (enabled and is_uniform):
+            kept[group] = list(decisions)
+    counts = {
+        "groups": len(groups),
+        "uniform": uniform,
+        "removed": len(groups) - len(kept),
+    }
+    return kept, counts
+
+
+def _passed(result: Any, reward: float) -> bool:
+    rewards = _field(result, "rewards")
+    if isinstance(rewards, Mapping):
+        value = rewards.get("passed")
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return value >= 0.5
+    return reward >= 1.0
 
 
 def _field(result: Any, name: str) -> Any:
@@ -310,6 +368,7 @@ __all__ = [
     "RewardDecision",
     "apply_integrity",
     "dropped",
+    "dynamic_sampling",
     "model_endpoint_failure",
     "reward_from_verify",
     "sandbox_start_failure",

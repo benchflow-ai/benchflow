@@ -27,6 +27,7 @@ from benchflow.integrations.rewards import (
     ZERO_REASONS,
     RewardDecision,
     dropped,
+    dynamic_sampling,
     reward_from_verify,
     sandbox_start_failure,
     summarize,
@@ -127,6 +128,10 @@ class BenchFlowSpecConfig:
     exclude_tasks: Sequence[str] = ()
     max_tasks: int | None = None
     bash_harness: BashHarnessConfig = field(default_factory=BashHarnessConfig)
+    # Dynamic sampling: mask groups whose rewards are all equal. TRL already
+    # gives such groups zero advantage, so this only changes what is logged
+    # as the batch reward; the share of such groups is logged either way.
+    drop_uniform_groups: bool = False
 
     def normalized(self) -> BenchFlowSpecConfig:
         max_tasks = self.max_tasks
@@ -138,6 +143,7 @@ class BenchFlowSpecConfig:
             exclude_tasks=tuple(dict.fromkeys(self.exclude_tasks)),
             max_tasks=max_tasks,
             bash_harness=self.bash_harness.normalized(),
+            drop_uniform_groups=self.drop_uniform_groups,
         )
 
 
@@ -348,6 +354,8 @@ def benchflow_environment_reward(
     trainer_state: Any = None,
     log_metric: Callable[[str, float], None] | None = None,
     log_extra: Callable[[str, list], None] | None = None,
+    benchflow_task_id: Sequence[Any] | None = None,
+    drop_uniform_groups: bool = False,
     **_: Any,
 ) -> list[float | None]:
     """TRL custom reward function reading reward from BenchFlow environments.
@@ -392,9 +400,53 @@ def benchflow_environment_reward(
             else 0.0
         )
         reasons.append("n/a")
+    _mask_uniform_groups(
+        rewards,
+        envs,
+        benchflow_task_id,
+        enabled=drop_uniform_groups,
+        log_metric=log_metric,
+    )
     _log_decisions(decisions, reasons, log_metric=log_metric, log_extra=log_extra)
     _record_rollouts(envs, prompts, completions, trainer_state)
     return rewards
+
+
+def _mask_uniform_groups(
+    rewards: list[float | None],
+    envs: Sequence[Any],
+    task_ids: Sequence[Any] | None,
+    *,
+    enabled: bool,
+    log_metric: Callable[[str, float], None] | None,
+) -> None:
+    """Count (and, when enabled, mask) GRPO groups whose rewards are all equal.
+
+    TRL passes a batch's rollouts with each prompt's group together, so a
+    group is a run of rows with the same task id.
+    """
+
+    if task_ids is None or len(task_ids) != len(rewards):
+        return
+    groups: dict[int, list[RewardDecision]] = {}
+    members: dict[int, list[int]] = {}
+    group = -1
+    for index, task_id in enumerate(task_ids):
+        if index == 0 or task_id != task_ids[index - 1]:
+            group += 1
+        members.setdefault(group, []).append(index)
+        decision = getattr(envs[index], "decision", None)
+        if isinstance(decision, RewardDecision):
+            groups.setdefault(group, []).append(decision)
+    if not groups:
+        return
+    kept, counts = dynamic_sampling(groups, enabled=enabled)
+    for group_id in groups:
+        if group_id not in kept:
+            for index in members[group_id]:
+                rewards[index] = None
+    if log_metric is not None:
+        log_metric("benchflow/uniform_group_frac", counts["uniform"] / counts["groups"])
 
 
 async def _finalize_all(envs: Sequence[BenchFlowRuntimeEnvironment]) -> None:
@@ -604,6 +656,7 @@ class BenchFlowSpec:
         exclude_tasks: Sequence[str] = (),
         max_tasks: int | None = None,
         bash_harness: BashHarnessConfig | None = None,
+        drop_uniform_groups: bool = False,
     ) -> None:
         if isinstance(config, BenchFlowSpecConfig):
             if tasks_dir is not None:
@@ -619,6 +672,7 @@ class BenchFlowSpec:
                 exclude_tasks=exclude_tasks,
                 max_tasks=max_tasks,
                 bash_harness=bash_harness or BashHarnessConfig(),
+                drop_uniform_groups=drop_uniform_groups,
             ).normalized()
         self.config = normalized
         self._rows = tuple(_load_task_rows(normalized))
@@ -660,7 +714,17 @@ class BenchFlowSpec:
 
     @property
     def reward_funcs(self) -> list[Callable[..., list[float | None]]]:
-        return [benchflow_environment_reward]
+        if not self.config.drop_uniform_groups:
+            return [benchflow_environment_reward]
+
+        def reward(*args: Any, **kwargs: Any) -> list[float | None]:
+            return benchflow_environment_reward(
+                *args, drop_uniform_groups=True, **kwargs
+            )
+
+        # TRL names the reward's logged metrics after the function.
+        reward.__name__ = benchflow_environment_reward.__name__
+        return [reward]
 
     def trainer_kwargs(self) -> dict[str, Any]:
         return {
