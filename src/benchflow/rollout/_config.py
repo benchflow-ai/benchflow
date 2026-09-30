@@ -176,6 +176,11 @@ class RolloutConfig:
     # regrade`` can re-run a changed verifier later. Rubric review and
     # verifier recovery freeze it anyway; this makes any trial regradable.
     freeze_workspace: bool = False
+    # Reward integrity (benchflow.integrity): "audit" records host-side
+    # evidence of what the agent did and writes integrity/claim_verdict.json;
+    # "strict" also runs the verifier in the separate verifier sandbox. Never
+    # changes a reward.
+    integrity: str = "off"
     codex_apps_policy: Literal["disabled", "inherit"] | None = field(
         default=None, kw_only=True
     )
@@ -298,6 +303,9 @@ class RolloutConfig:
             raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         if self.purpose not in {"task", "reviewer"}:
             raise ValueError("purpose must be task or reviewer")
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)

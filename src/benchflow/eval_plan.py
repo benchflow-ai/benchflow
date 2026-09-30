@@ -97,6 +97,7 @@ class EvalCreateRequest:
     checkpoints: str | None = None
     checkpoint_keep: int = 3
     freeze_workspace: bool = False
+    integrity: str = "off"
     retry_from_checkpoint: str | None = None
     retry_prompt: str | None = None
     retry_resume_session: bool = False
@@ -240,6 +241,7 @@ class EvalPlan:
             checkpoints=req.checkpoints,
             checkpoint_keep=req.checkpoint_keep,
             freeze_workspace=req.freeze_workspace,
+            integrity=req.integrity,
             retry_from_checkpoint=req.retry_from_checkpoint,
             retry_prompt=req.retry_prompt,
             retry_resume_session=req.retry_resume_session,

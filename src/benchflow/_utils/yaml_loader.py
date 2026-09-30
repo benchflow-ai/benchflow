@@ -160,6 +160,7 @@ def _optional_fields(raw: dict[str, Any]) -> dict[str, Any]:
         "uploads",
         "skip_verify",
         "freeze_workspace",
+        "integrity",
         "skip_agent_install",
         "source_provenance",
     ):
@@ -290,6 +291,7 @@ def rollout_config_to_dict(
             "uploads": dict(config.uploads) or None,
             "skip_verify": config.skip_verify,
             "freeze_workspace": config.freeze_workspace,
+            "integrity": config.integrity,
             "skip_agent_install": config.skip_agent_install,
             "environment_manifest": config.environment_manifest.model_dump(mode="json")
             if config.environment_manifest is not None

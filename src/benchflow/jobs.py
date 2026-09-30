@@ -379,6 +379,21 @@ class Trial:
         """The automatic reviewer's gate verdict (``ScoringResult``), or None."""
         return self.result.scoring
 
+    @cached_property
+    def integrity(self) -> Any:
+        """The trial's reward-integrity verdict, or None when it was not audited.
+
+        An :class:`~benchflow.integrity.IntegrityVerdict` read from
+        ``integrity/claim_verdict.json`` (``--integrity audit|strict``, or
+        ``benchflow.integrity.audit_trial``). ``exploited`` is True for
+        ``AgentViolation``. It never changes :attr:`reward`.
+        """
+        if self.source != "result.json":
+            return None
+        from benchflow.integrity import read_verdict
+
+        return read_verdict(self.path)
+
     def settings(self) -> dict[str, Any]:
         """The run settings ``bf.compare`` checks between two sides."""
         import hashlib
@@ -724,6 +739,19 @@ class Job:
     def agents(self) -> list[Trial]:
         """Agent runs (control runs left out)."""
         return [t for t in self.trials if t.control is None]
+
+    def integrity(self) -> Any:
+        """Integrity verdicts for every trial (an ``IntegrityReport``).
+
+        ``counts()`` gives trials per verdict (``not_audited`` for trials run
+        without ``--integrity``); ``exploited()`` the trials with
+        agent-attributed evidence of a forbidden crossing.
+        """
+        from benchflow.integrity import IntegrityReport
+
+        return IntegrityReport.of(
+            t.path for t in self.trials if t.source == "result.json"
+        )
 
     def controls(self) -> list[Trial]:
         """Control runs (oracle, empty/nop)."""

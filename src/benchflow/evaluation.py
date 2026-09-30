@@ -679,6 +679,9 @@ class EvaluationConfig:
     checkpoint_keep: int = 3
     # Freeze each trial's final workspace for later `bench eval regrade`.
     freeze_workspace: bool = False
+    # Reward integrity for every trial (benchflow.integrity): "off", "audit"
+    # or "strict". Writes integrity/claim_verdict.json; never changes a reward.
+    integrity: str = "off"
     # Opt-in retry of a failed/timed-out trial from its last checkpoint
     # (benchflow.checkpoint_retry): "on-failure", "on-timeout" or both.
     retry_from_checkpoint: str | None = None
@@ -737,6 +740,9 @@ class EvaluationConfig:
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.checkpoint_policy()  # refuse a bad --checkpoints before any run
         self.retry_policy()  # and a bad --retry-from-checkpoint
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         self.reviewer = ReviewerConfig.coerce(self.reviewer)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
@@ -1134,6 +1140,7 @@ class Evaluation:
             "checkpoints": cfg.checkpoints,
             "checkpoint_keep": cfg.checkpoint_keep,
             "freeze_workspace": cfg.freeze_workspace,
+            "integrity": cfg.integrity,
             "retry_from_checkpoint": cfg.retry_from_checkpoint,
             "retry_prompt": cfg.retry_prompt,
             "retry_resume_session": cfg.retry_resume_session,
@@ -1341,6 +1348,7 @@ class Evaluation:
             checkpoints=raw.get("checkpoints"),
             checkpoint_keep=raw.get("checkpoint_keep", 3),
             freeze_workspace=bool(raw.get("freeze_workspace", False)),
+            integrity=raw.get("integrity") or "off",
             retry_from_checkpoint=raw.get("retry_from_checkpoint"),
             retry_prompt=raw.get("retry_prompt"),
             retry_resume_session=bool(raw.get("retry_resume_session", False)),
@@ -1873,6 +1881,7 @@ class Evaluation:
         )
         rollout_config.checkpoints = cfg.checkpoint_policy()
         rollout_config.freeze_workspace = cfg.freeze_workspace
+        rollout_config.integrity = cfg.integrity
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 

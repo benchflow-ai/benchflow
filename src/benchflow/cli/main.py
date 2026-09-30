@@ -576,6 +576,20 @@ def eval_run(
             ),
         ),
     ] = False,
+    integrity: Annotated[
+        str,
+        typer.Option(
+            "--integrity",
+            help=(
+                "Reward integrity: off, audit or strict. audit records what the "
+                "agent did and checks it against the task's contract (every "
+                "sandbox); strict also runs the verifier in a separate verifier "
+                "sandbox. Each trial gets integrity/claim_verdict.json: Checked, "
+                "VectorExposed, AgentViolation or Rejected. Rewards are never "
+                "changed."
+            ),
+        ),
+    ] = "off",
     retry_from_checkpoint: Annotated[
         str | None,
         typer.Option(
@@ -1009,6 +1023,7 @@ def eval_run(
         checkpoints=checkpoints,
         checkpoint_keep=checkpoint_keep,
         freeze_workspace=freeze_workspace,
+        integrity=integrity,
         retry_from_checkpoint=retry_from_checkpoint,
         retry_prompt=retry_prompt,
         retry_resume_session=retry_resume_session,

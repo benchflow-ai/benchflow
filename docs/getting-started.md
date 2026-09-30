@@ -261,7 +261,7 @@ The Docker sandbox needs the Docker daemon running. For `--sandbox docker`, `ben
 
 To analyse finished runs in Python or a notebook (pass rates per agent and model, comparing two runs, exporting to pandas), see [Analysing runs](./analysing-runs.md).
 
-To re-score a finished run after fixing a verifier, without running the agent again, run it with `--freeze-workspace` and see [Regrade stored runs](./regrade.md). To score a task in a verifier sandbox that shares nothing with the agent's, see [Separate verifier sandboxes](./separate-verifier.md).
+To re-score a finished run after fixing a verifier, without running the agent again, run it with `--freeze-workspace` and see [Regrade stored runs](./regrade.md). To score a task in a verifier sandbox that shares nothing with the agent's, see [Separate verifier sandboxes](./separate-verifier.md). To check each trial for reward hacking, with a verdict next to its reward, add `--integrity audit` (see [Reward integrity](./integrity.md)).
 
 ## Run from Python
 

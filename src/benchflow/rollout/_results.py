@@ -138,6 +138,7 @@ def _write_config(
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
     freeze_workspace: bool = False,
+    integrity: str = "off",
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.acp.selection import selected_acp_transport
@@ -208,6 +209,8 @@ def _write_config(
         config_data["review"] = review
     if freeze_workspace:
         config_data["freeze_workspace"] = True
+    if integrity != "off":
+        config_data["integrity"] = integrity
     if purpose != "task":
         config_data.update(purpose=purpose, parent_rollout=parent_rollout)
     write_json_atomic(rollout_dir / "config.json", config_data)
