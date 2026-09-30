@@ -280,7 +280,7 @@ def test_under_a_subscription_cost_comes_from_claude_codes_session_log(
     assert all(c["config_override"] == hillclimb.SESSION_CAPTURE for c in evals)
     assert all(c["config_override"] is None for c in agent.calls if c not in evals)
     assert (
-        "Claude Code session logs (40 rollouts)"
+        "Claude Code session logs for 40 rollouts"
         in (tmp_path / "run" / "report.html").read_text()
     )
 
@@ -301,10 +301,9 @@ def test_rollout_and_sandbox_caps_bind_when_usd_is_unknown(tmp_path, monkeypatch
     # Nothing runs past the grader checks when the baseline alone is over the cap.
     doc = climb(settings(tmp_path / "b", max_rollouts=10))
     assert doc["baseline"] is None and "the baseline alone" in doc["stop"]["detail"]
-    assert (
-        doc["best"] is None
-        and "Refused" not in (tmp_path / "b" / "run" / "report.html").read_text()
-    )
+    report = (tmp_path / "b" / "run" / "report.html").read_text()
+    assert doc["best"] is None and "Stopped: budget" in report
+    assert "--max-rollouts 10 would be exceeded" in report
 
 
 def test_every_job_gets_its_share_of_the_caps(tmp_path, monkeypatch):

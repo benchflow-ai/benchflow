@@ -170,6 +170,15 @@ def verdict(doc: dict) -> str:
             f'<section class="card verdict"><div class="hero">—</div><div>'
             f"{badge('bad', 'Refused by the noise gate')}<p>{e(gate.get('message'))}</p></div></section>"
         )
+    stop = doc.get("stop") or {}
+    if doc["status"] == "stopped" and not (
+        best and best["test_delta"]["value"] is not None
+    ):
+        # stopped before anything was scored (plumbing or a cap): say why
+        return (
+            f'<section class="card verdict"><div class="hero">—</div><div>'
+            f"{badge('bad', 'Stopped: ' + str(stop.get('reason')))}<p>{e(stop.get('detail'))}</p></div></section>"
+        )
     if not best:
         return f'<section class="card verdict"><div class="hero">…</div><div>{e(doc["status"])}</div></section>'
     d, v = best["test_delta"], best["verdict"]
@@ -261,7 +270,7 @@ SOURCES = {
     "claude-code-usage-at-list-price": "session-log tokens at list prices",
     "benchflow": "the BenchFlow model proxy",
     "unknown": "unknown",
-}
+}  # where a rollout's USD came from (hillclimb_cost)
 
 
 def spending(doc: dict) -> str:
@@ -269,13 +278,14 @@ def spending(doc: dict) -> str:
     cost = doc["cost"]
     if "sources" not in cost:
         return ""
-    sources = ", ".join(
-        f"{SOURCES.get(k, k)} ({n} rollouts)" for k, n in cost["sources"].items()
+    sources = "; ".join(
+        f"{SOURCES.get(k, k)} for {n} rollout{'s' if n != 1 else ''}"
+        for k, n in cost["sources"].items()
     )
     rollouts, cap = cost["rollouts"], cost.get("max_rollouts")
     hours, hours_cap = cost["sandbox_seconds"] / 3600, cost.get("max_sandbox_seconds")
     parts = [
-        f"Cost from {sources or 'no rollout yet'}"
+        f"Cost: {sources or 'no rollout yet'}"
         + (". The 1M-context model variant ran." if cost.get("context_1m") else "."),
         f"Spent {rollouts:,} model rollouts"
         + (f" of a {cap:,} cap" if cap else "")
