@@ -1982,6 +1982,10 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                    # A trial that hit the usage limit during the wait stops
+                    # this one too.
+                    if usage_stop.skip(td.name):
+                        return td.name, None
                 if guard is not None and not guard.start(
                     td.name, asyncio.current_task()
                 ):

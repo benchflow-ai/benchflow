@@ -265,6 +265,26 @@ async def test_running_trials_finish_and_a_resume_runs_the_rest(tmp_path):
     assert (rerun.total, rerun.passed, rerun.errored) == (3, 3, 0)
 
 
+async def test_a_trial_in_its_start_jitter_does_not_start_after_the_limit(
+    tmp_path, monkeypatch
+):
+    """Review finding: above concurrency 16 each trial first waits a random
+    start jitter, and one still waiting when another hit the limit started
+    anyway."""
+    import random
+
+    delays = iter([0.0])
+    monkeypatch.setattr(random, "uniform", lambda _low, _high: next(delays, 0.3))
+    job = _job(tmp_path, 3, concurrency=17)
+    job._run_single_task = AsyncMock(side_effect=_runner(job, spent={"task-0"}))
+    with pytest.raises(UsageLimitError) as caught:
+        await job.run()
+    assert [c.args[0].name for c in job._run_single_task.await_args_list] == ["task-0"]
+    result = caught.value.result
+    summary = json.loads((result.job_dir / "summary.json").read_text())
+    assert sorted(summary["usage_limit"]["not_started"]) == ["task-1", "task-2"]
+
+
 def test_from_result_reads_a_saved_trial(tmp_path):
     payload = {
         "task_name": "t",
