@@ -15,7 +15,11 @@ import contextlib
 import secrets
 import socket
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
+
+# Module level, not inside build_server: MCP resolves the tools' postponed annotations
+# against this module's globals.
+from pydantic import Field
 
 if TYPE_CHECKING:
     from benchflow_taskset.session import BenchFlowSession
@@ -30,11 +34,8 @@ SUBMIT_ANSWER = "The final answer, written to the task's answer file."
 
 
 def build_server(session: BenchFlowSession, token: str):
-    from typing import Annotated
-
     from mcp.server.mcpserver import MCPServer
     from mcp.server.transport_security import TransportSecuritySettings
-    from pydantic import Field
 
     server = MCPServer("benchflow")
 
