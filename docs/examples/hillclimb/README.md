@@ -112,7 +112,6 @@ What the demo had to build itself, which a general primitive could provide:
 - **Trials of one configuration.** `Evaluation` runs each task once; repeated trials are one job per `trial-NN` folder, which the demo loops over (the CLI's `--matrix --trials` does the same).
 - **Trials that never ran.** A budget stop leaves no `result.json`, so `bf.load_job` cannot count them; the demo compares against the planned tasks.
 - **What a rollout received.** `RolloutConfig.uploads` leaves no record in the trial folder; the demo writes its own manifest.
-- **Parallel Docker evaluations** in one process prune each other's just-created containers. The demo runs a Docker evaluation's jobs one after another until the fix on `fix/parallel-runs` lands.
 
 ## Limits
 

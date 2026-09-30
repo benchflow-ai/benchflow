@@ -224,33 +224,23 @@ class Scores:
 async def run_jobs(
     s: Settings, configs: list[tuple[Path, bf.EvaluationConfig]]
 ) -> None:
-    """One Evaluation per (folder, config). On Docker they run one after another:
-    until fix/parallel-runs lands, parallel Docker evaluations in one process
-    prune each other's just-created containers."""
-    jobs = [
-        bf.Evaluation(s.tasks_dir, jobs_dir, config=cfg, job_name="job")
-        for jobs_dir, cfg in configs
-    ]
-    if s.sandbox == "docker":
-        for job in jobs:
-            await job.run()
-    else:
-        await asyncio.gather(*(job.run() for job in jobs))
+    """One Evaluation per (folder, config), all at once."""
+    await asyncio.gather(
+        *(
+            bf.Evaluation(s.tasks_dir, jobs_dir, config=cfg, job_name="job").run()
+            for jobs_dir, cfg in configs
+        )
+    )
 
 
 def config(s: Settings, names: list[str], **overrides) -> bf.EvaluationConfig:
-    share = (
-        s.concurrency
-        if s.sandbox == "docker"
-        else max(1, s.concurrency // (2 * s.trials))
-    )
     return bf.EvaluationConfig(
         **{
             "agent": s.agent,
             "model": s.model,
             "agent_env": dict(s.agent_env),
             "environment": s.sandbox,
-            "concurrency": share,
+            "concurrency": max(1, s.concurrency // (2 * s.trials)),
             "include_tasks": set(names),
             "retry": bf.RetryConfig(max_retries=s.retry_attempts),
             **overrides,
