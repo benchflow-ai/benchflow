@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from benchflow.agents.errors import UsageLimitError
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.loop_strategies import LoopStrategySpec
 from benchflow.review.options import ReviewerConfig
@@ -57,6 +58,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         model=raw.get("model"),
         reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
         reasoning_effort=raw.get("reasoning_effort"),
+        harness=raw.get("harness") or "acp",
         environment=raw.get("environment") or "docker",
         concurrency=int(raw.get("concurrency") or 1),
         prompts=raw.get("prompts"),
@@ -71,6 +73,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         checkpoints=raw.get("checkpoints"),
         checkpoint_keep=int(raw.get("checkpoint_keep") or 3),
         freeze_workspace=bool(raw.get("freeze_workspace", False)),
+        integrity=raw.get("integrity") or "off",
         retry_from_checkpoint=raw.get("retry_from_checkpoint"),
         retry_prompt=raw.get("retry_prompt"),
         retry_resume_session=bool(raw.get("retry_resume_session", False)),
@@ -118,8 +121,19 @@ async def run_worker(payload_path: Path) -> dict[str, Any]:
         # The parent `bench eval run` already made the pre-run checks.
         preflight=False,
     )
-    result = await evaluation.run()
+    try:
+        result = await evaluation.run()
+        usage_limit = None
+    except UsageLimitError as exc:
+        # The shard stopped on its login's usage limit: BenchFlow finished it
+        # as far as it can, so this is a result, not a worker failure the
+        # parent would retry (every retry would hit the same limit).
+        if exc.result is None:
+            raise
+        result, usage_limit = exc.result, exc.to_dict()
     result_payload = _result_payload(result)
+    if usage_limit is not None:
+        result_payload["usage_limit"] = usage_limit
     output_path = Path(payload["result_path"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result_payload, indent=2))

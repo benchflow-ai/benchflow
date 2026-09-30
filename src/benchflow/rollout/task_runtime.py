@@ -47,6 +47,11 @@ class TaskRuntimeConfig:
     runtime_label: str = "task-runtime"
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     planes: Any | None = None
+    # Reward integrity (benchflow.integrity): "audit" checks the recorded bash
+    # calls against the task's contract after verify(); "strict" also runs the
+    # verifier in a separate verifier sandbox. The verdict is on
+    # TaskRuntimeResult.integrity; the reward is never changed.
+    integrity: str = "off"
 
     def __post_init__(self) -> None:
         self.task_path = Path(self.task_path)
@@ -56,6 +61,9 @@ class TaskRuntimeConfig:
             self.skills_dir = Path(self.skills_dir)
         if self.skill_mode not in {SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL}:
             raise ValueError("TaskRuntimeConfig supports no-skill and with-skill only")
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
 
     def to_rollout_config(self) -> RolloutConfig:
         """Lower to the Rollout configuration used to own lifecycle/artifacts."""
@@ -84,6 +92,7 @@ class TaskRuntimeConfig:
             skill_mode=self.skill_mode,
             allow_document_user=False,
             planes=self.planes,
+            integrity=self.integrity,
         )
 
 
@@ -110,6 +119,10 @@ class TaskRuntimeResult:
     error: str | None
     rollout_dir: Path
     result: RolloutResult
+    # The integrity verdict when TaskRuntimeConfig.integrity is audit or
+    # strict: ``integrity.exploited`` / ``integrity.reason`` feed
+    # ``benchflow.integrations.rewards.apply_integrity``. Never changes reward.
+    integrity: Any = None
 
 
 class TaskRuntime:
@@ -261,6 +274,11 @@ class TaskRuntime:
         self._started = False
         rewards = result.rewards
         reward = (rewards or {}).get("reward") if isinstance(rewards, dict) else None
+        integrity = None
+        if self.config.integrity != "off":
+            from benchflow.integrity import read_verdict
+
+            integrity = read_verdict(self.rollout_dir)
         return TaskRuntimeResult(
             task_name=result.task_name,
             rollout_name=result.rollout_name,
@@ -270,6 +288,7 @@ class TaskRuntime:
             error=result.error,
             rollout_dir=self.rollout_dir,
             result=result,
+            integrity=integrity,
         )
 
     async def close(self) -> None:

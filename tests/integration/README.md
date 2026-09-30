@@ -2,7 +2,7 @@
 
 This folder holds two kinds of end-to-end tests.
 
-- **Deterministic tier** (`deterministic/`, run by `tests/test_deterministic_integration.py`): the real `bench` CLI, a real sandbox and a real agent (`claude-agent-acp`), with the model replaced by a scripted fake provider. No model keys, no model cost, same result every run. It runs in the default suite whenever a sandbox is available and on every PR in CI.
+- **Deterministic tier** (`deterministic/`, run by `tests/test_deterministic_integration.py`, `tests/test_docker_parallel_isolation.py` and `tests/test_integrity_deterministic.py`): the real `bench` CLI, a real sandbox and a real agent (`claude-agent-acp`), with the model replaced by a scripted fake provider. No model keys, no model cost, same result every run. It runs in the default suite whenever a sandbox is available and on every PR in CI.
 - **Live lanes** (`run.sh`, `run_suite.py`, `scenarios.py`, `suites/`, `configs/`): real models on Daytona, opt-in with `-m integration` / `-m live` and provider keys. See [`docs/integration-tests.md`](../../docs/integration-tests.md) and [`docs/integration-tiers.md`](../../docs/integration-tiers.md).
 
 The rest of this page is about the deterministic tier.

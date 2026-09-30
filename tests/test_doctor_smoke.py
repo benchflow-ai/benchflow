@@ -439,3 +439,13 @@ def test_subprocess_runner_kills_a_hung_run(tmp_path, fake_bench, monkeypatch):
     assert outcome.status == "error"
     assert outcome.reason.startswith("timed out after 1s")
     assert outcome.seconds < 30
+
+
+def test_a_control_agent_is_pointed_at_eval_run():
+    """dx/first-run: `bench eval smoke --agent oracle` said "unknown agent
+    'oracle'", though oracle is a built-in agent of bench eval run."""
+    for control in ("oracle", "nop"):
+        with pytest.raises(ValueError) as caught:
+            plan_smoke(_report(), [control])
+        assert "runs model agents" in str(caught.value)
+        assert f"bench eval run --agent {control}" in str(caught.value)

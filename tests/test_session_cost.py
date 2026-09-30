@@ -105,27 +105,16 @@ def test_no_log_or_an_unpriced_model_gives_no_estimate(tmp_path):
     assert estimate_claude_code_cost(tmp_path) is None
 
 
-@pytest.mark.asyncio
-async def test_cleanup_prices_an_unpriced_claude_rollout_from_its_log(
-    tmp_path, monkeypatch
-):
-    """The rollout's result gets the estimate, labelled, and the redacted log."""
+TOKEN = "sk-ant-oat01-" + "x" * 40
+
+
+def _unpriced_claude_rollout(tmp_path, monkeypatch, home: Path, agent_env: dict):
+    """A Claude Code rollout the gateway could not price, its log at *home*."""
     from benchflow._utils.task_authoring import task_digest
     from benchflow.rollout import Rollout, RolloutConfig, _session_log
     from benchflow.task import RolloutPaths, Task
     from tests.test_artifacts_collection import LocalTransport
 
-    home = tmp_path / "home"
-    token = "sk-ant-oat01-" + "x" * 40
-    leak = {"type": "user", "message": {"content": f"env shows {token}"}}
-    _log(
-        home / ".claude" / "projects",
-        [
-            leak,
-            _response("msg_1"),
-            _state(0.00125, input_tokens=1000, output_tokens=50),
-        ],
-    )
     monkeypatch.setattr(_session_log, "_home", lambda cfg: str(home))
 
     task = tmp_path / "task"
@@ -150,7 +139,7 @@ async def test_cleanup_prices_an_unpriced_claude_rollout_from_its_log(
     rollout._rollout_paths.mkdir()
     rollout._env = Box()
     rollout._agent_cwd = str(tmp_path)
-    rollout._agent_env = {"CLAUDE_CODE_OAUTH_TOKEN": token}
+    rollout._agent_env = dict(agent_env)
     rollout._native_usage_metrics = {
         **rollout._native_usage_metrics,
         "n_input_tokens": 1000,
@@ -159,6 +148,28 @@ async def test_cleanup_prices_an_unpriced_claude_rollout_from_its_log(
         "usage_source": "agent_native_acp",
         "cost_usd": None,
     }
+    return rollout, trial
+
+
+@pytest.mark.asyncio
+async def test_cleanup_prices_an_unpriced_claude_rollout_from_its_log(
+    tmp_path, monkeypatch
+):
+    """The rollout's result gets the estimate, labelled, and the redacted log."""
+    home = tmp_path / "home"
+    token = TOKEN
+    leak = {"type": "user", "message": {"content": f"env shows {token}"}}
+    _log(
+        home / ".claude" / "projects",
+        [
+            leak,
+            _response("msg_1"),
+            _state(0.00125, input_tokens=1000, output_tokens=50),
+        ],
+    )
+    rollout, trial = _unpriced_claude_rollout(
+        tmp_path, monkeypatch, home, {"CLAUDE_CODE_OAUTH_TOKEN": token}
+    )
 
     await rollout.cleanup()
 
@@ -171,3 +182,86 @@ async def test_cleanup_prices_an_unpriced_claude_rollout_from_its_log(
     copied = trial / "agent" / "claude-sessions" / "-app" / "session-1.jsonl"
     text = copied.read_text()
     assert token not in text and "totalCostUSD" in text
+
+
+@pytest.mark.asyncio
+async def test_an_isolated_branch_child_is_not_priced_from_the_shared_log(
+    tmp_path, monkeypatch
+):
+    """A child restored from the parent's snapshot must not be charged twice.
+
+    `bench eval branch --isolate` runs each child as its own rollout in its own
+    sandbox, restored from a snapshot taken after the parent's turns. That
+    snapshot carries the parent's Claude Code session file, so pricing the
+    child's copy of the log charges every sibling for the parent's turns as
+    well as its own (the deterministic tier's branch-parallel scenario saw a
+    child priced at 0.005005 where its own turns cost 0.0025).
+
+    The same `_from_branch_snapshot` marker covers a run continued from a kept
+    checkpoint, whose sandbox likewise carries the source rollout's log.
+    """
+    home = tmp_path / "home"
+    _log(
+        home / ".claude" / "projects",
+        [_response("parent_1"), _state(0.00125, input_tokens=1000, output_tokens=50)],
+        name="parent-session",
+    )
+    _log(
+        home / ".claude" / "projects",
+        [_response("child_1"), _state(0.00125, input_tokens=1000, output_tokens=50)],
+        name="child-session",
+    )
+    rollout, trial = _unpriced_claude_rollout(
+        tmp_path, monkeypatch, home, {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN}
+    )
+    rollout._from_branch_snapshot = True
+
+    await rollout.cleanup()
+
+    usage = rollout._usage_metrics
+    assert usage["cost_usd"] is None
+    assert usage.get("price_source") != "agent_session_log"
+    assert not (trial / "agent" / "claude-sessions").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_public_agent_env_value_survives_the_logs_redaction(
+    tmp_path, monkeypatch
+):
+    """Only credential-bearing agent_env entries are scrubbed from the log.
+
+    Scrubbing every value took the model name with it when the model was
+    passed as an env value, and a response whose model reads `[redacted]` has
+    no list price, so a session Claude Code's own totals do not cover became
+    unpriceable.
+    """
+    home = tmp_path / "home"
+    # A stale cost-state (it counts one response, the log holds two) forces the
+    # list-price path, which needs each response's model name.
+    _log(
+        home / ".claude" / "projects",
+        [
+            _response("msg_1"),
+            _response("msg_2"),
+            _state(0.00125, input_tokens=1000, output_tokens=50),
+        ],
+    )
+    rollout, trial = _unpriced_claude_rollout(
+        tmp_path,
+        monkeypatch,
+        home,
+        {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN, "ANTHROPIC_MODEL": HAIKU},
+    )
+
+    await rollout.cleanup()
+
+    copied = trial / "agent" / "claude-sessions" / "-app" / "session-1.jsonl"
+    assert HAIKU in copied.read_text()
+    usage = rollout._usage_metrics
+    estimate = usage["usage_details"]["cost_estimate"]
+    assert estimate["method"] == LIST_PRICE
+    assert list(estimate["models"]) == [HAIKU]
+    price = list_price(HAIKU)
+    assert price is not None
+    one = 1000 * price["input"] + 50 * price["output"]
+    assert usage["cost_usd"] == pytest.approx(2 * one)

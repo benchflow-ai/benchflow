@@ -304,3 +304,15 @@ def test_pre_agent_hooks_reach_every_rollout_of_an_evaluation(
                 worker_start_stagger_sec=0.0,
             )
         )
+
+
+def test_a_missing_tasks_folder_says_what_to_pass(tmp_path: Path) -> None:
+    """``Evaluation(tasks_dir=<missing>)`` failed with a bare ``[Errno 2]``."""
+    job = Evaluation(
+        tmp_path / "nope",
+        tmp_path / "jobs",
+        config=EvaluationConfig(agent="oracle"),
+        preflight=False,
+    )
+    with pytest.raises(FileNotFoundError, match=r"Tasks directory not found.*task\.md"):
+        job.run_sync()

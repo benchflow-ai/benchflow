@@ -22,7 +22,7 @@ os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
 
 # Vendored upstream tasks ship their own pytest files (task verifiers, run
 # inside task sandboxes) — they are fixtures, not suite tests.
-collect_ignore = ["fixtures/skillsbench_slice"]
+collect_ignore = ["fixtures/skillsbench_slice", "fixtures/taskmd"]
 
 REF_TASKS = REPO_ROOT / ".cache" / "datasets" / "benchflow" / "examples" / "tasks"
 

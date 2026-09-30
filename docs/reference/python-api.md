@@ -163,6 +163,20 @@ job = bf.Evaluation.resume("jobs/my-batch/2026-01-01__12-00-00", agent_env={...}
 
 A job holds `<job_dir>/.evaluation.lock` while it runs, so resuming a job that is still running is refused with the holder's process id. Finished tasks are read back from disk (they appear in `job.results`) and only the rest run; keyword overrides such as `concurrency=8` replace config fields. `on_result=lambda name, result: ...` on the constructor is still called as each task finishes.
 
+Every trial of an `Evaluation` runs on one login. When a trial ends on that login's usage limit (a Claude subscription's 5-hour or 7-day window, a ChatGPT plan's limit), the job starts no more trials, lets the running ones finish, writes `summary.json` (its `usage_limit` block lists the trials not started) and raises `bf.UsageLimitError`. The error names the login (a label such as `CLAUDE_CODE_OAUTH_TOKEN (environment)`, never the token), the `window` and `resets_at` when the agent said them, and carries the job's `EvaluationResult` as `.result`. Catch it to switch logins; resuming the job runs the usage-limit trials and the ones never started again:
+
+```python
+for token in tokens:                      # one Claude login per attempt
+    config = bf.EvaluationConfig(agent="claude-agent-acp", agent_env={"CLAUDE_CODE_OAUTH_TOKEN": token})
+    try:
+        job = await bf.Evaluation(tasks_dir="tasks", jobs_dir="jobs/pool", job_name="run", config=config).run()
+        break
+    except bf.UsageLimitError as exc:
+        print(f"{exc.login}: {exc.window} window spent until {exc.resets_at}")
+```
+
+A single `bf.run` returns its `RolloutResult` as before, with `error_category == "usage_limit"`; `bf.UsageLimitError.from_result(result)` gives the same fields. Such a trial is unscored and never retried.
+
 ## Branching
 
 `bf.branch` (blocking) and `await bf.abranch` run what `bench eval branch` runs, with the same driver and job folder: the task runs up to a checkpoint, the sandbox is snapshotted, each child starts from the snapshot with its own prompt and is scored by the task's verifier, then the parent is restored, finished and verified.
@@ -540,6 +554,9 @@ Rollout.run() catches common errors:
 - `TimeoutError` — agent exceeded timeout
 - `ConnectionError` — SSH/ACP pipe closed (retried 3x with exponential backoff)
 - `ACPError` — agent protocol error
+- `UsageLimitError` — the login's usage limit is spent: category `usage_limit`, unscored, never retried; an `Evaluation` stops starting trials and raises it (see above)
+
+Expected errors a user can fix (a task file that does not parse, a bad flag, a missing login) are `benchflow.errors.UserError` subclasses; `bench` prints them as one message with a next step. [When a run fails](../when-a-run-fails.md) maps every message to its cause and fix.
 
 Evaluation-level retry with `RetryConfig`:
 ```python

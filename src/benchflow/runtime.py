@@ -556,6 +556,59 @@ _HOST_CHECKED: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+def check_credentials(configs: Sequence[Any]) -> None:
+    """Raise ``MissingCredentialError`` now for an agent whose login is missing.
+
+    The same resolution each trial makes at setup (``resolve_agent_env``), made
+    once before a job exists, so a missing login is one clear error rather
+    than a traceback in every trial. It checks exactly what the rollout will
+    use: with ``scenes``, each role's agent and model with the config's
+    ``agent_env`` plus the role's ``env`` (the legacy ``agent``/``model``
+    fields are then unused); otherwise ``agent``, ``model`` and ``agent_env``
+    as given. A target with no model is checked against the agent's own
+    ``default_model`` (never the global default, which would demand another
+    provider's key, #343), since that is what the agent falls back to; an
+    agent with neither is not checked. Only a missing credential is raised
+    here; anything else the resolution rejects still surfaces in the trial.
+    """
+    from benchflow.agents.env import resolve_agent_env
+    from benchflow.agents.registry import AGENTS
+    from benchflow.errors import MissingCredentialError
+
+    def checked_model(agent: str, model: str | None) -> str | None:
+        if model:
+            return model
+        agent_cfg = AGENTS.get(agent)
+        return agent_cfg.default_model if agent_cfg else None
+
+    seen: set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
+    for config in configs:
+        base_env = dict(getattr(config, "agent_env", None) or {})
+        scenes = getattr(config, "scenes", None) or []
+        if scenes:
+            targets = [
+                (role.agent, role.model, {**base_env, **(role.env or {})})
+                for scene in scenes
+                for role in scene.roles
+            ]
+        else:
+            targets = [(config.agent, config.model, base_env)]
+        for agent, raw_model, env in targets:
+            if not agent or agent in ("oracle", "nop"):
+                continue
+            model = checked_model(agent, raw_model)
+            key = (agent, model, tuple(sorted(env.items())))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                resolve_agent_env(agent, model, env)
+            except MissingCredentialError:
+                raise
+            except Exception:
+                continue
+
+
 def check_host(configs: Sequence[Any]) -> None:
     """The host checks ``bench eval run`` makes before a job, for SDK callers.
 
@@ -582,6 +635,7 @@ def check_host(configs: Sequence[Any]) -> None:
     from benchflow._utils.config import normalize_agent_name
     from benchflow.cli.doctor import _expired_claude_login
 
+    check_credentials(configs)
     probes = doctor_mod.DoctorProbes.from_host()
     if any(c.environment == "docker" for c in configs):
         failed = [

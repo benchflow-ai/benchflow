@@ -13,11 +13,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from benchflow.errors import UserError
 from benchflow.task._document_profiles import _PROFILE_KEYS, _TASK_AUTHORING_PROFILES
 
 
-class TaskDocumentParseError(ValueError):
+class TaskDocumentParseError(ValueError, UserError):
     """Raised when a ``task.md`` document cannot be parsed."""
+
+    fault = "task"
 
 
 def normalize_task_document_frontmatter(

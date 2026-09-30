@@ -285,6 +285,7 @@ def _plan(
     agent_env: Mapping[str, str] | None,
     reasoning_effort: str | None,
     checkpoint: str | None = None,
+    harness: str = "acp",
 ) -> BranchPlan:
     try:
         return _build_plan(
@@ -311,6 +312,7 @@ def _plan(
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
             checkpoint=checkpoint,
+            harness=harness,
         )
     except BranchPlanError as exc:
         raise BranchPlanError(_python_names(str(exc))) from None
@@ -341,6 +343,7 @@ def _build_plan(
     agent_env: Mapping[str, str] | None,
     reasoning_effort: str | None,
     checkpoint: str | None,
+    harness: str = "acp",
 ) -> BranchPlan:
     from benchflow._utils.config import normalize_agent_name
     from benchflow.rollout import RolloutConfig
@@ -383,7 +386,7 @@ def _build_plan(
         model = model or recorded.get("model")
     sandbox = sandbox or (source.provider if source else "docker")
     requested = RolloutConfig(
-        task_path=Path(task_path), agent=agent, environment=sandbox
+        task_path=Path(task_path), agent=agent, environment=sandbox, harness=harness
     )
     check_rollout_config(requested)
     check_host([requested])
@@ -393,6 +396,7 @@ def _build_plan(
         agent=agent,
         model=model,
         reasoning_effort=reasoning_effort,
+        harness=requested.harness,
         sandbox=sandbox,
         children=_children(children),
         checkpoint_after=checkpoint_after
@@ -442,6 +446,7 @@ async def abranch(
     job_name: str | None = None,
     agent_env: Mapping[str, str] | None = None,
     reasoning_effort: str | None = None,
+    harness: str = "acp",
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> BranchResult:
     """Branch one task's run at a checkpoint into labelled, verifier-scored children.
@@ -496,6 +501,7 @@ async def abranch(
         agent_env=agent_env,
         reasoning_effort=reasoning_effort,
         checkpoint=checkpoint,
+        harness=harness,
     )
     task = plan.task_paths[0]
 
@@ -546,6 +552,7 @@ def branch(
     job_name: str | None = None,
     agent_env: Mapping[str, str] | None = None,
     reasoning_effort: str | None = None,
+    harness: str = "acp",
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> BranchResult:
     """Blocking form of :func:`abranch`; takes exactly the same arguments.
@@ -592,6 +599,7 @@ def branch(
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
             checkpoint=checkpoint,
+            harness=harness,
             on_event=on_event,
         )
     )

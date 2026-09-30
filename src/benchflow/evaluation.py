@@ -59,6 +59,7 @@ from benchflow._utils.scoring import (
     PROVIDER_REJECTED,
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
+    USAGE_LIMIT,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -75,10 +76,12 @@ from benchflow._utils.scoring import (
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.text import truncate_end
+from benchflow.agents.errors import UsageLimitError
 from benchflow.budget import Budget, BudgetGuard
 from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest, load_manifest
+from benchflow.errors import UserError
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -188,7 +191,7 @@ def _task_parse_error(path: Path) -> tuple[Path, str] | None:
     return None
 
 
-class EmptyTaskSelectionError(ValueError):
+class EmptyTaskSelectionError(ValueError, UserError):
     """Raised when task discovery + include/exclude filters resolve to zero tasks.
 
     Failing fast is preferred over silently writing a 0/0 summary.json that
@@ -196,7 +199,7 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
-class ResumeMismatchError(ValueError):
+class ResumeMismatchError(ValueError, UserError):
     """Raised when resuming a jobs_dir whose completed tasks ran a different agent.
 
     A jobs_dir holds one (agent, model) run. Folding a *different* agent's cached
@@ -263,7 +266,7 @@ def sample_task_dirs(
     return sorted(random.Random(seed).sample(tasks, n_tasks))
 
 
-class MalformedTaskError(ValueError):
+class MalformedTaskError(ValueError, UserError):
     """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
     but fails to parse (#3).
 
@@ -271,6 +274,8 @@ class MalformedTaskError(ValueError):
     as a clean red message + exit 1. The message names the offending file —
     silently treating a typo'd task.md as "not a task" would make the task vanish.
     """
+
+    fault = "task"
 
 
 @dataclass
@@ -352,6 +357,10 @@ class RetryConfig:
         category = category or classify_error(error)
         if not category:
             return False
+        if category == USAGE_LIMIT:
+            # Whatever exclude_categories says: every retry on the same login
+            # fails the same way until the window resets.
+            return False
         if category in self.exclude_categories:
             return False
         if self.retry_on_install and category == INSTALL_FAILED:
@@ -373,25 +382,42 @@ class RetryConfig:
             return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
+    def reruns_on_resume(
+        self, error: str | None, *, category: str | None = None
+    ) -> bool:
+        """Whether a resumed job runs an unscored trial again.
+
+        Everything ``should_retry`` retries, and a trial that ended on its
+        login's usage limit: never retried within the run (the same login
+        would only hit it again), but a resume is how a caller runs it again
+        on another login or after the reset.
+        """
+        category = category or classify_error(error)
+        return category == USAGE_LIMIT or self.should_retry(error, category=category)
+
     def reruns_unjudged_solver(
         self,
         scoring: ScoringResult | None,
         error: str | None,
         *,
         category: str | None = None,
+        on_resume: bool = False,
     ) -> bool:
         """Whether a rubric trial's solver runs again despite its scoring block.
 
         A rubric trial commits a scoring block even when its solver failed on
         the sandbox or transport and nothing was judged: a scoring error with
         no verifier reward. That is a retryable infrastructure failure like
-        any other (#1059), not a verdict that pins the trial.
+        any other (#1059), not a verdict that pins the trial. ``on_resume``
+        also runs again a solver that ended on a usage limit
+        (:meth:`reruns_on_resume`).
         """
+        again = self.reruns_on_resume if on_resume else self.should_retry
         return (
             scoring is not None
             and scoring.status == "error"
             and scoring.verifier_reward is None
-            and self.should_retry(error, category=category)
+            and again(error, category=category)
         )
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
@@ -493,6 +519,44 @@ class ApiErrorCircuitBreaker:
         )
 
 
+class UsageLimitStop:
+    """Stop starting trials once one ends on its login's usage limit.
+
+    Every trial of an Evaluation runs on the same login, so once one reports
+    the limit the rest would fail the same way until the window resets.
+    Running trials finish; trials not yet started are left out of the job
+    (not counted as results) for a resume on another login or after the
+    reset. ``Evaluation.run`` raises the first ``UsageLimitError`` at the end.
+    """
+
+    def __init__(self) -> None:
+        self.error: UsageLimitError | None = None
+        self.not_started: list[str] = []
+
+    def record(self, result: RunResult) -> None:
+        if self.error is not None:
+            return
+        self.error = UsageLimitError.from_result(result)
+        if self.error is not None:
+            login = f"login {self.error.login}" if self.error.login else "the login"
+            logger.error(
+                f"Stopping the job: {login} is out of usage; running trials "
+                "finish, no new ones start"
+            )
+
+    def skip(self, name: str) -> bool:
+        """True (and recorded) when ``name`` must not start."""
+        if self.error is None:
+            return False
+        self.not_started.append(name)
+        return True
+
+    def summary(self) -> dict[str, Any] | None:
+        if self.error is None:
+            return None
+        return {**self.error.to_dict(), "not_started": list(self.not_started)}
+
+
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
 DEFAULT_AGENT = "claude-agent-acp"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -508,6 +572,20 @@ DEFAULT_JOB_MODE = "parallel-independent"
 # The job names Evaluation generates: a timestamp, and a -N suffix when the
 # second is already taken (bench eval run --fresh).
 _AUTO_JOB_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}(-\d+)?$")
+
+
+def _is_job_folder(folder: Path) -> bool:
+    """Whether ``folder`` is one job (not, say, a folder of jobs): an
+    auto-generated name, a job record, or a trial folder inside it."""
+    if _AUTO_JOB_NAME.match(folder.name):
+        return True
+    if (folder / EVALUATION_RECORD).is_file() or (folder / "summary.json").is_file():
+        return True
+    return any(
+        (child / "result.json").is_file() or (child / "config.json").is_file()
+        for child in folder.iterdir()
+        if child.is_dir()
+    )
 
 
 def _recorded_run_differs(
@@ -663,6 +741,9 @@ class EvaluationConfig:
     agent: str = DEFAULT_AGENT
     model: str | None = None
     reasoning_effort: str | None = None
+    # "acp" (default) or "native": run the agent through its own CLI in
+    # headless JSON mode instead of its ACP adapter (benchflow.native_harness).
+    harness: str = "acp"
     environment: str = "docker"
     concurrency: int = 4
     build_concurrency: int | None = None
@@ -721,6 +802,9 @@ class EvaluationConfig:
     checkpoint_keep: int = 3
     # Freeze each trial's final workspace for later `bench eval regrade`.
     freeze_workspace: bool = False
+    # Reward integrity for every trial (benchflow.integrity): "off", "audit"
+    # or "strict". Writes integrity/claim_verdict.json; never changes a reward.
+    integrity: str = "off"
     # Opt-in retry of a failed/timed-out trial from its last checkpoint
     # (benchflow.checkpoint_retry): "on-failure", "on-timeout" or both.
     retry_from_checkpoint: str | None = None
@@ -779,12 +863,22 @@ class EvaluationConfig:
         # bare IDs fail before sandbox work; explicit commands remain supported.
         self.agent = normalize_agent_name(self.agent)
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
+        from benchflow.native_harness.harnesses import (
+            check_harness,
+            normalize_harness,
+        )
+
+        self.harness = normalize_harness(self.harness)
+        check_harness(self.harness, [self.agent])
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         if self.codex_apps_policy not in (None, "disabled", "inherit"):
             raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.checkpoint_policy()  # refuse a bad --checkpoints before any run
         self.retry_policy()  # and a bad --retry-from-checkpoint
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         self.reviewer = ReviewerConfig.coerce(self.reviewer)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
@@ -881,12 +975,14 @@ class EvaluationResult:
     ran: int = 0
 
     def __repr__(self) -> str:
-        mean = "n/a" if self.mean_reward is None else f"{self.mean_reward:.3f}"
+        # The counts, not the config or every task's RolloutResult.
+        job_dir = str(self.job_dir) if self.job_dir is not None else None
         return (
-            f"EvaluationResult(job={self.job_name!r}, passed={self.passed}/"
-            f"{self.total} ({self.score:.1%}), failed={self.failed}, "
-            f"errored={self.errored}, verifier_errored={self.verifier_errored}, "
-            f"mean_reward={mean}, job_dir={str(self.job_dir) if self.job_dir else None!r})"
+            f"EvaluationResult(job_name={self.job_name!r}, total={self.total}, "
+            f"passed={self.passed}, failed={self.failed}, errored={self.errored}, "
+            f"verifier_errored={self.verifier_errored}, score={self.score:.3f}, "
+            f"mean_reward={self.mean_reward!r}, results=<{len(self.results)} "
+            f"task(s)>, job_dir={job_dir!r})"
         )
 
     def to_records(self) -> list[dict[str, Any]]:
@@ -1062,16 +1158,17 @@ class Evaluation:
     ) -> str:
         """Pick a job_name when none was explicitly provided.
 
-        The latest job folder under ``jobs_dir`` whose name has the
-        auto-generated timestamp form is reused, so a second
-        ``Evaluation.run()`` (or plain ``bench eval run``) resumes into the
-        same directory instead of creating an orphan. Other folders, such as
-        a folder of jobs (``jobs/smoke/``) or a named job, are never picked.
-        When that job's ``evaluation.json`` records another agent, model or
-        tasks folder than ``config`` and ``tasks_dir``, a new job starts
-        instead (resuming would blend two runs' results); it is named in the
-        log so it can still be resumed by name. Without such a folder: a
-        fresh timestamp.
+        The latest job folder under ``jobs_dir`` (alphabetically last) is
+        reused, so a second ``Evaluation.run()`` (or plain ``bench eval
+        run``) resumes into the same directory instead of creating an orphan.
+        A job folder has an auto-generated (timestamp) name, a job record
+        (``evaluation.json``, ``summary.json``) or trial folders; a folder
+        that is none of these, such as a folder of jobs (``jobs/smoke/``), is
+        never picked. When that job's ``evaluation.json`` records another
+        agent, model or tasks folder than ``config`` and ``tasks_dir``, a new
+        job starts instead (resuming would blend two runs' results); it is
+        named in the log so it can still be resumed by name. Without such a
+        folder: a fresh timestamp.
 
         Guards ENG-160: auto-generated job_name must be stable across
         resume calls.
@@ -1080,7 +1177,9 @@ class Evaluation:
         if not jobs_dir.is_dir():
             return fresh
         job_dirs = sorted(
-            d for d in jobs_dir.iterdir() if d.is_dir() and _AUTO_JOB_NAME.match(d.name)
+            d
+            for d in jobs_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and _is_job_folder(d)
         )
         if not job_dirs:
             return fresh
@@ -1132,6 +1231,7 @@ class Evaluation:
             # A hard per-job cap (benchflow.budget); same as config.budget.
             self._config.budget = Budget.coerce(budget)
         self._budget_guard: BudgetGuard | None = None
+        self._usage_stop = UsageLimitStop()
         # agent_env names a loaded config declared without values; to_dict
         # keeps listing them so a second save does not forget them.
         self._declared_env_keys: list[str] = []
@@ -1235,6 +1335,7 @@ class Evaluation:
             "agent": cfg.agent,
             "model": cfg.model,
             "reasoning_effort": cfg.reasoning_effort,
+            "harness": cfg.harness,
             "environment": cfg.environment,
             "concurrency": cfg.concurrency,
             "build_concurrency": cfg.build_concurrency,
@@ -1265,6 +1366,7 @@ class Evaluation:
             "checkpoints": cfg.checkpoints,
             "checkpoint_keep": cfg.checkpoint_keep,
             "freeze_workspace": cfg.freeze_workspace,
+            "integrity": cfg.integrity,
             "retry_from_checkpoint": cfg.retry_from_checkpoint,
             "retry_prompt": cfg.retry_prompt,
             "retry_resume_session": cfg.retry_resume_session,
@@ -1431,6 +1533,7 @@ class Evaluation:
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
             reasoning_effort=raw.get("reasoning_effort"),
+            harness=raw.get("harness", "acp"),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             build_concurrency=raw.get("build_concurrency"),
@@ -1472,6 +1575,7 @@ class Evaluation:
             checkpoints=raw.get("checkpoints"),
             checkpoint_keep=raw.get("checkpoint_keep", 3),
             freeze_workspace=bool(raw.get("freeze_workspace", False)),
+            integrity=raw.get("integrity") or "off",
             retry_from_checkpoint=raw.get("retry_from_checkpoint"),
             retry_prompt=raw.get("retry_prompt"),
             retry_resume_session=bool(raw.get("retry_resume_session", False)),
@@ -1556,6 +1660,7 @@ class Evaluation:
             reasoning_effort=agent_cfg.get(
                 "reasoning_effort", raw.get("reasoning_effort")
             ),
+            harness=agent_cfg.get("harness", raw.get("harness", "acp")),
             environment=environment,
             concurrency=concurrency,
             agent_env=agent_env,
@@ -1597,6 +1702,13 @@ class Evaluation:
         that PARSES but is structurally incomplete (e.g. a schema-only fixture)
         keeps its existing silent skip.
         """
+        if not self._tasks_dir.is_dir():
+            raise FileNotFoundError(
+                f"Tasks directory not found: {self._tasks_dir} (resolved against "
+                f"{Path.cwd()}); pass a folder of task folders, or one task "
+                "folder (each holds task.md or task.toml)"
+            )
+
         from benchflow.task.formats import detect_task_format, materialize_task_dir
 
         seeds = self._config.seeds
@@ -1652,7 +1764,14 @@ class Evaluation:
         )
         for d in children:
             if detect_task_format(d) is not None:
-                selected.extend(materialize(d))
+                from benchflow.taskmd import TaskMdError
+
+                try:
+                    selected.extend(materialize(d))
+                except TaskMdError as exc:
+                    # A task.md draft 2 package BenchFlow refuses must not
+                    # vanish from a batch silently, nor stop the healthy ones.
+                    logger.warning("Skipping task %r: %s", d.name, exc)
                 continue
             if _is_task_dir(d):
                 if seeds:
@@ -1795,11 +1914,12 @@ class Evaluation:
                 if (
                     rerun_ok
                     and pending.get("rewards") is None
-                    and self._config.retry.should_retry(
+                    and self._config.retry.reruns_on_resume(
                         pending.get("error"), category=pending.get("error_category")
                     )
                 ):
-                    # Its solver failed on infrastructure: nothing to review.
+                    # Its solver failed on infrastructure or ended on a usage
+                    # limit: nothing to review.
                     continue
                 latest[name] = {
                     **pending,
@@ -1817,7 +1937,10 @@ class Evaluation:
             # unless the solver failed on infrastructure and nothing was judged.
             if r.get("scoring") is not None:
                 if rerun_ok and self._config.retry.reruns_unjudged_solver(
-                    _scoring_block(r), r.get("error"), category=r.get("error_category")
+                    _scoring_block(r),
+                    r.get("error"),
+                    category=r.get("error_category"),
+                    on_resume=True,
                 ):
                     logger.info(
                         f"Re-running task whose solver failed on infrastructure "
@@ -1973,6 +2096,7 @@ class Evaluation:
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
+            harness=cfg.harness,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             reviewer=cfg.reviewer,
@@ -2009,6 +2133,7 @@ class Evaluation:
                 *cfg.pre_agent_hooks,
             ]
         rollout_config.freeze_workspace = cfg.freeze_workspace
+        rollout_config.integrity = cfg.integrity
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 
@@ -2151,11 +2276,14 @@ class Evaluation:
 
         breaker = ApiErrorCircuitBreaker()
         guard = self._budget_guard
+        usage_stop = self._usage_stop
 
         async def bounded(td: Path) -> tuple[str, RunResult | None]:
             async with sem:
                 if guard is not None and guard.stopped:
                     guard.start(td.name)  # records it as not started
+                    return td.name, None
+                if usage_stop.skip(td.name):
                     return td.name, None
                 if breaker.tripped:
                     result = RunResult(task_name=td.name, error=breaker.skip_error())
@@ -2171,6 +2299,10 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                    # A trial that hit the usage limit during the wait stops
+                    # this one too.
+                    if usage_stop.skip(td.name):
+                        return td.name, None
                 if guard is not None and not await guard.admit(
                     td.name, asyncio.current_task()
                 ):
@@ -2179,6 +2311,7 @@ class Evaluation:
                 result = await self._run_budgeted(td, guard)
                 if result is None:
                     return td.name, None
+                usage_stop.record(result)
                 breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
@@ -2302,8 +2435,13 @@ class Evaluation:
                 self._learner_export_dir = export_dir
 
                 guard = self._budget_guard
-                if guard is not None and not guard.start(td.name):
-                    # Recorded as not started (a cap was reached).
+                if self._usage_stop.error is not None or (
+                    guard is not None and not guard.start(td.name)
+                ):
+                    # A usage limit stopped the job, or a cap was reached (the guard
+                    # records the trial as not started).
+                    if self._usage_stop.error is not None:
+                        self._usage_stop.skip(td.name)
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
                     continue
@@ -2336,6 +2474,7 @@ class Evaluation:
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
 
+                self._usage_stop.record(result)
                 self._log_and_report(td, result)
                 pairs.append((td.name, result))
 
@@ -2799,6 +2938,7 @@ class Evaluation:
 
         start = time.time()
 
+        self._usage_stop = UsageLimitStop()
         self._budget_guard = None
         if cfg.budget is not None:
             self._budget_guard = BudgetGuard(cfg.budget)
@@ -2941,6 +3081,11 @@ class Evaluation:
             **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
             **({"budget": job_result.budget} if job_result.budget is not None else {}),
+            **(
+                {"usage_limit": stop}
+                if (stop := self._usage_stop.summary()) is not None
+                else {}
+            ),
             **summary_source_fields(cfg.source_provenance, all_results),
             **(
                 {
@@ -3049,4 +3194,10 @@ class Evaluation:
         )
 
         self.result = job_result
+        if self._usage_stop.error is not None:
+            # The job stopped on its login's usage limit: raise the typed
+            # error (with this result) so a caller can switch logins and
+            # resume; summary.json and every finished trial are written.
+            self._usage_stop.error.result = job_result
+            raise self._usage_stop.error
         return job_result

@@ -8,10 +8,15 @@ import pytest
 import yaml
 
 from benchflow._utils.learner_memory import expected_skills_for_task
+from benchflow.agents.registry import (
+    _CLAUDE_AGENT_ACP_PACKAGE,
+    _CLAUDE_CODE_PACKAGE,
+)
 from benchflow.rollout import RolloutConfig, Scene, _resolve_prompts
 from benchflow.sandbox.user import DocumentNudgeUser, ModelDocumentNudgeUser
 from benchflow.scenes import compile_scenes_to_steps, scene_step_prompt, scene_step_role
 from benchflow.task import Task, TaskConfig, TaskDocument, TaskDocumentParseError
+from benchflow.task._document_profiles import _TASK_AUTHORING_PROFILES
 from benchflow.task.config import (
     MultiStepRewardStrategy,
     NetworkMode,
@@ -1387,3 +1392,42 @@ verifier:
 Do it.
 """
         )
+
+
+def test_multi_agent_profile_reviewer_model_is_one_the_pinned_adapter_accepts() -> None:
+    """The `multi-agent` profile's reviewer must name a live Claude model id.
+
+    The profile paired `agent: claude-agent-acp` with `model:
+    claude-sonnet-4-6`. The adapter pinned in `benchflow.agents.registry`
+    refuses that id: a zero-token `initialize` + `session/new` +
+    `session/set_config_option` probe against the real adapter answered
+    `-32603 Internal error` for `claude-sonnet-4-6`, `claude-sonnet-4-5` and
+    `claude-opus-4-8`, and accepted the ids below. So every task generated
+    from this profile got a reviewer that failed on each run, after the full
+    retry budget, with an opaque `acp_error`. The model API itself still
+    serves the refused ids, which is why this only bites through the adapter.
+
+    The accepted set is a property of the two pins, so this asserts them too:
+    a pin bump has to re-probe (as `tests/test_acp_pinned_protocol_guard.py`
+    requires for the neighbouring config-option wiring) rather than silently
+    inherit a stale list.
+    """
+    assert _CLAUDE_AGENT_ACP_PACKAGE == "@agentclientprotocol/claude-agent-acp@0.81.2"
+    assert _CLAUDE_CODE_PACKAGE == "@anthropic-ai/claude-code@2.1.280"
+
+    accepted_by_the_pinned_adapter = {
+        "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "default",
+        "haiku",
+        "sonnet",
+        "opus",
+    }
+    roles = _TASK_AUTHORING_PROFILES["multi-agent"]["agents"]["roles"]
+    reviewer = roles["reviewer"]
+
+    assert reviewer["agent"] == "claude-agent-acp"
+    assert reviewer["model"] in accepted_by_the_pinned_adapter

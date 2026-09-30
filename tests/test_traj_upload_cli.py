@@ -764,9 +764,11 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     (follow-up to PRs #1013 and #1014): the prompt tells the agent to
     upgrade BenchFlow before reading the skill, the upgrade command appears
     before the skill URL, and the URL sits on one unbroken physical line.
-    README.md renders the prompt as a blockquote (a fenced code block would
-    not soft-wrap on GitHub), so each unwrapped prompt line is asserted to be
-    present in the README instead of the whole string verbatim.
+    The prize page renders the prompt as a blockquote (a fenced code block
+    would not soft-wrap on GitHub), so each unwrapped prompt line is asserted
+    to be present on the page instead of the whole string verbatim. The page
+    is docs/traj-upload.md since dx/first-run moved the prize flow out of the
+    README's quick start (the README links to it).
     """
     from benchflow.cli.traj import (
         CONTRIBUTOR_PROMPT,
@@ -776,8 +778,8 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     )
 
     result = runner.invoke(app, ["traj", "setup", "--prompt"])
-    readme = Path(__file__).resolve().parents[1] / "README.md"
-    readme_text = readme.read_text(encoding="utf-8")
+    page = Path(__file__).resolve().parents[1] / "docs" / "traj-upload.md"
+    page_text = page.read_text(encoding="utf-8")
 
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
@@ -789,9 +791,9 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     prompt_lines = [line for line in CONTRIBUTOR_PROMPT.splitlines() if line]
     assert len(prompt_lines) == 3
     for line in prompt_lines:
-        assert line in readme_text
+        assert line in page_text
     # Wording updated on main in 8cae2a42 ("Send these to your coding agent.").
-    assert "Send these to your coding agent" in readme_text
+    assert "Send these to your coding agent" in page_text
 
     assert UPGRADE_COMMAND in CONTRIBUTOR_PROMPT
     assert CONTRIBUTOR_PROMPT.index(UPGRADE_COMMAND) < CONTRIBUTOR_PROMPT.index(

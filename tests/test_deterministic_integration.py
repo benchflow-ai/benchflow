@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -531,7 +532,9 @@ def test_verifier_error_is_an_assessment_error_never_zero(eval_job):
 # ---------------------------------------------------------------------------
 
 
-def _check_branch(run: h.CliRun, golden: str, *, isolated: bool) -> None:
+def _check_branch(
+    run: h.CliRun, golden: str, *, isolated: bool, native: bool = False
+) -> None:
     assert run.returncode == 0, run.output[-4000:]
     (trial,) = run.trial_dirs()
     tree = h.read_json(trial / "tree.json")
@@ -568,6 +571,11 @@ def _check_branch(run: h.CliRun, golden: str, *, isolated: bool) -> None:
             _check_trial(child_dir, None, route="native")
 
     parent = _check_trial(trial, None, route="native")
+    parent_view = _golden_view(parent)
+    if native:
+        # Claude Code's own CLI: the ACP run's golden file, bar the ATIF name.
+        _check_native_contract(trial, "claude-code", proxied=False)
+        parent_view = _as_acp_golden(parent_view)
     h.Golden(golden).check(
         {
             "fork": {
@@ -584,7 +592,7 @@ def _check_branch(run: h.CliRun, golden: str, *, isolated: bool) -> None:
                     for label, c in zip(labels, children, strict=True)
                 ],
             },
-            "parent": _golden_view(parent),
+            "parent": parent_view,
         }
     )
 
@@ -651,3 +659,610 @@ def test_fixture_task_is_valid_and_marks_one_script():
     for prompt in (DRAFT_PROMPT, PASS_CHILD, WRONG_CHILD, RETRY_PROMPT):
         (name,) = __import__("re").findall(r"\[\[fake-llm:([^\]]+)\]\]", prompt)
         assert name in scripts
+
+
+# ---------------------------------------------------------------------------
+# Native harness (benchflow.native_harness): the same scenarios through the
+# agents' own CLIs (`--harness native`). Claude Code native must reproduce
+# the ACP golden files above; Codex runs both harnesses here against the
+# fake's Responses API and compares them. Every native trial also passes the
+# harness contract: the pinned CLI ran with its headless flags, its JSON
+# events are kinds the recorded samples of that pin contain, and every model
+# call it made reached BenchFlow's proxy.
+# ---------------------------------------------------------------------------
+
+NATIVE = ("--harness", "native")
+NATIVE_SAMPLES = Path(__file__).parent / "fixtures" / "native_harness"
+# The one field of the golden view a native Claude Code run legitimately
+# changes: the ATIF agent name is the CLI, not the ACP adapter.
+ACP_AGENT_NAME = "@agentclientprotocol/claude-agent-acp"
+
+CODEX_VARIANTS = {
+    "codex-hello-pass": h.TaskVariant("codex-hello-pass", "hello-pass"),
+    "codex-wrong-answer": h.TaskVariant("codex-wrong-answer", "hello-wrong"),
+    # codex-acp does not notice its Codex process dying: this runs to the
+    # agent timeout on the ACP side (see _CODEX_CRASH).
+    "codex-agent-crash": h.TaskVariant(
+        "codex-agent-crash", "codex-crash", agent_timeout_sec=60.0
+    ),
+    "codex-slow-model": h.TaskVariant(
+        "codex-slow-model", "slow-model", agent_timeout_sec=45.0
+    ),
+}
+# One allowlisted task (agent.network_mode: allowlist): only example.com and
+# the model gateway are reachable for the agent.
+ALLOWLIST_VARIANT = h.TaskVariant(
+    "codex-allowlist", "hello-pass", allowed_hosts=("example.com",)
+)
+
+
+def _concurrency() -> list[str]:
+    return [
+        "--concurrency",
+        os.environ.get("BENCHFLOW_DETERMINISTIC_CONCURRENCY", "4"),
+        "--retry-attempts",
+        "0",
+    ]
+
+
+@pytest.fixture(scope="session")
+def native_eval_job(det_root, fake_url) -> h.CliRun:
+    return _run(
+        det_root,
+        "eval-native",
+        ["eval", "run"],
+        list(EVAL_VARIANTS.values()),
+        fake_url,
+        extra=[*_concurrency(), *NATIVE],
+    )
+
+
+@pytest.fixture(scope="session")
+def native_branch_in_place(det_root, fake_url) -> h.CliRun:
+    return _branch(det_root, fake_url, "branch-in-place-native", extra=NATIVE)
+
+
+@pytest.fixture(scope="session")
+def native_branch_resume(det_root, fake_url) -> h.CliRun:
+    return _branch(
+        det_root, fake_url, "branch-resume-native", extra=[*NATIVE, "--resume-session"]
+    )
+
+
+@pytest.fixture(scope="session")
+def codex_acp_job(det_root, fake_url) -> h.CliRun:
+    return _run(
+        det_root,
+        "codex-acp",
+        ["eval", "run"],
+        list(CODEX_VARIANTS.values()),
+        fake_url,
+        route="codex",
+        extra=_concurrency(),
+    )
+
+
+@pytest.fixture(scope="session")
+def codex_native_job(det_root, fake_url) -> h.CliRun:
+    return _run(
+        det_root,
+        "codex-native",
+        ["eval", "run"],
+        list(CODEX_VARIANTS.values()),
+        fake_url,
+        route="codex",
+        extra=[*_concurrency(), *NATIVE],
+    )
+
+
+@pytest.fixture(scope="session")
+def codex_allowlist_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    """The allowlisted task on both harnesses (proxy in the sandbox)."""
+    return {
+        harness: _run(
+            det_root,
+            f"codex-allowlist-{harness}",
+            ["eval", "run"],
+            [ALLOWLIST_VARIANT],
+            fake_url,
+            route="codex-in-sandbox",
+            extra=["--retry-attempts", "0", "--harness", harness],
+        )
+        for harness in ("acp", "native")
+    }
+
+
+def _stream(trial: Path, cli: str) -> list[dict[str, Any]]:
+    path = trial / "agent" / f"{cli}.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    return [e for e in events if "benchflow_native_turn" not in e]
+
+
+def _event_kind(event: dict[str, Any]) -> tuple[str, ...]:
+    kind = str(event.get("type"))
+    if kind == "stream_event":
+        return kind, str((event.get("event") or {}).get("type"))
+    if kind in ("system", "result"):
+        return kind, str(event.get("subtype"))
+    if kind.startswith("item."):
+        return kind, str((event.get("item") or {}).get("type"))
+    return (kind,)
+
+
+def _sample_kinds(cli: str) -> set[tuple[str, ...]]:
+    from benchflow.agents.registry import pinned_npm_package
+
+    version = pinned_npm_package("claude-code" if cli == "claude-code" else "codex")[1]
+    kinds: set[tuple[str, ...]] = set()
+    for path in (NATIVE_SAMPLES / f"{cli}-{version}").glob("*.jsonl"):
+        kinds |= {
+            _event_kind(json.loads(line)) for line in path.read_text().splitlines()
+        }
+    return kinds
+
+
+def _check_native_contract(trial: Path, cli: str, *, proxied: bool = True) -> None:
+    """The harness contract, on one native trial.
+
+    ``proxied=False`` is the subscription route (the CLI calls the model
+    itself, as over ACP), where there is no proxy to account for the calls.
+    """
+    from benchflow.native_harness.harnesses import CLAUDE_CODE, CODEX
+
+    harness = CLAUDE_CODE if cli == "claude-code" else CODEX
+    config = h.read_json(trial / "config.json")
+    assert config["harness_mode"] == "native"
+    assert config["native_harness"] == {"cli": cli, "package": harness.package}
+    turns = h.read_json(trial / "agent" / "native-turns.json")
+    assert turns, "no native turn ran"
+    for turn in turns:
+        assert turn["version"] == harness.version
+        argv = turn["argv"]
+        # The headless flags the harness launches the pinned CLI with.
+        if cli == "claude-code":
+            assert argv[:3] == ["-p", "--output-format", "stream-json"]
+            assert {"--verbose", "--include-partial-messages"} <= set(argv)
+        else:
+            assert argv[0] == "exec" and "--json" in argv and argv[-1] == "-"
+    # The JSON output parses, and every event is a kind the pin's recorded
+    # samples contain (a new kind is a format change to look at).
+    stream = _stream(trial, cli)
+    assert stream, "the CLI wrote no JSON events"
+    unknown = {_event_kind(e) for e in stream} - _sample_kinds(cli)
+    assert not unknown, f"event kinds the {cli} samples do not have: {unknown}"
+    # Every model call the CLI made reached BenchFlow's proxy: the model
+    # responses the CLI reports equal the calls the proxy captured.
+    if cli == "claude-code":
+        responses = {
+            (e.get("message") or {}).get("id")
+            for e in stream
+            if e.get("type") == "assistant" and e.get("parent_tool_use_id") is None
+        }
+    else:
+        responses = {
+            (e.get("item") or {}).get("id")
+            for e in stream
+            if e.get("type") == "item.completed"
+            and (e.get("item") or {}).get("type") == "agent_message"
+        }
+    main_calls = [c for c in h.llm_calls(trial) if c["kind"] == "main"]
+    if proxied:
+        assert len(main_calls) == len(responses), (main_calls, responses)
+    else:
+        assert main_calls == [] and responses
+
+
+def _as_acp_golden(view: dict[str, Any]) -> dict[str, Any]:
+    atif = view.get("atif")
+    if isinstance(atif, dict):
+        atif["agent"]["name"] = ACP_AGENT_NAME
+    return view
+
+
+@needs_sandbox
+def test_native_eval_job_summary_matches_acp(native_eval_job):
+    """The same five tasks end the same way through Claude Code's own CLI."""
+    assert native_eval_job.returncode == 1, native_eval_job.output[-4000:]
+    (job,) = native_eval_job.job_dirs()
+    summary = h.read_json(job / "summary.json")
+    counts = {
+        k: summary[k]
+        for k in ("passed", "failed", "errored", "verifier_errored", "unscored")
+    }
+    assert counts == {
+        "passed": 2,
+        "failed": 1,
+        "errored": 1,
+        "verifier_errored": 1,
+        "unscored": 0,
+    }
+    assert summary["error_categories"] == {"acp_error": 1, "timeout": 1}
+    assert summary["verifier_error_categories"] == {"verifier_failure": 1}
+
+
+@needs_sandbox
+@pytest.mark.parametrize(
+    ("variant", "golden"),
+    [
+        ("hello-pass", "eval-hello-pass"),
+        ("wrong-answer", "eval-wrong-answer"),
+        ("timeout-pass", "eval-timeout-pass"),
+        ("agent-crash", "eval-agent-crash"),
+        ("verifier-error", "eval-verifier-error"),
+    ],
+)
+def test_native_claude_code_reproduces_the_acp_golden(native_eval_job, variant, golden):
+    """Outcome parity, and more: the ACP run's golden file, field for field.
+
+    The golden view holds the outcome labels, the result.json subset
+    (rewards, counts, error categories, usage, metrics, trajectory summary,
+    timing keys), the provider calls, the ACP trajectory and the ATIF export.
+    Only the ATIF agent name may differ.
+    """
+    trial = native_eval_job.trial(variant)
+    facts = _check_trial(trial, None)
+    _check_native_contract(trial, "claude-code")
+    h.Golden(golden).check(_as_acp_golden(_golden_view(facts)))
+
+
+@needs_sandbox
+def test_native_timeout_kills_the_cli_and_keeps_the_pending_call(native_eval_job):
+    trial = native_eval_job.trial("timeout-pass")
+    (turn,) = h.read_json(trial / "agent" / "native-turns.json")
+    assert turn["cancelled"] is True and turn["stop_reason"] == "cancelled"
+
+
+@needs_sandbox
+def test_native_crash_is_an_agent_error_with_the_clis_exit_status(native_eval_job):
+    trial = native_eval_job.trial("agent-crash")
+    result = h.read_json(trial / "result.json")
+    assert result["error"].startswith("Native harness error (claude-code)")
+    assert "exit code 137" in result["error"]
+
+
+@needs_sandbox
+def test_native_branch_reproduces_the_acp_golden(native_branch_in_place):
+    """Two prompts on one CLI session, a checkpoint, two children, a restore."""
+    _check_branch(
+        native_branch_in_place, "branch-in-place", isolated=False, native=True
+    )
+
+
+@needs_sandbox
+def test_native_branch_children_resume_the_cli_session(native_branch_resume):
+    """--resume-session: each child continues the parent's CLI session.
+
+    The session lives in the sandbox (Claude Code's session log under the
+    sandbox user's home), so the child's ``claude -p --resume`` finds it in
+    the restored checkpoint; a missing session fails the child's turn.
+    """
+    run = native_branch_resume
+    assert run.returncode == 0, run.output[-4000:]
+    (trial,) = run.trial_dirs()
+    (fork,) = h.read_json(trial / "tree.json")["forks"]
+    assert [c["reward"] for c in fork["children"]] == [1.0, 0.0]
+    draft = h.read_json(trial / "agent" / "native-turns.json")[0]
+    assert draft["resumed"] is None and draft["stop_reason"] == "end_turn"
+    children = trial / "branches" / fork["id"] / "children"
+    for child in fork["children"]:
+        # Each child writes its own evidence (the rollout follows it there).
+        (turn,) = h.read_json(
+            children / child["node_id"] / "agent" / "native-turns.json"
+        )
+        assert turn["resumed"] == draft["session_id"]
+        assert turn["argv"][turn["argv"].index("--resume") + 1] == draft["session_id"]
+        # The CLI continued that session rather than starting a new one.
+        assert turn["session_id"] == draft["session_id"]
+        assert turn["stop_reason"] == "end_turn"
+
+
+# ----- wire parity ---------------------------------------------------------
+
+# The written list of expected request differences: where the two harnesses'
+# requests may differ, and why. Each one is removed by exactly one
+# normalization below (_normalize_claude, _normalize_codex); after them, and
+# after ids are normalized, every request pair must be identical: model,
+# system prompt, messages, tool definitions, thinking, limits and identifying
+# headers.
+WIRE_EXPECTED_DIFFERENCES: dict[str, list[tuple[str, str]]] = {
+    "claude-code": [
+        (
+            "headers.user-agent",
+            "Claude Code names its entrypoint: sdk-ts and the Agent SDK version "
+            "(the SDK inside claude-agent-acp), or sdk-cli (print mode)",
+        ),
+        (
+            "body.system[0].text",
+            "the same entrypoint in the billing line (cc_entrypoint)",
+        ),
+        (
+            "body.tools",
+            "the ACP session starts in the default permission mode, whose "
+            "EnterPlanMode and ExitPlanMode tools bypassPermissions does not "
+            "offer; the other tool definitions are identical, in order",
+        ),
+        (
+            "body.messages[*].content[*].content",
+            "the adapter hands the SDK the session directory as an additional "
+            "working directory, which adds an 'Environment update' reminder "
+            "(Additional working directories added: /app) to the first tool "
+            "result",
+        ),
+    ],
+    "codex": [
+        (
+            "headers.originator, headers.user-agent",
+            "codex-acp names the ACP client (benchflow, with its version); exec "
+            "names itself (codex_exec)",
+        ),
+    ],
+}
+_CLAUDE_UA_ENTRYPOINT = re.compile(
+    r"\(external, sdk-(?:ts|cli)(?:, agent-sdk/[\w.]+)?\)"
+)
+_CLAUDE_BILLING_ENTRYPOINT = re.compile(r"cc_entrypoint=sdk-(?:ts|cli);")
+_ACP_ONLY_TOOLS = ["EnterPlanMode", "ExitPlanMode"]
+_ACP_ENVIRONMENT_UPDATE = re.compile(
+    r"\n\n<system-reminder>\n# Environment update\n"
+    r" - Additional working directories added:\n(?:  - [^\n]*\n)+</system-reminder>"
+)
+_CODEX_CLIENT_NAME = re.compile(
+    r"^(?:benchflow|codex_exec)/|\((?:benchflow|codex_exec); [\w.]+\)$"
+)
+
+
+def _normalize_claude(request: dict[str, Any], *, acp: bool) -> dict[str, Any]:
+    """Remove the written Claude Code differences (and only those)."""
+    headers = request["headers"]
+    headers["user-agent"] = _CLAUDE_UA_ENTRYPOINT.sub(
+        "(external, <entrypoint>)", headers.get("user-agent", "")
+    )
+    body = request["body"]
+    system = body.get("system")
+    if isinstance(system, list) and system and isinstance(system[0], dict):
+        system[0]["text"] = _CLAUDE_BILLING_ENTRYPOINT.sub(
+            "cc_entrypoint=<entrypoint>;", system[0].get("text", "")
+        )
+    if acp:
+        tools = body.get("tools") or []
+        assert [t["name"] for t in tools if t["name"] in _ACP_ONLY_TOOLS] == (
+            _ACP_ONLY_TOOLS
+        )
+        body["tools"] = [t for t in tools if t["name"] not in _ACP_ONLY_TOOLS]
+        for message in body.get("messages") or []:
+            content = message.get("content")
+            for block in content if isinstance(content, list) else []:
+                if block.get("type") == "tool_result" and isinstance(
+                    block.get("content"), str
+                ):
+                    block["content"] = _ACP_ENVIRONMENT_UPDATE.sub("", block["content"])
+    return request
+
+
+def _tool_results(request: dict[str, Any]) -> list[str]:
+    return [
+        block["content"]
+        for message in request["body"].get("messages") or []
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result" and isinstance(block.get("content"), str)
+    ]
+
+
+def _normalize_codex(request: dict[str, Any]) -> dict[str, Any]:
+    """Remove the written Codex difference (the client's name and version)."""
+    headers = request["headers"]
+    if headers.get("originator") in ("benchflow", "codex_exec"):
+        headers["originator"] = "<client>"
+    headers["user-agent"] = _CODEX_CLIENT_NAME.sub(
+        lambda m: "<client>/" if m.group(0).endswith("/") else "(<client>)",
+        headers.get("user-agent", ""),
+    )
+    return request
+
+
+_WIRE_VOLATILE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|"
+    r"[0-9a-f]{64}|Chunk ID: [0-9a-f]+"
+)
+
+
+def _wire(job: h.CliRun, marker: str) -> list[dict[str, Any]]:
+    """The proxy-entry requests of the task with ``marker``, ids normalized."""
+    rows = []
+    for path in sorted(job.wire_dir.glob("wire-*.jsonl")):
+        rows += h.read_jsonl(path)
+    picked = [r for r in rows if marker in json.dumps(r["body"])]
+    return [json.loads(_WIRE_VOLATILE.sub("<id>", json.dumps(r))) for r in picked]
+
+
+def _json_diff(a: Any, b: Any, path: str = "") -> list[str]:
+    if isinstance(a, dict) and isinstance(b, dict):
+        out: list[str] = []
+        for key in sorted(set(a) | set(b)):
+            sub = f"{path}.{key}" if path else str(key)
+            if key not in a or key not in b:
+                out.append(sub)
+            else:
+                out += _json_diff(a[key], b[key], sub)
+        return out
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        return [
+            d
+            for i, (x, y) in enumerate(zip(a, b, strict=True))
+            for d in _json_diff(x, y, f"{path}[{i}]")
+        ]
+    return [] if a == b else [path]
+
+
+def _drop_volatile_keys(request: dict[str, Any]) -> dict[str, Any]:
+    body = request["body"]
+    body.pop("metadata", None)  # Claude: user_id carries device and session ids
+    body.pop("client_metadata", None)  # Codex: thread, turn and installation ids
+    body.pop("prompt_cache_key", None)  # Codex: the thread id
+    return request
+
+
+@needs_sandbox
+@pytest.mark.parametrize("variant", ["hello-pass", "wrong-answer"])
+def test_claude_code_wire_parity(eval_job, native_eval_job, variant):
+    """Both harnesses send the proxy the same requests, bar the written list."""
+    marker = h.marker(EVAL_VARIANTS[variant].script)
+    acp = [_drop_volatile_keys(r) for r in _wire(eval_job, marker)]
+    native = [_drop_volatile_keys(r) for r in _wire(native_eval_job, marker)]
+    # The session-title side call is a race on the ACP side; compare the loop.
+    acp = [r for r in acp if r["body"].get("tools")]
+    native = [r for r in native if r["body"].get("tools")]
+    assert len(acp) == len(native) > 0
+    # The adapter's reminder is really there, in a tool result.
+    assert any(
+        _ACP_ENVIRONMENT_UPDATE.search(text) for r in acp for text in _tool_results(r)
+    )
+    for a, n in zip(acp, native, strict=True):
+        assert (
+            _json_diff(_normalize_claude(a, acp=True), _normalize_claude(n, acp=False))
+            == []
+        )
+
+
+@needs_sandbox
+@pytest.mark.parametrize("variant", ["codex-hello-pass", "codex-wrong-answer"])
+def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
+    marker = h.marker(CODEX_VARIANTS[variant].script)
+    acp = [_drop_volatile_keys(r) for r in _wire(codex_acp_job, marker)]
+    native = [_drop_volatile_keys(r) for r in _wire(codex_native_job, marker)]
+    assert len(acp) == len(native) > 0
+    for a, n in zip(acp, native, strict=True):
+        assert _json_diff(_normalize_codex(a), _normalize_codex(n)) == []
+
+
+# ----- Codex: both harnesses on the same scenarios -------------------------
+
+_CODEX_OUTCOMES = {
+    "codex-hello-pass": ("completed", "scored", 1.0),
+    "codex-wrong-answer": ("completed", "scored", 0.0),
+    # No model response before the agent timeout (no tool call, no usage):
+    # an integration failure, never a score.
+    "codex-slow-model": ("integration_failed", "unscored", None),
+}
+# The one written outcome difference. When the Codex process dies mid-turn
+# (its own tool call kills it here), codex-acp 1.13.1 does not report it: the
+# prompt runs to the agent timeout and the verifier scores the untouched
+# workspace. The native harness reports the CLI's death at once as an agent
+# error, as both harnesses do for Claude Code (the agent-crash golden).
+_CODEX_CRASH = {
+    "acp": ("timed_out", "scored", 0.0),
+    "native": ("errored", "unscored", None),
+}
+
+
+def _codex_facts(trial: Path) -> dict[str, Any]:
+    """The facts both Codex harnesses must share, ids of tool calls aside."""
+    facts = _trial_facts(trial)
+    result = facts["result"]
+    trajectory = [
+        {k: v for k, v in e.items() if k not in ("tool_call_id", "content")}
+        for e in facts["acp_trajectory"]
+    ]
+    for event in trajectory:
+        if event.get("type") == "agent_timeout":
+            event["pending_tool_call_ids"] = len(event["pending_tool_call_ids"])
+    timeout = result["agent_timeout"]
+    return {
+        "outcome": facts["outcome"],
+        "rewards": result["rewards"],
+        "n_tool_calls": result["n_tool_calls"],
+        "n_prompts": result["n_prompts"],
+        "error_category": result["error_category"],
+        "agent_timeout": {
+            **timeout,
+            "pending_tool_call_ids": len(timeout["pending_tool_call_ids"]),
+        }
+        if timeout
+        else None,
+        "usage": {
+            k: result["agent_result"][k]
+            for k in (
+                "n_input_tokens",
+                "n_output_tokens",
+                "total_tokens",
+                "cost_usd",
+                "usage_source",
+            )
+        },
+        "trajectory_summary": result["trajectory_summary"],
+        "llm_calls": [
+            {**c, "tool_calls": [{**t, "id": None} for t in c["tool_calls"]]}
+            for c in facts["llm_calls"]
+            if c["kind"] == "main"
+        ],
+        "trajectory": trajectory,
+    }
+
+
+@needs_sandbox
+@pytest.mark.parametrize("variant", sorted(CODEX_VARIANTS))
+def test_codex_native_matches_codex_acp(codex_acp_job, codex_native_job, variant):
+    """Outcome and trajectory parity for Codex (tool call ids aside: codex-acp
+    exposes the model's call id, exec only its own item id)."""
+    acp_trial = codex_acp_job.trial(variant)
+    native_trial = codex_native_job.trial(variant)
+    acp, native = _codex_facts(acp_trial), _codex_facts(native_trial)
+    labels = ("execution", "assessment", "reward")
+    if variant == "codex-agent-crash":
+        assert acp["outcome"] == dict(zip(labels, _CODEX_CRASH["acp"], strict=True))
+        assert native["outcome"] == dict(
+            zip(labels, _CODEX_CRASH["native"], strict=True)
+        )
+        error = h.read_json(native_trial / "result.json")["error"]
+        assert error.startswith("Native harness error (codex)"), error
+        assert "exit code 137" in error
+        # Up to the crash the two runs are the same: the one model call, its
+        # usage, the trajectory before ACP's timeout event.
+        assert native["usage"] == acp["usage"]
+        assert native["trajectory"] == [
+            e for e in acp["trajectory"] if e["type"] != "agent_timeout"
+        ]
+    else:
+        assert acp["outcome"] == dict(
+            zip(labels, _CODEX_OUTCOMES[variant], strict=True)
+        )
+        assert native == acp
+    _check_native_contract(native_trial, "codex")
+    # Usage and cost come from the proxy on both harnesses (the slow model
+    # never answered, so there is none).
+    source = "unavailable" if variant == "codex-slow-model" else "provider_response"
+    assert native["usage"]["usage_source"] == source
+    assert h.trial_document_problems(native_trial) == []
+
+
+# ----- Codex under the egress allowlist ------------------------------------
+
+
+def _egress_blocked(trial: Path) -> list[dict[str, Any]]:
+    path = trial / "trajectory" / "egress_denylist.jsonl"
+    return h.read_jsonl(path) if path.is_file() else []
+
+
+@needs_sandbox
+def test_native_codex_reaches_nothing_but_the_gateway(codex_allowlist_jobs):
+    """With the agent allowlisted to example.com, native Codex still passes:
+    every model call went through the proxy, and the egress proxy saw no
+    attempt to reach api.openai.com, chatgpt.com or any other host."""
+    native = codex_allowlist_jobs["native"].trial("codex-allowlist")
+    result = h.read_json(native / "result.json")
+    assert result["rewards"] == {"reward": 1.0}, result.get("error")
+    assert result["agent_result"]["usage_source"] == "provider_response"
+    _check_native_contract(native, "codex")
+    assert _egress_blocked(native) == []
+
+
+@needs_sandbox
+def test_codex_acp_attempts_are_blocked_under_the_allowlist(codex_allowlist_jobs):
+    """The same task on codex-acp: whatever it tries outside the gateway (its
+    plugin marketplace sync opens chatgpt.com) is refused and logged."""
+    acp = codex_allowlist_jobs["acp"].trial("codex-allowlist")
+    result = h.read_json(acp / "result.json")
+    assert result["rewards"] == {"reward": 1.0}, result.get("error")
+    blocked = {str(r.get("url")) for r in _egress_blocked(acp)}
+    assert not any("api.openai.com" in url for url in blocked), blocked

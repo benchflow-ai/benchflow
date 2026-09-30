@@ -593,8 +593,43 @@ class IntegrationFailureDiagnostic(Diagnostic):
         )
 
 
+@dataclass
+class UsageLimitDiagnostic(Diagnostic):
+    """The login ran out of subscription usage (a typed ``UsageLimitError``).
+
+    Set by the rollout when the agent reports that its login's usage limit is
+    spent. ``login`` is a label (``CLAUDE_CODE_OAUTH_TOKEN (environment)``),
+    never a credential; ``resets_at`` is ISO 8601 UTC or None.
+    """
+
+    login: str | None = None
+    window: str | None = None
+    resets_at: str | None = None
+    detail: str = ""
+
+    field: ClassVar[str] = "usage_limit_info"
+    category: ClassVar[str | None] = "usage_limit"
+    summary_description: ClassVar[str] = (
+        "stopped on the login's usage limit (unscored; not retried)"
+    )
+    # Only the category reaches trainer artifacts; the fields are free text.
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = ()
+
+    @classmethod
+    def from_error(cls, error: Any) -> UsageLimitDiagnostic:
+        """From a :class:`benchflow.agents.errors.UsageLimitError`."""
+        return cls(**error.to_dict())
+
+    def format_issue(self, task_name: str) -> str:
+        where = f" on login {self.login}" if self.login else ""
+        window = f" {self.window} window" if self.window else ""
+        resets = f", resets {self.resets_at}" if self.resets_at else ""
+        return f"{task_name}: usage limit reached{where}{window}{resets} — unscored"
+
+
 # Public registry — every diagnostic kind goes here exactly once.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
+    UsageLimitDiagnostic,
     IdleTimeoutDiagnostic,
     AgentPromptTimeoutDiagnostic,
     SandboxStartupDiagnostic,
@@ -883,6 +918,7 @@ __all__ = [
     "TransportClosedDiagnostic",
     "VerifierTimeoutDiagnostic",
     "IntegrationFailureDiagnostic",
+    "UsageLimitDiagnostic",
     "DIAGNOSTIC_REGISTRY",
     "DIAGNOSTIC_BY_FIELD",
     "IdleTimeoutError",

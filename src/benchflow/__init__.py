@@ -49,6 +49,7 @@ from benchflow.adapters import (
     to_ors_reward,
     write_ors_tool_outputs_jsonl,
 )
+from benchflow.agents.errors import UsageLimitError
 from benchflow.agents.registry import (
     AGENTS,
     get_agent,
@@ -281,6 +282,7 @@ __all__ = [
     "AgentInstallError",
     "AgentTimeoutError",
     "RolloutResult",
+    "UsageLimitError",
     # Monitor mode — scaffolded API surface (#386)
     "Monitor",
     "MonitorConfig",

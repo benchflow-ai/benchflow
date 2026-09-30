@@ -113,6 +113,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--sandbox", choices=["docker", "daytona"], default="docker")
     parser.add_argument("--agent", default="claude-agent-acp")
-    parser.add_argument("--model", default="claude-sonnet-4-6")
+    parser.add_argument("--model", default="claude-sonnet-5")
     parser.add_argument("--jobs-dir", default="jobs")
     asyncio.run(main(parser.parse_args()))

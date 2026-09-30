@@ -5,7 +5,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from benchflow.agents.errors import AgentProtocolError
+from benchflow.agents.errors import AgentProtocolError, UsageLimitError
+from benchflow.agents.usage_limits import is_usage_limit_text
 
 from .session import ACPSession, _host_receipt
 from .transport import StdioTransport, Transport
@@ -31,6 +32,108 @@ logger = logging.getLogger(__name__)
 # Callable invoked when the agent issues ``session/request_permission``.
 # Receives the raw params dict and returns the option_id to select.
 AskUserHandler = Callable[[dict[str, Any]], Awaitable[str]]
+
+# Typed session failures (the "AIR" extension of claude-agent-acp 0.73+ and
+# codex-acp 1.13+). A client that advertises this capability gets each
+# provider failure as a record on the prompt response (``stopReason``
+# end_turn plus ``_meta.jetbrains.air.sessionFailure``) instead of an opaque
+# -32603, and a spent subscription as its own kind: category "limit" with no
+# action to offer (a rate limit offers "retry", a spent budget or context
+# "new_session"). Retry notices and advisories arrive as
+# ``session_info_update`` notifications. Advertised only for agents whose
+# ``AgentConfig.acp_typed_failures`` is set.
+AIR_SESSION_FAILURE_META: dict[str, Any] = {
+    "jetbrains": {"air": {"version": 1, "capabilities": ["sessionFailure"]}}
+}
+
+
+def session_failure(meta: Any) -> dict[str, Any] | None:
+    """The ``_meta.jetbrains.air.sessionFailure`` record in ``meta``, if any."""
+    if not isinstance(meta, dict):
+        return None
+    jetbrains = meta.get("jetbrains")
+    air = jetbrains.get("air") if isinstance(jetbrains, dict) else None
+    failure = air.get("sessionFailure") if isinstance(air, dict) else None
+    return failure if isinstance(failure, dict) else None
+
+
+# AIR's severities are "warning", an advisory the turn went on after, and
+# "error". Any other value, or none, counts as an error, so a failed turn
+# never passes as a finished one.
+_ADVISORY_SEVERITIES = frozenset({"warning"})
+
+
+def is_spent_subscription(failure: dict[str, Any]) -> bool:
+    """Whether a record says the login has no quota left.
+
+    Category ``limit`` with no action to offer (a rate limit offers
+    ``retry``, a spent budget or context ``new_session``), or the CLI's own
+    usage-limit words in the title.
+    """
+    actions = failure.get("actions")
+    if failure.get("category") == "limit" and isinstance(actions, list) and not actions:
+        return True
+    return is_usage_limit_text(str(failure.get("title") or ""))
+
+
+def is_advisory(failure: dict[str, Any]) -> bool:
+    """Whether a session-failure record is only an advisory.
+
+    A spent login never is, whatever severity it carries: the turn cannot
+    have done any work, and treating it as an advisory would verify the
+    untouched workspace, score it 0 and let the rest of the job keep
+    spending trials on a login that can no longer answer.
+    """
+    severity = failure.get("severity")
+    if not (
+        isinstance(severity, str) and severity.strip().lower() in _ADVISORY_SEVERITIES
+    ):
+        return False
+    return not is_spent_subscription(failure)
+
+
+def session_failure_error(failure: dict[str, Any]) -> AgentProtocolError:
+    """The exception for a failure the agent ended its turn with.
+
+    A spent subscription (category ``limit`` with no action, or the CLI's own
+    usage-limit words) is a :class:`UsageLimitError`. Every other failure is
+    the same ``ACPError(-32603, "Internal error: <text>")`` the agent raised
+    before BenchFlow opted in, so its classification (rate limit, auth,
+    overload, lost connection) and retry verdict do not change.
+    """
+    title = str(failure.get("title") or "").strip()
+    details = str(failure.get("details") or "").strip()
+    if is_spent_subscription(failure):
+        return UsageLimitError.from_text(title) or UsageLimitError(
+            title or "the account has no available quota"
+        )
+    text = title or "the agent ended its turn on a failure"
+    if details and details not in text:
+        text = f"{text}: {details}"
+    if failure.get("category") == "connection":
+        # claude-agent-acp's transport_lost covers its CLI process dying and
+        # the CLI's stream failing; its record does not say which, the
+        # adapter's log (agent/<agent>.txt) does.
+        text = (
+            f"{text.rstrip('.')}: the agent's own process ended or lost its "
+            "stream (not BenchFlow's connection to the sandbox); the agent log "
+            "in the trial's agent/ folder says which"
+        )
+    return ACPError(-32603, f"Internal error: {text}")
+
+
+def acp_error(code: int, message: str, data: Any = None) -> AgentProtocolError:
+    """The exception for a JSON-RPC error: a usage limit is typed, the rest ACPError.
+
+    Without the typed-failure capability, codex-acp (1.13 and 2.0) answers a
+    spent ChatGPT plan with ``-32603 "Internal error"`` whose ``data`` is
+    ``{"message": <Codex's text>, "codexErrorInfo": "usageLimitExceeded"}``;
+    claude-agent-acp puts its "You've hit your ... limit" text in the message.
+    """
+    if isinstance(data, dict) and data.get("codexErrorInfo") == "usageLimitExceeded":
+        detail = str(data.get("message") or message)
+        return UsageLimitError.from_text(detail) or UsageLimitError(detail)
+    return UsageLimitError.from_text(message) or ACPError(code, message, data)
 
 
 def _auto_approve_option_id(options: list[dict[str, Any]]) -> str:
@@ -61,8 +164,15 @@ class ACPClient:
     Lifecycle: connect → initialize → session_new → prompt (loop) → close
     """
 
-    def __init__(self, transport: Transport, *, subagent_transcript: bool = False):
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        subagent_transcript: bool = False,
+        typed_failures: bool = False,
+    ):
         self._transport = transport
+        self._typed_failures = typed_failures
         self._request_id = 100000  # High start to avoid collision with agent IDs
         self._session: ACPSession | None = None
         # True when session/new returned no sessionId and the session runs
@@ -168,9 +278,10 @@ class ACPClient:
             # from echoed requests when running through a PTY)
             if "id" in msg and msg["id"] == request_id and "method" not in msg:
                 if msg.get("error"):
-                    raise ACPError(
+                    raise acp_error(
                         msg["error"].get("code", -1),
                         msg["error"].get("message", "Unknown error"),
+                        msg["error"].get("data"),
                     )
                 return msg.get("result", {})
 
@@ -225,7 +336,7 @@ class ACPClient:
                     self._session.session_id,
                 )
                 return
-            update = params.get("update", {})
+            update = _session_notice(params.get("update", {}))
             logger.debug(
                 f"ACPClient session/update: {update.get('sessionUpdate', '?')}"
                 f" toolCallId={update.get('toolCallId', '')}"
@@ -322,9 +433,15 @@ class ACPClient:
                 fs=FsCapabilities(read_text_file=False, write_text_file=False),
                 terminal=False,
                 auth=AuthCapabilities(),
-                field_meta=(
-                    {"subagent-transcript": True} if self._subagent_transcript else None
-                ),
+                field_meta={
+                    **(AIR_SESSION_FAILURE_META if self._typed_failures else {}),
+                    **(
+                        {"subagent-transcript": True}
+                        if self._subagent_transcript
+                        else {}
+                    ),
+                }
+                or None,
             ),
             client_info=ClientInfo(name="benchflow", version="2.0.0"),
         )
@@ -457,6 +574,12 @@ class ACPClient:
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
         )
         prompt_result = PromptResult.model_validate(result)
+        # A turn the agent ended on a failure (see AIR_SESSION_FAILURE_META)
+        # raises as the agent's -32603 did, never passes as a finished turn:
+        # verifying it would score the untouched workspace 0.
+        failure = session_failure(prompt_result.field_meta)
+        if failure is not None and not is_advisory(failure):
+            raise session_failure_error(failure)
         # The SDK exposes ``stop_reason`` as a plain string; coerce it to the
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
         # comparisons working.
@@ -480,10 +603,52 @@ class ACPClient:
         await self._transport.close()
 
 
-class ACPError(AgentProtocolError):
-    """Error from ACP agent."""
+def _session_notice(update: Any) -> Any:
+    """Log a typed-failure notice; keep an advisory in the transcript.
 
-    def __init__(self, code: int, message: str):
+    With the typed-failure capability, claude-agent-acp sends as
+    ``session_info_update`` what it otherwise writes into the transcript or
+    drops: provider retries ("Retrying Claude, attempt 2 of 10."), a failure
+    outside any turn, and advisories such as a model fallback ("<model>
+    declined this request; retried with <other model>"). Retries and
+    failures are logged. An advisory stays evidence in the trajectory: it
+    becomes the agent message it was before the opt-in (``**Notice:** ...``).
+    Any other update is returned unchanged.
+    """
+    if not isinstance(update, dict) or update.get("sessionUpdate") != (
+        "session_info_update"
+    ):
+        return update
+    failure = session_failure(update.get("_meta"))
+    title = str((failure or {}).get("title") or "").strip()
+    if failure is None or not title:
+        return update
+    if not is_advisory(failure):
+        logger.warning("Agent reported: %s", title)
+        return update
+    if failure.get("category") == "unknown":
+        details = str(failure.get("details") or "").strip()
+        text = f"**Notice:** {title}" + (f"\n\n{details}" if details else "")
+        logger.warning("Agent notice: %s", title)
+        return {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": f"{text}\n\n"},
+        }
+    logger.info("Agent notice: %s", title)
+    return update
+
+
+class ACPError(AgentProtocolError):
+    """Error from ACP agent.
+
+    ``data`` is the JSON-RPC error's ``data`` (the ACP TypeScript SDK puts a
+    thrown ``Error``'s text in ``{"details": ...}``); it is kept for callers
+    that need it, and never added to the message, whose text categories are
+    read from.
+    """
+
+    def __init__(self, code: int, message: str, data: Any = None):
         self.code = code
         self.message = message
+        self.data = data
         super().__init__(f"ACP error {code}: {message}")

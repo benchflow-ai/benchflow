@@ -1,0 +1,37 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points",
+    "headline": "partial",
+    "pass_threshold": 0.7
+  },
+  "criteria": [
+    {
+      "id": "root-cause",
+      "points": 2,
+      "judge": "llm",
+      "evidence": [
+        "summary.md",
+        "/work/incident.log"
+      ],
+      "text": "The summary names the component that failed and the time it failed.",
+      "stated": "what failed, when"
+    },
+    {
+      "id": "usefulness",
+      "points": 1,
+      "judge": "llm",
+      "score": {
+        "min": 0,
+        "max": 100
+      },
+      "evidence": [
+        "summary.md"
+      ],
+      "text": "How useful the summary is to the on-call engineer.",
+      "stated": "for the on-call engineer",
+      "guidance": "100 means the engineer could act on it without opening the log."
+    }
+  ]
+}

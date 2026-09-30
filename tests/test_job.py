@@ -972,6 +972,13 @@ class TestResolveJobNameSkipsOtherRuns:
         )
         assert name != "2026-09-30__05-21-59"
 
+    def test_a_named_job_with_trials_still_resumes(self, tmp_path):
+        """A folder with trial folders is a job, whatever its name."""
+        jobs_dir = tmp_path / "jobs"
+        (jobs_dir / "old-run" / "task-a__1").mkdir(parents=True)
+        (jobs_dir / "old-run" / "task-a__1" / "result.json").write_text("{}")
+        assert Evaluation._resolve_job_name(jobs_dir) == "old-run"
+
     def test_the_same_run_resumes(self, tmp_path):
         jobs_dir = tmp_path / "jobs"
         self._job(jobs_dir, "2026-09-30__05-21-59", tasks_dir=tmp_path / "tasks")

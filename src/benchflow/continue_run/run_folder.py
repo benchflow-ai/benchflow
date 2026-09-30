@@ -25,6 +25,7 @@ from typing import Any
 
 from benchflow.embodied.spec import RestoreBoundary, RestoreRefused, SpecError
 from benchflow.embodied.trials import task_dir_restore_boundary, trial_restore_boundary
+from benchflow.errors import UserError
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_CATEGORIES = frozenset({"timeout", "idle_timeout"})
 
 
-class RunFolderError(ValueError):
+class RunFolderError(ValueError, UserError):
     """Raised when a run folder is missing required artifacts or malformed."""
 
 

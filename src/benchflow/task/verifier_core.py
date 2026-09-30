@@ -42,6 +42,7 @@ from benchflow.sandbox.lockdown import (
     _exec_return_code,
     clear_verifier_output_dir,
     describe_installed_marker,
+    installed_marker_plugins,
     parse_pytest_plugin_guard_markers,
     pytest_plugin_guard_markers_cmd,
     pytest_plugin_guard_markers_dir,
@@ -150,6 +151,8 @@ class Verifier:
         # canonical strict [0, 1]. Applies to the test-script reward contract
         # (reward.txt / reward.json) — judge and ORS scores stay [0, 1].
         self._reward_range = declared_reward_range(task)
+        # The last test script's exit status (``_verify_test_script``).
+        self.test_return_code: int | None = None
 
     def _parse_reward_text(self) -> dict[str, float | int]:
         if self._rollout_paths.reward_text_path.stat().st_size == 0:
@@ -319,6 +322,10 @@ class Verifier:
                 )
             if strategy.type == "ors-episode":
                 return await self._verify_ors_episode(strategy=strategy)
+            if strategy.type == "taskmd":
+                from benchflow.taskmd.verify import verify_taskmd
+
+                return await verify_taskmd(self, strategy)
             raise UnsupportedVerifierStrategyError(
                 f"verifier strategy {strategy.name!r} has type {strategy.type!r}, "
                 "which is parsed but not executable yet"
@@ -458,6 +465,9 @@ class Verifier:
         *,
         strategy: VerifierStrategy | None = None,
         aggregate_policy: dict[str, Any] | None = None,
+        cwd: str | None = None,
+        script_timeout_sec: float | None = None,
+        parse_rewards: bool = True,
     ) -> VerifierResult:
         """Run the task's ``test.sh`` verifier and return the reward result.
 
@@ -466,6 +476,12 @@ class Verifier:
         Multi-container (vulhub-style) tasks set it to a target/database
         service so the verifier can inspect *target-side* state — RCE markers,
         DB modifications — instead of only the agent workspace (#248).
+
+        ``cwd`` runs the script in that folder, ``script_timeout_sec`` bounds it
+        instead of ``[verifier].timeout_sec``, and ``parse_rewards=False`` stops
+        after the script and its outputs are in (``test_return_code`` holds its
+        exit status): a task.md draft 2 rubric is scored from the script's
+        report, not from a reward file (``benchflow.taskmd.verify``).
         """
         service = self._task.config.verifier.service
         verifier_outputs_are_mounted = service == "main" and getattr(
@@ -527,6 +543,8 @@ class Verifier:
             )
             test_command = test_script_path
             chmod_command = f"chmod +x {test_script_path}"
+        if cwd is not None:
+            test_command = f"cd {shlex.quote(cwd)} && {test_command}"
         test_stdout_path = shlex.quote(
             str(
                 sandbox_paths.verifier_dir
@@ -580,9 +598,14 @@ class Verifier:
             env=env,
             user=self._task.config.verifier.user,
             service=service,
-            timeout_sec=self._task.config.verifier.timeout_sec,
+            timeout_sec=(
+                script_timeout_sec
+                if script_timeout_sec is not None
+                else self._task.config.verifier.timeout_sec
+            ),
         )
         test_return_code = _exec_return_code(test_result)
+        self.test_return_code = test_return_code
 
         # Download verifier output if it is not host-mounted. Only the agent's
         # ``main`` container has the rollout dir bind-mounted; a target service
@@ -649,16 +672,28 @@ class Verifier:
             # The guard refused a plugin the verifier installed after the agent
             # stopped (a refusal of planted code leaves no marker and stays
             # scored): BenchFlow's own false positive, not the solution's 0.
-            files = describe_installed_marker(installed[0].detail)
+            detail = installed[0].detail
+            plugins, environments = installed_marker_plugins(detail)
+            what = "pytest plugin " + (", ".join(plugins) if plugins else "code")
+            where = f" into {', '.join(environments)}" if environments else ""
+            task_dir = getattr(getattr(self._task, "paths", None), "task_dir", None)
+            check = f"bench tasks check {task_dir}" if task_dir else "bench tasks check"
+            example = plugins[0].replace(" ", "==") if plugins else "<plugin>"
             raise PluginGuardLoadError(
-                f"the pytest plugin guard {guard} refused a pytest plugin the "
-                f"verifier installed after the agent stopped: {files} (listed "
-                f"in verifier/{installed[0].name}); its reward is not scored. "
-                "Install verifier plugins with uvx, whose cache BenchFlow moves "
-                "to a directory the guard trusts, or into the image; the guard "
-                "refuses plugin code in the workspace, /tmp or a venv test.sh "
-                "makes there"
+                f"{what} was installed after the agent stopped, by the "
+                f"verifier{where}, where the agent could write; the pytest "
+                f"plugin guard {guard} refused it, so this run is not scored, "
+                "and neither is any run of this task, the reference solution's "
+                f"included. This is a task problem: `{check}` flags it. Install "
+                f"verifier plugins with uvx (for example `uvx --with {example} "
+                "pytest ...`), whose cache BenchFlow moves to a directory the "
+                "guard trusts, or into the image. Refused: "
+                f"{describe_installed_marker(detail)} (listed in "
+                f"verifier/{installed[0].name})"
             )
+
+        if not parse_rewards:
+            return VerifierResult(rewards=None)
 
         if test_return_code != 0 and (
             self._rollout_paths.reward_text_path.exists()

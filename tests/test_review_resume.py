@@ -780,3 +780,66 @@ async def test_an_expected_resume_refusal_logs_one_line_without_a_traceback(
     [record] = [r for r in caplog.records if rollout.name in r.getMessage()]
     assert "Task digest mismatch" in record.getMessage()
     assert record.exc_info is None
+
+
+USAGE_LIMIT_FAILURE = (
+    "usage limit reached on login CLAUDE_CODE_OAUTH_TOKEN (environment): 7-day "
+    "window, resets 2026-10-03 19:00 UTC (You've hit your weekly limit · resets "
+    "Oct 3, 7pm (UTC))"
+)
+
+
+def test_resume_reruns_a_rubric_solver_that_hit_a_usage_limit(saved_trial):
+    """dx/errors: a trial that ended on its login's usage limit is never retried
+    within the run (the same login would hit it again), but resuming the job,
+    on another login or after the reset, must run it again. A rubric trial
+    commits an unjudged scoring block for it, which resume kept as final."""
+    from benchflow.evaluation import Evaluation, RetryConfig
+
+    rollout, task = saved_trial
+    scoring = scoring_error(
+        "Deterministic verifier produced no reward",
+        tests_pass=None,
+        verifier_reward=None,
+    )
+    result = _parent(rollout, scoring)
+    result.update(error=USAGE_LIMIT_FAILURE, error_category="usage_limit", rewards=None)
+    _write(rollout / "result.json", result)
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()
+    # Within the run it still does not rerun.
+    retry = RetryConfig()
+    assert not retry.reruns_unjudged_solver(
+        scoring, USAGE_LIMIT_FAILURE, category="usage_limit"
+    )
+    assert retry.reruns_unjudged_solver(
+        scoring, USAGE_LIMIT_FAILURE, category="usage_limit", on_resume=True
+    )
+
+
+def test_a_pending_review_whose_solver_hit_a_usage_limit_reruns(saved_trial):
+    """The solver.json-only case of the test above: it was kept as a solver to
+    finish with `bench eval score`, but there is nothing to review."""
+    from benchflow.evaluation import Evaluation
+
+    rollout, task = saved_trial
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(
+        rollout / "solver.json",
+        {
+            **solver,
+            "rewards": None,
+            "error": USAGE_LIMIT_FAILURE,
+            "error_category": "usage_limit",
+        },
+    )
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" not in job._get_completed_tasks()

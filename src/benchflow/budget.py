@@ -94,6 +94,14 @@ class Budget:
         if value is None or isinstance(value, Budget):
             return value
         if isinstance(value, Mapping):
+            # A misspelt cap (budget: {max_usd: 5}) must not silently leave
+            # the job without a budget.
+            unknown = sorted(str(k) for k in value if k not in _CAPS)
+            if unknown:
+                raise ValueError(
+                    f"unknown budget key(s) {', '.join(unknown)}; use "
+                    f"{', '.join(_CAPS)}"
+                )
             if all(value.get(k) is None for k in _CAPS):
                 return None
             return cls(**{k: value.get(k) for k in _CAPS})

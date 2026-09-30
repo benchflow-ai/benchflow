@@ -53,6 +53,7 @@ from .structural_checks import (
     _logical_dir_label,
     task_config_parse_error,
     task_document_parse_error,
+    task_workspace,
 )
 
 logger = logging.getLogger(__name__)
@@ -371,8 +372,9 @@ def check_task_warnings(task_dir: Path) -> list[str]:
       *refuses* (typos, unknown keys in decision tables) are reported by
       :func:`check_task` as errors, not warned about here;
     - a verifier script that installs pytest plugins into a Python
-      environment in the workspace or /tmp, which the pytest plugin guard
-      refuses, leaving every trial unscored.
+      environment the agent could write (the workspace, its home, /tmp,
+      /var/tmp, /logs, /testbed), which the pytest plugin guard refuses,
+      leaving every trial unscored.
     """
     from benchflow.task.imports import (
         classify_unknown_key,
@@ -417,7 +419,9 @@ def check_task_warnings(task_dir: Path) -> list[str]:
     if paths.tests_dir.is_dir():
         warnings.extend(
             _check_workspace_plugin_installs(
-                paths.tests_dir, label=_logical_dir_label(paths, kind="verifier")
+                paths.tests_dir,
+                label=_logical_dir_label(paths, kind="verifier"),
+                workspace=task_workspace(task_dir),
             )
         )
     return warnings

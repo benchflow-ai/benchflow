@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.registry import AGENTS, infer_env_key_for_model, is_vertex_model
+from benchflow.errors import MissingCredentialError
 
 logger = logging.getLogger(__name__)
 
@@ -437,22 +438,91 @@ def uses_native_subscription_auth(
     return False
 
 
+# The next step for a missing credential, by the variable the model needs.
+_LOGIN_HINTS = {
+    "ANTHROPIC_API_KEY": (
+        "for a Claude subscription run `claude setup-token` and export "
+        "CLAUDE_CODE_OAUTH_TOKEN (or `claude login`, which writes "
+        "~/.claude/.credentials.json); `bench doctor` lists the logins it finds"
+    ),
+    "OPENAI_API_KEY": (
+        "for a ChatGPT plan run `codex login` (it writes ~/.codex/auth.json); "
+        "`bench doctor` lists the logins it finds"
+    ),
+}
+_LOGIN_LABEL_ENV = "BENCHFLOW_LOGIN_LABEL"
+# The credentials each family reads, in the order its CLI prefers them (an
+# API key wins over a subscription token in Claude Code and in codex-acp).
+_LOGIN_KEYS_BY_FAMILY: dict[str, tuple[str, ...]] = {
+    "ANTHROPIC_API_KEY": (
+        "ANTHROPIC_API_KEY",
+        _CLAUDE_CODE_OAUTH_TOKEN_ENV,
+        _CLAUDE_OAUTH_TOKEN_ENV,
+        "ANTHROPIC_AUTH_TOKEN",
+    ),
+    "OPENAI_API_KEY": (
+        "OPENAI_API_KEY",
+        _CODEX_API_KEY_ENV,
+        _CODEX_ACCESS_TOKEN_ENV,
+        _CODEX_AUTH_JSON_ENV,
+    ),
+}
+
+
+def login_label(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+    explicit_env: dict[str, str] | None = None,
+) -> str | None:
+    """Which login the agent runs on, as a label: never a credential's value.
+
+    ``BENCHFLOW_LOGIN_LABEL`` in the agent's environment (for example the
+    name of a pooled account) wins. Otherwise the variable the credential is
+    in and where it came from (``CLAUDE_CODE_OAUTH_TOKEN (agent_env)`` for one
+    passed with ``--agent-env``/``agent_env``, ``(environment)`` for one
+    inherited from the shell or ``.env``), or the host login file BenchFlow
+    copied in (``host login (~/.claude/.credentials.json)``).
+    """
+    custom = " ".join((agent_env.get(_LOGIN_LABEL_ENV) or "").split())
+    if custom:
+        return custom[:80]
+    explicit_env = explicit_env or {}
+    cfg = AGENTS.get(agent)
+    family = (
+        cfg.subscription_auth.replaces_env
+        if cfg is not None and cfg.subscription_auth is not None
+        else (infer_env_key_for_model(model) if model else None)
+    )
+    keys = _LOGIN_KEYS_BY_FAMILY.get(family or "", (family,) if family else ())
+    for key in keys:
+        if agent_env.get(key):
+            where = "agent_env" if explicit_env.get(key) else "environment"
+            return f"{key} ({where})"
+    if agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1":
+        if cfg is not None and cfg.subscription_auth is not None:
+            return f"host login ({cfg.subscription_auth.detect_file})"
+        return "host login"
+    return None
+
+
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
     """Inject ADC credentials and defaults for Vertex AI models."""
     if not is_vertex_model(model):
         return
     adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
     if not adc_path.exists():
-        raise ValueError(
-            f"Vertex AI model {model!r} requires ADC credentials. "
-            f"Run: gcloud auth application-default login"
+        raise MissingCredentialError(
+            f"Vertex AI model {model!r} requires ADC credentials.",
+            hint="gcloud auth application-default login",
         )
     agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
     agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
     if "GOOGLE_CLOUD_PROJECT" not in agent_env:
-        raise ValueError(
-            f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}. "
-            f"Export it or pass via --agent-env GOOGLE_CLOUD_PROJECT=<project>"
+        raise MissingCredentialError(
+            f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}.",
+            hint="export GOOGLE_CLOUD_PROJECT=<project>, or pass "
+            "--agent-env GOOGLE_CLOUD_PROJECT=<project>",
         )
 
 
@@ -561,14 +631,16 @@ def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:
     token = agent_env.get("AWS_BEARER_TOKEN_BEDROCK")
     region = agent_env.get("AWS_REGION") or agent_env.get("AWS_DEFAULT_REGION")
     if not token:
-        raise ValueError(
+        raise MissingCredentialError(
             f"AWS_BEARER_TOKEN_BEDROCK required for Bedrock model {model!r} but not set. "
-            "Export it or pass via agent_env."
+            "Export it or pass via agent_env.",
+            hint="export AWS_BEARER_TOKEN_BEDROCK=... AWS_REGION=us-west-2",
         )
     if not region:
-        raise ValueError(
+        raise MissingCredentialError(
             f"AWS_REGION or AWS_DEFAULT_REGION required for Bedrock model {model!r} "
-            "but not set. Export one of them or pass via agent_env."
+            "but not set. Export one of them or pass via agent_env.",
+            hint="export AWS_REGION=us-west-2",
         )
     agent_env.setdefault("AWS_REGION", region)
     agent_env.setdefault("AWS_DEFAULT_REGION", region)
@@ -795,10 +867,11 @@ def resolve_agent_env(
                     required_key,
                 )
             else:
-                raise ValueError(
+                raise MissingCredentialError(
                     f"{required_key} required for model {model!r} but not set. "
                     "Pass it explicitly (for example via --agent-env/agent_env) "
-                    "or define it in .env."
+                    "or define it in .env.",
+                    hint=_LOGIN_HINTS.get(required_key),
                 )
         _configure_codex_custom_provider(agent, model, agent_env)
     else:

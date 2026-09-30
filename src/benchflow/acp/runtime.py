@@ -37,6 +37,7 @@ from benchflow.acp.watchdog import (
     pending_grace_from_env,
 )
 from benchflow.agents.codex_config import apply_codex_launch_config
+from benchflow.agents.errors import AgentProtocolError, UsageLimitError
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
     find_provider,
@@ -480,6 +481,47 @@ def _resolve_acp_model_option_id(
     return None
 
 
+def _config_option_values(session: object | None, config_id: str) -> list[str]:
+    """The values a ``select`` config option offers (groups flattened)."""
+    for option in getattr(session, "config_options", None) or ():
+        if not isinstance(option, dict) or option.get("id") != config_id:
+            continue
+        values: list[str] = []
+        stack = list(option.get("options") or ())
+        while stack:
+            choice = stack.pop(0)
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("options"), list):  # a group of choices
+                stack[:0] = choice["options"]
+            elif isinstance(choice.get("value"), str):
+                values.append(choice["value"])
+        return values
+    return []
+
+
+# "not available" is deliberately absent: a provider answering "model
+# temporarily not available" is a transient failure that must stay retried,
+# and it reads the same as a refusal.
+_REFUSAL_MARKERS = ("invalid value", "not offered", "unknown model")
+
+
+def _refuses_value(exc: BaseException, value: str = "") -> bool:
+    """Whether an ACP error answer says the value itself was refused.
+
+    The answer has to both read as a refusal and name the value, so a
+    transient error on the same request stays the retried error it was.
+    """
+    if not isinstance(exc, AgentProtocolError):
+        return False
+    data = getattr(exc, "data", None)
+    details = data.get("details") if isinstance(data, dict) else data
+    text = f"{getattr(exc, 'message', '')} {details or ''}".lower()
+    if value and value.lower() not in text:
+        return False
+    return any(marker in text for marker in _REFUSAL_MARKERS)
+
+
 async def _set_acp_model(
     acp_client: ACPClient,
     *,
@@ -489,6 +531,8 @@ async def _set_acp_model(
     try:
         await asyncio.wait_for(acp_client.set_model(model_id), timeout=60)
         logger.info(f"Model set to: {model_id}")
+    except UsageLimitError:
+        raise
     except Exception as e:
         logger.error(
             "ACP session/set_model failed for agent=%s model=%s: %s",
@@ -521,6 +565,8 @@ async def _set_acp_config_option(
             acp_client.set_config_option(config_id, value), timeout=60
         )
         logger.info(f"ACP {label} config option {config_id!r} set to: {value}")
+    except UsageLimitError:
+        raise
     except Exception as e:
         logger.error(
             "ACP session/set_config_option failed for agent=%s config=%s value=%s: %s",
@@ -529,6 +575,20 @@ async def _set_acp_config_option(
             value,
             e,
         )
+        offered = _config_option_values(session, config_id)
+        if (
+            label == "model"
+            and offered
+            and value not in offered
+            and _refuses_value(e, value)
+        ):
+            # The agent refused a value it does not list (claude-agent-acp:
+            # -32603 "Internal error" with data.details "Invalid value for
+            # config option model: <value>") and will on every retry: an
+            # unscored agent_model integration failure that names what it
+            # offers, like codex's set_model. Anything else stays a retried
+            # error: a transient failure must not become permanent.
+            raise AgentModelNotOfferedError(agent, value, offered) from e
         raise RuntimeError(
             f"Failed to set ACP {label} config option {config_id!r}="
             f"{value!r} for agent {agent!r}: {e}"
@@ -717,6 +777,7 @@ async def connect_acp(
                 subagent_transcript=bool(
                     agent_config and agent_config.acp_subagent_transcript
                 ),
+                typed_failures=bool(getattr(agent_config, "acp_typed_failures", False)),
             )
             await acp_client.connect()
 

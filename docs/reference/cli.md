@@ -9,7 +9,7 @@ bench --version
 
 ## bench doctor
 
-Check that this machine can run evals and print one PASS, WARN, FAIL or SKIP line per check, each with a concrete fix. Credentials are reported by variable name or file path, source (`env`, `.env`, file) and expiry; their values are never printed. Exits 1 when a required check fails, 0 otherwise (warnings do not fail).
+Check that this machine can run evals and print one PASS, WARN, FAIL or SKIP line per check, each with a concrete fix. Credentials are reported by variable name or file path, source (`env`, `.env`, file) and expiry; their values are never printed. Exits 1 when a required check fails, 0 otherwise (warnings do not fail). The Claude subscription check is the one model request doctor makes: one 8-token `claude-haiku-4-5-20251001` request, sent only to api.anthropic.com and only with a subscription's own OAuth token (`--offline`, an API key or gateway token, and a custom `ANTHROPIC_BASE_URL` each skip it with a reason). [When a run fails](../when-a-run-fails.md) explains each line.
 
 ```bash
 bench doctor
@@ -20,10 +20,11 @@ bench doctor --json | jq '.checks[] | select(.status != "pass")'
 | Area | What it checks |
 |------|----------------|
 | Runtime | Python version (3.12+) and `uv` on PATH. |
-| Sandbox | Docker CLI and daemon (`docker info`), the Docker VM's CPUs and memory (warns below 4 GiB), and the Colima profile behind the current Docker context (stopped or undersized). With `--sandbox daytona` or `DAYTONA_API_KEY` set: the Daytona SDK (`benchflow[sandbox-daytona]`, 0.184+) and a live API call with the key. |
-| Agent credentials | For `claude-agent-acp`: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, then `~/.claude/.credentials.json` with its access-token expiry (an expired file is a warning; on macOS the Claude CLI keeps live logins in the Keychain, so this file goes stale). For `codex-acp`: `OPENAI_API_KEY`/`CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `CODEX_AUTH_JSON`, then `~/.codex/auth.json` (ChatGPT login, plan, last refresh). For `gemini`: `GEMINI_API_KEY`/`GOOGLE_API_KEY`; a `~/.gemini/oauth_creds.json` login alone is a warning, because the LiteLLM proxy that runs Gemini needs an API key. Bedrock: `AWS_BEARER_TOKEN_BEDROCK` plus a region. Other provider keys (`DEEPSEEK_API_KEY`, `AZURE_API_KEY`, …) with any missing base-URL variable. Precedence conflicts (an API key overriding a subscription login) are called out. Fails when no agent has a working credential. |
+| Sandbox | Docker CLI and daemon (`docker info`): the daemon's version, the Docker VM's CPUs and memory (warns below 4 GiB), and for a daemon on this machine the free disk in its data root (warns below 10 GiB); the Colima profile behind the current Docker context (stopped or undersized). Linux gets Linux fixes, and a `DOCKER_HOST` pointing at a dead daemon is named. With `--sandbox daytona` or `DAYTONA_API_KEY` set: the Daytona SDK (`benchflow[sandbox-daytona]`, 0.184+) and a live, read-only API call with the key (list one sandbox). |
+| Agent credentials | For `claude-agent-acp`: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, then `~/.claude/.credentials.json` with its access-token expiry (an expired file is a warning; on macOS the Claude CLI keeps live logins in the Keychain, so this file goes stale). For `codex-acp`: `OPENAI_API_KEY`/`CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `CODEX_AUTH_JSON`, then `~/.codex/auth.json` (ChatGPT login, plan, last refresh). For `gemini`: `GEMINI_API_KEY`/`GOOGLE_API_KEY`; a `~/.gemini/oauth_creds.json` login alone is a warning, because the LiteLLM proxy that runs Gemini needs an API key. Bedrock: `AWS_BEARER_TOKEN_BEDROCK` plus a region. Other provider keys (`DEEPSEEK_API_KEY`, `AZURE_API_KEY`, …) with any missing base-URL variable. Precedence conflicts (an API key overriding a subscription login) are called out. A Claude subscription login (an OAuth token in the environment or the login file) gets a `claude usage` line: accepted or refused, and each window's use and reset from the `anthropic-ratelimit-unified-*` headers of one 8-token Haiku request; a spent window warns with its reset time. With no working credential for any agent it warns (the oracle and nop controls need none). |
 | Agent versions | The package each agent's sandbox install pins (for example `@agentclientprotocol/claude-agent-acp@0.81.2 + @anthropic-ai/claude-code@2.1.280`: the adapter and the Claude Code CLI it runs are pinned separately) next to the host CLI version, which is only used to log in. Warns when a registry override replaced a built-in pin. |
-| Network | HTTPS reachability from the host of the Docker registry, `nodejs.org` and `registry.npmjs.org` (agent installs; failures fail the check) and of the model API behind each credential found (failures warn and take that agent out of `bench eval smoke`). |
+| Model proxy | The LiteLLM proxy API-key and provider runs go through: the `litellm` CLI next to BenchFlow's Python on Docker (a warning when missing), or PyPI, which Daytona sandboxes install it from; a custom `BENCHFLOW_PROVIDER_BASE_URL` or `LLM_BASE_URL` is named and probed. Subscription logins do not use it. |
+| Network | HTTPS reachability from the host of the Docker registry, `nodejs.org` and `registry.npmjs.org` (agent installs; failures fail the check), PyPI with `--sandbox daytona`, a custom model proxy, and the model API behind each credential found (failures warn and take that agent out of `bench eval smoke`). |
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -291,6 +292,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
+| `--harness` | `acp` | How the agent runs: `acp` (its ACP adapter) or `native` (its own CLI in headless JSON mode: `claude -p --output-format stream-json`, `codex exec --json`; `claude-agent-acp` and `codex-acp` only). See [Native harness](../native-harness.md) |
 | `--sandbox` | `docker` | Sandbox: docker, remote-docker, daytona, modal, apple-container, or agentcore |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Environment-plane manifest applied to every rollout in the batch: a path to an `environment.toml`, or a `name@version` registry spec resolved via `$BENCHFLOW_ENV_REGISTRY` when set, else the built-in registry shipped with benchflow (`env0@prod`, `env0@outage`; see [Environment plane: Registry](../environment-plane.md#registry-nameversion)). Overrides a task.md `benchflow.environment.manifest` pin |
@@ -306,6 +308,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--checkpoints` | off | Keep a sandbox snapshot after these prompts (`every-prompt` or `prompt:N[,M]`) so `bench eval branch --from-checkpoint <trial>` can fork from it later; recorded in the trial's `checkpoints.json`. Docker or Daytona direct; see [Composed checkpoints](../composed-checkpoints.md) for cost and cleanup |
 | `--checkpoint-keep` | `3` | Keep at most this many checkpoints per trial; the oldest is deleted when a newer one is taken |
 | `--freeze-workspace` | off | Save each trial's final workspace and declared artifacts (`evidence/`, with a manifest) before the verifier runs, so `bench eval regrade` can re-score it with a changed verifier |
+| `--integrity` | off | Reward integrity: `audit` records what the agent did (from the trajectory the host recorded) and checks it against the task's contract, on every sandbox; `strict` also runs the verifier in a separate verifier sandbox, where a clean run can be certified. Each trial gets `integrity/claim_verdict.json` with `Checked`, `VectorExposed`, `AgentViolation` or `Rejected`; rewards are never changed. See [Reward integrity](../integrity.md) |
 | `--retry-from-checkpoint` | off | `on-failure`, `on-timeout` or both: when a trial fails or its agent times out, fork one retry child from its last kept checkpoint (needs `--checkpoints`), verified by the same verifier with the snapshot's original pre-agent baseline. The trial's `rewards` are kept; the retry's reward is reported next to them (`retry` in `result.json`, `checkpoint_retries` in `summary.json`, a `retry` fork in `tree.json`). Embodied tasks are not retried (`status: refused`; see [the restore boundary](../embodied.md#the-restore-boundary-branching-checkpoint-restores-and-replay)). See [Branching guide](../branching.md) |
 | `--retry-prompt` | the prompts after the checkpoint | Prompt sent to the retry child, replacing those prompts. `@instruction` expands to the task instruction and `@verifier_feedback` to the failed trial's reward and the last ~3,000 characters of its verifier output, e.g. `--retry-prompt $'@instruction\n\nYour first attempt failed. @verifier_feedback'`. A fresh session knows only this prompt: without `@instruction` (or `--retry-resume-session`) the agent does not know the task. A retry that made no tool calls is logged as a warning and recorded as `no_work: true` (with `tool_calls`) in the `retry` block; the final summary prints a retries line and `summary.json` `checkpoint_retries` counts `no_work` |
 | `--retry-resume-session` | off | The retry child resumes the failed trial's conversation at the checkpoint (ACP `session/load`; agents that keep their session on disk, such as Claude Code) instead of a fresh session; needs a checkpoint that recorded its session id |
@@ -455,11 +458,15 @@ gate-based pass rates, and recovery without rerunning the solver.
 
 #### Resuming
 
-Rerunning `bench eval run` with the same `--jobs-dir` resumes: it reuses the latest job folder there with an auto-generated (timestamp) name, keeps every task that already has a finished result, and runs only the rest. Only the same run resumes: when that job's `evaluation.json` records another agent, model or tasks folder, a new job starts instead, with a warning naming the job it did not resume; folders with other names (a named job, or a folder of jobs such as `jobs/smoke/`) are never picked. The final summary says so on stderr, `Resumed job <dir>: N finished task(s) reused, M ran now`, and when nothing was left to run, that the results are the earlier ones. In a CI workspace that keeps `jobs/` between runs, pass `--fresh` (a new timestamped job) or a new `--job-name`, or the rerun reports the old result. With `--config`, the job is resolved under the CLI's `--jobs-dir` when given. `bench eval resume <job_dir>` finishes one job from its folder.
+Rerunning `bench eval run` with the same `--jobs-dir` resumes: it reuses the latest job folder there (alphabetically last), keeps every task that already has a finished result, and runs only the rest. Only a job folder is picked (one with an auto-generated timestamp name, a job record, or trial folders), never a folder of jobs such as `jobs/smoke/`, and only the same run resumes: when that job's `evaluation.json` records another agent, model or tasks folder, a new job starts instead, with a warning naming the job it did not resume. The final summary says so on stderr, `Resumed job <dir>: N finished task(s) reused, M ran now`, and when nothing was left to run, that the results are the earlier ones. In a CI workspace that keeps `jobs/` between runs, pass `--fresh` (a new timestamped job) or a new `--job-name`, or the rerun reports the old result. With `--config`, the job is resolved under the CLI's `--jobs-dir` when given. `bench eval resume <job_dir>` finishes one job from its folder.
 
 #### Exit codes
 
-`bench eval run`: 1 when a trial ended unscored because of an agent or verifier error, when a `--fail-under`/`--fail-on` gate failed (each failed check is printed as `Gate failed: …`), or when a flag or the run config is invalid (checked before any job folder is created); otherwise 0, whatever the rewards. A trial whose agent timed out but whose work the verifier still scored counts as scored. `bench eval inspect`, `bench eval compare` and `bench eval resume`: 2 for a usage error or a path with no trial; `compare --on-mismatch raise` exits 1 when it refuses.
+`bench eval run`: 1 when a trial ended unscored because of an agent or verifier error, when a `--fail-under`/`--fail-on` gate failed (each failed check is printed as `Gate failed: …`), or when a flag or the run config is invalid (checked before any job folder is created); otherwise 0, whatever the rewards. A trial whose agent timed out but whose work the verifier still scored counts as scored. A missing login (no credential for the agent's model) exits 1 before the job exists, with a next step (`claude setup-token`, `codex login`). A trial that ends on its login's usage limit is not retried, and the job starts no more trials: the report lists the login, the window, the reset and the trials not started, and `bench eval resume <job>` runs them later or on another login (exit 1). `bench eval inspect`, `bench eval compare` and `bench eval resume`: 2 for a usage error or a path with no trial; `compare --on-mismatch raise` exits 1 when it refuses.
+
+An error you can fix prints one message and its next step; any other error prints the traceback and the path of a crash log under `~/.cache/benchflow/logs` (`BENCHFLOW_LOG_DIR`), with credential values replaced by `***`. See [When a run fails](../when-a-run-fails.md).
+
+After the score, the report splits the trials into scored, unscored and errored, groups the unscored and errored ones by cause with whose problem it is (task, agent, infrastructure, setup) and the next step, and prints the run's cost and time before the `Artifacts:`, `Summary:` and `View:` lines.
 
 ### bench eval resume
 
@@ -473,7 +480,7 @@ Fork an agent run at a checkpoint into labelled children, each started from the 
 ```bash
 # Branch after the first of two parent prompts; two children with different prompts.
 bench eval branch --tasks-dir tests/examples/hello-world-task \
-  --agent claude-agent-acp --model claude-sonnet-4-6 --sandbox daytona \
+  --agent claude-agent-acp --model claude-sonnet-5 --sandbox daytona \
   --prompt "Create draft.txt containing: Hello world" --prompt @instruction \
   --checkpoint-after-prompt 1 \
   --child "label=baseline" --child "label=hint,prompt=Rename draft.txt to hello.txt."
@@ -495,6 +502,7 @@ bench eval branch --tasks-dir tests/examples/hello-world-task \
 | `--include` | all | Only these task names; repeatable. |
 | `--agent` | `claude-agent-acp` | Agent, or `oracle` (children run `solve.sh`, no prompts). With `--from-checkpoint`: the source trial's agent. |
 | `--model`, `--reasoning-effort` | agent default | As for `bench eval run`. |
+| `--harness` | `acp` | As for `bench eval run`. With `--from-checkpoint`: the source trial's harness. |
 | `--sandbox` | `docker` | `docker` or `daytona` (direct mode). With `--from-checkpoint`: the snapshot's provider. |
 | `--prompt` | the task's prompts | Parent prompt; repeatable, sent in order. `@instruction` is the task instruction. |
 | `--checkpoint-after-prompt` | `1` (`0` for the oracle and with `--from-checkpoint`) | Branch after this many parent prompts. |
@@ -666,7 +674,7 @@ bench eval inspect jobs/my-run/2026-01-01__12-00-00 --json --no-verifier --out j
 
 ### bench eval compare
 
-Pair two finished jobs by task, the same way `bf.compare` does: per-task rewards and deltas (B - A), attempted/scored/verifier-error/unscored counts per side with control runs left out, and a check that both sides ran with comparable settings (task digest, model, harness, dataset, reasoning effort, sandbox, sandbox user, timeout, agent variables, prompts). Each side is a job folder, a trial, or a glob of folders (one arm of a paired run kept per task). Prints a markdown report, or with `--json` the `benchflow.comparison` document. Warnings go to stderr.
+Pair two finished jobs by task, the same way `bf.compare` does: per-task rewards and deltas (B - A), attempted/scored/verifier-error/unscored counts per side with control runs left out, and a check that both sides ran with comparable settings (task digest, model, harness, dataset, reasoning effort, harness mode (`acp` or `native`), sandbox, sandbox user, timeout, agent variables, prompts). Each side is a job folder, a trial, or a glob of folders (one arm of a paired run kept per task). Prints a markdown report, or with `--json` the `benchflow.comparison` document. Warnings go to stderr.
 
 ```bash
 bench eval compare jobs/run-a jobs/run-b
@@ -678,7 +686,7 @@ bench eval compare jobs/haiku jobs/sonnet --vary model --on-mismatch raise
 |------|---------|-------------|
 | `--json` | off | Print the JSON document instead of the markdown report. |
 | `--labels A B` | folder names | Names for the two sides. |
-| `--vary` | none | A setting the comparison is about (repeatable), e.g. `model`; it is not reported as a mismatch. `harness` or `model` also covers `agent_variable_names`. |
+| `--vary` | none | A setting the comparison is about (repeatable), e.g. `model`; it is not reported as a mismatch. `harness` or `model` also covers `agent_variable_names`. `harness` is the agent; `harness_mode` is `--harness` (`acp` or `native`), so an ACP-versus-native comparison takes `--vary harness_mode`. |
 | `--on-mismatch` | `warn` | `warn`, `raise` (exit 1) or `ignore` an undeclared setting difference. |
 | `--include-controls` | off | Keep control runs (oracle, empty) in the counts and rows. |
 | `--attempts` | `best` | `best` or `all`, as for `inspect`. |
@@ -1030,7 +1038,7 @@ Validate a task directory. Native packages use `task.md`, `environment/`, and
 bench tasks check tasks/my-task
 ```
 
-Warnings are printed but do not fail the check: a task with no canary string (no file among `task.md`, `instruction.md`, `task.toml`, `verifier/test.sh`, `tests/test.sh`, `oracle/solve.sh`, `solution/solve.sh`, `environment/Dockerfile` has a `canary GUID <uuid>` line; Harbor's and Terminal-Bench's canaries count), `task.toml` keys BenchFlow does not know (ignored when the task runs, or named as refused when BenchFlow cannot honour them, such as `[[verifier.collect]]`), and a verifier script that installs pytest plugins (`pytest-*` packages) into a Python environment in the working directory or `/tmp` (`uv venv .tb`, `uv init`/`uv add`, `python -m venv venv`, `pip install --target ./x`): the pytest plugin guard refuses plugin code there, so every trial ends unscored, and the warning names the fix, `uvx --with <plugin>` into uv's cache (which BenchFlow moves to a directory the guard trusts) or the image. A script that also clears `PYTEST_ADDOPTS` is told instead that the guard never checks that code.
+Warnings are printed but do not fail the check: a task with no canary string (no file among `task.md`, `instruction.md`, `task.toml`, `verifier/test.sh`, `tests/test.sh`, `oracle/solve.sh`, `solution/solve.sh`, `environment/Dockerfile` has a `canary GUID <uuid>` line; Harbor's and Terminal-Bench's canaries count), `task.toml` keys BenchFlow does not know (ignored when the task runs, or named as refused when BenchFlow cannot honour them, such as `[[verifier.collect]]`), and a verifier script that installs pytest plugins (`pytest-*` packages) into a Python environment the agent could write: the working directory, the task's workspace (`sandbox.workdir`, else the Dockerfile's last `WORKDIR`, `/` meaning `/root`), the agent's home, `/tmp`, `/var/tmp`, `/logs` or `/testbed`, with `$HOME` and `~` read as the verifier's `/root` (`uv venv .tb`, `uv init`/`uv add`, `python -m venv venv`, `pip install --target ./x`, `uv venv /root/.venv` or `uv pip install --python /root/.venv/bin/python` in a `WORKDIR /root` task, an activated venv there): the pytest plugin guard refuses plugin code there, so every trial ends unscored, and the warning names the fix, `uvx --with <plugin>` into uv's cache (which BenchFlow moves to a directory the guard trusts) or the image. A script that also clears `PYTEST_ADDOPTS` is told instead that the guard never checks that code.
 
 With `--level`, validation runs at a chosen depth: `schema`, `structural`,
 `runtime-capability`, `publication-grade`, `acceptance`, `acceptance-live`, or `equivalence`.

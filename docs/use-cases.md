@@ -40,7 +40,7 @@ scenes:
         model: gemini-3.1-flash-lite-preview
       - name: assistant
         agent: claude-agent-acp
-        model: claude-sonnet-4-6
+        model: claude-sonnet-5
     turns:
       - role: user
         prompt: |
@@ -78,7 +78,7 @@ config = RolloutConfig(
         Scene(name="interactive-assist",
               roles=[
                   Role("user", "gemini", "gemini-3.1-flash-lite-preview"),
-                  Role("assistant", "claude-agent-acp", "claude-sonnet-4-6"),
+                  Role("assistant", "claude-agent-acp", "claude-sonnet-5"),
               ],
               turns=[
                   Turn("user", "You are simulating a user. Read /instruction.md..."),
@@ -344,7 +344,7 @@ scenes:
         model: gemini-3.1-flash-lite-preview
       - name: reviewer
         agent: claude-agent-acp
-        model: claude-sonnet-4-6
+        model: claude-sonnet-5
     turns:
       - role: coder
       - role: reviewer
@@ -370,7 +370,7 @@ config = RolloutConfig(
         Scene(name="cross-model-review",
               roles=[
                   Role("coder", "gemini", "gemini-3.1-flash-lite-preview"),
-                  Role("reviewer", "claude-agent-acp", "claude-sonnet-4-6"),
+                  Role("reviewer", "claude-agent-acp", "claude-sonnet-5"),
               ],
               turns=[
                   Turn("coder"),

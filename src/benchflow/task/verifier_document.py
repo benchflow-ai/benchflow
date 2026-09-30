@@ -15,6 +15,8 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from benchflow.errors import UserError
+
 VERIFIER_DOCUMENT_FILENAME = "verifier.md"
 
 VerifierStrategyType = Literal[
@@ -23,6 +25,7 @@ VerifierStrategyType = Literal[
     "llm-judge",
     "agent-judge",
     "ors-episode",
+    "taskmd",
 ]
 
 _ROLE_SECTION_RE = re.compile(
@@ -35,11 +38,15 @@ _KNOWN_STRATEGY_TYPES = {
     "llm-judge",
     "agent-judge",
     "ors-episode",
+    # A materialized task.md draft 2 package's verifier (benchflow.taskmd.verify).
+    "taskmd",
 }
 
 
-class VerifierDocumentParseError(ValueError):
+class VerifierDocumentParseError(ValueError, UserError):
     """Raised when ``verifier/verifier.md`` cannot be parsed."""
+
+    fault = "task"
 
 
 @dataclass(frozen=True)
@@ -336,6 +343,32 @@ def _validate_strategy(
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"
             )
+    elif strategy_type == "taskmd":
+        grading = config.get("grading")
+        if grading not in ("rubric", "script"):
+            raise VerifierDocumentParseError(
+                f"{prefix}.grading must be 'rubric' or 'script'"
+            )
+        if "command" in config:
+            _safe_relative_path(
+                _required_str(config.get("command"), f"{prefix}.command"),
+                f"{prefix}.command",
+            )
+        elif grading == "script":
+            raise VerifierDocumentParseError(
+                f"{prefix}.command is required when grading is 'script'"
+            )
+        workdir = config.get("workdir")
+        if workdir is not None and not (
+            isinstance(workdir, str) and workdir.startswith("/")
+        ):
+            raise VerifierDocumentParseError(f"{prefix}.workdir must be absolute")
+        if config.get("isolation", "shared") not in ("shared", "separate"):
+            raise VerifierDocumentParseError(
+                f"{prefix}.isolation must be 'shared' or 'separate'"
+            )
+        if not isinstance(config.get("offline", False), bool):
+            raise VerifierDocumentParseError(f"{prefix}.offline must be a boolean")
     elif strategy_type == "ors-episode":
         inputs = config.get("inputs")
         if (

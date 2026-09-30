@@ -369,6 +369,72 @@ def _apply_token_capture(data: dict[str, Any], plan: dict[str, Any] | None) -> d
     return cleaned
 
 
+# Opt-in wire capture (BENCHFLOW_LITELLM_WIRE_LOG_DIR): each request as the
+# agent sent it, before any routing change, for the native-harness wire-parity
+# check. Only these headers are kept (they identify the client and the
+# protocol, never credentials), and the proxy's own bookkeeping keys are left
+# out of the body.
+_WIRE_HEADERS = frozenset(
+    {
+        "user-agent",
+        "anthropic-beta",
+        "anthropic-version",
+        "x-app",
+        "originator",
+        "openai-beta",
+        "version",
+        "x-codex-beta-features",
+    }
+)
+_WIRE_PROXY_KEYS = frozenset(
+    {
+        "proxy_server_request",
+        "secret_fields",
+        "litellm_call_id",
+        "litellm_logging_obj",
+        "litellm_metadata",
+        "litellm_parent_otel_span",
+        "litellm_session_id",
+        "litellm_trace_id",
+        "provider_specific_header",
+        "user_api_key_dict",
+        "api_key",
+    }
+)
+
+
+def _write_wire(data: dict[str, Any], call_type: Any) -> None:
+    directory = os.environ.get("BENCHFLOW_LITELLM_WIRE_LOG_DIR")
+    if not directory:
+        return
+    try:
+        request = data.get("proxy_server_request") or {}
+        url = str(request.get("url") or "")
+        headers = {
+            str(k).lower(): v
+            for k, v in (request.get("headers") or {}).items()
+            if str(k).lower() in _WIRE_HEADERS
+        }
+        body = {k: v for k, v in data.items() if k not in _WIRE_PROXY_KEYS}
+        metadata = body.get("metadata")
+        if isinstance(metadata, dict):
+            # LiteLLM fills metadata with its own entries; the Messages API's
+            # own metadata field carries only user_id.
+            body["metadata"] = {k: v for k, v in metadata.items() if k == "user_id"}
+        record = {
+            "call_type": str(call_type),
+            "path": "/" + url.split("://", 1)[-1].split("/", 1)[-1] if url else None,
+            "headers": headers,
+            "body": body,
+        }
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f"wire-{os.getpid()}.jsonl")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_jsonable(record), separators=(",", ":")) + "\n")
+    except Exception:
+        traceback.print_exc()
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -447,6 +513,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     ):
         if not isinstance(data, dict):
             return None
+        _write_wire(data, call_type)
 
         # Refuse, and record without the request body, a request for a model
         # the run's config does not route (codex-acp's title thread asks for

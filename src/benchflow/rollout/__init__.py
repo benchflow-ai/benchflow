@@ -79,6 +79,7 @@ from benchflow.agents.codex_connector_policy import (
     enforce_codex_apps_policy,
 )
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.errors import UsageLimitError
 from benchflow.agents.registry import (
     AGENTS,
     infer_env_key_for_model,
@@ -96,17 +97,21 @@ from benchflow.contracts import (
 from benchflow.diagnostics import (
     AgentModelNotOfferedError,
     AgentPromptTimeoutError,
+    IdleTimeoutError,
     IntegrationFailureDiagnostic,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
+    UsageLimitDiagnostic,
 )
+from benchflow.errors import UserError, user_message
 from benchflow.loop_strategies import (
     LoopStrategyUser,
     collect_loop_metadata,
     loop_block,
 )
-from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.models import AgentInstallError, RolloutResult, TrajectorySource
+from benchflow.native_harness.harnesses import HARNESS_NATIVE, native_harness_for
 from benchflow.review.automatic import PreparedReview
 from benchflow.review.outcome import ScoringResult, scoring_from_result
 from benchflow.review.persistence import scoring_lock
@@ -847,6 +852,9 @@ class Rollout:
         # with no pending tool calls) fired — its captured trajectory is a
         # complete terminal one, not a rerunnable partial (#640).
         self._terminal_timeout: bool = False
+        # Set when the agent's wall-clock budget ran out (not an idle abort);
+        # a task.md draft 2 package's reward.json records it as timed_out.
+        self._agent_ran_out_of_time: bool = False
         # Detail-less agent-phase timeout, eligible for zero-activity
         # reclassification (#1071). One-shot: cleared once a verdict lands.
         self._bare_timeout: bool = False
@@ -1119,6 +1127,36 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
+        # A task.md draft 2 package: refuse, before any sandbox starts, a run
+        # that cannot honor it (an agent's budget, [agent] user, its judges).
+        from benchflow.taskmd.launch import check_launch
+
+        check_launch(
+            cfg.task_path,
+            primary_agent=cfg.primary_agent,
+            sandbox_user=cfg.sandbox_user,
+        )
+
+        if cfg.integrity == "strict":
+            # Strict integrity runs the verifier in the separate verifier
+            # sandbox (benchflow.integrity): refused here, before any sandbox
+            # exists, where that sandbox cannot run this task.
+            from benchflow.integrity.trial import (
+                force_separate_verifier,
+                strict_launch_issues,
+            )
+
+            issues = strict_launch_issues(
+                self._task.config, sandbox=cfg.environment, task_dir=cfg.task_path
+            )
+            if issues:
+                raise ValueError(
+                    "integrity=strict runs the verifier in a separate verifier "
+                    "sandbox, which this task cannot use here:\n- "
+                    + "\n- ".join(issues)
+                )
+            self._task.config = force_separate_verifier(self._task.config)
+
         prepare_terminal_review(self)
         if cfg.task_digest is None:
             from benchflow._utils.task_authoring import task_digest
@@ -1295,6 +1333,8 @@ class Rollout:
             purpose=cfg.purpose,
             parent_rollout=cfg.parent_rollout,
             freeze_workspace=cfg.freeze_workspace,
+            integrity=cfg.integrity,
+            harness=cfg.harness,
         )
 
         self._phase = "setup"
@@ -1470,6 +1510,7 @@ class Rollout:
                 rollout_dir,
                 sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             )
+            await self._install_native_cli(agent_name, rollout_dir)
         if cfg.sandbox_user:
             self._agent_cwd = await self._planes.setup_sandbox_user(
                 self._env,
@@ -1516,6 +1557,7 @@ class Rollout:
             ),
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
+            harness=cfg.harness,
         )
         await verifier_baseline()
 
@@ -1554,6 +1596,45 @@ class Rollout:
             return cfg.session_factory
         return None
 
+    async def _install_native_cli(self, agent: str, rollout_dir: Path) -> None:
+        """Add the native harness's CLI to an agent install that lacks it.
+
+        Claude Code's install already brings the pinned CLI (the adapter runs
+        it); Codex's native harness installs the pinned ``codex`` next to
+        ``codex-acp``. A no-op for the ACP harness.
+        """
+        if self._config.harness != HARNESS_NATIVE or is_scripted_agent(agent):
+            return
+        harness = native_harness_for(agent)
+        if not harness.install_cmd:
+            return
+        from benchflow.agents.install import effective_install_timeout
+
+        result = await self._env.exec(
+            harness.install_cmd,
+            timeout_sec=effective_install_timeout(
+                agent, self._config.sandbox_setup_timeout
+            ),
+        )
+        log = rollout_dir / "agent" / "install-native-stdout.txt"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        output = f"$ {harness.install_cmd}\n{result.stdout or ''}{result.stderr or ''}"
+        log.write_text(output)
+        if result.return_code != 0:
+            raise AgentInstallError(
+                agent=f"{agent} (native {harness.cli})",
+                return_code=result.return_code,
+                stdout=output,
+                diagnostics="",
+                log_path=str(log),
+            )
+
+    async def _connect_live_agent(self, **kwargs: Any) -> Any:
+        """Connect the run's harness: the ACP adapter, or the agent's own CLI."""
+        if self._config.harness == HARNESS_NATIVE:
+            return await self._planes.connect_native(**kwargs)
+        return await self._planes.connect_acp(**kwargs)
+
     async def _stop_active_egress(self) -> None:
         if self._active_egress_policy is not None:
             await self._planes.stop_egress_denylist(
@@ -1572,7 +1653,10 @@ class Rollout:
         admission = None
         if denylist.native_claude_model_only:
             admission = await validate_native_oauth_transport(
-                self._env, self._config.sandbox_user, agent_launch or self._agent_launch
+                self._env,
+                self._config.sandbox_user,
+                agent_launch or self._agent_launch,
+                harness=self._config.harness,
             )
         await self._stop_active_egress()
         # Track attempted startup too: cleanup must remove partially staged policy.
@@ -1637,6 +1721,7 @@ class Rollout:
             ),
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
+            harness=cfg.harness,
         )
         if egress_denylist is None:
             await self._stop_active_egress()
@@ -1671,7 +1756,7 @@ class Rollout:
                 self._session,
                 self._session_adapter,
                 self._agent_name,
-            ) = await self._planes.connect_acp(
+            ) = await self._connect_live_agent(
                 env=self._env,
                 agent=cfg.primary_agent,
                 agent_launch=self._agent_launch,
@@ -2531,6 +2616,43 @@ class Rollout:
 
     # Full run
 
+    def _record_taskmd_timed_out(self) -> None:
+        """Record in a task.md draft 2 package's reward.json whether the agent ran out of time.
+
+        task.md: "In every case reward.json records timed_out" (docs/document.md,
+        "Timeouts"). The rewards themselves are unchanged, and a trial without a
+        reward gets no reward file.
+        """
+        from benchflow.taskmd.materialize import taskmd_metadata
+
+        paths = getattr(self, "_rollout_paths", None)
+        if (
+            paths is None
+            or self._rewards is None
+            or taskmd_metadata(self._config.task_path) is None
+        ):
+            return
+        path = paths.reward_json_path
+        try:
+            recorded = json.loads(path.read_text()) if path.is_file() else {}
+        except (OSError, ValueError):
+            recorded = None
+        if not isinstance(recorded, dict):
+            logger.warning(f"Cannot record timed_out in unreadable {path}")
+            return
+        recorded = (recorded or dict(self._rewards)) | {
+            "timed_out": bool(getattr(self, "_agent_ran_out_of_time", False))
+        }
+        # A verifier that ran as root in the container leaves reward.json root-owned,
+        # so the host cannot open it for writing; replacing it needs only a writable
+        # folder. Recording timed_out must never fail a trial that has its rewards.
+        try:
+            tmp = path.with_name(path.name + ".timed-out.tmp")
+            tmp.write_text(json.dumps(recorded, indent=2) + "\n")
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.warning(f"Cannot record timed_out in {path}: {e}")
+
     def _record_agent_timeout(self, e: TimeoutError, *, agent_phase: bool) -> None:
         """Record a timed-out agent run on the rollout's error state.
 
@@ -2552,6 +2674,18 @@ class Rollout:
         """
         detail = str(e).strip()
         self._bare_timeout = not detail and agent_phase
+        # The agent's wall-clock budget ran out (an idle-watchdog abort is not
+        # running out of time); a task.md draft 2 reward.json records it.
+        if (
+            agent_phase
+            and not isinstance(e, IdleTimeoutError)
+            and (
+                isinstance(e, AgentPromptTimeoutError)
+                or "exceeded wall-clock budget" in detail
+                or not detail
+            )
+        ):
+            self._agent_ran_out_of_time = True
         if not detail and self._started_at is not None:
             elapsed = (datetime.now() - self._started_at).total_seconds()
             detail = (
@@ -2596,6 +2730,11 @@ class Rollout:
         if result.rollout_name and self._rollout_dir is not None:
             with scoring_lock(self._rollout_dir):
                 result = await self._finish_scoring_locked(result)
+                # Synchronous CPU and file IO over the whole trajectory (about
+                # 0.4 ms per recorded tool call), so it runs off the event loop:
+                # it is outside the hard deadline and inside the scoring lock,
+                # and every other trial in this process would stall for it.
+                await asyncio.to_thread(self._write_integrity, result)
             if result.rollout_dir is None:
                 result.rollout_dir = self._rollout_dir
             return result
@@ -2669,6 +2808,20 @@ class Rollout:
             result = await finish_terminal_review(self, result=result, lock_held=True)
         self._completed_result = result
         return result
+
+    def _write_integrity(self, result: RolloutResult) -> None:
+        """Audit the finished trial (``integrity`` audit/strict); rewards untouched.
+
+        Runs after verifier recovery and review, so it sees the final scoring.
+        Reviewer rollouts are never audited.
+        """
+        if self._config.integrity == "off" or self._config.purpose != "task":
+            return
+        from benchflow.integrity.trial import write_rollout_integrity
+
+        verdict = write_rollout_integrity(self, result)
+        if verdict is not None:
+            result.integrity = verdict.as_dict()
 
     async def finalize(self) -> RolloutResult:
         """Finish a manually driven rollout, including required rubric review."""
@@ -2776,6 +2929,7 @@ class Rollout:
                 ):
                     self._rewards = {"reward": 0.0}
                     self._verifier_error = None
+                self._record_taskmd_timed_out()
 
         except TimeoutError as e:
             if self._solver_execution_complete:
@@ -2822,7 +2976,9 @@ class Rollout:
             # self._error to the provider_auth marker, so this is only a
             # placeholder during cleanup.
             self._error = str(e)
-            logger.error(str(e))
+            if not isinstance(e, UsageLimitError):
+                # A usage limit is logged once, below, with its login.
+                logger.error(str(e))
         except Exception as e:
             # describe_exception, not str(e): this is the funnel every
             # unclassified rollout failure lands in, and some SDK errors
@@ -2833,7 +2989,12 @@ class Rollout:
                 self._verifier_error = f"[solver-preserved] post-solver stage failed: {describe_exception(e)}"
             else:
                 self._error = describe_exception(e)
-            logger.error("Run failed", exc_info=True)
+            if isinstance(e, UserError):
+                # Expected (a missing login, a task file that does not
+                # parse): its message says it all, a traceback would not.
+                logger.error(f"Run failed: {user_message(e)}")
+            else:
+                logger.error("Run failed", exc_info=True)
         finally:
             try:
                 await self.cleanup()
@@ -2997,6 +3158,7 @@ class Rollout:
                     rollout_dir,
                     sandbox_setup_timeout=cfg.sandbox_setup_timeout,
                 )
+                await self._install_native_cli(role.agent, rollout_dir)
         else:
             agent_cfg = self._agent_cfg
         if needs_role_credentials:
@@ -3040,6 +3202,7 @@ class Rollout:
             ),
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
+            harness=cfg.harness,
         )
         self._agent_launch = agent_launch
 
@@ -3080,7 +3243,7 @@ class Rollout:
                 self._session,
                 self._session_adapter,
                 self._agent_name,
-            ) = await self._planes.connect_acp(
+            ) = await self._connect_live_agent(
                 env=self._env,
                 agent=role.agent,
                 agent_launch=agent_launch,
@@ -3140,6 +3303,21 @@ class Rollout:
             diag.sandbox_probe_traceback = traceback.format_exc()[-2000:]
 
     def _classify_acp_error(self, e: AgentProtocolError) -> str:
+        if isinstance(e, UsageLimitError):
+            # Name the login (a label, never the token) and record the typed
+            # diagnostic: the trial is an unscored usage_limit, never retried.
+            from benchflow.agents.env import login_label
+
+            named = e.with_login(
+                login_label(
+                    self._config.primary_agent,
+                    self._config.primary_model,
+                    self._agent_env,
+                    self._config.agent_env,
+                )
+            )
+            self._diagnostics.set(UsageLimitDiagnostic.from_error(named))
+            return str(named)
         # The base AgentProtocolError only annotates `message: str` without
         # assigning it, so a base instance has no `.message` (AttributeError
         # risk); ACPError subclasses do set it. Fall back to str(e) defensively.

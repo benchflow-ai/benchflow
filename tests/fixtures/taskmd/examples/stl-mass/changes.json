@@ -1,0 +1,20 @@
+[
+  {
+    "version": "2.1.0",
+    "bump": "minor",
+    "date": "2026-09-29",
+    "reason": "The rubric no longer writes scoring.gates, a key with one value that the checker now rejects: every gate must pass, as before."
+  },
+  {
+    "version": "2.0.1",
+    "bump": "patch",
+    "date": "2026-09-28",
+    "reason": "The oracle script's comment no longer names the oracle seat, so a judge that reads it cannot tell it from a solver."
+  },
+  {
+    "version": "2.0.0",
+    "bump": "major",
+    "date": "2026-09-27",
+    "reason": "Replaced the stub with the SkillsBench task itself, converted with tools/convert.py import-v06: its instruction, data, solver, and tests."
+  }
+]

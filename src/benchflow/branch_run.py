@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchflow.checkpoints import CheckpointPolicy, after_prompt
+from benchflow.errors import UserError
 from benchflow.review.persistence import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ _CHILD_KEYS = ("label", "parent", "prompt", "prompt-file")
 _MAX_LABEL = 200
 
 
-class BranchPlanError(ValueError):
+class BranchPlanError(ValueError, UserError):
     """The branch request is inconsistent; nothing was started."""
 
 
@@ -278,6 +279,8 @@ class BranchPlan:
     retain_snapshots: bool = False
     prompts: list[str] | None = None
     reasoning_effort: str | None = None
+    # "acp" or "native" (benchflow.native_harness), as for bench eval run.
+    harness: str = "acp"
     agent_env: dict[str, str] = field(default_factory=dict)
     jobs_dir: Path = Path("jobs")
     job_name: str = "branch"
@@ -705,6 +708,7 @@ async def run_branch_trial(
         agent=plan.agent,
         model=plan.model,
         reasoning_effort=plan.reasoning_effort,
+        harness=plan.harness,
         # '@instruction' is the task instruction (None in RolloutConfig).
         prompts=[None if p == INSTRUCTION else p for p in plan.prompts]
         if plan.prompts

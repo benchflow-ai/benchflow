@@ -20,9 +20,19 @@ The server is stateless. Every reply is a function of the request alone:
   snapshot, or a retried request gets the same reply.
 - Requests without tools (Claude Code's side calls such as title generation)
   get a fixed ``ok`` with ``SIDE_USAGE`` (0 in, 1 out).
+- A step with ``delay_sec`` answers after that many seconds (a slow model,
+  for timeouts that hit a model call rather than a tool).
 
 Every main-loop reply reports fixed usage (``USAGE``) so token and cost fields
 of a rollout are exact. Each request is appended to ``--log`` as JSONL.
+
+``POST /v1/responses`` serves the same scripts as the OpenAI Responses API
+that Codex speaks (streaming SSE and plain JSON): a step's ``Bash`` tool
+becomes a call of the shell tool Codex offers (``exec_command``,
+``shell_command`` or ``shell``), and its call id is
+``call_fake_<script>_<step>``. With ``--wire-log`` every request body and its
+non-secret headers are appended there too, which the native-harness wire
+parity check diffs.
 """
 
 from __future__ import annotations
@@ -31,6 +41,7 @@ import argparse
 import json
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
@@ -73,6 +84,17 @@ def locate(messages: list[dict[str, Any]]) -> tuple[str | None, int]:
             step = sum(1 for m in messages[index + 1 :] if m.get("role") == "assistant")
             return names[-1], step
     return None, 0
+
+
+def script_delay(
+    messages: list[dict[str, Any]], scripts: dict[str, list[dict[str, Any]]]
+) -> float:
+    """Seconds the step's ``delay_sec`` holds the reply back (a slow model)."""
+    name, step = locate(messages)
+    script = scripts.get(name or "") or []
+    if step < len(script):
+        return float(script[step].get("delay_sec") or 0)
+    return 0.0
 
 
 def _resolve_tool(requested: str, tools: list[dict[str, Any]]) -> str | None:
@@ -470,11 +492,236 @@ def chat_chunks(
     return chunks
 
 
+# ---------------------------------------------------------------------------
+# OpenAI Responses API (Codex)
+# ---------------------------------------------------------------------------
+
+# Codex's shell tools, most preferred first, and how a script's Bash input
+# becomes their arguments.
+_RESPONSES_SHELL_TOOLS = ("exec_command", "shell_command", "shell")
+
+
+def _responses_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """Responses ``input`` items as the role/content messages :func:`locate` reads."""
+    items = body.get("input")
+    if isinstance(items, str):
+        return [{"role": "user", "content": items}]
+    messages: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict) or item.get("type", "message") != "message":
+            continue
+        role = item.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = item.get("content")
+        texts = (
+            [content]
+            if isinstance(content, str)
+            else [
+                str(c.get("text", ""))
+                for c in content or []
+                if isinstance(c, dict) and "text" in c
+            ]
+        )
+        messages.append(
+            {"role": role, "content": [{"type": "text", "text": t} for t in texts]}
+        )
+    return messages
+
+
+def _responses_tool_names(body: dict[str, Any]) -> list[str]:
+    names = []
+    for tool in body.get("tools") or []:
+        if isinstance(tool, dict):
+            names.append(str(tool.get("name") or tool.get("type") or ""))
+    return names
+
+
+def _shell_arguments(tool: str, entry_input: dict[str, Any]) -> dict[str, Any]:
+    command = str(entry_input.get("command", ""))
+    timeout_ms = entry_input.get("timeout")
+    if tool == "exec_command":
+        args: dict[str, Any] = {"cmd": command}
+        if timeout_ms:
+            # Wait for the command, as Claude Code's Bash tool does.
+            args["yield_time_ms"] = int(timeout_ms)
+        return args
+    if tool == "shell_command":
+        args = {"command": command}
+    else:
+        args = {"command": ["bash", "-lc", command]}
+    if timeout_ms:
+        args["timeout_ms"] = int(timeout_ms)
+    return args
+
+
+def plan_responses_reply(
+    body: dict[str, Any], scripts: dict[str, list[dict[str, Any]]]
+) -> dict[str, Any]:
+    """The Responses API ``response`` object for one request."""
+    model = str(body.get("model") or "fake-model")
+    names = _responses_tool_names(body)
+    shell = next((t for t in _RESPONSES_SHELL_TOOLS if t in names), None)
+    # A script's Bash step runs through Codex's shell tool.
+    offered = [{"name": n} for n in names] + ([{"name": "Bash"}] if shell else [])
+    anthropic_like = {
+        "model": model,
+        "tools": offered,
+        "messages": _responses_messages(body),
+    }
+    plan = plan_reply(anthropic_like, scripts)
+    name, step = locate(anthropic_like["messages"])
+    usage = plan["usage"]
+    output: list[dict[str, Any]] = []
+    text = "".join(b["text"] for b in plan["content"] if b["type"] == "text")
+    if text:
+        output.append(
+            {
+                "type": "message",
+                "id": plan["id"].replace("msg_", "msg_out_"),
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        )
+    entry = (scripts.get(name or "") or [])[step : step + 1]
+    wanted = entry[0].get("tool") if entry else None
+    if wanted and names:
+        tool = (
+            shell
+            if wanted == "Bash" and shell
+            else _resolve_tool(wanted, [{"name": n} for n in names])
+        )
+        if tool is not None:
+            arguments = (
+                _shell_arguments(tool, entry[0].get("input") or {})
+                if tool in _RESPONSES_SHELL_TOOLS
+                else entry[0].get("input") or {}
+            )
+            output.append(
+                {
+                    "type": "function_call",
+                    "id": f"fc_fake_{name}_{step}",
+                    "call_id": f"call_fake_{name}_{step}",
+                    "name": tool,
+                    "arguments": json.dumps(arguments),
+                    "status": "completed",
+                }
+            )
+    return {
+        "id": plan["id"].replace("msg_", "resp_"),
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": model,
+        "output": output,
+        "usage": {
+            "input_tokens": usage["input_tokens"],
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": usage["output_tokens"],
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": usage["input_tokens"] + usage["output_tokens"],
+        },
+    }
+
+
+def responses_events(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Responses API streaming events for one response."""
+    head = dict(response, status="in_progress", output=[], usage=None)
+    events: list[dict[str, Any]] = [
+        {"type": "response.created", "response": head},
+        {"type": "response.in_progress", "response": head},
+    ]
+    for index, item in enumerate(response["output"]):
+        opened = dict(item, status="in_progress")
+        if item["type"] == "message":
+            opened["content"] = []
+        events.append(
+            {
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": opened,
+            }
+        )
+        if item["type"] == "message":
+            text = item["content"][0]["text"]
+            part = {"type": "output_text", "text": "", "annotations": []}
+            events += [
+                {
+                    "type": "response.content_part.added",
+                    "item_id": item["id"],
+                    "output_index": index,
+                    "content_index": 0,
+                    "part": part,
+                },
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": item["id"],
+                    "output_index": index,
+                    "content_index": 0,
+                    "delta": text,
+                },
+                {
+                    "type": "response.output_text.done",
+                    "item_id": item["id"],
+                    "output_index": index,
+                    "content_index": 0,
+                    "text": text,
+                },
+                {
+                    "type": "response.content_part.done",
+                    "item_id": item["id"],
+                    "output_index": index,
+                    "content_index": 0,
+                    "part": dict(part, text=text),
+                },
+            ]
+        else:
+            events += [
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": item["id"],
+                    "output_index": index,
+                    "delta": item["arguments"],
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    "item_id": item["id"],
+                    "output_index": index,
+                    "arguments": item["arguments"],
+                },
+            ]
+        events.append(
+            {"type": "response.output_item.done", "output_index": index, "item": item}
+        )
+    events.append({"type": "response.completed", "response": response})
+    for number, event in enumerate(events):
+        event["sequence_number"] = number
+    return events
+
+
+# Headers the wire log keeps: what identifies the client and the protocol,
+# never credentials.
+_WIRE_HEADERS = frozenset(
+    {
+        "user-agent",
+        "anthropic-beta",
+        "anthropic-version",
+        "x-app",
+        "content-type",
+        "openai-beta",
+        "originator",
+        "version",
+    }
+)
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "FakeLLM/1"
     protocol_version = "HTTP/1.1"
     scripts: ClassVar[dict[str, list[dict[str, Any]]]] = {}
     log_path: Path | None = None
+    wire_log_path: Path | None = None
     lock = threading.Lock()
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -522,8 +769,21 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if self.wire_log_path is not None:
+            headers = {
+                k.lower(): v
+                for k, v in self.headers.items()
+                if k.lower() in _WIRE_HEADERS
+            }
+            with self.lock, self.wire_log_path.open("a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps({"path": path, "headers": headers, "body": body}) + "\n"
+                )
         if path.endswith("/chat/completions"):
             self._chat(path, body)
+            return
+        if path.endswith("/responses"):
+            self._responses(path, body)
             return
         if path.endswith("/messages/count_tokens"):
             self._log({"path": path, "kind": "count_tokens"})
@@ -539,6 +799,8 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if body.get("tools"):
+            time.sleep(script_delay(body.get("messages") or [], self.scripts))
         reply = plan_reply(body, self.scripts)
         self._log(
             {
@@ -561,6 +823,40 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         for event, data in sse_events(reply):
             self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+            self.wfile.flush()
+        self.close_connection = True
+
+    def _responses(self, path: str, body: dict[str, Any]) -> None:
+        if body.get("tools"):
+            time.sleep(script_delay(_responses_messages(body), self.scripts))
+        response = plan_responses_reply(body, self.scripts)
+        self._log(
+            {
+                "path": path,
+                "kind": "responses",
+                "stream": bool(body.get("stream")),
+                "n_input": len(body.get("input") or []),
+                "n_tools": len(body.get("tools") or []),
+                "reply_id": response["id"],
+                "calls": [
+                    item["call_id"]
+                    for item in response["output"]
+                    if item["type"] == "function_call"
+                ],
+            }
+        )
+        if not body.get("stream"):
+            self._json(200, response)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        for event in responses_events(response):
+            self.wfile.write(
+                f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+            )
             self.wfile.flush()
         self.close_connection = True
 
@@ -616,9 +912,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8911)
     parser.add_argument("--scripts", type=Path, default=DEFAULT_SCRIPTS)
     parser.add_argument("--log", type=Path, default=None)
+    parser.add_argument("--wire-log", type=Path, default=None)
     args = parser.parse_args()
     _Handler.scripts = json.loads(args.scripts.read_text())
     _Handler.log_path = args.log
+    _Handler.wire_log_path = args.wire_log
     server = ThreadingHTTPServer((args.host, args.port), _Handler)
     server.daemon_threads = True
     try:

@@ -138,8 +138,15 @@ def _write_config(
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
     freeze_workspace: bool = False,
+    integrity: str = "off",
+    harness: str = "acp",
 ) -> None:
-    """Write config.json to rollout_dir with secrets filtered out."""
+    """Write config.json to rollout_dir with secrets filtered out.
+
+    ``harness_mode`` records how the agent ran (``acp`` or ``native``). It is
+    not called ``harness``: published metadata and ``bf.compare`` already use
+    that name for the agent itself.
+    """
     from benchflow.acp.selection import selected_acp_transport
     from benchflow.agents.install import effective_install_timeout
 
@@ -163,6 +170,7 @@ def _write_config(
             agent=agent,
             environment=environment,
         ),
+        "harness_mode": harness,
         "environment_manifest": _environment_manifest_metadata(environment_manifest),
         **skill_policy.config_metadata(),
         "sandbox_user": sandbox_user,
@@ -208,6 +216,13 @@ def _write_config(
         config_data["review"] = review
     if freeze_workspace:
         config_data["freeze_workspace"] = True
+    if integrity != "off":
+        config_data["integrity"] = integrity
+    if harness == "native":
+        from benchflow.native_harness.harnesses import native_harness_for
+
+        native = native_harness_for(agent)
+        config_data["native_harness"] = {"cli": native.cli, "package": native.package}
     if purpose != "task":
         config_data.update(purpose=purpose, parent_rollout=parent_rollout)
     write_json_atomic(rollout_dir / "config.json", config_data)

@@ -9,6 +9,7 @@ only wires the call.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -81,6 +82,22 @@ def register_tasks(app: typer.Typer) -> None:
             # which `bench tasks check` validates).
             for rel in result.files:
                 console.print(f"  {rel}")
+            # The scaffold fails on purpose until edited; say what comes next.
+            # Its own --jobs-dir, so it cannot resume another experiment's job,
+            # and --fresh, because this is the authoring loop: without it a
+            # re-run after an edit resumes its own last job and reports the
+            # cached result of the code the author just changed.
+            task_dir = shlex.quote(str(result.task_dir))
+            jobs_dir = shlex.quote(f"jobs/{result.task_dir.name}-oracle")
+            for line in (
+                "Next: replace every [REPLACE: ...] placeholder (bench tasks check "
+                "lists them), then prove the task with its reference solution:",
+                f"bench tasks check {task_dir}",
+                f"bench eval run --tasks-dir {task_dir} --agent oracle "
+                f"--sandbox docker --jobs-dir {jobs_dir} --fresh",
+                "Guide: https://github.com/benchflow-ai/benchflow/blob/main/docs/task-authoring.md",
+            ):
+                console.print(escape(line), highlight=False, soft_wrap=True)
         except (OSError, ValueError) as e:
             # OSError covers FileExistsError plus the NotADirectoryError /
             # PermissionError that mkdir() raises for `--dir <file>` or a
@@ -152,7 +169,30 @@ def register_tasks(app: typer.Typer) -> None:
         from benchflow.task.formats import detect_task_format, materialize_task_dir
 
         fmt = detect_task_format(task_dir)
-        if fmt is not None:
+        refused_before_native = False
+        if fmt is not None and fmt.name == "taskmd":
+            # task.md draft 2: the reference checker's report, then BenchFlow's
+            # decisions field by field, then the native package's own checks.
+            from benchflow.taskmd.check import check_package
+
+            report = check_package(task_dir)
+            console.print("reference checker (task-md tools/taskmd.py check):")
+            for line in report.reference:
+                console.print(f"  {escape(line)}")
+            console.print("BenchFlow:")
+            for line in report.benchflow:
+                console.print(f"  {escape(line)}")
+            refused_before_native = not report.ok
+            if report.native_dir is None:
+                if refused_before_native:
+                    raise typer.Exit(1)
+                return
+            task_dir = report.native_dir
+            console.print(
+                f"{escape(fmt.name)} task format: checking the materialized package "
+                f"{escape(str(task_dir))}"
+            )
+        elif fmt is not None:
             task_dir = materialize_task_dir(task_dir)
             console.print(
                 f"{escape(fmt.name)} task format: checking the materialized package "
@@ -176,6 +216,8 @@ def register_tasks(app: typer.Typer) -> None:
             console.print(
                 f"[green]✓[/green] {escape(task_dir.name)} — valid ({validation_level})"
             )
+            if refused_before_native:
+                raise typer.Exit(1)
         else:
             console.print(
                 f"[red]✗[/red] {escape(task_dir.name)} — {len(issues)} issue(s):"

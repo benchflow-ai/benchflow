@@ -769,20 +769,26 @@ def regrade(
     sandbox: str | None = None,
     concurrency: int = 4,
     reason: str | None = None,
+    runner: Runner | None = None,
 ) -> RegradeSummary:
     """Re-run each trial's task verifier (from ``tasks_dir`` when given) on
     the trial's frozen final workspace, in a fresh sandbox.
 
     ``path`` is a job folder or one trial folder. ``sandbox`` defaults to the
     backend each trial ran on. The original ``result.json`` is never touched;
-    see the module docstring for what is written.
+    see the module docstring for what is written. Blocking form of
+    :func:`aregrade`, with the same arguments; it also works inside a running
+    event loop, such as a Jupyter cell.
     """
-    return asyncio.run(
-        aregrade(
+    from benchflow.batch import run_blocking
+
+    return run_blocking(
+        lambda: aregrade(
             path,
             tasks_dir=tasks_dir,
             sandbox=sandbox,
             concurrency=concurrency,
             reason=reason,
+            runner=runner,
         )
     )
