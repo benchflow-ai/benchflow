@@ -81,6 +81,16 @@ def register_tasks(app: typer.Typer) -> None:
             # which `bench tasks check` validates).
             for rel in result.files:
                 console.print(f"  {rel}")
+            # The scaffold fails on purpose until edited; say what comes next.
+            task_dir = str(result.task_dir)
+            for line in (
+                "Next: replace every [REPLACE: ...] placeholder (bench tasks check "
+                "lists them), then prove the task with its reference solution:",
+                f"  bench tasks check {task_dir}",
+                f"  bench eval run --tasks-dir {task_dir} --agent oracle --sandbox docker",
+                "Guide: https://github.com/benchflow-ai/benchflow/blob/main/docs/task-authoring.md",
+            ):
+                console.print(escape(line), highlight=False, soft_wrap=True)
         except (OSError, ValueError) as e:
             # OSError covers FileExistsError plus the NotADirectoryError /
             # PermissionError that mkdir() raises for `--dir <file>` or a

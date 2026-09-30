@@ -14,7 +14,13 @@ import typer
 from benchflow.sandbox.providers import providers_phrase
 
 AgentOption = Annotated[str, typer.Option("--agent", help="Agent name")]
-ModelOption = Annotated[str | None, typer.Option("--model", help="Model")]
+ModelOption = Annotated[
+    str | None,
+    typer.Option(
+        "--model",
+        help="Model id for the agent, e.g. claude-haiku-4-5-20251001 (none for oracle and nop)",
+    ),
+]
 SandboxOption = Annotated[
     str, typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}")
 ]
