@@ -634,9 +634,14 @@ class _Episode:
                 out.timings["model_sec"] = out.timings.get("model_sec", 0.0) + (
                     time.monotonic() - t
                 )
+            if response.status_code == 502 and attempt < s.transport_retries:
+                # The session server lost its SGLang backend for a moment; it
+                # accepts the same request again as a retry of the latest turn.
+                last = RuntimeError(f"HTTP 502: {response.text[:200]}")
+                continue
             return self._parse_reply(response)
         raise _ModelServerFailure(
-            f"session server unreachable after {s.transport_retries + 1} attempts: "
+            f"session server failed after {s.transport_retries + 1} attempts: "
             f"{type(last).__name__}: {last}"
         )
 
