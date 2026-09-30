@@ -236,7 +236,10 @@ def classify_error(error: str | None) -> str | None:
         return IDLE_TIMEOUT
     if "install failed" in lower:
         return INSTALL_FAILED
-    if "closed stdout" in lower:
+    if "closed stdout" in lower or lower.startswith(("pty ", "daytonaptyprocess:")):
+        # The agent's pipe ended: a local or SSH process closed stdout, or the
+        # Daytona PTY closed ("PTY closed by the peer: ...") or stayed silent
+        # ("PTY readline timeout"). The transport's diagnostic says the same.
         return PIPE_CLOSED
     # Order matters: "suspected provider api error" contains "provider api
     # error", so the heuristic marker must be checked first.

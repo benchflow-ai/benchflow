@@ -79,6 +79,15 @@ def session_failure_error(failure: dict[str, Any]) -> AgentProtocolError:
     text = title or "the agent ended its turn on a failure"
     if details and details not in text:
         text = f"{text}: {details}"
+    if failure.get("category") == "connection":
+        # claude-agent-acp's transport_lost covers its CLI process dying and
+        # the CLI's stream failing; its record does not say which, the
+        # adapter's log (agent/<agent>.txt) does.
+        text = (
+            f"{text.rstrip('.')}: the agent's own process ended or lost its "
+            "stream (not BenchFlow's connection to the sandbox); the agent log "
+            "in the trial's agent/ folder says which"
+        )
     return ACPError(-32603, f"Internal error: {text}")
 
 

@@ -186,8 +186,26 @@ async def test_other_failures_raise_the_acp_error_the_agent_raised_before(
     err = caught.value
     assert not isinstance(err, UsageLimitError)
     assert err.code == -32603
-    assert str(err) == f"ACP error -32603: Internal error: {title}"
+    assert str(err).startswith(f"ACP error -32603: Internal error: {title.rstrip('.')}")
     assert classify_error(str(err)) == expected_category
+
+
+async def test_a_lost_agent_process_says_it_was_the_agents_own():
+    """Before the opt-in, a killed Claude Code CLI read 'The Claude Agent process
+    exited unexpectedly'; the typed record's title only says the connection
+    was lost, so the message says whose connection and where to look."""
+    title = "The connection to Claude was lost."
+    client = await _client_with_session(
+        [{"result": _failure_response("connection", ["new_session"], title)}]
+    )
+    with pytest.raises(ACPError) as caught:
+        await client.prompt("hi")
+    assert str(caught.value) == (
+        "ACP error -32603: Internal error: The connection to Claude was lost: "
+        "the agent's own process ended or lost its stream (not BenchFlow's "
+        "connection to the sandbox); the agent log in the trial's agent/ folder "
+        "says which"
+    )
 
 
 async def test_a_finished_turn_without_a_failure_is_returned():
