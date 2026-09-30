@@ -19,7 +19,7 @@ ones :func:`benchflow._utils.scoring.classify_score_outcome` decides.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -306,18 +306,24 @@ def _errored_cause(
     )
 
 
-def task_dir_for(job_dir: Path | None, task_name: str) -> Path | None:
-    """Where a job's task lives, from the tasks_dir its evaluation.json recorded."""
-    if job_dir is None:
-        return None
-    try:
-        record = json.loads((Path(job_dir) / "evaluation.json").read_text())
-    except (OSError, ValueError):
-        return None
-    tasks_dir = record.get("tasks_dir") if isinstance(record, dict) else None
-    if not isinstance(tasks_dir, str) or not tasks_dir:
-        return None
-    root = Path(tasks_dir)
-    if root.name == task_name and not (root / task_name).is_dir():
-        return root
-    return root / task_name
+def task_dir_finder(job_dir: Path | None) -> Callable[[str], Path | None]:
+    """Where each of a job's tasks lives, from the tasks_dir its evaluation.json
+    recorded (read once)."""
+    root: Path | None = None
+    if job_dir is not None:
+        try:
+            record = json.loads((Path(job_dir) / "evaluation.json").read_text())
+        except (OSError, ValueError):
+            record = None
+        tasks_dir = record.get("tasks_dir") if isinstance(record, dict) else None
+        if isinstance(tasks_dir, str) and tasks_dir:
+            root = Path(tasks_dir)
+
+    def find(task_name: str) -> Path | None:
+        if root is None:
+            return None
+        if root.name == task_name and not (root / task_name).is_dir():
+            return root
+        return root / task_name
+
+    return find

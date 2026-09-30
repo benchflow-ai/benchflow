@@ -334,26 +334,37 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
     prints nothing here.
     """
     import json
+    from collections.abc import Mapping
+    from typing import cast
 
-    from benchflow.failures import cause_of, task_dir_for
+    from benchflow._utils.scoring import classify_score_outcome
+    from benchflow.failures import cause_of, task_dir_finder
 
     results = getattr(result, "results", None)
     if not isinstance(results, dict) or not results:
         return
+    task_dir = task_dir_finder(job_dir)
     groups: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
     counts = {"passed": 0, "failed": 0, "unscored": 0, "errored": 0}
     for key, trial in sorted(results.items()):
         name = str(key)
-        cause = cause_of(
-            trial,
-            job_dir=job_dir,
-            task_dir=task_dir_for(job_dir, name) if job_dir else None,
+        # The Score line's buckets: its errors are "errored" here and its
+        # verifier errors "unscored". Only those trials' files are read.
+        outcome = (
+            classify_score_outcome(cast("Mapping[str, Any]", trial))
+            if isinstance(trial, Mapping)
+            else getattr(trial, "score_outcome", None)
         )
-        if cause is None:
-            passed = getattr(trial, "score_outcome", None) == "passed"
-            counts["passed" if passed else "failed"] += 1
+        if outcome in ("passed", "failed"):
+            counts[outcome] += 1
             continue
-        bucket = "errored" if getattr(trial, "error", None) else "unscored"
+        cause = cause_of(trial, job_dir=job_dir, task_dir=task_dir(name))
+        if cause is None:
+            counts["passed" if outcome == "passed" else "failed"] += 1
+            continue
+        if outcome is None:
+            outcome = "errored" if getattr(trial, "error", None) else "unscored"
+        bucket = "errored" if outcome == "errored" else "unscored"
         counts[bucket] += 1
         groups.setdefault((bucket, cause.headline(), cause.key), []).append(
             (name, cause.next_step)
@@ -419,19 +430,24 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         and not isinstance(t, bool)
     ]
     token_text = f", {sum(tokens):,} tokens" if tokens else ""
+    trials = len(results)
+    no_usage = trials - len(tokens)
+    usage_note = (
+        f" ({no_usage} of {trials} trials reported no usage)" if no_usage else ""
+    )
     if costs:
-        missing = len(results) - len(costs)
-        note = (
-            f" ({missing} of {len(results)} trials reported no cost)" if missing else ""
-        )
+        missing = trials - len(costs)
+        note = f" ({missing} of {trials} trials reported no cost)" if missing else ""
         cost_text = f"${sum(costs):.2f}{token_text}{note}"
-    elif tokens and not sum(tokens):
+    elif tokens and not sum(tokens) and not no_usage:
         cost_text = "none: no model tokens were used"
-    elif tokens:
+    elif tokens and sum(tokens):
         cost_text = (
             "not reported in USD (subscription logins and unpriced models "
-            f"report tokens only){token_text}"
+            f"report tokens only){token_text}{usage_note}"
         )
+    elif tokens:
+        cost_text = f"not reported{usage_note}; the others used no model tokens"
     else:
         cost_text = "not reported"
     console.print(f"[dim]Cost:     [/dim] {cost_text}", soft_wrap=True)

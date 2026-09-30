@@ -140,6 +140,61 @@ def test_no_cost_says_so(job, monkeypatch):
     assert "Cost:      none: no model tokens were used" in out
 
 
+def test_no_tokens_is_none_only_when_every_trial_reported_usage(job, monkeypatch):
+    """Review finding: one trial reporting 0 tokens and the rest reporting
+    nothing read "none: no model tokens were used"."""
+    job_dir, result = job
+    for trial in result.results.values():
+        trial.cost_usd = trial.total_tokens = None
+    result.results["hello"].total_tokens = 0
+    out = _render(monkeypatch, result, job_dir)
+    assert "no model tokens were used" not in out
+    assert (
+        "Cost:      not reported (3 of 4 trials reported no usage); the others "
+        "used no model tokens"
+    ) in out
+
+
+def test_the_summary_reads_only_the_files_it_reports_from(job, monkeypatch):
+    """Review finding: the summary read the job's evaluation.json once per
+    trial and every trial's result.json, passed ones included."""
+    job_dir, result = job
+    reads: list[str] = []
+    read_text = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        reads.append(self.parent.name if self.name == "result.json" else self.name)
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    monkeypatch.setattr(shared, "console", Console(file=io.StringIO(), width=240))
+    shared._report_outcomes(result, job_dir)
+    assert reads.count("evaluation.json") == 1
+    assert "fine__abcd1234" not in reads
+
+
+def test_a_trial_with_no_verdict_and_no_error_is_errored_on_both_lines(
+    tmp_path, monkeypatch
+):
+    """Review finding: the Score line counts a trial with no reward and no
+    error as an error; the Outcomes line called it unscored."""
+    job_dir = tmp_path / "jobs" / "run"
+    job_dir.mkdir(parents=True)
+    result = EvaluationResult(
+        job_name="run",
+        config=EvaluationConfig(),
+        total=1,
+        errored=1,
+        job_dir=job_dir,
+        results={"cut": _trial(job_dir, "cut")},
+    )
+    assert result.results["cut"].score_outcome == "errored"
+    out = _render(monkeypatch, result, job_dir)
+    assert "errors=1" in out
+    assert "Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored" in out
+    assert "1 errored: no verdict was recorded" in out
+
+
 def test_a_scored_trial_has_no_cause(job):
     _, result = job
     assert cause_of(result.results["fine"]) is None
