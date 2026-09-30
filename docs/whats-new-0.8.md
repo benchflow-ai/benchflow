@@ -42,7 +42,7 @@ bench doctor
 Each of these still works and warns when used:
 
 - `benchflow.SDK`: use `bf.run(bf.RolloutConfig(...))`, which takes the same keyword arguments.
-- `bf.snapshot`, `bf.restore` and `bf.list_snapshots`: use the `workspace_*` names.
+- `bf.snapshot`, `bf.restore` and `bf.list_snapshots`: use `bf.workspace_snapshot`, `bf.workspace_restore` and `bf.list_workspace_snapshots`.
 - `RuntimeResult`: use `RolloutResult`.
 - The unused `RuntimeConfig.max_rounds`, `snapshot_policy` and `reward_stream` fields.
 - `bench eval create`: use `bench eval run`.

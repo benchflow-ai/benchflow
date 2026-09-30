@@ -1,8 +1,6 @@
 # Contribute trajectory captures
 
-**Don't follow these steps yourself — send them to your coding agent.** Copy
-the block below and paste it as a message to Claude Code, Codex, OpenCode, or
-Cursor. You do not run a BenchFlow command.
+**Send these to your coding agent.** Copy the block below and paste it as a message to Claude Code, Codex, OpenCode, or Cursor. That is the $2,000 eval prize path: no BenchFlow account, API key, or Azure login, and you do not run a BenchFlow command yourself.
 
 > Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, on this laptop) to the BenchFlow eval prize.
 >

@@ -24,7 +24,7 @@ Scaffold the package:
 bench tasks init my-task
 ```
 
-It writes `tasks/my-task/` with every file above. Each one holds `[REPLACE: ...]` placeholders, and the scaffold fails on purpose until you edit it (`test.sh` writes 0.0 and `solve.sh` exits 1), so an unedited task can never pass by accident. `bench tasks check` lists what is left:
+It writes `tasks/my-task/` with every file above. All but the Dockerfile hold `[REPLACE: ...]` placeholders, and the scaffold fails on purpose until you edit it (`test.sh` writes 0.0 and `solve.sh` exits 1), so an unedited task can never pass by accident. `bench tasks check` lists what is left:
 
 ```bash
 bench tasks check tasks/my-task

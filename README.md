@@ -39,12 +39,12 @@ BenchFlow downloads only that task from the [SkillsBench](https://github.com/ben
 
 ```bash
 claude setup-token
-export CLAUDE_CODE_OAUTH_TOKEN=<token>
+export CLAUDE_CODE_OAUTH_TOKEN='<token>'
 bench eval run --source-repo benchflow-ai/skillsbench --source-path tasks/citation-check \
   --agent claude --model claude-haiku-4-5-20251001 --sandbox docker --jobs-dir jobs/claude
 ```
 
-The agent may pass or fail; either way the evaluation completed. `bench eval smoke` runs a bundled hello-world task once with every agent you are logged in to, which checks each login in about a minute. For a ChatGPT subscription, run `codex login` and use `--agent codex`; see [Auth](./docs/getting-started.md#auth-oauth-long-lived-token-or-api-key) for API keys and other agents.
+The agent may pass or fail; either way the evaluation completed. An exported `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` wins over the token and is billed, so unset them to use the subscription. `bench eval smoke` runs a bundled hello-world task once with every agent you are logged in to, which checks each login in about a minute. For a ChatGPT subscription, run `codex login` and use `--agent codex --model <model>` with a model your plan offers; see [Auth](./docs/getting-started.md#auth-oauth-long-lived-token-or-api-key) for API keys and other agents.
 
 **4. Read the results.**
 
@@ -139,7 +139,7 @@ bench eval run \
     --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
-Repos are cached under `.cache/datasets/` (in the enclosing git repository's root, or the current directory outside one). With a source path, only that path is downloaded (a sparse clone that fetches no other file), and each later path joins the same cache; a source without a path, or a folder that holds no BenchFlow task, gets the whole repository.
+Repos are cached under `.cache/datasets/` (in the enclosing git repository's root, or the current directory outside one). With a source path, only that folder and the repository's top-level files are downloaded (a sparse clone), and each later path joins the same cache; a source without a path, or a folder that holds no BenchFlow task, gets the whole repository.
 
 Hosted environments are another source type. Instead of a repo, pass
 `--source-env` with the environment's pinned source version to run an external
