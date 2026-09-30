@@ -27,4 +27,6 @@ def selected_acp_transport(*, agent: str, environment: str) -> str:
         return "docker-stdio"
     if environment == "daytona":
         return "ssh" if agent == "gemini" else daytona_acp_transport()
+    if environment == "hf-sandbox":
+        return "hf-http-bridge"
     return "provider-default"

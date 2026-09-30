@@ -171,7 +171,7 @@ class UsageTrackingConfig:
         # live proxy reports host/sandbox, native-subscription agents report
         # agent_native, and only a genuinely un-routable agent (no telemetry at
         # all, e.g. a native-protocol agent) reports none.
-        endpoint_kind = "sandbox" if environment == "daytona" else "host"
+        endpoint_kind = "sandbox" if environment in ("daytona", "hf-sandbox") else "host"
         if usage_source == USAGE_SOURCE_AGENT_NATIVE_ACP:
             endpoint_kind = "agent_native"
         elif usage_source == USAGE_SOURCE_UNAVAILABLE:

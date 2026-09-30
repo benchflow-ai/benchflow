@@ -70,6 +70,11 @@ sandbox-modal = [
     "modal>=0.73",
     "tenacity>=8.0",
 ]
+sandbox-hf = [
+    # huggingface_hub.Sandbox (dedicated HF Jobs sandboxes, proxy_url_for) landed in 1.32.
+    "huggingface_hub>=1.32",
+    "httpx>=0.27",
+]
 bedrock = [
     "boto3>=1.40",
 ]

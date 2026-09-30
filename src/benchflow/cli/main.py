@@ -588,7 +588,7 @@ def eval_run(
 ) -> None:
     """Run an evaluation — single task or batch.
 
-    Sandbox: docker, daytona, or modal.
+    Sandbox: docker, daytona, modal, or hf-sandbox.
     """
     _apply_dotenv_to_process_env()
 

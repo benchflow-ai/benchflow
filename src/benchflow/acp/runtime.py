@@ -585,6 +585,11 @@ async def connect_acp(
                 else:
                     live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
                     logger.info("Using PTY transport for Daytona sandbox")
+            elif environment == "hf-sandbox":
+                from benchflow.sandbox.hf_bridge import HFBridgeProcess
+
+                live_proc = await HFBridgeProcess.from_sandbox_env(env)
+                logger.info("Using HTTP bridge transport for HF sandbox")
             else:
                 is_dind = hasattr(env, "_strategy") and hasattr(
                     env._strategy, "_compose_cmd"

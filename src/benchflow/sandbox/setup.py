@@ -781,6 +781,25 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "hf-sandbox":
+        try:
+            from benchflow.sandbox.hf_sandbox import HFSandbox
+
+            import huggingface_hub  # noqa: F401
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("hf-sandbox", exc)
+        HFSandbox.preflight()
+
+        return HFSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            agent_timeout_sec=task.config.agent.timeout_sec,
+            verifier_timeout_sec=task.config.verifier.timeout_sec,
+            persistent_env=manifest_env or None,
+        )
     else:
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"

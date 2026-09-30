@@ -28,15 +28,17 @@ _REGISTRY = _SRC / "sandbox" / "providers.py"
 def test_registry_is_the_single_source_of_truth() -> None:
     # Locks the current set + docker-first order; adding a provider is then a
     # deliberate edit here + a test update, never a silent scatter.
-    assert SANDBOX_PROVIDERS == ("docker", "daytona", "modal")
+    assert SANDBOX_PROVIDERS == ("docker", "daytona", "modal", "hf-sandbox")
     assert frozenset(SANDBOX_PROVIDERS) == SANDBOX_PROVIDER_SET
 
 
 def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
-    assert providers_phrase() == "docker, daytona, or modal"
-    assert providers_phrase(quote=True) == "'docker', 'daytona', or 'modal'"
+    assert providers_phrase() == "docker, daytona, modal, or hf-sandbox"
+    assert (
+        providers_phrase(quote=True) == "'docker', 'daytona', 'modal', or 'hf-sandbox'"
+    )
 
 
 def test_off_box_subset_is_exactly_the_non_docker_providers() -> None:

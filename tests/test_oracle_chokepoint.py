@@ -75,7 +75,7 @@ class TestEvalCreateRouting:
         result = CliRunner().invoke(app, command)
 
         assert result.exit_code == 0
-        assert "Sandbox: docker, daytona, or modal" in result.stdout
+        assert "Sandbox: docker, daytona, modal, or hf-sandbox" in result.stdout
         assert "firecracker" not in result.stdout.lower()
         assert "kubernetes" not in result.stdout.lower()
         assert "k8s" not in result.stdout.lower()
