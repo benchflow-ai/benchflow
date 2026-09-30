@@ -64,6 +64,12 @@ def add_env_args(parser: argparse.ArgumentParser) -> None:
     )
     g.add_argument("--max-trajectory-tokens", type=int, default=32768)
     g.add_argument("--temperature", type=float, default=1.0)
+    g.add_argument(
+        "--base-url",
+        default=None,
+        help="Tinker API server (default: $TINKER_BASE_URL, else Thinking Machines' "
+        "hosted service); a self-hosted SkyRL Tinker server works here",
+    )
     s = parser.add_argument_group("sandboxes")
     s.add_argument("--sandbox", default="daytona", help="BenchFlow sandbox backend")
     s.add_argument(
@@ -159,8 +165,9 @@ def build_config(args: argparse.Namespace) -> rl_train.Config:
         eval_every=0,
         save_every=args.save_every,
         load_checkpoint_path=args.load_checkpoint,
+        base_url=args.base_url,
         rollout_error_tolerance=te.DropInfrastructureFailures(
-            max_retries=args.max_retries
+            max_retries=args.max_retries, drop_constant_groups=True
         ),
         num_groups_to_log=2,
         max_steps=args.steps,
@@ -173,38 +180,72 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def curve_from_records(log_path: Path) -> list[dict]:
+    """Per step: every scored episode and every group, dropped groups included.
+
+    The cookbook's own `env/all/reward/total` covers only the groups it
+    trained on; with constant groups dropped that mean is biased, so the
+    curve comes from the rollout records and the group log instead.
+    """
+    episodes = read_jsonl(log_path / "trials" / "rollouts.jsonl")
+    groups = read_jsonl(log_path / "groups.jsonl")
+    steps: dict[str, dict] = {}
+    for row in episodes:
+        if row.get("reward") is None or not str(row.get("step", "")).startswith(
+            "train-"
+        ):
+            continue
+        step = steps.setdefault(row["step"], {"rewards": [], "groups": {}})
+        step["rewards"].append(row["reward"])
+    for row in groups:
+        step = steps.setdefault(row["where"], {"rewards": [], "groups": {}})
+        step["groups"][row["kind"]] = step["groups"].get(row["kind"], 0) + 1
+    curve = []
+    for name in sorted(steps):
+        rewards = steps[name]["rewards"]
+        curve.append(
+            {
+                "step": int(name.split("-")[-1]),
+                "episodes": len(rewards),
+                "mean_reward": sum(rewards) / len(rewards) if rewards else None,
+                "solve_rate": sum(r >= 1.0 for r in rewards) / len(rewards)
+                if rewards
+                else None,
+                "groups": steps[name]["groups"],
+            }
+        )
+    return curve
+
+
 def summarize(args: argparse.Namespace) -> dict:
-    """The reward curve, drops, cost estimate and checkpoints of a run."""
+    """The reward curve, drops, group counts, a cost bound and the checkpoints."""
     metrics = read_jsonl(args.log_path / "metrics.jsonl")
-    curve = [
-        {
-            "step": m.get("progress/batch"),
-            "reward": m.get("env/all/reward/total"),
-            "solved": m.get("env/all/bf/solved"),
-            "episodes": m.get("env/all/total_episodes"),
-            "turns_per_episode": m.get("env/all/turns_per_episode"),
-        }
-        for m in metrics
-        if "env/all/reward/total" in m
-    ]
     prefill = sum(m.get("env/all/total_ob_tokens", 0) for m in metrics)
     sampled = sum(m.get("env/all/total_ac_tokens", 0) for m in metrics)
     price = PRICES.get(args.model)
     # Training tokens are at most prefill + sampled (every sampled prompt is a
-    # prefix of a trained sequence), so this bound overstates the cost.
+    # prefix of a trained sequence), so this bound overstates the cost. Token
+    # counts cover the trained groups only (the cookbook's metrics); dropped
+    # groups were sampled too, so scale by episodes sampled over trained.
+    curve = curve_from_records(args.log_path)
+    trained = sum(m.get("env/all/total_episodes", 0) for m in metrics)
+    sampled_episodes = sum(point["episodes"] for point in curve)
+    scale = sampled_episodes / trained if trained else 1.0
     cost = (
         None
-        if price is None
-        else (prefill * price[0] + sampled * price[1] + (prefill + sampled) * price[2])
+        if price is None or args.base_url
+        else scale
+        * (prefill * price[0] + sampled * price[1] + (prefill + sampled) * price[2])
         / 1e6
     )
     return {
         "model": args.model,
         "steps": len(curve),
         "curve": curve,
+        "groups": dict(te.GROUPS.counts),
         "infrastructure_drops": dict(te.DROPS.counts),
         "sandbox_peak": te.sandbox_slots().peak,
-        "tokens": {"prefill": prefill, "sampled": sampled},
+        "tokens_trained_groups": {"prefill": prefill, "sampled": sampled},
         "cost_upper_bound_usd": cost,
         "checkpoints": read_jsonl(args.log_path / "checkpoints.jsonl"),
         "args": {
@@ -236,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
     te.configure(
         max_sandboxes=args.max_sandboxes,
         drops_path=args.log_path / "infrastructure_drops.jsonl",
+        groups_path=args.log_path / "groups.jsonl",
     )
     try:
         asyncio.run(train(args))
@@ -243,8 +285,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = summarize(args)
         (args.log_path / "summary.json").write_text(json.dumps(summary, indent=1))
         log.info(
-            "steps %d, drops %s, sandbox peak %d, cost upper bound %s USD",
+            "steps %d, groups %s, drops %s, sandbox peak %d, cost upper bound %s USD",
             summary["steps"],
+            summary["groups"],
             summary["infrastructure_drops"],
             summary["sandbox_peak"],
             summary["cost_upper_bound_usd"],

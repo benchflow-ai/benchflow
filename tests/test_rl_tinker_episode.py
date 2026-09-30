@@ -427,3 +427,32 @@ def test_the_cookbook_uses_only_public_benchflow_names():
                 and node.value.id == "bf"
             ):
                 assert node.attr in bf.__all__, f"{path.name} uses bf.{node.attr}"
+
+
+# -- groups ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rewards", "kind"),
+    [
+        ([1.0, 0.0, 1.0], "mixed"),
+        ([0.5, 0.25], "mixed"),
+        ([1.0, 1.0], "all_solved"),
+        ([0.0, 0.0, 0.0], "all_failed"),
+        ([0.5, 0.5], "constant_partial"),
+    ],
+)
+def test_groups_are_classified_by_reward_variance(rewards, kind):
+    assert ep.group_kind(rewards) == kind
+
+
+def test_the_group_log_counts_and_records_every_group(tmp_path):
+    log = ep.GroupLog(path=tmp_path / "groups.jsonl")
+    log.add([1.0, 0.0], task="a", where="train-0000", dropped=False)
+    log.add([0.0, 0.0], task="b", where="train-0000", dropped=True)
+    assert log.counts == {"mixed": 1, "all_failed": 1}
+    rows = [json.loads(x) for x in (tmp_path / "groups.jsonl").read_text().splitlines()]
+    assert [(r["task"], r["kind"], r["dropped"]) for r in rows] == [
+        ("a", "mixed", False),
+        ("b", "all_failed", True),
+    ]

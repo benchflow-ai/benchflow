@@ -539,3 +539,47 @@ class DropLog:
 
 def decision_dict(decision: Decision | None) -> dict[str, Any] | None:
     return asdict(decision) if decision is not None else None
+
+
+# -- groups ------------------------------------------------------------------------
+
+
+def group_kind(rewards: list[float]) -> str:
+    """`mixed` when the group's rewards differ; otherwise what they all were."""
+    if len(set(rewards)) > 1:
+        return "mixed"
+    if not rewards:
+        return "empty"
+    if rewards[0] >= 1.0:
+        return "all_solved"
+    if rewards[0] <= 0.0:
+        return "all_failed"
+    return "constant_partial"
+
+
+@dataclass
+class GroupLog:
+    """Every finished group's rewards, counted by kind and kept as JSON lines.
+
+    A group whose episodes all got the same reward has zero advantage for
+    every episode, so it teaches nothing; training drops it and counts it here.
+    """
+
+    path: Path | None = None
+    counts: dict[str, int] = field(default_factory=dict)
+
+    def add(self, rewards: list[float], *, task: str, where: str, dropped: bool) -> str:
+        kind = group_kind(rewards)
+        self.counts[kind] = self.counts.get(kind, 0) + 1
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a") as f:
+                row = {
+                    "where": where,
+                    "task": task,
+                    "kind": kind,
+                    "rewards": rewards,
+                    "dropped": dropped,
+                }
+                f.write(json.dumps(row) + "\n")
+        return kind

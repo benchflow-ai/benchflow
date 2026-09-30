@@ -61,6 +61,7 @@ from tinker_episode import (
     DropLog,
     Episode,
     EpisodeSettings,
+    GroupLog,
     InfrastructureError,
     SandboxSlots,
 )
@@ -104,6 +105,9 @@ SUBMIT_SPEC: dict[str, Any] = {
 # template (the one Tinker's OpenAI-compatible endpoint applies) prints the
 # OpenAI wrapper {"type": "function", "function": ...}: they get the wrapper.
 WRAPPED_TOOL_SPEC_RENDERERS = frozenset({"qwen3_5", "qwen3_5_disable_thinking"})
+
+# What the model sees after a tool call that does not parse ({details}: why).
+PARSE_ERROR_MESSAGE = '{{"error": "the tool call could not be parsed: {details}"}}'
 
 # How an episode ended, from the cookbook's stop reason.
 ENDED = {
@@ -184,15 +188,23 @@ def _is_task_dir(path: Path) -> bool:
 
 _SLOTS = SandboxSlots(16)
 DROPS = DropLog()
+GROUPS = GroupLog()
 
 
-def configure(*, max_sandboxes: int, drops_path: Path | None = None) -> None:
-    """Set this process's sandbox cap and where infrastructure drops are logged."""
+def configure(
+    *,
+    max_sandboxes: int,
+    drops_path: Path | None = None,
+    groups_path: Path | None = None,
+) -> None:
+    """Set this process's sandbox cap and where drops and groups are logged."""
     global _SLOTS
     _SLOTS = SandboxSlots(max_sandboxes)
     DROPS.path = drops_path
     DROPS.counts.clear()
     DROPS.consecutive = 0
+    GROUPS.path = groups_path
+    GROUPS.counts.clear()
 
 
 def sandbox_slots() -> SandboxSlots:
@@ -360,16 +372,20 @@ class BenchFlowEnv(types.Env):
             runtime_factory=runtime_factory,
         )
         tools = [RunBash(self.episode), Submit(self.episode)]
-        # A malformed tool call ends the episode, as in the evaluator, where
-        # the endpoint returns it as a reply without tool calls.
-        no_retries = ParseErrorPolicy(max_consecutive=0)
+        # A tool call that does not parse is answered with an error and the
+        # episode goes on, within its turns, as in the evaluator (which reports
+        # unparsable arguments the same way). Broken framing still ends it.
+        parse_errors = ParseErrorPolicy(
+            max_consecutive=config.max_turns,
+            retry_message_template=PARSE_ERROR_MESSAGE,
+        )
         self.messages = AgentToolMessageEnv(
             tools=tools,
             initial_messages=initial_messages(task, config, renderer),
             max_turns=config.max_turns,
             reward_fn=self._grade,
             failed_parse_reward=0.0,
-            parse_error_policy=no_retries,
+            parse_error_policy=parse_errors,
             tool_execution="sequential",
         )
         self.inner = EnvFromMessageEnv(
@@ -379,7 +395,7 @@ class BenchFlowEnv(types.Env):
             max_trajectory_tokens=config.max_trajectory_tokens,
             max_generation_tokens=config.max_tokens,
             context_overflow_reward=0.0,
-            parse_error_policy=no_retries,
+            parse_error_policy=parse_errors,
         )
         # Read by the cookbook's rollout runner: a sampling call that hangs
         # raises, and DropInfrastructureFailures drops the episode.
@@ -685,10 +701,14 @@ class DropInfrastructureFailures(RolloutStrategy):
     training (`catches_group_errors` is False): dropping episodes on a harness
     bug could select them by what the policy did. A group left with fewer
     than `min_group_size` episodes is skipped (AllTrajectoriesFailedError).
+    With `drop_constant_groups` (training), a group whose episodes all got the
+    same reward is dropped too (NoRewardVariance); every group is counted in
+    GROUPS by kind either way.
     """
 
     max_retries: int = 2
     min_group_size: int = 2
+    drop_constant_groups: bool = False
 
     @property
     def catches_group_errors(self) -> bool:
@@ -751,4 +771,18 @@ class DropInfrastructureFailures(RolloutStrategy):
                 f"{task_name}: {len(trajectories)} of {len(envs)} episodes left after "
                 f"{len(errors)} infrastructure failures; the group is skipped"
             )
+        rewards = [sum(t.reward for t in traj.transitions) for traj in trajectories]
+        drop = self.drop_constant_groups and len(set(rewards)) == 1
+        kind = GROUPS.add(rewards, task=task_name, where=where, dropped=drop)
+        if drop:
+            # Every advantage would be 0. The cookbook skips a group whose
+            # strategy raises AllTrajectoriesFailedError.
+            raise NoRewardVariance(
+                f"{task_name}: all {len(rewards)} episodes scored {rewards[0]:g} "
+                f"({kind}); the group is dropped"
+            )
         return RolloutResult(trajectories=trajectories, envs=survivors, errors=errors)
+
+
+class NoRewardVariance(AllTrajectoriesFailedError):
+    """A group whose episodes all got the same reward: nothing to learn from it."""

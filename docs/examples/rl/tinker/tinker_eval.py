@@ -157,7 +157,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "base" if ref == "base" else ref.rstrip("/").rsplit("/", 1)[-1]
         for ref in args.policy
     ]
-    service = tinker.ServiceClient()
+    service = tinker.ServiceClient(base_url=args.base_url)
     evaluations = []
     try:
         for ref, label in zip(args.policy, labels, strict=True):
@@ -200,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     te.configure(
         max_sandboxes=args.max_sandboxes,
         drops_path=args.out.with_name(args.out.stem + "-drops.jsonl"),
+        groups_path=args.out.with_name(args.out.stem + "-groups.jsonl"),
     )
     doc = asyncio.run(run(args))
     args.out.write_text(json.dumps(doc, indent=1, default=str))

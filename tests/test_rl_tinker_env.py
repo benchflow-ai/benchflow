@@ -351,10 +351,11 @@ def test_group_cleanup_closes_a_cut_off_episode_and_records_it(tmp_path):
 
 
 class ScriptedEnv(types.Env):
-    """One-step episode; fails at start or step when told to."""
+    """One-step episode; fails at start when told to."""
 
-    def __init__(self, fail: BaseException | None = None) -> None:
+    def __init__(self, fail: BaseException | None = None, reward: float = 1.0) -> None:
         self.fail = fail
+        self.reward = reward
 
     async def initial_observation(self):
         if self.fail is not None:
@@ -363,7 +364,7 @@ class ScriptedEnv(types.Env):
 
     async def step(self, action, *, extra=None):
         return types.StepResult(
-            reward=1.0,
+            reward=self.reward,
             episode_done=True,
             next_observation=tinker.ModelInput.empty(),
             next_stop_condition=[],
@@ -371,9 +372,15 @@ class ScriptedEnv(types.Env):
 
 
 class ScriptedBuilder(types.EnvGroupBuilder):
-    def __init__(self, failures: list[BaseException | None], group_size: int) -> None:
+    def __init__(
+        self,
+        failures: list[BaseException | None],
+        group_size: int,
+        rewards: list[float] | None = None,
+    ) -> None:
         self.failures = failures
         self.group_size = group_size
+        self.rewards = rewards or []
         self.task = SimpleNamespace(name="t")
         self.job_name = "train-0000"
         self.made = 0
@@ -381,8 +388,10 @@ class ScriptedBuilder(types.EnvGroupBuilder):
     async def make_envs(self):
         envs = []
         for _ in range(self.group_size):
-            fail = self.failures[self.made] if self.made < len(self.failures) else None
-            envs.append(ScriptedEnv(fail))
+            n = self.made
+            fail = self.failures[n] if n < len(self.failures) else None
+            reward = self.rewards[n] if n < len(self.rewards) else 1.0
+            envs.append(ScriptedEnv(fail, reward))
             self.made += 1
         return envs
 
@@ -468,3 +477,45 @@ def test_openai_message_keeps_reasoning_and_tool_calls():
         "name": "run_bash",
         "arguments": json.dumps({"command": "ls"}),
     }
+
+
+def test_training_drops_and_counts_groups_without_reward_variance(tmp_path):
+    te.configure(max_sandboxes=4, groups_path=tmp_path / "groups.jsonl")
+    train = te.DropInfrastructureFailures(drop_constant_groups=True)
+    with pytest.raises(te.NoRewardVariance) as info:
+        run(train.execute(ScriptedBuilder([], 3, rewards=[1.0, 1.0, 1.0]), policy))
+    assert isinstance(info.value, AllTrajectoriesFailedError)  # the cookbook skips it
+    mixed = run(train.execute(ScriptedBuilder([], 3, rewards=[1.0, 0.0, 1.0]), policy))
+    assert len(mixed.trajectories) == 3
+    # Evaluation keeps constant groups; they are still counted.
+    kept = run(te.DropInfrastructureFailures().execute(ScriptedBuilder([], 2), policy))
+    assert len(kept.trajectories) == 2
+    assert te.GROUPS.counts == {"all_solved": 2, "mixed": 1}
+    rows = [json.loads(x) for x in (tmp_path / "groups.jsonl").read_text().splitlines()]
+    assert [r["dropped"] for r in rows] == [True, False, False]
+
+
+def test_a_malformed_tool_call_is_answered_and_the_episode_goes_on(tmp_path):
+    from tinker_cookbook.renderers.base import UnparsedToolCall
+
+    env, runtimes = make_env(tmp_path)
+
+    async def go():
+        await env.episode.start()
+        result = await env.messages.step(
+            {
+                "role": "assistant",
+                "content": "",
+                "unparsed_tool_calls": [
+                    UnparsedToolCall(raw_text="<tool_call>{bad", error="Invalid JSON")
+                ],
+            }
+        )
+        await env.episode.close()
+        return result
+
+    result = run(go())
+    assert not result.episode_done and result.reward == 0.0
+    assert env.messages.history[-1]["role"] == "user"
+    assert "Invalid JSON" in env.messages.history[-1]["content"]
+    assert runtimes[0].verified == 0
