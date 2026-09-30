@@ -29,7 +29,10 @@ def _app(exc: BaseException) -> typer.Typer:
     app = typer.Typer()
 
     @app.command()
-    def go(agent_env: list[str] = typer.Option(None, "--agent-env")) -> None:  # noqa: B008
+    def go(
+        agent_env: list[str] = typer.Option(None, "--agent-env"),  # noqa: B008
+        hf_token: str = typer.Option("", "--hf-token"),
+    ) -> None:
         logging.getLogger("benchflow.test").info("working on it")
         raise exc
 
@@ -281,3 +284,25 @@ def test_the_credential_check_looks_only_at_what_the_rollout_uses(
         )
     # No model: the rollout resolves without one, and so does the check.
     check_credentials([RolloutConfig(task_path=HELLO, agent="claude-agent-acp")])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["go", "--agent-env=OPENAI_API_KEY=sk-attached-secret-value-5678"],
+        ["go", "--hf-token", "hf_attachedsecretvalue5678"],
+        ["go", "--hf-token=hf_attachedsecretvalue5678"],
+    ],
+)
+def test_the_crash_log_redacts_every_argv_form(argv, capsys, tmp_path, monkeypatch):
+    """Review finding: `--agent-env=KEY=VALUE` as one word (and a credential
+    option's separate value) reached the crash log, which the message invites
+    users to attach to a public issue."""
+    monkeypatch.setenv("BENCHFLOW_LOG_DIR", str(tmp_path / "logs"))
+    assert _run(_app(RuntimeError("boom")), argv) == 1
+    err = capsys.readouterr().err
+    (log,) = (tmp_path / "logs").glob("bench-*.log")
+    text = log.read_text()
+    secret = argv[-1].rsplit("=", 1)[-1]
+    assert secret not in text and secret not in err
+    assert "***" in text

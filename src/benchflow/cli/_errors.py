@@ -79,10 +79,27 @@ def _secrets(argv: Sequence[str]) -> list[str]:
     with contextlib.suppress(Exception):
         environ.update(load_dotenv_env())
     environ.update(os.environ)
-    for arg in argv:
-        key, sep, value = arg.partition("=")
-        if sep and _SECRET_NAME_RE.search(key.upper()):
-            environ[key] = value
+    words = list(argv)
+    for index, arg in enumerate(words):
+        pairs = [arg]
+        if arg.startswith("-") and "=" in arg:
+            # --agent-env=KEY=VALUE: the option's value is itself a pair.
+            pairs.append(arg.split("=", 1)[1])
+        for pair in pairs:
+            key, sep, value = pair.partition("=")
+            if sep and value and _SECRET_NAME_RE.search(key.upper()):
+                # Named so secret_values() keeps it (it matches key names).
+                environ[f"ARGV_{index}_{key.upper()}"] = value
+        # --hf-token VALUE: an option named like a credential, then its value.
+        following = words[index + 1] if index + 1 < len(words) else ""
+        if (
+            arg.startswith("-")
+            and "=" not in arg
+            and _SECRET_NAME_RE.search(arg.upper().replace("-", "_"))
+            and following
+            and not following.startswith("-")
+        ):
+            environ[f"ARGV_{index + 1}_TOKEN"] = following
     return secret_values(environ)
 
 
