@@ -34,7 +34,7 @@ import tinker_stats  # noqa: E402
 from tinker_cookbook.completers import TinkerTokenCompleter  # noqa: E402
 from tinker_cookbook.exceptions import AllTrajectoriesFailedError  # noqa: E402
 from tinker_cookbook.rl.rollouts import do_group_rollout  # noqa: E402
-from tinker_episode import close_all_live  # noqa: E402
+from tinker_episode import RunStopped, close_all_live, run_guarded  # noqa: E402
 from tinker_train import add_env_args, env_config  # noqa: E402
 
 log = logging.getLogger("tinker_eval")
@@ -62,6 +62,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--out", required=True, type=Path, help="the result JSON")
     parser.add_argument("--seed", type=int, default=0, help="bootstrap seed")
+    parser.add_argument(
+        "--min-free-disk-gb",
+        type=float,
+        default=0,
+        help="stop cleanly when --out's disk has less free space (GiB)",
+    )
     add_env_args(parser)
     args = parser.parse_args(argv)
     if args.label and len(args.label) != len(args.policy):
@@ -205,7 +211,17 @@ def main(argv: list[str] | None = None) -> int:
         drops_path=args.out.with_name(args.out.stem + "-drops.jsonl"),
         groups_path=args.out.with_name(args.out.stem + "-groups.jsonl"),
     )
-    doc = asyncio.run(run(args))
+    try:
+        doc = asyncio.run(
+            run_guarded(
+                run(args),
+                disk_path=args.out.parent,
+                min_free_gib=args.min_free_disk_gb,
+            )
+        )
+    except RunStopped as exc:
+        log.error("%s", exc)
+        return 3
     args.out.write_text(json.dumps(doc, indent=1, default=str))
     for ev in doc["evaluations"]:
         s = ev["summary"]

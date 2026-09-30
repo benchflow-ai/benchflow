@@ -28,6 +28,8 @@ import contextlib
 import json
 import logging
 import shlex
+import shutil
+import signal
 import sys
 import time
 import weakref
@@ -78,6 +80,7 @@ __all__ = [
     "HARNESS_MESSAGE",
     "KEPT_REASONS",
     "LIVE",
+    "RunStopped",
     "MAX_OUTPUT_CHARS",
     "MAX_TURNS",
     "SUBMIT_PATH",
@@ -92,7 +95,9 @@ __all__ = [
     "TooManyInfrastructureFailures",
     "close_all_live",
     "describe",
+    "free_gib",
     "group_kind",
+    "run_guarded",
     "solved",
     "truncate",
 ]
@@ -445,6 +450,73 @@ async def close_all_live() -> int:
     episodes = list(LIVE)
     await asyncio.gather(*(e.close() for e in episodes), return_exceptions=True)
     return len(episodes)
+
+
+class RunStopped(RuntimeError):
+    """A run stopped from outside: a signal, or its disk running low."""
+
+
+def free_gib(path: Path | str) -> float:
+    return shutil.disk_usage(path).free / 2**30
+
+
+async def run_guarded(
+    coro: Awaitable[Any],
+    *,
+    disk_path: Path | str | None = None,
+    min_free_gib: float = 0.0,
+    check_every_sec: float = 30.0,
+) -> Any:
+    """Run `coro`; on SIGINT, SIGTERM or low disk, cancel it cleanly.
+
+    Cancelling lets every cleanup path run (groups close their sandboxes),
+    then any sandbox still open is closed and RunStopped is raised. A job
+    started in the background from a script ignores SIGINT; the handlers
+    installed here take both signals regardless.
+    """
+    task = asyncio.ensure_future(coro)
+    loop = asyncio.get_running_loop()
+    reasons: list[str] = []
+
+    def stop(reason: str) -> None:
+        if not reasons:
+            reasons.append(reason)
+            log.error("stopping: %s", reason)
+            task.cancel()
+
+    installed = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+            loop.add_signal_handler(sig, stop, f"signal {sig.name}")
+            installed.append(sig)
+
+    async def watch_disk() -> None:
+        while True:
+            free = free_gib(disk_path)  # type: ignore[arg-type]
+            if free < min_free_gib:
+                stop(f"{free:.1f} GiB free under {disk_path}, below {min_free_gib:g}")
+                return
+            await asyncio.sleep(check_every_sec)
+
+    watcher = (
+        asyncio.create_task(watch_disk())
+        if disk_path is not None and min_free_gib > 0
+        else None
+    )
+    try:
+        return await task
+    except asyncio.CancelledError:
+        if reasons:
+            raise RunStopped(reasons[0]) from None
+        raise
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+        left = await close_all_live()
+        if left:
+            log.warning("closed %d sandboxes left open", left)
 
 
 # -- drops -----------------------------------------------------------------------

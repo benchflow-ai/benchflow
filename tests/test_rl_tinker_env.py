@@ -522,3 +522,31 @@ def test_a_malformed_tool_call_is_answered_and_the_episode_goes_on(tmp_path):
     assert env.messages.history[-1]["role"] == "user"
     assert "Invalid JSON" in env.messages.history[-1]["content"]
     assert runtimes[0].verified == 0
+
+
+def test_a_resumed_run_sets_aside_the_steps_it_runs_again(tmp_path):
+    import tinker_train
+
+    (tmp_path / "trials").mkdir()
+    (tmp_path / "checkpoints.jsonl").write_text(
+        json.dumps(
+            {"name": "000002", "batch": 2, "state_path": "tinker://run/weights/000002"}
+        )
+        + "\n"
+    )
+    rows = [{"step": f"train-{i:04d}", "reward": 1.0} for i in range(4)]
+    (tmp_path / "trials" / "rollouts.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows)
+    )
+    groups = [{"where": f"train-{i:04d}", "kind": "mixed"} for i in range(4)]
+    (tmp_path / "groups.jsonl").write_text(
+        "".join(json.dumps(g) + "\n" for g in groups)
+    )
+    assert tinker_train.prune_for_resume(tmp_path) == 4
+    kept = [
+        json.loads(x)["step"]
+        for x in (tmp_path / "trials" / "rollouts.jsonl").read_text().splitlines()
+    ]
+    assert kept == ["train-0000", "train-0001"]
+    aside = (tmp_path / "trials" / "rollouts.discarded.jsonl").read_text().splitlines()
+    assert [json.loads(x)["step"] for x in aside] == ["train-0002", "train-0003"]

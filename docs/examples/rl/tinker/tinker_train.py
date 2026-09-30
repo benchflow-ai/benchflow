@@ -34,7 +34,8 @@ from tinker_episode import (  # noqa: E402
     MAX_TURNS,
     SUBMIT_PATH,
     EpisodeSettings,
-    close_all_live,
+    RunStopped,
+    run_guarded,
 )
 
 log = logging.getLogger("tinker_train")
@@ -178,6 +179,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="start from these weights (tinker://...)",
     )
+    t.add_argument(
+        "--min-free-disk-gb",
+        type=float,
+        default=0,
+        help="stop cleanly when the log path's disk has less free space (GiB); "
+        "rerun with the same --log-path to resume from the last checkpoint",
+    )
     return parser.parse_args(argv)
 
 
@@ -218,6 +226,39 @@ def read_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _step_index(name: object) -> int:
+    try:
+        return int(str(name).rsplit("-", 1)[-1])
+    except ValueError:
+        return -1
+
+
+def prune_for_resume(log_path: Path) -> int:
+    """Set aside the records of steps a resumed run will run again.
+
+    The cookbook resumes after its last checkpoint; episodes and groups of the
+    steps after it (an interrupted step included) move to *.discarded.jsonl,
+    so the curve counts every step once.
+    """
+    from tinker_cookbook import checkpoint_utils
+
+    last = checkpoint_utils.get_last_checkpoint(str(log_path))
+    resume = last.batch if last is not None else 0
+    moved = 0
+    for relative, key in (("trials/rollouts.jsonl", "step"), ("groups.jsonl", "where")):
+        path = log_path / relative
+        rows = read_jsonl(path)
+        gone = [r for r in rows if _step_index(r.get(key)) >= resume]
+        if not gone:
+            continue
+        keep = [r for r in rows if _step_index(r.get(key)) < resume]
+        with path.with_suffix(".discarded.jsonl").open("a") as f:
+            f.writelines(json.dumps(r) + "\n" for r in gone)
+        path.write_text("".join(json.dumps(r) + "\n" for r in keep))
+        moved += len(gone)
+    return moved
 
 
 def curve_from_records(log_path: Path) -> list[dict]:
@@ -287,8 +328,10 @@ def summarize(args: argparse.Namespace) -> dict:
         "steps": len(curve),
         "sandbox_hours": round(sandbox_hours, 2),
         "curve": curve,
-        "groups": dict(te.GROUPS.counts),
-        "infrastructure_drops": dict(te.DROPS.counts),
+        "groups": _count(read_jsonl(args.log_path / "groups.jsonl"), "kind"),
+        "infrastructure_drops": _count(
+            read_jsonl(args.log_path / "infrastructure_drops.jsonl"), "reason"
+        ),
         "sandbox_peak": te.sandbox_slots().peak,
         "tokens_trained_groups": {"prefill": prefill, "sampled": sampled},
         "cost_upper_bound_usd": cost,
@@ -299,18 +342,24 @@ def summarize(args: argparse.Namespace) -> dict:
     }
 
 
+def _count(rows: list[dict], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row[key]] = counts.get(row[key], 0) + 1
+    return counts
+
+
 async def train(args: argparse.Namespace) -> None:
     config = build_config(args)
     builder = config.dataset_builder
     parity = te.chat_template_parity(builder.train_tasks[0], builder.config)
     log.info("first prompt vs the model's chat template: %s", parity)
     (args.log_path / "chat_template_parity.txt").write_text(parity + "\n")
-    try:
-        await rl_train.main(config)
-    finally:
-        left = await close_all_live()
-        if left:
-            log.warning("closed %d sandboxes left open by an interrupted run", left)
+    await run_guarded(
+        rl_train.main(config),
+        disk_path=args.log_path,
+        min_free_gib=args.min_free_disk_gb,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -324,8 +373,15 @@ def main(argv: list[str] | None = None) -> int:
         drops_path=args.log_path / "infrastructure_drops.jsonl",
         groups_path=args.log_path / "groups.jsonl",
     )
+    moved = prune_for_resume(args.log_path)
+    if moved:
+        log.info("resuming: set aside %d records of steps that run again", moved)
+    code = 0
     try:
         asyncio.run(train(args))
+    except RunStopped as exc:
+        log.error("%s; rerun with the same --log-path to resume", exc)
+        code = 3
     finally:
         summary = summarize(args)
         (args.log_path / "summary.json").write_text(json.dumps(summary, indent=1))
@@ -337,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             summary["sandbox_peak"],
             summary["cost_upper_bound_usd"],
         )
-    return 0
+    return code
 
 
 if __name__ == "__main__":

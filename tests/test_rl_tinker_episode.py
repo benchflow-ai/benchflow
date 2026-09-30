@@ -528,3 +528,50 @@ def test_compare_reads_both_evaluators(tmp_path):
     assert doc["after"]["label"] == "trained"
     assert doc["difference"]["solve_rate"]["delta"] == pytest.approx(1.0 - 0.25)
     assert doc["difference"]["mean_reward"]["delta"] == pytest.approx(1.0 - 0.5)
+
+
+# -- stopping a run ------------------------------------------------------------------------------
+
+
+def test_a_guarded_run_returns_its_value():
+    async def work():
+        return 7
+
+    assert run(ep.run_guarded(work())) == 7
+
+
+def test_low_disk_stops_a_run_after_its_cleanup(tmp_path):
+    cleaned = []
+
+    async def work():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cleaned.append(True)
+
+    with pytest.raises(ep.RunStopped, match="GiB free"):
+        run(ep.run_guarded(work(), disk_path=tmp_path, min_free_gib=1e9))
+    assert cleaned == [True]
+
+
+def test_sigterm_stops_a_run_after_its_cleanup():
+    import os
+    import signal
+
+    cleaned = []
+
+    async def work():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cleaned.append(True)
+
+    async def go():
+        asyncio.get_running_loop().call_later(
+            0.05, os.kill, os.getpid(), signal.SIGTERM
+        )
+        return await ep.run_guarded(work())
+
+    with pytest.raises(ep.RunStopped, match="SIGTERM"):
+        run(go())
+    assert cleaned == [True]
