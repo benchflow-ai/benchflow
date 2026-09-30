@@ -26,7 +26,7 @@ MAX_COST_USD="${MAX_COST_USD:-250}"
 # Caps that bind when no USD is known (a subscription reports none to
 # BenchFlow): rollouts that call a model, and sandbox wall-clock hours.
 MAX_ROLLOUTS="${MAX_ROLLOUTS:-610}"
-MAX_SANDBOX_HOURS="${MAX_SANDBOX_HOURS:-120}"
+MAX_SANDBOX_HOURS="${MAX_SANDBOX_HOURS:-150}"
 
 # Both agents are Claude Code (claude-agent-acp). Credentials come from the
 # environment, never the command line: a Claude subscription token from
