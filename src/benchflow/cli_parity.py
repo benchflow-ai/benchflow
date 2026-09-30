@@ -184,6 +184,15 @@ EVAL_RUN: dict[str, Equivalent] = {
         f"{_EV}.__init__(job_name)",
         "run the Evaluation once per trial with a distinct job_name",
     ),
+    "--n-tasks": _sdk(f"{_EC}.n_tasks"),
+    "--sample-seed": _sdk(f"{_EC}.sample_seed"),
+    "--timeout-multiplier": _sdk(f"{_EC}.timeout_multiplier"),
+    "--extra-instruction": _sdk(f"{_EC}.extra_instruction"),
+    "--dry-run": _cli("prints the resolved plan and task selection; nothing runs"),
+    "--seeds": _sdk(
+        f"{_EC}.seeds",
+        "a list of ints; benchflow.embodied.rollouts.parse_seeds reads the CLI form",
+    ),
 }
 
 EVAL_BRANCH: dict[str, Equivalent] = {

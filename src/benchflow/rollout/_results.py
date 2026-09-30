@@ -582,6 +582,20 @@ def _write_trainer_artifact(
         if strict:
             raise
         logger.warning("ADP artifact write failed: %s", e)
+    # Embodied episodes (benchflow.embodied): per-step state/action/reward rows and
+    # the video index, next to the other trainer formats. Only trials whose verifier
+    # downloaded an episode record (verifier/episode/steps.jsonl) produce them.
+    try:
+        from benchflow.embodied.export import write_rollout_embodied
+
+        write_rollout_embodied(
+            rollout_dir,
+            trajectory_id=trajectory_id,
+            task_name=task_name,
+            rewards=rewards,
+        )
+    except Exception as e:  # an optional format never fails the rollout
+        logger.warning("Embodied trainer artifact write failed: %s", e)
 
 
 def _is_document_user(user: BaseUser) -> bool:

@@ -130,6 +130,9 @@ class RolloutConfig:
     # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
     # budget without editing every task definition (#378).
     timeout: int | None = None
+    # Text appended to every resolved prompt (``bench eval run --extra-instruction``):
+    # prompt ablations without editing tasks. Recorded in the rollout config.
+    prompt_suffix: str | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
 
     # User-driven progressive-disclosure loop
@@ -235,6 +238,10 @@ class RolloutConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
+        # A task in a registered task format runs as its native package.
+        from benchflow.task.formats import materialize_task_dir
+
+        self.task_path = materialize_task_dir(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
         if self.base_image_override is not None:

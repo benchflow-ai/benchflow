@@ -49,6 +49,7 @@ from benchflow.cli.agent import register_agent
 from benchflow.cli.branch import register_eval_branch, register_eval_branches
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.doctor import eval_preflight, register_doctor, register_eval_smoke
+from benchflow.cli.embodied import register_embodied
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
 from benchflow.cli.eval_lift import register_eval_lift
@@ -281,6 +282,42 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # `bench eval --help` lists commands in registration order: smoke, then run,
 # the order the README and getting-started use (doctor, smoke, run).
 register_eval_smoke(eval_app)
+
+
+def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
+    """``bench eval run --dry-run``: the resolved plan and task selection, nothing runs."""
+    import json as _json
+
+    from benchflow.evaluation import sample_task_dirs, task_name_selected
+
+    req = plan.request
+    out: dict[str, Any] = {
+        "agent": plan.eval_agent,
+        "model": req.model,
+        "environment": plan.eval_environment,
+        "concurrency": plan.eval_concurrency,
+        "seeds": plan.eval_seeds,
+        "include": sorted(plan.include_tasks),
+        "exclude": sorted(plan.exclude_tasks),
+        "n_tasks": req.n_tasks,
+        "sample_seed": req.sample_seed,
+        "timeout_multiplier": req.timeout_multiplier,
+        "extra_instruction": req.extra_instruction,
+        "dataset": req.dataset,
+        "jobs_dir": plan.output_jobs_dir,
+    }
+    if tasks_dir is not None and Path(tasks_dir).is_dir():
+        children = [
+            d
+            for d in sorted(Path(tasks_dir).iterdir())
+            if d.is_dir()
+            and task_name_selected(d.name, plan.include_tasks, plan.exclude_tasks)
+            and ((d / "task.md").is_file() or (d / "task.toml").is_file())
+        ]
+        chosen = sample_task_dirs(children, req.n_tasks, req.sample_seed)
+        out["tasks"] = [d.name for d in chosen]
+        out["rollouts"] = len(chosen) * max(1, len(plan.eval_seeds or [None]))
+    console.print_json(_json.dumps(out, default=str))
 
 
 @eval_app.command("run")
@@ -890,6 +927,50 @@ def eval_run(
         int,
         typer.Option("--trials", help="Number of trials for --matrix"),
     ] = 1,
+    n_tasks: Annotated[
+        int | None,
+        typer.Option(
+            "--n-tasks",
+            help="Run at most N tasks after --include/--exclude: the first N, or a seeded "
+            "random sample with --sample-seed",
+        ),
+    ] = None,
+    sample_seed: Annotated[
+        int | None,
+        typer.Option("--sample-seed", help="Seed for the --n-tasks random sample"),
+    ] = None,
+    timeout_multiplier: Annotated[
+        float | None,
+        typer.Option(
+            "--timeout-multiplier",
+            help="Scale every task's agent time budget (task.md agent.timeout_sec), e.g. 2.0",
+        ),
+    ] = None,
+    extra_instruction: Annotated[
+        str | None,
+        typer.Option(
+            "--extra-instruction",
+            help="Text appended to every task prompt (prompt ablations; recorded per rollout)",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Resolve the plan (agent, model, selected tasks, seeds, budgets) and print it without running",
+        ),
+    ] = False,
+    seeds: Annotated[
+        str | None,
+        typer.Option(
+            "--seeds",
+            help=(
+                "Seeded rollouts: run every task once per seed, e.g. 0-4 or 0,3,7 "
+                "(tasks in a task format that writes seeded variants, such as "
+                "embodied tasks). summary.json gets pass@k and variance per task."
+            ),
+        ),
+    ] = None,
 ) -> None:
     # The supported --sandbox values are rendered from the provider registry
     # into that option's own help text. This docstring used to hand-copy them
@@ -991,6 +1072,11 @@ def eval_run(
         eval_results_task=eval_results_task,
         matrix=matrix,
         trials=trials,
+        seeds=seeds,
+        n_tasks=n_tasks,
+        sample_seed=sample_seed,
+        timeout_multiplier=timeout_multiplier,
+        extra_instruction=extra_instruction,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
@@ -1019,6 +1105,11 @@ def eval_run(
     except EvalPlanError as exc:
         print_error(f"{exc}")
         raise typer.Exit(1) from None
+    # A dry run prints the plan and starts nothing, so it needs no sandbox or
+    # credential checks.
+    if dry_run:
+        _print_dry_run(plan, tasks_dir)
+        return
     # Hosted source envs own their harness; a run config names its sandbox in
     # the YAML, so _run_config_file_eval checks it once the file is loaded.
     if not config_file and not source_env:
@@ -1120,11 +1211,13 @@ def eval_run(
         )
         # tasks_dir is the resolved source checkout (a superset); restrict to
         # the dataset's pinned task set, further narrowed by any --include.
-        dataset_include = (
-            resolved_dataset.task_names & plan.include_tasks
-            if plan.include_tasks
-            else resolved_dataset.task_names
-        )
+        from benchflow.evaluation import task_name_selected
+
+        dataset_include = {
+            name
+            for name in resolved_dataset.task_names
+            if task_name_selected(name, plan.include_tasks, set())
+        }
         run_batch_eval(
             plan,
             resolved_dataset.tasks_dir,
@@ -1816,6 +1909,7 @@ register_review(app)
 register_tasks(app)
 register_traj(app)
 register_train(app)
+register_embodied(app)
 register_hub(app)
 register_agent(app)
 register_adopt_deprecated(app)
