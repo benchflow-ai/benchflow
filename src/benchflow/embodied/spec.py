@@ -628,12 +628,12 @@ class RestoreBoundary:
     def require_world_restore(self, operation: str) -> None:
         """Refuse an operation whose correctness depends on restoring the world."""
         if not self.world_restore:
-            raise RestoreRefused(operation, self)
+            raise RestoreRefused(operation, self, "world_restore")
 
     def require_action_replay(self, operation: str) -> None:
         """Refuse an operation that re-executes recorded agent actions."""
         if not self.action_replay:
-            raise RestoreRefused(operation, self)
+            raise RestoreRefused(operation, self, "action_replay")
 
 
 class RestoreRefused(RuntimeError):
@@ -642,9 +642,12 @@ class RestoreRefused(RuntimeError):
     Raised before anything is quiesced, checkpointed, restored or replayed.
     """
 
-    def __init__(self, operation: str, boundary: RestoreBoundary) -> None:
+    def __init__(
+        self, operation: str, boundary: RestoreBoundary, capability: str
+    ) -> None:
         self.operation = operation
         self.boundary = boundary
+        self.capability = capability
         if boundary.physical:
             reason = (
                 f"the task acts on a {boundary.mode} embodiment. Restoring software "
@@ -654,10 +657,8 @@ class RestoreRefused(RuntimeError):
             )
         else:
             reason = (
-                "the task's simulator state is in no checkpoint BenchFlow takes "
-                "(metadata.embodied declares "
-                f"world_restore={str(boundary.world_restore).lower()} and "
-                f"action_replay={str(boundary.action_replay).lower()})"
+                "the task's simulator state is in no checkpoint BenchFlow takes, and "
+                f"its metadata.embodied does not declare {capability}: true"
             )
         super().__init__(f"{operation} refused: {reason}.")
 

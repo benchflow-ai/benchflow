@@ -201,6 +201,24 @@ def test_continue_refuses_to_replay_an_embodied_task(tmp_path):
         load_run_folder(folder)
 
 
+def test_continue_refuses_a_run_folder_with_an_episode_record(tmp_path):
+    """config.json records only the task's name, so the task is rarely local;
+    an embodied trial's episode record is evidence enough, and fails closed."""
+    folder = write_run_folder(
+        tmp_path / "run", exchanges=[exchange(completion(content="a"))]
+    )
+    episode = folder / "verifier" / "episode"
+    episode.mkdir(parents=True)
+    (episode / "episode.json").write_text(
+        json.dumps({"embodiment": {"name": "arm", "kind": "arm", "mode": "real"}})
+    )
+    with pytest.raises(RunFolderError, match="operator-qualified reset"):
+        load_run_folder(folder)
+    (episode / "episode.json").write_text("{truncated")
+    with pytest.raises(RunFolderError, match="does not declare action_replay"):
+        load_run_folder(folder)
+
+
 def test_continue_still_replays_a_software_task(tmp_path):
     folder = write_run_folder(
         tmp_path / "run", exchanges=[exchange(completion(content="a"))]

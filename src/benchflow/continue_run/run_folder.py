@@ -23,7 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from benchflow.embodied.spec import RestoreBoundary, RestoreRefused, restore_boundary
+from benchflow.embodied.spec import (
+    MODES,
+    RestoreBoundary,
+    RestoreRefused,
+    restore_boundary,
+)
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -169,12 +174,16 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
     return exchanges
 
 
-def run_restore_boundary(config: dict[str, Any]) -> RestoreBoundary:
-    """What software may do to the original run's world, from its task metadata.
+def run_restore_boundary(path: Path, config: dict[str, Any]) -> RestoreBoundary:
+    """What software may do to the original run's world.
 
-    Reads the task directory named by ``config.json`` when it is available
-    locally; without it the run is taken as a software task.
+    The task's own ``metadata.embodied`` declaration when the task directory
+    named by ``config.json`` is available locally (most runs record only the
+    task's name). Otherwise the run folder's evidence: an embodied trial keeps
+    its episode record (``verifier/episode/episode.json``), whose embodiment
+    names the mode, and restores nothing. Without either it is a software task.
     """
+    declared = RestoreBoundary()
     task_path = config.get("task_path")
     if isinstance(task_path, str) and task_path and Path(task_path).is_dir():
         from benchflow.task.task import Task
@@ -183,8 +192,20 @@ def run_restore_boundary(config: dict[str, Any]) -> RestoreBoundary:
             metadata = Task(task_path).config.metadata
         except (OSError, ValueError):
             metadata = None
-        return restore_boundary(metadata)
-    return RestoreBoundary()
+        declared = restore_boundary(metadata)
+    episode = path / "verifier" / "episode" / "episode.json"
+    if declared.embodied or not episode.is_file():
+        return declared
+    try:
+        mode = json.loads(episode.read_text())["embodiment"].get("mode", "sim")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        mode = "sim"
+    return RestoreBoundary(
+        embodied=True,
+        mode=mode if mode in MODES else "sim",
+        world_restore=False,
+        action_replay=False,
+    )
 
 
 def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> RunFolder:
@@ -208,7 +229,7 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
     # real robot that would move hardware again from an unreset scene; on a
     # simulator it would act on a world the replay never restored.
     try:
-        run_restore_boundary(config).require_action_replay("benchflow continue")
+        run_restore_boundary(path, config).require_action_replay("benchflow continue")
     except (RestoreRefused, ValueError) as exc:
         raise RunFolderError(str(exc)) from exc
     result = _read_json(path / "result.json", required=False)
