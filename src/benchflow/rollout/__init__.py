@@ -111,7 +111,10 @@ from benchflow.review.automatic import PreparedReview
 from benchflow.review.outcome import ScoringResult, scoring_from_result
 from benchflow.review.persistence import scoring_lock
 from benchflow.rollout import _deadline as _deadline
-from benchflow.rollout._artifacts import collect_rollout_artifacts
+from benchflow.rollout._artifacts import (
+    collect_rollout_artifacts,
+    collect_unverified_rollout_artifacts,
+)
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
@@ -2357,9 +2360,14 @@ class Rollout:
     # Phase 5: CLEANUP
 
     async def cleanup(self) -> None:
-        """Close ACP client and stop the environment."""
+        """Close ACP client and stop the environment.
+
+        A rollout that never reached its verifier (the agent errored) has its
+        artifacts collected here, before the sandbox stops.
+        """
         self._capture_partial_acp_trajectory()
         await self.disconnect()
+        await collect_unverified_rollout_artifacts(self)
 
         if self._env and self._config.export_generated_skills_to:
             try:
