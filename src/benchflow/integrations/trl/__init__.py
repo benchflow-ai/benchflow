@@ -6,7 +6,11 @@ from benchflow.integrations.trl.spec import (
     BenchFlowRuntimeEnvironment,
     BenchFlowSpec,
     BenchFlowSpecConfig,
+    bash_tool_schemas,
     benchflow_environment_reward,
+    finish_rollout,
+    rollout_record,
+    write_rollout_record,
 )
 
 __all__ = [
@@ -15,5 +19,9 @@ __all__ = [
     "BenchFlowRuntimeEnvironment",
     "BenchFlowSpec",
     "BenchFlowSpecConfig",
+    "bash_tool_schemas",
     "benchflow_environment_reward",
+    "finish_rollout",
+    "rollout_record",
+    "write_rollout_record",
 ]

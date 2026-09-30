@@ -9,6 +9,9 @@ sandbox lifecycle, verifier execution, and artifacts; TRL owns optimization.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import json
+import logging
 import shlex
 import threading
 from collections.abc import Callable, Coroutine, Sequence
@@ -17,8 +20,22 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._utils.task_authoring import check_task, task_document_parse_error
+from benchflow.integrations.rewards import (
+    DROP_REASONS,
+    VERIFIER_CRASH_CLEAN_RUN,
+    VERIFIER_ERROR,
+    ZERO_REASONS,
+    RewardDecision,
+    dropped,
+    reward_from_verify,
+    sandbox_start_failure,
+    summarize,
+    zero,
+)
 from benchflow.rollout import TaskRuntime, TaskRuntimeConfig
 from benchflow.task.package import TaskPackage
+
+logger = logging.getLogger(__name__)
 
 
 class _AsyncRunner:
@@ -39,10 +56,13 @@ class _AsyncRunner:
         loop.run_forever()
 
     def run(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        return self.submit(coro).result()
+
+    def submit(self, coro: Coroutine[Any, Any, Any]) -> concurrent.futures.Future:
         loop = self._loop
         if loop is None:
             raise RuntimeError("BenchFlow TRL async runner failed to start")
-        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
 _ASYNC_RUNNER: _AsyncRunner | None = None
@@ -73,6 +93,10 @@ class BashHarnessConfig:
     submit_path: str = "/workdir/answer.txt"
     reset_message: str | None = None
     planes: Any | None = None
+    # TRL resets a batch's environments one after another. With
+    # background_start, reset() returns at once and the sandbox starts while
+    # the model generates; the first tool call waits for it.
+    background_start: bool = False
 
     def normalized(self) -> BashHarnessConfig:
         if self.bash_timeout_sec < 1:
@@ -90,6 +114,7 @@ class BashHarnessConfig:
             submit_path=self.submit_path,
             reset_message=self.reset_message,
             planes=self.planes,
+            background_start=self.background_start,
         )
 
 
@@ -141,13 +166,22 @@ class BenchFlowRuntimeEnvironment:
 
     TRL discovers public methods as tools. ``run_bash`` and ``submit`` are the
     v1 tool surface; both execute inside the BenchFlow task sandbox.
+
+    Each rollout ends with a :class:`~benchflow.integrations.rewards.RewardDecision`
+    in ``decision``: a verifier reward, a 0 for a failure the policy could
+    have caused, or a drop for an infrastructure failure (the sandbox never
+    started, or the verifier crashed on a sandbox the policy never touched).
+    ``reward`` is the decision's reward, and None for a dropped rollout.
     """
 
     def __init__(self, harness: BashHarnessConfig) -> None:
         self._harness = harness.normalized()
         self._runtime: TaskRuntime | None = None
+        self._starting: concurrent.futures.Future | None = None
         self.task_id: str | None = None
-        self.reward: float = 0.0
+        self.reward: float | None = None
+        self.decision: RewardDecision | None = None
+        self.policy_acted: bool = False
         self.rollout_dir: Path | None = None
         self.last_returncode: int | None = None
 
@@ -169,22 +203,27 @@ class BenchFlowRuntimeEnvironment:
             jobs_dir=self._harness.jobs_dir,
             planes=self._harness.planes,
         )
-        self._runtime = _run_blocking(TaskRuntime.create(runtime_config))
-        self.reward = 0.0
-        self.rollout_dir = self._runtime.rollout_dir
+        self.reward = None
+        self.decision = None
+        self.policy_acted = False
+        self.rollout_dir = None
+        self.last_returncode = None
+        starting = _async_runner().submit(TaskRuntime.create(runtime_config))
+        if self._harness.background_start:
+            self._starting = starting
+        else:
+            self._adopt_started(starting)
         return self._harness.reset_message
 
     def run_bash(self, command: str) -> str:
-        """Run a bash command in the BenchFlow task sandbox.
+        """Run a bash command in the task sandbox and return its output (stdout and stderr).
 
         Args:
-            command: Bash command to execute in the task workspace.
-
-        Returns:
-            Combined standard output and standard error, truncated if needed.
+            command: The bash command to run in the task's working directory.
         """
 
         runtime = self._require_runtime()
+        self.policy_acted = True
         result = _run_blocking(
             runtime.bash(command, timeout_sec=self._harness.bash_timeout_sec)
         )
@@ -195,16 +234,14 @@ class BenchFlowRuntimeEnvironment:
         return _truncate(output, self._harness.max_output_chars)
 
     def submit(self, answer: str) -> str:
-        """Write the final answer and run the BenchFlow verifier.
+        """Submit the final answer. This ends the task, so call it once, when you are done.
 
         Args:
-            answer: Final answer string to write to the configured submission path.
-
-        Returns:
-            Confirmation text including the verifier reward.
+            answer: The final answer, written to the task's answer file.
         """
 
         runtime = self._require_runtime()
+        self.policy_acted = True
         answer_literal = shlex.quote(str(answer))
         submit_path = shlex.quote(self._harness.submit_path)
         _run_blocking(
@@ -214,30 +251,91 @@ class BenchFlowRuntimeEnvironment:
             )
         )
         self._finalize()
-        return f"submission recorded; reward={self.reward:g}"
+        decision = self.decision
+        if decision is None or decision.reward is None:
+            reason = decision.reason if decision is not None else "unknown"
+            return f"submission recorded; rollout dropped ({reason})"
+        return f"submission recorded; reward={decision.reward:g}"
+
+    def _adopt_started(self, starting: concurrent.futures.Future) -> None:
+        """Take the started runtime, or record a sandbox that never started."""
+
+        try:
+            self._runtime = starting.result()
+        except Exception as exc:
+            self._runtime = None
+            self._set_decision(sandbox_start_failure(exc))
+            return
+        self.rollout_dir = self._runtime.rollout_dir
+
+    async def _aadopt_started(self) -> None:
+        starting = self._starting
+        if starting is None:
+            return
+        self._starting = None
+        try:
+            self._runtime = await asyncio.wrap_future(starting)
+        except Exception as exc:
+            self._runtime = None
+            self._set_decision(sandbox_start_failure(exc))
+            return
+        self.rollout_dir = self._runtime.rollout_dir
+
+    def _set_decision(self, decision: RewardDecision) -> None:
+        self.decision = decision
+        self.reward = decision.reward
 
     def _finalize(self) -> None:
+        _run_blocking(self._afinalize())
+
+    async def _afinalize(self) -> None:
+        """Verify once and record the decision; always release the sandbox."""
+
+        await self._aadopt_started()
         runtime = self._runtime
         if runtime is None:
             return
+        self._runtime = None
         try:
-            result = _run_blocking(runtime.verify())
-            self.reward = (
-                float(result.reward) if isinstance(result.reward, int | float) else 0.0
-            )
-            self.rollout_dir = result.rollout_dir
+            try:
+                result = await runtime.verify()
+            except Exception as exc:
+                self._set_decision(
+                    zero(VERIFIER_ERROR, exc)
+                    if self.policy_acted
+                    else dropped(VERIFIER_CRASH_CLEAN_RUN, exc)
+                )
+            else:
+                self._set_decision(
+                    reward_from_verify(result, policy_acted=self.policy_acted)
+                )
+                self.rollout_dir = getattr(result, "rollout_dir", self.rollout_dir)
         finally:
-            self._runtime = None
-            _run_blocking(runtime.close())
+            await runtime.close()
 
     def _close(self) -> None:
+        starting = self._starting
+        self._starting = None
+        if starting is not None:
+            try:
+                self._runtime = starting.result()
+            except Exception:
+                self._runtime = None
         runtime = self._runtime
         self._runtime = None
         if runtime is not None:
             _run_blocking(runtime.close())
 
     def _require_runtime(self) -> TaskRuntime:
+        if self._starting is not None:
+            self._adopt_started(self._starting)
+            self._starting = None
         if self._runtime is None:
+            if self.decision is not None and self.decision.dropped:
+                raise RuntimeError(
+                    "the sandbox for this task failed to start; this rollout is "
+                    "dropped from training"
+                )
             raise RuntimeError("environment must be reset before tool use")
         return self._runtime
 
@@ -246,25 +344,252 @@ def benchflow_environment_reward(
     completions: Sequence[Any],
     *,
     environments: Sequence[Any] | None = None,
+    prompts: Sequence[Any] | None = None,
+    trainer_state: Any = None,
+    log_metric: Callable[[str, float], None] | None = None,
+    log_extra: Callable[[str, list], None] | None = None,
     **_: Any,
-) -> list[float]:
-    """TRL custom reward function reading reward from BenchFlow environments."""
+) -> list[float | None]:
+    """TRL custom reward function reading reward from BenchFlow environments.
+
+    Rollouts still open are verified concurrently. A dropped rollout gets
+    ``None``, which TRL treats as unscorable: it is left out of its group's
+    baseline and gets zero advantage. When TRL passes ``log_metric`` and
+    ``log_extra``, the drop count, the drop reasons, and each rollout's reason
+    are logged with the batch.
+
+    Every rollout, dropped or not, is kept for audit: its messages (the
+    prompt and the whole multi-turn completion) go to ``policy/messages.json``
+    in its rollout folder, and a line with the decision goes to
+    ``rollouts.jsonl`` in the harness's ``jobs_dir``.
+    """
 
     if environments is None:
         return [0.0 for _ in completions]
 
-    rewards: list[float] = []
-    for index, _completion in enumerate(completions):
-        env = environments[index] if index < len(environments) else None
-        if isinstance(env, BenchFlowRuntimeEnvironment):
-            env._finalize()
+    envs = [
+        environments[index] if index < len(environments) else None
+        for index in range(len(completions))
+    ]
+    open_envs = [env for env in envs if isinstance(env, BenchFlowRuntimeEnvironment)]
+    if open_envs:
+        _run_blocking(_finalize_all(open_envs))
+
+    rewards: list[float | None] = []
+    reasons: list[str] = []
+    decisions: list[RewardDecision] = []
+    for env in envs:
+        decision = getattr(env, "decision", None)
+        if isinstance(decision, RewardDecision):
+            decisions.append(decision)
+            rewards.append(decision.reward)
+            reasons.append(decision.reason)
+            continue
         value = getattr(env, "reward", 0.0)
         rewards.append(
             float(value)
             if isinstance(value, int | float) and not isinstance(value, bool)
             else 0.0
         )
+        reasons.append("n/a")
+    _log_decisions(decisions, reasons, log_metric=log_metric, log_extra=log_extra)
+    _record_rollouts(envs, prompts, completions, trainer_state)
     return rewards
+
+
+async def _finalize_all(envs: Sequence[BenchFlowRuntimeEnvironment]) -> None:
+    results = await asyncio.gather(
+        *(env._afinalize() for env in envs), return_exceptions=True
+    )
+    for env, result in zip(envs, results, strict=True):
+        if isinstance(result, BaseException) and env.decision is None:
+            # Close failed after verification, or verification raised
+            # something unexpected: score by who could have caused it.
+            env._set_decision(
+                zero(VERIFIER_ERROR, result)
+                if env.policy_acted
+                else dropped(VERIFIER_CRASH_CLEAN_RUN, result)
+            )
+
+
+def rollout_record(
+    env: BenchFlowRuntimeEnvironment,
+    messages: Sequence[Any] | None,
+    *,
+    step: Any = None,
+) -> dict[str, Any]:
+    """One rollout's audit record: task, folder, decision, and messages."""
+
+    decision = env.decision
+    return {
+        "task_id": env.task_id,
+        "rollout_dir": str(env.rollout_dir) if env.rollout_dir is not None else None,
+        "step": step,
+        "policy_acted": env.policy_acted,
+        **(
+            decision.as_dict()
+            if decision is not None
+            else {"reward": None, "reason": None}
+        ),
+        "messages": list(messages) if messages is not None else None,
+    }
+
+
+def write_rollout_record(record: dict[str, Any], jobs_dir: Path | str) -> None:
+    """Keep a rollout for audit, in its own folder and in ``rollouts.jsonl``."""
+
+    text = json.dumps(record, default=str)
+    rollout_dir = record.get("rollout_dir")
+    if rollout_dir:
+        policy_dir = Path(rollout_dir) / "policy"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        (policy_dir / "messages.json").write_text(text + "\n")
+    jobs = Path(jobs_dir)
+    jobs.mkdir(parents=True, exist_ok=True)
+    with _RECORD_LOCK, (jobs / "rollouts.jsonl").open("a") as handle:
+        handle.write(text + "\n")
+
+
+_RECORD_LOCK = threading.Lock()
+
+
+def finish_rollout(
+    env: BenchFlowRuntimeEnvironment,
+    messages: Sequence[Any] | None = None,
+    *,
+    drop: RewardDecision | None = None,
+    step: Any = None,
+) -> RewardDecision:
+    """End one rollout outside TRL, the way TRL's reward function ends it.
+
+    Verifies the sandbox (unless it already was), records the rollout for
+    audit, and returns its decision. Pass ``drop`` for an infrastructure
+    failure outside the sandbox, such as the model endpoint failing: the
+    sandbox is then closed without verification and the rollout is dropped.
+    """
+
+    if drop is not None:
+        if not drop.dropped:
+            raise ValueError("drop must be a dropped decision")
+        env._close()
+        env._set_decision(drop)
+    else:
+        _run_blocking(_finalize_all([env]))
+    decision = env.decision
+    assert decision is not None
+    write_rollout_record(
+        rollout_record(env, messages, step=step), env._harness.jobs_dir
+    )
+    return decision
+
+
+def _record_rollouts(
+    envs: Sequence[Any],
+    prompts: Sequence[Any] | None,
+    completions: Sequence[Any],
+    trainer_state: Any,
+) -> None:
+    step = getattr(trainer_state, "global_step", None)
+    for index, env in enumerate(envs):
+        if not isinstance(env, BenchFlowRuntimeEnvironment):
+            continue
+        messages: list[Any] = []
+        if (
+            prompts is not None
+            and index < len(prompts)
+            and isinstance(prompts[index], list)
+        ):
+            messages.extend(prompts[index])
+        completion = completions[index] if index < len(completions) else None
+        if isinstance(completion, list):
+            messages.extend(completion)
+        elif completion is not None:
+            messages.append({"role": "assistant", "content": completion})
+        try:
+            write_rollout_record(
+                rollout_record(env, messages, step=step), env._harness.jobs_dir
+            )
+        except OSError as exc:  # never let audit bookkeeping stop training
+            logger.warning("could not record rollout %s: %s", env.task_id, exc)
+
+
+def _log_decisions(
+    decisions: Sequence[RewardDecision],
+    reasons: list[str],
+    *,
+    log_metric: Callable[[str, float], None] | None,
+    log_extra: Callable[[str, list], None] | None,
+) -> None:
+    # TRL averages each metric over a logging step and gathers metrics across
+    # ranks by name, so every batch logs the same keys, as fractions.
+    n = max(len(reasons), 1)
+    if log_metric is not None:
+        summary = summarize(decisions)
+        log_metric("benchflow/dropped_frac", summary["dropped"] / n)
+        for reason in sorted(DROP_REASONS):
+            log_metric(
+                f"benchflow/drop/{reason}", summary["drop_reasons"].get(reason, 0) / n
+            )
+        for reason in sorted(ZERO_REASONS):
+            log_metric(
+                f"benchflow/zero/{reason}", summary["zero_reasons"].get(reason, 0) / n
+            )
+    if log_extra is not None:
+        log_extra("benchflow_reason", list(reasons))
+
+
+def bash_tool_schemas() -> list[dict[str, Any]]:
+    """The ``run_bash`` and ``submit`` tools as OpenAI-style function definitions.
+
+    These are the definitions TRL derives from :class:`BenchFlowRuntimeEnvironment`'s
+    method signatures and docstrings, so a policy evaluated through an
+    OpenAI-compatible endpoint sees the same tools it was trained with.
+    """
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "run_bash",
+                "description": (
+                    "Run a bash command in the task sandbox and return its output "
+                    "(stdout and stderr)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": (
+                                "The bash command to run in the task's working directory."
+                            ),
+                        }
+                    },
+                    "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit",
+                "description": (
+                    "Submit the final answer. This ends the task, so call it once, "
+                    "when you are done."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {
+                            "type": "string",
+                            "description": "The final answer, written to the task's answer file.",
+                        }
+                    },
+                    "required": ["answer"],
+                },
+            },
+        },
+    ]
 
 
 class BenchFlowSpec:
@@ -334,7 +659,7 @@ class BenchFlowSpec:
         return factory
 
     @property
-    def reward_funcs(self) -> list[Callable[..., list[float]]]:
+    def reward_funcs(self) -> list[Callable[..., list[float | None]]]:
         return [benchflow_environment_reward]
 
     def trainer_kwargs(self) -> dict[str, Any]:
@@ -460,5 +785,9 @@ __all__ = [
     "BenchFlowRuntimeEnvironment",
     "BenchFlowSpec",
     "BenchFlowSpecConfig",
+    "bash_tool_schemas",
     "benchflow_environment_reward",
+    "finish_rollout",
+    "rollout_record",
+    "write_rollout_record",
 ]
