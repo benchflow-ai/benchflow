@@ -683,7 +683,11 @@ async def run_branch_trial(
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.rollout_branch import restore_sandbox_with_services
     from benchflow.sandbox.protocol import SandboxImage
+    from benchflow.task.formats import materialize_task_dir
 
+    # A task-format folder (bf.branch(task_path=...)) runs as the native
+    # package it materializes; the task document below is read from it.
+    task_path = materialize_task_dir(task_path)
     config = RolloutConfig(
         task_path=task_path,
         agent=plan.agent,

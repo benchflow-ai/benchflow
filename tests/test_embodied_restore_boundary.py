@@ -176,6 +176,22 @@ async def test_branch_trial_refuses_before_the_sandbox_starts(tmp_path, caplog):
     assert record.levelname == "WARNING" and record.exc_info is None
 
 
+async def test_branch_trial_takes_a_task_format_folder(tmp_path, monkeypatch):
+    """bf.branch hands run_branch_trial the path it was given; a source folder
+    in a task format runs as its package (its own task.md is not a native one)."""
+    from benchflow.task import formats
+
+    monkeypatch.setenv(formats.CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setattr(formats, "_registered", [ToyFormat()])
+    monkeypatch.setattr(formats, "_entry_point_formats", [])
+    src = _toy_task(tmp_path / "suite")
+    plan = _plan(tmp_path, task_paths=[src], agent="oracle", checkpoint_after=0)
+    outcome = await run_branch_trial(plan, src, rollout_factory=_EmbodiedScripted)
+    assert outcome.task == "toy-reach"
+    assert outcome.error is not None and "branch refused" in outcome.error
+    assert _EmbodiedScripted.last._config.task_path != src
+
+
 async def test_retry_from_checkpoint_is_refused_and_recorded(tmp_path):
     IMAGES.clear()
     IsoRollout.all = []
