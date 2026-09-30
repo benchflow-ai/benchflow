@@ -96,6 +96,7 @@ BF.jobviews = (() => {
       const groups = Object.keys(doc.pareto);
       state.group = PREFERRED.find((d) => groups.includes(d) && agentSpread(d)) || groups[0] || "model";
     }
+    if (!params.has("pp")) state.part = ["split", "dataset"].find(agentSpread) || "none";
   }
 
   // ── URL state ──────────────────────────────────────────────────────────

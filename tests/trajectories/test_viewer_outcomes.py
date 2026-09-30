@@ -511,3 +511,18 @@ def test_browse_server_serves_outcomes_for_several_jobs(tmp_path: Path, capsys) 
     assert status == 200
     status, _ = _get(base + "api/rollout?id=two/../one/alpha__1")
     assert status == 404
+
+
+def test_a_job_without_trajectories_still_gets_its_views(tmp_path: Path, monkeypatch) -> None:
+    from benchflow.trajectories.viewer import server
+
+    job = tmp_path / "job"
+    _trial(job / "alpha__1", "alpha")  # result.json only, no trajectory
+    seen: dict = {}
+    monkeypatch.setattr(
+        server,
+        "_serve_browse",
+        lambda roots, port, n_runs, capped=False: seen.update(roots=roots, n=n_runs),
+    )
+    assert server.serve(str(job), port=0) is None
+    assert seen["n"] == 0 and seen["roots"].paths == [job]

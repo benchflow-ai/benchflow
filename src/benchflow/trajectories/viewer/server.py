@@ -11,6 +11,7 @@ from .catalog import (
     _rollout_summary_at,
     _runs_cap,
 )
+from .jobviews import has_trials
 from .legacy import (
     _NO_TRAJECTORIES_HTML,
     _inject_confirm_bar,
@@ -136,7 +137,13 @@ def serve(
     ):
         cap = _runs_cap()
         rollouts = BrowseRoots([path]).scan(cap + 1)
-        if rollouts:
+        # A job whose trials kept no trajectory still has job views.
+        results_only = (
+            not rollouts
+            and not (path / "result.json").exists()
+            and has_trials(path)
+        )
+        if rollouts or results_only:
             capped = len(rollouts) > cap
             n_runs = min(len(rollouts), cap)
             if confirm:
@@ -404,7 +411,7 @@ def _serve_browse(
     import socketserver
     from http.server import SimpleHTTPRequestHandler
 
-    from .jobviews import OutcomesCache, has_trials
+    from .jobviews import OutcomesCache
 
     if isinstance(roots, Path):
         roots = BrowseRoots([roots])
