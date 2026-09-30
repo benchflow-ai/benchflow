@@ -421,9 +421,15 @@ def test_provider_field_shapes(name, cfg):
         f"anthropic_auth_header={cfg.anthropic_auth_header!r} not in "
         f"{sorted(VALID_ANTHROPIC_AUTH_HEADERS)}"
     )
+    assert isinstance(cfg.prefer_agent_protocol, bool)
+    assert isinstance(cfg.responses_bridge, bool)
     if cfg.anthropic_auth_header == "bearer":
         assert "anthropic-messages" in cfg.all_endpoints, (
             f"{name!r}: bearer auth needs an anthropic-messages endpoint"
+        )
+        assert cfg.prefer_agent_protocol, (
+            f"{name!r}: bearer auth applies only when the proxy reaches the "
+            "anthropic-messages endpoint (prefer_agent_protocol)"
         )
         assert cfg.auth_type == "api_key", (
             f"{name!r}: bearer auth needs an api_key provider"

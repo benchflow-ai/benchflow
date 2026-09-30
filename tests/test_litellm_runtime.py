@@ -125,8 +125,12 @@ async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
 @pytest.mark.parametrize(
     ("agent", "backend", "api_base"),
     [
-        ("claude-agent-acp", "anthropic/glm-5.1", "https://api.z.ai/api/anthropic"),
-        ("codex-acp", "openai/glm-5.1", "https://api.z.ai/api/paas/v4"),
+        (
+            "claude-agent-acp",
+            "anthropic/zai-org/GLM-5.3",
+            "https://inference.baseten.co",
+        ),
+        ("codex-acp", "openai/zai-org/GLM-5.3", "https://inference.baseten.co/v1"),
     ],
 )
 async def test_litellm_route_follows_agent_protocol(
@@ -144,8 +148,8 @@ async def test_litellm_route_follows_agent_protocol(
 
     _updated, provider_runtime = await ensure_litellm_runtime(
         agent=agent,
-        agent_env={"ZAI_API_KEY": "sk-zai"},
-        model="zai/glm-5.1",
+        agent_env={"BASETEN_API_KEY": "sk-baseten"},
+        model="baseten/zai-org/GLM-5.3",
         runtime=None,
         environment="local",
         session_id="run-1",
@@ -207,6 +211,7 @@ async def test_bearer_value_reaches_proxy_env_only(monkeypatch):
             auth_type="api_key",
             auth_env="BEARER_TEST_API_KEY",
             endpoints={"anthropic-messages": "https://llm.example.test"},
+            prefer_agent_protocol=True,
             anthropic_auth_header="bearer",
         ),
     )

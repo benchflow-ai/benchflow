@@ -313,10 +313,15 @@ def _route_registered_provider(
             litellm_params=params,
         )
 
-    # The agent's own protocol when the provider serves it: translating it to
-    # chat completions is lossy (an image inside an Anthropic tool_result
-    # reaches the model as text). Otherwise chat completions, then primary.
-    if not protocol or protocol not in provider_cfg.all_endpoints:
+    # The agent's own protocol when the provider serves it and prefers it:
+    # translating it to chat completions is lossy (an image inside an
+    # Anthropic tool_result reaches the model as text). Otherwise chat
+    # completions, then the primary protocol.
+    if not (
+        protocol
+        and provider_cfg.prefer_agent_protocol
+        and protocol in provider_cfg.all_endpoints
+    ):
         protocol = (
             "openai-completions"
             if "openai-completions" in provider_cfg.all_endpoints
@@ -418,9 +423,9 @@ def resolve_litellm_route(
     """Resolve a BenchFlow model ID to one LiteLLM proxy route.
 
     *protocol* is the wire protocol the agent speaks (its ``api_protocol``).
-    When a registered provider serves that protocol, the route reaches the
-    provider over it; otherwise it uses the provider's chat-completions
-    endpoint, as without *protocol*.
+    When a registered provider with ``prefer_agent_protocol`` serves that
+    protocol, the route reaches the provider over it; otherwise it uses the
+    provider's chat-completions endpoint, as without *protocol*.
     """
     provider = find_provider(model)
     if provider is not None:

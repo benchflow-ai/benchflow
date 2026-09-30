@@ -54,6 +54,11 @@ Common optional fields
                        ``find_provider_for_bare_model()`` to route
                        prefix-stripped ids. Tokens must be lowercase and
                        unique across providers (longest token wins).
+- ``prefer_agent_protocol`` True when the LiteLLM proxy should reach this
+                       provider over the agent's own protocol (an
+                       ``endpoints`` entry) instead of translating it to
+                       chat completions. The translation turns an image
+                       inside an Anthropic ``tool_result`` into text.
 - ``anthropic_auth_header`` How the ``anthropic-messages`` endpoint takes
                        the key: ``"x-api-key"`` (default, Anthropic's own
                        header) or ``"bearer"`` (``Authorization: Bearer``,
@@ -108,6 +113,10 @@ class ProviderConfig:
     credential_files: list[dict] = field(default_factory=list)
     # Files to write into container (e.g. GCP ADC).
     # Each dict: {"path": str, "env_source": str, "post_env": {k: v} (optional)}
+    # The LiteLLM proxy reaches this provider over the agent's own protocol when
+    # it serves it, instead of translating to chat completions (lossy: images
+    # in an Anthropic tool_result become text). Opt-in, so existing routes stay.
+    prefer_agent_protocol: bool = False
     # Auth header for the anthropic-messages endpoint: "x-api-key" (Anthropic's
     # own) or "bearer" (Authorization: Bearer, for compatible endpoints that
     # reject x-api-key).
@@ -256,6 +265,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
             "openai-responses": "https://inference.baseten.co/v1",
             "anthropic-messages": "https://inference.baseten.co",
         },
+        prefer_agent_protocol=True,
         anthropic_auth_header="bearer",
         responses_bridge=True,
         models=[
