@@ -21,7 +21,13 @@ from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
 
 @pytest.fixture(autouse=True)
 def _modern_git(monkeypatch):
-    """Pin git's sparse support: the clone commands below are exact."""
+    """Pin git's sparse support: the clone commands below are exact.
+
+    Autouse, and module-wide: it also keeps `_git_can_sparse`'s
+    `functools.cache` from making these tests depend on what ran first. A
+    test of the old-git full-clone path therefore cannot live in this module
+    without overriding this — put it in tests/test_source_sparse_clone.py.
+    """
     monkeypatch.setattr(task_download, "_git_can_sparse", lambda: True)
 
 
@@ -143,7 +149,7 @@ def test_resolve_source_with_metadata_records_sha_and_task_hashes(
     """Guards v0.5-integration@cb8759e against unauditable source artifacts."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -208,7 +214,7 @@ def test_resolve_source_with_metadata_records_task_md_hashes(tmp_path, monkeypat
     """Guards commit 67378ddd's 2026-06-04 task.md spike source hashes."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -254,7 +260,7 @@ def test_resolve_source_with_metadata_uses_snapshot_sha_for_provenance(
     mutated_sha = "b" * 40
     rev_parse_calls = 0
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         nonlocal rev_parse_calls
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
@@ -297,7 +303,7 @@ def test_resolve_source_with_metadata_snapshots_under_cache_lock(tmp_path, monke
     monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".cache" / "datasets" / "acme-org" / ".benchmarks.lock"
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -510,7 +516,7 @@ def test_resolve_source_with_metadata_records_canonical_source_path(
     """Guards v0.5-integration@cb8759e against non-canonical source evidence."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -575,7 +581,7 @@ def test_resolve_source_with_metadata_fails_without_git_sha(tmp_path, monkeypatc
     """Guards v0.5-integration@cb8759e against unauditable source metadata."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -599,7 +605,7 @@ def test_resolve_source_with_metadata_rejects_path_escape(tmp_path, monkeypatch)
     """Guards v0.5-integration@cb8759e against source path escape evidence."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -629,7 +635,7 @@ def _clone_with(tmp_path, monkeypatch, *, populate):
     """Install a fake ``git`` whose clone is populated by ``populate(clone_dir)``."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True

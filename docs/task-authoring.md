@@ -66,11 +66,11 @@ bench tasks check tasks/my-task
 The check prints `✓ my-task — valid (structural)`. Then prove the task both ways, before any model sees it: the oracle must score 1.0, and the empty `nop` agent, which does nothing, must score 0.0:
 
 ```bash
-bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker --jobs-dir jobs/my-task-oracle
-bench eval run --tasks-dir tasks/my-task --agent nop --sandbox docker --jobs-dir jobs/my-task-nop
+bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker --jobs-dir jobs/my-task-oracle --fresh
+bench eval run --tasks-dir tasks/my-task --agent nop --sandbox docker --jobs-dir jobs/my-task-nop --fresh
 ```
 
-Neither needs a model or a key. Then run a model on it, for example `--agent claude --model claude-haiku-4-5-20251001` (see [Getting started](./getting-started.md#run-your-first-eval)).
+Neither needs a model or a key. `--fresh` matters while you are still editing: without it a re-run resumes its own last job, and a task that already has a result is reported from that result rather than run again, so you would read the verdict of the code you just changed. Then run a model on it, for example `--agent claude --model claude-haiku-4-5-20251001` (see [Getting started](./getting-started.md#run-your-first-eval)).
 
 The full authoring guide, including multi-container tasks, network policy and verifier strategies, lives in [Authoring native task.md tasks](./task-authoring-task-md.md), and the normative schema lives in [Task standard](./task-standard.md).
 

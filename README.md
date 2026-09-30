@@ -139,7 +139,7 @@ bench eval run \
     --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
-Repos are cached under `.cache/datasets/` (in the enclosing git repository's root, or the current directory outside one). With a source path, only that folder and the repository's top-level files are downloaded (a sparse clone), and each later path joins the same cache; a source without a path, or a folder that holds no BenchFlow task, gets the whole repository.
+Repos are cached under `.cache/datasets/` (in the enclosing git repository's root, or the current directory outside one). With a source path, only that folder is downloaded (a sparse clone), and each later path joins the same cache; a source without a path, or a folder that holds no BenchFlow task, gets the whole repository.
 
 Hosted environments are another source type. Instead of a repo, pass
 `--source-env` with the environment's pinned source version to run an external

@@ -207,7 +207,11 @@ def _git_quiet(root: Path, *args: str) -> None:
     """
     cmd = ["git", "-C", str(root), *args]
     result = subprocess.run(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
     )
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
@@ -288,7 +292,7 @@ def _widen_sparse_checkout(root: Path, path: str | None) -> None:
         _check_out_everything(root)
         return
     sparse_path = _sparse_source_path(path)
-    if sparse_path is None or _sparse_covers(root, sparse_path):
+    if sparse_path is None:
         return
     parts = sparse_path.split("/")
     prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
@@ -298,10 +302,18 @@ def _widen_sparse_checkout(root: Path, path: str | None) -> None:
         return
     if entries[-1] is None or entries[-1][1] != "tree":
         return
-    _git_quiet(root, "sparse-checkout", "add", "--", sparse_path)
-    # The clone checks out nothing (--no-checkout), so fill the working tree
-    # from HEAD under the new patterns; on a filled one this changes nothing.
-    _git_quiet(root, "read-tree", "-mu", "HEAD")
+    # Only the two calls below write to the working tree, so only they are
+    # skipped for a path the patterns already hold (another process may be
+    # reading it). The checks around them read the tree or the index, and the
+    # native-task verdict has to run either way: a foreign folder that happens
+    # to sit under an already-added pattern still needs the whole repository,
+    # because its source adapter reads files outside the path.
+    if not _sparse_covers(root, sparse_path):
+        _git_quiet(root, "sparse-checkout", "add", "--", sparse_path)
+        # The clone checks out nothing (--no-checkout), so fill the working
+        # tree from HEAD under the new patterns; on a filled one this changes
+        # nothing.
+        _git_quiet(root, "read-tree", "-mu", "HEAD")
     if not _holds_native_tasks(root / sparse_path):
         _check_out_everything(root)
 
@@ -532,6 +544,10 @@ def _git_stdout(root: Path, *args: str) -> str | None:
         ["git", "-C", str(root), *args],
         capture_output=True,
         text=True,
+        # `ls-tree -z` hands back raw path bytes rather than git's ASCII
+        # C-quoting, so a non-ASCII name under a non-UTF-8 LC_CTYPE would
+        # raise out of here instead of being read back as a path.
+        errors="surrogateescape",
     )
     if result.returncode != 0:
         return None
@@ -604,6 +620,12 @@ def resolve_source_with_metadata(
             canonical_source_path = target.relative_to(
                 root.resolve(strict=True)
             ).as_posix()
+            # `.` is a spelling of the whole repository, like passing no path
+            # at all; Path.relative_to renders that as ".". Record it the same
+            # way as a pathless source, so two spellings of one source do not
+            # produce different provenance or different per-task paths.
+            if canonical_source_path == ".":
+                canonical_source_path = ""
         resolved_sha = _read_resolved_sha(root, f"{org}/{repo_name}")
         snapshot_root = _snapshot_repo_root(
             root,

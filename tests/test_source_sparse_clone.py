@@ -17,6 +17,8 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -27,7 +29,13 @@ _IDENTITY = ("-c", "user.name=BenchFlow Test", "-c", "user.email=test@example.co
 
 
 def _git_version() -> tuple[int, int]:
-    out = subprocess.run(["git", "version"], capture_output=True, text=True).stdout
+    # Runs at import time for the module-wide skip below, so a machine with no
+    # git has to skip, not fail collection (the production twin
+    # br._git_can_sparse guards the same call the same way).
+    try:
+        out = subprocess.run(["git", "version"], capture_output=True, text=True).stdout
+    except (OSError, ValueError):
+        return (0, 0)
     match = re.search(r"(\d+)\.(\d+)", out)
     return (int(match.group(1)), int(match.group(2))) if match else (0, 0)
 
@@ -282,6 +290,15 @@ def _read_until_exit(pid: int, fd: int, timeout: float = 120.0) -> tuple[int, by
     return os.waitstatus_to_exitcode(status), output
 
 
+def _read_until_exit_closing(pid: int, fd: int) -> tuple[int, bytes]:
+    """`_read_until_exit`, always closing the pty master it was handed."""
+    try:
+        return _read_until_exit(pid, fd)
+    finally:
+        with suppress(OSError):
+            os.close(fd)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
 @pytest.mark.parametrize("ref", [None, "main"])
 def test_the_fetch_prints_no_progress_on_a_terminal(bench, tmp_path, ref):
@@ -311,9 +328,15 @@ def test_the_fetch_prints_no_progress_on_a_terminal(bench, tmp_path, ref):
             os.write(2, b"CONTROL\n")
             subprocess.run(["git", "-C", str(bench), "sparse-checkout", "add", "docs"])
             code = 0
+        except BaseException:
+            # os._exit below discards the traceback, and this child does a
+            # fetch, a detached checkout and a read-tree: without this a
+            # failure reads as a bare code=1.
+            with suppress(OSError):
+                os.write(2, traceback.format_exc().encode("utf-8", "replace"))
         finally:
             os._exit(code)
-    code, output = _read_until_exit(pid, fd)
+    code, output = _read_until_exit_closing(pid, fd)
     assert code == 0, output
     ours, _, control = output.partition(b"CONTROL")
     assert b"tty=1" in ours
@@ -364,6 +387,47 @@ def test_a_foreign_folder_widens_an_existing_sparse_snapshot(bench):
     assert (snapshot / "docs/guide.md").is_file()
     assert not br._is_sparse_checkout(snapshot)
     assert foreign.provenance["dirty"] is False
+
+
+def test_a_foreign_folder_under_an_already_fetched_pattern_still_widens(
+    tmp_path, monkeypatch
+):
+    """A foreign benchmark needs the whole repository even when already fetched.
+
+    Regression guard. The "leave an already fetched path alone" check ran
+    before the native-task verdict, so a source that first fetched `tasks`
+    (native, stays sparse) and then asked for `tasks/harbor` matched the
+    existing `tasks` pattern, returned early, and never widened: the foreign
+    adapter's files outside the path (here `configs/`) stayed absent and the
+    adapter failed on a missing file. Only the two calls that write to the
+    working tree may be skipped, not the verdict.
+    """
+    src = tmp_path / "src"
+    _write(src / "tasks/citation-check/task.md", "---\n---\nCheck the citations.\n")
+    _write(src / "tasks/harbor/config.yaml", "name: harbor\n")
+    _write(src / "configs/harbor.yaml", "rows: 3\n")
+    _git(tmp_path, "init", "-q", "-b", "main", str(src))
+    _git(src, "add", "-A")
+    _git(src, *_IDENTITY, "commit", "-q", "-m", "one")
+    bare = tmp_path / "remote.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(src), str(bare))
+    _git(bare, "config", "uploadpack.allowFilter", "true")
+    _git(bare, "config", "uploadpack.allowAnySHA1InWant", "true")
+    monkeypatch.setattr(br, "_repo_url", lambda org, repo: f"file://{bare}")
+    monkeypatch.setattr(br, "_cache_dir", lambda: tmp_path / "cache")
+    checkout = tmp_path / "cache" / "acme" / "mixed"
+
+    native = br.resolve_source_with_metadata("acme/mixed", path="tasks")
+    snapshot = native.path.parent
+    assert br._is_sparse_checkout(checkout)
+    assert not (checkout / "configs").exists()
+
+    foreign = br.resolve_source_with_metadata("acme/mixed", path="tasks/harbor")
+
+    assert foreign.path == snapshot / "tasks" / "harbor"
+    assert (checkout / "configs/harbor.yaml").is_file()
+    assert (snapshot / "configs/harbor.yaml").is_file()
+    assert not br._is_sparse_checkout(checkout)
 
 
 def test_a_path_git_would_quote_is_found(tmp_path, monkeypatch):
