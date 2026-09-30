@@ -29,7 +29,10 @@ from tinker_cookbook import model_info  # noqa: E402
 from tinker_cookbook.rl import train as rl_train  # noqa: E402
 from tinker_episode import (  # noqa: E402
     BASH_TIMEOUT_SEC,
+    HARNESS_MESSAGE,
+    MAX_OUTPUT_CHARS,
     MAX_TURNS,
+    SUBMIT_PATH,
     EpisodeSettings,
     close_all_live,
 )
@@ -87,6 +90,24 @@ def add_env_args(parser: argparse.ArgumentParser) -> None:
         default=900,
         help="seconds per episode once its sandbox is up",
     )
+    h = parser.add_argument_group(
+        "harness (defaults: the shared RL harness; change them for other task sets)"
+    )
+    h.add_argument(
+        "--harness-message",
+        default=HARNESS_MESSAGE,
+        help="text appended to every task prompt (default: the shared harness "
+        "message, which assumes the family's /workdir and answer file)",
+    )
+    h.add_argument(
+        "--max-output-chars",
+        type=int,
+        default=MAX_OUTPUT_CHARS,
+        help="run_bash output shown to the model",
+    )
+    h.add_argument(
+        "--submit-path", default=SUBMIT_PATH, help="where submit(answer) writes"
+    )
 
 
 def env_config(args: argparse.Namespace, jobs_dir: Path) -> te.EnvConfig:
@@ -98,11 +119,14 @@ def env_config(args: argparse.Namespace, jobs_dir: Path) -> te.EnvConfig:
             sandbox=args.sandbox,
             jobs_dir=str(jobs_dir),
             command_timeout_sec=args.command_timeout,
+            max_output_chars=args.max_output_chars,
+            submit_path=args.submit_path,
             episode_timeout_sec=args.episode_timeout,
         ),
         max_turns=args.max_turns,
         max_tokens=args.max_tokens,
         max_trajectory_tokens=args.max_trajectory_tokens,
+        prompt_suffix=args.harness_message,
     )
 
 

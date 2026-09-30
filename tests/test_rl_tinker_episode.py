@@ -462,3 +462,41 @@ def test_the_group_log_counts_and_records_every_group(tmp_path):
         ("a", "mixed", False),
         ("b", "all_failed", True),
     ]
+
+
+def test_partial_credit_has_its_own_measure():
+    results = {"a": [0.5, 1.0], "b": [0.0, 0.25]}
+    summary = stats.summarize(results)
+    assert summary["solve_rate"] == pytest.approx(0.25)
+    assert summary["mean_reward"] == pytest.approx((0.75 + 0.125) / 2)
+    assert summary["mean_reward_ci95_low"] <= summary["mean_reward"]
+
+
+def test_compare_reads_both_evaluators(tmp_path):
+    shared = tmp_path / "eval-base"
+    shared.mkdir()
+    rows = [
+        {"task_id": "a", "reward": 0.0},
+        {"task_id": "a", "reward": 1.0},
+        {"task_id": "b", "reward": None, "dropped": True},
+        {"task_id": "b", "reward": 0.5},
+    ]
+    (shared / "episodes.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n"
+    )
+    ours = tmp_path / "eval.json"
+    ours.write_text(
+        json.dumps(
+            {
+                "evaluations": [
+                    {"label": "trained", "rewards": {"a": [1.0, 1.0], "b": [1.0]}}
+                ]
+            }
+        )
+    )
+    label, base = stats.load_results(shared)
+    assert label == "eval-base" and base == {"a": [0.0, 1.0], "b": [0.5]}
+    doc = stats.compare(shared, ours)
+    assert doc["after"]["label"] == "trained"
+    assert doc["difference"]["solve_rate"]["delta"] == pytest.approx(1.0 - 0.25)
+    assert doc["difference"]["mean_reward"]["delta"] == pytest.approx(1.0 - 0.5)

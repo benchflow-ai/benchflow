@@ -172,9 +172,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         {
             "before": evaluations[0]["label"],
             "after": other["label"],
-            **tinker_stats.paired_difference(
-                evaluations[0]["rewards"], other["rewards"], seed=args.seed
-            ),
+            **{
+                name: tinker_stats.paired_difference(
+                    evaluations[0]["rewards"], other["rewards"], measure, seed=args.seed
+                )
+                for name, measure in tinker_stats.MEASURES.items()
+            },
         }
         for other in evaluations[1:]
     ]
@@ -212,10 +215,12 @@ def main(argv: list[str] | None = None) -> int:
             f"{s['solved']}/{s['episodes']} episodes over {s['tasks']} tasks; reasons {ev['reasons']}"
         )
     for c in doc["comparisons"]:
-        print(
-            f"{c['after']} - {c['before']}: {c['delta']:+.3f} "
-            f"(95% CI {c['low']:+.3f} to {c['high']:+.3f}) over {c['tasks']} tasks"
-        )
+        for name in tinker_stats.MEASURES:
+            d = c[name]
+            print(
+                f"{c['after']} - {c['before']}, {name}: {d['delta']:+.3f} "
+                f"(95% CI {d['low']:+.3f} to {d['high']:+.3f}) over {d['tasks']} tasks"
+            )
     return 0
 
 
