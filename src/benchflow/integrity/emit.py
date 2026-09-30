@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import posixpath
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1057,7 +1059,19 @@ def _sha256_file(path: Path | None) -> str | None:
 
 
 def _write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True, default=str) + "\n")
+    """Replace the document once it is complete (never a half-written claim)."""
+
+    text = json.dumps(value, indent=2, sort_keys=True, default=str) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

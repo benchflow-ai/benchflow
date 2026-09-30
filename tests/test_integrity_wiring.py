@@ -88,6 +88,47 @@ def test_evaluation_yaml_and_cli_flag_reach_the_config(
     )
     assert seen["config"].integrity == "audit"
 
+    # --integrity on top of --config wins over the file, and is not dropped:
+    # a safety flag that goes missing fails in the unsafe direction (the
+    # operator believes the trials are audited and they are not).
+    seen.clear()
+    off = bf.Evaluation(
+        tasks_dir=TASK.parent,
+        jobs_dir=tmp_path / "jobs3",
+        config=bf.EvaluationConfig(agent="oracle"),
+    ).to_yaml(tmp_path / "off.yaml")
+    CliRunner().invoke(
+        cli_main.app, ["eval", "run", "--config", str(off), "--integrity", "strict"]
+    )
+    assert seen["config"].integrity == "strict"
+
+    # ... and without the flag the file's own value still stands.
+    seen.clear()
+    CliRunner().invoke(cli_main.app, ["eval", "run", "--config", str(path)])
+    assert seen["config"].integrity == "strict"
+
+
+def test_a_bad_integrity_value_is_one_red_line_not_a_traceback(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        cli_main.app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(TASK.parent),
+            "--agent",
+            "oracle",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+            "--integrity",
+            "bogus",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "integrity must be one of off, audit, strict" in result.output
+    assert "Traceback" not in result.output
+    assert not (tmp_path / "jobs").exists()  # refused before a job folder
+
 
 def test_sharded_workers_carry_integrity() -> None:
     from benchflow.eval_sharding import EvalShard, _config_payload
@@ -199,6 +240,43 @@ def test_rollout_hook_is_off_by_default_and_skips_reviewers(tmp_path: Path) -> N
     )
     Rollout._write_integrity(rollout, result)
     assert not (trial / "integrity").exists()
+
+
+def test_an_audit_that_cannot_record_its_own_failure_is_dropped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The fallback's own write can fail too, and must not fail the trial.
+
+    The disk that makes the audit fail (full, read-only, wrong permissions) is
+    the same disk the Rejected fallback is written to, so both are inside the
+    guard. An escape here would turn a scored trial into an errored one: its
+    result.json already holds a complete reward, but the job records the trial
+    as ``Unexpected: ...``.
+    """
+
+    import benchflow.integrity.trial as trial_module
+
+    def boom(evidence):
+        raise RuntimeError("evidence store unreadable")
+
+    def boom_too(trial_dir, *, mode, error, source="rollout"):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(trial_module, "emit_integrity", boom)
+    monkeypatch.setattr(trial_module, "emit_integrity_error", boom_too)
+    rollout, result, trial = _finished_rollout(tmp_path, integrity="audit")
+    Rollout._write_integrity(rollout, result)  # must not raise into scoring
+    assert result.integrity is None and read_verdict(trial) is None
+    assert result.rewards == {"reward": 1.0}
+
+
+def test_a_bad_mode_set_after_construction_does_not_raise(tmp_path: Path) -> None:
+    """normalize_integrity_mode is inside the guard, not before it."""
+
+    rollout, result, _ = _finished_rollout(tmp_path, integrity="audit")
+    rollout._config.integrity = "bogus"  # bypasses __post_init__ validation
+    Rollout._write_integrity(rollout, result)
+    assert result.integrity is None and result.rewards == {"reward": 1.0}
 
 
 def test_a_broken_audit_fails_closed_without_raising(

@@ -22,6 +22,8 @@ trial.integrity.verdict, trial.integrity.exploited, trial.integrity.reason
 
 `integrity: audit` (or `strict`) works in evaluation and rollout YAML, `EvaluationConfig(integrity=...)`, `RolloutConfig(integrity=...)` and `TaskRuntimeConfig(integrity=...)`.
 
+On the command line `--integrity` also wins over a run-config file (`--config run.yaml --integrity strict` audits, whatever the file says), and a value that is not `off`, `audit` or `strict` is refused before a job folder exists. In YAML, note that `integrity: on` is a YAML boolean and means `audit`, and `integrity: off` is a YAML boolean and means `off`; quote the value if you want to be explicit.
+
 ## The two modes
 
 | Mode | What runs differently | Backends | Best verdict of a clean run |
@@ -137,6 +139,8 @@ The same verdict is on disk (`integrity/claim_verdict.json`) for trainers that r
 
 - Audit mode sees what the agent's tool calls say. A command run through an interpreter (`python -c`, `perl -e`, a script the agent wrote) is opaque: its file writes are not witnessed, and when it names a protected path the verdict is `Rejected`, not `Checked`. The host-side Docker monitor that would corroborate such writes is not ported.
 - Reward-relevant state a task keeps inside the agent's workspace is agent-writable by default, so reading it is not a violation until a binding names it (see "The contract").
+- A verdict is written when the trial's scoring finishes in the run itself. `bench eval score` (scoring a trial later) does not produce one, and `bench eval regrade` does not refresh one: a regraded trial keeps the verdict of the run that produced it, whose embedded `reward` is then the old one, while `result.json` has the new one. Re-verdict such a trial with `audit_trial(trial_dir, task_path=...)`, which reads the current `result.json`.
+- A task that strict mode cannot run is refused per trial, not at plan time, so a job started with `--integrity strict` against an unsupported task creates its job folder and then refuses each trial with the launch gate's reason.
 - Answer-source shortcuts (reading an upstream fix from git history, fetching a published answer) are semantic (I7). They are caught only when a binding says so (for example `measurement_mode: closed_book` turns any egress into a violation).
 - The static taint analysis that finds vectors before a run, and the LLM audit agents, are not part of this; the rubric review's `reward_hacking` criterion is BenchFlow's LLM reviewer.
 - Declared artifacts that are code run inside the verifier; they are handed over like data.

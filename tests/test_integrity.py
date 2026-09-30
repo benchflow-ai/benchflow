@@ -557,6 +557,40 @@ def test_trial_and_job_readers(tmp_path: Path) -> None:
     assert job.integrity().counts() == {"AgentViolation": 1}
 
 
+def test_the_reader_never_raises_on_a_damaged_verdict_file(tmp_path: Path) -> None:
+    """One hand-edited file must not make a whole job's Job.integrity() raise."""
+
+    import json
+
+    cases = [
+        None,  # no integrity/ at all
+        "",
+        "{ not json",
+        "[]",
+        '{"core": {"agent_evidence": 5}}',  # parses, wrong shape
+        '{"core": "not a dict"}',
+        '{"core": {"agent_evidence": {"a": 1}}}',
+        '{"final_flags": 7, "reward": "free"}',
+    ]
+    for index, text in enumerate(cases):
+        trial = tmp_path / f"t{index}"
+        trial.mkdir()
+        if text is not None:
+            (trial / "integrity").mkdir()
+            (trial / "integrity" / "claim_verdict.json").write_text(text)
+        read_verdict(trial)  # must not raise
+    # A string of event ids is not eight single-character evidence items.
+    trial = tmp_path / "string-evidence"
+    (trial / "integrity").mkdir(parents=True)
+    (trial / "integrity" / "claim_verdict.json").write_text(
+        json.dumps(
+            {"core_verdict": "AgentViolation", "core": {"agent_evidence": "abc"}}
+        )
+    )
+    verdict = read_verdict(trial)
+    assert verdict is not None and verdict.agent_evidence == ()
+
+
 def test_verdict_exposes_what_apply_integrity_takes(tmp_path: Path) -> None:
     """rl-core's apply_integrity takes any object with bool ``exploited`` and ``reason``."""
     trial = _stored_trial(tmp_path, _calls("echo 1 > /logs/verifier/reward.txt"))

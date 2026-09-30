@@ -2576,7 +2576,11 @@ class Rollout:
         if result.rollout_name and self._rollout_dir is not None:
             with scoring_lock(self._rollout_dir):
                 result = await self._finish_scoring_locked(result)
-                self._write_integrity(result)
+                # Synchronous CPU and file IO over the whole trajectory (about
+                # 0.4 ms per recorded tool call), so it runs off the event loop:
+                # it is outside the hard deadline and inside the scoring lock,
+                # and every other trial in this process would stall for it.
+                await asyncio.to_thread(self._write_integrity, result)
             if result.rollout_dir is None:
                 result.rollout_dir = self._rollout_dir
             return result

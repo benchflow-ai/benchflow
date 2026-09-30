@@ -54,6 +54,7 @@ class IntegrityVerdict:
         )
         flags = claim.get("final_flags")
         reward_raw = claim.get("reward")
+        evidence_raw = core.get("agent_evidence")
         return cls(
             verdict=verdict,
             exploited=verdict == "AgentViolation",
@@ -66,7 +67,9 @@ class IntegrityVerdict:
             ),
             mode=str(claim.get("mode") or "audit"),
             severity=str(claim.get("event_severity") or "None"),
-            agent_evidence=tuple(core.get("agent_evidence") or ()),
+            agent_evidence=tuple(str(item) for item in evidence_raw)
+            if isinstance(evidence_raw, list | tuple)
+            else (),
             flags=tuple(name for name, value in (flags or {}).items() if value is True)
             if isinstance(flags, dict)
             else (),
@@ -101,11 +104,14 @@ def read_verdict(trial_dir: str | Path) -> IntegrityVerdict | None:
     path = verdict_path(trial_dir)
     try:
         claim = json.loads(path.read_text())
-    except (OSError, ValueError):
+        if not isinstance(claim, dict):
+            return None
+        # from_claim is inside the guard: a hand-edited or foreign-produced
+        # file can parse as JSON and still have fields of the wrong shape, and
+        # one such file must not make a whole job's Job.integrity() raise.
+        return IntegrityVerdict.from_claim(claim, path=path)
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
-    if not isinstance(claim, dict):
-        return None
-    return IntegrityVerdict.from_claim(claim, path=path)
 
 
 @dataclass(frozen=True)

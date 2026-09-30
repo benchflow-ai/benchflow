@@ -102,8 +102,28 @@ def _with_separate_verifier(task_config: Any, mode: Any) -> Any:
 
 
 def write_rollout_integrity(rollout: Any, result: Any) -> IntegrityVerdict | None:
-    """Audit a finished rollout; never raises into scoring, never touches rewards."""
+    """Audit a finished rollout; never raises into scoring, never touches rewards.
 
+    The outer guard is what makes that promise hold: the fallback below writes
+    a Rejected verdict to the trial folder, and the failure that made the audit
+    fail (a full or read-only disk, a permission error) is exactly the failure
+    that can make the fallback's own write fail. An audit that cannot even
+    record its own failure is logged and dropped; scoring never sees it.
+    """
+
+    try:
+        return _audit_finished_rollout(rollout, result)
+    except Exception as exc:  # the audit must never fail the trial
+        logger.warning(
+            "Integrity audit could not be recorded for %s: %s",
+            getattr(rollout, "_rollout_dir", "<unknown trial>"),
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
+def _audit_finished_rollout(rollout: Any, result: Any) -> IntegrityVerdict | None:
     cfg = rollout._config
     mode = normalize_integrity_mode(getattr(cfg, "integrity", "off"))
     trial_dir = getattr(rollout, "_rollout_dir", None)
