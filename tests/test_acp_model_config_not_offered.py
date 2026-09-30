@@ -105,6 +105,21 @@ async def test_a_timeout_is_not_called_a_refusal(tmp_path):
         (ACPError(-32603, "Internal error"), "claude-sonnet-9"),
         # A listed value that fails is not a value the agent does not offer.
         (ACPError(-32603, "Internal error", REFUSED), "sonnet"),
+        # Second review finding: "not available" read as a refusal, so a
+        # provider that is briefly down made the model permanently wrong.
+        (
+            ACPError(-32603, "Internal error", {"details": "model not available"}),
+            "claude-sonnet-9",
+        ),
+        # A refusal that names a different value is not this value's refusal.
+        (
+            ACPError(
+                -32603,
+                "Internal error",
+                {"details": "Invalid value for config option model: other-model"},
+            ),
+            "claude-sonnet-9",
+        ),
     ],
 )
 async def test_other_config_errors_stay_retryable(tmp_path, error, model):

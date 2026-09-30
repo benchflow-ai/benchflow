@@ -495,16 +495,25 @@ def _config_option_values(session: object | None, config_id: str) -> list[str]:
     return []
 
 
-_REFUSAL_MARKERS = ("invalid value", "not offered", "unknown model", "not available")
+# "not available" is deliberately absent: a provider answering "model
+# temporarily not available" is a transient failure that must stay retried,
+# and it reads the same as a refusal.
+_REFUSAL_MARKERS = ("invalid value", "not offered", "unknown model")
 
 
-def _refuses_value(exc: BaseException) -> bool:
-    """Whether an ACP error answer says the value itself was refused."""
+def _refuses_value(exc: BaseException, value: str = "") -> bool:
+    """Whether an ACP error answer says the value itself was refused.
+
+    The answer has to both read as a refusal and name the value, so a
+    transient error on the same request stays the retried error it was.
+    """
     if not isinstance(exc, AgentProtocolError):
         return False
     data = getattr(exc, "data", None)
     details = data.get("details") if isinstance(data, dict) else data
     text = f"{getattr(exc, 'message', '')} {details or ''}".lower()
+    if value and value.lower() not in text:
+        return False
     return any(marker in text for marker in _REFUSAL_MARKERS)
 
 
@@ -562,7 +571,12 @@ async def _set_acp_config_option(
             e,
         )
         offered = _config_option_values(session, config_id)
-        if label == "model" and offered and value not in offered and _refuses_value(e):
+        if (
+            label == "model"
+            and offered
+            and value not in offered
+            and _refuses_value(e, value)
+        ):
             # The agent refused a value it does not list (claude-agent-acp:
             # -32603 "Internal error" with data.details "Invalid value for
             # config option model: <value>") and will on every retry: an
