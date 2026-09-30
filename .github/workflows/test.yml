@@ -88,6 +88,7 @@ jobs:
           uv run python -m pytest tests/test_deterministic_integration.py
           tests/test_docker_parallel_isolation.py
           tests/test_integrity_deterministic.py
+          tests/test_rl_deterministic.py
           -m deterministic -v -rs --durations=0
         env:
           BENCHFLOW_DETERMINISTIC_SANDBOX: docker
