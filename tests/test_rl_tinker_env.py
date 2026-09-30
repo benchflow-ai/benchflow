@@ -28,6 +28,8 @@ from tinker_cookbook.exceptions import AllTrajectoriesFailedError
 from tinker_cookbook.renderers.base import ToolCall
 from tinker_cookbook.rl import types
 
+from benchflow.integrations.rewards import dropped
+
 EXAMPLE = Path(__file__).resolve().parents[1] / "docs" / "examples" / "rl" / "tinker"
 sys.path.insert(0, str(EXAMPLE))
 import tinker_env as te  # noqa: E402
@@ -125,11 +127,12 @@ def run(coro: Any) -> Any:
 
 
 def test_the_tools_are_the_shared_harness_tools():
-    trl = pytest.importorskip("benchflow.integrations.trl")
-    schemas = getattr(trl, "bash_tool_schemas", None)
-    if schemas is None:
-        pytest.skip("this BenchFlow has no bash_tool_schemas (cookbook/rl-core)")
-    assert [s["function"] for s in schemas()] == [te.RUN_BASH_SPEC, te.SUBMIT_SPEC]
+    from benchflow.integrations.trl import bash_tool_schemas
+
+    assert [s["function"] for s in bash_tool_schemas()] == [
+        te.RUN_BASH_SPEC,
+        te.SUBMIT_SPEC,
+    ]
 
 
 def test_qwen3_5_renderers_get_the_openai_tool_wrapper(tmp_path):
@@ -298,7 +301,7 @@ def test_decision_metrics_carry_every_key():
     metrics = te.decision_metrics(ep.Decision(0.0, "verifier_error"), "submitted")
     reasons = {k: v for k, v in metrics.items() if k.startswith("bf/reason/")}
     ended = {k: v for k, v in metrics.items() if k.startswith("bf/ended/")}
-    assert len(reasons) == 5 and sum(reasons.values()) == 1.0
+    assert len(reasons) == len(ep.KEPT_REASONS) and sum(reasons.values()) == 1.0
     assert metrics["bf/reason/verifier_error"] == 1.0
     assert sum(ended.values()) == 1.0 and metrics["bf/ended/submitted"] == 1.0
     assert "bf/ended/timeout" in ended
@@ -401,7 +404,7 @@ async def policy(ob, stop, *, max_tokens=None):
 
 
 def start_failure() -> ep.InfrastructureError:
-    return ep.InfrastructureError(ep.dropped("sandbox_start", "no capacity"))
+    return ep.InfrastructureError(dropped("sandbox_start", "no capacity"))
 
 
 def test_infrastructure_failures_are_dropped_counted_and_replaced(tmp_path):

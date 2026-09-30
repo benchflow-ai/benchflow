@@ -23,11 +23,14 @@ from typing import Any
 import pytest
 
 import benchflow as bf
+from benchflow.integrations.rewards import dropped
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "docs" / "examples" / "rl" / "tinker"
 sys.path.insert(0, str(EXAMPLE))
 import tinker_episode as ep  # noqa: E402
 import tinker_stats as stats  # noqa: E402
+
+PUBLIC_MODULES = {"benchflow.integrations.rewards", "benchflow.integrations.trl"}
 
 
 @dataclass
@@ -106,6 +109,8 @@ def run(coro: Any) -> Any:
 
 
 # -- the training rule -----------------------------------------------------------
+# The rule itself is benchflow.integrations.rewards (tests/test_rl_rewards.py);
+# these check that an episode applies it to what its sandbox and verifier did.
 
 
 def result(**fields: Any) -> SimpleNamespace:
@@ -134,30 +139,31 @@ def result(**fields: Any) -> SimpleNamespace:
         ({"verifier_error": "verifier crashed: boom"}, True, 0.0, "verifier_error"),
         ({"error": "connection lost"}, True, 0.0, "run_error"),
         ({}, True, 0.0, "no_reward"),
+        ({"reward": True}, True, 0.0, "no_reward"),
+        ({"reward": math.nan}, True, 0.0, "no_reward"),
     ],
 )
-def test_the_training_rule_maps_each_verify_result(fields, acted, reward, reason):
-    decision = ep.decide(result(**fields), policy_acted=acted)
-    assert decision.reward == reward
-    assert decision.reason == reason
+def test_an_episode_scores_its_verify_result_by_the_rule(
+    tmp_path, fields, acted, reward, reason
+):
+    episode, runtimes = make_episode(tmp_path, verify=result(**fields))
+
+    async def go():
+        await episode.start()
+        if acted:
+            await episode.run_bash("ls")
+        return await episode.finish()
+
+    decision = run(go())
+    assert decision.reward == reward and decision.reason == reason
     assert decision.dropped is (reward is None)
+    assert runtimes[0].closed == 1
 
 
-@pytest.mark.parametrize("bad", [True, math.nan, math.inf, "1.0"])
-def test_a_reward_must_be_a_finite_number(bad):
-    decision = ep.decide(result(reward=bad), policy_acted=True)
-    assert decision.reason == "no_reward"
-    assert decision.reward == 0.0
-
-
-def test_decisions_keep_drops_and_zeros_apart():
-    with pytest.raises(ValueError):
-        ep.Decision(None, "timeout")  # a drop needs an infrastructure reason
-    with pytest.raises(ValueError):
-        ep.Decision(0.0, "sandbox_start")  # an infrastructure reason is a drop
-    with pytest.raises(ValueError):
-        ep.zero("sandbox_start")
-    assert ep.scored(1).solved and not ep.scored(0.99).solved
+def test_solved_means_every_check_passed():
+    assert ep.solved(ep.Decision(1.0, "scored"))
+    assert not ep.solved(ep.Decision(0.99, "scored"))
+    assert not ep.solved(None)
 
 
 # -- the episode's lifecycle ----------------------------------------------------------
@@ -195,7 +201,7 @@ def test_a_sandbox_that_never_started_is_dropped_and_frees_its_slot(tmp_path):
     with pytest.raises(ep.InfrastructureError) as info:
         run(episode.start())
     assert info.value.reason == "sandbox_start"
-    assert episode.decision == ep.dropped("sandbox_start", RuntimeError("no capacity"))
+    assert episode.decision == dropped("sandbox_start", RuntimeError("no capacity"))
     assert slots.in_use == 0 and not runtimes and episode.closed
     run(episode.close())  # idempotent
     assert slots.in_use == 0
@@ -367,7 +373,7 @@ def test_the_rollout_record_follows_the_shared_harness(tmp_path):
 
 def test_drops_are_counted_and_a_streak_stops_the_run(tmp_path):
     log = ep.DropLog(path=tmp_path / "drops.jsonl", max_consecutive=3)
-    error = ep.InfrastructureError(ep.dropped("sandbox_start", "quota"), task="t")
+    error = ep.InfrastructureError(dropped("sandbox_start", "quota"), task="t")
     log.add(error, task="t", where="train-0000")
     log.add(RuntimeError("sampler 503"), task="t", where="train-0000")
     log.completed()  # an episode finished: the streak resets
@@ -413,13 +419,13 @@ def test_wilson_interval_bounds():
 
 
 def test_the_cookbook_uses_only_public_benchflow_names():
+    """`bf.<name>` from benchflow's __all__, and the public integration modules."""
     for path in EXAMPLE.glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "benchflow"
-            ):
+            module = node.module or "" if isinstance(node, ast.ImportFrom) else ""
+            if module.startswith("benchflow") and module not in PUBLIC_MODULES:
                 pytest.fail(
-                    f"{path.name} imports {node.module}; use `import benchflow as bf`"
+                    f"{path.name} imports {module}; use `import benchflow as bf`"
                 )
             if (
                 isinstance(node, ast.Attribute)

@@ -54,9 +54,8 @@ from tinker_cookbook.tool_use import (
 )
 from tinker_episode import (
     HARNESS_MESSAGE,
+    KEPT_REASONS,
     MAX_TURNS,
-    SCORED,
-    ZERO_REASONS,
     Decision,
     DropLog,
     Episode,
@@ -64,42 +63,16 @@ from tinker_episode import (
     GroupLog,
     InfrastructureError,
     SandboxSlots,
+    solved,
 )
 
 import benchflow as bf
+from benchflow.integrations.trl import bash_tool_schemas
 
 log = logging.getLogger(__name__)
 
-# The run_bash and submit tools, as benchflow.integrations.trl.bash_tool_schemas()
-# defines them for TRL and the held-out evaluator.
-RUN_BASH_SPEC: dict[str, Any] = {
-    "name": "run_bash",
-    "description": "Run a bash command in the task sandbox and return its output (stdout and stderr).",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "The bash command to run in the task's working directory.",
-            }
-        },
-        "required": ["command"],
-    },
-}
-SUBMIT_SPEC: dict[str, Any] = {
-    "name": "submit",
-    "description": "Submit the final answer. This ends the task, so call it once, when you are done.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "answer": {
-                "type": "string",
-                "description": "The final answer, written to the task's answer file.",
-            }
-        },
-        "required": ["answer"],
-    },
-}
+# The run_bash and submit tools exactly as TRL and the held-out evaluator see them.
+RUN_BASH_SPEC, SUBMIT_SPEC = (schema["function"] for schema in bash_tool_schemas())
 
 # Renderers that print each tool spec as they get it, whose Hugging Face chat
 # template (the one Tinker's OpenAI-compatible endpoint applies) prints the
@@ -510,10 +483,10 @@ def decision_metrics(decision: Decision | None, ended: str | None) -> dict[str, 
     if decision is None:
         return {}
     metrics = {
-        "bf/solved": float(decision.solved),
-        "bf/scored": float(decision.reason == SCORED),
+        "bf/solved": float(solved(decision)),
+        "bf/scored": float(decision.reason == KEPT_REASONS[0]),
     }
-    for reason in (SCORED, *ZERO_REASONS):
+    for reason in KEPT_REASONS:
         metrics[f"bf/reason/{reason}"] = float(decision.reason == reason)
     for how in dict.fromkeys(ENDED.values()):
         metrics[f"bf/ended/{how}"] = float(ended == how)

@@ -6,15 +6,17 @@ framework.
 
 An `Episode` starts the task's sandbox with `bf.TaskRuntime`, runs the
 policy's `run_bash` commands and `submit` answer in it the way the shared RL
-harness does (BenchFlow's TRL adapter and the held-out evaluator), runs the
-task's verifier, and always closes the sandbox. The training rule turns each
-ending into a `Decision`:
+harness does (docs/examples/rl/common/harness.py: BenchFlow's TRL adapter and
+the held-out evaluator use the same tools, instructions and limits), runs the
+task's verifier, and always closes the sandbox. The training rule of
+`benchflow.integrations.rewards` turns each ending into a `RewardDecision`:
 
 - dropped (reward None): an infrastructure failure the policy could not have
   caused: the sandbox never started, the model endpoint failed, or the
   verifier gave no reward on a clean run (the policy never acted). Dropped
   episodes leave the batch and are counted by reason.
-- scored: the verifier's reward.
+- scored: the verifier's reward (a fraction of checks passed, for partial
+  credit).
 - 0, with a named reason, for every other failure: `timeout` (including the
   episode's wall-clock budget), `verifier_error`, `run_error`, `no_reward`.
 """
@@ -25,136 +27,82 @@ import asyncio
 import contextlib
 import json
 import logging
-import math
 import shlex
+import sys
 import time
 import weakref
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import benchflow as bf
+from benchflow.integrations.rewards import (
+    DROP_REASONS,
+    MODEL_ENDPOINT,
+    SCORED,
+    TIMEOUT,
+    VERIFIER_CRASH_CLEAN_RUN,
+    VERIFIER_ERROR,
+    ZERO_REASONS,
+    RewardDecision,
+    dropped,
+    reward_from_verify,
+    sandbox_start_failure,
+    zero,
+)
+from benchflow.integrations.trl import write_rollout_record
+
+COMMON = Path(__file__).resolve().parents[1] / "common"
+if str(COMMON) not in sys.path:
+    sys.path.insert(0, str(COMMON))
+from harness import HARNESS_MESSAGE, MAX_TURNS, harness_config  # noqa: E402
 
 log = logging.getLogger(__name__)
 
-# -- the shared harness --------------------------------------------------------
-# The same values as docs/examples/rl/common/harness.py, so that a policy trained
-# here is evaluated with the tools, instructions and limits it trained with.
-
-HARNESS_MESSAGE = (
-    "\n\nYou are working in a Linux sandbox. Use the run_bash tool to run shell "
-    "commands; each call starts in /workdir. When you are done, call the submit tool "
-    "once with your final answer: it writes the answer to /workdir/answer.txt for you "
-    "and ends the task. For a code fix, submit the word done."
-)
-BASH_TIMEOUT_SEC = 30
-MAX_OUTPUT_CHARS = 2000
-MAX_TURNS = 10
-SUBMIT_PATH = "/workdir/answer.txt"
+# The shared harness's limits (docs/examples/rl/common/harness.py).
+_HARNESS = harness_config()
+BASH_TIMEOUT_SEC = _HARNESS.bash_timeout_sec
+MAX_OUTPUT_CHARS = _HARNESS.max_output_chars
+SUBMIT_PATH = _HARNESS.submit_path
+# What the TRL adapter's run_bash appends to output it cuts.
 TRUNCATION_MARKER = "\n[benchflow output truncated]\n"
 
-# -- the training rule ---------------------------------------------------------
-# The reasons of benchflow.integrations.rewards (branch cookbook/rl-core).
+Decision = RewardDecision
+# Reasons a kept episode can have, the verifier's reward first.
+KEPT_REASONS = (SCORED, *sorted(ZERO_REASONS))
 
-SCORED = "scored"
-TIMEOUT = "timeout"
-VERIFIER_ERROR = "verifier_error"
-RUN_ERROR = "run_error"
-NO_REWARD = "no_reward"
-ZERO_REASONS = (TIMEOUT, VERIFIER_ERROR, RUN_ERROR, NO_REWARD)
-SANDBOX_START = "sandbox_start"
-MODEL_ENDPOINT = "model_endpoint"
-VERIFIER_CRASH_CLEAN_RUN = "verifier_crash_clean_run"
-DROP_REASONS = (SANDBOX_START, MODEL_ENDPOINT, VERIFIER_CRASH_CLEAN_RUN)
-
-
-@dataclass(frozen=True)
-class Decision:
-    """A training reward, or a drop (reward None) with its reason."""
-
-    reward: float | None
-    reason: str
-    detail: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.reward is None and self.reason not in DROP_REASONS:
-            raise ValueError(
-                f"a drop needs an infrastructure reason, got {self.reason!r}"
-            )
-        if self.reward is not None and self.reason in DROP_REASONS:
-            raise ValueError(f"{self.reason!r} is a drop; its reward must be None")
-
-    @property
-    def dropped(self) -> bool:
-        return self.reward is None
-
-    @property
-    def solved(self) -> bool:
-        return self.reward is not None and self.reward >= 1.0
+__all__ = [
+    "BASH_TIMEOUT_SEC",
+    "DROP_REASONS",
+    "HARNESS_MESSAGE",
+    "KEPT_REASONS",
+    "LIVE",
+    "MAX_OUTPUT_CHARS",
+    "MAX_TURNS",
+    "SUBMIT_PATH",
+    "TRUNCATION_MARKER",
+    "Decision",
+    "DropLog",
+    "Episode",
+    "EpisodeSettings",
+    "GroupLog",
+    "InfrastructureError",
+    "SandboxSlots",
+    "TooManyInfrastructureFailures",
+    "close_all_live",
+    "describe",
+    "group_kind",
+    "solved",
+    "truncate",
+]
 
 
-def _short(detail: object) -> str | None:
-    if detail is None:
-        return None
-    if isinstance(detail, BaseException):
-        text = f"{type(detail).__name__}: {detail}"
-    else:
-        text = str(detail)
-    text = " ".join(text.split())
-    return (text[:497] + "...") if len(text) > 500 else (text or None)
-
-
-def scored(reward: float) -> Decision:
-    return Decision(float(reward), SCORED)
-
-
-def zero(reason: str, detail: object = None) -> Decision:
-    if reason not in ZERO_REASONS:
-        raise ValueError(f"unknown zero reason {reason!r}")
-    return Decision(0.0, reason, _short(detail))
-
-
-def dropped(reason: str, detail: object = None) -> Decision:
-    return Decision(None, reason, _short(detail))
-
-
-def _finite(value: Any) -> float | None:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
-def decide(result: Any, *, policy_acted: bool) -> Decision:
-    """A verify result (TaskRuntimeResult) as a reward or a drop.
-
-    Mirrors benchflow.integrations.rewards.reward_from_verify: a finite reward
-    is the score; without one, a sandbox that failed to start is a drop, a
-    verifier that gave nothing on a clean run is a drop, and everything after
-    the policy acted scores 0 by what went wrong.
-    """
-    reward = _finite(getattr(result, "reward", None))
-    if reward is None:
-        rewards = getattr(result, "rewards", None)
-        if isinstance(rewards, dict):
-            reward = _finite(rewards.get("reward"))
-    if reward is not None:
-        return scored(reward)
-    error = getattr(result, "error", None) or ""
-    verifier_error = getattr(result, "verifier_error", None) or ""
-    detail = verifier_error or error or None
-    if "sandbox startup" in error.lower() or "sandbox creation" in error.lower():
-        return dropped(SANDBOX_START, detail)
-    if not policy_acted:
-        return dropped(VERIFIER_CRASH_CLEAN_RUN, detail)
-    if "verifier timed out" in verifier_error or "timed out" in error.lower():
-        return zero(TIMEOUT, detail)
-    if verifier_error:
-        return zero(VERIFIER_ERROR, detail)
-    if error:
-        return zero(RUN_ERROR, detail)
-    return zero(NO_REWARD)
+def solved(decision: RewardDecision | None) -> bool:
+    """Every check passed: the verifier's full reward."""
+    return (
+        decision is not None and decision.reward is not None and decision.reward >= 1.0
+    )
 
 
 class InfrastructureError(RuntimeError):
@@ -305,7 +253,7 @@ class Episode:
             self._release_slot()
             if not isinstance(exc, Exception):
                 raise
-            self.decision = dropped(SANDBOX_START, exc)
+            self.decision = sandbox_start_failure(exc)
             raise InfrastructureError(self.decision, task=self.task_dir.name) from exc
         LIVE.add(self)
         self.timings["sandbox_start_sec"] = round(self._clock() - t0, 3)
@@ -378,6 +326,7 @@ class Episode:
                 self.runtime.verify(), timeout=self.settings.verify_timeout_sec
             )
         except Exception as exc:  # a crash, or the guard's TimeoutError
+            # As the TRL adapter decides a verify() that raises.
             decision = (
                 zero(VERIFIER_ERROR, exc)
                 if self.policy_acted
@@ -386,7 +335,7 @@ class Episode:
         else:
             with contextlib.suppress(Exception):
                 self.rollout_dir = Path(result.rollout_dir)
-            decision = decide(result, policy_acted=self.policy_acted)
+            decision = reward_from_verify(result, policy_acted=self.policy_acted)
         finally:
             self.timings["verify_sec"] = round(self._clock() - t0, 3)
             await self.close()
@@ -435,7 +384,7 @@ class Episode:
     # -- audit record --------------------------------------------------------
 
     def record(self, messages: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
-        """The rollout record of the shared harness (rollout_record), plus extras."""
+        """The shared harness's rollout record (see trl.rollout_record), plus extras."""
         decision = self.decision
         return {
             "task_id": self.task_dir.name,
@@ -443,13 +392,7 @@ class Episode:
             "step": self.job_name,
             "policy_acted": self.policy_acted,
             **(
-                {
-                    "reward": decision.reward,
-                    "dropped": decision.dropped,
-                    "reason": decision.reason,
-                    "detail": decision.detail,
-                    "flagged": False,
-                }
+                decision.as_dict()
                 if decision is not None
                 else {"reward": None, "reason": None}
             ),
@@ -461,18 +404,10 @@ class Episode:
         }
 
     def write_record(self, record: dict[str, Any]) -> None:
-        """Keep the rollout for audit, like the shared harness's write_rollout_record:
+        """Keep the rollout for audit as the shared harness does:
         `policy/messages.json` in its rollout folder, a line in `rollouts.jsonl`."""
-        text = json.dumps(record, default=str)
         try:
-            if self.rollout_dir is not None:
-                policy_dir = self.rollout_dir / "policy"
-                policy_dir.mkdir(parents=True, exist_ok=True)
-                (policy_dir / "messages.json").write_text(text + "\n")
-            jobs = Path(self.settings.jobs_dir)
-            jobs.mkdir(parents=True, exist_ok=True)
-            with (jobs / "rollouts.jsonl").open("a") as f:
-                f.write(text + "\n")
+            write_rollout_record(record, self.settings.jobs_dir)
         except OSError as exc:  # never let bookkeeping stop training
             log.warning("could not record rollout of %s: %s", self.task_dir.name, exc)
 
@@ -535,10 +470,6 @@ class DropLog:
             raise TooManyInfrastructureFailures(
                 f"{self.consecutive} infrastructure failures in a row, the last: {self.last}"
             )
-
-
-def decision_dict(decision: Decision | None) -> dict[str, Any] | None:
-    return asdict(decision) if decision is not None else None
 
 
 # -- groups ------------------------------------------------------------------------
