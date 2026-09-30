@@ -2780,7 +2780,9 @@ class Rollout:
             # self._error to the provider_auth marker, so this is only a
             # placeholder during cleanup.
             self._error = str(e)
-            logger.error(str(e))
+            if not isinstance(e, UsageLimitError):
+                # A usage limit is logged once, below, with its login.
+                logger.error(str(e))
         except Exception as e:
             # describe_exception, not str(e): this is the funnel every
             # unclassified rollout failure lands in, and some SDK errors

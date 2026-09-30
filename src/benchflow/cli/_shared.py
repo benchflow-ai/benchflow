@@ -424,15 +424,17 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         note = (
             f" ({missing} of {len(results)} trials reported no cost)" if missing else ""
         )
-        console.print(
-            f"[dim]Cost:     [/dim] ${sum(costs):.2f}{token_text}{note}", soft_wrap=True
+        cost_text = f"${sum(costs):.2f}{token_text}{note}"
+    elif tokens and not sum(tokens):
+        cost_text = "none: no model tokens were used"
+    elif tokens:
+        cost_text = (
+            "not reported in USD (subscription logins and unpriced models "
+            f"report tokens only){token_text}"
         )
     else:
-        console.print(
-            "[dim]Cost:     [/dim] not reported (subscription logins and unpriced "
-            f"models report no USD){token_text}",
-            soft_wrap=True,
-        )
+        cost_text = "not reported"
+    console.print(f"[dim]Cost:     [/dim] {cost_text}", soft_wrap=True)
     elapsed = getattr(result, "elapsed_sec", None)
     if isinstance(elapsed, int | float) and not isinstance(elapsed, bool):
         reused = int(getattr(result, "reused", 0) or 0)

@@ -465,7 +465,11 @@ class UsageLimitStop:
             return
         self.error = UsageLimitError.from_result(result)
         if self.error is not None:
-            logger.error(f"{self.error}; starting no more trials (running ones finish)")
+            login = f"login {self.error.login}" if self.error.login else "the login"
+            logger.error(
+                f"Stopping the job: {login} is out of usage; running trials "
+                "finish, no new ones start"
+            )
 
     def skip(self, name: str) -> bool:
         """True (and recorded) when ``name`` must not start."""

@@ -132,7 +132,12 @@ def test_no_cost_says_so(job, monkeypatch):
     for trial in result.results.values():
         trial.cost_usd = None
     out = _render(monkeypatch, result, job_dir)
-    assert "Cost:      not reported (subscription logins and unpriced models" in out
+    assert "Cost:      not reported in USD (subscription logins" in out
+    assert "report tokens only), 1,000 tokens" in out
+    for trial in result.results.values():
+        trial.total_tokens = 0
+    out = _render(monkeypatch, result, job_dir)
+    assert "Cost:      none: no model tokens were used" in out
 
 
 def test_a_scored_trial_has_no_cause(job):
