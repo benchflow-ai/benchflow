@@ -323,12 +323,42 @@ class BenchmarkMetrics:
 
 
 def _result_rank(result: dict[str, Any]) -> tuple[bool, bool, float]:
-    """Prefer a scored pass, then quality, without selecting stale error rewards."""
+    """Prefer a scored pass, then quality, without selecting stale error rewards.
+
+    Uses _valid_reward_scalar to guard the float slot so that booleans
+    (isinstance(True, int) is True in Python) and non-finite values (inf, nan)
+    do not displace genuine scores. No [0, 1] range bound is applied — this
+    function reads result.json files and never sees a TaskConfig, so it cannot
+    know whether a task declared a widened reward_range.
+    """
     reward = extract_reward(result)
+    # _valid_reward_scalar guarantees isinstance(reward, (int, float)) and not bool
+    # and math.isfinite — use isinstance here so ty can narrow the type to float.
+    reward_f: float = (
+        float(reward)
+        if isinstance(reward, (int, float)) and not isinstance(reward, bool)
+        else 0.0
+    )
     return (
-        reward is not None,
+        _valid_reward_scalar(reward),
         classify_score_outcome(result) == "passed",
-        reward if isinstance(reward, (int, float)) else 0.0,
+        reward_f,
+    )
+
+
+def _valid_reward_scalar(value: object) -> bool:
+    """Return True only for a finite, non-boolean numeric reward scalar.
+
+    Needed because isinstance(True, int) is True in Python, so an explicit
+    bool check is required to exclude boolean verifier outputs from ranking.
+    Non-finite values (inf, nan) are also excluded.
+    """
+    import math
+
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
     )
 
 
