@@ -162,7 +162,7 @@ class _EmbodiedScripted(ScriptedRollout):
         self._task = _task(EMBODIED)
 
 
-async def test_branch_trial_refuses_before_the_sandbox_starts(tmp_path):
+async def test_branch_trial_refuses_before_the_sandbox_starts(tmp_path, caplog):
     task = tmp_path / "task"
     task.mkdir()
     (task / "instruction.md").write_text("Do it.")
@@ -171,6 +171,9 @@ async def test_branch_trial_refuses_before_the_sandbox_starts(tmp_path):
     assert outcome.error is not None and "branch refused" in outcome.error
     calls = [call[0] for call in _EmbodiedScripted.last.calls]
     assert "start" not in calls and "execute" not in calls
+    # An expected refusal is logged as a warning, without a traceback.
+    [record] = [r for r in caplog.records if "branch refused" in r.getMessage()]
+    assert record.levelname == "WARNING" and record.exc_info is None
 
 
 async def test_retry_from_checkpoint_is_refused_and_recorded(tmp_path):

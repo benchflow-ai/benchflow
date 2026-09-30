@@ -678,7 +678,7 @@ async def run_branch_trial(
         except Exception:
             logger.warning("on_event callback failed for %s", event, exc_info=True)
 
-    from benchflow.embodied.spec import task_restore_boundary
+    from benchflow.embodied.spec import RestoreRefused, task_restore_boundary
     from benchflow.evaluation import _environment_manifest_from_task_document
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.rollout_branch import restore_sandbox_with_services
@@ -798,7 +798,11 @@ async def run_branch_trial(
             outcome.parent_reward = (rewards or {}).get("reward")
             emit("parent_finished", reward=outcome.parent_reward)
     except Exception as exc:
-        logger.exception("Branch trial for %s failed", task_path.name)
+        if isinstance(exc, RestoreRefused):
+            # An expected refusal, not a crash: no traceback.
+            logger.warning("Branch trial for %s: %s", task_path.name, exc)
+        else:
+            logger.exception("Branch trial for %s failed", task_path.name)
         outcome.error = f"{type(exc).__name__}: {exc}"
         _fork_outcome(outcome, rollout)
     finally:
