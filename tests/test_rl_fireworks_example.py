@@ -229,7 +229,7 @@ def test_usage_counts_only_this_deployment(monkeypatch, capsys):
     assert out["usd"] == 8.0
 
 
-def test_an_interrupt_finishes_running_episodes_and_cancels_the_queue(monkeypatch):
+def test_an_interrupt_cancels_the_queue_and_stops_running_episodes(monkeypatch):
     pytest.importorskip("benchflow.integrations.trl")
     import io
     import threading
@@ -248,12 +248,52 @@ def test_an_interrupt_finishes_running_episodes_and_cancels_the_queue(monkeypatc
         if first:
             raise KeyboardInterrupt
         time.sleep(0.2)
-        raise RuntimeError("a running episode finishes; its result is not needed")
+        raise RuntimeError("a running episode ends; its result is not needed")
 
     monkeypatch.setattr(fireworks_rl, "run_episode", fake_episode)
     rows = [{"benchflow_task_id": f"t{i}"} for i in range(5)]
     args = SimpleNamespace(group_size=4, concurrency=2)
-    with pytest.raises(KeyboardInterrupt):
-        fireworks_rl.run_groups(rows, None, args, {}, io.StringIO(), step=0)
-    # Without cancelling, all 20 queued episodes would start.
-    assert len(started) <= 4
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            fireworks_rl.run_groups(rows, None, args, {}, io.StringIO(), step=0)
+        # Without cancelling, all 20 queued episodes would start.
+        assert len(started) <= 4
+        # Running episodes see the stop flag at their next turn.
+        assert fireworks_rl.STOP.is_set()
+    finally:
+        fireworks_rl.STOP.clear()
+
+
+def test_each_run_gets_its_own_owner_and_cleanup_needs_only_the_owner(monkeypatch, tmp_path):
+    pytest.importorskip("benchflow.integrations.trl")
+    import fireworks_rl
+
+    swept = []
+    monkeypatch.setattr(fireworks_rl, "sweep_daytona", lambda owner: swept.append(owner) or {"deleted": 0})
+    assert fireworks_rl.main(["cleanup", "--owner", "bf-fw-rl-x"]) == 0
+    assert swept == ["bf-fw-rl-x"]
+
+    seen = {}
+
+    def fake_screen(args):
+        seen["owner"] = args.owner
+        return 0
+
+    # main() sets these and a SIGTERM handler; restore all of them afterwards.
+    for name in (
+        "BENCHFLOW_DAYTONA_OWNER",
+        "BENCHFLOW_DAYTONA_AUTO_STOP_MINS",
+        "BENCHFLOW_DAYTONA_AUTO_DELETE_MINS",
+    ):
+        monkeypatch.setenv(name, "placeholder")
+        monkeypatch.delenv(name)
+    import signal
+
+    monkeypatch.setattr(signal, "signal", lambda *a: None)
+    monkeypatch.setattr(fireworks_rl, "cmd_screen", fake_screen)
+    argv = ["screen", "--tasks-dir", str(tmp_path), "--out", str(tmp_path / "out")]
+    assert fireworks_rl.main(argv) == 0
+    assert seen["owner"].startswith("bf-fw-rl-")
+    assert fireworks_rl.os.environ["BENCHFLOW_DAYTONA_OWNER"] == seen["owner"]
+    # The run's own sandboxes are swept when it ends.
+    assert swept[-1] == seen["owner"]

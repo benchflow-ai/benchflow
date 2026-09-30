@@ -40,6 +40,7 @@ import concurrent.futures
 import json
 import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -52,7 +53,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "common"))
 
-from evaluate import Episode, _task_meta, _tool_result, wilson  # noqa: E402
+from evaluate import STOP, Episode, _task_meta, _tool_result, wilson  # noqa: E402
 from fireworks_chat import (  # noqa: E402
     QwenChat,
     Turn,
@@ -61,7 +62,13 @@ from fireworks_chat import (  # noqa: E402
     group_advantages,
     join_turns,
 )
-from harness import MAX_TURNS, harness_config  # noqa: E402
+from harness import (  # noqa: E402
+    MAX_TURNS,
+    harness_config,
+    run_owner,
+    shorten_daytona_lifetimes,
+    sweep_daytona,
+)
 
 from benchflow.integrations.rewards import (  # noqa: E402
     RewardDecision,
@@ -170,6 +177,8 @@ def run_episode(row: dict[str, Any], sample: int, policy: Policy, args: argparse
             if env.decision is not None and env.decision.dropped:
                 episode.ended = "sandbox_start"
                 break
+            if STOP.is_set():
+                raise KeyboardInterrupt
             try:
                 message, record = policy.act(messages, tools)
             except ContextExhausted:
@@ -245,8 +254,10 @@ def run_groups(
                     flush=True,
                 )
     except BaseException:
-        # Ctrl-C or an error: let running episodes finish (they close their
-        # sandboxes), and never start the queued ones.
+        # Ctrl-C, SIGTERM or an error: never start the queued episodes, and stop
+        # the running ones at their next turn. main() then deletes this run's
+        # sandboxes, including those of episodes stopped mid-way.
+        STOP.set()
         pool.shutdown(wait=True, cancel_futures=True)
         raise
     pool.shutdown(wait=True)
@@ -442,6 +453,7 @@ def cmd_screen(args: argparse.Namespace) -> int:
     meters = rollout_cost(groups)
     record = {
         "session": session.session_id,
+        "owner": args.owner,
         "snapshot": path,
         "base_model": args.base_model,
         "tasks": len(rows),
@@ -481,6 +493,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         "session": session.session_id,
         "session_name": session.session_name,
         "run": session.run_id,
+        "owner": args.owner,
         "base_model": args.base_model,
         "config": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != "func"},
         "steps": [],
@@ -571,7 +584,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.add_argument("--retries", type=int, default=4)
         p.add_argument("--request-timeout", type=float, default=600.0)
         p.add_argument("--seed", type=int, default=0)
-        p.add_argument("--owner", help="Daytona owner label (BENCHFLOW_DAYTONA_OWNER)")
+        p.add_argument("--owner", help="Daytona owner label for this run's sandboxes (default: unique per run)")
         if name == "train":
             p.add_argument("--steps", type=int, default=8)
             p.add_argument("--groups-per-step", type=int, default=8, help="tasks per step")
@@ -579,15 +592,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             p.add_argument("--max-usd", type=float, default=60.0, help="stop before a step that would pass it")
             p.add_argument("--first-step-usd", type=float, default=6.0, help="step 0's cost guess, for --max-usd")
             p.add_argument("--output-model-id", help="promote the final checkpoint to this model id")
+    p = sub.add_parser("cleanup", help="delete every Daytona sandbox of --owner (after a hard kill)")
+    p.add_argument("--owner", required=True)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.owner:
-        os.environ["BENCHFLOW_DAYTONA_OWNER"] = args.owner
+    if args.command == "cleanup":
+        print(f"deleting the Daytona sandboxes of owner {args.owner}: {sweep_daytona(args.owner)}")
+        return 0
+    # One owner label per run, so its cleanup never touches another run's sandboxes.
+    args.owner = args.owner or run_owner("bf-fw-rl")
+    os.environ["BENCHFLOW_DAYTONA_OWNER"] = args.owner
+    shorten_daytona_lifetimes()
     args.out.mkdir(parents=True, exist_ok=True)
-    return args.func(args)
+    print(f"Daytona owner {args.owner}; after a hard kill: fireworks_rl.py cleanup --owner {args.owner}", flush=True)
+
+    def interrupted(signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print("interrupted", flush=True)
+        return 130
+    finally:
+        if args.sandbox == "daytona":
+            # Every finished episode closed its sandbox; this catches the rest.
+            print(f"swept Daytona owner {args.owner}: {sweep_daytona(args.owner)}", flush=True)
 
 
 if __name__ == "__main__":
