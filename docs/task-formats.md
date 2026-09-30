@@ -33,6 +33,10 @@ The entry point may name an instance or a class that takes no arguments. Code ru
 
 A format may also implement `materialize_variant(task_dir, out_root, *, seed)`, which writes the package of one seed. `bench eval run --seeds 0-4` (or `0,3,7`) then loads every claimed task once per seed, and `summary.json` gets a `seeded` report (pass@k, mean, standard deviation and reset reproducibility per task). The seeded package's folder name must differ per seed; `benchflow.embodied.sidecar.EmbodiedTaskFormat` names it `<task>--seed-<n>`. `--seeds` refuses native task packages, since BenchFlow cannot pass them a seed.
 
+## Built-in formats
+
+BenchFlow ships one format of its own, `taskmd`: [task.md draft 2](./task-authoring-taskmd-v2.md) packages, whose `task.md` opens with the instruction rather than YAML frontmatter. A registration or entry point with the same name replaces a built-in.
+
 ## Simulator tasks
 
 Formats whose tasks run a simulator next to the agent can subclass `benchflow.embodied.sidecar.EmbodiedTaskFormat`, which writes the agent image, the compose topology with a trusted simulator service, the physical verifier and the seeded and noop variants, and leaves only the simulator image, the episode factory and the reference solutions to the benchmark. See [embodied.md](./embodied.md).

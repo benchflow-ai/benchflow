@@ -149,3 +149,19 @@ def test_the_support_table_names_every_table() -> None:
     text = " ".join(row[0] for row in plan.SUPPORT)
     for table in sorted(ref.TABLES):
         assert f"[{table}" in text or f"[[{table}" in text, table
+
+
+LABELS = {
+    plan.HONORED: "Honored",
+    plan.PARTIAL: "Partly",
+    plan.REFUSED: "Refused",
+    plan.AGENT_REFUSED: "Refused for agents",
+    plan.RECORDED: "Recorded",
+}
+
+
+def test_the_docs_print_the_support_table() -> None:
+    docs = Path(__file__).parent.parent / "docs" / "task-authoring-taskmd-v2.md"
+    text = docs.read_text()
+    for pattern, status, detail in plan.SUPPORT:
+        assert f"| {pattern} | {LABELS[status]} | {detail} |" in text, pattern

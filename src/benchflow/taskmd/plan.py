@@ -156,8 +156,8 @@ SUPPORT: list[tuple[str, str, str]] = [
     ),
     (
         "[agent] user",
-        AGENT_REFUSED,
-        "the oracle runs as it; an agent runs as the run's --sandbox-user, so a different user is refused",
+        PARTIAL,
+        "the oracle runs as it; an agent runs as the run's --sandbox-user, and a run whose agent user differs is refused",
     ),
     (
         "[agent] network",
@@ -247,7 +247,11 @@ SUPPORT: list[tuple[str, str, str]] = [
         REFUSED,
         "BenchFlow cannot check that the image has the zone's data",
     ),
-    ("[verifier] timeout", HONORED, "verifier.timeout_sec"),
+    (
+        "[verifier] timeout",
+        HONORED,
+        "bounds test.sh; each judge session keeps its own timeout",
+    ),
     ("[verifier] user", HONORED, "verifier.user"),
     (
         "[verifier] env",

@@ -326,10 +326,10 @@ async def verify_taskmd(verifier: Any, strategy: Any) -> Any:
     fs_root = judge_dir / "fs"
     if judge_dir.exists():
         shutil.rmtree(judge_dir)
-    fs_root.mkdir(parents=True)
     refused: dict[str, str] = {}
     kept = kept_paths(config)
     if model_roles:
+        fs_root.mkdir(parents=True)
         refused = await copy_kept(sandbox, kept, fs_root)
 
     return_code = None
