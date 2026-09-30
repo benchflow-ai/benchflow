@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from benchflow.agents.env import resolve_agent_env, resolve_provider_env
+from benchflow.agents.providers import PROVIDERS, ProviderConfig
 from benchflow.providers.litellm_config import (
+    LITELLM_BEARER_AUTH_ENV,
+    litellm_proxy_auth_env,
     litellm_proxy_config,
     resolve_litellm_route,
 )
@@ -215,6 +219,66 @@ def test_route_falls_back_to_chat_when_protocol_not_served():
 
     assert route.upstream_model == "openai/qwen/qwen3.5-397b-a17b"
     assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+
+
+@pytest.fixture
+def bearer_provider(monkeypatch):
+    """A provider whose Anthropic-compatible endpoint wants a Bearer token."""
+    cfg = ProviderConfig(
+        name="bearer-test",
+        base_url="https://llm.example.test/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="BEARER_TEST_API_KEY",
+        endpoints={"anthropic-messages": "https://llm.example.test"},
+        anthropic_auth_header="bearer",
+    )
+    monkeypatch.setitem(PROVIDERS, "bearer-test", cfg)
+    return cfg
+
+
+def test_bearer_route_references_key_from_proxy_env(bearer_provider):
+    env = {"BEARER_TEST_API_KEY": "sk-secret-value"}
+    route = resolve_litellm_route("bearer-test/m-1", env, protocol="anthropic-messages")
+
+    assert route.upstream_model == "anthropic/m-1"
+    assert route.litellm_params["api_base"] == "https://llm.example.test"
+    assert route.litellm_params["extra_headers"] == {
+        "Authorization": f"os.environ/{LITELLM_BEARER_AUTH_ENV}"
+    }
+    assert route.bearer_key_env == "BEARER_TEST_API_KEY"
+    assert litellm_proxy_auth_env(route, env) == {
+        LITELLM_BEARER_AUTH_ENV: "Bearer sk-secret-value"
+    }
+    # The key never lands in the proxy config file.
+    config = litellm_proxy_config(route, master_key="sk-local")
+    assert "sk-secret-value" not in yaml.safe_dump(config)
+
+
+def test_bearer_route_without_key_adds_no_proxy_env(bearer_provider):
+    route = resolve_litellm_route("bearer-test/m-1", {}, protocol="anthropic-messages")
+
+    assert litellm_proxy_auth_env(route, {}) == {}
+
+
+@pytest.mark.parametrize("protocol", [None, "openai-completions"])
+def test_bearer_setting_leaves_chat_route_alone(bearer_provider, protocol):
+    env = {"BEARER_TEST_API_KEY": "sk-secret-value"}
+    route = resolve_litellm_route("bearer-test/m-1", env, protocol=protocol)
+
+    assert route.upstream_model == "openai/m-1"
+    assert "extra_headers" not in route.litellm_params
+    assert route.bearer_key_env is None
+    assert litellm_proxy_auth_env(route, env) == {}
+
+
+def test_x_api_key_provider_gets_no_bearer_header():
+    route = resolve_litellm_route(
+        "zai/glm-5.1", {"ZAI_API_KEY": "k"}, protocol="anthropic-messages"
+    )
+
+    assert "extra_headers" not in route.litellm_params
+    assert litellm_proxy_auth_env(route, {"ZAI_API_KEY": "k"}) == {}
 
 
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])

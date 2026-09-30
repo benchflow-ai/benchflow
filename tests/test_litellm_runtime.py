@@ -156,6 +156,47 @@ async def test_litellm_route_follows_agent_protocol(
 
 
 @pytest.mark.asyncio
+async def test_bearer_value_reaches_proxy_env_only(monkeypatch):
+    from benchflow.agents.providers import PROVIDERS, ProviderConfig
+    from benchflow.providers.litellm_config import LITELLM_BEARER_AUTH_ENV
+
+    monkeypatch.setitem(
+        PROVIDERS,
+        "bearer-test",
+        ProviderConfig(
+            name="bearer-test",
+            base_url="https://llm.example.test/v1",
+            api_protocol="openai-completions",
+            auth_type="api_key",
+            auth_env="BEARER_TEST_API_KEY",
+            endpoints={"anthropic-messages": "https://llm.example.test"},
+            anthropic_auth_header="bearer",
+        ),
+    )
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, _runtime = await ensure_litellm_runtime(
+        agent="claude-agent-acp",
+        agent_env={"BEARER_TEST_API_KEY": "sk-secret"},
+        model="bearer-test/m-1",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    assert starts[0]["route"].upstream_model == "anthropic/m-1"
+    assert starts[0]["agent_env"][LITELLM_BEARER_AUTH_ENV] == "Bearer sk-secret"
+    assert LITELLM_BEARER_AUTH_ENV not in updated
+    assert "sk-secret" not in updated.values()
+
+
+@pytest.mark.asyncio
 async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypatch):
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])

@@ -23,6 +23,10 @@ PROVIDER_REASONING_EFFORT_ENV = "BENCHFLOW_REASONING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
+#: Proxy-process env var holding ``Bearer <provider key>`` for routes whose
+#: Anthropic-compatible endpoint takes the key as ``Authorization: Bearer``.
+#: The config references it by name; ``litellm_proxy_auth_env`` derives it.
+LITELLM_BEARER_AUTH_ENV = "BENCHFLOW_LITELLM_BEARER_AUTH"
 _PROVIDER_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -107,6 +111,9 @@ def _clamp_bedrock_effort(effort: str) -> str:
     return ladder[min(ladder.index(effort), ladder.index(_BEDROCK_LITELLM_MAX_EFFORT))]
 
 
+LiteLLMParamValue = str | int | float | bool | list[str] | dict[str, str]
+
+
 @dataclass(frozen=True)
 class LiteLLMRoute:
     """Resolved LiteLLM model route for one BenchFlow model ID."""
@@ -115,8 +122,11 @@ class LiteLLMRoute:
     model_alias: str
     upstream_model: str
     provider_name: str
-    litellm_params: dict[str, str | int | float | bool | list[str]]
+    litellm_params: dict[str, LiteLLMParamValue]
     required_env: tuple[str, ...] = ()
+    # Env var holding the key the proxy sends as ``Authorization: Bearer``
+    # (provider ``anthropic_auth_header="bearer"``); see litellm_proxy_auth_env.
+    bearer_key_env: str | None = None
 
     @property
     def config_key(self) -> str:
@@ -212,7 +222,7 @@ def _route_registered_provider(
     protocol: str | None = None,
 ) -> LiteLLMRoute:
     bare = strip_provider_prefix(model)
-    params: dict[str, str | int | float | bool | list[str]]
+    params: dict[str, LiteLLMParamValue]
     required_env: list[str] = []
 
     if provider_name == "aws-bedrock":
@@ -344,7 +354,7 @@ def _route_registered_provider(
         upstream = f"{provider_name}/{bare}"
     else:
         upstream = f"openai/{bare}"
-    params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
+    params: dict[str, LiteLLMParamValue] = {"model": upstream}
     if api_base:
         params["api_base"] = api_base
     native_key = (env.get(provider_cfg.auth_env or "") or "").strip()
@@ -362,6 +372,17 @@ def _route_registered_provider(
             required_env.append("BENCHFLOW_PROVIDER_API_KEY")
         elif provider_cfg.auth_env:
             required_env.append(provider_cfg.auth_env)
+    bearer_key_env = None
+    if (
+        protocol == "anthropic-messages"
+        and provider_cfg.anthropic_auth_header == "bearer"
+        and api_key_ref
+    ):
+        # LiteLLM sends an anthropic/ key as x-api-key, which such endpoints
+        # reject. Reference the Bearer value from the proxy's environment so
+        # the key is never written into config.yaml.
+        bearer_key_env = api_key_ref.removeprefix("os.environ/")
+        params["extra_headers"] = {"Authorization": _env_ref(LITELLM_BEARER_AUTH_ENV)}
     return LiteLLMRoute(
         requested_model=model,
         model_alias=safe_model_alias(model),
@@ -369,6 +390,7 @@ def _route_registered_provider(
         provider_name=provider_name,
         litellm_params=params,
         required_env=tuple(required_env),
+        bearer_key_env=bearer_key_env,
     )
 
 
@@ -419,7 +441,7 @@ def resolve_litellm_route(
         upstream = f"openai/{bare}"
         required = ("OPENAI_API_KEY",)
 
-    params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
+    params: dict[str, LiteLLMParamValue] = {"model": upstream}
     if upstream.lower().startswith("gemini/"):
         explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
         explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
@@ -440,6 +462,19 @@ def resolve_litellm_route(
         litellm_params=params,
         required_env=required,
     )
+
+
+def litellm_proxy_auth_env(route: LiteLLMRoute, env: dict[str, str]) -> dict[str, str]:
+    """Env the proxy process needs for *route* beyond the caller's own.
+
+    For a Bearer route this is ``LITELLM_BEARER_AUTH_ENV`` = ``Bearer <key>``,
+    read from ``env[route.bearer_key_env]``. Pass it only to the proxy process,
+    never to the agent.
+    """
+    if not route.bearer_key_env:
+        return {}
+    key = (env.get(route.bearer_key_env) or "").strip()
+    return {LITELLM_BEARER_AUTH_ENV: f"Bearer {key}"} if key else {}
 
 
 def litellm_proxy_config(

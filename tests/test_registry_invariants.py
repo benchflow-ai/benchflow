@@ -41,6 +41,7 @@ VALID_API_PROTOCOLS = {
 }
 VALID_PROVIDER_API_PROTOCOLS = VALID_API_PROTOCOLS - {""}
 VALID_AUTH_TYPES = {"api_key", "adc", "aws", "none"}
+VALID_ANTHROPIC_AUTH_HEADERS = {"x-api-key", "bearer"}
 VALID_MODEL_INPUTS = {"text", "image"}
 VALID_ACP_MODEL_FORMATS = {
     "bare",
@@ -415,6 +416,17 @@ def test_provider_field_shapes(name, cfg):
     else:
         assert cfg.auth_env is None, (
             f"{cfg.auth_type} provider {name!r} should not set auth_env"
+        )
+    assert cfg.anthropic_auth_header in VALID_ANTHROPIC_AUTH_HEADERS, (
+        f"anthropic_auth_header={cfg.anthropic_auth_header!r} not in "
+        f"{sorted(VALID_ANTHROPIC_AUTH_HEADERS)}"
+    )
+    if cfg.anthropic_auth_header == "bearer":
+        assert "anthropic-messages" in cfg.all_endpoints, (
+            f"{name!r}: bearer auth needs an anthropic-messages endpoint"
+        )
+        assert cfg.auth_type == "api_key", (
+            f"{name!r}: bearer auth needs an api_key provider"
         )
 
 

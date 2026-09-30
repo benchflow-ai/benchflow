@@ -45,6 +45,7 @@ from benchflow.providers.litellm_config import (
     LITELLM_MODEL_ALIAS_ENV,
     LITELLM_MODEL_VIA_ENV,
     LiteLLMRoute,
+    litellm_proxy_auth_env,
     litellm_proxy_config,
     resolve_litellm_route,
     strip_provider_prefix,
@@ -1753,6 +1754,7 @@ async def ensure_litellm_runtime(
             agent_env=agent_env,
             required_skill_names=required_skill_names,
         )
+        proxy_env.update(litellm_proxy_auth_env(route, agent_env))
         if sandbox_local:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,

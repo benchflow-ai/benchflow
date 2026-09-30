@@ -54,6 +54,10 @@ Common optional fields
                        ``find_provider_for_bare_model()`` to route
                        prefix-stripped ids. Tokens must be lowercase and
                        unique across providers (longest token wins).
+- ``anthropic_auth_header`` How the ``anthropic-messages`` endpoint takes
+                       the key: ``"x-api-key"`` (default, Anthropic's own
+                       header) or ``"bearer"`` (``Authorization: Bearer``,
+                       for compatible endpoints that reject ``x-api-key``).
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
@@ -100,6 +104,10 @@ class ProviderConfig:
     credential_files: list[dict] = field(default_factory=list)
     # Files to write into container (e.g. GCP ADC).
     # Each dict: {"path": str, "env_source": str, "post_env": {k: v} (optional)}
+    # Auth header for the anthropic-messages endpoint: "x-api-key" (Anthropic's
+    # own) or "bearer" (Authorization: Bearer, for compatible endpoints that
+    # reject x-api-key).
+    anthropic_auth_header: str = "x-api-key"
 
     @property
     def all_endpoints(self) -> dict[str, str]:
