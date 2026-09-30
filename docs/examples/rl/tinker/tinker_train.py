@@ -63,7 +63,7 @@ def add_env_args(parser: argparse.ArgumentParser) -> None:
         "--max-turns", type=int, default=MAX_TURNS, help="tool-calling turns"
     )
     g.add_argument(
-        "--max-tokens", type=int, default=4096, help="sampled tokens per turn"
+        "--max-tokens", type=int, default=2048, help="sampled tokens per turn"
     )
     g.add_argument("--max-trajectory-tokens", type=int, default=32768)
     g.add_argument("--temperature", type=float, default=1.0)
@@ -262,9 +262,14 @@ def summarize(args: argparse.Namespace) -> dict:
         * (prefill * price[0] + sampled * price[1] + (prefill + sampled) * price[2])
         / 1e6
     )
+    records = read_jsonl(args.log_path / "trials" / "rollouts.jsonl")
+    sandbox_hours = (
+        sum(r.get("timings", {}).get("sandbox_sec", 0) for r in records) / 3600
+    )
     return {
         "model": args.model,
         "steps": len(curve),
+        "sandbox_hours": round(sandbox_hours, 2),
         "curve": curve,
         "groups": dict(te.GROUPS.counts),
         "infrastructure_drops": dict(te.DROPS.counts),

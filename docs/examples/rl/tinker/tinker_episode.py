@@ -220,6 +220,7 @@ class Episode:
         self.submitted = False
         self.timings: dict[str, float] = {}
         self._deadline: float | None = None
+        self._created_at: float | None = None
         self._start_called = False
         self._closed = False
         self._slot_held = False
@@ -244,7 +245,7 @@ class Episode:
             jobs_dir=self.settings.jobs_dir,
             job_name=self.job_name,
         )
-        t0 = self._clock()
+        t0 = self._created_at = self._clock()
         try:
             self.runtime = await self._factory(config)
         except BaseException as exc:
@@ -364,6 +365,9 @@ class Episode:
                 "closing the sandbox of %s: %s", self.task_dir.name, describe(exc)
             )
         finally:
+            if self.runtime is not None and self._created_at is not None:
+                # From the create call to the end of the delete: the sandbox's life.
+                self.timings["sandbox_sec"] = round(self._clock() - self._created_at, 3)
             LIVE.discard(self)
             self._release_slot()
 

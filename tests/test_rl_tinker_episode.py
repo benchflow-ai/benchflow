@@ -188,6 +188,7 @@ def test_a_submitted_episode_is_verified_once_and_closed(tmp_path):
     assert rt.verified == 1 and rt.closed == 1
     assert slots.in_use == 0 and episode not in ep.LIVE
     assert episode.policy_acted and episode.submitted
+    assert episode.timings["sandbox_sec"] >= episode.timings["sandbox_start_sec"]
     # submit writes the answer file the way the TRL adapter does, quoted
     assert rt.commands[1] == (
         "mkdir -p $(dirname /workdir/answer.txt) && "

@@ -108,7 +108,7 @@ class EnvConfig:
     max_turns: int = (
         MAX_TURNS  # tool-calling turns; the verifier runs when they run out
     )
-    max_tokens: int = 4096  # sampled tokens per turn
+    max_tokens: int = 2048  # sampled tokens per turn
     max_trajectory_tokens: int = 32768  # prompt plus generation, per episode
     sampling_timeout_sec: float = (
         300.0  # one sampling call; past it: dropped (endpoint)
