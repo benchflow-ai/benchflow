@@ -162,7 +162,9 @@ SUPPORT: list[tuple[str, str, str]] = [
     (
         "[agent] network",
         PARTIAL,
-        "equal to [sandbox] network, or a host list over an open sandbox (an agent allowlist); anything else is refused",
+        'equal to [sandbox] network, or narrower than it: "none" runs the agent\'s phase offline in an '
+        "online sandbox, a host list is an agent allowlist. A network wider than the sandbox's is refused, "
+        "since the agent works inside the sandbox's container",
     ),
     (
         "[agent] network_reason",
@@ -270,8 +272,10 @@ SUPPORT: list[tuple[str, str, str]] = [
         "[verifier] network",
         PARTIAL,
         'a shared verifier: "none" (taken offline with iptables) or "open" (over an open sandbox or an agent '
-        'allowlist); a separate verifier: "none" or "open" for its own sandbox; a host list is refused, since '
-        "BenchFlow holds only the agent's uid to one",
+        'allowlist); a separate verifier: "none" or "open" for its own sandbox. A host list written for the '
+        "verifier is refused, since BenchFlow holds only the agent's uid to one; a host list the verifier only "
+        "inherited from [sandbox] network is honored as binding the agent, with the shared verifier running as "
+        "root outside it",
     ),
     (
         "[verifier] isolation",
