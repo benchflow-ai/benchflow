@@ -96,6 +96,7 @@ from benchflow.contracts import (
 from benchflow.diagnostics import (
     AgentModelNotOfferedError,
     AgentPromptTimeoutError,
+    IdleTimeoutError,
     IntegrationFailureDiagnostic,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
@@ -823,6 +824,9 @@ class Rollout:
         # with no pending tool calls) fired — its captured trajectory is a
         # complete terminal one, not a rerunnable partial (#640).
         self._terminal_timeout: bool = False
+        # Set when the agent's wall-clock budget ran out (not an idle abort);
+        # a task.md draft 2 package's reward.json records it as timed_out.
+        self._agent_ran_out_of_time: bool = False
         # Detail-less agent-phase timeout, eligible for zero-activity
         # reclassification (#1071). One-shot: cleared once a verdict lands.
         self._bare_timeout: bool = False
@@ -1090,6 +1094,15 @@ class Rollout:
                 self._task.config, cfg.config_override
             )
 
+        # A task.md draft 2 package: refuse, before any sandbox starts, a run
+        # that cannot honor it (an agent's budget, [agent] user, its judges).
+        from benchflow.taskmd.launch import check_launch
+
+        check_launch(
+            cfg.task_path,
+            primary_agent=cfg.primary_agent,
+            sandbox_user=cfg.sandbox_user,
+        )
         prepare_terminal_review(self)
         if cfg.task_digest is None:
             from benchflow._utils.task_authoring import task_digest
@@ -2490,6 +2503,35 @@ class Rollout:
 
     # Full run
 
+    def _record_taskmd_timed_out(self) -> None:
+        """Record in a task.md draft 2 package's reward.json whether the agent ran out of time.
+
+        task.md: "In every case reward.json records timed_out" (docs/document.md,
+        "Timeouts"). The rewards themselves are unchanged, and a trial without a
+        reward gets no reward file.
+        """
+        from benchflow.taskmd.materialize import taskmd_metadata
+
+        paths = getattr(self, "_rollout_paths", None)
+        if (
+            paths is None
+            or self._rewards is None
+            or taskmd_metadata(self._config.task_path) is None
+        ):
+            return
+        path = paths.reward_json_path
+        try:
+            recorded = json.loads(path.read_text()) if path.is_file() else {}
+        except (OSError, ValueError):
+            recorded = None
+        if not isinstance(recorded, dict):
+            logger.warning(f"Cannot record timed_out in unreadable {path}")
+            return
+        recorded = (recorded or dict(self._rewards)) | {
+            "timed_out": bool(getattr(self, "_agent_ran_out_of_time", False))
+        }
+        path.write_text(json.dumps(recorded, indent=2) + "\n")
+
     def _record_agent_timeout(self, e: TimeoutError, *, agent_phase: bool) -> None:
         """Record a timed-out agent run on the rollout's error state.
 
@@ -2511,6 +2553,14 @@ class Rollout:
         """
         detail = str(e).strip()
         self._bare_timeout = not detail and agent_phase
+        # The agent's wall-clock budget ran out (an idle-watchdog abort is not
+        # running out of time); a task.md draft 2 reward.json records it.
+        if agent_phase and not isinstance(e, IdleTimeoutError) and (
+            isinstance(e, AgentPromptTimeoutError)
+            or "exceeded wall-clock budget" in detail
+            or not detail
+        ):
+            self._agent_ran_out_of_time = True
         if not detail and self._started_at is not None:
             elapsed = (datetime.now() - self._started_at).total_seconds()
             detail = (
@@ -2735,6 +2785,7 @@ class Rollout:
                 ):
                     self._rewards = {"reward": 0.0}
                     self._verifier_error = None
+                self._record_taskmd_timed_out()
 
         except TimeoutError as e:
             if self._solver_execution_complete:
