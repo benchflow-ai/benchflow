@@ -63,12 +63,31 @@ def session_failure(meta: Any) -> dict[str, Any] | None:
 _ADVISORY_SEVERITIES = frozenset({"warning"})
 
 
+def is_spent_subscription(failure: dict[str, Any]) -> bool:
+    """Whether a record says the login has no quota left.
+
+    Category ``limit`` with no action to offer (a rate limit offers
+    ``retry``, a spent budget or context ``new_session``), or the CLI's own
+    usage-limit words in the title.
+    """
+    actions = failure.get("actions")
+    if failure.get("category") == "limit" and isinstance(actions, list) and not actions:
+        return True
+    return is_usage_limit_text(str(failure.get("title") or ""))
+
+
 def is_advisory(failure: dict[str, Any]) -> bool:
-    """Whether a session-failure record is only an advisory."""
+    """Whether a session-failure record is only an advisory.
+
+    A spent login never is, whatever severity it carries: the turn cannot
+    have done any work, and treating it as an advisory would verify the
+    untouched workspace, score it 0 and let the rest of the job keep
+    spending trials on a login that can no longer answer.
+    """
     severity = failure.get("severity")
-    return isinstance(severity, str) and severity.strip().lower() in (
-        _ADVISORY_SEVERITIES
-    )
+    if not (isinstance(severity, str) and severity.strip().lower() in _ADVISORY_SEVERITIES):
+        return False
+    return not is_spent_subscription(failure)
 
 
 def session_failure_error(failure: dict[str, Any]) -> AgentProtocolError:
@@ -82,11 +101,7 @@ def session_failure_error(failure: dict[str, Any]) -> AgentProtocolError:
     """
     title = str(failure.get("title") or "").strip()
     details = str(failure.get("details") or "").strip()
-    actions = failure.get("actions")
-    spent = (
-        failure.get("category") == "limit" and isinstance(actions, list) and not actions
-    )
-    if spent or is_usage_limit_text(title):
+    if is_spent_subscription(failure):
         return UsageLimitError.from_text(title) or UsageLimitError(
             title or "the account has no available quota"
         )

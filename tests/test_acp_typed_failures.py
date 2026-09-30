@@ -229,6 +229,24 @@ async def test_an_advisory_does_not_end_the_turn(severity):
     assert result.stop_reason == "end_turn"
 
 
+@pytest.mark.parametrize("severity", ["warning", "Warning"])
+async def test_a_spent_login_marked_as_an_advisory_still_ends_the_turn(severity):
+    """Second review finding: the severity was read before the category, so a
+    spent-login record that happened to be marked "warning" passed as a
+    finished turn. The workspace is untouched, so it would be scored 0 and
+    the job would keep spending trials on a login that cannot answer."""
+    title = "You've hit your weekly limit \u00b7 resets Oct 3, 7pm (UTC)"
+    reply = _failure_response("limit", [], title, severity=severity)
+    client = await _client_with_session([{"result": reply}])
+    with pytest.raises(UsageLimitError) as caught:
+        await client.prompt("hi")
+    assert caught.value.window == "7-day"
+    # A rate limit, which offers "retry", is still only an advisory.
+    retryable = _failure_response("limit", ["retry"], "Slow down.", severity=severity)
+    client = await _client_with_session([{"result": retryable}])
+    assert (await client.prompt("hi")).stop_reason == "end_turn"
+
+
 async def test_a_finished_turn_without_a_failure_is_returned():
     ok = {"stopReason": "end_turn", "_meta": {"quota": {"token_count": {}}}}
     client = await _client_with_session([{"result": ok}])
