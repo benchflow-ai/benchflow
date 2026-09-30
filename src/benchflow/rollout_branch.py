@@ -1059,10 +1059,14 @@ def _stderr(rewards: list[float]) -> float | None:
 def _retry_before_work(exc: BaseException, node: RolloutNode, verified: bool) -> bool:
     """A child is retried once when it failed before its agent did anything:
     nothing recorded on its node and the verifier not run (a provider hiccup
-    such as a connect timeout). Never an unscored verdict or a cancellation."""
+    such as a connect timeout). Never an unscored verdict, a cancellation, or
+    a spent usage limit, which a retry on the same login only repeats."""
+    from benchflow.agents.errors import UsageLimitError
+
     return (
         isinstance(exc, Exception)
         and not isinstance(exc, UnscoredChildError | NonfiniteChildReward)
+        and not isinstance(exc, UsageLimitError)
         and node.step_in is None
         and not verified
     )

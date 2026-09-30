@@ -285,3 +285,14 @@ def test_from_result_reads_a_saved_trial(tmp_path):
         UsageLimitError.from_result({"error": "boom", "error_category": "acp_error"})
         is None
     )
+
+
+def test_a_branch_child_on_a_spent_login_is_not_retried():
+    """A branch child that fails before its agent does anything is retried
+    once in a new sandbox; a usage limit would only repeat."""
+    from benchflow.rollout_branch import _retry_before_work
+    from benchflow.trajectories.tree import RolloutNode
+
+    node = RolloutNode(id="child")
+    assert _retry_before_work(ConnectionError("connect timeout"), node, False)
+    assert not _retry_before_work(UsageLimitError(WEEKLY), node, False)
