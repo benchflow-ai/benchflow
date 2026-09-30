@@ -19,6 +19,12 @@ from benchflow._utils.benchmark_repos import (
 from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
 
 
+@pytest.fixture(autouse=True)
+def _modern_git(monkeypatch):
+    """Pin git's sparse support: the clone commands below are exact."""
+    monkeypatch.setattr(task_download, "_git_can_sparse", lambda: True)
+
+
 def _fake_worktree(cmd):
     repo_root = Path(cmd[2])
     snapshot = Path(cmd[-2])
@@ -724,14 +730,17 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
     sha_ref = "c65af83ae2c76fda3f1fd4d2fcf56563975e283e"
     clone_tmp = tmp_path / ".cache" / "datasets" / "org" / "_repo_clone"
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check=False, **kwargs):
+        # The clone checks its exit code; the ref's fetch and checkout run
+        # through _git_quiet, which reads returncode (dx/first-run).
         calls.append(cmd)
-        assert check is True
         if cmd[:2] == ["git", "clone"]:
+            assert check is True
             clone_dir = Path(cmd[-1])
             clone_dir.mkdir(parents=True)
             (clone_dir / ".git").mkdir()
             (clone_dir / "tasks").mkdir()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 
@@ -773,9 +782,9 @@ def test_resolve_source_with_ref_refreshes_cached_checkout(tmp_path, monkeypatch
     (cache / "tasks").mkdir()
     calls = []
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check=False, **kwargs):
         calls.append(cmd)
-        assert check is True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 

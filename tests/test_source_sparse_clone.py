@@ -11,8 +11,12 @@ over ``file://``, and check which file contents were fetched at all.
 from __future__ import annotations
 
 import os
+import re
+import select
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +24,18 @@ import pytest
 from benchflow._utils import benchmark_repos as br
 
 _IDENTITY = ("-c", "user.name=BenchFlow Test", "-c", "user.email=test@example.com")
+
+
+def _git_version() -> tuple[int, int]:
+    out = subprocess.run(["git", "version"], capture_output=True, text=True).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+
+
+# `git init -b` needs 2.28 and `sparse-checkout add` 2.26.
+pytestmark = pytest.mark.skipif(
+    _git_version() < (2, 28), reason="needs git 2.28 or newer"
+)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -193,7 +209,10 @@ def test_a_full_clone_made_before_sparse_fetches_is_reused_as_is(bench, tmp_path
     assert not br._is_sparse_checkout(bench)
 
 
-def test_the_sparse_fetch_prints_nothing(bench, capfd):
+def test_the_fetch_writes_nothing_to_a_pipe(bench, capfd):
+    """Nothing reaches stdout or stderr when they are pipes (CI logs). Git
+    shows fetch progress only on a terminal; the pseudo-terminal test below
+    covers that."""
     capfd.readouterr()
 
     br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
@@ -239,29 +258,19 @@ def test_git_can_sparse_reads_the_version(monkeypatch, version, can_sparse):
         br._git_can_sparse.cache_clear()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
-def test_the_fetch_prints_no_progress_on_a_terminal(bench):
-    """git shows an on-demand blob fetch's progress ("Receiving objects: ...")
-    when stderr is a terminal, whatever the command's own flags: in the
-    2026-09-30 first-run walk it printed two progress blocks before the
-    dashboard. Run the resolve on a pseudo-terminal, then, as a control, one
-    unquieted git command that fetches, and check only the control shows it."""
-    import pty
-
-    pid, fd = pty.fork()
-    if pid == 0:  # the child: stdout and stderr are the terminal
-        code = 1
-        try:
-            os.write(2, b"tty=%d\n" % os.isatty(2))
-            br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
-            br.resolve_source_with_metadata("acme/bench", path="tasks/court-form")
-            os.write(2, b"CONTROL\n")
-            subprocess.run(["git", "-C", str(bench), "sparse-checkout", "add", "docs"])
-            code = 0
-        finally:
-            os._exit(code)
+def _read_until_exit(pid: int, fd: int, timeout: float = 120.0) -> tuple[int, bytes]:
+    """The child's terminal output and exit code; kill it past the timeout."""
     output = b""
+    deadline = time.monotonic() + timeout
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            pytest.fail(f"no exit within {timeout:.0f} s: {output!r}")
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            continue
         try:
             chunk = os.read(fd, 4096)
         except OSError:
@@ -270,13 +279,123 @@ def test_the_fetch_prints_no_progress_on_a_terminal(bench):
             break
         output += chunk
     _, status = os.waitpid(pid, 0)
-    assert os.waitstatus_to_exitcode(status) == 0, output
+    return os.waitstatus_to_exitcode(status), output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
+@pytest.mark.parametrize("ref", [None, "main"])
+def test_the_fetch_prints_no_progress_on_a_terminal(bench, tmp_path, ref):
+    """git shows an on-demand blob fetch's progress ("Receiving objects: ...")
+    when stderr is a terminal, whatever the command's own flags: in the
+    2026-09-30 first-run walk it printed two progress blocks before the
+    dashboard. Run resolves on a pseudo-terminal, then, as a control, one
+    unquieted git command that fetches, and check only the control shows it.
+    With a ref, the cache is warm and the ref moved, so the ref's checkout
+    fetches the changed file on demand too."""
+    import pty
+
+    if ref:
+        br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
+        src = tmp_path / "src"
+        _write(src / "tasks/citation-check/task.md", "---\n---\nCheck them all.\n")
+        _git(src, *_IDENTITY, "commit", "-qam", "two")
+        _git(src, "push", "-q", str(tmp_path / "remote.git"), "main")
+
+    pid, fd = pty.fork()
+    if pid == 0:  # the child: stdout and stderr are the terminal
+        code = 1
+        try:
+            os.write(2, b"tty=%d\n" % os.isatty(2))
+            for path in ("tasks/citation-check", "tasks/court-form"):
+                br.resolve_source_with_metadata("acme/bench", path=path, ref=ref)
+            os.write(2, b"CONTROL\n")
+            subprocess.run(["git", "-C", str(bench), "sparse-checkout", "add", "docs"])
+            code = 0
+        finally:
+            os._exit(code)
+    code, output = _read_until_exit(pid, fd)
+    assert code == 0, output
     ours, _, control = output.partition(b"CONTROL")
     assert b"tty=1" in ours
     if b"Receiving objects" not in control:
         pytest.skip("this git prints no fetch progress on a terminal")
     assert b"Receiving objects" not in ours
     assert b"remote:" not in ours
+    if ref:
+        task_md = (bench / "tasks/citation-check/task.md").read_text()
+        assert task_md.endswith("Check them all.\n")
+
+
+def test_dot_is_the_whole_repository(bench):
+    """`--source-path .` names the repository root, as before sparse fetches."""
+    assert br.resolve_source("acme/bench", path=".") == bench
+    assert (bench / "docs/guide.md").is_file()
+    assert not br._is_sparse_checkout(bench)
+
+
+def test_dot_on_a_sparse_cache_checks_out_everything(bench):
+    br.resolve_source("acme/bench", path="tasks/citation-check")
+
+    root = br.resolve_source("acme/bench", path="./")
+
+    assert (root / "tasks/court-form/big.bin").is_file()
+    assert not br._is_sparse_checkout(root)
+
+
+def test_a_path_through_a_skipped_folder_resolves(bench):
+    """`docs/../tasks/x` names tasks/x; docs/ is not on disk in a sparse checkout."""
+    resolved = br.resolve_source_with_metadata(
+        "acme/bench", path="docs/../tasks/court-form"
+    )
+
+    assert resolved.provenance["path"] == "tasks/court-form"
+    assert (resolved.path / "big.bin").is_file()
+    assert not (resolved.path.parents[1] / "docs").exists()
+
+
+def test_a_foreign_folder_widens_an_existing_sparse_snapshot(bench):
+    first = br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
+    snapshot = first.path.parents[1]
+    assert not (snapshot / "docs").exists()
+
+    foreign = br.resolve_source_with_metadata("acme/bench", path="data/foreign")
+
+    assert foreign.path == snapshot / "data" / "foreign"
+    assert (snapshot / "docs/guide.md").is_file()
+    assert not br._is_sparse_checkout(snapshot)
+    assert foreign.provenance["dirty"] is False
+
+
+def test_a_path_git_would_quote_is_found(tmp_path, monkeypatch):
+    """Non-ASCII names come out of `git ls-tree` quoted unless -z is used."""
+    src = tmp_path / "src"
+    _write(src / "tasks/café/task.md", "---\n---\nOrder a coffee.\n")
+    _write(src / "docs/guide.md", "guide\n")
+    _git(tmp_path, "init", "-q", "-b", "main", str(src))
+    _git(src, "add", "-A")
+    _git(src, *_IDENTITY, "commit", "-q", "-m", "one")
+    bare = tmp_path / "remote.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(src), str(bare))
+    _git(bare, "config", "uploadpack.allowFilter", "true")
+    monkeypatch.setattr(br, "_repo_url", lambda org, repo: f"file://{bare}")
+    monkeypatch.setattr(br, "_cache_dir", lambda: tmp_path / "cache")
+
+    resolved = br.resolve_source_with_metadata("acme/cafe", path="tasks/café")
+
+    assert (resolved.path / "task.md").read_text().endswith("Order a coffee.\n")
+    assert not (resolved.path.parents[1] / "docs").exists()
+
+
+def test_a_path_already_fetched_leaves_the_checkout_alone(bench, monkeypatch):
+    """A resolve of a fetched path runs no sparse-checkout or read-tree: another
+    process may be reading that checkout."""
+    br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
+    ran: list[tuple[str, ...]] = []
+    monkeypatch.setattr(br, "_git_quiet", lambda root, *args: ran.append(args))
+
+    br.resolve_source_with_metadata("acme/bench", path="tasks/citation-check")
+
+    assert ran == []
 
 
 def test_a_long_listing_is_cut_and_counted(tmp_path):

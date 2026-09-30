@@ -106,24 +106,10 @@ def _looks_like_commit_sha(ref: str) -> bool:
 
 
 def _checkout_fetched_ref(repo_root: Path, ref: str) -> None:
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_root),
-            "fetch",
-            "--quiet",
-            "--depth",
-            "1",
-            "origin",
-            ref,
-        ],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo_root), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
-        check=True,
-    )
+    # Through _git_quiet: in a blob-less clone the checkout fetches file
+    # contents on demand, which prints progress on a terminal despite --quiet.
+    _git_quiet(repo_root, "fetch", "--quiet", "--depth", "1", "origin", ref)
+    _git_quiet(repo_root, "checkout", "--quiet", "--detach", "FETCH_HEAD")
 
 
 def _read_resolved_sha(repo_root: Path, repo: str) -> str:
@@ -265,9 +251,9 @@ def _tree_entry(root: Path, path: str) -> tuple[str, str] | None:
 
     Reads only trees, which a blob-less clone holds for the whole repo.
     """
-    listing = _git_stdout(root, "ls-tree", "HEAD", "--", path)
-    for line in (listing or "").splitlines():
-        meta, _, name = line.partition("\t")
+    listing = _git_stdout(root, "ls-tree", "-z", "HEAD", "--", path)
+    for record in (listing or "").split("\0"):
+        meta, _, name = record.partition("\t")
         fields = meta.split()
         if name == path and len(fields) >= 2:
             return fields[0], fields[1]
@@ -298,11 +284,11 @@ def _widen_sparse_checkout(root: Path, path: str | None) -> None:
     """
     if not _is_sparse_checkout(root):
         return
-    if path is None:
+    if path is None or posixpath.normpath(path) == ".":
         _check_out_everything(root)
         return
     sparse_path = _sparse_source_path(path)
-    if sparse_path is None:
+    if sparse_path is None or _sparse_covers(root, sparse_path):
         return
     parts = sparse_path.split("/")
     prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
@@ -318,6 +304,22 @@ def _widen_sparse_checkout(root: Path, path: str | None) -> None:
     _git_quiet(root, "read-tree", "-mu", "HEAD")
     if not _holds_native_tasks(root / sparse_path):
         _check_out_everything(root)
+
+
+def _sparse_covers(root: Path, sparse_path: str) -> bool:
+    """Whether the checkout's patterns already hold ``sparse_path`` whole.
+
+    Checking first keeps a resolve of an already fetched path from touching
+    the checkout at all (another process may be reading it).
+    """
+    listing = _git_stdout(root, "sparse-checkout", "list") or ""
+    for pattern in listing.splitlines():
+        folder = pattern.strip().strip("/")
+        if not folder or folder.startswith("!") or "*" in folder:
+            continue
+        if sparse_path == folder or sparse_path.startswith(f"{folder}/"):
+            return True
+    return False
 
 
 def _check_out_everything(root: Path) -> None:
@@ -338,7 +340,7 @@ def _clone_repo_unlocked(
         return cache
 
     url = _repo_url(org, repo)
-    sparse = bool(path) and _git_can_sparse()
+    sparse = _sparse_source_path(path) is not None and _git_can_sparse()
     if sparse:
         logger.info("Fetching %s from %s/%s (%s) ...", path, org, repo, url)
     else:
@@ -406,10 +408,13 @@ def _resolve_repo_path(root: Path, path: str, repo_label: str) -> Path:
             f"Source path {path!r} must resolve to a task directory inside "
             f"{repo_label}; .git is the clone metadata, not a task source"
         )
+    sparse = _is_sparse_checkout(root)
+    normalized = _sparse_source_path(path)
+    if sparse and normalized:
+        # `docs/../tasks/x` needs docs/ on disk, which a sparse checkout skips.
+        requested = Path(normalized)
     target = root / requested
     if not target.exists():
-        sparse = _is_sparse_checkout(root)
-        normalized = _sparse_source_path(path)
         entry = _tree_entry(root, normalized) if sparse and normalized else None
         if entry is not None and entry[1] == "blob":
             # A sparse checkout leaves the file out; it is still not a task source.
@@ -455,13 +460,13 @@ def _directory_entries(root: Path, rel: str, *, sparse: bool) -> list[str] | Non
     not checked out.
     """
     if sparse:
-        args = ["ls-tree", "-d", "--name-only", "HEAD"]
+        args = ["ls-tree", "-z", "-d", "--name-only", "HEAD"]
         if rel:
             args += ["--", f"{rel}/"]
         listing = _git_stdout(root, *args)
         if listing is None or (rel and not listing):
             return None
-        return sorted(posixpath.basename(line) for line in listing.splitlines())
+        return sorted(posixpath.basename(name) for name in listing.split("\0") if name)
     directory = root / rel if rel else root
     if not directory.is_dir():
         return None
@@ -607,23 +612,22 @@ def resolve_source_with_metadata(
             resolved_sha=resolved_sha,
             path=canonical_source_path or None,
         )
-
-    target = (
-        snapshot_root / canonical_source_path
-        if canonical_source_path
-        else snapshot_root
-    )
-
-    return ResolvedSource(
-        path=target,
-        provenance=_source_provenance(
+        target = (
+            snapshot_root / canonical_source_path
+            if canonical_source_path
+            else snapshot_root
+        )
+        # Under the lock: another resolve may add a path to this sparse
+        # snapshot, and git status must not see that half written.
+        provenance = _source_provenance(
             repo=f"{org}/{repo_name}",
             requested_ref=ref,
             source_path=canonical_source_path,
             local_path=target,
             repo_root=snapshot_root,
-        ),
-    )
+        )
+
+    return ResolvedSource(path=target, provenance=provenance)
 
 
 def task_source_provenance(
