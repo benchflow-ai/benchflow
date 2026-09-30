@@ -31,6 +31,10 @@ _PROVIDER_FAILURES: dict[int, ProviderFailure] = {
     400: ProviderFailure(400, "provider rejected request"),
     401: ProviderFailure(401, "provider auth failed"),
     403: ProviderFailure(403, "provider auth failed"),
+    # A model id the provider does not serve (a typo, a retired serverless
+    # model, an undeployed LoRA): permanent, like ``_api_error_subcategory``'s
+    # model_not_found, so a raised ACP error behind it is not retried.
+    404: ProviderFailure(404, "provider rejected request"),
     429: ProviderFailure(429, "provider rate limited"),
     503: ProviderFailure(503, "provider unavailable"),
 }

@@ -75,6 +75,20 @@ def test_detects_400_rejected_in_trajectory():
     assert _provider_auth_status_from_runtime(_runtime_with_statuses([400])) is None
 
 
+def test_detects_404_model_not_found_as_permanent_rejection():
+    """A provider 404 (model not served, e.g. a retired serverless model) behind
+    a raised ACP -32603 is a permanent rejection, so the job does not retry it."""
+    from benchflow._utils.scoring import PROVIDER_REJECTED, classify_error
+
+    failure = _provider_failure_from_runtime(_runtime_with_statuses([404]))
+    assert failure is not None
+    assert failure.status == 404
+    assert failure.marker == "provider rejected request"
+    error = f"ACP error -32603: Internal error | {failure.error_suffix}"
+    assert classify_error(error) == PROVIDER_REJECTED
+    assert _provider_auth_status_from_runtime(_runtime_with_statuses([404])) is None
+
+
 def test_missing_runtime_is_safe():
     """No proxy runtime (e.g. oracle runs) must not raise — returns None."""
     assert _provider_auth_status_from_runtime(None) is None
