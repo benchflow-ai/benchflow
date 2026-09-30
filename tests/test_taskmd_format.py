@@ -249,6 +249,116 @@ def test_a_separate_verifier_runs_in_the_image_the_spec_names(
         assert chosen.sandbox.cpus == 2
 
 
+def _verifier_decision(tmp_path, config: str, *, verifier_dockerfile: bool = False):
+    from benchflow.taskmd.plan import plan_package
+    from benchflow.taskmd.reference import errors
+
+    package = _package(tmp_path / "p", f"Do it.\n\n```toml task\n{config}```\n")
+    if verifier_dockerfile:
+        _write(package / "verifier" / "Dockerfile", "FROM ubuntu:24.04\n")
+    document = parse_package(package)
+    assert not errors(document)
+    return package, plan_package(document, package)
+
+
+@pytest.mark.parametrize(
+    ("config", "offline"),
+    [
+        # A shared verifier can be taken offline, and is open under an agent allowlist.
+        ('[sandbox]\nnetwork = "open"\n\n[verifier]\nnetwork = "none"\n', True),
+        ('[sandbox]\nnetwork = ["pypi.org"]\n\n[verifier]\nnetwork = "open"\n', False),
+        ('[sandbox]\nnetwork = ["pypi.org"]\n\n[verifier]\nnetwork = "none"\n', True),
+    ],
+)
+def test_a_shared_verifier_network_that_benchflow_enforces(
+    tmp_path, config, offline
+) -> None:
+    package, plan = _verifier_decision(tmp_path, config)
+    assert not plan.refused, plan.refused
+    strategy = yaml.safe_load(
+        (materialize_task_dir(package) / "verifier" / "verifier.md")
+        .read_text()
+        .split("---")[1]
+    )["verifier"]["strategies"]["taskmd"]
+    assert strategy["offline"] is offline
+
+
+@pytest.mark.parametrize(
+    ("config", "field"),
+    [
+        # The agent's container is offline: a shared verifier cannot get a network.
+        (
+            '[sandbox]\nnetwork = "none"\n\n[verifier]\nnetwork = "open"\n',
+            "[verifier] network",
+        ),
+        # A shared verifier runs as root, outside the agent's allowlist.
+        (
+            '[sandbox]\nnetwork = ["pypi.org"]\n',
+            "[verifier] network (inherited from [sandbox] network)",
+        ),
+        (
+            '[verifier]\nnetwork = ["pypi.org"]\n',
+            "[verifier] network",
+        ),
+        # No host list is enforced in a separate verifier's sandbox.
+        (
+            '[sandbox]\nimage = "ubuntu:24.04"\n\n[verifier]\nisolation = "separate"\nnetwork = ["pypi.org"]\n',
+            "[verifier] network",
+        ),
+        # A separate verifier's own network needs an image of its own or the task's.
+        (
+            '[sandbox]\nnetwork = "none"\n\n[verifier]\nisolation = "separate"\nnetwork = "open"\n',
+            "[verifier] network",
+        ),
+    ],
+)
+def test_a_verifier_network_that_benchflow_cannot_enforce_is_refused(
+    tmp_path, config, field
+) -> None:
+    _, plan = _verifier_decision(tmp_path, config)
+    assert field in [f.field for f in plan.refused], plan.refused
+
+
+@pytest.mark.parametrize(
+    ("config", "verifier_dockerfile", "mode", "image"),
+    [
+        (
+            '[sandbox]\nimage = "ubuntu:24.04"\nnetwork = "none"\n\n[verifier]\nisolation = "separate"\n\n'
+            '[verifier.sandbox]\nnetwork = "open"\n',
+            False,
+            "public",
+            "ubuntu:24.04",
+        ),
+        (
+            '[sandbox]\nimage = "ubuntu:24.04"\nnetwork = "none"\n\n[verifier]\nisolation = "separate"\nnetwork = "open"\n',
+            False,
+            "public",
+            "ubuntu:24.04",
+        ),
+        (
+            '[sandbox]\nnetwork = "open"\n\n[verifier]\nisolation = "separate"\nnetwork = "none"\n',
+            True,
+            "no-network",
+            None,
+        ),
+    ],
+)
+def test_a_separate_verifier_gets_its_own_network(
+    tmp_path, config, verifier_dockerfile, mode, image
+) -> None:
+    from benchflow.task import Task
+    from benchflow.task.verifier_sandbox import plan_verifier_image
+
+    package, plan = _verifier_decision(
+        tmp_path, config, verifier_dockerfile=verifier_dockerfile
+    )
+    assert not plan.refused, plan.refused
+    native = materialize_task_dir(package)
+    chosen = plan_verifier_image(Task(native).config, native)
+    assert chosen.sandbox.network_mode.value == mode
+    assert chosen.sandbox.docker_image == image
+
+
 def test_a_separate_verifier_with_its_own_settings_needs_an_image(tmp_path) -> None:
     package = _package(
         tmp_path / "p",

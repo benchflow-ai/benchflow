@@ -269,7 +269,9 @@ SUPPORT: list[tuple[str, str, str]] = [
     (
         "[verifier] network",
         PARTIAL,
-        'equal to [sandbox] network; a shared verifier is taken offline for "none"',
+        'a shared verifier: "none" (taken offline with iptables) or "open" (over an open sandbox or an agent '
+        'allowlist); a separate verifier: "none" or "open" for its own sandbox; a host list is refused, since '
+        "BenchFlow holds only the agent's uid to one",
     ),
     (
         "[verifier] isolation",
@@ -967,13 +969,7 @@ def _verifier(
                 out["env"] = env
                 plan.honor(where, "verifier.env")
         elif key == "network":
-            if value == sandbox_network:
-                plan.honor(where, "the sandbox's network")
-            else:
-                plan.refuse(
-                    where,
-                    f"{value!r} differs from [sandbox] network ({sandbox_network!r}); BenchFlow gives a verifier the sandbox's network",
-                )
+            pass  # decided below, with isolation (_verifier_network)
         elif key == "isolation":
             if value == "separate":
                 out["sandbox_mode"] = "separate"
@@ -984,7 +980,14 @@ def _verifier(
             else:
                 plan.honor(where, "the agent's container, after BenchFlow's hardening")
         elif key == "sandbox":
-            vs = _verifier_sandbox(plan, _table(value), sandbox_network)
+            if isolation != "separate":
+                plan.refuse(
+                    where,
+                    '[verifier.sandbox] sets a separate verifier\'s container; with isolation = "shared" the '
+                    "verifier runs in the agent's container, so these settings would apply to nothing",
+                )
+                continue
+            vs = _verifier_sandbox(plan, _table(value))
             if vs:
                 out["sandbox"] = vs
         elif key == "snapshot":
@@ -1021,14 +1024,106 @@ def _verifier(
         else:
             walker.unknown(where)
     if isolation == "separate":
-        _separate_verifier_image(plan, verifier, out, network)
+        _separate_verifier(plan, verifier, out, sandbox_network)
+    else:
+        _shared_verifier_network(plan, verifier, network, sandbox_network)
     if out:
         fm["verifier"] = out
 
 
-def _separate_verifier_image(
-    plan: Plan, verifier: dict[str, Any], out: dict[str, Any], network: Any
+def _shared_verifier_network(
+    plan: Plan, verifier: dict[str, Any], network: Any, sandbox_network: Any
 ) -> None:
+    """``[verifier] network`` for a verifier in the agent's container.
+
+    BenchFlow filters the agent's uid (allowlists) or starts the container
+    offline (``"none"``); a shared verifier runs as root in that container.
+    So it can be taken offline (``"none"``, with iptables before test.sh), and
+    it is open under an agent allowlist, but it can neither get a network the
+    container lacks nor be held to a host list.
+    """
+    where = "[verifier] network"
+    inherited = "network" not in verifier
+    source = " (inherited from [sandbox] network)" if inherited else ""
+    if inherited and network_setting(sandbox_network) is None:
+        return  # [sandbox] network is refused already
+    if network == "none":
+        if not inherited:
+            plan.honor(
+                where,
+                "taken offline with iptables before test.sh (the trial is not scored if it cannot be)",
+            )
+        return
+    if network == "open":
+        if sandbox_network == "none":
+            plan.refuse(
+                where,
+                '"open", and the agent\'s container is offline ([sandbox] network = "none"); '
+                'a shared verifier cannot get a network the container lacks: use isolation = "separate"',
+            )
+        elif not inherited:
+            plan.honor(
+                where,
+                "open: the verifier runs as root, outside the agent's allowlist",
+            )
+        return
+    plan.refuse(
+        where + source,
+        f"{network!r}: BenchFlow holds only the agent's uid to a host list, and a shared verifier "
+        'runs as root, unfiltered. Set [verifier] network = "open" or "none"',
+    )
+
+
+def _separate_verifier(
+    plan: Plan, verifier: dict[str, Any], out: dict[str, Any], sandbox_network: Any
+) -> None:
+    """A separate verifier's image and network, as BenchFlow's planner will pick them.
+
+    The container's network is ``[verifier.sandbox] network``, which defaults
+    to ``[verifier] network``, which defaults to ``[sandbox] network``.
+    """
+    declared = _table(verifier.get("sandbox"))
+    network = declared.get("network", verifier.get("network", sandbox_network))
+    plan.verifier_network = network
+    where = (
+        "[verifier.sandbox] network"
+        if "network" in declared
+        else "[verifier] network"
+        if "network" in verifier
+        else "[verifier] network (inherited from [sandbox] network)"
+    )
+    mapped = network_setting(network)
+    if mapped is None and where.endswith("(inherited from [sandbox] network)"):
+        return  # [sandbox] network is refused already
+    if mapped is None or mapped[0] == "allowlist":
+        plan.refuse(
+            where,
+            f"{network!r}: BenchFlow enforces no host list in a separate verifier's sandbox; "
+            'use "open" or "none"',
+        )
+        return
+    if not _separate_verifier_image(plan, verifier, out):
+        return
+    native = out.get("sandbox")
+    if native is None and network != sandbox_network and plan.image:
+        # The task's prebuilt image, declared so the verifier's sandbox gets its own network.
+        native = out["sandbox"] = {"docker_image": plan.image}
+    if native is not None:
+        native["network_mode"] = mapped[0]
+    elif network != sandbox_network:
+        plan.refuse(
+            where,
+            f"{network!r} differs from [sandbox] network ({sandbox_network!r}); BenchFlow gives a separate "
+            "verifier a network of its own only with an image or verifier/Dockerfile",
+        )
+        return
+    if "network" in declared or "network" in verifier:
+        plan.honor(where, f"the verifier's sandbox, network_mode = {mapped[0]}")
+
+
+def _separate_verifier_image(
+    plan: Plan, verifier: dict[str, Any], out: dict[str, Any]
+) -> bool:
     """The separate verifier's image in the spec's order, as BenchFlow will choose it.
 
     docs/document.md, "Discovery and the verifier's image": (1) an image in
@@ -1038,13 +1133,13 @@ def _separate_verifier_image(
     then ``tests/Dockerfile`` (the materialized verifier folder), and only an
     undeclared verifier sandbox falls back to the agent's image or
     ``environment/Dockerfile``; so the native config declares one exactly
-    when that picks the spec's image.
+    when that picks the spec's image. Returns False when it refused.
     """
     declared = _table(verifier.get("sandbox"))
     folder = plan.task_dir / "verifier"
     native = out.get("sandbox") or {}
     if "image" in declared:
-        return  # (1): verifier.sandbox.docker_image
+        return True  # (1): verifier.sandbox.docker_image
     if (folder / "docker-compose.yaml").is_file() and not (
         folder / "Dockerfile"
     ).is_file():
@@ -1052,47 +1147,41 @@ def _separate_verifier_image(
             "verifier/docker-compose.yaml",
             "BenchFlow builds a verifier's own sandbox from a Dockerfile, not a Compose file",
         )
-        return
-    mapped = network_setting(network)
+        return False
     if (folder / "Dockerfile").is_file():
         # (2): declaring the verifier's sandbox makes BenchFlow build tests/Dockerfile
         # rather than reuse the agent's [sandbox] image.
-        if mapped is not None:
-            native.setdefault("network_mode", mapped[0])
-            if mapped[1]:
-                native.setdefault("allowed_hosts", mapped[1])
         out["sandbox"] = native
         plan.honor(
             "verifier/Dockerfile",
             "the separate verifier's image, built with verifier/ as the context",
         )
-        return
+        return True
     if plan.image:
-        # (3) with a prebuilt image.
+        # (3) with a prebuilt image; declared only when it carries settings of its own.
         if native:
             native["docker_image"] = plan.image
         plan.honor("[verifier.sandbox] image", "the task's image, [sandbox] image")
-        return
+        return True
     # (3) with the image built from sandbox/Dockerfile: BenchFlow builds environment/Dockerfile
     # for a separate verifier only when the task declares no verifier sandbox of its own.
-    if {k for k in native if k not in ("network_mode", "allowed_hosts")}:
+    if native:
         plan.refuse(
             "[verifier.sandbox]",
             "BenchFlow gives a verifier its own sandbox settings only with an image or verifier/Dockerfile; "
             "without them it runs the verifier in a fresh container built from sandbox/Dockerfile with the "
             "agent's settings. Remove these settings or give the verifier an image",
         )
-        return
+        return False
     out.pop("sandbox", None)
     plan.honor(
         "[verifier.sandbox] image",
         "the task's image, built from sandbox/Dockerfile",
     )
+    return True
 
 
-def _verifier_sandbox(
-    plan: Plan, table: dict[str, Any], sandbox_network: Any
-) -> dict[str, Any]:
+def _verifier_sandbox(plan: Plan, table: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in table.items():
         where = f"[verifier.sandbox] {key}"
@@ -1140,19 +1229,14 @@ def _verifier_sandbox(
         elif key == "build_timeout" and seconds(value) is not None:
             out["build_timeout_sec"] = seconds(value)
             plan.honor(where, "verifier.sandbox.build_timeout_sec")
-        elif key == "network" and value == sandbox_network:
-            plan.honor(where, "the sandbox's network")
+        elif key == "network":
+            pass  # decided with the image (_separate_verifier)
         elif key == "mcp" and value in (None, []):
             plan.honor(where, "no MCP servers")
         elif key in ("mounts", "tpu") and value in (None, 0, {}, []):
             plan.honor(where, "none")
         else:
             plan.refuse(where, "not mapped for a verifier's own sandbox yet")
-    mapped = network_setting(sandbox_network)
-    if out and mapped is not None:
-        out.setdefault("network_mode", mapped[0])
-        if mapped[1]:
-            out["allowed_hosts"] = mapped[1]
     return out
 
 
@@ -1652,7 +1736,7 @@ def _judging(
             if plan.verifier_network != "none":
                 plan.refuse(
                     where,
-                    f'an agent judge\'s runners have no network; the verifier sandbox BenchFlow runs them in has network {plan.verifier_network!r}. Set [sandbox] network = "none"',
+                    f'an agent judge\'s runners have no network; the verifier sandbox BenchFlow runs them in has network {plan.verifier_network!r}. Set [verifier] network = "none"',
                 )
             if isinstance(verifier.get("sandbox"), dict) and verifier["sandbox"].get(
                 "image"

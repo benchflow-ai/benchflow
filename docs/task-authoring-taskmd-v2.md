@@ -117,7 +117,7 @@ A trial's `verifier/` holds what the spec asks the verifier to write: `ctrf.json
 | [verifier] timeout | Honored | bounds test.sh; each judge session keeps its own timeout |
 | [verifier] user | Honored | verifier.user |
 | [verifier] env | Partly | literal values to verifier.env; ${VAR} values are refused |
-| [verifier] network | Partly | equal to [sandbox] network; a shared verifier is taken offline for "none" |
+| [verifier] network | Partly | a shared verifier: "none" (taken offline with iptables) or "open" (over an open sandbox or an agent allowlist); a separate verifier: "none" or "open" for its own sandbox; a host list is refused, since BenchFlow holds only the agent's uid to one |
 | [verifier] isolation | Honored | "shared", or "separate" (verifier.sandbox_mode: separate) |
 | [verifier] sandbox, [verifier.sandbox] <key> | Partly | image, os, cpus, gpus, gpu_types, memory, disk, workdir, env, build_timeout, and empty mcp; the rest is refused. The image is found in the spec's order: [verifier.sandbox] image, verifier/Dockerfile, the task's image |
 | [verifier] snapshot, [[verifier.snapshot]] run, reads, service, timeout, user | Refused | snapshot commands are not run |
