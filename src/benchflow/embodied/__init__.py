@@ -12,6 +12,7 @@
   verifier    the physical verifier (runs in the simulator service)
   export      training export of episode records
   rollouts    seeded rollouts: pass@k, variance, reset reproducibility
+  trials      the restore boundary of task folders and finished trials (host side)
 
 This package imports nothing else from BenchFlow, so simulator images can vendor it (sidecar.vendor_embodied).
 """

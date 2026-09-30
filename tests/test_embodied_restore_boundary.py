@@ -208,15 +208,108 @@ async def test_retry_from_checkpoint_is_refused_and_recorded(tmp_path):
     assert saved["retry"] == result.retry
 
 
-def test_continue_refuses_to_replay_an_embodied_task(tmp_path):
-    pkg = ToyFormat().materialize(_toy_task(tmp_path / "src"), tmp_path / "cache")
-    folder = write_run_folder(
-        tmp_path / "run", exchanges=[exchange(completion(content="a"))]
+@pytest.fixture
+def toy_suite(tmp_path, monkeypatch):
+    """A folder of toy-format source tasks, with the format registered, and
+    every way a continuation could start a sandbox made to fail loudly."""
+    from benchflow.continue_run import orchestrator
+    from benchflow.rollout import Rollout
+    from benchflow.task import formats
+
+    monkeypatch.setenv(formats.CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setattr(formats, "_registered", [ToyFormat()])
+    monkeypatch.setattr(formats, "_entry_point_formats", [])
+
+    async def must_not_start(*_args, **_kwargs):
+        raise AssertionError("the continuation started")
+
+    monkeypatch.setattr(Rollout, "create", must_not_start)
+    monkeypatch.setattr(
+        orchestrator, "_continue_run_with_sandbox_proxy", must_not_start
     )
+    suite = tmp_path / "suite"
+    _toy_task(suite)
+    return suite
+
+
+def _run_folder(tmp_path, *, record_mode=None, record="verifier/episode/episode.json"):
+    """A run folder as real runs write it: config.json names only the task."""
+    folder = write_run_folder(
+        tmp_path / "run",
+        task_name="toy-reach",
+        exchanges=[exchange(completion(content="a"))],
+    )
+    config = json.loads((folder / "config.json").read_text())
+    config["task_path"] = "toy-reach"
+    (folder / "config.json").write_text(json.dumps(config))
+    if record_mode is not None:
+        path = folder / record
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"embodiment": {"name": "arm", "mode": record_mode}})
+        )
+    return folder
+
+
+def _declare(suite, block: str) -> None:
+    task_md = suite / "toy-reach" / "task.md"
+    task_md.write_text(
+        task_md.read_text().replace(
+            "agent:\n", f"metadata:\n  embodied:\n{block}agent:\n", 1
+        )
+    )
+
+
+async def test_continue_refuses_to_replay_an_embodied_task(tmp_path, toy_suite):
+    """config.json records only the task's name, so load_run_folder cannot see
+    the task; the gate is on the task --tasks-dir resolves."""
+    from benchflow.continue_run.orchestrator import continue_run
+
+    folder = _run_folder(tmp_path)
+    assert load_run_folder(folder).task_name == "toy-reach"  # nothing to refuse yet
+    with pytest.raises(RunFolderError, match="benchflow continue refused"):
+        await continue_run(folder, tasks_dir=toy_suite, replay_only=True)
+
+
+async def test_continue_batch_refuses_it_too(tmp_path, toy_suite):
+    from benchflow.continue_run.batch import continue_batch
+
+    [row] = await continue_batch(
+        [_run_folder(tmp_path)],
+        concurrency=1,
+        tasks_dir=toy_suite,
+        model=None,
+        timeout=None,
+        output_dir=None,
+        require_timeout=False,
+    )
+    assert not row.ok and "benchflow continue refused" in row.error
+
+
+@pytest.mark.parametrize(
+    ("record", "mode"),
+    [
+        ("verifier/episode/episode.json", "real"),
+        ("trainer/embodied_episode.json", "hil-mock"),
+    ],
+)
+async def test_a_physical_episode_record_wins_over_the_declaration(
+    tmp_path, toy_suite, record, mode
+):
+    """The task declares a replayable simulator; the run's own record says it
+    ran on a real (or hardware-in-the-loop) robot."""
+    from benchflow.continue_run.orchestrator import continue_run
+
+    _declare(toy_suite, "    action_replay: true\n    world_restore: true\n")
+    folder = _run_folder(tmp_path, record_mode=mode, record=record)
+    with pytest.raises(RunFolderError, match="operator-qualified reset"):
+        await continue_run(folder, tasks_dir=toy_suite, replay_only=True)
+    # The same when the recorded task folder exists here.
+    pkg = ToyFormat().materialize(toy_suite / "toy-reach", tmp_path / "pkg")
     config = json.loads((folder / "config.json").read_text())
     config["task_path"] = str(pkg)
     (folder / "config.json").write_text(json.dumps(config))
-    with pytest.raises(RunFolderError, match="benchflow continue refused"):
+    with pytest.raises(RunFolderError, match="operator-qualified reset"):
         load_run_folder(folder)
 
 

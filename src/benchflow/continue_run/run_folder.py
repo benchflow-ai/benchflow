@@ -23,12 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from benchflow.embodied.spec import (
-    MODES,
-    RestoreBoundary,
-    RestoreRefused,
-    restore_boundary,
-)
+from benchflow.embodied.spec import RestoreBoundary, RestoreRefused, SpecError
+from benchflow.embodied.trials import task_dir_restore_boundary, trial_restore_boundary
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -175,37 +171,41 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
 
 
 def run_restore_boundary(path: Path, config: dict[str, Any]) -> RestoreBoundary:
-    """What software may do to the original run's world.
+    """What software may do to the original run's world, before its task is resolved.
 
-    The task's own ``metadata.embodied`` declaration when the task directory
-    named by ``config.json`` is available locally (most runs record only the
-    task's name). Otherwise the run folder's evidence: an embodied trial keeps
-    its episode record (``verifier/episode/episode.json``), whose embodiment
-    names the mode, and restores nothing. Without either it is a software task.
+    The declaration of the task ``config.json`` names, when that folder exists
+    here (most runs record only the task's name, so ``continue_run`` gates the
+    task it resolves again), overruled by the run's own episode records (see
+    :func:`benchflow.embodied.trials.trial_restore_boundary`).
     """
     declared = RestoreBoundary()
     task_path = config.get("task_path")
     if isinstance(task_path, str) and task_path and Path(task_path).is_dir():
-        from benchflow.task.task import Task
-
         try:
-            metadata = Task(task_path).config.metadata
-        except (OSError, ValueError):
-            metadata = None
-        declared = restore_boundary(metadata)
-    episode = path / "verifier" / "episode" / "episode.json"
-    if declared.embodied or not episode.is_file():
-        return declared
+            _, declared = task_dir_restore_boundary(Path(task_path))
+        except SpecError:
+            raise
+        except (OSError, ValueError, RuntimeError):
+            declared = RestoreBoundary()  # an unreadable task: the records decide
+    return trial_restore_boundary(path, declared)
+
+
+def require_replayable_task(run: RunFolder, task_path: Path) -> Path:
+    """Refuse to replay ``run`` against ``task_path`` unless its world allows it.
+
+    ``task_path`` is the task ``benchflow continue`` resolved (``--tasks-dir``
+    or the recorded path). A folder in a registered task format is materialized
+    and its native package returned. Its declaration, overruled by the run's
+    episode records, must grant ``action_replay``.
+    """
     try:
-        mode = json.loads(episode.read_text())["embodiment"].get("mode", "sim")
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        mode = "sim"
-    return RestoreBoundary(
-        embodied=True,
-        mode=mode if mode in MODES else "sim",
-        world_restore=False,
-        action_replay=False,
-    )
+        native, declared = task_dir_restore_boundary(task_path)
+        trial_restore_boundary(run.path, declared).require_action_replay(
+            "benchflow continue"
+        )
+    except (RestoreRefused, ValueError, RuntimeError) as exc:
+        raise RunFolderError(str(exc)) from exc
+    return native
 
 
 def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> RunFolder:
