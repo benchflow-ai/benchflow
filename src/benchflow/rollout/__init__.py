@@ -106,7 +106,8 @@ from benchflow.loop_strategies import (
     collect_loop_metadata,
     loop_block,
 )
-from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.models import AgentInstallError, RolloutResult, TrajectorySource
+from benchflow.native_harness.harnesses import HARNESS_NATIVE, native_harness_for
 from benchflow.review.automatic import PreparedReview
 from benchflow.review.outcome import ScoringResult, scoring_from_result
 from benchflow.review.persistence import scoring_lock
@@ -1287,6 +1288,7 @@ class Rollout:
             parent_rollout=cfg.parent_rollout,
             freeze_workspace=cfg.freeze_workspace,
             integrity=cfg.integrity,
+            harness=cfg.harness,
         )
 
         self._phase = "setup"
@@ -1458,6 +1460,7 @@ class Rollout:
                 rollout_dir,
                 sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             )
+            await self._install_native_cli(agent_name, rollout_dir)
         if cfg.sandbox_user:
             self._agent_cwd = await self._planes.setup_sandbox_user(
                 self._env,
@@ -1504,6 +1507,7 @@ class Rollout:
             ),
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
+            harness=cfg.harness,
         )
         await verifier_baseline()
 
@@ -1542,6 +1546,45 @@ class Rollout:
             return cfg.session_factory
         return None
 
+    async def _install_native_cli(self, agent: str, rollout_dir: Path) -> None:
+        """Add the native harness's CLI to an agent install that lacks it.
+
+        Claude Code's install already brings the pinned CLI (the adapter runs
+        it); Codex's native harness installs the pinned ``codex`` next to
+        ``codex-acp``. A no-op for the ACP harness.
+        """
+        if self._config.harness != HARNESS_NATIVE or is_scripted_agent(agent):
+            return
+        harness = native_harness_for(agent)
+        if not harness.install_cmd:
+            return
+        from benchflow.agents.install import effective_install_timeout
+
+        result = await self._env.exec(
+            harness.install_cmd,
+            timeout_sec=effective_install_timeout(
+                agent, self._config.sandbox_setup_timeout
+            ),
+        )
+        log = rollout_dir / "agent" / "install-native-stdout.txt"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        output = f"$ {harness.install_cmd}\n{result.stdout or ''}{result.stderr or ''}"
+        log.write_text(output)
+        if result.return_code != 0:
+            raise AgentInstallError(
+                agent=f"{agent} (native {harness.cli})",
+                return_code=result.return_code,
+                stdout=output,
+                diagnostics="",
+                log_path=str(log),
+            )
+
+    async def _connect_live_agent(self, **kwargs: Any) -> Any:
+        """Connect the run's harness: the ACP adapter, or the agent's own CLI."""
+        if self._config.harness == HARNESS_NATIVE:
+            return await self._planes.connect_native(**kwargs)
+        return await self._planes.connect_acp(**kwargs)
+
     async def _stop_active_egress(self) -> None:
         if self._active_egress_policy is not None:
             await self._planes.stop_egress_denylist(
@@ -1560,7 +1603,10 @@ class Rollout:
         admission = None
         if denylist.native_claude_model_only:
             admission = await validate_native_oauth_transport(
-                self._env, self._config.sandbox_user, agent_launch or self._agent_launch
+                self._env,
+                self._config.sandbox_user,
+                agent_launch or self._agent_launch,
+                harness=self._config.harness,
             )
         await self._stop_active_egress()
         # Track attempted startup too: cleanup must remove partially staged policy.
@@ -1625,6 +1671,7 @@ class Rollout:
             ),
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
+            harness=cfg.harness,
         )
         if egress_denylist is None:
             await self._stop_active_egress()
@@ -1659,7 +1706,7 @@ class Rollout:
                 self._session,
                 self._session_adapter,
                 self._agent_name,
-            ) = await self._planes.connect_acp(
+            ) = await self._connect_live_agent(
                 env=self._env,
                 agent=cfg.primary_agent,
                 agent_launch=self._agent_launch,
@@ -2996,6 +3043,7 @@ class Rollout:
                     rollout_dir,
                     sandbox_setup_timeout=cfg.sandbox_setup_timeout,
                 )
+                await self._install_native_cli(role.agent, rollout_dir)
         else:
             agent_cfg = self._agent_cfg
         if needs_role_credentials:
@@ -3039,6 +3087,7 @@ class Rollout:
             ),
             requested=cfg.codex_apps_policy,
             rollout_dir=rollout_dir,
+            harness=cfg.harness,
         )
         self._agent_launch = agent_launch
 
@@ -3079,7 +3128,7 @@ class Rollout:
                 self._session,
                 self._session_adapter,
                 self._agent_name,
-            ) = await self._planes.connect_acp(
+            ) = await self._connect_live_agent(
                 env=self._env,
                 agent=role.agent,
                 agent_launch=agent_launch,

@@ -89,6 +89,7 @@ class EvalCreateRequest:
     agent: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    harness: str | None = None
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
@@ -195,6 +196,8 @@ class EvalPlan:
     include_tasks: set[str]
     exclude_tasks: set[str]
     eval_seeds: list[int] | None = None
+    # "acp" (default) or "native"; checked against the agent at planning.
+    eval_harness: str = "acp"
 
     @property
     def eval_budget(self) -> Budget | None:
@@ -233,6 +236,7 @@ class EvalPlan:
             agent=self.eval_agent,
             model=effective_model(self.eval_agent, req.model),
             reasoning_effort=self.eval_reasoning_effort,
+            harness=self.eval_harness,
             environment=self.eval_environment,
             concurrency=self.eval_concurrency,
             build_concurrency=req.build_concurrency,
@@ -610,6 +614,18 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
+    from benchflow.native_harness.harnesses import check_harness, normalize_harness
+
+    try:
+        eval_harness = normalize_harness(request.harness)
+        if request.harness is not None and request.config_file is None:
+            check_harness(eval_harness, [eval_agent])
+    except ValueError as exc:
+        raise EvalPlanError(f"Invalid --harness {request.harness!r}: {exc}") from None
+    if eval_harness != "acp" and request.source_env:
+        raise EvalPlanError(
+            "--harness is for BenchFlow agent rollouts; --source-env runs its own harness"
+        )
     output_jobs_dir = request.jobs_dir or "jobs"
     if request.fresh and request.job_name:
         raise EvalPlanError("give --fresh or --job-name, not both")
@@ -685,4 +701,5 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,
         eval_seeds=eval_seeds,
+        eval_harness=eval_harness,
     )

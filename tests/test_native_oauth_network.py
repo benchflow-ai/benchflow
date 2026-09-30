@@ -221,6 +221,74 @@ async def test_native_client_must_match_what_the_pinned_acp_installs(change):
         )
 
 
+def _native_cli_env(found, *, uid="1500\n", status=0):
+    """The sandbox as the native-harness admission sees it: the uid, then the
+    node check's JSON (CLI package version, binary --version, and whether the
+    executable resolves into the pinned package)."""
+    commands = []
+
+    async def execute(command, **kwargs):
+        commands.append(command)
+        if command.startswith("id -u"):
+            return ExecResult(stdout=uid, return_code=0)
+        return ExecResult(stdout=json.dumps(found), return_code=status)
+
+    return SimpleNamespace(exec=execute, commands=commands)
+
+
+NATIVE_CLI = {"cli": "2.1.280", "native": "2.1.280 (Claude Code)", "inside": True}
+
+
+@pytest.mark.asyncio
+async def test_native_harness_admission_checks_the_cli_itself():
+    """harness="native": BenchFlow runs the pinned CLI, so no adapter or launcher."""
+    env = _native_cli_env(NATIVE_CLI)
+    admission = await validate_native_oauth_transport(
+        env, "agent", "ignored", harness="native"
+    )
+    assert admission["harness"] == "native"
+    assert admission["versions"] == {"native": "2.1.280 (Claude Code)"}
+    assert admission["sandbox_uid"] == 1500
+    check = env.commands[-1]
+    # The check refuses routing overrides and an API key in the CLI's env.
+    assert "ANTHROPIC_API_KEY" in check and "ANTHROPIC_BASE_URL" in check
+    assert CLAUDE_CODE_EXECUTABLE_PATH in check
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"cli": "2.1.281"},
+        {"native": "2.1.281 (Claude Code)"},
+        {"inside": False},  # the executable is not the pinned package's binary
+        {"cli": None},
+    ],
+)
+async def test_native_harness_admission_refuses_another_cli(change):
+    with pytest.raises(ValueError, match="not verified"):
+        await validate_native_oauth_transport(
+            _native_cli_env({**NATIVE_CLI, **change}), "agent", "x", harness="native"
+        )
+
+
+@pytest.mark.asyncio
+async def test_native_harness_admission_refuses_root_and_a_failed_check():
+    with pytest.raises(ValueError, match="nonzero"):
+        await validate_native_oauth_transport(
+            _native_cli_env(NATIVE_CLI, uid="0\n"), "agent", "x", harness="native"
+        )
+    with pytest.raises(ValueError, match="nonroot"):
+        await validate_native_oauth_transport(
+            _native_cli_env(NATIVE_CLI), None, "x", harness="native"
+        )
+    # A routing override in the CLI's environment makes the check exit 2.
+    with pytest.raises(ValueError, match="not verified"):
+        await validate_native_oauth_transport(
+            _native_cli_env(NATIVE_CLI, status=2), "agent", "x", harness="native"
+        )
+
+
 def make_rollout(tmp_path):
     r = Rollout(
         RolloutConfig(

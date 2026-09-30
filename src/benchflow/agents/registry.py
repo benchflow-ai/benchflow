@@ -15,8 +15,12 @@ Required fields
 
 Common optional fields
 ----------------------
-- ``protocol``           "acp" (default), "cli", or "session-factory".
-                         Almost always "acp".
+- ``protocol``           "acp" (default) or "session-factory" (an ``acpx/``
+                         spec wraps an entry to launch through acpx). Almost
+                         always "acp". Running an agent's own CLI in headless
+                         JSON mode is not a protocol value: it is the run
+                         option ``harness="native"``, available for the entries
+                         ``benchflow.native_harness.harnesses`` lists.
 - ``session_factory``    Non-ACP "module:callable" entrypoint used only when
                          ``protocol="session-factory"``.
 - ``requires_env``       List of env var names the SDK must propagate into the
@@ -150,6 +154,13 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.2"
 # adapter's SDK (0.3.280) was built against.
 _CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.280"
 _CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.13.1"
+# The Codex CLI the native harness runs (``harness="native"`` on codex-acp),
+# pinned exactly. 0.156.1 is the release codex-acp 1.13.1 resolves its
+# ``@openai/codex ^0.156.1`` dependency to (npm had no later 0.156.x on
+# 2026-09-30), so both harnesses run the same Codex core. codex-acp still
+# runs its own nested copy; pinning the ACP path to this CLI too (as
+# CLAUDE_CODE_EXECUTABLE does for Claude) is a follow-up.
+_CODEX_CLI_PACKAGE = "@openai/codex@0.156.1"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
@@ -209,15 +220,17 @@ def _npm_package_spec(package: str) -> str:
 def pinned_npm_package(agent: str) -> tuple[str, str]:
     """Return the built-in ``(package, version)`` pin of a policy-gated client.
 
-    ``agent`` names a policy-gated ACP agent, or ``"claude-code"`` for the
-    Claude Code CLI that ``claude-agent-acp`` runs. Reads the constants, not
-    mutable ``AGENTS``: a manifest override must not redefine the version an
+    ``agent`` names a policy-gated ACP agent, ``"claude-code"`` for the
+    Claude Code CLI that ``claude-agent-acp`` runs, or ``"codex"`` for the
+    Codex CLI the native harness runs. Reads the constants, not mutable
+    ``AGENTS``: a manifest override must not redefine the version an
     admission gate verifies.
     """
     spec = {
         "claude-agent-acp": _CLAUDE_AGENT_ACP_PACKAGE,
         "claude-code": _CLAUDE_CODE_PACKAGE,
         "codex-acp": _CODEX_ACP_PACKAGE,
+        "codex": _CODEX_CLI_PACKAGE,
     }[agent]
     package, _, version = spec.rpartition("@")
     return package, version
@@ -225,6 +238,9 @@ def pinned_npm_package(agent: str) -> tuple[str, str]:
 
 # npm links the Claude Code package's native binary here.
 CLAUDE_CODE_EXECUTABLE_PATH = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/claude"
+# The Codex CLI's npm entry point is a Node script; this launcher runs it on
+# BenchFlow's private Node, so the task image needs no Node of its own.
+CODEX_CLI_EXECUTABLE_PATH = f"{_BENCHFLOW_BIN_PREFIX}/codex"
 
 
 def js_agent_launcher(binary: str, env: tuple[tuple[str, str], ...] = ()) -> str:
@@ -295,6 +311,29 @@ def _claude_code_version_check() -> str:
         f'( v="$({cli} --version 2>&1)"; [ "$v" = {shlex.quote(expected)} ] || '
         f'{{ echo "BenchFlow: {cli} is not Claude Code {version}: $v" >&2; exit 1; }} )'
     )
+
+
+def _codex_cli_version_check() -> str:
+    """Fail the install unless the pinned Codex CLI runs and reports its pin."""
+    _, version = pinned_npm_package("codex")
+    cli = CODEX_CLI_EXECUTABLE_PATH
+    expected = f"codex-cli {version}"
+    return (
+        f'( v="$({cli} --version 2>&1)"; [ "$v" = {shlex.quote(expected)} ] || '
+        f'{{ echo "BenchFlow: {cli} is not Codex {version}: $v" >&2; exit 1; }} )'
+    )
+
+
+def codex_cli_install_cmd() -> str:
+    """Install the pinned Codex CLI next to codex-acp, for the native harness."""
+    return _js_agent_install(
+        "codex", _CODEX_CLI_PACKAGE, verify=_codex_cli_version_check()
+    )
+
+
+def claude_code_version_check() -> str:
+    """The install-time check of the pinned Claude Code CLI (see below)."""
+    return _claude_code_version_check()
 
 
 def _js_agent_launch(binary: str, args: str = "") -> str:
@@ -553,7 +592,7 @@ class AgentConfig:
     name: str
     install_cmd: str
     launch_cmd: str
-    protocol: str = "acp"  # "acp", "cli", or "session-factory"
+    protocol: str = "acp"  # "acp" or "session-factory"
     session_factory: str = ""
     # Non-ACP only. When protocol == "session-factory", this is a
     # "module:callable" entrypoint that builds an Agent Protocol object.

@@ -16,7 +16,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from benchflow.cli._options import ModelOption
+from benchflow.cli._options import HarnessOption, ModelOption
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _parse_agent_env,
@@ -227,6 +227,7 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
                 "--reasoning-effort", help="Agent reasoning effort (e.g. max)"
             ),
         ] = None,
+        harness: HarnessOption = None,
         sandbox: Annotated[
             str | None,
             typer.Option(
@@ -440,11 +441,24 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
             parent_mode = parent or ("discard" if source is not None else "continue")
             if parent_mode not in ("continue", "discard"):
                 raise branch_run.BranchPlanError("--parent is continue or discard")
+            from benchflow.native_harness.harnesses import (
+                check_harness,
+                normalize_harness,
+            )
+
+            try:
+                harness_name = normalize_harness(
+                    harness if harness is not None else recorded.get("harness_mode")
+                )
+                check_harness(harness_name, [agent_name])
+            except ValueError as exc:
+                raise branch_run.BranchPlanError(f"--harness: {exc}") from None
             plan = branch_run.BranchPlan(
                 task_paths=tasks,
                 agent=agent_name,
                 model=model or (recorded.get("model") if agent is None else None),
                 reasoning_effort=reasoning_effort,
+                harness=harness_name,
                 sandbox=sandbox or (source.provider if source else "docker"),
                 children=[branch_run.parse_child_spec(spec) for spec in (child or [])],
                 checkpoint_after=checkpoint_after_prompt

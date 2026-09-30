@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Running a failing command."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc 'ls /nonexistent-dir'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc 'ls /nonexistent-dir'","aggregated_output":"ls: cannot access '/nonexistent-dir': No such file or directory\n","exit_code":2,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"It failed as expected."}}
+{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":100,"reasoning_output_tokens":0}}

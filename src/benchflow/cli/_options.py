@@ -27,6 +27,16 @@ JobsDirOption = Annotated[
 MonitorJobsDirOption = Annotated[
     str, typer.Option("--jobs-dir", help="Output root for monitor artifacts.")
 ]
+HarnessOption = Annotated[
+    str | None,
+    typer.Option(
+        "--harness",
+        help=(
+            "How the agent runs: acp (default, its ACP adapter) or native (its "
+            "own CLI in headless JSON mode; claude-agent-acp and codex-acp)"
+        ),
+    ),
+]
 SkillModeOption = Annotated[
     str,
     typer.Option("--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"),

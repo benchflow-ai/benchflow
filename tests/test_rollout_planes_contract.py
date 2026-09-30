@@ -45,6 +45,7 @@ _REQUIRED_METHODS = (
     "stop_egress_denylist",
     "extract_usage",
     "connect_acp",
+    "connect_native",
     "execute_prompts",
     "harden_before_verify",
     "verifier",
