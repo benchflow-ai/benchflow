@@ -152,9 +152,11 @@ def test_a_missing_path_lists_its_parent_and_suggests_a_match(bench):
         br.resolve_source_with_metadata("acme/bench", path="tasks/citaton-check")
 
     message = str(caught.value)
-    assert "not found in acme/bench. Available: " in message
-    assert "['tasks/citation-check', 'tasks/court-form']" in message
-    assert message.endswith("Did you mean 'tasks/citation-check'?")
+    assert message == (
+        "Path 'tasks/citaton-check' not found in acme/bench. Did you mean "
+        "'tasks/citation-check'? Available: ['tasks/citation-check', "
+        "'tasks/court-form']"
+    )
     # Reporting the typo fetched no task's files.
     assert _blob(bench, "tasks/court-form/big.bin") in _missing_blobs(bench)
 
@@ -275,3 +277,21 @@ def test_the_fetch_prints_no_progress_on_a_terminal(bench):
         pytest.skip("this git prints no fetch progress on a terminal")
     assert b"Receiving objects" not in ours
     assert b"remote:" not in ours
+
+
+def test_a_long_listing_is_cut_and_counted(tmp_path):
+    """SkillsBench's tasks/ holds 87 folders; the message lists 12 of them."""
+    root = tmp_path / "repo"
+    for index in range(15):
+        (root / "tasks" / f"task-{index:02d}").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError) as caught:
+        br._resolve_repo_path(root, "tasks/nothing-like-it", "acme/bench")
+
+    message = str(caught.value)
+    assert message.startswith(
+        "Path 'tasks/nothing-like-it' not found in acme/bench. Available: "
+        "['tasks/task-00', "
+    )
+    assert "'tasks/task-11']" in message
+    assert message.endswith(" and 3 more")

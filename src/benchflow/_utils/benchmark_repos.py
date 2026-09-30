@@ -445,7 +445,7 @@ def _resolve_repo_path(root: Path, path: str, repo_label: str) -> Path:
     return target_resolved
 
 
-_MAX_LISTED_ENTRIES = 30
+_MAX_LISTED_ENTRIES = 12
 
 
 def _directory_entries(root: Path, rel: str, *, sparse: bool) -> list[str] | None:
@@ -486,14 +486,15 @@ def _missing_path_message(
     shown = [f"{prefix}/{name}" if prefix else name for name in names]
     listing = shown[:_MAX_LISTED_ENTRIES]
     more = len(shown) - len(listing)
-    message = f"Path {path!r} not found in {repo_label}. Available: {listing}"
-    if more:
-        message += f" and {more} more"
+    message = f"Path {path!r} not found in {repo_label}."
     wanted = parts[len(parent_parts)] if len(parts) > len(parent_parts) else ""
     close = difflib.get_close_matches(wanted, names, n=1) if wanted else []
     if close:
         guess = f"{prefix}/{close[0]}" if prefix else close[0]
-        message += f". Did you mean {guess!r}?"
+        message += f" Did you mean {guess!r}?"
+    message += f" Available: {listing}"
+    if more:
+        message += f" and {more} more"
     return message
 
 
