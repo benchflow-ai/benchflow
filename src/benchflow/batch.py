@@ -35,6 +35,7 @@ from benchflow.runtime import run as arun
 if TYPE_CHECKING:
     from benchflow.jobs import Denominators
     from benchflow.rollout import RolloutConfig
+    from benchflow.runtime import Agent, Environment, RuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +109,25 @@ async def _close_loop_clients() -> None:
             await manager._cleanup()
 
 
-def run_sync(*args: Any, **kwargs: Any) -> RolloutResult:
+def run_sync(
+    subject: Agent | RolloutConfig | str,
+    env: Environment | str | None = None,
+    config: RuntimeConfig | None = None,
+    *,
+    task_path: str | Path | None = None,
+    model: str | None = None,
+) -> RolloutResult:
     """Blocking form of :func:`arun`; takes exactly the same arguments.
+
+    It also works inside a running event loop, such as a Jupyter cell.
 
     >>> import benchflow as bf
     >>> bf.run_sync.__doc__.splitlines()[0]
     'Blocking form of :func:`arun`; takes exactly the same arguments.'
     """
-    return run_blocking(lambda: arun(*args, **kwargs))
+    return run_blocking(
+        lambda: arun(subject, env, config, task_path=task_path, model=model)
+    )
 
 
 class Completed(NamedTuple):
