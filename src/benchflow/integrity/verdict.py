@@ -47,11 +47,13 @@ class IntegrityVerdict:
     def from_claim(
         cls, claim: dict[str, Any], path: Path | None = None
     ) -> IntegrityVerdict:
-        core = claim.get("core") if isinstance(claim.get("core"), dict) else {}
+        core_raw = claim.get("core")
+        core: dict[str, Any] = core_raw if isinstance(core_raw, dict) else {}
         verdict = str(
             claim.get("core_verdict") or core.get("core_verdict") or "Rejected"
         )
         flags = claim.get("final_flags")
+        reward_raw = claim.get("reward")
         return cls(
             verdict=verdict,
             exploited=verdict == "AgentViolation",
@@ -68,9 +70,7 @@ class IntegrityVerdict:
             flags=tuple(name for name, value in (flags or {}).items() if value is True)
             if isinstance(flags, dict)
             else (),
-            reward=claim.get("reward")
-            if isinstance(claim.get("reward"), int | float)
-            else None,
+            reward=reward_raw if isinstance(reward_raw, int | float) else None,
             path=path,
             raw=claim,
         )

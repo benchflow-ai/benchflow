@@ -10,6 +10,7 @@ reward and trajectory folders under ``/logs``.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import cast
 
 from benchflow.integrity.constants import RESOURCE_CLASSES, ResourceClass
 
@@ -43,7 +44,7 @@ def normalize_manifest_resources(
         root = str(path).replace("\\", "/").lower().rstrip("/")
         if not root.startswith("/"):
             root = f"/{root}"
-        normalized.append((root, resource_class))  # type: ignore[arg-type]
+        normalized.append((root, cast("ResourceClass", resource_class)))
     normalized.sort(key=lambda item: len(item[0]), reverse=True)
     return tuple(normalized)
 
