@@ -457,6 +457,7 @@ class RolloutConfig:
 
     @property
     def recorded_skill_mode(self) -> str:
+        """The skill mode written to the rollout's records."""
         return self.artifact_skill_mode or self.skill_mode
 
     @property

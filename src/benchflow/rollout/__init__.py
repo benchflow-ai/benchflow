@@ -934,10 +934,12 @@ class Rollout:
 
     @property
     def env(self) -> Any:
+        """The rollout's sandbox, once :meth:`setup` created it."""
         return self._env
 
     @property
     def acp_client(self) -> Any:
+        """The agent's ACP client while connected, else None."""
         return self._acp_client
 
     def activity_snapshot(self) -> ActivitySnapshot:
@@ -988,6 +990,7 @@ class Rollout:
 
     @property
     def trajectory(self) -> list[dict]:
+        """The ACP events captured so far."""
         return self._trajectory
 
     def record_external_tool_call(
@@ -1031,10 +1034,12 @@ class Rollout:
 
     @property
     def timing(self) -> dict[str, float]:
+        """Seconds per phase so far."""
         return self._timing
 
     @property
     def result(self) -> RolloutResult | None:
+        """The final result once the rollout is verified or finished, else None."""
         if self._completed_result is not None:
             return self._completed_result
         if self._phase not in ("verified", "cleaned"):

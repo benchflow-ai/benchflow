@@ -96,21 +96,26 @@ class RegradeSummary:
 
     @property
     def regraded(self) -> list[TrialRegrade]:
+        """Trials whose stored workspace was scored again."""
         return [t for t in self.trials if t.status == "regraded"]
 
     @property
     def changed(self) -> list[TrialRegrade]:
+        """Regraded trials whose verdict changed."""
         return [t for t in self.trials if t.changed]
 
     @property
     def not_regradable(self) -> list[TrialRegrade]:
+        """Trials that kept no frozen workspace to score again."""
         return [t for t in self.trials if t.status == "not_regradable"]
 
     @property
     def failed(self) -> list[TrialRegrade]:
+        """Trials whose regrade failed."""
         return [t for t in self.trials if t.status == "failed"]
 
     def counts(self) -> dict[str, int]:
+        """How many trials were regraded, changed (and which way), failed or not regradable."""
         changes = [t.change for t in self.changed]
         return {
             "trials": len(self.trials),
@@ -123,6 +128,7 @@ class RegradeSummary:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        """The summary as the JSON document ``bench eval regrade --json`` prints."""
         return {
             "path": self.path,
             "regrade_id": self.regrade_id,

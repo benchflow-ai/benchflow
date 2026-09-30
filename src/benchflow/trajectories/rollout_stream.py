@@ -171,13 +171,16 @@ class StreamedRollout:
 
     @property
     def scored(self) -> bool:
+        """Whether the rollout has a reward."""
         return self.reward is not None
 
     @property
     def training_grade(self) -> bool:
+        """Whether every model call was captured token-in/token-out."""
         return bool(self.token_capture.get("training_grade"))
 
     def to_json_dict(self) -> dict[str, Any]:
+        """The record as a ``benchflow.rollout-stream.v1`` mapping."""
         return {
             "schema_version": ROLLOUT_STREAM_SCHEMA_VERSION,
             "job": self.job,
@@ -203,6 +206,7 @@ class StreamedRollout:
         }
 
     def to_json(self) -> str:
+        """The record as one compact JSON line."""
         return json.dumps(self.to_json_dict(), separators=(",", ":"))
 
 

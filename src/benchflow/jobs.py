@@ -116,6 +116,7 @@ class VerifierOutput:
 
     @classmethod
     def read(cls, verifier_dir: Path) -> VerifierOutput:
+        """Read ``verifier/`` (reward, stdout, stderr, test report); missing files are None."""
         reward = _read_text(verifier_dir / "reward.txt")
         return cls(
             reward_text=reward.strip() if reward is not None else None,
@@ -238,6 +239,7 @@ class Trial:
 
     @property
     def task_name(self) -> str:
+        """The task this trial ran."""
         return self.result.task_name
 
     @property
@@ -247,6 +249,7 @@ class Trial:
 
     @property
     def model(self) -> str | None:
+        """The model the agent used, or None."""
         return self.result.model
 
     @property
@@ -259,6 +262,7 @@ class Trial:
 
     @property
     def reward(self) -> float | None:
+        """The reward when the trial is scored; None when unscored (never 0 for a failure to score)."""
         if self.integration_failure is not None:
             return None
         reward = self.result.reward
@@ -300,6 +304,7 @@ class Trial:
 
     @property
     def passed(self) -> bool:
+        """Whether the trial passed (and its agent integration did not break)."""
         return self.result.passed and self.integration_failure is None
 
     def __repr__(self) -> str:
@@ -312,14 +317,17 @@ class Trial:
 
     @property
     def cost_usd(self) -> float | None:
+        """USD of this rollout, or None (see ``result.price_source``)."""
         return self.result.cost_usd
 
     @property
     def total_tokens(self) -> int | None:
+        """Tokens of this rollout, or None when unknown."""
         return self.result.total_tokens
 
     @property
     def control(self) -> Control | None:
+        """``oracle`` or ``empty`` for a control run, None for an agent run."""
         variant = str(
             self.config.get("task_variant") or self.raw.get("task_variant") or ""
         )
@@ -342,6 +350,7 @@ class Trial:
 
     @property
     def execution(self) -> Execution:
+        """How the run ended: completed, errored, timed_out or integration_failed."""
         if self.integration_failure is not None:
             return "integration_failed"
         if not self.result.error:
@@ -350,6 +359,7 @@ class Trial:
 
     @property
     def assessment(self) -> Assessment:
+        """Whether it got a score: scored, error (the verifier failed) or unscored."""
         from benchflow._utils.scoring import assessment_withholds_score
 
         if self.reward is not None and not assessment_withholds_score(self.raw):
@@ -689,18 +699,22 @@ class Denominators:
 
     @property
     def pass_rate_scored(self) -> float | None:
+        """Passed over scored trials; None when none was scored."""
         return self.passed / self.scored if self.scored else None
 
     @property
     def pass_rate_attempted(self) -> float | None:
+        """Passed over attempted trials; None when none was attempted."""
         return self.passed / self.attempted if self.attempted else None
 
     @property
     def pass_rate_clean(self) -> float | None:
+        """Passed over scored trials whose execution completed; None when none."""
         return self.clean_passed / self.clean_scored if self.clean_scored else None
 
     @classmethod
     def of(cls, trials: Iterable[Trial], *, controls_excluded: int = 0) -> Denominators:
+        """Count ``trials`` (see the class docstring for each count)."""
         items = list(trials)
         scored = [t for t in items if t.assessment == "scored"]
         rewards = [t.reward for t in scored if t.reward is not None]
@@ -811,6 +825,7 @@ class Job:
 
     @property
     def kind(self) -> Literal["evaluation", "branch", "directory"]:
+        """evaluation (an Evaluation job), branch (a branch job) or directory."""
         if (self.summary or {}).get("kind") == "benchflow-branch-job":
             return "branch"
         if self.evaluation is not None or self.summary is not None:
@@ -826,6 +841,7 @@ class Job:
         return [t for t in self.trials if t.control is not None]
 
     def by_task(self, *, include_controls: bool = False) -> dict[str, list[Trial]]:
+        """Trials grouped by task (control runs left out unless ``include_controls``)."""
         out: dict[str, list[Trial]] = {}
         for t in self.trials if include_controls else self.agents():
             out.setdefault(t.task_name, []).append(t)
@@ -855,6 +871,7 @@ class Job:
         ]
 
     def denominators(self, *, include_controls: bool = False) -> Denominators:
+        """Attempted, scored, errors and pass rates (control runs left out unless ``include_controls``)."""
         if include_controls:
             return Denominators.of(self.trials)
         return Denominators.of(self.agents(), controls_excluded=len(self.controls()))
@@ -893,6 +910,7 @@ class Job:
 
     @property
     def cost_usd(self) -> float | None:
+        """USD over the job's trials that reported one (one attempt each; ``trial.attempts`` has the rest); None when none did."""
         costs = [t.cost_usd for t in self.trials if t.cost_usd is not None]
         return math.fsum(costs) if costs else None
 
@@ -962,6 +980,7 @@ class Job:
         return path
 
     def to_jsonl(self, path: str | Path) -> Path:
+        """Write :meth:`to_records` as JSON Lines and return the path."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(r) + "\n" for r in self.to_records()))
@@ -1261,6 +1280,7 @@ class ComparisonRow:
 
     @property
     def delta(self) -> float | None:
+        """reward_b - reward_a, or None unless both sides were scored."""
         if self.reward_a is None or self.reward_b is None:
             return None
         return self.reward_b - self.reward_a
@@ -1321,6 +1341,7 @@ class Comparison:
         return _write_json(self.to_json_dict(), path, indent)
 
     def to_records(self) -> list[dict[str, Any]]:
+        """One flat dict per row, with its delta and the settings that differ."""
         out = []
         for r in self.rows:
             record = {k: v for k, v in r.__dict__.items() if k != "checks"}

@@ -123,18 +123,22 @@ class BenchmarkMetrics:
 
     @property
     def total(self) -> int:
+        """Trials counted (one per trial; see collect_metrics)."""
         return len(self.tasks)
 
     @property
     def passed(self) -> int:
+        """Trials whose score outcome is a pass."""
         return sum(1 for t in self.tasks if t.passed)
 
     @property
     def failed(self) -> int:
+        """Trials scored below a pass."""
         return sum(1 for t in self.tasks if t.failed)
 
     @property
     def errored(self) -> int:
+        """Trials that ended with an agent error and no score."""
         return sum(1 for t in self.tasks if t.errored)
 
     @property
@@ -215,22 +219,27 @@ class BenchmarkMetrics:
 
     @property
     def total_input_tokens(self) -> int:
+        """Input tokens over completed trials with trusted usage."""
         return sum(t.input_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_output_tokens(self) -> int:
+        """Output tokens over completed trials with trusted usage."""
         return sum(t.output_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_cache_read_tokens(self) -> int:
+        """Prompt-cache read tokens over completed trials with trusted usage."""
         return sum(t.cache_read_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_cache_creation_tokens(self) -> int:
+        """Prompt-cache write tokens over completed trials with trusted usage."""
         return sum(t.cache_creation_tokens or 0 for t in self.telemetry_tasks)
 
     @property
     def total_tokens(self) -> int:
+        """All tokens over completed trials with trusted usage."""
         return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
 
     @property
@@ -242,6 +251,7 @@ class BenchmarkMetrics:
 
     @property
     def avg_cost_per_trial_usd(self) -> float | None:
+        """Mean USD over the trials that reported a cost; None when none did."""
         priced = [t for t in self.telemetry_tasks if t.cost_usd is not None]
         total = self.total_cost_usd
         if total is None or not priced:
@@ -250,6 +260,7 @@ class BenchmarkMetrics:
 
     @property
     def telemetry_coverage(self) -> float:
+        """Fraction of completed trials with trusted token usage."""
         completed = self.telemetry_completed_tasks
         if not completed:
             return 0.0
@@ -257,6 +268,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_scores(self) -> dict[str, float]:
+        """Memory score per task, for trials that have one."""
         return {
             t.task_name: t.memory_score
             for t in self.tasks
@@ -265,6 +277,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_score(self) -> float | None:
+        """Mean memory score over the tasks that have one; None when none do."""
         scores = list(self.memory_scores.values())
         if not scores:
             return None
@@ -272,6 +285,7 @@ class BenchmarkMetrics:
 
     @property
     def memory_summary(self) -> dict[str, Any]:
+        """Memory scores in summary form: count, mean and formatted mean."""
         avg = self.memory_score
         return {
             "scored": len(self.memory_scores),

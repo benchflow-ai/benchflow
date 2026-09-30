@@ -36,6 +36,7 @@ class TestRewardFunc:
     """
 
     async def score(self, rollout_dir: Path) -> float:
+        """The reward the verifier wrote to ``reward.txt`` (0.0 when absent or empty)."""
         reward_path = rollout_dir / "reward.txt"
         if not reward_path.exists():
             return 0.0
@@ -504,6 +505,7 @@ class StringMatchRewardFunc:
         self.fuzzy = fuzzy
 
     async def score(self, rollout_dir: Path) -> float:
+        """1.0 when ``answer.txt`` matches ``expected`` (substring when fuzzy), else 0.0."""
         answer_path = rollout_dir / "answer.txt"
         if not answer_path.exists():
             return 0.0
@@ -523,5 +525,6 @@ class CodeExecRewardFunc:
         self.func = func
 
     async def score(self, rollout_dir: Path) -> float:
+        """The wrapped function's value for ``rollout_dir``, as a float."""
         result = self.func(rollout_dir)
         return float(result)
