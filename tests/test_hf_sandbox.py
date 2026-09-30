@@ -371,7 +371,11 @@ def test_bridge_resumes_from_line_and_ignores_duplicate_writes(tmp_path) -> None
                             seen.append(line)
                         if len(seen) == 2:
                             break
-            health = (await httpx.AsyncClient().get(proc._base + "health")).json()
+            health_resp = await httpx.AsyncClient().get(proc._base + "health")
+            # every bridge response closes its connection: the sandbox proxy would otherwise
+            # let the front proxy reuse it for sandbox API calls (/v1/exec -> bridge 404)
+            assert health_resp.headers["connection"] == "close"
+            health = health_resp.json()
             return seen, [str(health["lines"])]
         finally:
             await proc.close()

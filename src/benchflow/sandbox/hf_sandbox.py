@@ -390,15 +390,25 @@ class HFSandbox(BaseSandbox):
                 user_arg = shlex.quote(str(user))
             command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
         # argv mode: no extra /bin/sh -c wrapper; env travels in the API payload.
-        result = await asyncio.to_thread(
-            sandbox.run,
-            ["/bin/bash", "-c", command],
-            shell=False,
-            cwd=cwd,
-            env=env or None,
-            timeout=timeout_sec,
-            check=False,
-        )
+        try:
+            result = await asyncio.to_thread(
+                sandbox.run,
+                ["/bin/bash", "-c", command],
+                shell=False,
+                cwd=cwd,
+                env=env or None,
+                timeout=timeout_sec,
+                check=False,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "HF sandbox exec failed (%s): cwd=%r env_keys=%s command=%r",
+                exc,
+                cwd,
+                sorted(env or {}),
+                command[:300],
+            )
+            raise
         if getattr(result, "timed_out", False):
             raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
         code = getattr(result, "exit_code", None)

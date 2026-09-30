@@ -85,6 +85,15 @@ def main():
         def log_message(self, *args):
             pass
 
+        def end_headers(self):
+            # One request per connection. The sandbox server's port proxy hands a proxied
+            # keep-alive connection through to us as-is, so the front proxy may reuse it
+            # for later sandbox API calls (/v1/exec reached this bridge and got 404 on
+            # Sept 30). Closing after every response keeps our connections private.
+            self.send_header("connection", "close")
+            self.close_connection = True
+            super().end_headers()
+
         def _json(self, code, obj):
             body = json.dumps(obj).encode()
             self.send_response(code)
