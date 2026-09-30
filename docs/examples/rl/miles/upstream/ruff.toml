@@ -1,0 +1,13 @@
+# The files under this folder are the patch for radixark/miles
+# (examples/experimental/benchflow and its tests), so they follow Miles's style,
+# not BenchFlow's: black and isort at 119 columns, ruff's E, F, B and UP rules,
+# Python 3.10.
+line-length = 119
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "B", "UP", "I"]
+ignore = ["E402", "E501"]
+
+[lint.isort]
+known-first-party = ["miles", "miles_plugins"]
