@@ -238,6 +238,55 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENROUTER_API_KEY",
     ),
+    # Baseten Model APIs. One key serves all three protocols. Both models read
+    # images on every protocol; the Anthropic endpoint rejects more than 8
+    # images per request and needs a Bearer token. Baseten's Responses endpoint
+    # rejects an image inside a tool result (function_call_output), which is
+    # where Codex puts one, so Codex goes through the chat-completions bridge.
+    # Cost: USD per 1M tokens (baseten.co/pricing, 2026-09-29); no cached-input
+    # discount is published, so cached tokens are priced as input.
+    "baseten": ProviderConfig(
+        name="baseten",
+        base_url="https://inference.baseten.co/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="BASETEN_API_KEY",
+        endpoints={
+            "openai-completions": "https://inference.baseten.co/v1",
+            "openai-responses": "https://inference.baseten.co/v1",
+            "anthropic-messages": "https://inference.baseten.co",
+        },
+        anthropic_auth_header="bearer",
+        responses_bridge=True,
+        models=[
+            {
+                "id": "zai-org/GLM-5.3",
+                "name": "GLM-5.3",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "maxImages": 8,
+                "cost": {
+                    "input": 1.40,
+                    "output": 4.40,
+                    "cacheRead": 1.40,
+                    "cacheWrite": 1.40,
+                },
+            },
+            {
+                "id": "moonshotai/Kimi-K3",
+                "name": "Kimi K3",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "maxImages": 8,
+                "cost": {
+                    "input": 3.00,
+                    "output": 15.00,
+                    "cacheRead": 3.00,
+                    "cacheWrite": 3.00,
+                },
+            },
+        ],
+    ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(

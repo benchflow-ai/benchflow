@@ -281,6 +281,58 @@ def test_x_api_key_provider_gets_no_bearer_header():
     assert litellm_proxy_auth_env(route, {"ZAI_API_KEY": "k"}) == {}
 
 
+BASETEN_ENV = {"BASETEN_API_KEY": "sk-baseten-test"}
+
+
+def test_baseten_claude_agent_reaches_messages_endpoint_with_bearer():
+    env = resolve_agent_env("claude-agent-acp", "baseten/zai-org/GLM-5.3", BASETEN_ENV)
+    route = resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", env, protocol="anthropic-messages"
+    )
+
+    assert route.upstream_model == "anthropic/zai-org/GLM-5.3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co"
+    assert route.litellm_params["api_base"] == env["BENCHFLOW_PROVIDER_BASE_URL"]
+    assert route.litellm_params["api_key"] == "os.environ/BASETEN_API_KEY"
+    assert route.litellm_params["extra_headers"] == {
+        "Authorization": f"os.environ/{LITELLM_BEARER_AUTH_ENV}"
+    }
+    assert route.required_env == ("BASETEN_API_KEY",)
+    assert litellm_proxy_auth_env(route, env) == {
+        LITELLM_BEARER_AUTH_ENV: "Bearer sk-baseten-test"
+    }
+    assert "sk-baseten-test" not in yaml.safe_dump(
+        litellm_proxy_config(route, master_key="sk-local")
+    )
+
+
+def test_baseten_codex_goes_through_responses_bridge():
+    route = resolve_litellm_route(
+        "baseten/moonshotai/Kimi-K3", BASETEN_ENV, protocol="openai-responses"
+    )
+
+    assert route.upstream_model == "openai/moonshotai/Kimi-K3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
+    assert route.responses_model == "benchflow-baseten-moonshotai-Kimi-K3-responses-bridge"
+    by_name = {
+        e["model_name"]: e
+        for e in litellm_proxy_config(route, master_key="sk-local")["model_list"]
+    }
+    assert by_name[route.responses_model]["litellm_params"]["model"] == (
+        "openai/chat_completions/moonshotai/Kimi-K3"
+    )
+    assert "extra_headers" not in route.litellm_params
+
+
+def test_baseten_chat_route_is_plain_openai_compatible():
+    route = resolve_litellm_route("baseten/zai-org/GLM-5.3", BASETEN_ENV)
+
+    assert route.upstream_model == "openai/zai-org/GLM-5.3"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
+    assert route.litellm_params["api_key"] == "os.environ/BASETEN_API_KEY"
+    assert "extra_headers" not in route.litellm_params
+
+
 @pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])
 def test_gemini_native_route_honors_explicit_base_url(model):
     """Guards the fix from PR #881 for issue #672."""
