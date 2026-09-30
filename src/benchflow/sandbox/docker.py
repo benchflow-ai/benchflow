@@ -47,6 +47,7 @@ from benchflow.sandbox._docker_sweep import (
     process_token,
     release_project,
 )
+from benchflow.sandbox._image_holders import ImageHold
 from benchflow.sandbox._recovery_baseline import (
     DockerRecoveryBaseline,
     capture_baseline,
@@ -449,6 +450,7 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._image_hold: ImageHold | None = None
         self._logs_are_mounted = True
 
         verifier_dir = (
@@ -841,6 +843,18 @@ class DockerSandbox(BaseSandbox):
         self._use_prebuilt = self._recovery_baseline is not None or (
             not force_build and bool(self.task_env_config.docker_image)
         )
+        if self._recovery_baseline is None and self._image_hold is None:
+            # Hold the image before building it, so a sibling rollout's
+            # teardown does not remove it under us (sandbox/_image_holders.py).
+            image = (
+                self._env_vars.prebuilt_image_name
+                if self._use_prebuilt
+                else self._env_vars.main_image_name
+            )
+            if image:
+                hold = ImageHold(image)
+                await asyncio.to_thread(hold.acquire)
+                self._image_hold = hold
 
         # Gate the entire startup phase (build + down + up) — not just build.
         # When images are cached, build is a no-op so a build-only semaphore
@@ -933,6 +947,14 @@ class DockerSandbox(BaseSandbox):
                 )
             else:
                 down = self._down_command(delete)
+                hold = self._image_hold
+                if (
+                    hold is not None
+                    and "--rmi" in down
+                    and not await asyncio.to_thread(hold.begin_release)
+                ):
+                    # Another live rollout holds the image: keep it.
+                    down = [a for a in down if a not in {"--rmi", "all"}]
                 await self._run_docker_compose_command(
                     down, timeout_sec=120 if "--rmi" in down else 90
                 )
@@ -953,6 +975,10 @@ class DockerSandbox(BaseSandbox):
                 )
                 await self._force_kill_project()
         finally:
+            if self._image_hold is not None:
+                self._image_hold.end_release()
+                self._image_hold.discard()
+                self._image_hold = None
             if not self._keep_containers:
                 # Whatever teardown left is now garbage the sweep may remove.
                 release_project(self.compose_project_name)
