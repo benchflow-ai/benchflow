@@ -494,9 +494,7 @@ def test_segments_are_attested_against_the_relay_log(tmp_path):
 
     call = _capture([1, 2], [3])
     root = write_rollout(tmp_path / "job", "t__a", calls=[call])
-    digest = token_digest(
-        [1, 2], [{"index": 0, "token_ids": [3], "logprobs": [-0.5]}]
-    )
+    digest = token_digest([1, 2], [{"index": 0, "token_ids": [3], "logprobs": [-0.5]}])
     (root / "trajectory" / "policy_relay.jsonl").write_text(
         json.dumps({"status": "ok", "digest": digest, "version": 12}) + "\n"
     )
