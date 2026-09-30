@@ -6,7 +6,7 @@ In the post, the optimizer is trusted to keep away from the test set. Here the t
 
 ## The loop
 
-`climb()` in [`hillclimb.py`](hillclimb.py) is the whole loop, 30 lines; `one_round()` (propose, evaluate, keep or revert) is 30 more and `decide()`, the keep-or-revert rule, 41.
+`climb()` in [`hillclimb.py`](hillclimb.py) is the whole loop, 32 lines; `one_round()` (propose, evaluate, keep or revert) is 30 more and `decide()`, the keep-or-revert rule, 41.
 
 1. **Split** the tasks at random into train and test, with a seed (`--test-frac`, `--seed`), or read `--split-file`.
 2. **Check the graders.** Each task runs once with its own solution (the oracle) and once with an agent that does nothing (`nop`). A task whose oracle does not pass, or where doing nothing passes, has a grader bug, and is dropped.
@@ -20,10 +20,10 @@ In the post, the optimizer is trusted to keep away from the test set. Here the t
 
 | Primitive | For |
 |---|---|
-| `bf.Evaluation` with `bf.EvaluationConfig(skills_dir=..., skill_mode="with-skill", include_tasks=...)` | Each split, once per trial, as a normal BenchFlow job with the skills deployed; `agent="oracle"` and `agent="nop"` for the grader checks |
-| `bf.Budget`, `bf.RetryConfig` | A spending cap on every job; retries of infrastructure errors |
-| `bf.load_job`, `Job.agents()`, `Job.solve_rates()`, `Job.cost_usd`, `Trial.assessment` | Reading trials back; pass@1; leaving unscored trials out |
-| `bf.run(bf.RolloutConfig(uploads=..., pre_agent_hooks=...))` | The optimizer, as a rollout of a task folder the demo writes |
+| `bf.Evaluation` with `bf.EvaluationConfig(skills_dir=..., skill_mode="with-skill", include_tasks=..., config_override=...)` | Each split, once per trial, as a normal BenchFlow job with the skills deployed and a setup command that keeps Claude Code's session log (see [Cost](#cost)); `agent="oracle"` and `agent="nop"` for the grader checks |
+| `bf.Budget(max_cost_usd=..., max_sandbox_seconds=...)`, `bf.RetryConfig` | Every job's share of the caps; retries of infrastructure errors |
+| `bf.load_job`, `Job.agents()`, `Job.solve_rates()`, `Trial.assessment`, `Trial.cost_usd`, `Trial.timing` | Reading trials back; pass@1; leaving unscored trials out; cost and sandbox time |
+| `bf.run(bf.RolloutConfig(uploads=..., pre_agent_hooks=...))` | The optimizer, as a rollout of a task folder the demo writes (its `artifacts:` keep Claude Code's session log) |
 | `bf.Task` | Task instructions, for the optimizer (train only) and for the leak check (test) |
 
 The test [`tests/test_hillclimb_example.py`](../../../tests/test_hillclimb_example.py) checks that the demo uses no other BenchFlow names.
@@ -50,13 +50,14 @@ The recipe climbs a small office-files skill, [`office-skills/office-files`](off
 
 ```bash
 cd docs/examples/hillclimb
-export ANTHROPIC_API_KEY=...        # both agents
+export CLAUDE_CODE_OAUTH_TOKEN=...  # both agents: a Claude subscription (claude setup-token), or ANTHROPIC_API_KEY
 export DAYTONA_API_KEY=...          # or: export SANDBOX=docker
-./run.sh smoke    # 4 tasks, 2 trials, one forced round, a $10 cap
-./run.sh climb    # 20 tasks (12 train, 8 test), 5 trials, --min-gain 0.15, 5 rounds, a $250 cap
+export BENCHFLOW_DAYTONA_OWNER=hillclimb-demo   # labels the sandboxes, for `bench sandbox list` and `cleanup`
+./run.sh smoke    # 4 tasks, 2 trials, one forced round; caps: $10, 20 model rollouts, 6 sandbox-hours
+./run.sh climb    # 20 tasks (12 train, 8 test), 5 trials, --min-gain 0.15, 5 rounds; caps: $250, 610 rollouts, 120 sandbox-hours
 ```
 
-`run.sh` fetches SkillsBench into `$WORK/skillsbench` (default `~/hillclimb-demo`) and writes each run to `$WORK/runs/<stage>-<timestamp>/`. The knobs are environment variables: `TRIALS`, `MIN_GAIN`, `TEST_FRAC`, `SEED`, `ROUNDS`, `MAX_COST_USD`, `CONCURRENCY`, `SANDBOX`, `AGENT_MODEL`, `PROPOSER_MODEL`, `WORK`, `SKILLSBENCH_SHA`. The script itself runs as `uv run python docs/examples/hillclimb/hillclimb.py --help` from a BenchFlow checkout.
+`run.sh` fetches SkillsBench into `$WORK/skillsbench` (default `~/hillclimb-demo`) and writes each run to `$WORK/runs/<stage>-<timestamp>/`. The knobs are environment variables: `TRIALS`, `MIN_GAIN`, `TEST_FRAC`, `SEED`, `ROUNDS`, `MAX_COST_USD`, `MAX_ROLLOUTS`, `MAX_SANDBOX_HOURS`, `CONCURRENCY`, `SANDBOX`, `AGENT_MODEL`, `PROPOSER_MODEL`, `WORK`, `SKILLSBENCH_SHA`. The script itself runs as `uv run python docs/examples/hillclimb/hillclimb.py --help` from a BenchFlow checkout.
 
 With `SEED=7` and `TEST_FRAC=0.4` the split is:
 
@@ -68,11 +69,27 @@ All 20 tasks have an oracle, and none uses an LLM judge.
 
 ### What it needs
 
-- **Accounts.** An Anthropic API key for both agents, read from the environment and passed to the provider only through BenchFlow's model proxy. The proxy also prices each rollout for the budget, so it must be a priced key: a subscription login reports no USD. A sandbox: Daytona with `CONCURRENCY` 40 or more, or a large Docker host.
-- **Models.** `claude-haiku-4-5` for the agent under test and `claude-opus-4-8` for the optimizer. After the smoke run, check that `hillclimb.json`'s `cost.agent_usd` and `cost.proposer_usd` are above zero: a model missing from the pinned price table reports no USD, and the budget cannot count it.
-- **Cost and time.** Each evaluation runs 20 tasks x 5 trials = 100 rollouts, and a climb runs at most six (the baseline and five rounds): 600 rollouts, plus up to six optimizer runs. At roughly $0.05 to $0.30 per Haiku rollout and $1 to $5 per Opus optimizer run, that is about $40 to $200; these are estimates, not measured on these tasks, and the $250 cap stops the climb before a round it cannot afford. With 40 or more Daytona sandboxes an evaluation takes about as long as its slowest task, 15 to 30 minutes, so a full climb takes 2 to 4 hours. The smoke run costs a few dollars.
+- **Accounts.** Claude credentials for both agents, from the environment: a subscription token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`), which Claude Code uses directly, or an API key, which reaches the provider only through BenchFlow's model proxy. An API key overrides the token when both are set. A sandbox: Daytona with `CONCURRENCY` 40 or more, or a large Docker host.
+- **Models.** `claude-haiku-4-5-20251001` for the agent under test (the id BenchFlow's docs use for `claude-agent-acp`) and `claude-opus-5-5` for the optimizer (it needs Claude Code 2.1.280, which BenchFlow pins apart from the ACP adapter). The adapter maps them to its `haiku` and `opus` picker rows. After the smoke run, check `hillclimb.json`'s `cost`: `source` should not be `unknown`, and `context_1m` should be false. If an account's picker maps `claude-opus-5-5` to its 1M-context row (`opus[1m]`), pass `--proposer-model-env`, which gives Claude Code the model as `ANTHROPIC_MODEL` instead of through the picker.
+- **Cost and time.** Each evaluation runs 20 tasks x 5 trials = 100 rollouts, and a climb runs at most six (the baseline and five rounds): 600 rollouts, plus up to six optimizer runs. At roughly $0.05 to $0.30 per Haiku rollout and $1 to $5 per Opus optimizer run, that is about $40 to $200 (list-price equivalents under a subscription); these are estimates, not measured on these tasks, and the caps stop the climb before a round it cannot afford. With 40 or more Daytona sandboxes an evaluation takes about as long as its slowest task, 15 to 30 minutes, so a full climb takes 2 to 4 hours. The smoke run costs a few dollars.
 
-It stops early, and cheaply, when something is wrong: exit 2 with "Refusing to climb" when the noise is above `--min-gain` (only the baseline was spent; raise `TRIALS` or `TEST_FRAC`, or `MIN_GAIN`), and exit 1 when too many trials had no score.
+It stops early, and cheaply, when something is wrong: exit 2 with "Refusing to climb" when the noise is above `--min-gain` (only the baseline was spent; raise `TRIALS` or `TEST_FRAC`, or `MIN_GAIN`), and exit 1 when too many trials had no score or a cap would be passed.
+
+### Cost
+
+With a subscription, Claude Code calls the Anthropic API itself, so BenchFlow records each trial's tokens but no USD, and a `bf.Budget`'s `max_cost_usd` cannot count it. Claude Code keeps its own session log (`~/.claude/projects/<cwd>/<session>.jsonl`, subagents in `<session>/subagents/`), whose `cost-state` lines hold its running `totalCostUSD` and per-model `modelUsage` with `costUSD`, and whose responses hold their token usage. The demo puts that log into every trial folder, at `artifacts/claude-sessions/`, and prices the trial from it ([`hillclimb_cost.py`](hillclimb_cost.py)):
+
+- **Getting the log.** An evaluation trial gets a task setup command (`EvaluationConfig.config_override`) that links `/root/.claude/projects` to `/logs/artifacts/claude-sessions` before the agent is installed. BenchFlow copies `/root/.claude` into the sandbox user's home, so Claude Code writes its log into `/logs/artifacts`, which BenchFlow collects into the trial folder. The optimizer's task declares its sandbox user's `~/.claude/projects` as an artifact. Any credential from the environment is replaced in the collected logs.
+- **Pricing.** Claude Code's own `totalCostUSD` when a `cost-state` line counts every response in the log (source `claude-code-cost-state`); otherwise the responses' usage at Anthropic's list prices (`claude-code-usage-at-list-price`; on a real session log these reproduce Claude Code's `costUSD` for `claude-opus-5-5` within 0.3%). A trial without a log keeps BenchFlow's `cost_usd` (`benchflow`: an API key priced by the proxy), or is `unknown`.
+- **Where it shows.** `hillclimb.json` has `cost.source` and `cost.sources` (rollouts per source) for the run, `cost_source` and `cost_sources` for every split of every evaluation, and `cost_source` for every optimizer run; the report says it under the tiles.
+
+Three caps stop the climb before a step it cannot afford, and every job gets its share of the first two as a `bf.Budget`:
+
+| Cap | Counts | Binds without USD |
+|---|---|---|
+| `--max-cost-usd` | USD from the sources above; a job's `bf.Budget` counts only BenchFlow's own USD | between steps only |
+| `--max-sandbox-seconds` | sandbox wall-clock of every trial and optimizer run, the grader checks included | yes, inside every job too |
+| `--max-rollouts` | rollouts that call a model: evaluation trials and optimizer runs | yes, between steps (`bf.Budget` has no rollout count) |
 
 ## Outputs
 
@@ -96,6 +113,7 @@ Every job folder opens with `bench eval view`, and `bench eval metrics evals/<id
 | `hillclimb.py` | The loop (`climb`, `decide`), the evaluations, the optimizer's rounds, `hillclimb.json`, the command line |
 | `hillclimb_proposer.py` | The optimizer's sandbox: the train-only workspace, the mount check and manifest, the task it runs |
 | `hillclimb_stats.py` | Bootstrap intervals, paired deltas, rerun noise, the noise gate |
+| `hillclimb_cost.py` | What each rollout cost, from Claude Code's session log |
 | `hillclimb_report.py` | The HTML report |
 | `hillclimb.schema.json` | The schema of `hillclimb.json` |
 | `run.sh`, `tasks.txt`, `office-skills/` | The SkillsBench recipe |
@@ -113,10 +131,16 @@ What the demo had to build itself, which a general primitive could provide:
 - **Trials that never ran.** A budget stop leaves no `result.json`, so `bf.load_job` cannot count them; the demo compares against the planned tasks.
 - **What a rollout received.** `RolloutConfig.uploads` leaves no record in the trial folder; the demo writes its own manifest.
 - **Parallel Docker evaluations** in one process prune each other's just-created containers. The demo runs a Docker evaluation's jobs one after another until the fix on `fix/parallel-runs` lands.
+- **USD under a subscription.** A native `claude-agent-acp` run records tokens but `cost_usd` null, although the adapter sends the SDK's `total_cost_usd` in every `usage_update` notification: BenchFlow's ACP session drops that update type. The demo recovers the cost from Claude Code's session log.
+- **A rollout count in `bf.Budget`.** It caps USD, sandbox-seconds and tokens; the demo checks its rollout cap between steps.
+- **Artifacts or hooks for an `Evaluation`.** `EvaluationConfig` takes no pre-agent hooks, and `config_override` may not declare `artifacts:` (only `agent`, `sandbox` and `metadata` are patchable), so the session log reaches the trial folder through a setup command and BenchFlow's copy of `/root/.claude` into the sandbox user's home, which is an implementation detail.
+- **Artifacts of a rollout that errored.** Artifacts are collected when the verifier starts, which an agent error skips, so a trial whose agent crashed keeps no session log, and its cost is unknown.
+- **Retried attempts.** `bf.load_job` returns each task's last attempt; the attempts a `bf.RetryConfig` retried are folders it does not expose, so the rollout cap counts trials, not attempts (the sandbox-seconds come from each job's budget, which counts them).
+- **A usage limit is an ordinary ACP error.** When a subscription's limit is reached, the claude-agent-acp prompt fails with a generic `-32603` ("You've hit your weekly limit · resets ..."), recorded as `acp_error`, and the job retries it though no retry can succeed before the reset. The adapter has a typed `quota_exhausted` failure for clients that opt in to it; BenchFlow's ACP client does not.
 
 ## Limits
 
-- The no-network optimizer (`allow_internet: false`, the default) has not yet run on a real sandbox: the Docker test runs it with the network open so that it can reach its scripted model on the host. The smoke run is its first real test.
+- The no-network optimizer (`allow_internet: false`, the default) has reached the model on Daytona under a subscription: BenchFlow's native no-web proxy admitted Claude Code 2.1.280 and passed its `POST /v1/messages` to `api.anthropic.com` (it blocked two other requests). It has not yet finished a real proposal; the Docker test runs it with the network open so that it can reach its scripted model on the host.
 - There is no resume: each `--out` is a new run.
-- The budget is checked before each round and passed to every job as its cap; like `bench eval run --max-cost-usd`, it counts trials as they finish, so a round can overshoot by what its running trials spend.
+- The caps are checked before each step, and each job gets its share of what is left; like `bench eval run --max-cost-usd`, USD is counted as trials finish, so a round can overshoot the USD cap by what its running trials spend. The sandbox-seconds cap also counts running trials.
 - LLM-judged graders are not checked for consistency.
