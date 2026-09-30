@@ -169,6 +169,8 @@ def _report_checkpoint_retries(result: object) -> None:
         parts.append(f"{counts['failed_to_run']} failed to run")
     if counts.get("no_checkpoint"):
         parts.append(f"{counts['no_checkpoint']} had no checkpoint")
+    if counts.get("refused"):
+        parts.append(f"{counts['refused']} refused by the restore boundary")
     console.print(
         "Retries from checkpoints: "
         + ", ".join(parts)

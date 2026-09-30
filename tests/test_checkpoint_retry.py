@@ -289,11 +289,13 @@ def test_summary_reports_retries_next_to_the_original_score():
             retry={"status": "completed", "reward": 0.0, "original_reward": 0.0}
         ),
         SimpleNamespace(retry={"status": "no_checkpoint", "reason": "failure"}),
+        SimpleNamespace(retry={"status": "refused", "reason": "failure"}),
     ]
     assert retry_summary(results) == {
         "attempted": 2,
         "passed": 1,
         "no_checkpoint": 1,
+        "refused": 1,
         "failed_to_run": 0,
         "no_work": 0,
     }
@@ -335,6 +337,7 @@ async def test_job_summary_counts_retries_of_fresh_trials(tmp_path):
         "attempted": 1,
         "passed": 1,
         "no_checkpoint": 0,
+        "refused": 0,
         "failed_to_run": 0,
         "no_work": 0,
     }

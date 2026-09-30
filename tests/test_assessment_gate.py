@@ -46,7 +46,7 @@ def _result(assessment, reward=1.0, **extra):
         _result(["verified"]),
         _result({"status": ["verified"]}),
         _result({"status": {"verified": True}}),
-        # A report row built from a legacy robotics manifest.
+        # A report row built from a legacy physical-trial manifest.
         {"status": "awaiting_assessment", "rewards": {"reward": 1.0}},
     ],
 )

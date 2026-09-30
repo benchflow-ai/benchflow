@@ -207,6 +207,61 @@ class ResumeMismatchError(ValueError):
     """
 
 
+def _budget_overrides(cfg: Any, task_dir: Path) -> dict[str, Any]:
+    """Per-rollout overrides from ``--timeout-multiplier`` and ``--extra-instruction``."""
+    out: dict[str, Any] = {}
+    if cfg.timeout_multiplier and cfg.timeout_multiplier != 1:
+        from benchflow.task import Task
+
+        base = Task(task_dir).config.agent.timeout_sec or 900
+        out["timeout"] = max(1, round(float(base) * float(cfg.timeout_multiplier)))
+    if cfg.extra_instruction:
+        out["prompt_suffix"] = cfg.extra_instruction
+    return out
+
+
+def _seeds_from_config(value: Any) -> list[int] | None:
+    """``seeds:`` in a job config: a list of ints, or the CLI form (``0-4``)."""
+    if value is None or isinstance(value, list):
+        return value
+    from benchflow.embodied.rollouts import parse_seeds
+
+    return parse_seeds(str(value))
+
+
+def task_name_selected(name: str, include: set[str], exclude: set[str]) -> bool:
+    """``--include`` / ``--exclude`` matching: exact names or fnmatch globs
+    (``libero-10-*``, ``*-hard``). Exclude wins over include."""
+    import fnmatch
+
+    def hit(patterns: set[str]) -> bool:
+        return any(
+            name == p or (any(c in p for c in "*?[") and fnmatch.fnmatchcase(name, p))
+            for p in patterns
+        )
+
+    if exclude and hit(exclude):
+        return False
+    return not include or hit(include)
+
+
+def sample_task_dirs(
+    dirs: list[Path], n_tasks: int | None, seed: int | None, is_task=None
+) -> list[Path]:
+    """``--n-tasks N [--sample-seed S]``: the first N task dirs in sorted order, or a
+    seeded random sample of N (reproducible: same seed, same tasks), kept sorted."""
+    if not n_tasks or n_tasks <= 0:
+        return dirs
+    tasks = [d for d in dirs if is_task is None or is_task(d)]
+    if len(tasks) <= n_tasks:
+        return tasks
+    if seed is None:
+        return tasks[:n_tasks]
+    import random
+
+    return sorted(random.Random(seed).sample(tasks, n_tasks))
+
+
 class MalformedTaskError(ValueError):
     """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
     but fails to parse (#3).
@@ -584,6 +639,14 @@ class EvaluationConfig:
     base_image_override: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
+    # Sample limit (``--n-tasks``): after include/exclude, run a random sample of
+    # this many tasks, drawn with ``sample_seed`` (sorted order when seed is None).
+    n_tasks: int | None = None
+    sample_seed: int | None = None
+    # Scale every task's agent time budget (``--timeout-multiplier``).
+    timeout_multiplier: float | None = None
+    # Text appended to every task prompt (``--extra-instruction``).
+    extra_instruction: str | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
@@ -624,6 +687,10 @@ class EvaluationConfig:
     # Hard per-job budget (benchflow.budget): stop launching and cancel
     # running trials once USD, sandbox-seconds or tokens reach a cap.
     budget: Budget | None = None
+    # Seeded rollouts (`--seeds 0-4`): every task whose task format writes seeded
+    # variants runs once per seed; summary.json then carries a `seeded` report
+    # (pass@k, variance, reset reproducibility). See docs/embodied.md.
+    seeds: list[int] | None = None
 
     def retry_policy(self) -> RetryPolicy | None:
         """The parsed retry policy, or None when not requested."""
@@ -1071,6 +1138,11 @@ class Evaluation:
             "retry_prompt": cfg.retry_prompt,
             "retry_resume_session": cfg.retry_resume_session,
             "budget": None if cfg.budget is None else cfg.budget.to_dict(),
+            "seeds": cfg.seeds,
+            "n_tasks": cfg.n_tasks,
+            "sample_seed": cfg.sample_seed,
+            "timeout_multiplier": cfg.timeout_multiplier,
+            "extra_instruction": cfg.extra_instruction,
             "source_provenance": cfg.source_provenance,
             "dataset_name": cfg.dataset_name,
             "dataset_version": cfg.dataset_version,
@@ -1273,6 +1345,11 @@ class Evaluation:
             retry_prompt=raw.get("retry_prompt"),
             retry_resume_session=bool(raw.get("retry_resume_session", False)),
             budget=Budget.coerce(raw.get("budget")),
+            seeds=_seeds_from_config(raw.get("seeds")),
+            n_tasks=raw.get("n_tasks"),
+            sample_seed=raw.get("sample_seed"),
+            timeout_multiplier=raw.get("timeout_multiplier"),
+            extra_instruction=raw.get("extra_instruction"),
         )
         evaluation = cls(
             tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs
@@ -1389,14 +1466,37 @@ class Evaluation:
         that PARSES but is structurally incomplete (e.g. a schema-only fixture)
         keeps its existing silent skip.
         """
+        from benchflow.task.formats import detect_task_format, materialize_task_dir
+
+        seeds = self._config.seeds
+        include, exclude = self._config.include_tasks, self._config.exclude_tasks
+
+        def picked(name: str) -> bool:
+            return task_name_selected(name, include, exclude)
+
+        def materialize(d: Path) -> list[Path]:
+            if not seeds:
+                return [materialize_task_dir(d)]
+            return [materialize_task_dir(d, seed=s) for s in seeds]
+
+        # A task in a registered task format (benchflow.task.formats) at the
+        # root is a single-task input too; it runs as its materialized package.
+        if detect_task_format(self._tasks_dir) is not None:
+            natives = materialize(self._tasks_dir)
+            # with seeds, filters match the source folder (like child folders below)
+            base = self._tasks_dir.name if seeds else natives[0].name
+            if not picked(base):
+                return []
+            return natives
+
         # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
-            if self._tasks_dir.name in self._config.exclude_tasks:
-                return []
-            if (
-                self._config.include_tasks
-                and self._tasks_dir.name not in self._config.include_tasks
-            ):
+            if seeds:
+                raise ValueError(
+                    f"--seeds: {self._tasks_dir.name} is a native task package; seeded rollouts "
+                    "need a task format that writes seeded variants (docs/embodied.md)"
+                )
+            if not picked(self._tasks_dir.name):
                 return []
             return [self._tasks_dir]
 
@@ -1408,14 +1508,27 @@ class Evaluation:
         # PARSES but is structurally incomplete (schema-only fixture) keeps its
         # silent skip.
         selected: list[Path] = []
-        for d in sorted(self._tasks_dir.iterdir()):
-            if not d.is_dir():
-                continue
-            if d.name in self._config.exclude_tasks:
-                continue
-            if self._config.include_tasks and d.name not in self._config.include_tasks:
+        children = [
+            d
+            for d in sorted(self._tasks_dir.iterdir())
+            if d.is_dir() and picked(d.name)
+        ]
+        children = sample_task_dirs(
+            children,
+            self._config.n_tasks,
+            self._config.sample_seed,
+            is_task=lambda d: detect_task_format(d) is not None or _is_task_dir(d),
+        )
+        for d in children:
+            if detect_task_format(d) is not None:
+                selected.extend(materialize(d))
                 continue
             if _is_task_dir(d):
+                if seeds:
+                    raise ValueError(
+                        f"--seeds: {d.name} is a native task package; seeded rollouts need "
+                        "a task format that writes seeded variants (docs/embodied.md)"
+                    )
                 selected.append(d)
                 continue
             malformed = _task_parse_error(d)
@@ -1756,6 +1869,7 @@ class Evaluation:
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
             loop_strategy=cfg.loop_strategy,
+            **_budget_overrides(cfg, task_dir),
         )
         rollout_config.checkpoints = cfg.checkpoint_policy()
         rollout_config.freeze_workspace = cfg.freeze_workspace
@@ -2692,6 +2806,15 @@ class Evaluation:
         # Write summary into the job directory so each run is self-contained.
         job_dir = self._jobs_dir / self._job_name
         job_dir.mkdir(parents=True, exist_ok=True)
+        if cfg.seeds:
+            # Seeded rollouts: per base task pass@k, mean/std, reset reproducibility.
+            try:
+                from benchflow.embodied.rollouts import seed_report
+
+                summary["seeds"] = list(cfg.seeds)
+                summary["seeded"] = seed_report(job_dir)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Seeded-rollout report failed: %s", e)
         summary_text = json.dumps(summary, indent=2)
         (job_dir / "summary.json").write_text(summary_text)
         # Backward-compat: also write to jobs_dir root for tooling that

@@ -1,7 +1,6 @@
 """HTTP serving: single-trajectory pages (with --confirm) and browse mode."""
 
 import hmac
-import json
 import secrets
 import sys
 from pathlib import Path
@@ -40,38 +39,6 @@ _MAX_DECISION_BYTES = 32
 def _utf8_safe_text(value: str) -> str:
     """Replace lone surrogates so rendered pages are always valid UTF-8."""
     return value.encode("utf-8", errors="replace").decode("utf-8")
-
-
-def _physical_trials_hint(path: Path) -> str | None:
-    """Where to read physical robot trials, which this viewer does not render.
-
-    A trial directory holds ``trial-record.json`` or a robotics
-    ``manifest.json`` (it names a ``trial_id``); look at *path* and two levels
-    below it, as ``physical-trials/<trial>`` usually sits under a run root.
-    """
-
-    def _is_trial(candidate: Path) -> bool:
-        if (candidate / "trial-record.json").is_file():
-            return True
-        try:
-            manifest = json.loads((candidate / "manifest.json").read_text())
-        except (OSError, ValueError):
-            return False
-        return isinstance(manifest, dict) and "trial_id" in manifest
-
-    if not path.is_dir():
-        return None
-    candidates = [path, *path.glob("*/"), *path.glob("*/*/")]
-    trials = [c for c in candidates if c.is_dir() and _is_trial(c)]
-    if not trials:
-        return None
-    return (
-        f"{path} holds {_plural(len(trials), 'physical robot trial')}, "
-        "which this viewer does not "
-        "render yet. Read one with `python -m benchflow.robotics index "
-        f"{trials[0]}`, or list execution and assessment states with "
-        f"`python -m benchflow.robotics report {trials[0].parent}`."
-    )
 
 
 def _plural(count: int, noun: str) -> str:
@@ -215,9 +182,6 @@ def _serve_single(
         # Don't write a blank trajectory.html into an unrelated directory or
         # start a server for nothing — fail fast like the not-a-directory path.
         print(f"No trajectories found in {path}")
-        hint = _physical_trials_hint(path)
-        if hint:
-            print(hint)
         sys.exit(1)
     html_content = _utf8_safe_text(html_content)
     if write_sidecar:

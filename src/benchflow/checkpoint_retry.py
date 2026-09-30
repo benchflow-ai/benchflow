@@ -132,6 +132,7 @@ async def run_checkpoint_retry(rollout: Any, result: Any, policy: RetryPolicy) -
     applies; record it without touching the trial's reward."""
     from benchflow.branch_lineage import ForkRecord, fork_cost
     from benchflow.checkpoints import load_checkpoints
+    from benchflow.embodied.spec import RestoreRefused, task_restore_boundary
     from benchflow.rollout_branch import _run_isolated_children
     from benchflow.sandbox.protocol import SandboxImage
 
@@ -142,6 +143,17 @@ async def run_checkpoint_retry(rollout: Any, result: Any, policy: RetryPolicy) -
         or run_dir is None
         or rollout._config.primary_agent in ("oracle", "nop")
     ):
+        return
+    # A checkpoint of an embodied task does not hold its world (the simulator
+    # or the robot), so a retry from it would start from the wrong state.
+    try:
+        task_restore_boundary(getattr(rollout, "_task", None)).require_world_restore(
+            "retry from checkpoint"
+        )
+    except (RestoreRefused, ValueError) as exc:
+        _publish(
+            rollout, result, {"status": "refused", "reason": reason, "error": str(exc)}
+        )
         return
     rows = [
         row
@@ -317,6 +329,8 @@ def retry_summary(results: Any) -> dict[str, int] | None:
             if isinstance(b.get("reward"), int | float) and b["reward"] >= 1.0
         ),
         "no_checkpoint": sum(1 for b in blocks if b.get("status") == "no_checkpoint"),
+        # Embodied tasks: a checkpoint does not hold the simulator or robot.
+        "refused": sum(1 for b in blocks if b.get("status") == "refused"),
         "failed_to_run": sum(1 for b in ran if b.get("status") == "failed"),
         "no_work": sum(1 for b in ran if b.get("no_work") is True),
     }

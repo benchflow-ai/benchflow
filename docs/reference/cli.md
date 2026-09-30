@@ -306,7 +306,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--checkpoints` | off | Keep a sandbox snapshot after these prompts (`every-prompt` or `prompt:N[,M]`) so `bench eval branch --from-checkpoint <trial>` can fork from it later; recorded in the trial's `checkpoints.json`. Docker or Daytona direct; see [Composed checkpoints](../composed-checkpoints.md) for cost and cleanup |
 | `--checkpoint-keep` | `3` | Keep at most this many checkpoints per trial; the oldest is deleted when a newer one is taken |
 | `--freeze-workspace` | off | Save each trial's final workspace and declared artifacts (`evidence/`, with a manifest) before the verifier runs, so `bench eval regrade` can re-score it with a changed verifier |
-| `--retry-from-checkpoint` | off | `on-failure`, `on-timeout` or both: when a trial fails or its agent times out, fork one retry child from its last kept checkpoint (needs `--checkpoints`), verified by the same verifier with the snapshot's original pre-agent baseline. The trial's `rewards` are kept; the retry's reward is reported next to them (`retry` in `result.json`, `checkpoint_retries` in `summary.json`, a `retry` fork in `tree.json`). See [Branching guide](../branching.md) |
+| `--retry-from-checkpoint` | off | `on-failure`, `on-timeout` or both: when a trial fails or its agent times out, fork one retry child from its last kept checkpoint (needs `--checkpoints`), verified by the same verifier with the snapshot's original pre-agent baseline. The trial's `rewards` are kept; the retry's reward is reported next to them (`retry` in `result.json`, `checkpoint_retries` in `summary.json`, a `retry` fork in `tree.json`). Embodied tasks are not retried (`status: refused`; see [the restore boundary](../embodied.md#the-restore-boundary-branching-checkpoint-restores-and-replay)). See [Branching guide](../branching.md) |
 | `--retry-prompt` | the prompts after the checkpoint | Prompt sent to the retry child, replacing those prompts. `@instruction` expands to the task instruction and `@verifier_feedback` to the failed trial's reward and the last ~3,000 characters of its verifier output, e.g. `--retry-prompt $'@instruction\n\nYour first attempt failed. @verifier_feedback'`. A fresh session knows only this prompt: without `@instruction` (or `--retry-resume-session`) the agent does not know the task. A retry that made no tool calls is logged as a warning and recorded as `no_work: true` (with `tool_calls`) in the `retry` block; the final summary prints a retries line and `summary.json` `checkpoint_retries` counts `no_work` |
 | `--retry-resume-session` | off | The retry child resumes the failed trial's conversation at the checkpoint (ACP `session/load`; agents that keep their session on disk, such as Claude Code) instead of a fresh session; needs a checkpoint that recorded its session id |
 | `--max-cost-usd` | none | Hard job budget in USD over trials that report a cost. At the cap no new trial starts and running ones are cancelled; both are listed in `summary.json` `budget` and not counted as failures. See [Job budget caps](./budget.md) |
@@ -329,8 +329,8 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
 | `--self-gen-no-internet` | `false` | Disable web tools for the self-generated skill run |
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
-| `--include` | — | Only run these task names; repeatable (e.g. `--include jax-computing-basics --include data-to-d3`) |
-| `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
+| `--include` | — | Only run these task names or globs; repeatable (e.g. `--include jax-computing-basics --include 'libero-10-*'`) |
+| `--exclude` | — | Skip these task names or globs; repeatable (e.g. `--exclude quantum-numerical-simulation`, `--exclude "*-hard"`) |
 | `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
 | `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
 | `--task-manifest-out` | — | Write selected task-set manifest JSON with task ids, paths, digests, and source provenance |
@@ -352,6 +352,12 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--eval-results-task` | — | Benchmark `task_id`, as defined in the dataset's `eval.yaml` |
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
+| `--seeds` | — | Seeded rollouts: run every task once per seed (`0-4`, `0,3,7`); tasks must be in a task format that writes seeded variants (e.g. embodied tasks). `summary.json` gets `seeded` (pass@k, mean, std per task). See [embodied.md](../embodied.md) |
+| `--n-tasks` | — | Run at most N tasks after `--include`/`--exclude`: the first N in sorted order, or a seeded random sample with `--sample-seed` |
+| `--sample-seed` | — | Seed for the `--n-tasks` sample (same seed, same tasks) |
+| `--timeout-multiplier` | — | Scale every task's agent time budget (`agent.timeout_sec`), e.g. `2.0`; the rollout's `config.json` records the effective `timeout_sec` |
+| `--extra-instruction` | — | Text appended to every task prompt (prompt ablations); recorded in `prompts.json` |
+| `--dry-run` | off | Resolve the plan (agent, model, selected tasks, seeds, budgets) and print it as JSON without running anything |
 
 `--publish-hf`/`--publish-bucket` also write a `README.md` run summary
 (agent, model, per-task reward and any error/verifier issue, deduplicated
@@ -1441,3 +1447,14 @@ bench eval continue-batch path/to/jobs-root --tasks-dir path/to/tasks
 | `--limit` | — | Limit discovered timeout folders |
 | `--strict-divergence` | `false` | Abort a run if replay leaves the original rails |
 | `--proxy-mode` | `auto` | Replay proxy placement: `auto`, `host`, or `sandbox` |
+
+## bench embodied
+
+Embodied rollouts (robots and simulators); see [embodied.md](../embodied.md).
+
+| Command | What it does |
+|---|---|
+| `bench embodied report JOB_DIR [--json]` | Per task: rewards by seed, mean, std, unbiased pass@k, reset reproducibility |
+| `bench embodied export JOB_DIR --out DIR` | Every trial's per-step transitions and episode index as `DIR/steps.jsonl` + `DIR/episodes.jsonl` |
+| `bench embodied check-spec SPEC.json` | Validate an embodiment spec (or a saved `robo info --json` response) |
+| `bench embodied robo-path` | Path of the standalone agent-side `robo` script |

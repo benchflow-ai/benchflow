@@ -149,7 +149,15 @@ def register_tasks(app: typer.Typer) -> None:
         but do not fail the check.
         """
         from benchflow._utils.task_authoring import check_task, check_task_warnings
+        from benchflow.task.formats import detect_task_format, materialize_task_dir
 
+        fmt = detect_task_format(task_dir)
+        if fmt is not None:
+            task_dir = materialize_task_dir(task_dir)
+            console.print(
+                f"{escape(fmt.name)} task format: checking the materialized package "
+                f"{escape(str(task_dir))}"
+            )
         for warning in check_task_warnings(task_dir) if task_dir.is_dir() else ():
             console.print(f"  [yellow]warning:[/yellow] {escape(warning)}")
         issues = check_task(

@@ -139,8 +139,8 @@ def _unique_compose_project_name(session_id: str) -> str:
     """A Compose project name no other sandbox on the daemon uses.
 
     The session id is the rollout name, and several callers fix it: branch
-    children are ``n<k>``, regrade's verifier ``verifier``, robotics
-    ``agent``, and SDK callers pass their own. Two sandboxes with one project
+    children are ``n<k>``, regrade's verifier ``verifier``, and SDK callers
+    pass their own. Two sandboxes with one project
     name share containers and networks: ``start()``'s ``compose down
     --remove-orphans`` and teardown's ``compose down`` of one delete the
     other's. The random suffix keeps concurrent sandboxes (any job, process

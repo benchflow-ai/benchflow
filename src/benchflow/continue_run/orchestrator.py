@@ -32,7 +32,12 @@ from typing import Any, cast
 
 from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
-from benchflow.continue_run.run_folder import RunFolder, RunFolderError, load_run_folder
+from benchflow.continue_run.run_folder import (
+    RunFolder,
+    RunFolderError,
+    load_run_folder,
+    require_replayable_task,
+)
 from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
     sandbox_replay_base_url,
@@ -524,7 +529,9 @@ async def continue_run(
     the replay without provider credentials.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
-    task_path = resolve_task_path(run, tasks_dir)
+    # config.json records only the task's name, so load_run_folder rarely sees
+    # the declaration of the task that actually runs: gate that task here.
+    task_path = require_replayable_task(run, resolve_task_path(run, tasks_dir))
 
     live_model = model or run.model
     live_forwarder = None

@@ -27,7 +27,7 @@ summary.not_regradable
 - `artifacts/` and `artifacts-manifest.json` (optional): files collected from `/logs/artifacts`. They are restored there, after each file's hash is checked against the manifest.
 - `trajectory/acp_trajectory.jsonl` (optional): republished to `/logs/agent` for verifiers that read the trajectory.
 
-A trial without `evidence/`, with a frozen workspace that no longer matches its manifest, or whose task folder cannot be found is reported as **not regradable**, with the reason. It is never scored against a reconstructed or empty workspace.
+A trial without `evidence/`, with a frozen workspace that no longer matches its manifest, or whose task folder cannot be found is reported as **not regradable**, with the reason. It is never scored against a reconstructed or empty workspace. So is a trial of an embodied task: its world (the simulator or the robot) is not in the frozen workspace, so the verifier would judge an episode the agent never touched (see [the restore boundary](./embodied.md#the-restore-boundary-branching-checkpoint-restores-and-replay)).
 
 ## How one trial is regraded
 

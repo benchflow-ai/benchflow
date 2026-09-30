@@ -151,6 +151,7 @@ def _optional_fields(raw: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in (
         "timeout",
+        "prompt_suffix",
         "services",
         "config_override",
         "max_user_rounds",
@@ -266,6 +267,7 @@ def rollout_config_to_dict(
             "concurrency": config.concurrency,
             "agent_idle_timeout_sec": config.agent_idle_timeout,
             "timeout": config.timeout,
+            "prompt_suffix": config.prompt_suffix,
             "context_root": str(config.context_root) if config.context_root else None,
             "base_image_override": config.base_image_override,
             "agent_env": agent_env if include_agent_env else None,

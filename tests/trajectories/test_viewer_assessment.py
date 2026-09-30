@@ -185,7 +185,7 @@ def test_catalog_rows_carry_both_statuses(tmp_path):
             "assessment unassessable",
         ),
         (
-            # Legacy benchflow.robotics manifest row.
+            # Legacy physical-trial manifest row.
             {"status": "awaiting_assessment", "rewards": {"reward": 1.0}},
             "assessment pending",
         ),

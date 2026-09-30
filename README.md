@@ -158,12 +158,13 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
+| Run a benchmark's own task folders natively (a task format plugin) | [Task formats](./docs/task-formats.md) |
+| Robots and simulators: embodiment spec, `robo` protocol, episode server, seeded rollouts, training export | [Embodied rollouts](./docs/embodied.md) |
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
 | Fork a run at a checkpoint into children (compare prompts, parallel or nested children, retry from a checkpoint, branch-tree training data) | [Branching guide](./docs/branching.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
-| Read or score a physical robot trial (`trial-record.json`) | [Physical robot trials](./docs/robotics.md) |
 | Contribute a trajectory capture | [Trajectory upload](./docs/traj-upload.md) |
 | Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
 | Use public vs internal preview SDK releases | [Release channels](./docs/release.md) |
