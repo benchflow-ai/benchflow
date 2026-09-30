@@ -1,0 +1,71 @@
+# Serve a base model and a LoRA checkpoint from one H100, OpenAI-compatible, with
+# tool calling on, so BenchFlow's evaluate.py can compare them on the same
+# deployment. Based on Baseten's Qwen3.5-9B recipe (vLLM 0.22.0, qwen3 reasoning
+# parser, qwen3_coder tool parser), plus the LoRA.
+#
+# The checkpoint here is the team's public env-0 SFT adapter on Hugging Face,
+# pinned by revision. To serve your own checkpoint, point the second `weights`
+# entry at it; from a private GCS bucket that looks like:
+#   - source: "gs://YOUR_BUCKET/path/to/adapter"      # adapter_config.json + adapter_model.safetensors
+#     mount_location: "/app/lora/benchflow-sft"
+#     auth: {auth_method: GCP_OIDC, gcp_oidc_service_account: SA@PROJECT.iam.gserviceaccount.com,
+#            gcp_oidc_workload_id_provider: projects/NUM/locations/global/workloadIdentityPools/POOL/providers/PROV}
+#     # or auth: {auth_method: CUSTOM_SECRET, auth_secret_name: gcp_service_account}
+# A full fine-tuned model instead of an adapter: point the first entry at it and
+# drop the --enable-lora flags.
+model_name: bf-rl-cookbook-qwen35-9b-lora
+model_metadata:
+  example_model_input:
+    model: benchflow-sft
+    messages:
+      - role: user
+        content: Return exactly ok.
+    max_tokens: 8
+  tags:
+    - openai-compatible
+    - benchflow-rl-cookbook
+base_image:
+  image: vllm/vllm-openai:v0.22.0-cu129
+weights:
+  - source: "hf://Qwen/Qwen3.5-9B@c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    mount_location: "/app/checkpoint/model"
+  - source: "hf://benchflow/benchflow-qwen35-9b@b585e34f7eefdb9e703f68143f51166441c5c593"
+    mount_location: "/app/lora/benchflow-sft"
+    allow_patterns:
+      - "adapter_config.json"
+      - "adapter_model.safetensors"
+docker_server:
+  # Two model names on one server: the base as Qwen/Qwen3.5-9B, the adapter as
+  # benchflow-sft (send it as the request's "model").
+  start_command: >-
+    sh -c 'vllm serve /app/checkpoint/model
+    --served-model-name Qwen/Qwen3.5-9B
+    --host 0.0.0.0
+    --port 8000
+    --gpu-memory-utilization 0.90
+    --max-model-len 32768
+    --dtype bfloat16
+    --reasoning-parser qwen3
+    --enable-auto-tool-choice
+    --tool-call-parser qwen3_coder
+    --enable-prefix-caching
+    --enable-lora
+    --max-lora-rank 32
+    --max-loras 1
+    --lora-modules benchflow-sft=/app/lora/benchflow-sft'
+  readiness_endpoint: /health
+  liveness_endpoint: /health
+  predict_endpoint: /v1/chat/completions
+  server_port: 8000
+environment_variables:
+  VLLM_LOGGING_LEVEL: WARNING
+  VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+runtime:
+  predict_concurrency: 64
+  health_checks:
+    startup_threshold_seconds: 1800
+    restart_threshold_seconds: 1200
+    stop_traffic_threshold_seconds: 120
+resources:
+  accelerator: H100:1
+  use_gpu: true
