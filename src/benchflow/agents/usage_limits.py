@@ -82,8 +82,13 @@ _MONTH_NAMES += ("jul", "aug", "sep", "oct", "nov", "dec")
 _MONTHS = {name: number for number, name in enumerate(_MONTH_NAMES, start=1)}
 _HIT_YOUR = re.compile(r"You've (?:hit|reached) your (?P<name>[^·.\n]+?)(?:\s*[·.]|$)")
 _RESETS = re.compile(r"\bresets (?P<when>[^·\n]+?)\s*(?:·|$)")
+# Codex: "Try again at 5:05 PM." or "... at Oct 3rd, 2026 5:05 PM." (sandbox time).
+_TRY_AGAIN_AT = re.compile(
+    r"try again at (?P<when>.+?(?:[ap]m|\([^)]*\)))\s*\.?\s*$", re.IGNORECASE
+)
 _CLOCK = re.compile(
-    r"^(?:(?P<month>[A-Za-z]{3})[a-z]* (?P<day>\d{1,2}),\s*(?:(?P<year>\d{4}),\s*)?)?"
+    r"^(?:(?P<month>[A-Za-z]{3})[a-z]* (?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s*"
+    r"(?:(?P<year>\d{4}),?\s*)?)?"
     r"(?:at )?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[ap]m)"
     r"(?:\s*\((?P<zone>[^)]+)\))?$",
     re.IGNORECASE,
@@ -115,8 +120,11 @@ class LimitInfo:
 
 
 def strip_wrappers(text: str) -> str:
-    """The agent's own words, without ``ACP error -32603: Internal error:``."""
-    return _WRAPPERS.sub("", text.strip(), count=1).strip()
+    """The agent's own words, without ``ACP error -32603: Internal error:``.
+
+    Codex writes a typographic apostrophe (``You’ve``); it is made plain.
+    """
+    return _WRAPPERS.sub("", text.strip().replace("\u2019", "'"), count=1).strip()
 
 
 def is_usage_limit_text(text: str | None) -> bool:
@@ -181,8 +189,9 @@ def parse_limit_text(
     """The window and reset a usage-limit message names, or None when it is not one.
 
     Understands Claude Code's ``You've hit your <limit> · resets <time>``, its
-    older ``Claude AI usage limit reached|<epoch>``, and a ``try again in 2
-    days 3 hours`` tail such as Codex's.
+    older ``Claude AI usage limit reached|<epoch>``, Codex's ``You’ve hit your
+    usage limit. ... Try again at Oct 3rd, 2026 5:05 PM.`` (a time with no
+    zone is the sandbox's, UTC) and a ``try again in 2 days 3 hours`` tail.
     """
     if not is_usage_limit_text(text):
         return None
@@ -195,7 +204,7 @@ def parse_limit_text(
     if legacy := _LEGACY.search(detail):
         resets_at = datetime.fromtimestamp(int(legacy["epoch"]), UTC)
         detail = "Claude AI usage limit reached"
-    elif resets := _RESETS.search(detail):
+    elif resets := _RESETS.search(detail) or _TRY_AGAIN_AT.search(detail):
         resets_at = parse_reset_time(resets["when"], now=now)
     elif again := _TRY_AGAIN_IN.search(detail):
         seconds = sum(

@@ -73,13 +73,18 @@ class UsageLimitError(AgentProtocolError, UserError):
         super().__init__(self.describe())
 
     def describe(self) -> str:
-        """``usage limit reached on login L: 7-day window, resets 2026-10-02 16:00 UTC (<detail>)``."""
+        """``usage limit reached on login L: 7-day window, resets 2026-10-02 16:00 UTC (<detail>)``.
+
+        The window and the reset are left out when the agent did not say them.
+        """
         where = f" on login {self.login}" if self.login else ""
-        window = f"{self.window} window, " if self.window else ""
-        return (
-            f"usage limit reached{where}: {window}resets "
-            f"{format_reset(self.resets_at)} ({self.detail})"
-        )
+        facts = []
+        if self.window:
+            facts.append(f"{self.window} window")
+        if self.resets_at is not None:
+            facts.append(f"resets {format_reset(self.resets_at)}")
+        told = f": {', '.join(facts)}" if facts else ""
+        return f"usage limit reached{where}{told} ({self.detail})"
 
     def __str__(self) -> str:
         return self.describe()

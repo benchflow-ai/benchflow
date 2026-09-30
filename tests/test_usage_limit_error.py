@@ -138,11 +138,11 @@ def test_a_relative_try_again_tail():
     assert err.resets_at == NOW + timedelta(days=2, hours=3, minutes=4)
 
 
-def test_an_unknown_reset_time_is_said_plainly():
+def test_a_message_with_no_window_or_reset_says_only_what_it_knows():
     err = UsageLimitError.from_text("You're out of usage credits")
     assert err is not None
     assert err.resets_at is None
-    assert "resets an unknown time" in str(err)
+    assert str(err) == "usage limit reached (You're out of usage credits)"
 
 
 @pytest.mark.parametrize(

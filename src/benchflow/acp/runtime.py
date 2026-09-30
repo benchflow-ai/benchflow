@@ -712,6 +712,7 @@ async def connect_acp(
                 subagent_transcript=bool(
                     agent_config and agent_config.acp_subagent_transcript
                 ),
+                typed_failures=bool(agent_config and agent_config.acp_typed_failures),
             )
             await acp_client.connect()
 
