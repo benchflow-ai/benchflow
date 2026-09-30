@@ -266,6 +266,18 @@ def sandbox_seconds(spent: list[float | None], rows: list[dict]) -> float:
     return max(sum(x for x in spent if x is not None), sum(r["seconds"] for r in rows))
 
 
+def session_capture(s: Settings, rec: Record, names: list[str]) -> bool:
+    """Whether the evaluations get SESSION_CAPTURE: an override replaces a
+    task's own setup commands, so not when a task declares some."""
+    own = [n for n in names if bf.Task(s.tasks_dir / n).config.sandbox.setup_commands]
+    if s.session_logs and own:
+        rec.warn(
+            f"no session logs (so no cost under a subscription): {', '.join(own)} "
+            "declare their own setup commands, which the capture would replace"
+        )
+    return s.session_logs and not own
+
+
 def config(s: Settings, names: list[str], **overrides) -> bf.EvaluationConfig:
     share = (
         s.concurrency
@@ -300,7 +312,9 @@ async def evaluate(
     deploy = {
         "skills_dir": str(skills),
         "skill_mode": "with-skill",
-        "config_override": SESSION_CAPTURE if s.session_logs else None,
+        "config_override": SESSION_CAPTURE
+        if session_capture(s, rec, train + test)
+        else None,
     }
     spent = await run_jobs(
         s,

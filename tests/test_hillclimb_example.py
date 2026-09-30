@@ -285,6 +285,19 @@ def test_under_a_subscription_cost_comes_from_claude_codes_session_log(
     )
 
 
+def test_no_capture_for_tasks_with_their_own_setup_commands(tmp_path, monkeypatch):
+    agent = FakeAgent(lambda task, skills, trial: 0.0).install(monkeypatch)
+    FakeOptimizer().install(monkeypatch)
+    s = settings(tmp_path, rounds=0)
+    toml = s.tasks_dir / "t6" / "task.toml"
+    toml.write_text(
+        toml.read_text() + '[[environment.setup_commands]]\ncommand = "true"\n'
+    )
+    doc = climb(s)
+    assert all(c["config_override"] is None for c in agent.calls)
+    assert any("t6 declare their own setup commands" in w for w in doc["warnings"])
+
+
 def test_rollout_and_sandbox_caps_bind_when_usd_is_unknown(tmp_path, monkeypatch):
     FakeAgent(lambda task, skills, trial: 0.0, usd=None).install(monkeypatch)
     optimizer = FakeOptimizer([append_rule("an idea")]).install(monkeypatch)
