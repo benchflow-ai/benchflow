@@ -70,12 +70,72 @@ MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {
 
 
 def custom_cost_per_token(model: str) -> tuple[float, float] | None:
-    """Return (input, output) USD-per-token for a custom model, or None."""
+    """Return (input, output) USD-per-token for a custom model, or None.
+
+    The longest matching key wins, so a specific entry beats a family entry
+    whatever the table's order.
+    """
     lowered = model.lower()
-    for key, price in MODEL_COST_PER_TOKEN.items():
-        if key in lowered:
-            return price
+    matches = [key for key in MODEL_COST_PER_TOKEN if key in lowered]
+    if not matches:
+        return None
+    return MODEL_COST_PER_TOKEN[max(matches, key=len)]
+
+
+#: Hosted providers whose prices LiteLLM keeps in its own table under its native
+#: prefix. BenchFlow still routes them through the generic ``openai/``
+#: passthrough: LiteLLM's native Fireworks route drops ``tools`` for any model its
+#: table does not mark as supporting function calling (a new release, or your own
+#: fine-tuned LoRA), and ``drop_params`` would make that silent. The price is read
+#: from the table by exact id instead.
+LITELLM_PRICE_TABLE_PREFIX: dict[str, str] = {
+    "fireworks": "fireworks_ai",
+    "baseten": "baseten",
+}
+
+#: Per-token USD prices for hosted models newer than LiteLLM's pinned price
+#: table, keyed by the exact ``--model`` id (``<provider>/<model id>``, compared
+#: lowercase). Unlike ``MODEL_COST_PER_TOKEN`` there is no substring matching:
+#: the same weights cost different amounts on different hosts. VERIFY each entry
+#: against the provider's pricing page; the date says when it was checked.
+HOSTED_MODEL_COST_PER_TOKEN: dict[str, tuple[float, float]] = {}
+
+
+def _litellm_table_cost_per_token(model: str) -> tuple[float, float] | None:
+    """(input, output) USD-per-token from LiteLLM's own table, by exact id."""
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - litellm is a core dependency
+        return None
+    wanted = model.lower()
+    for key, entry in litellm.model_cost.items():
+        if key.lower() != wanted or not isinstance(entry, dict):
+            continue
+        in_cost = entry.get("input_cost_per_token")
+        out_cost = entry.get("output_cost_per_token")
+        if isinstance(in_cost, int | float) and isinstance(out_cost, int | float):
+            if in_cost or out_cost:
+                return float(in_cost), float(out_cost)
     return None
+
+
+def route_cost_per_token(route: LiteLLMRoute) -> tuple[float, float] | None:
+    """Per-token USD price to inject into a route's LiteLLM deployment, if any.
+
+    A hosted provider in ``LITELLM_PRICE_TABLE_PREFIX`` is priced only by its
+    exact model id: first ``HOSTED_MODEL_COST_PER_TOKEN``, then LiteLLM's table
+    under the provider's native prefix. It never falls back to
+    ``MODEL_COST_PER_TOKEN``, whose family entries carry another host's prices.
+    An unknown model stays unpriced, and its cost is recorded as unknown.
+    """
+    hosted = HOSTED_MODEL_COST_PER_TOKEN.get(route.requested_model.lower())
+    if hosted is not None:
+        return hosted
+    prefix = LITELLM_PRICE_TABLE_PREFIX.get(route.provider_name)
+    if prefix is not None:
+        bare = strip_provider_prefix(route.requested_model)
+        return _litellm_table_cost_per_token(f"{prefix}/{bare}")
+    return custom_cost_per_token(route.upstream_model)
 
 
 # Claude 4.8+ and every 5-family model. Kept in sync with
@@ -437,7 +497,7 @@ def litellm_proxy_config(
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
     params = dict(route.litellm_params)
-    cost = custom_cost_per_token(route.upstream_model)
+    cost = route_cost_per_token(route)
     if cost is not None:
         params.setdefault("input_cost_per_token", cost[0])
         params.setdefault("output_cost_per_token", cost[1])

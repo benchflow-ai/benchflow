@@ -921,6 +921,138 @@ def test_litellm_config_no_cost_injection_for_litellm_priced_model():
         assert "input_cost_per_token" not in entry["litellm_params"]
 
 
+def test_custom_cost_per_token_longest_key_wins(monkeypatch):
+    from benchflow.providers import litellm_config
+
+    monkeypatch.setattr(
+        litellm_config,
+        "MODEL_COST_PER_TOKEN",
+        {"model-x": (1e-6, 2e-6), "model-x-large": (5e-6, 9e-6)},
+    )
+    assert litellm_config.custom_cost_per_token("openai/model-x-large") == (5e-6, 9e-6)
+    assert litellm_config.custom_cost_per_token("openai/model-x") == (1e-6, 2e-6)
+
+
+def _fake_litellm_table(monkeypatch, table):
+    import litellm
+
+    monkeypatch.setattr(litellm, "model_cost", table)
+
+
+def test_fireworks_route_is_openai_passthrough_priced_from_litellm_table(monkeypatch):
+    """Fireworks goes through the openai/ passthrough (tools never dropped) and
+    takes its price from LiteLLM's own fireworks_ai table, by exact id."""
+    from benchflow.providers.litellm_config import (
+        litellm_proxy_config,
+        resolve_litellm_route,
+    )
+
+    _fake_litellm_table(
+        monkeypatch,
+        {
+            "fireworks_ai/accounts/fireworks/models/kimi-k2p6": {
+                "input_cost_per_token": 9.5e-7,
+                "output_cost_per_token": 4e-6,
+            }
+        },
+    )
+    route = resolve_litellm_route(
+        "fireworks/accounts/fireworks/models/kimi-k2p6", {"FIREWORKS_API_KEY": "k"}
+    )
+    assert route.provider_name == "fireworks"
+    assert route.upstream_model == "openai/accounts/fireworks/models/kimi-k2p6"
+    assert route.litellm_params["api_base"] == "https://api.fireworks.ai/inference/v1"
+    assert route.litellm_params["api_key"] == "os.environ/FIREWORKS_API_KEY"
+    assert route.required_env == ("FIREWORKS_API_KEY",)
+    config = litellm_proxy_config(route, master_key="sk-master")
+    for entry in config["model_list"]:
+        params = entry["litellm_params"]
+        assert params["input_cost_per_token"] == 9.5e-7
+        assert params["output_cost_per_token"] == 4e-6
+
+
+def test_baseten_route_matches_litellm_table_case_insensitively(monkeypatch):
+    from benchflow.providers.litellm_config import (
+        litellm_proxy_config,
+        resolve_litellm_route,
+    )
+
+    _fake_litellm_table(
+        monkeypatch,
+        {
+            "baseten/zai-org/GLM-5": {
+                "input_cost_per_token": 9.5e-7,
+                "output_cost_per_token": 3.15e-6,
+            }
+        },
+    )
+    route = resolve_litellm_route("baseten/zai-org/glm-5", {"BASETEN_API_KEY": "k"})
+    assert route.upstream_model == "openai/zai-org/glm-5"
+    assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
+    assert route.litellm_params["api_key"] == "os.environ/BASETEN_API_KEY"
+    params = litellm_proxy_config(route, master_key="sk-master")["model_list"][0][
+        "litellm_params"
+    ]
+    assert params["input_cost_per_token"] == 9.5e-7
+
+
+def test_hosted_provider_never_takes_another_hosts_family_price(monkeypatch):
+    """A deepseek-v4-pro served by Baseten must not get the deepseek API's
+    family price from MODEL_COST_PER_TOKEN: unknown stays unpriced."""
+    from benchflow.providers import litellm_config
+    from benchflow.providers.litellm_config import (
+        litellm_proxy_config,
+        resolve_litellm_route,
+    )
+
+    _fake_litellm_table(monkeypatch, {})
+    monkeypatch.setattr(
+        litellm_config, "MODEL_COST_PER_TOKEN", {"deepseek-v4-pro": (2.8e-7, 4.2e-7)}
+    )
+    monkeypatch.setattr(litellm_config, "HOSTED_MODEL_COST_PER_TOKEN", {})
+    route = resolve_litellm_route(
+        "baseten/deepseek-ai/DeepSeek-V4-Pro-0813", {"BASETEN_API_KEY": "k"}
+    )
+    for entry in litellm_proxy_config(route, master_key="sk-master")["model_list"]:
+        assert "input_cost_per_token" not in entry["litellm_params"]
+    # The family table still prices a custom endpoint, as before.
+    vllm_route = resolve_litellm_route(
+        "vllm/deepseek-v4-pro",
+        {
+            "BENCHFLOW_PROVIDER_BASE_URL": "http://gpu:8000/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "x",
+        },
+    )
+    params = litellm_proxy_config(vllm_route, master_key="sk-master")["model_list"][0][
+        "litellm_params"
+    ]
+    assert params["input_cost_per_token"] == 2.8e-7
+
+
+def test_hosted_model_price_matches_exact_id_only(monkeypatch):
+    from benchflow.providers import litellm_config
+    from benchflow.providers.litellm_config import route_cost_per_token
+
+    _fake_litellm_table(monkeypatch, {})
+    monkeypatch.setattr(
+        litellm_config,
+        "HOSTED_MODEL_COST_PER_TOKEN",
+        {"baseten/zai-org/glm-5.3": (1e-6, 3e-6)},
+    )
+    exact = litellm_config.resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", {"BASETEN_API_KEY": "k"}
+    )
+    assert route_cost_per_token(exact) == (1e-6, 3e-6)
+    longer = litellm_config.resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3-Fast", {"BASETEN_API_KEY": "k"}
+    )
+    assert route_cost_per_token(longer) is None
+    other_host = litellm_config.resolve_litellm_route(
+        "fireworks/zai-org/GLM-5.3", {"FIREWORKS_API_KEY": "k"}
+    )
+    assert route_cost_per_token(other_host) is None
+
+
 @pytest.mark.asyncio
 async def test_callback_prefers_proxy_computed_response_cost(tmp_path, monkeypatch):
     # The injected logger captures the proxy's already-computed response_cost

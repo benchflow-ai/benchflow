@@ -543,6 +543,73 @@ async def test_openhands_azure_never_bypasses_proxy(monkeypatch):
     assert not any("azure.com" in str(v) for v in updated.values())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "key_env", "host", "upstream"),
+    [
+        (
+            "fireworks/accounts/fireworks/models/kimi-k2p6",
+            "FIREWORKS_API_KEY",
+            "fireworks.ai",
+            "openai/accounts/fireworks/models/kimi-k2p6",
+        ),
+        (
+            "baseten/zai-org/GLM-5.3",
+            "BASETEN_API_KEY",
+            "baseten.co",
+            "openai/zai-org/GLM-5.3",
+        ),
+    ],
+)
+async def test_hosted_provider_key_reaches_only_the_proxy(
+    monkeypatch, model, key_env, host, upstream
+):
+    """With only the provider's own key exported, an opencode run on a Docker
+    sandbox gives the key and the provider URL to the host proxy, and the agent
+    sees neither: only the proxy URL and the proxy's master key."""
+
+    started: dict[str, object] = {}
+
+    async def fake_start(**kwargs):
+        started.update(kwargs)
+        return FakeLiteLLMServer("http://172.17.0.1:40001", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    monkeypatch.setattr("benchflow.agents.env.load_dotenv_env", lambda: {})
+    for name in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+        "BENCHFLOW_PROVIDER_BASE_URL",
+        "BENCHFLOW_PROVIDER_API_KEY",
+        "FIREWORKS_API_KEY",
+        "BASETEN_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(key_env, "raw-provider-key")
+
+    resolved = resolve_agent_env("opencode", model, {})
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env=resolved,
+        model=model,
+        runtime=None,
+        environment="docker",
+        session_id="run-1",
+        usage_tracking="required",
+    )
+
+    assert provider_runtime is not None
+    assert started["route"].upstream_model == upstream
+    assert "raw-provider-key" in started["agent_env"].values()
+    assert "raw-provider-key" not in updated.values()
+    assert key_env not in updated
+    assert not any(host in str(value) for value in updated.values())
+    assert updated["OPENAI_BASE_URL"] == "http://172.17.0.1:40001/v1"
+    assert updated["OPENAI_API_KEY"] == provider_runtime.master_key
+
+
 def test_proxy_isolation_guard_blocks_leaked_secret():
     """The fail-closed guard refuses to run if a raw provider key would survive."""
 

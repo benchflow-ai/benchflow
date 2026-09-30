@@ -218,6 +218,27 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENROUTER_API_KEY",
     ),
+    # Fireworks AI's OpenAI-compatible endpoint: serverless models, dedicated
+    # deployments and fine-tuned LoRAs. Model ids keep Fireworks' own form, e.g.
+    # fireworks/accounts/fireworks/models/kimi-k2p6 or
+    # fireworks/accounts/<account>/models/<lora>.
+    "fireworks": ProviderConfig(
+        name="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="FIREWORKS_API_KEY",
+    ),
+    # Baseten Model APIs (OpenAI-compatible), e.g. baseten/zai-org/GLM-5.3.
+    # A dedicated Baseten deployment has its own URL; reach it with vllm/ or
+    # sglang/ and BENCHFLOW_PROVIDER_BASE_URL.
+    "baseten": ProviderConfig(
+        name="baseten",
+        base_url="https://inference.baseten.co/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="BASETEN_API_KEY",
+    ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
