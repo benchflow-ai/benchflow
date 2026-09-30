@@ -371,3 +371,59 @@ def test_a_retried_trial_lists_its_attempts(tmp_path: Path) -> None:
     assert len(every.trials) == 4
     assert all(len(x.attempts) == 3 for x in every.trials if x.task_name == "t")
     assert bf.load_trial(last).attempts[0].path == last  # read alone: itself
+
+
+def test_printing_a_job_summarises_it(tmp_path: Path) -> None:
+    """``print(job)`` says what a notebook user asks first.
+
+    ``repr(job)`` and ``str(job)`` were one line with the path and a trial
+    count: no solve rate, no reason for unscored trials, no cost.
+    """
+    job = tmp_path / "job"
+    _trial(job, "t1", reward=1.0, suffix="00000001")
+    _trial(job, "t2", reward=0.0, suffix="00000002")
+    crashed = _trial(
+        job,
+        "t3",
+        reward=None,
+        error="ACP error",
+        error_category="acp_error",
+        suffix="00000003",
+    )
+    _trial(job, "zz", agent="oracle", model=None, suffix="0000oracl")
+    result = json.loads((crashed / "result.json").read_text())
+    result["agent_result"]["price_source"] = "agent_session_log"
+    (crashed / "result.json").write_text(json.dumps(result))
+
+    loaded = bf.load_job(job)
+    text = str(loaded)
+    assert text == loaded.to_markdown() == loaded._repr_markdown_()
+    assert "3 trial(s) of 3 task(s); claude-agent-acp · claude-haiku-4-5" in text
+    assert "Solve rate: 50.0% (1 of 2 scored trials" in text
+    assert "95% interval" in text
+    assert "Unscored: 1 of 3 trial(s): acp_error x1 (t3)" in text
+    assert "Control runs left out: 1 (oracle)" in text
+    assert "Cost: $0.0400 over 4 rollout(s) (1 estimated" in text
+    assert repr(loaded).startswith("Job(path=")
+
+
+def test_an_evaluation_result_prints_on_one_line() -> None:
+    from benchflow.evaluation import EvaluationConfig, EvaluationResult
+    from benchflow.models import RolloutResult
+
+    result = EvaluationResult(
+        job_name="j",
+        config=EvaluationConfig(agent="oracle"),
+        total=2,
+        passed=1,
+        failed=1,
+        mean_reward=0.5,
+        results={
+            "a": RolloutResult("a", rewards={"reward": 1.0}),
+            "b": RolloutResult("b", rewards={"reward": 0.0}),
+        },
+    )
+    assert repr(result) == (
+        "EvaluationResult(job='j', passed=1/2 (50.0%), failed=1, errored=0, "
+        "verifier_errored=0, mean_reward=0.500, job_dir=None)"
+    )

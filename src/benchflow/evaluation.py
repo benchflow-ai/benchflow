@@ -780,7 +780,9 @@ class EvaluationResult:
 
     ``results`` maps each task name to its :class:`RolloutResult` (tasks
     reused on resume are read back from their ``result.json``), and
-    ``job_dir`` is where the job's artifacts and ``summary.json`` live.
+    ``job_dir`` is where the job's artifacts and ``summary.json`` live. For
+    the solve rate with its interval, unscored trials and cost,
+    ``print(bf.load_job(result.job_dir))``.
     """
 
     job_name: str
@@ -810,6 +812,15 @@ class EvaluationResult:
     # ran now; ran == 0 with reused > 0 means the results are all earlier ones.
     reused: int = 0
     ran: int = 0
+
+    def __repr__(self) -> str:
+        mean = "n/a" if self.mean_reward is None else f"{self.mean_reward:.3f}"
+        return (
+            f"EvaluationResult(job={self.job_name!r}, passed={self.passed}/"
+            f"{self.total} ({self.score:.1%}), failed={self.failed}, "
+            f"errored={self.errored}, verifier_errored={self.verifier_errored}, "
+            f"mean_reward={mean}, job_dir={str(self.job_dir) if self.job_dir else None!r})"
+        )
 
     def to_records(self) -> list[dict[str, Any]]:
         """One flat dict per task, sorted by task name (``RolloutResult.to_record``)."""

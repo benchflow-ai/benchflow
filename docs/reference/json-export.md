@@ -31,6 +31,7 @@ Each entry has the rubric definition (`rubric.criteria[]`: name, `kind` blocker/
 
 | Version | Document | Change |
 |---|---|---|
+| 1.3 | `benchflow.job`, `benchflow.comparison` | `solve_rates.solve_rate_interval` (95%, `[low, high]`) and `solve_rate_interval_method` (`wilson` or `wilson-clustered`; see [pass@k](./pass-at-k.md)). |
 | 1.3 | `benchflow.trial`, `benchflow.job` | `attempts` per trial: the rollouts it took, 1 plus each retry (or resume re-run) of its task in an Evaluation job. `usage.price_source` (who priced `cost_usd`) and `usage.cost_estimate` (set when `cost_usd` is the agent's own estimate from its session log: source, method, path, sessions, responses, USD per model, `context_1m`). |
 | 1.2 | `benchflow.trial` | `execution` may be `integration_failed`; `integration_failure` (cause, evidence, evidence source, activity counts, `reward_withheld`; `detected: "on read"` for results written before 1.2). See [Agent integration failures](./integration-failures.md). |
 | 1.2 | `benchflow.job`, `benchflow.comparison` | `denominators.integration_failures` (runs whose agent integration broke; also in `unscored` and `execution_errors`). |

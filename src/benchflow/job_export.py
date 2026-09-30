@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 1
 #: Bumped when optional fields are added within a schema_version; the
 #: changelog is in docs/reference/json-export.md.
-SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 3, "comparison": 2, "run-summary": 0}
+SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 3, "comparison": 3, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -360,6 +360,16 @@ class SolveRatesExport(_Model):
     min_trials_per_task: int
     max_trials_per_task: int
     solve_rate: float | None
+    solve_rate_interval: list[float] | None = Field(
+        None,
+        description="95% interval of solve_rate, [low, high] (1.3); see "
+        "solve_rate_interval_method",
+    )
+    solve_rate_interval_method: str | None = Field(
+        None,
+        description="wilson (one scored trial per task) or wilson-clustered "
+        "(Wilson on the design-effect sample size, for repeated trials) (1.3)",
+    )
     nonbinary_rewards: int
     ks: list[int]
     pass_at_k: dict[str, float | None]

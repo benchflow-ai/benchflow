@@ -740,6 +740,75 @@ class Job:
     def __repr__(self) -> str:
         return f"Job(path={str(self.path)!r}, trials={len(self.trials)}, kind={self.kind!r})"
 
+    def __str__(self) -> str:
+        return self.to_markdown()
+
+    def _repr_markdown_(self) -> str:
+        return self.to_markdown()
+
+    def to_markdown(self) -> str:
+        """A short report of the job, also what ``print(job)`` shows.
+
+        What ran (trials, tasks, agents and models), the solve rate with its
+        95% interval and pass@k, the trials that got no score grouped by
+        reason, the control runs left out, and what the rollouts cost (retried
+        attempts included; estimates from an agent's session log counted and
+        marked).
+        """
+        agents = self.agents()
+        tasks = {t.task_name for t in agents}
+        pairs = sorted({f"{t.agent} · {t.model or 'no model'}" for t in agents})
+        shown = ", ".join(pairs[:3]) + (
+            f" and {len(pairs) - 3} more" if len(pairs) > 3 else ""
+        )
+        lines = [
+            f"**{self.path}** ({self.kind}): {len(agents)} trial(s) of "
+            f"{len(tasks)} task(s)" + (f"; {shown}" if shown else "")
+        ]
+        rates = self.solve_rates(ks=[1])
+        if rates.solve_rate is None:
+            lines.append("- Solve rate: n/a (no scored trial)")
+        else:
+            interval = ""
+            if rates.interval is not None:
+                low, high = rates.interval
+                interval = (
+                    f", 95% interval {low:.1%} to {high:.1%} ({rates.interval_method})"
+                )
+            solved = round(rates.solve_rate * rates.trials)
+            lines.append(
+                f"- Solve rate: {rates.solve_rate:.1%} ({solved} of {rates.trials} "
+                f"scored trials, {rates.success_rule}){interval}"
+            )
+            if rates.max_trials_per_task > 1:
+                many = self.solve_rates()
+                lines += [f"- {line}" for line in many.lines()]
+        unscored = [t for t in agents if t.assessment != "scored"]
+        if unscored:
+            reasons: dict[str, list[str]] = {}
+            for t in unscored:
+                reasons.setdefault(_unscored_reason(t), []).append(t.task_name)
+            parts = []
+            for reason, names in sorted(reasons.items(), key=lambda kv: -len(kv[1])):
+                listed = ", ".join(sorted(set(names))[:3])
+                more = len(set(names)) - 3
+                parts.append(
+                    f"{reason} x{len(names)} ({listed}{f', +{more}' if more > 0 else ''})"
+                )
+            lines.append(
+                f"- Unscored: {len(unscored)} of {len(agents)} trial(s): "
+                + "; ".join(parts)
+            )
+        controls = self.controls()
+        if controls:
+            kinds = ", ".join(sorted({t.control or "" for t in controls}))
+            lines.append(
+                f"- Control runs left out: {len(controls)} ({kinds}); they check "
+                "the task, not an agent"
+            )
+        lines.append("- " + _cost_line([a for t in self.trials for a in t.attempts]))
+        return "\n".join(lines) + "\n"
+
     @property
     def kind(self) -> Literal["evaluation", "branch", "directory"]:
         if (self.summary or {}).get("kind") == "benchflow-branch-job":
@@ -897,6 +966,39 @@ class Job:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(r) + "\n" for r in self.to_records()))
         return path
+
+
+def _unscored_reason(trial: Trial) -> str:
+    """Why a trial got no score, for a summary line."""
+    failure = trial.integration_failure
+    if failure is not None:
+        return f"agent integration ({failure.get('cause') or 'unknown'})"
+    r = trial.result
+    if r.error:
+        return r.error_category or "agent error"
+    if r.verifier_error:
+        return f"verifier: {r.verifier_error_category or 'error'}"
+    return "no reward"
+
+
+def _cost_line(rollouts: list[Trial]) -> str:
+    """What ``rollouts`` cost: known USD, how much of it is estimated, and
+    how many reported none."""
+    priced = [t for t in rollouts if t.cost_usd is not None]
+    estimated = [t for t in priced if t.result.price_source == "agent_session_log"]
+    unknown = len(rollouts) - len(priced)
+    if not priced:
+        return (
+            f"Cost: unknown ({len(rollouts)} rollout(s) reported no USD; a "
+            "subscription run has none unless its agent's session log prices it)"
+        )
+    usd = math.fsum(t.cost_usd or 0.0 for t in priced)
+    line = f"Cost: ${usd:.4f} over {len(priced)} rollout(s)"
+    if estimated:
+        line += f" ({len(estimated)} estimated from the agent's session log)"
+    if unknown:
+        line += f"; {unknown} rollout(s) reported no USD, so the total is a floor"
+    return line
 
 
 def _rank(trial: Trial) -> tuple[bool, float, str]:

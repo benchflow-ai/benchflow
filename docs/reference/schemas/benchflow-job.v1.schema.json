@@ -1294,6 +1294,35 @@
           ],
           "title": "Solve Rate"
         },
+        "solve_rate_interval": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "95% interval of solve_rate, [low, high] (1.3); see solve_rate_interval_method",
+          "title": "Solve Rate Interval"
+        },
+        "solve_rate_interval_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "wilson (one scored trial per task) or wilson-clustered (Wilson on the design-effect sample size, for repeated trials) (1.3)",
+          "title": "Solve Rate Interval Method"
+        },
         "solve_threshold": {
           "anyOf": [
             {
