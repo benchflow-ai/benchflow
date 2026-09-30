@@ -256,6 +256,77 @@ def test_graders_and_infrastructure_errors(tmp_path, monkeypatch):
     assert doc["status"] == "stopped" and doc["stop"]["reason"] == "infra"
 
 
+def test_under_a_subscription_cost_comes_from_claude_codes_session_log(
+    tmp_path, monkeypatch
+):
+    """BenchFlow reports no USD for a subscription login; the demo copies Claude
+    Code's session log into each evaluation trial and prices the trial from it."""
+    agent = FakeAgent(
+        lambda task, skills, trial: float("FIX" in skills), usd=None, session_usd=0.02
+    ).install(monkeypatch)
+    FakeOptimizer([append_rule("FIX: check the units")], root=tmp_path).install(
+        monkeypatch
+    )
+    doc = climb(settings(tmp_path))
+    cost = doc["cost"]
+    assert cost["sources"] == {"benchflow": 1, "claude-code-cost-state": 40}
+    assert cost["source"] == "mixed" and cost["rollouts"] == 41
+    assert cost["agent_usd"] == pytest.approx(40 * 0.02)
+    assert cost["sandbox_seconds"] == pytest.approx((20 + 40) * 30.0)
+    train = doc["baseline"]["train"]
+    assert train["cost_source"] == "claude-code-cost-state"
+    assert train["cost_usd"] == pytest.approx(12 * 0.02)
+    evals = [c for c in agent.calls if c["agent"] not in ("oracle", "nop")]
+    assert all(c["config_override"] == hillclimb.SESSION_CAPTURE for c in evals)
+    assert all(c["config_override"] is None for c in agent.calls if c not in evals)
+    assert (
+        "Claude Code session logs (40 rollouts)"
+        in (tmp_path / "run" / "report.html").read_text()
+    )
+
+
+def test_rollout_and_sandbox_caps_bind_when_usd_is_unknown(tmp_path, monkeypatch):
+    FakeAgent(lambda task, skills, trial: 0.0, usd=None).install(monkeypatch)
+    optimizer = FakeOptimizer([append_rule("an idea")]).install(monkeypatch)
+    # The baseline (20 rollouts) fits; a round (20 more and the optimizer) does not.
+    doc = climb(settings(tmp_path, max_rollouts=30))
+    assert doc["status"] == "stopped" and doc["stop"]["reason"] == "budget"
+    assert "--max-rollouts 30" in doc["stop"]["detail"] and optimizer.runs == []
+    assert doc["cost"]["rollouts"] == 20 and doc["baseline"] is not None
+    # Grader checks (20 x 30 s) and the baseline (20 x 30 s) fit in 1500 s; a round does not.
+    doc = climb(settings(tmp_path / "s", max_sandbox_seconds=1500))
+    assert doc["stop"]["reason"] == "budget"
+    assert "--max-sandbox-seconds 1500" in doc["stop"]["detail"]
+    assert doc["cost"]["sandbox_seconds"] == pytest.approx(1200)
+    # Nothing runs past the grader checks when the baseline alone is over the cap.
+    doc = climb(settings(tmp_path / "b", max_rollouts=10))
+    assert doc["baseline"] is None and "the baseline alone" in doc["stop"]["detail"]
+    assert (
+        doc["best"] is None
+        and "Refused" not in (tmp_path / "b" / "run" / "report.html").read_text()
+    )
+
+
+def test_every_job_gets_its_share_of_the_caps(tmp_path, monkeypatch):
+    agent = FakeAgent(lambda task, skills, trial: 1.0).install(monkeypatch)
+    FakeOptimizer().install(monkeypatch)
+    climb(settings(tmp_path, max_sandbox_seconds=10_000, max_cost_usd=40, rounds=0))
+
+    def caps(calls):
+        return {
+            (c["budget"].max_cost_usd, c["budget"].max_sandbox_seconds) for c in calls
+        }
+
+    controls = [c for c in agent.calls if c["agent"] in ("oracle", "nop")]
+    assert caps(controls) == {
+        (10.0, 2500.0)
+    }  # a quarter each: two controls, two trials
+    # The baseline's jobs: what is left (10000 - 20 x 30 s), in proportion to their tasks.
+    train = [c for c in agent.calls if c not in controls and c["task"] in TRAIN]
+    ((usd, seconds),) = caps(train)
+    assert usd == pytest.approx(40 * 6 / 20) and seconds == pytest.approx(9400 * 6 / 20)
+
+
 def test_session_log_pricing_and_scrubbing(tmp_path, monkeypatch):
     trial = tmp_path / "trial"
     log = trial / "artifacts" / "claude-sessions" / "-app" / "s1.jsonl"

@@ -279,7 +279,8 @@
             "status": {
               "enum": [
                 "ok",
-                "failed"
+                "failed",
+                "skipped"
               ]
             },
             "error": {
@@ -289,7 +290,14 @@
               ]
             },
             "mounted": {
-              "$ref": "#/$defs/mounted"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/mounted"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "summary": {
               "type": [
@@ -440,6 +448,10 @@
         "agent_usd",
         "max_cost_usd",
         "proposer_usd",
+        "rollouts",
+        "sandbox_seconds",
+        "source",
+        "sources",
         "total_usd"
       ],
       "properties": {
@@ -453,6 +465,46 @@
           "type": "number"
         },
         "max_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "source": {
+          "enum": [
+            "claude-code-cost-state",
+            "claude-code-usage-at-list-price",
+            "benchflow",
+            "mixed",
+            "unknown"
+          ]
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Rollouts per cost source: claude-code-cost-state (Claude Code's own costUSD from its session log), claude-code-usage-at-list-price (the session log's per-response usage at hillclimb_cost.LIST_PRICES), benchflow (BenchFlow's cost_usd, priced by its model proxy), unknown."
+        },
+        "context_1m": {
+          "type": "boolean",
+          "description": "A session log shows a model's 1M-context variant ([1m])."
+        },
+        "rollouts": {
+          "type": "integer",
+          "description": "Rollouts that call a model: evaluation trials and optimizer runs."
+        },
+        "max_rollouts": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sandbox_seconds": {
+          "type": "number",
+          "description": "Sandbox wall-clock seconds of finished trials and optimizer runs, the grader checks included."
+        },
+        "max_sandbox_seconds": {
           "type": [
             "number",
             "null"
@@ -526,12 +578,15 @@
     "split": {
       "type": "object",
       "required": [
+        "cost_source",
+        "cost_sources",
         "cost_usd",
         "infra_categories",
         "infra_errors",
         "job_dir",
         "pass_at_1",
         "per_task",
+        "sandbox_seconds",
         "score",
         "tasks",
         "trials"
@@ -594,6 +649,25 @@
               }
             }
           }
+        },
+        "cost_source": {
+          "enum": [
+            "claude-code-cost-state",
+            "claude-code-usage-at-list-price",
+            "benchflow",
+            "mixed",
+            "unknown"
+          ]
+        },
+        "cost_sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Rollouts per cost source: claude-code-cost-state (Claude Code's own costUSD from its session log), claude-code-usage-at-list-price (the session log's per-response usage at hillclimb_cost.LIST_PRICES), benchflow (BenchFlow's cost_usd, priced by its model proxy), unknown."
+        },
+        "sandbox_seconds": {
+          "type": "number"
         }
       }
     },
@@ -782,6 +856,28 @@
               }
             }
           }
+        },
+        "cost_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "claude-code-cost-state",
+                "claude-code-usage-at-list-price",
+                "benchflow",
+                "mixed",
+                "unknown"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sandbox_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       }
     },

@@ -10,14 +10,15 @@ The loop of "Automating eval design and hillclimbing with Claude" (claude.dev,
   unscored trials (infrastructure errors) are left out of every score;
 - ``bf.run(bf.RolloutConfig(...))`` runs the optimizer as a sandboxed rollout
   whose only uploads are the train split's material (hillclimb_proposer.py);
-- ``bf.Budget`` caps each job's spend.
+- ``bf.Budget`` caps each job's spend and sandbox-seconds.
 
-The statistics (bootstrap intervals, the noise gate) are in hillclimb_stats.py
+The statistics (bootstrap intervals, the noise gate) are in hillclimb_stats.py,
+the cost of each rollout (from Claude Code's session log) in hillclimb_cost.py
 and the HTML report in hillclimb_report.py. From a BenchFlow checkout::
 
     uv run python docs/examples/hillclimb/hillclimb.py --tasks-dir tasks/ \\
-        --skills skills/ --out runs/demo --model claude-haiku-4-5 \\
-        --proposer-model claude-opus-4-8 --trials 5 --min-gain 0.15
+        --skills skills/ --out runs/demo --model claude-haiku-4-5-20251001 \\
+        --proposer-model claude-opus-5-5 --trials 5 --min-gain 0.15
 
 See README.md for the recipe, the safeguards and the outputs.
 """
@@ -30,10 +31,11 @@ import difflib
 import json
 import random
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from hillclimb_cost import CAPTURE, scrub, summary, trial_cost
 from hillclimb_proposer import ProposerSettings, mounted, run_optimizer, write_workspace
 from hillclimb_report import write_report
 from hillclimb_stats import bootstrap, noise_gate, paired_delta
@@ -41,6 +43,11 @@ from hillclimb_stats import bootstrap, noise_gate, paired_delta
 import benchflow as bf
 
 SPLITS = ("train", "test")
+# Each evaluation trial copies Claude Code's session log into its folder
+# (hillclimb_cost.CAPTURE), through a task setup command.
+SESSION_CAPTURE = {
+    "sandbox": {"setup_commands": [{"command": CAPTURE, "timeout_sec": 60}]}
+}
 
 
 @dataclass
@@ -50,7 +57,7 @@ class Settings:
     out: Path
     include: list[str] = field(default_factory=list)
     agent: str = "claude-agent-acp"
-    model: str | None = "claude-haiku-4-5"
+    model: str | None = "claude-haiku-4-5-20251001"
     agent_env: dict[str, str] = field(default_factory=dict)
     sandbox: str = "docker"
     concurrency: int = 4
@@ -62,6 +69,12 @@ class Settings:
     split_file: Path | None = None
     stall_rounds: int = 3
     max_cost_usd: float | None = None
+    # Caps that bind when no USD is known (a subscription login): the rollouts
+    # that call a model (evaluation trials and optimizer runs), and sandbox
+    # wall-clock seconds (the grader checks included).
+    max_rollouts: int | None = None
+    max_sandbox_seconds: float | None = None
+    session_logs: bool = True  # copy Claude Code's session log into each trial
     max_infra_error_rate: float = 0.25
     retry_attempts: int = 2
     force: bool = False
@@ -85,6 +98,8 @@ async def climb(s: Settings) -> dict:
     ):  # graders first: the oracle must pass, doing nothing must not
         train, test = await check_graders(s, rec, tasks, train, test)
     rec.doc["split"].update(train=train, test=test)
+    if over := rec.over_cap(rollouts=(len(train) + len(test)) * s.trials):
+        return rec.finish("stopped", "budget", f"the baseline alone: {over}")
 
     v0 = copy_skills(s.skills, rec.version("v000"))
     rec.baseline = rec.current = await evaluate(s, rec, v0, train, test, "baseline")
@@ -97,8 +112,8 @@ async def climb(s: Settings) -> dict:
 
     stall = 0
     for r in range(1, s.rounds + 1):
-        if not rec.can_afford():
-            return rec.finish("stopped", "budget", "--max-cost-usd would be exceeded")
+        if over := rec.over_cap(**rec.round_estimate()):
+            return rec.finish("stopped", "budget", f"round {r}: {over}")
         entry = await one_round(s, rec, r, tasks, train, test)
         stall = 0 if entry["decision"] == "keep" else stall + 1
         if stall >= s.stall_rounds:  # stalled: sort what is left by root cause
@@ -223,19 +238,32 @@ class Scores:
 
 async def run_jobs(
     s: Settings, configs: list[tuple[Path, bf.EvaluationConfig]]
-) -> None:
-    """One Evaluation per (folder, config). On Docker they run one after another:
-    until fix/parallel-runs lands, parallel Docker evaluations in one process
-    prune each other's just-created containers."""
+) -> list[float | None]:
+    """One Evaluation per (folder, config); return each job's sandbox-seconds as
+    its budget counted them (retried attempts included), None without a budget.
+    On Docker they run one after another: until fix/parallel-runs lands,
+    parallel Docker evaluations in one process prune each other's
+    just-created containers."""
     jobs = [
         bf.Evaluation(s.tasks_dir, jobs_dir, config=cfg, job_name="job")
         for jobs_dir, cfg in configs
     ]
     if s.sandbox == "docker":
-        for job in jobs:
-            await job.run()
+        results = [await job.run() for job in jobs]
     else:
-        await asyncio.gather(*(job.run() for job in jobs))
+        results = await asyncio.gather(*(job.run() for job in jobs))
+    return [
+        float(r.budget["spent"]["sandbox_seconds"])
+        if getattr(r, "budget", None)
+        else None
+        for r in results
+    ]
+
+
+def sandbox_seconds(spent: list[float | None], rows: list[dict]) -> float:
+    """The larger of what the jobs' budgets counted (retried attempts included;
+    only with a budget) and the final trials' own wall-clock."""
+    return max(sum(x for x in spent if x is not None), sum(r["seconds"] for r in rows))
 
 
 def config(s: Settings, names: list[str], **overrides) -> bf.EvaluationConfig:
@@ -268,27 +296,39 @@ async def evaluate(
 ) -> Scores:
     """Run both splits ``s.trials`` times with ``skills`` deployed, and read them back."""
     root = s.out / "evals" / eval_id
-    budget = rec.remaining()
+    planned = (len(train) + len(test)) * s.trials
     deploy = {
         "skills_dir": str(skills),
         "skill_mode": "with-skill",
-        "budget": bf.Budget(max_cost_usd=budget) if budget else None,
+        "config_override": SESSION_CAPTURE if s.session_logs else None,
     }
-    await run_jobs(
+    spent = await run_jobs(
         s,
         [
-            (root / split / f"trial-{k:02d}", config(s, names, **deploy))
+            (
+                root / split / f"trial-{k:02d}",
+                config(s, names, budget=rec.job_budget(len(names) / planned), **deploy),
+            )
             for split, names in (("train", train), ("test", test))
             for k in range(1, s.trials + 1)
         ],
     )
     values, rows, doc = {}, {}, {"id": eval_id, "version": skills.name}
-    for split, names in (("train", train), ("test", test)):
+    for i, (split, names) in enumerate((("train", train), ("test", test))):
         try:
             job = bf.load_job(root / split)
         except FileNotFoundError:  # every trial was cancelled (budget)
             job = None
         rows[split] = trial_rows(job, names, s.trials)
+        ran = [r for r in rows[split] if r["path"]]
+        cost = summary([r["cost"] for r in ran])
+        seconds = sandbox_seconds(spent[i * s.trials : (i + 1) * s.trials], ran)
+        rec.spend(
+            agent=cost["usd"] or 0.0,
+            rollouts=len(ran),
+            seconds=seconds,
+            costs=[r["cost"] for r in ran],
+        )
         values[split] = {
             t: [
                 float(r["passed"])
@@ -310,18 +350,21 @@ async def evaluate(
                 c: sum(1 for r in errors if r["error"] == c)
                 for c in sorted({r["error"] for r in errors})
             },
-            "cost_usd": job.cost_usd if job else None,
+            "cost_usd": cost["usd"],
+            "cost_source": cost["source"],
+            "cost_sources": cost["sources"],
+            "sandbox_seconds": round(seconds, 1),
             "per_task": [
                 {"task": t, "solved": values[split][t], "trials": s.trials}
                 for t in names
             ],
         }
-        rec.spend(agent=(job.cost_usd if job else None) or 0.0)
     return Scores(eval_id, doc["version"], values, rows, doc)
 
 
 def trial_rows(job: bf.Job | None, names: list[str], trials: int) -> list[dict]:
-    """One row per (task, trial): a scored trial, an unscored one, or one that never ran."""
+    """One row per (task, trial): a scored trial, an unscored one, or one that
+    never ran; with what it cost (hillclimb_cost) and its sandbox wall-clock."""
     rows, seen = [], set()
     for t in job.agents() if job else []:
         k = int(
@@ -337,6 +380,7 @@ def trial_rows(job: bf.Job | None, names: list[str], trials: int) -> list[dict]:
                 or "unscored"
             )
         )
+        scrub(t.path)
         rows.append(
             {
                 "task": t.task_name,
@@ -345,6 +389,8 @@ def trial_rows(job: bf.Job | None, names: list[str], trials: int) -> list[dict]:
                 "passed": bool(t.passed) if scored else None,
                 "error": error,
                 "path": str(t.path),
+                "cost": trial_cost(t.path, t.cost_usd),
+                "seconds": float(t.timing.get("total") or t.duration_sec or 0.0),
             }
         )
         seen.add((t.task_name, k))
@@ -356,6 +402,8 @@ def trial_rows(job: bf.Job | None, names: list[str], trials: int) -> list[dict]:
             "passed": None,
             "error": "not run",
             "path": None,
+            "cost": None,
+            "seconds": 0.0,
         }
         for n in names
         for k in range(1, trials + 1)
@@ -381,18 +429,26 @@ async def check_graders(
     """Run the task's own solution (oracle) and an agent that does nothing (nop)."""
     names = sorted(tasks)
     root = s.out / "controls"
-    await run_jobs(
+    # Each control job's share of the caps: two control runs, then the
+    # baseline's trials, each about one control run's worth.
+    share = 1 / (2 + s.trials)
+    spent = await run_jobs(
         s,
         [
-            (root / agent, config(s, names, agent=agent, model=None))
+            (
+                root / agent,
+                config(s, names, agent=agent, model=None, budget=rec.job_budget(share)),
+            )
             for agent in ("oracle", "nop")
         ],
     )
     results = {}
-    for agent in ("oracle", "nop"):
+    for i, agent in enumerate(("oracle", "nop")):
+        trials = bf.load_job(root / agent).trials
+        timing = [{"seconds": float(t.timing.get("total") or 0.0)} for t in trials]
+        rec.spend(seconds=sandbox_seconds(spent[i : i + 1], timing))
         results[agent] = {
-            t.task_name: t.reward if t.assessment == "scored" else None
-            for t in bf.load_job(root / agent).trials
+            t.task_name: t.reward if t.assessment == "scored" else None for t in trials
         }
     rows = []
     for name in names:
@@ -444,9 +500,13 @@ async def propose(
     )
     seen = check_mounts(s, rec, uploads, tasks, test, work)
     out = await run_optimizer(
-        "propose", uploads, settings=s.proposer, task_dir=work / "task", jobs_dir=work
+        "propose",
+        uploads,
+        settings=replace(s.proposer, timeout_sec=rec.proposer_timeout()),
+        task_dir=work / "task",
+        jobs_dir=work,
     )
-    rec.spend(proposer=out.get("cost_usd") or 0.0)
+    rec.spend_optimizer(out)
     proposal = out.get("output") or {}
     cand = {
         "id": cid,
@@ -455,6 +515,8 @@ async def propose(
         "error": out["error"],
         "rollout_dir": out.get("rollout_dir"),
         "cost_usd": out.get("cost_usd"),
+        "cost_source": out.get("cost_source"),
+        "sandbox_seconds": out.get("sandbox_seconds"),
         "mounted": seen,
         **{k: proposal.get(k) for k in ("root_cause", "change", "rationale")},
     }
@@ -495,6 +557,18 @@ async def analyze(
     work = s.out / "proposer" / "analysis"
     current = rec.current
     rows = current.rows["train"]
+    if over := rec.over_cap(
+        rollouts=1, usd=rec.last_proposer_usd, seconds=rec.last_proposer_seconds
+    ):
+        return {
+            "status": "skipped",
+            "error": f"not run: {over}",
+            "mounted": None,
+            "summary": None,
+            "failures": [],
+            "counts": dict.fromkeys(CATEGORIES, 0),
+            "recommendations": [],
+        }
     uploads = write_workspace(
         work / "workspace",
         skills=rec.version(current.version),
@@ -506,9 +580,13 @@ async def analyze(
     )
     seen = check_mounts(s, rec, uploads, tasks, test, work)
     out = await run_optimizer(
-        "analyze", uploads, settings=s.proposer, task_dir=work / "task", jobs_dir=work
+        "analyze",
+        uploads,
+        settings=replace(s.proposer, timeout_sec=rec.proposer_timeout()),
+        task_dir=work / "task",
+        jobs_dir=work,
     )
-    rec.spend(proposer=out.get("cost_usd") or 0.0)
+    rec.spend_optimizer(out)
     data = out.get("output") or {}
     failures = [
         f
@@ -663,9 +741,12 @@ class Record:
             0.0,
             0.0,
         )
+        self.rollouts, self.sandbox_seconds, self.last_proposer_seconds = 0, 0.0, 0.0
+        self.costs: list[dict] = []  # hillclimb_cost.trial_cost of every rollout
         self.baseline: Scores | None = None  # set once the baseline has run
         self.current: Scores | None = None  # the version rounds build on
         now = datetime.now(UTC).isoformat(timespec="seconds")
+        model_env = s.proposer.agent_env.get("ANTHROPIC_MODEL")  # --proposer-model-env
         self.doc: dict = {
             "kind": "hillclimb-demo",
             "schema_version": 1,
@@ -684,10 +765,16 @@ class Record:
                 "stall_rounds": s.stall_rounds,
                 "seed": s.seed,
                 "max_cost_usd": s.max_cost_usd,
+                "max_rollouts": s.max_rollouts,
+                "max_sandbox_seconds": s.max_sandbox_seconds,
+                "session_logs": s.session_logs,
                 "force": s.force,
                 "proposer": {
                     "agent": s.proposer.agent,
-                    "model": s.proposer.model,
+                    "model": s.proposer.model or model_env,
+                    "model_via": "ANTHROPIC_MODEL"
+                    if model_env and not s.proposer.model
+                    else "acp",
                     "sandbox": s.proposer.sandbox,
                     "open_network": s.proposer.open_network,
                 },
@@ -714,25 +801,93 @@ class Record:
     def version(self, name: str) -> Path:
         return self.s.out / "surfaces" / name
 
-    def spend(self, agent: float = 0.0, proposer: float = 0.0) -> None:
+    def spend(
+        self,
+        agent: float = 0.0,
+        rollouts: int = 0,
+        seconds: float = 0.0,
+        costs: list[dict] | None = None,
+    ) -> None:
         self.agent_usd += agent
-        self.proposer_usd += proposer
-        self.last_proposer_usd = proposer or self.last_proposer_usd
+        self.rollouts += rollouts
+        self.sandbox_seconds += seconds
+        self.costs += costs or []
 
-    def remaining(self) -> float | None:
-        cap = self.s.max_cost_usd
-        return (
-            None if cap is None else max(cap - self.agent_usd - self.proposer_usd, 0.01)
+    def spend_optimizer(self, out: dict) -> None:
+        """Count one optimizer rollout (run_optimizer's outcome)."""
+        if "cost_source" not in out:  # bf.run raised: no trial folder to price
+            self.spend(rollouts=1)
+            return
+        usd, seconds = out["cost_usd"] or 0.0, out["sandbox_seconds"] or 0.0
+        self.proposer_usd += usd
+        self.last_proposer_usd = usd or self.last_proposer_usd
+        self.last_proposer_seconds = seconds or self.last_proposer_seconds
+        self.spend(
+            rollouts=1,
+            seconds=seconds,
+            costs=[
+                {
+                    "usd": out["cost_usd"],
+                    "source": out["cost_source"],
+                    "models": out["cost_models"],
+                }
+            ],
         )
 
-    def can_afford(self) -> bool:
-        """A round costs about what the baseline and the last optimizer run cost."""
-        cap = self.s.max_cost_usd
-        cost = (
-            sum(self.baseline.doc[split]["cost_usd"] or 0.0 for split in SPLITS)
-            + self.last_proposer_usd
-        )
-        return cap is None or self.agent_usd + self.proposer_usd + cost <= cap
+    def job_budget(self, share: float) -> bf.Budget | None:
+        """A job's ``bf.Budget``: ``share`` of what is left under --max-cost-usd
+        and --max-sandbox-seconds, so the jobs of one step together stay under
+        both. (The rollout cap is checked before each step.)"""
+        s, caps = self.s, {}
+        if s.max_cost_usd is not None:
+            left = s.max_cost_usd - self.agent_usd - self.proposer_usd
+            caps["max_cost_usd"] = max(left * share, 0.01)
+        if s.max_sandbox_seconds is not None:
+            left = s.max_sandbox_seconds - self.sandbox_seconds
+            caps["max_sandbox_seconds"] = max(left * share, 1.0)
+        return bf.Budget(**caps) if caps else None
+
+    def proposer_timeout(self) -> int:
+        """The optimizer's time limit, within what is left of --max-sandbox-seconds."""
+        timeout, cap = self.s.proposer.timeout_sec, self.s.max_sandbox_seconds
+        if cap is None:
+            return timeout
+        return max(60, min(timeout, int(cap - self.sandbox_seconds)))
+
+    def round_estimate(self) -> dict:
+        """A round costs about what the baseline and the last optimizer run did."""
+        base = self.baseline
+        return {
+            "rollouts": sum(base.attempted(split) for split in SPLITS) + 1,
+            "usd": sum(base.doc[split]["cost_usd"] or 0.0 for split in SPLITS)
+            + self.last_proposer_usd,
+            "seconds": sum(base.doc[split]["sandbox_seconds"] for split in SPLITS)
+            + self.last_proposer_seconds,
+        }
+
+    def over_cap(
+        self, rollouts: int = 0, usd: float = 0.0, seconds: float = 0.0
+    ) -> str | None:
+        """Which cap the next step (``rollouts``, ``usd``, ``seconds``) would pass."""
+        s = self.s
+        for flag, cap, need, unit in (
+            ("--max-rollouts", s.max_rollouts, self.rollouts + rollouts, "rollouts"),
+            (
+                "--max-cost-usd",
+                s.max_cost_usd,
+                self.agent_usd + self.proposer_usd + usd,
+                "USD",
+            ),
+            (
+                "--max-sandbox-seconds",
+                s.max_sandbox_seconds,
+                self.sandbox_seconds + seconds,
+                "sandbox-seconds",
+            ),
+        ):
+            if cap is not None and need > cap:
+                return f"{flag} {cap:g} would be exceeded ({need:,.2f} {unit} with the next step)"
+        return None
 
     def warn(self, *messages: str) -> None:
         self.doc["warnings"] += [m for m in messages if m not in self.doc["warnings"]]
@@ -784,11 +939,20 @@ class Record:
 
     def save(self) -> None:
         self.doc["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        costs = summary(self.costs)
         self.doc["cost"] = {
             "agent_usd": round(self.agent_usd, 6),
             "proposer_usd": round(self.proposer_usd, 6),
             "total_usd": round(self.agent_usd + self.proposer_usd, 6),
             "max_cost_usd": self.s.max_cost_usd,
+            # Where the USD came from (hillclimb_cost): trials per source.
+            "source": costs["source"],
+            "sources": costs["sources"],
+            "context_1m": costs["context_1m"],
+            "rollouts": self.rollouts,
+            "max_rollouts": self.s.max_rollouts,
+            "sandbox_seconds": round(self.sandbox_seconds, 1),
+            "max_sandbox_seconds": self.s.max_sandbox_seconds,
         }
         (self.s.out / "hillclimb.json").write_text(
             json.dumps(self.doc, indent=2) + "\n"
@@ -798,6 +962,10 @@ class Record:
     def finish(self, status: str, reason: str, detail: str) -> dict:
         """The verdict: the best version (the current one) against the baseline on test."""
         baseline, best = self.baseline, self.current
+        if baseline is None:  # stopped before the baseline ran: nothing to compare
+            self.doc.update(status=status, stop={"reason": reason, "detail": detail})
+            self.save()
+            return self.doc
         d = paired_delta(
             baseline.values["test"],
             best.values["test"],
@@ -853,7 +1021,7 @@ def main() -> None:
         "--include", action="append", default=[], help="only these tasks; repeatable"
     )
     p.add_argument("--agent", default="claude-agent-acp")
-    p.add_argument("--model", default="claude-haiku-4-5")
+    p.add_argument("--model", default="claude-haiku-4-5-20251001")
     p.add_argument("--sandbox", default="docker")
     p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--trials", type=int, default=3)
@@ -864,6 +1032,21 @@ def main() -> None:
     p.add_argument("--split-file", type=Path)
     p.add_argument("--stall-rounds", type=int, default=3)
     p.add_argument("--max-cost-usd", type=float)
+    p.add_argument(
+        "--max-rollouts",
+        type=int,
+        help="cap on rollouts that call a model: evaluation trials and optimizer runs",
+    )
+    p.add_argument(
+        "--max-sandbox-seconds",
+        type=float,
+        help="cap on sandbox wall-clock seconds, the grader checks included",
+    )
+    p.add_argument(
+        "--no-session-logs",
+        action="store_true",
+        help="do not copy Claude Code's session log into each trial (no cost from it)",
+    )
     p.add_argument("--max-infra-error-rate", type=float, default=0.25)
     p.add_argument(
         "--force", action="store_true", help="climb although the noise gate refuses"
@@ -871,8 +1054,15 @@ def main() -> None:
     p.add_argument("--skip-controls", action="store_true")
     p.add_argument("--proposer-agent", default="claude-agent-acp")
     p.add_argument("--proposer-model")
+    p.add_argument(
+        "--proposer-model-env",
+        action="store_true",
+        help="give Claude Code the optimizer's model as ANTHROPIC_MODEL instead of "
+        "through ACP (whose model picker can map claude-opus-5-5 to its 1M-context row)",
+    )
     p.add_argument("--proposer-timeout", type=int, default=1800)
     a = p.parse_args()
+    via_env = a.proposer_model_env and a.proposer_model
     s = Settings(
         tasks_dir=a.tasks_dir,
         skills=a.skills,
@@ -890,12 +1080,16 @@ def main() -> None:
         split_file=a.split_file,
         stall_rounds=a.stall_rounds,
         max_cost_usd=a.max_cost_usd,
+        max_rollouts=a.max_rollouts,
+        max_sandbox_seconds=a.max_sandbox_seconds,
+        session_logs=not a.no_session_logs,
         max_infra_error_rate=a.max_infra_error_rate,
         force=a.force,
         skip_controls=a.skip_controls,
         proposer=ProposerSettings(
             agent=a.proposer_agent,
-            model=a.proposer_model,
+            model=None if via_env else a.proposer_model,
+            agent_env={"ANTHROPIC_MODEL": a.proposer_model} if via_env else {},
             sandbox=a.sandbox,
             timeout_sec=a.proposer_timeout,
         ),

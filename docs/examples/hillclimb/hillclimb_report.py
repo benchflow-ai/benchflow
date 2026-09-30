@@ -240,7 +240,9 @@ def kpis(doc: dict) -> str:
         ),
         (
             "Cost",
-            f"${cost.get('total_usd', 0):,.2f}",
+            f"${cost.get('total_usd', 0):,.2f}"
+            if cost.get("source", "unknown") != "unknown"
+            else "unknown",
             f"agent ${cost.get('agent_usd', 0):,.2f} · optimizer ${cost.get('proposer_usd', 0):,.2f}",
         ),
     ]
@@ -250,6 +252,39 @@ def kpis(doc: dict) -> str:
             f'<div class="card kpi"><div class="sub">{e(a)}</div><div class="v">{e(b)}</div><div class="n">{e(c)}</div></div>'
             for a, b, c in tiles
         )
+        + "</div>"
+    )
+
+
+SOURCES = {
+    "claude-code-cost-state": "Claude Code session logs",
+    "claude-code-usage-at-list-price": "session-log tokens at list prices",
+    "benchflow": "the BenchFlow model proxy",
+    "unknown": "unknown",
+}
+
+
+def spending(doc: dict) -> str:
+    """Where the USD came from, and the caps that bind without it."""
+    cost = doc["cost"]
+    if "sources" not in cost:
+        return ""
+    sources = ", ".join(
+        f"{SOURCES.get(k, k)} ({n} rollouts)" for k, n in cost["sources"].items()
+    )
+    rollouts, cap = cost["rollouts"], cost.get("max_rollouts")
+    hours, hours_cap = cost["sandbox_seconds"] / 3600, cost.get("max_sandbox_seconds")
+    parts = [
+        f"Cost from {sources or 'no rollout yet'}"
+        + (". The 1M-context model variant ran." if cost.get("context_1m") else "."),
+        f"Spent {rollouts:,} model rollouts"
+        + (f" of a {cap:,} cap" if cap else "")
+        + f" and {hours:,.1f} sandbox-hours"
+        + (f" of a {hours_cap / 3600:,.1f} cap." if hours_cap else "."),
+    ]
+    return (
+        '<div style="margin-top:12px">'
+        + "".join(f'<p class="sub">{e(p)}</p>' for p in parts)
         + "</div>"
     )
 
@@ -362,6 +397,7 @@ def write_report(doc: dict, path: Path) -> Path:
         + verdict(doc)
         + isolation(doc)
         + kpis(doc)
+        + spending(doc)
         + (
             f"<h2>Score by round</h2><div class=card>{legend}<div class=chart>{body}<div class=tip></div></div></div>"
             if body
