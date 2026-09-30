@@ -22,7 +22,6 @@ import pytest
 
 from benchflow._utils.scoring import classify_error
 from benchflow.acp.runtime import execute_prompts
-from benchflow.acp.types import StopReason
 from benchflow.diagnostics import AgentPromptTimeoutError, TransportClosedError
 from benchflow.native_harness import client as client_module
 from benchflow.native_harness.client import (
@@ -94,13 +93,15 @@ def _harness(base, tmp_path: Path):
     cli = tmp_path / "cli"
     cli.write_text(
         f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(FIXTURES / 'replay_cli.py'))} \"$@\"\n"
+        f'{shlex.quote(str(FIXTURES / "replay_cli.py"))} "$@"\n'
     )
     cli.chmod(0o755)
     return dataclasses.replace(base, executable=str(cli))
 
 
-def _client(tmp_path, sandbox, harness, sample: Path, **replay) -> NativeCLIClient:
+def _client(
+    tmp_path, sandbox, harness, sample: Path, mcp_servers=(), **replay
+) -> NativeCLIClient:
     env = {
         "REPLAY_SAMPLE": str(sample),
         "REPLAY_PROMPT_OUT": str(tmp_path / "prompt.txt"),
@@ -115,7 +116,12 @@ def _client(tmp_path, sandbox, harness, sample: Path, **replay) -> NativeCLIClie
         sandbox_user=None,
         cwd=str(tmp_path),
         rollout_dir=tmp_path / "trial",
+        mcp_servers=tuple(mcp_servers),
     )
+
+
+def _turns(tmp_path: Path) -> list[dict]:
+    return json.loads((tmp_path / "trial" / "agent" / "native-turns.json").read_text())
 
 
 def _argvs(tmp_path: Path) -> list[list[str]]:
@@ -131,7 +137,12 @@ async def _marked_alive(sandbox: _LocalSandbox, run_id: str) -> bool:
 @pytest.mark.asyncio
 async def test_a_turn_runs_the_cli_with_the_prompt_on_stdin(tmp_path):
     sandbox = _LocalSandbox()
-    client = _client(tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "turn.jsonl")
+    client = _client(
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "turn.jsonl",
+    )
     session_id = client.cli_session_id
     prompt = "Write it.\nLine two with 'quotes', \"double\", $HOME and ünïcode [[fake-llm:x]]"
     client.session.record_user_prompt(prompt)
@@ -148,9 +159,13 @@ async def test_a_turn_runs_the_cli_with_the_prompt_on_stdin(tmp_path):
     assert client.session.tool_calls[0].tool_call_id == "toolu_fake_hello_0"
     assert client.session.latest_usage_totals()["input_tokens"] == 2000
     # Evidence: the raw stream (with a turn header) and a per-turn record.
-    stream = (tmp_path / "trial" / "agent" / "claude-code.jsonl").read_text().splitlines()
+    stream = (
+        (tmp_path / "trial" / "agent" / "claude-code.jsonl").read_text().splitlines()
+    )
     assert json.loads(stream[0])["benchflow_native_turn"] == 1
-    (turn,) = json.loads((tmp_path / "trial" / "agent" / "native-turns.json").read_text())
+    (turn,) = json.loads(
+        (tmp_path / "trial" / "agent" / "native-turns.json").read_text()
+    )
     assert turn["stop_reason"] == "end_turn" and turn["exit_code"] == 0
     assert turn["cli_cost_usd"] == pytest.approx(0.0025)
     # The prompt never reached a command line or an environment variable.
@@ -160,14 +175,21 @@ async def test_a_turn_runs_the_cli_with_the_prompt_on_stdin(tmp_path):
 @pytest.mark.asyncio
 async def test_the_next_turn_resumes_the_cli_session(tmp_path):
     sandbox = _LocalSandbox()
-    client = _client(tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "turn.jsonl")
+    client = _client(
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "turn.jsonl",
+    )
     first_id = client.cli_session_id
     await client.prompt("one")
     await client.prompt("two")
     first, second = _argvs(tmp_path)
     assert first[first.index("--session-id") + 1] == first_id
     # The CLI reported its session (the sample's placeholder id): resume it.
-    assert second[second.index("--resume") + 1] == "00000000-0000-4000-8000-000000000000"
+    assert (
+        second[second.index("--resume") + 1] == "00000000-0000-4000-8000-000000000000"
+    )
     assert client.session.session_id == "00000000-0000-4000-8000-000000000000"
     # Usage adds up across turns (the session keeps cumulative snapshots).
     assert client.session.latest_usage_totals()["input_tokens"] == 4000
@@ -195,8 +217,13 @@ async def test_cancel_kills_the_cli_group_and_its_detached_children(tmp_path):
     sandbox = _LocalSandbox()
     # The turn up to its tool call, then a hang with a detached child.
     client = _client(
-        tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "cancelled.jsonl",
-        cut=5, hang=1, child=1,
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "cancelled.jsonl",
+        cut=5,
+        hang=1,
+        child=1,
     )
     task = asyncio.create_task(client.prompt("sleep"))
     for _ in range(200):
@@ -209,16 +236,115 @@ async def test_cancel_kills_the_cli_group_and_its_detached_children(tmp_path):
     result = await asyncio.wait_for(task, 10)
     assert result.stop_reason == "cancelled"
     assert not await _marked_alive(sandbox, run_id)
+    (turn,) = _turns(tmp_path)
+    assert turn["cancelled"] is True and turn["stopped"] is True
     # The trajectory stops at the cancel: the call stays pending.
     assert client.session.pending_tool_call_ids() == ["toolu_fake_sleep_0"]
+
+
+@pytest.mark.asyncio
+async def test_a_cli_that_ignores_the_interrupt_is_killed_within_the_cancel_budget(
+    tmp_path,
+):
+    """The kernel's timeout path gets its diagnostics: the prompt returns in time."""
+    sandbox = _LocalSandbox()
+    client = _client(
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "cancelled.jsonl",
+        cut=5,
+        hang=1,
+        ignore_int=1,
+    )
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(AgentPromptTimeoutError) as caught:
+        await execute_prompts(
+            client, client.session, ["sleep"], timeout=2, idle_timeout=None
+        )
+    # Returned on its own (a prompt the kernel had to cancel raises a bare
+    # TimeoutError without the trajectory), after the 2 s interrupt grace.
+    assert caught.value.diagnostic.pending_tool_call_ids == ["toolu_fake_sleep_0"]
+    assert loop.time() - started < 2 + client_module.CANCEL_RETURN_SEC + 1
+    (turn,) = _turns(tmp_path)
+    assert turn["stop_reason"] == "cancelled" and turn["stopped"] is True
+    run_id = next(c for c in sandbox.exec_calls if "BENCHFLOW_NATIVE_RUN=" in c)
+    run_id = run_id.split("BENCHFLOW_NATIVE_RUN=", 1)[1][:32]
+    assert not await _marked_alive(sandbox, run_id)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_the_caller_cancels_keeps_its_record_and_close_kills_the_cli(
+    tmp_path,
+):
+    sandbox = _LocalSandbox()
+    client = _client(
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "cancelled.jsonl",
+        cut=5,
+        hang=1,
+        ignore_int=1,
+    )
+    task = asyncio.create_task(client.prompt("sleep"))
+    for _ in range(200):
+        if client.session.tool_calls:
+            break
+        await asyncio.sleep(0.05)
+    run_id = client._run_id
+    assert run_id and await _marked_alive(sandbox, run_id)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (turn,) = _turns(tmp_path)
+    assert turn["failure"] == "the prompt was cancelled before the turn ended"
+    await client.close()
+    assert not await _marked_alive(sandbox, run_id)
+
+
+@pytest.mark.asyncio
+async def test_a_cli_killed_by_a_signal_leaves_its_arguments_out_of_the_error(tmp_path):
+    """bash's "Killed <command line>" notice would carry the MCP settings."""
+    from benchflow.acp.types import McpServerSpec
+
+    secret = "mcp-secret-3f9a"
+    server = McpServerSpec(
+        name="web", type="http", url="http://h/mcp", headers={"Authorization": secret}
+    )
+    sandbox = _LocalSandbox()
+    client = _client(
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "turn.jsonl",
+        mcp_servers=[server],
+        cut=4,
+        signal=9,
+    )
+    with pytest.raises(NativeHarnessError) as caught:
+        await client.prompt("go")
+    message = str(caught.value)
+    assert "exit code 137" in message
+    assert "Killed" not in message and "--permission-mode" not in message
+    evidence = [message] + [
+        path.read_text() for path in (tmp_path / "trial").rglob("*") if path.is_file()
+    ]
+    assert all(secret not in text for text in evidence)
 
 
 @pytest.mark.asyncio
 async def test_a_cli_that_dies_mid_turn_is_an_agent_error(tmp_path):
     sandbox = _LocalSandbox()
     client = _client(
-        tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "turn.jsonl",
-        cut=4, exit=137,
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "turn.jsonl",
+        cut=4,
+        exit=137,
     )
     with pytest.raises(NativeHarnessError) as caught:
         await client.prompt("go")
@@ -226,7 +352,9 @@ async def test_a_cli_that_dies_mid_turn_is_an_agent_error(tmp_path):
     assert "exit code 137" in str(caught.value)
     # Classified with ACP errors, as the ACP path files a dead Claude Code CLI.
     assert classify_error(str(caught.value)) == "acp_error"
-    (turn,) = json.loads((tmp_path / "trial" / "agent" / "native-turns.json").read_text())
+    (turn,) = json.loads(
+        (tmp_path / "trial" / "agent" / "native-turns.json").read_text()
+    )
     assert "exit code 137" in turn["failure"]
 
 
@@ -234,8 +362,12 @@ async def test_a_cli_that_dies_mid_turn_is_an_agent_error(tmp_path):
 async def test_a_lost_sandbox_is_a_transport_failure_not_an_agent_error(tmp_path):
     sandbox = _LocalSandbox()
     client = _client(
-        tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "turn.jsonl",
-        cut=4, exit=1,
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "turn.jsonl",
+        cut=4,
+        exit=1,
     )
     sandbox.fail_exec = True
     with pytest.raises(TransportClosedError):
@@ -270,11 +402,17 @@ async def test_execute_prompts_times_out_a_native_turn_like_an_acp_turn(tmp_path
     """The kernel's own loop (wall clock, bounded cancel) drives the native client."""
     sandbox = _LocalSandbox()
     client = _client(
-        tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "cancelled.jsonl",
-        cut=5, hang=1,
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "cancelled.jsonl",
+        cut=5,
+        hang=1,
     )
     with pytest.raises(AgentPromptTimeoutError) as caught:
-        await execute_prompts(client, client.session, ["sleep"], timeout=3, idle_timeout=None)
+        await execute_prompts(
+            client, client.session, ["sleep"], timeout=3, idle_timeout=None
+        )
     assert caught.value.diagnostic.pending_tool_call_ids == ["toolu_fake_sleep_0"]
     assert [e["type"] for e in caught.value.trajectory][-1] == "agent_timeout"
     run_ids = [c for c in sandbox.exec_calls if "BENCHFLOW_NATIVE_RUN=" in c]
@@ -286,7 +424,10 @@ async def test_a_cli_lingering_after_its_result_is_stopped(tmp_path, monkeypatch
     monkeypatch.setattr(client_module, "EXIT_GRACE_SEC", 1)
     sandbox = _LocalSandbox()
     client = _client(
-        tmp_path, sandbox, _harness(CLAUDE_CODE, tmp_path), CLAUDE_SAMPLES / "turn.jsonl",
+        tmp_path,
+        sandbox,
+        _harness(CLAUDE_CODE, tmp_path),
+        CLAUDE_SAMPLES / "turn.jsonl",
         hang=1,
     )
     result = await asyncio.wait_for(client.prompt("go"), 20)
@@ -294,7 +435,9 @@ async def test_a_cli_lingering_after_its_result_is_stopped(tmp_path, monkeypatch
 
 
 def test_ask_user_handlers_are_refused_not_silently_dropped(tmp_path):
-    client = _client(tmp_path, _LocalSandbox(), CLAUDE_CODE, CLAUDE_SAMPLES / "turn.jsonl")
+    client = _client(
+        tmp_path, _LocalSandbox(), CLAUDE_CODE, CLAUDE_SAMPLES / "turn.jsonl"
+    )
     session = NativeSession(client)
     session.on_ask_user(None)  # clearing is fine
 
@@ -310,6 +453,9 @@ def test_ask_user_handlers_are_refused_not_silently_dropped(tmp_path):
 def test_launch_script_reads_the_prompt_line_and_starts_its_own_group():
     script = launch_script("/opt/cli", ("-p", "it's"), "abc123")
     assert "IFS= read -r p" in script and "base64 -d" in script
-    assert "set -m; /opt/cli -p 'it'\"'\"'s' <&3 3<&- & set +m; wait $!" in script
+    assert (
+        "set -m; /opt/cli -p 'it'\"'\"'s' <&3 3<&- 2>&4 4>&- & set +m; "
+        "exec 2>/dev/null; wait $!"
+    ) in script
     assert "benchflow_native_exit" in script
     assert encode_prompt("héllo\n") == "aMOpbGxvCg=="

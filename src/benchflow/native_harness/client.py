@@ -52,8 +52,13 @@ RUN_ENV = "BENCHFLOW_NATIVE_RUN"
 EXIT_KEY = "benchflow_native_exit"
 # How long a cancelled CLI gets to exit on SIGINT (writing its result and
 # session log) before its process group and every marked process are killed.
-# Kept under the kernel's 5 s bounded cancel (acp/timeout_cleanup.py).
 CANCEL_GRACE_SEC = 2
+# How long a cancelled turn's prompt waits for the CLI's stream to end and for
+# the kill, counted from the cancel. The kernel gives a timed-out prompt 5 s
+# to return on its own (acp/timeout_cleanup.py) before it cancels the task,
+# which loses the turn's diagnostics; a kill still running then goes on, and
+# close() and the next turn wait for it.
+CANCEL_RETURN_SEC = 3.5
 # How long a CLI may keep running after it reported the end of its turn.
 EXIT_GRACE_SEC = 15
 _KILL_TIMEOUT_SEC = 20
@@ -80,6 +85,11 @@ def launch_script(executable: str, argv: tuple[str, ...], run_id: str) -> str:
     again so bash prints no job notice); the shell waits for it and reports
     its exit status as a last JSON line, :data:`EXIT_KEY`, which reaches the
     client on every transport.
+
+    The CLI writes to the shell's original stderr (kept as fd 4), and the
+    shell's own stderr is /dev/null while it waits: bash reports a job a
+    signal killed with its whole command line ("line 1: 479 Killed ..."),
+    which would put the arguments, MCP settings included, into the error.
     """
     work = shlex.quote(f"/tmp/benchflow-native-{run_id}")
     command = " ".join(shlex.quote(part) for part in (executable, *argv))
@@ -87,9 +97,10 @@ def launch_script(executable: str, argv: tuple[str, ...], run_id: str) -> str:
         f"umask 077; mkdir -p {work} || exit 1; "
         "IFS= read -r p || exit 1; "
         f"printf '%s' \"$p\" | base64 -d > {work}/prompt || exit 1; "
-        f"unset p; exec 3<{work}/prompt; rm -rf {work}; "
-        f"set -m; {command} <&3 3<&- & set +m; wait $!; rc=$?; "
-        f"printf '{{\"{EXIT_KEY}\": %d}}\\n' \"$rc\"; exit $rc"
+        f"unset p; exec 3<{work}/prompt 4>&2; rm -rf {work}; "
+        f"set -m; {command} <&3 3<&- 2>&4 4>&- & set +m; "
+        "exec 2>/dev/null; wait $!; rc=$?; "
+        f'printf \'{{"{EXIT_KEY}": %d}}\\n\' "$rc"; exit $rc'
     )
 
 
@@ -115,28 +126,37 @@ def _process_functions(run_id: str) -> str:
         "leaders() { for p in $(marked); do "
         "g=$(sed 's/^.*) //' /proc/$p/stat 2>/dev/null | cut -d' ' -f3); "
         '[ "$g" = "$p" ] && echo "$p"; done; }; '
-        "alive() { for p in $(marked); do "
+        'running() { for p in "$@"; do '
         "s=$(sed 's/^.*) //' /proc/$p/stat 2>/dev/null | cut -d' ' -f1); "
         '[ -n "$s" ] && [ "$s" != Z ] && echo "$p"; done; }; '
+        "alive() { running $(marked); }; "
     )
+
+
+# Polls every 0.2 s (every second where sleep takes whole seconds only).
+_POLL = "sleep 0.2 2>/dev/null || { sleep 1; i=$((i+4)); }; i=$((i+1))"
 
 
 def kill_script(run_id: str, *, grace_sec: int) -> str:
     """Root script: SIGINT the turn's process groups, then kill what is left.
 
-    Only groups a marked process leads are signalled as groups, so a group
-    shared with anything else (a CLI started without job control) is never
-    hit; every marked process is then killed by pid.
+    The grace lasts until the signalled group leaders (the CLI) have exited,
+    at most ``grace_sec``: the CLI gets to write its result and session log,
+    and the tool processes it leaves are killed at once. Only groups a marked
+    process leads are signalled as groups, so a group shared with anything
+    else (a CLI started without job control) is never hit; every marked
+    process is then killed by pid. Prints ``gone`` once no marked process
+    runs, else ``left`` and the pids.
     """
-    # Polls every 0.2 s (every second where sleep takes whole seconds only).
     return (
         _process_functions(run_id)
-        + "for g in $(leaders); do kill -INT -- -$g 2>/dev/null; done; "
-        f'i=0; while [ $i -lt {int(grace_sec) * 5} ] && [ -n "$(alive)" ]; do '
-        "sleep 0.2 2>/dev/null || { sleep 1; i=$((i+4)); }; i=$((i+1)); done; "
-        "for g in $(leaders); do kill -KILL -- -$g 2>/dev/null; done; "
+        + "gs=$(leaders); for g in $gs; do kill -INT -- -$g 2>/dev/null; done; "
+        f'i=0; while [ $i -lt {int(grace_sec) * 5} ] && [ -n "$(running $gs)" ]; '
+        f"do {_POLL}; done; "
+        "for g in $gs $(leaders); do kill -KILL -- -$g 2>/dev/null; done; "
         "for p in $(marked); do kill -KILL $p 2>/dev/null; done; "
-        "true"
+        f'i=0; while [ $i -lt 10 ] && [ -n "$(alive)" ]; do {_POLL}; done; '
+        'left=$(alive); [ -z "$left" ] && echo gone || echo left $left'
     )
 
 
@@ -161,6 +181,12 @@ def recorded_argv(argv: tuple[str, ...]) -> list[str]:
         else:
             shown.append(arg)
     return shown
+
+
+def _consume(task: asyncio.Future[Any]) -> None:
+    """Retrieve an abandoned read's outcome so asyncio does not report it."""
+    if not task.cancelled():
+        task.exception()
 
 
 def _decode_event(text: str, *, lenient: bool) -> dict[str, Any] | None:
@@ -231,10 +257,18 @@ class NativeCLIClient:
         self._process: Any = None
         self._run_id: str | None = None
         self._cancel_requested = False
+        self._cancel_at: float | None = None
+        self._cancel_event: asyncio.Event | None = None
         self._totals: dict[str, int] = dict.fromkeys(_USAGE_FIELDS, 0)
         self._last_total: dict[str, int] | None = None
         self._exit_code: int | None = None
-        self._kill_task: asyncio.Future[None] | None = None
+        # A cancel's kill (it can outlive the prompt, see CANCEL_RETURN_SEC)
+        # and the run it stops.
+        self._kill_task: asyncio.Future[bool] | None = None
+        self._kill_run_id: str | None = None
+        self._kill_record: dict[str, Any] | None = None
+        # The running turn's evidence record
+        self._record: dict[str, Any] | None = None
         self._closed = False
         agent_dir = rollout_dir / "agent"
         self._stream_path = agent_dir / f"{harness.cli}.jsonl"
@@ -286,13 +320,17 @@ class NativeCLIClient:
             raise RuntimeError("native harness client is closed")
         if self._process is not None:
             raise RuntimeError("a native harness turn is already running")
+        # The last turn's processes are gone before this one starts: a
+        # cancel's kill may still run, and a turn whose prompt task was
+        # cancelled outright may have left its processes.
+        await self._finish_kill()
         if self._run_id is not None:
-            # A turn whose prompt task was cancelled outright: its processes
-            # may still run in the sandbox.
             await self._kill(self._run_id, grace_sec=0)
             self._run_id = None
         self._turn += 1
         self._cancel_requested = False
+        self._cancel_at = None
+        self._cancel_event = asyncio.Event()
         self._exit_code = None
         run_id = uuid4().hex
         resume_id = self._resume_id
@@ -320,61 +358,50 @@ class NativeCLIClient:
             "argv": shown_argv,
             "started_at": started.isoformat(),
         }
+        self._record = record
         self._write_stream({"benchflow_native_turn": self._turn, "argv": shown_argv})
         process = await self._env.live_process(agent=self._agent)
         self._process = process
         self._run_id = run_id
         end: TransportClosedError | None = None
         try:
-            await process.start(command=command, env=env, cwd=self._cwd)
-            await process.writeline(encode_prompt(text))
-            if self._cancel_requested:
-                # cancel() ran while the process was starting, before its
-                # processes existed to be killed.
-                await self._kill(run_id, grace_sec=0)
-            if self._silence_sec is not None:
-                process.expect_silence(self._silence_sec)
-            lenient = True
-            finished_at: float | None = None
-            loop = asyncio.get_running_loop()
-            while True:
-                try:
-                    if finished_at is None:
-                        line = await process.readline()
-                    else:
-                        # The CLI reported the end of the turn; it gets a
-                        # moment to exit before it is stopped.
-                        remaining = finished_at + EXIT_GRACE_SEC - loop.time()
-                        line = await asyncio.wait_for(
-                            process.readline(), timeout=max(remaining, 0.01)
-                        )
-                except TransportClosedError as exc:
-                    end = exc
-                    break
-                except TimeoutError:
-                    logger.warning(
-                        "%s did not exit %ss after the end of its turn; stopping it",
-                        self._harness.cli,
-                        EXIT_GRACE_SEC,
-                    )
+            try:
+                await process.start(command=command, env=env, cwd=self._cwd)
+                await process.writeline(encode_prompt(text))
+                if self._cancel_requested:
+                    # cancel() ran while the process was starting, before its
+                    # processes existed to be killed.
                     await self._kill(run_id, grace_sec=0)
-                    break
-                if self._handle_line(line, parser, lenient=lenient):
-                    lenient = False
-                    if finished_at is None and parser.outcome().completed:
-                        finished_at = loop.time()
-        finally:
-            self._process = None
-            with contextlib.suppress(Exception):
-                await process.close()
-            stderr = getattr(process, "stderr_tail", "")
-            if isinstance(stderr, str) and stderr.strip():
-                self._log(redact_trajectory_text(stderr.rstrip()))
-        if self._kill_task is not None and not self._kill_task.done():
-            # A cancel is stopping this turn's processes: return once they
-            # are gone.
-            with contextlib.suppress(Exception):
-                await asyncio.shield(self._kill_task)
+                if self._silence_sec is not None:
+                    process.expect_silence(self._silence_sec)
+                end = await self._read_turn(process, parser, run_id)
+            finally:
+                self._process = None
+                with contextlib.suppress(Exception):
+                    await process.close()
+                stderr = getattr(process, "stderr_tail", "")
+                if isinstance(stderr, str) and stderr.strip():
+                    self._log(redact_trajectory_text(stderr.rstrip()))
+        except asyncio.CancelledError:
+            # The caller stopped waiting (the kernel does 5 s after a
+            # timeout): keep the evidence; close() or the next turn kills
+            # what still runs.
+            record.update(
+                ended_at=datetime.now(UTC).isoformat(),
+                cancelled=True,
+                failure="the prompt was cancelled before the turn ended",
+            )
+            self._save_turn(record)
+            raise
+        kill = self._kill_task
+        if self._cancel_requested and kill is not None:
+            # Return once the cancel's kill is done, or at its deadline.
+            cancel_at = self._cancel_at or asyncio.get_running_loop().time()
+            remaining = (
+                cancel_at + CANCEL_RETURN_SEC - asyncio.get_running_loop().time()
+            )
+            await asyncio.wait({kill}, timeout=max(remaining, 0))
+            record["stopped"] = self._kill_outcome()
         outcome = parser.outcome()
         exit_code = self._exit_code
         if exit_code is None and end is not None:
@@ -432,26 +459,35 @@ class NativeCLIClient:
         The trajectory stops at the cancel: events the CLI writes while it
         winds down (Claude Code reports the interrupted tool call as rejected)
         are kept in the stream log but not applied to the session, as an ACP
-        adapter's cancelled turn leaves its pending calls pending.
+        adapter's cancelled turn leaves its pending calls pending. The prompt
+        returns once the kill is done or :data:`CANCEL_RETURN_SEC` after the
+        cancel, whichever is first; a kill still running then goes on, and
+        :meth:`close` and the next turn wait for it.
         """
         run_id = self._run_id
         if run_id is None:
             return
-        self._cancel_requested = True
-        # The prompt waits for this kill before it returns (see prompt()), so
-        # a turn reported cancelled has no process left, even when the kernel
-        # stops waiting for cancel() itself once the prompt has returned.
-        if self._kill_task is None or self._kill_task.done():
+        if not self._cancel_requested:
+            self._cancel_requested = True
+            self._cancel_at = asyncio.get_running_loop().time()
+            if self._cancel_event is not None:
+                self._cancel_event.set()
+        if self._kill_task is None or self._kill_run_id != run_id:
             self._kill_task = asyncio.ensure_future(
                 self._kill(run_id, grace_sec=CANCEL_GRACE_SEC)
             )
+            self._kill_run_id = run_id
+            self._kill_record = self._record
         await asyncio.shield(self._kill_task)
 
     async def close(self) -> None:
-        """Kill any running turn and release the transport and logs."""
+        """Kill what the turns left running and release the transport and logs."""
         self._closed = True
+        await self._finish_kill()
         run_id = self._run_id
         if run_id is not None:
+            # A turn still running, or one whose prompt task was cancelled
+            # outright.
             self._cancel_requested = True
             with contextlib.suppress(Exception):
                 await self._kill(run_id, grace_sec=0)
@@ -465,19 +501,121 @@ class NativeCLIClient:
 
     # -- internals -------------------------------------------------------------
 
-    async def _kill(self, run_id: str, *, grace_sec: int) -> None:
+    async def _read_turn(
+        self, process: Any, parser: NativeParser, run_id: str
+    ) -> TransportClosedError | None:
+        """Apply the CLI's output lines until its stream ends or a deadline passes.
+
+        Returns the transport's end-of-stream error, or None when a deadline
+        ended the read: a CLI that reported the end of its turn gets
+        :data:`EXIT_GRACE_SEC` to exit before it is killed, and after a
+        cancel the read stops :data:`CANCEL_RETURN_SEC` after it. One read
+        is outstanding at a time and is never abandoned mid-line while the
+        turn runs, so no output is lost to a deadline check.
+        """
+        loop = asyncio.get_running_loop()
+        lenient = True
+        finished_at: float | None = None
+        event = self._cancel_event or asyncio.Event()
+        cancelled = asyncio.ensure_future(event.wait())
+        read: asyncio.Future[bytes] | None = None
+        try:
+            while True:
+                if read is None:
+                    read = asyncio.ensure_future(process.readline())
+                if self._cancel_at is not None:
+                    deadline: float | None = self._cancel_at + CANCEL_RETURN_SEC
+                elif finished_at is not None:
+                    deadline = finished_at + EXIT_GRACE_SEC
+                else:
+                    deadline = None
+                done, _ = await asyncio.wait(
+                    {read} if cancelled.done() else {read, cancelled},
+                    timeout=None
+                    if deadline is None
+                    else max(deadline - loop.time(), 0),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if read in done:
+                    finished, read = read, None
+                    try:
+                        line = finished.result()
+                    except TransportClosedError as exc:
+                        return exc
+                    if self._handle_line(line, parser, lenient=lenient):
+                        lenient = False
+                        if finished_at is None and parser.outcome().completed:
+                            finished_at = loop.time()
+                    continue
+                if done:
+                    continue  # a cancel: its deadline applies from now on
+                if self._cancel_requested:
+                    return None
+                logger.warning(
+                    "%s did not exit %ss after the end of its turn; stopping it",
+                    self._harness.cli,
+                    EXIT_GRACE_SEC,
+                )
+                await self._kill(run_id, grace_sec=0)
+                return None
+        finally:
+            cancelled.cancel()
+            if read is not None:
+                if not read.done():
+                    read.cancel()
+                    await asyncio.wait({read}, timeout=1)
+                read.add_done_callback(_consume)
+
+    def _kill_outcome(self) -> bool | None:
+        """The cancel's kill: True (nothing left), False, or None (running)."""
+        task = self._kill_task
+        if task is None or not task.done():
+            return None
+        if task.cancelled() or task.exception() is not None:
+            return False
+        return bool(task.result())
+
+    async def _finish_kill(self) -> None:
+        """Wait for a cancel's kill, and kill again if it left processes."""
+        task = self._kill_task
+        if task is None:
+            return
+        try:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(task)
+            stopped = self._kill_outcome()
+            if not stopped and self._kill_run_id is not None:
+                try:
+                    stopped = await self._kill(self._kill_run_id, grace_sec=0)
+                except Exception:
+                    logger.warning("Native harness kill failed", exc_info=True)
+            record = self._kill_record
+            if record is not None and record.get("stopped") is not True:
+                record["stopped"] = bool(stopped)
+                self._write_turns()
+        finally:
+            self._kill_task = None
+            self._kill_run_id = None
+            self._kill_record = None
+
+    async def _kill(self, run_id: str, *, grace_sec: int) -> bool:
+        """Run :func:`kill_script`; True when no process of the run is left."""
         result = await self._env.exec(
             kill_script(run_id, grace_sec=grace_sec),
             user="root",
             timeout_sec=_KILL_TIMEOUT_SEC + grace_sec,
         )
-        if getattr(result, "return_code", 0) != 0:
-            logger.warning(
-                "Native harness kill of turn %s exited %s: %s",
-                run_id,
-                getattr(result, "return_code", None),
-                (getattr(result, "stderr", "") or "")[:500],
-            )
+        out = (getattr(result, "stdout", "") or "").strip()
+        if getattr(result, "return_code", 0) == 0 and out.endswith("gone"):
+            return True
+        logger.warning(
+            "Native harness kill of turn %s exited %s: %s %s",
+            run_id,
+            getattr(result, "return_code", None),
+            out[-200:],
+            (getattr(result, "stderr", "") or "")[:300],
+        )
+        return False
 
     async def _cli_alive(self, run_id: str) -> bool:
         result = await self._env.exec(
@@ -597,6 +735,9 @@ class NativeCLIClient:
 
     def _save_turn(self, record: dict[str, Any]) -> None:
         self.turns.append(record)
+        self._write_turns()
+
+    def _write_turns(self) -> None:
         self._turns_path.parent.mkdir(parents=True, exist_ok=True)
         self._turns_path.write_text(
             json.dumps(redact_trajectory_obj(self.turns), indent=2) + "\n"
