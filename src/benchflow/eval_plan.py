@@ -103,6 +103,7 @@ class EvalCreateRequest:
     max_cost_usd: float | None = None
     max_sandbox_seconds: float | None = None
     max_tokens: int | None = None
+    max_rollouts: int | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
@@ -191,15 +192,21 @@ class EvalPlan:
 
     @property
     def eval_budget(self) -> Budget | None:
-        """The hard per-job cap from --max-cost-usd/-sandbox-seconds/-tokens."""
+        """The per-job cap from --max-cost-usd/-sandbox-seconds/-tokens/-rollouts."""
         req = self.request
-        caps = (req.max_cost_usd, req.max_sandbox_seconds, req.max_tokens)
+        caps = (
+            req.max_cost_usd,
+            req.max_sandbox_seconds,
+            req.max_tokens,
+            req.max_rollouts,
+        )
         if all(c is None for c in caps):
             return None
         return Budget(
             max_cost_usd=req.max_cost_usd,
             max_sandbox_seconds=req.max_sandbox_seconds,
             max_tokens=req.max_tokens,
+            max_rollouts=req.max_rollouts,
         )
 
     def make_eval_config(
@@ -432,23 +439,29 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         ("--max-cost-usd", request.max_cost_usd),
         ("--max-sandbox-seconds", request.max_sandbox_seconds),
         ("--max-tokens", request.max_tokens),
+        ("--max-rollouts", request.max_rollouts),
     ):
         if value is not None and not value > 0:
             raise EvalPlanError(f"{flag} must be > 0")
     has_budget = any(
         v is not None
-        for v in (request.max_cost_usd, request.max_sandbox_seconds, request.max_tokens)
+        for v in (
+            request.max_cost_usd,
+            request.max_sandbox_seconds,
+            request.max_tokens,
+            request.max_rollouts,
+        )
     )
     if has_budget and request.worker_concurrency is not None:
         raise EvalPlanError(
-            "--max-cost-usd/--max-sandbox-seconds/--max-tokens cap one job and are "
-            "not supported with --worker-concurrency (each worker would get the "
-            "whole budget)"
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts cap "
+            "one job and are not supported with --worker-concurrency (each worker "
+            "would get the whole budget)"
         )
     if has_budget and request.source_env:
         raise EvalPlanError(
-            "--max-cost-usd/--max-sandbox-seconds/--max-tokens are not supported "
-            "with --source-env (vf-eval runs the rollouts)"
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts are "
+            "not supported with --source-env (vf-eval runs the rollouts)"
         )
     if request.worker_retries < 0:
         raise EvalPlanError("--worker-retries must be >= 0")

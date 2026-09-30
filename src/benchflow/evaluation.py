@@ -795,6 +795,37 @@ EVALUATION_RECORD = "evaluation.json"
 JOB_LOCK = ".evaluation.lock"
 
 
+def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
+    """Every rollout an earlier run of this job left: the result of each
+    attempt that wrote one (``result.json``, else the solver snapshot a
+    reviewed or interrupted attempt keeps), and how many attempt folders
+    wrote neither (killed, or cancelled for the budget)."""
+    from benchflow._utils.result_paths import iter_task_result_paths
+    from benchflow.jobs import _interrupted
+
+    if not job_dir.is_dir():
+        return [], 0
+    results: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for path in iter_task_result_paths(job_dir):
+        seen.add(path.parent)
+        with contextlib.suppress(OSError, ValueError):
+            data = json.loads(path.read_text())
+            if isinstance(data, dict) and data.get("purpose", "task") == "task":
+                results.append(data)
+    for name in ("solver.json", "solver-complete.json"):
+        for path in sorted(job_dir.glob(f"*/{name}")):
+            if path.parent in seen:
+                continue
+            seen.add(path.parent)
+            with contextlib.suppress(OSError, ValueError):
+                data = json.loads(path.read_text())
+                if isinstance(data, dict):
+                    results.append(data)
+    interrupted = [p for p in _interrupted(job_dir) if p not in seen]
+    return results, len(interrupted)
+
+
 def _pid_alive(pid: int) -> bool:
     """Whether a process with this pid exists on this host."""
     try:
@@ -1794,8 +1825,14 @@ class Evaluation:
             live_activity.unregister(task_dir.name)
 
     async def _run_task(self, task_dir: Path) -> RunResult:
-        """Run a single task with retries."""
+        """Run a single task with retries.
+
+        With a budget, every attempt's USD and tokens count against it, and a
+        retry starts only while the budget allows another rollout; otherwise
+        the task keeps its last attempt's result.
+        """
         cfg = self._config
+        guard = self._budget_guard
         last_result: RunResult | None = None
 
         for attempt in range(1, cfg.retry.max_retries + 2):
@@ -1806,6 +1843,8 @@ class Evaluation:
                 await self._sweep_docker()
             result = await self._run_single_task(task_dir, cfg)
             last_result = result
+            if guard is not None:
+                guard.attempt_done(task_dir.name, result)
             if result.scoring is not None and not cfg.retry.reruns_unjudged_solver(
                 result.scoring, result.error, category=result.error_category
             ):
@@ -1829,6 +1868,9 @@ class Evaluation:
                 break
 
             if attempt <= cfg.retry.max_retries:
+                if guard is not None and not guard.retry(task_dir.name):
+                    logger.info(f"Not retrying {task_dir.name}: {guard.reason}")
+                    break
                 err_preview = truncate_end(
                     result.error or result.verifier_error or "", 60
                 )
@@ -1914,7 +1956,7 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
-                if guard is not None and not guard.start(
+                if guard is not None and not await guard.admit(
                     td.name, asyncio.current_task()
                 ):
                     return td.name, None
@@ -1986,7 +2028,7 @@ class Evaluation:
                 return None
             raise
         except Exception:
-            guard.finish(td.name, None)  # stop counting its sandbox time
+            guard.finish(td.name)  # stop counting its sandbox time
             raise
         guard.finish(td.name, result)
         return result
@@ -2045,8 +2087,8 @@ class Evaluation:
                 self._learner_export_dir = export_dir
 
                 guard = self._budget_guard
-                if guard is not None and guard.stopped:
-                    guard.start(td.name)  # records it as not started
+                if guard is not None and not guard.start(td.name):
+                    # Recorded as not started (a cap was reached).
                     self._learner_skills_dir = None
                     self._learner_export_dir = None
                     continue
@@ -2058,7 +2100,7 @@ class Evaluation:
                         # Its own task so the budget can cancel the trial
                         # without cancelling the job.
                         trial = asyncio.ensure_future(self._run_budgeted(td, guard))
-                        guard.start(td.name, trial)
+                        guard.attach(td.name, trial)
                         watcher = asyncio.ensure_future(guard.watch())
                         try:
                             maybe = await trial
@@ -2536,8 +2578,10 @@ class Evaluation:
         self._budget_guard = None
         if cfg.budget is not None:
             self._budget_guard = BudgetGuard(cfg.budget)
-            # A resumed job has already spent what its finished trials used.
-            self._budget_guard.seed(completed.values())
+            # A resumed job has already spent what every earlier rollout used
+            # (retried and re-run attempts included).
+            attempts, interrupted = _recorded_attempts(self._jobs_dir / self._job_name)
+            self._budget_guard.seed(attempts, interrupted=interrupted)
 
         if cfg.job_mode == "sequential-shared":
             pairs = await self._run_sequential_shared(remaining)

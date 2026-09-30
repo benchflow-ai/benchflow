@@ -568,9 +568,12 @@ def eval_run(
         typer.Option(
             "--max-cost-usd",
             help=(
-                "Hard job budget in USD, over trials that report a cost: when "
-                "reached, no new trials start and running ones are cancelled "
-                "(recorded in summary.json budget, not as failures)"
+                "Job budget in USD over rollouts that report a cost (retries "
+                "included). USD is known when a rollout finishes, so it is "
+                "checked between starts: a rollout waits while the running ones "
+                "would reach the cap at the mean so far, and the job can pass "
+                "it by about one rollout's cost. At the cap no rollout starts "
+                "and running ones are cancelled (summary.json budget, not failures)"
             ),
         ),
     ] = None,
@@ -579,8 +582,9 @@ def eval_run(
         typer.Option(
             "--max-sandbox-seconds",
             help=(
-                "Hard job budget in trial wall-clock seconds, running trials "
-                "included; same stop/cancel behaviour as --max-cost-usd"
+                "Job budget in trial wall-clock seconds, running trials "
+                "included and re-checked as they run; same stop/cancel "
+                "behaviour as --max-cost-usd"
             ),
         ),
     ] = None,
@@ -589,8 +593,18 @@ def eval_run(
         typer.Option(
             "--max-tokens",
             help=(
-                "Hard job budget in total tokens over finished trials; same "
-                "stop/cancel behaviour as --max-cost-usd"
+                "Job budget in total tokens over finished rollouts (retries "
+                "included); checked between starts, like --max-cost-usd"
+            ),
+        ),
+    ] = None,
+    max_rollouts: Annotated[
+        int | None,
+        typer.Option(
+            "--max-rollouts",
+            help=(
+                "Job budget in rollouts started, retries included: at the cap "
+                "no rollout starts and running ones finish"
             ),
         ),
     ] = None,
@@ -934,6 +948,7 @@ def eval_run(
         max_cost_usd=max_cost_usd,
         max_sandbox_seconds=max_sandbox_seconds,
         max_tokens=max_tokens,
+        max_rollouts=max_rollouts,
         jobs_dir=jobs_dir,
         fresh=fresh,
         job_name=job_name,

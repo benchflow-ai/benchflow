@@ -600,4 +600,4 @@ evaluation = Evaluation(tasks_dir="tasks", jobs_dir="jobs/my-run", config=config
 eval_result: EvaluationResult = await evaluation.run()
 ```
 
-`Evaluation(..., budget=bf.Budget(max_cost_usd=..., max_sandbox_seconds=..., max_tokens=...))` caps the job: at the cap no new trial starts and running ones are cancelled, and `eval_result.budget` / `summary.json` `budget` list them (never as failures). See [Job budget caps](./budget.md).
+`Evaluation(..., budget=bf.Budget(max_cost_usd=..., max_sandbox_seconds=..., max_tokens=..., max_rollouts=...))` caps the job: at a cap no new rollout starts (retries included), running ones are cancelled for the spend caps, and `eval_result.budget` / `summary.json` `budget` list them (never as failures). USD and tokens are known when a rollout finishes, so they are enforced between starts. See [Job budget caps](./budget.md).

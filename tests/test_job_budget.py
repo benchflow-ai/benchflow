@@ -100,11 +100,17 @@ def test_budget_validates() -> None:
         Budget(max_tokens=0)
     with pytest.raises(ValueError):
         Budget(max_cost_usd=-1.0)
+    with pytest.raises(ValueError, match="max_rollouts"):
+        Budget(max_rollouts=0)
+    with pytest.raises(ValueError, match="max_rollouts"):
+        Budget(max_rollouts=True)
     assert Budget(max_sandbox_seconds=60).to_dict() == {
         "max_cost_usd": None,
         "max_sandbox_seconds": 60.0,
         "max_tokens": None,
+        "max_rollouts": None,
     }
+    assert Budget.coerce({"max_rollouts": 5}) == Budget(max_rollouts=5)
 
 
 @pytest.mark.asyncio
@@ -241,6 +247,8 @@ def test_cli_flags_reach_the_config() -> None:
         ({"max_tokens": 0}, "--max-tokens"),
         ({"max_sandbox_seconds": -5.0}, "--max-sandbox-seconds"),
         ({"max_cost_usd": 1.0, "worker_concurrency": 2}, "--worker-concurrency"),
+        ({"max_rollouts": 0}, "--max-rollouts"),
+        ({"max_rollouts": 3, "worker_concurrency": 2}, "--worker-concurrency"),
     ],
 )
 def test_cli_flags_are_validated(kwargs, match) -> None:
@@ -315,3 +323,187 @@ def test_budget_keyword_leaves_the_callers_config_alone(tmp_path: Path) -> None:
     assert config.budget is None
     assert capped._config.budget == Budget(max_tokens=10)
     assert uncapped._config.budget is None
+
+
+def _attempts_runner(job: Evaluation, plan: dict[str, list[dict]], delays=None):
+    """A fake rollout per attempt, in its own folder: ``plan[task]`` lists each
+    attempt's outcome (``error``, ``tokens``, ``cost``); the last repeats."""
+    seen: dict[str, int] = {}
+
+    async def fake_run(task_path, _cfg):
+        name = task_path.name
+        n = seen[name] = seen.get(name, 0) + 1
+        outcome = plan[name][min(n, len(plan[name])) - 1]
+        await asyncio.sleep((delays or {}).get(name, 0.0))
+        rollout_dir = job._jobs_dir / job._job_name / f"{name}__attempt{n}"
+        rollout_dir.mkdir(parents=True, exist_ok=True)
+        error = outcome.get("error")
+        rewards = None if error else {"reward": 1.0}
+        payload = {
+            "task_name": name,
+            "rollout_name": rollout_dir.name,
+            "rewards": rewards,
+            "error": error,
+            "error_category": "acp_error" if error else None,
+            "verifier_error": None,
+            "agent_result": {
+                "total_tokens": outcome.get("tokens"),
+                "cost_usd": outcome.get("cost"),
+            },
+        }
+        (rollout_dir / "result.json").write_text(json.dumps(payload))
+        return RolloutResult(
+            task_name=name,
+            rollout_name=rollout_dir.name,
+            rewards=rewards,
+            error=error,
+            error_category="acp_error" if error else None,
+            total_tokens=outcome.get("tokens"),
+            cost_usd=outcome.get("cost"),
+            rollout_dir=rollout_dir,
+        )
+
+    return fake_run
+
+
+_FLAKY = {"error": "ACP error -32603: Internal error", "tokens": 100}
+_OK = {"tokens": 100}
+
+
+def _retrying_job(tmp_path: Path, n: int, budget: Budget, **kw) -> Evaluation:
+    config = EvaluationConfig(
+        agent="oracle",
+        concurrency=kw.get("concurrency", 1),
+        retry=RetryConfig(max_retries=kw.get("retries", 2), min_wait_sec=0.0),
+    )
+    return Evaluation(
+        _tasks(tmp_path, n), tmp_path / "jobs", config=config, budget=budget
+    )
+
+
+@pytest.mark.asyncio
+async def test_rollout_cap_counts_retries_and_lets_running_trials_finish(
+    tmp_path: Path,
+) -> None:
+    """``Budget(max_rollouts=N)`` caps rollouts started, retries included.
+
+    The hill-climb demo (docs/examples/hillclimb) needed a rollout cap and
+    had to count trials between steps itself, missing retried attempts.
+    """
+    job = _retrying_job(tmp_path, 3, Budget(max_rollouts=3))
+    plan = {"task-0": [_FLAKY, _FLAKY, _OK], "task-1": [_OK], "task-2": [_OK]}
+    job._run_single_task = AsyncMock(side_effect=_attempts_runner(job, plan))
+    result = await job.run()
+    ran = [c.args[0].name for c in job._run_single_task.await_args_list]
+    assert ran == ["task-0", "task-0", "task-0"]
+    assert result.results["task-0"].reward == 1.0
+    budget = _summary(job)["budget"]
+    assert budget["caps"]["max_rollouts"] == 3
+    assert budget["spent"]["rollouts"] == 3
+    assert budget["spent"]["tokens"] == 300
+    assert budget["stopped"] is True and "3 rollouts" in budget["reason"]
+    assert budget["not_started"] == ["task-1", "task-2"]
+    assert budget["cancelled"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_retry_is_not_started_at_the_rollout_cap(tmp_path: Path) -> None:
+    job = _retrying_job(tmp_path, 1, Budget(max_rollouts=2))
+    plan = {"task-0": [_FLAKY]}
+    job._run_single_task = AsyncMock(side_effect=_attempts_runner(job, plan))
+    result = await job.run()
+    assert job._run_single_task.await_count == 2
+    # The trial keeps its last attempt's result; it is not "not started".
+    assert result.results["task-0"].error == _FLAKY["error"]
+    budget = _summary(job)["budget"]
+    assert budget["spent"]["rollouts"] == 2 and budget["not_started"] == []
+
+
+@pytest.mark.asyncio
+async def test_retried_attempts_count_against_the_token_cap(tmp_path: Path) -> None:
+    """Every attempt's tokens count, not only the final attempt's.
+
+    Guards the dx/sdk fix of the budget from bf6e8412 (SDK update), which
+    counted a retried trial's USD and tokens from its last attempt only.
+    """
+    job = _retrying_job(tmp_path, 3, Budget(max_tokens=250), retries=1)
+    plan = {"task-0": [_FLAKY, _OK], "task-1": [_OK], "task-2": [_OK]}
+    job._run_single_task = AsyncMock(side_effect=_attempts_runner(job, plan))
+    await job.run()
+    ran = [c.args[0].name for c in job._run_single_task.await_args_list]
+    assert ran == ["task-0", "task-0", "task-1"]
+    budget = _summary(job)["budget"]
+    assert budget["spent"]["tokens"] == 300
+    assert budget["not_started"] == ["task-2"]
+
+
+@pytest.mark.asyncio
+async def test_usd_cap_is_enforced_between_starts(tmp_path: Path) -> None:
+    """A trial waits while the running ones would reach the USD cap.
+
+    Guards the dx/sdk fix of the budget from bf6e8412 (SDK update): USD and
+    tokens were counted only as trials finished, so every free slot started
+    a trial until the cap was passed, and the running ones were then
+    cancelled (their spend lost). With three trials running at a mean of $1,
+    none may start under a $2.50 cap until the estimate allows it.
+    """
+    job = _retrying_job(tmp_path, 6, Budget(max_cost_usd=2.5), concurrency=3)
+    plan = {f"task-{i}": [{"tokens": 10, "cost": 1.0}] for i in range(6)}
+    delays = {"task-0": 0.05, **{f"task-{i}": 0.4 for i in range(1, 6)}}
+    job._run_single_task = AsyncMock(
+        side_effect=_attempts_runner(job, plan, delays=delays)
+    )
+    await job.run()
+    ran = sorted(c.args[0].name for c in job._run_single_task.await_args_list)
+    assert ran == ["task-0", "task-1", "task-2"]
+    budget = _summary(job)["budget"]
+    assert budget["cancelled"] == []
+    assert budget["not_started"] == ["task-3", "task-4", "task-5"]
+    assert budget["spent"]["cost_usd"] == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_resume_counts_every_recorded_attempt(tmp_path: Path) -> None:
+    """A resume counts retried attempts' spend and every attempt as a rollout.
+
+    Guards the same dx/sdk fix: a resume counted only the reused final
+    results, so a retried task's earlier attempts were free the second time.
+    """
+    job = _retrying_job(tmp_path, 2, Budget(max_tokens=150))
+    job_dir = job._jobs_dir / job._job_name
+    for name, payload in (
+        ("task-0__a1", {"error": _FLAKY["error"], "error_category": "acp_error"}),
+        ("task-0__a2", {"rewards": {"reward": 1.0}}),
+    ):
+        (job_dir / name).mkdir(parents=True)
+        (job_dir / name / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task-0",
+                    "rollout_name": name,
+                    "rewards": None,
+                    "error": None,
+                    "verifier_error": None,
+                    "agent_result": {"total_tokens": 100},
+                    **payload,
+                }
+            )
+        )
+    (job_dir / "task-1__cut").mkdir()  # an attempt that wrote no result.json
+    (job_dir / "task-1__cut" / "config.json").write_text(json.dumps({"agent": "x"}))
+    job._run_single_task = AsyncMock(side_effect=_runner(job))
+    await job.run()
+    assert job._run_single_task.await_count == 0
+    budget = _summary(job)["budget"]
+    assert budget["spent"]["tokens"] == 200
+    assert budget["spent"]["rollouts"] == 3
+    assert budget["not_started"] == ["task-1"]
+
+
+def test_max_rollouts_reaches_the_config_from_the_cli() -> None:
+    from benchflow.eval_plan import EvalCreateRequest, build_eval_plan
+
+    plan = build_eval_plan(
+        EvalCreateRequest(tasks_dir=HELLO, agent="oracle", max_rollouts=7)
+    )
+    assert plan.make_eval_config().budget == Budget(max_rollouts=7)
