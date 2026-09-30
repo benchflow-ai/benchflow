@@ -449,7 +449,7 @@ gate-based pass rates, and recovery without rerunning the solver.
 
 #### Resuming
 
-Rerunning `bench eval run` with the same `--jobs-dir` resumes: it reuses the only job folder there (or the alphabetically latest of several), keeps every task that already has a finished result, and runs only the rest. The final summary says so on stderr, `Resumed job <dir>: N finished task(s) reused, M ran now`, and when nothing was left to run, that the results are the earlier ones. In a CI workspace that keeps `jobs/` between runs, pass `--fresh` (a new timestamped job) or a new `--job-name`, or the rerun reports the old result. With `--config`, the job is resolved under the CLI's `--jobs-dir` when given. `bench eval resume <job_dir>` finishes one job from its folder.
+Rerunning `bench eval run` with the same `--jobs-dir` resumes: it reuses the latest job folder there with an auto-generated (timestamp) name, keeps every task that already has a finished result, and runs only the rest. Only the same run resumes: when that job's `evaluation.json` records another agent, model or tasks folder, a new job starts instead, with a warning naming the job it did not resume; folders with other names (a named job, or a folder of jobs such as `jobs/smoke/`) are never picked. The final summary says so on stderr, `Resumed job <dir>: N finished task(s) reused, M ran now`, and when nothing was left to run, that the results are the earlier ones. In a CI workspace that keeps `jobs/` between runs, pass `--fresh` (a new timestamped job) or a new `--job-name`, or the rerun reports the old result. With `--config`, the job is resolved under the CLI's `--jobs-dir` when given. `bench eval resume <job_dir>` finishes one job from its folder.
 
 #### Exit codes
 

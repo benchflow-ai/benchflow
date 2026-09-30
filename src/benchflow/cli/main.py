@@ -1358,7 +1358,9 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             # YAML's: from_yaml already picked a name under the YAML's jobs dir.
             if req.jobs_dir is not None:
                 j._jobs_dir = Path(req.jobs_dir)
-            j._job_name = plan.job_name or Evaluation._resolve_job_name(j._jobs_dir)
+            j._job_name = plan.job_name or Evaluation._resolve_job_name(
+                j._jobs_dir, j._config, j._tasks_dir
+            )
             if j._config.job_mode == "sequential-shared":
                 j.learner_store = j._load_or_init_learner_store()
         if req.concurrency is not None:

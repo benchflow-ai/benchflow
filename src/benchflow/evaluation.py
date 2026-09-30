@@ -450,6 +450,45 @@ JOB_MODES = ("parallel-independent", "sequential-shared")
 DEFAULT_JOB_MODE = "parallel-independent"
 
 
+# The job names Evaluation generates: a timestamp, and a -N suffix when the
+# second is already taken (bench eval run --fresh).
+_AUTO_JOB_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}__\d{2}-\d{2}-\d{2}(-\d+)?$")
+
+
+def _recorded_run_differs(
+    job_dir: Path, config: EvaluationConfig | None, tasks_dir: Path | None
+) -> str | None:
+    """What of ``config``/``tasks_dir`` the job's ``evaluation.json`` records
+    differently (e.g. "agent='oracle' (this run: 'nop')"), or None when it
+    matches or records nothing to compare."""
+    if config is None:
+        return None
+    try:
+        record = json.loads((job_dir / EVALUATION_RECORD).read_text())
+    except (OSError, ValueError):
+        return None
+    recorded = record.get("config") if isinstance(record, dict) else None
+    if not isinstance(recorded, dict):
+        return None
+    ran = {
+        "agent": (recorded.get("agent"), config.agent),
+        "model": (recorded.get("model"), config.model),
+    }
+    diffs = [
+        f"{key}={old!r} (this run: {new!r})"
+        for key, (old, new) in ran.items()
+        if old != new
+    ]
+    recorded_tasks = record.get("tasks_dir")
+    if (
+        tasks_dir is not None
+        and isinstance(recorded_tasks, str)
+        and Path(recorded_tasks).resolve() != Path(tasks_dir).resolve()
+    ):
+        diffs.append(f"tasks_dir={recorded_tasks!r} (this run: {str(tasks_dir)!r})")
+    return ", ".join(diffs) or None
+
+
 def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
     """Guard against resuming a jobs_dir whose completed tasks ran differently.
 
@@ -484,7 +523,9 @@ def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
             f"refusing to resume: this jobs_dir's completed tasks ran "
             f"agent={prev_agent!r}, but this run uses agent={config.agent!r}. "
             f"Mixing them would publish a blended score that belongs to neither. "
-            f"Use a fresh --jobs-dir (the existing results are preserved)."
+            f"Start a new job instead: bench eval run --fresh (or a new "
+            f"--job-name or --jobs-dir); in Python, a new job_name. The existing "
+            f"results are preserved."
         )
     current_loop = loop_block(config.loop_strategy)
     if prev_loop is not None and prev_loop != current_loop:
@@ -919,40 +960,60 @@ class Evaluation:
     """
 
     @staticmethod
-    def _resolve_job_name(jobs_dir: Path) -> str:
+    def _resolve_job_name(
+        jobs_dir: Path,
+        config: EvaluationConfig | None = None,
+        tasks_dir: Path | None = None,
+    ) -> str:
         """Pick a job_name when none was explicitly provided.
 
-        If ``jobs_dir`` already contains exactly one timestamped job
-        directory, reuse it so that a second ``Evaluation.run()`` call
-        resumes into the same directory instead of creating an orphan.
-        When zero job dirs exist (or ``jobs_dir`` itself does not exist),
-        fall back to a fresh timestamp.  When multiple exist, resume into
-        the most recent (alphabetically last).
+        The latest job folder under ``jobs_dir`` whose name has the
+        auto-generated timestamp form is reused, so a second
+        ``Evaluation.run()`` (or plain ``bench eval run``) resumes into the
+        same directory instead of creating an orphan. Other folders, such as
+        a folder of jobs (``jobs/smoke/``) or a named job, are never picked.
+        When that job's ``evaluation.json`` records another agent, model or
+        tasks folder than ``config`` and ``tasks_dir``, a new job starts
+        instead (resuming would blend two runs' results); it is named in the
+        log so it can still be resumed by name. Without such a folder: a
+        fresh timestamp.
 
         Guards ENG-160: auto-generated job_name must be stable across
         resume calls.
         """
-        if jobs_dir.is_dir():
-            job_dirs = sorted(
-                d
-                for d in jobs_dir.iterdir()
-                if d.is_dir() and not d.name.startswith(".")
+        fresh = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        if not jobs_dir.is_dir():
+            return fresh
+        job_dirs = sorted(
+            d for d in jobs_dir.iterdir() if d.is_dir() and _AUTO_JOB_NAME.match(d.name)
+        )
+        if not job_dirs:
+            return fresh
+        latest = job_dirs[-1]
+        differs = _recorded_run_differs(latest, config, tasks_dir)
+        if differs:
+            name, n = fresh, 1
+            while (jobs_dir / name).exists():
+                n += 1
+                name = f"{fresh}-{n}"
+            logger.warning(
+                f"Starting a new job {name}: the latest job in {jobs_dir} "
+                f"({latest.name}) ran {differs}. Pass job_name={latest.name!r} "
+                f"(bench eval resume {latest}) to add to that job instead."
             )
-            if len(job_dirs) == 1:
-                logger.warning(
-                    f"Resuming into existing job directory: {job_dirs[0].name} "
-                    "(finished tasks are reused; pass a new job_name, or "
-                    "--fresh on the CLI, for a new run)"
-                )
-                return job_dirs[0].name
-            if len(job_dirs) > 1:
-                latest = job_dirs[-1]
-                logger.warning(
-                    f"Multiple job directories found ({len(job_dirs)}); "
-                    f"resuming into most recent: {latest.name}"
-                )
-                return latest.name
-        return datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+            return name
+        if len(job_dirs) == 1:
+            logger.warning(
+                f"Resuming into existing job directory: {latest.name} "
+                "(finished tasks are reused; pass a new job_name, or "
+                "--fresh on the CLI, for a new run)"
+            )
+        else:
+            logger.warning(
+                f"Multiple job directories found ({len(job_dirs)}); "
+                f"resuming into most recent: {latest.name}"
+            )
+        return latest.name
 
     def __init__(
         self,
@@ -983,7 +1044,9 @@ class Evaluation:
             from benchflow._utils.hf_datasets import load_source_sidecar
 
             self._config.source_provenance = load_source_sidecar(self._tasks_dir)
-        self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
+        self._job_name = job_name or self._resolve_job_name(
+            self._jobs_dir, self._config, self._tasks_dir
+        )
         self._on_result = on_result
         # Pre-run checks in run(); the CLI passes False (it runs its own).
         self._preflight = preflight
