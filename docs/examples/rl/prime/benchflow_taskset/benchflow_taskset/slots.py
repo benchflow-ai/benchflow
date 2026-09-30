@@ -32,7 +32,9 @@ def _try_lock(directory: Path, count: int) -> tuple[int, int] | None:
 
 
 @contextlib.asynccontextmanager
-async def sandbox_slot(directory: str | Path, count: int, *, poll_sec: float = 0.5) -> AsyncIterator[int]:
+async def sandbox_slot(
+    directory: str | Path, count: int, *, poll_sec: float = 0.5
+) -> AsyncIterator[int]:
     """Hold one of ``count`` machine-wide slots while the body runs; yields its index."""
     if count < 1:
         raise ValueError("count must be at least 1")

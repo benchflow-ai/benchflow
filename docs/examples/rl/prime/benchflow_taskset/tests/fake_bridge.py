@@ -33,7 +33,9 @@ def main() -> int:
 
     def record(event: str, **fields) -> None:
         with log.open("a") as handle:
-            handle.write(json.dumps({"event": event, "pid": os.getpid(), **fields}) + "\n")
+            handle.write(
+                json.dumps({"event": event, "pid": os.getpid(), **fields}) + "\n"
+            )
 
     if sys.argv[1] == "tasks":
         for row in scenario.get("tasks", []):
@@ -53,7 +55,10 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, on_term)
     record("spawned", argv=sys.argv[1:], env=sorted(os.environ))
-    bash_replies = list(scenario.get("bash") or [{"ok": True, "return_code": 0, "stdout": "", "stderr": ""}])
+    bash_replies = list(
+        scenario.get("bash")
+        or [{"ok": True, "return_code": 0, "stdout": "", "stderr": ""}]
+    )
     for line in sys.stdin:
         request = json.loads(line)
         op = request.get("op")

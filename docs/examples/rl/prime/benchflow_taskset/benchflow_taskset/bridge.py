@@ -56,7 +56,11 @@ MAX_STREAM_CHARS = 256_000
 def _clip(text: str, limit: int = MAX_STREAM_CHARS) -> str:
     if len(text) <= limit:
         return text
-    return text[: limit // 2] + "\n[... output clipped by the bridge ...]\n" + text[-limit // 2 :]
+    return (
+        text[: limit // 2]
+        + "\n[... output clipped by the bridge ...]\n"
+        + text[-limit // 2 :]
+    )
 
 
 def _describe(exc: BaseException) -> str:
@@ -79,7 +83,9 @@ def _is_transient(exc: BaseException) -> bool:
 # --- tasks ------------------------------------------------------------------------------
 
 
-def list_tasks(tasks_dir: Path, include: list[str], exclude: list[str]) -> list[dict[str, Any]]:
+def list_tasks(
+    tasks_dir: Path, include: list[str], exclude: list[str]
+) -> list[dict[str, Any]]:
     import benchflow as bf
 
     root = tasks_dir.expanduser().resolve()
@@ -148,7 +154,11 @@ class Session:
             await runtime.start()
         except Exception as exc:  # the policy has not acted: an infrastructure failure
             decision = rewards.sandbox_start_failure(_describe(exc))
-            return {"ok": False, "error": _describe(exc), "decision": decision.as_dict()}
+            return {
+                "ok": False,
+                "error": _describe(exc),
+                "decision": decision.as_dict(),
+            }
         self.runtime = runtime
         return {
             "ok": True,
@@ -165,8 +175,13 @@ class Session:
         wrapped = f"timeout -k 5 {timeout_sec} bash -c {shlex.quote(command)}"
         started = time.monotonic()
         try:
-            result = await self.runtime.bash(wrapped, timeout_sec=timeout_sec + EXEC_GRACE_SEC)
+            result = await self.runtime.bash(
+                wrapped, timeout_sec=timeout_sec + EXEC_GRACE_SEC
+            )
         except Exception as exc:
+            # A transport blip can also say "timed out"; it is not the command's timeout.
+            if _is_transient(exc):
+                return {"ok": False, "error": _describe(exc), "transient": True}
             if "timed out" in str(exc).lower():
                 return {
                     "ok": True,
@@ -176,13 +191,14 @@ class Session:
                     "timed_out": True,
                     "elapsed_sec": round(time.monotonic() - started, 3),
                 }
-            return {"ok": False, "error": _describe(exc), "transient": _is_transient(exc)}
+            return {"ok": False, "error": _describe(exc), "transient": False}
         return {
             "ok": True,
             "return_code": result.return_code,
             "stdout": _clip(result.stdout),
             "stderr": _clip(result.stderr),
-            "timed_out": result.return_code in (124, 137) and result.elapsed_sec >= timeout_sec,
+            "timed_out": result.return_code in (124, 137)
+            and result.elapsed_sec >= timeout_sec,
             "elapsed_sec": result.elapsed_sec,
         }
 
@@ -193,11 +209,15 @@ class Session:
         text = str(request.get("text", ""))
         quoted = shlex.quote(path)
         # The same write the TRL harness's `submit` does, as the sandbox user.
-        command = f"mkdir -p \"$(dirname {quoted})\" && printf %s {shlex.quote(text)} > {quoted}"
+        command = f'mkdir -p "$(dirname {quoted})" && printf %s {shlex.quote(text)} > {quoted}'
         reply = await self.bash({"command": command, "timeout_sec": 30})
         if reply.get("ok") and reply.get("return_code") != 0:
             detail = (reply.get("stderr") or reply.get("stdout") or "").strip()[-500:]
-            return {"ok": False, "error": f"write failed (exit {reply['return_code']}): {detail}", "transient": False}
+            return {
+                "ok": False,
+                "error": f"write failed (exit {reply['return_code']}): {detail}",
+                "transient": False,
+            }
         return reply
 
     async def verify(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -217,8 +237,14 @@ class Session:
             if policy_acted:
                 decision = rewards.zero(rewards.VERIFIER_ERROR, _describe(exc))
             else:
-                decision = rewards.dropped(rewards.VERIFIER_CRASH_CLEAN_RUN, _describe(exc))
-            return {"ok": True, "decision": decision.as_dict(), "result": {"exception": _describe(exc)}}
+                decision = rewards.dropped(
+                    rewards.VERIFIER_CRASH_CLEAN_RUN, _describe(exc)
+                )
+            return {
+                "ok": True,
+                "decision": decision.as_dict(),
+                "result": {"exception": _describe(exc)},
+            }
         run = outcome.result
         decision = rewards.reward_from_verify(run, policy_acted=policy_acted)
         return {
@@ -230,7 +256,9 @@ class Session:
                 "verifier_error": outcome.verifier_error,
                 "error": outcome.error,
                 "error_category": getattr(run, "error_category", None),
-                "verifier_error_category": getattr(run, "verifier_error_category", None),
+                "verifier_error_category": getattr(
+                    run, "verifier_error_category", None
+                ),
                 "rollout_dir": str(outcome.rollout_dir),
             },
         }
@@ -261,7 +289,9 @@ async def serve_session(idle_timeout: float) -> int:
         loop.add_signal_handler(sig, stop.set)
 
     reader = asyncio.StreamReader(limit=64 * 1024 * 1024)
-    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+    await loop.connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+    )
 
     handlers = {
         "start": session.start,
@@ -282,7 +312,10 @@ async def serve_session(idle_timeout: float) -> int:
             if line_task not in done:
                 line_task.cancel()
                 if not done:
-                    print(f"bridge: idle for {idle_timeout:g}s; closing the sandbox", file=sys.stderr)
+                    print(
+                        f"bridge: idle for {idle_timeout:g}s; closing the sandbox",
+                        file=sys.stderr,
+                    )
                 break
             line = line_task.result()
             if not line:
@@ -301,7 +334,9 @@ async def serve_session(idle_timeout: float) -> int:
                     # A signal during a long call must still close the sandbox.
                     call = asyncio.ensure_future(handler(request))
                     stop_task = asyncio.ensure_future(stop.wait())
-                    await asyncio.wait({call, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                    await asyncio.wait(
+                        {call, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
                     stop_task.cancel()
                     if not call.done():
                         call.cancel()

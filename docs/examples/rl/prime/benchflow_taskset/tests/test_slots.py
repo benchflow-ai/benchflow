@@ -8,7 +8,6 @@ import sys
 import time
 
 import pytest
-
 from benchflow_taskset.slots import sandbox_slot
 
 

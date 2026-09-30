@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: UP017 - this tool runs on stock Python 3.10 (the VM's python3), which has no datetime.UTC
 """Rent Prime Intellect pods, and a watchdog that stops the ones we created.
 
 Standard library only, so it runs on any machine with Python 3.10+. One ledger
@@ -114,7 +115,9 @@ def load_key() -> str:
     try:
         lines = path.read_text().splitlines()
     except OSError as exc:
-        raise SystemExit(f"PRIME_API_KEY is not set and {path} is unreadable: {exc}")
+        raise SystemExit(
+            f"PRIME_API_KEY is not set and {path} is unreadable: {exc}"
+        ) from None
     for line in lines:
         line = line.strip()
         if line.startswith("export "):
@@ -176,7 +179,9 @@ class Prime:
         pods: list[dict] = []
         offset = 0
         while True:
-            page = self.request("GET", "/pods/", params={"offset": offset, "limit": 100})
+            page = self.request(
+                "GET", "/pods/", params={"offset": offset, "limit": 100}
+            )
             data = (page or {}).get("data") or []
             pods.extend(data)
             total = int((page or {}).get("total_count") or 0)
@@ -188,7 +193,9 @@ class Prime:
         return self.request("GET", f"/pods/{pod_id}") or {}
 
     def history(self, limit: int = 100) -> list[dict]:
-        page = self.request("GET", "/pods/history", params={"offset": 0, "limit": limit})
+        page = self.request(
+            "GET", "/pods/history", params={"offset": 0, "limit": limit}
+        )
         return (page or {}).get("data") or []
 
     def status(self, pod_id: str) -> dict:
@@ -229,7 +236,9 @@ def ledger_append(directory: Path, record: dict) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, sort_keys=True) + "\n"
     # One small O_APPEND write per record, so concurrent writers never interleave.
-    fd = os.open(directory / "ledger.jsonl", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    fd = os.open(
+        directory / "ledger.jsonl", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+    )
     try:
         os.write(fd, line.encode())
     finally:
@@ -259,7 +268,9 @@ def ledger_read(directory: Path) -> dict[str, LedgerPod]:
                 name=record.get("name"),
                 created_at=parse_time(record["created_at"]) or utcnow(),
                 price_hr=float(record.get("price_hr") or 0.0),
-                max_hours=min(HARD_MAX_HOURS, float(record.get("max_hours") or HARD_MAX_HOURS)),
+                max_hours=min(
+                    HARD_MAX_HOURS, float(record.get("max_hours") or HARD_MAX_HOURS)
+                ),
                 owner=str(record.get("owner") or LEGACY_OWNER),
                 gpu_type=record.get("gpu_type"),
                 gpu_count=record.get("gpu_count"),
@@ -295,13 +306,18 @@ def load_policy(directory: Path, *, max_hours: float, spend_cap: float) -> Polic
     try:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"policy.json unreadable, using the command line's limits: {exc}", file=sys.stderr)
+        print(
+            f"policy.json unreadable, using the command line's limits: {exc}",
+            file=sys.stderr,
+        )
         return policy
     if data.get("max_hours") is not None:
         policy.max_hours = min(policy.max_hours, float(data["max_hours"]))
     if data.get("spend_cap") is not None:
         policy.spend_cap = min(policy.spend_cap, float(data["spend_cap"]))
-    policy.owner_caps = {str(k): float(v) for k, v in (data.get("owner_caps") or {}).items()}
+    policy.owner_caps = {
+        str(k): float(v) for k, v in (data.get("owner_caps") or {}).items()
+    }
     if data.get("owners"):
         policy.owners = tuple(str(owner) for owner in data["owners"])
     if data.get("name_prefixes"):
@@ -309,7 +325,12 @@ def load_policy(directory: Path, *, max_hours: float, spend_cap: float) -> Polic
     return policy
 
 
-def is_ours(pod: dict, ledger: dict[str, "LedgerPod"], owners: tuple[str, ...], prefixes: tuple[str, ...]) -> bool:
+def is_ours(
+    pod: dict,
+    ledger: dict[str, LedgerPod],
+    owners: tuple[str, ...],
+    prefixes: tuple[str, ...],
+) -> bool:
     """A pod we created: in the ledger under one of our owners, or named with our prefix."""
     entry = ledger.get(str(pod.get("id")))
     if entry is not None and entry.owner in owners:
@@ -372,8 +393,12 @@ def estimate_spend(
         cost = price * hours_between(start, now)
         foreign_total += cost
         by_owner[UNATTRIBUTED] = by_owner.get(UNATTRIBUTED, 0.0) + cost
-        lines.append(f"{pod_id} {pod.get('name') or '-'} [{UNATTRIBUTED}] ${price:.3f}/h = ${cost:.2f}")
-    return Spend(ledger_total + foreign_total, ledger_total, foreign_total, lines, by_owner)
+        lines.append(
+            f"{pod_id} {pod.get('name') or '-'} [{UNATTRIBUTED}] ${price:.3f}/h = ${cost:.2f}"
+        )
+    return Spend(
+        ledger_total + foreign_total, ledger_total, foreign_total, lines, by_owner
+    )
 
 
 def pods_to_terminate(
@@ -403,14 +428,19 @@ def pods_to_terminate(
             doomed.append((pod_id, "STOP_ALL file present"))
             continue
         if spend.total >= spend_cap:
-            doomed.append((pod_id, f"estimated spend ${spend.total:.2f} >= cap ${spend_cap:.2f}"))
+            doomed.append(
+                (pod_id, f"estimated spend ${spend.total:.2f} >= cap ${spend_cap:.2f}")
+            )
             continue
         entry = ledger.get(pod_id)
         owner = entry.owner if entry is not None else UNATTRIBUTED
         cap = owner_caps.get(owner)
         if cap is not None and spend.by_owner.get(owner, 0.0) >= cap:
             doomed.append(
-                (pod_id, f"owner {owner} spend ${spend.by_owner.get(owner, 0.0):.2f} >= its cap ${cap:.2f}")
+                (
+                    pod_id,
+                    f"owner {owner} spend ${spend.by_owner.get(owner, 0.0):.2f} >= its cap ${cap:.2f}",
+                )
             )
             continue
         limit = max_hours
@@ -464,7 +494,10 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
         for pod in ledger.values()
         if pod.ended_at is None
         and pod.id not in active_ids
-        and (pod.id in seen or hours_between(pod.created_at, now) * 3600 > UNSEEN_GRACE_SECONDS)
+        and (
+            pod.id in seen
+            or hours_between(pod.created_at, now) * 3600 > UNSEEN_GRACE_SECONDS
+        )
     ]
     if gone:
         try:
@@ -473,7 +506,11 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
             history = {}
         for pod in gone:
             item = history.get(pod.id, {})
-            ended = parse_time(item.get("terminatedAt")) or parse_time(seen.get(pod.id)) or now
+            ended = (
+                parse_time(item.get("terminatedAt"))
+                or parse_time(seen.get(pod.id))
+                or now
+            )
             ledger_append(
                 directory,
                 {
@@ -502,7 +539,11 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
         owners=policy.owners,
         name_prefixes=policy.name_prefixes,
     )
-    ours = [pod for pod in active if is_ours(pod, ledger, policy.owners, policy.name_prefixes)]
+    ours = [
+        pod
+        for pod in active
+        if is_ours(pod, ledger, policy.owners, policy.name_prefixes)
+    ]
     others = [pod for pod in active if pod not in ours]
 
     def label(pod: dict) -> str:
@@ -512,11 +553,13 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
         return f"{pod.get('id')}:{pod.get('name') or '-'}:{owner}:{pod.get('status')}:{age:.2f}h"
 
     owners = ", ".join(
-        f"{owner} ${value:.2f}" + (f"/${policy.owner_caps[owner]:.0f}" if owner in policy.owner_caps else "")
+        f"{owner} ${value:.2f}"
+        + (f"/${policy.owner_caps[owner]:.0f}" if owner in policy.owner_caps else "")
         for owner, value in sorted(spend.by_owner.items())
     )
     not_ours = ", ".join(
-        f"{pod.get('id')}:{pod.get('name') or '-'}:${float(pod.get('priceHr') or 0):.2f}/h" for pod in others
+        f"{pod.get('id')}:{pod.get('name') or '-'}:${float(pod.get('priceHr') or 0):.2f}/h"
+        for pod in others
     )
     # The account's balance is shared with whoever else uses it: warn, never act on it
     # (terminating would lose unexported work; the owner stops at a checkpoint instead).
@@ -525,7 +568,11 @@ def cmd_watch(prime: Prime, args: argparse.Namespace) -> int:
         balance = float(prime.wallet().get("balance_usd") or 0.0)
         burn = sum(float(pod.get("priceHr") or 0.0) for pod in active)
         runway = balance / burn if burn > 0 else float("inf")
-        wallet_note = f" wallet=${balance:.2f} runway={runway:.1f}h" if burn > 0 else f" wallet=${balance:.2f}"
+        wallet_note = (
+            f" wallet=${balance:.2f} runway={runway:.1f}h"
+            if burn > 0
+            else f" wallet=${balance:.2f}"
+        )
         if runway < 1.0:
             wallet_note += " LOW-WALLET: stop at a checkpoint and export now"
     except ApiError:
@@ -564,7 +611,8 @@ def pick_offer(offers: list[dict], args: argparse.Namespace) -> dict:
         and (args.cloud_id is None or offer.get("cloudId") == args.cloud_id)
         and (args.data_center is None or offer.get("dataCenter") == args.data_center)
         and args.image in (offer.get("images") or [])
-        and str(offer.get("stockStatus", "")).lower() not in {"unavailable", "out of stock"}
+        and str(offer.get("stockStatus", "")).lower()
+        not in {"unavailable", "out of stock"}
         and not (offer.get("isSpot") and not args.allow_spot)
     ]
     if not matches:
@@ -642,7 +690,9 @@ def cmd_create(prime: Prime, args: argparse.Namespace) -> int:
             "name": args.name,
             "owner": owner,
             # The request time, not the API's: never later than billing starts.
-            "created_at": iso(min(requested, parse_time(created.get("createdAt")) or requested)),
+            "created_at": iso(
+                min(requested, parse_time(created.get("createdAt")) or requested)
+            ),
             "price_hr": max(price, float(created.get("priceHr") or 0.0)),
             "max_hours": args.max_hours,
             "gpu_type": offer["gpuType"],
@@ -685,7 +735,10 @@ def cmd_register(prime: Prime, args: argparse.Namespace) -> int:
             "source": "register",
         },
     )
-    log(args.dir, f"registered {args.pod_id} {pod.get('name')} [{owner}] ${price:.3f}/h max {args.max_hours:g}h")
+    log(
+        args.dir,
+        f"registered {args.pod_id} {pod.get('name')} [{owner}] ${price:.3f}/h max {args.max_hours:g}h",
+    )
     return 0
 
 
@@ -713,7 +766,11 @@ def cmd_wait(prime: Prime, args: argparse.Namespace) -> int:
     last = None
     while time.monotonic() < deadline:
         status = prime.status(args.pod_id)
-        summary = (status.get("status"), status.get("installationProgress"), status.get("installationFailure"))
+        summary = (
+            status.get("status"),
+            status.get("installationProgress"),
+            status.get("installationFailure"),
+        )
         if summary != last:
             print(
                 f"{iso(utcnow())} {args.pod_id}: status={summary[0]} progress={summary[1]} failure={summary[2]}",
@@ -733,7 +790,15 @@ def cmd_wait(prime: Prime, args: argparse.Namespace) -> int:
 
 def cmd_status(prime: Prime, args: argparse.Namespace) -> int:
     status = prime.status(args.pod_id)
-    keep = ("podId", "status", "installationProgress", "installationFailure", "priceHr", "sshConnection", "ip")
+    keep = (
+        "podId",
+        "status",
+        "installationProgress",
+        "installationFailure",
+        "priceHr",
+        "sshConnection",
+        "ip",
+    )
     print(json.dumps({key: status.get(key) for key in keep}, indent=1))
     return 0
 
@@ -754,14 +819,22 @@ def cmd_list(prime: Prime, args: argparse.Namespace) -> int:
 
 def cmd_spend(prime: Prime, args: argparse.Namespace) -> int:
     ledger = ledger_read(args.dir)
-    policy = load_policy(args.dir, max_hours=HARD_MAX_HOURS, spend_cap=DEFAULT_SPEND_CAP)
-    ours = [pod for pod in prime.pods() if is_ours(pod, ledger, policy.owners, policy.name_prefixes)]
+    policy = load_policy(
+        args.dir, max_hours=HARD_MAX_HOURS, spend_cap=DEFAULT_SPEND_CAP
+    )
+    ours = [
+        pod
+        for pod in prime.pods()
+        if is_ours(pod, ledger, policy.owners, policy.name_prefixes)
+    ]
     spend = estimate_spend(ledger, ours, utcnow())
     for line in spend.lines:
         print(line)
     for owner, value in sorted(spend.by_owner.items()):
         print(f"  {owner}: ${value:.2f}")
-    print(f"estimated spend ${spend.total:.2f} (ledger ${spend.ledger:.2f}, not in ledger ${spend.foreign:.2f})")
+    print(
+        f"estimated spend ${spend.total:.2f} (ledger ${spend.ledger:.2f}, not in ledger ${spend.foreign:.2f})"
+    )
     return 0
 
 
@@ -787,20 +860,34 @@ def cmd_wallet(prime: Prime, args: argparse.Namespace) -> int:
     wallet = prime.wallet()
     balance = float(wallet.get("balance_usd") or 0.0)
     ledger = ledger_read(args.dir)
-    policy = load_policy(args.dir, max_hours=HARD_MAX_HOURS, spend_cap=DEFAULT_SPEND_CAP)
+    policy = load_policy(
+        args.dir, max_hours=HARD_MAX_HOURS, spend_cap=DEFAULT_SPEND_CAP
+    )
     pods = prime.pods()
     burn = sum(float(pod.get("priceHr") or 0.0) for pod in pods)
     ours = sum(
-        float(pod.get("priceHr") or 0.0) for pod in pods if is_ours(pod, ledger, policy.owners, policy.name_prefixes)
+        float(pod.get("priceHr") or 0.0)
+        for pod in pods
+        if is_ours(pod, ledger, policy.owners, policy.name_prefixes)
     )
     runway = f"{balance / burn:.1f}h" if burn > 0 else "no pod running"
-    print(f"balance ${balance:.2f}; running pods ${burn:.2f}/h (ours ${ours:.2f}/h); runway {runway}")
+    print(
+        f"balance ${balance:.2f}; running pods ${burn:.2f}/h (ours ${ours:.2f}/h); runway {runway}"
+    )
     return 0
 
 
 def cmd_delete(prime: Prime, args: argparse.Namespace) -> int:
     prime.delete(args.pod_id)
-    ledger_append(args.dir, {"event": "ended", "id": args.pod_id, "ended_at": iso(utcnow()), "source": "delete"})
+    ledger_append(
+        args.dir,
+        {
+            "event": "ended",
+            "id": args.pod_id,
+            "ended_at": iso(utcnow()),
+            "source": "delete",
+        },
+    )
     log(args.dir, f"deleted {args.pod_id} (requested)")
     for _ in range(40):
         if all(str(pod.get("id")) != args.pod_id for pod in prime.pods()):
@@ -815,7 +902,12 @@ def cmd_ssh_key_register(prime: Prime, args: argparse.Namespace) -> int:
     public_key = Path(args.pub).expanduser().read_text().strip()
     if "PRIVATE KEY" in public_key:
         raise SystemExit("that is a private key; pass the .pub file")
-    created = prime.request("POST", "/ssh_keys/", body={"name": args.name, "publicKey": public_key}, retries=1)
+    created = prime.request(
+        "POST",
+        "/ssh_keys/",
+        body={"name": args.name, "publicKey": public_key},
+        retries=1,
+    )
     key_id = str((created or {}).get("id") or "")
     if not key_id:
         raise SystemExit(f"no key id in response: {str(created)[:300]}")
@@ -856,7 +948,9 @@ def _watchdog_running(pid_file: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--dir",
         type=lambda value: Path(value).expanduser(),
@@ -870,7 +964,9 @@ def main(argv: list[str] | None = None) -> int:
     watch.add_argument("--dry-run", action="store_true")
 
     create = sub.add_parser("create")
-    create.add_argument("--owner", help="who the pod belongs to (default $PRIME_POD_OWNER)")
+    create.add_argument(
+        "--owner", help="who the pod belongs to (default $PRIME_POD_OWNER)"
+    )
     create.add_argument("--gpu-type", required=True)
     create.add_argument("--gpu-count", type=int, default=1)
     create.add_argument("--image", default="ubuntu_22_cuda_12")
@@ -884,9 +980,13 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--allow-spot", action="store_true")
     create.add_argument("--no-watchdog-check", action="store_true")
 
-    register = sub.add_parser("register", help="add a pod created elsewhere to the ledger")
+    register = sub.add_parser(
+        "register", help="add a pod created elsewhere to the ledger"
+    )
     register.add_argument("pod_id")
-    register.add_argument("--owner", help="who the pod belongs to (default $PRIME_POD_OWNER)")
+    register.add_argument(
+        "--owner", help="who the pod belongs to (default $PRIME_POD_OWNER)"
+    )
     register.add_argument("--max-hours", type=float, required=True)
     register.add_argument("--price-hr", type=float, help="if above the API's price")
 
@@ -900,7 +1000,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("spend")
     sub.add_parser("wallet")
     history = sub.add_parser("history")
-    history.add_argument("--all", action="store_true", help="every pod on the account, not only the ledger's")
+    history.add_argument(
+        "--all",
+        action="store_true",
+        help="every pod on the account, not only the ledger's",
+    )
     offers = sub.add_parser("offers")
     offers.add_argument("--gpu-type")
     offers.add_argument("--gpu-count", type=int)

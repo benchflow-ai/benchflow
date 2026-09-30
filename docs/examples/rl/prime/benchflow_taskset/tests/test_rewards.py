@@ -9,23 +9,29 @@ so they check what prime-rl will see: a reward, or a failed (dropped) trace.
 from __future__ import annotations
 
 import pytest
-
 import verifiers.v1 as vf
-from verifiers.v1.errors import RolloutError, TaskError, boundary
-
 from benchflow_taskset import BenchFlowData, BenchFlowInfraError, BenchFlowTask
 from benchflow_taskset.session import BridgeError
+from verifiers.v1.errors import RolloutError, TaskError, boundary
 
 
 class ScriptedSession:
     """The part of BenchFlowSession the task's hooks read."""
 
-    def __init__(self, decision=None, *, error: Exception | None = None, **flags) -> None:
+    def __init__(
+        self, decision=None, *, error: Exception | None = None, **flags
+    ) -> None:
         self._decision = decision
         self._error = error
         self.decision = None
         self.verify_result = {"reward": decision.get("reward") if decision else None}
-        self.stats = {"bash_calls": 3, "bash_timeouts": 1, "bash_nonzero": 0, "exec_errors": 0, "transient_errors": 0}
+        self.stats = {
+            "bash_calls": 3,
+            "bash_timeouts": 1,
+            "bash_nonzero": 0,
+            "exec_errors": 0,
+            "transient_errors": 0,
+        }
         self.policy_acted = flags.get("policy_acted", True)
         self.submitted = flags.get("submitted", False)
         self.infra_error = flags.get("infra_error")
@@ -45,7 +51,9 @@ class ScriptedSession:
 
 
 def make_task() -> BenchFlowTask:
-    return BenchFlowTask(BenchFlowData(name="t1", id="fam/t1", prompt="Solve.", task_dir="/tasks/t1"))
+    return BenchFlowTask(
+        BenchFlowData(name="t1", id="fam/t1", prompt="Solve.", task_dir="/tasks/t1")
+    )
 
 
 def make_trace(task: BenchFlowTask) -> vf.Trace:
@@ -61,7 +69,7 @@ async def score_like_a_rollout(task: BenchFlowTask) -> vf.Trace:
     try:
         async with boundary(TaskError, "scoring"):
             await task.score(trace)
-    except Exception as exc:  # noqa: BLE001 - mirrors Rollout.fail
+    except Exception as exc:
         trace.record_error(exc)
     else:
         trace.ok = True
@@ -69,7 +77,13 @@ async def score_like_a_rollout(task: BenchFlowTask) -> vf.Trace:
 
 
 def decision(reward, reason="scored", *, dropped=False, detail=None):
-    return {"reward": reward, "dropped": dropped, "reason": reason, "detail": detail, "flagged": False}
+    return {
+        "reward": reward,
+        "dropped": dropped,
+        "reason": reason,
+        "detail": detail,
+        "flagged": False,
+    }
 
 
 async def test_a_verifier_reward_is_the_training_reward() -> None:
@@ -84,15 +98,24 @@ async def test_a_verifier_reward_is_the_training_reward() -> None:
     assert session.verify_calls == 1
 
 
-@pytest.mark.parametrize("reason", ["timeout", "verifier_error", "run_error", "no_reward", "integrity_violation"])
+@pytest.mark.parametrize(
+    "reason",
+    ["timeout", "verifier_error", "run_error", "no_reward", "integrity_violation"],
+)
 async def test_policy_failures_score_zero_and_stay_in_the_batch(reason: str) -> None:
-    trace = await score_like_a_rollout(make_task().bind(ScriptedSession(decision(0.0, reason))))
-    assert trace.ok, "a failure the policy could have caused must train as a 0, not drop"
+    trace = await score_like_a_rollout(
+        make_task().bind(ScriptedSession(decision(0.0, reason)))
+    )
+    assert trace.ok, (
+        "a failure the policy could have caused must train as a 0, not drop"
+    )
     assert trace.reward == 0.0
     assert trace.info["benchflow"]["decision"]["reason"] == reason
 
 
-@pytest.mark.parametrize("reason", ["sandbox_start", "model_endpoint", "verifier_crash_clean_run"])
+@pytest.mark.parametrize(
+    "reason", ["sandbox_start", "model_endpoint", "verifier_crash_clean_run"]
+)
 async def test_infrastructure_failures_drop_the_trace(reason: str) -> None:
     session = ScriptedSession(decision(None, reason, dropped=True, detail="boom"))
     trace = await score_like_a_rollout(make_task().bind(session))
@@ -118,7 +141,9 @@ async def test_a_failed_bridge_drops_the_trace() -> None:
 
 
 async def test_a_missing_reward_never_trains_as_a_number() -> None:
-    session = ScriptedSession({"reward": None, "dropped": False, "reason": "scored", "detail": None})
+    session = ScriptedSession(
+        {"reward": None, "dropped": False, "reason": "scored", "detail": None}
+    )
     trace = await score_like_a_rollout(make_task().bind(session))
     assert not trace.ok
 
@@ -130,9 +155,15 @@ async def test_stops_read_the_session() -> None:
     assert not await quiet.submitted(trace)
     assert not await quiet.time_budget(trace)
     assert not await quiet.bridge_failed(trace)
-    assert await task.bind(ScriptedSession(decision(1.0), submitted=True)).submitted(trace)
-    assert await task.bind(ScriptedSession(decision(1.0), budget_spent=True)).time_budget(trace)
-    assert await task.bind(ScriptedSession(decision(1.0), infra_error="gone")).bridge_failed(trace)
+    assert await task.bind(ScriptedSession(decision(1.0), submitted=True)).submitted(
+        trace
+    )
+    assert await task.bind(
+        ScriptedSession(decision(1.0), budget_spent=True)
+    ).time_budget(trace)
+    assert await task.bind(
+        ScriptedSession(decision(1.0), infra_error="gone")
+    ).bridge_failed(trace)
 
 
 async def test_stop_names_are_the_stop_conditions_prime_rl_sees() -> None:

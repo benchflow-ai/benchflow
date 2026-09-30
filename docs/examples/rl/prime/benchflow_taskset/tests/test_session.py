@@ -11,11 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 import benchflow_taskset.session as session_module
+import pytest
 from benchflow_taskset.session import BridgeError, SandboxStartError, bridge_environment
-
 from conftest import make_session
 
 
@@ -50,16 +48,36 @@ async def test_an_untouched_sandbox_is_verified_as_clean(world) -> None:
     await session.start()
     await session.verify()
     await session.close()
-    verify = [row["request"] for row in world.events("request") if row["op"] == "verify"][0]
+    verify = next(
+        row["request"] for row in world.events("request") if row["op"] == "verify"
+    )
     assert verify["policy_acted"] is False
 
 
 async def test_tool_outputs_match_the_trl_harness(world) -> None:
     world.set(
         bash=[
-            {"ok": True, "return_code": 0, "stdout": "x" * 500, "stderr": "err", "timed_out": False},
-            {"ok": True, "return_code": 2, "stdout": "partial", "stderr": "", "timed_out": False},
-            {"ok": True, "return_code": 124, "stdout": "partial", "stderr": "", "timed_out": True},
+            {
+                "ok": True,
+                "return_code": 0,
+                "stdout": "x" * 500,
+                "stderr": "err",
+                "timed_out": False,
+            },
+            {
+                "ok": True,
+                "return_code": 2,
+                "stdout": "partial",
+                "stderr": "",
+                "timed_out": False,
+            },
+            {
+                "ok": True,
+                "return_code": 124,
+                "stdout": "partial",
+                "stderr": "",
+                "timed_out": True,
+            },
             {"ok": False, "error": "sandbox gone", "transient": True},
         ]
     )
@@ -67,8 +85,12 @@ async def test_tool_outputs_match_the_trl_harness(world) -> None:
     await session.start()
     long = await session.run_bash("big")
     assert len(long) == 300 and long.endswith("\n[benchflow output truncated]\n")
-    assert await session.run_bash("fails") == "partial", "no exit-code suffix, as in TRL"
-    assert json.loads(await session.run_bash("slow")) == {"error": "Command timed out after 5 seconds"}
+    assert await session.run_bash("fails") == "partial", (
+        "no exit-code suffix, as in TRL"
+    )
+    assert json.loads(await session.run_bash("slow")) == {
+        "error": "Command timed out after 5 seconds"
+    }
     assert json.loads(await session.run_bash("lost")) == {"error": "sandbox gone"}
     assert session.stats == {
         "bash_calls": 4,
@@ -91,7 +113,12 @@ async def test_after_submit_the_tools_refuse(world) -> None:
 
 
 async def test_a_start_failure_carries_the_drop_decision(world) -> None:
-    drop = {"reward": None, "dropped": True, "reason": "sandbox_start", "detail": "no image"}
+    drop = {
+        "reward": None,
+        "dropped": True,
+        "reason": "sandbox_start",
+        "detail": "no image",
+    }
     world.set(start={"ok": False, "error": "no image", "decision": drop})
     session = make_session(world)
     with pytest.raises(SandboxStartError) as raised:
@@ -142,10 +169,18 @@ async def test_end_of_input_closes_the_sandbox(world) -> None:
     await session.close()
 
 
-async def test_the_bridge_gets_the_sandbox_key_and_no_model_keys(world, monkeypatch) -> None:
+async def test_the_bridge_gets_the_sandbox_key_and_no_model_keys(
+    world, monkeypatch
+) -> None:
     monkeypatch.setenv("DAYTONA_API_KEY", "dtn-test")
     monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "tests")
-    for name in ("PRIME_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN", "WANDB_API_KEY"):
+    for name in (
+        "PRIME_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "HF_TOKEN",
+        "WANDB_API_KEY",
+    ):
         monkeypatch.setenv(name, "secret")
     monkeypatch.setenv("VIRTUAL_ENV", "/verifiers/venv")
     monkeypatch.setenv("PYTHONPATH", "/verifiers/site")
@@ -154,11 +189,27 @@ async def test_the_bridge_gets_the_sandbox_key_and_no_model_keys(world, monkeypa
     await session.close()
     env = set(world.events("spawned")[0]["env"])
     assert {"DAYTONA_API_KEY", "BENCHFLOW_DAYTONA_OWNER", "PATH", "HOME"} <= env
-    assert not env & {"PRIME_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN", "WANDB_API_KEY"}
+    assert not env & {
+        "PRIME_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "HF_TOKEN",
+        "WANDB_API_KEY",
+    }
     assert not env & {"VIRTUAL_ENV", "PYTHONPATH"}
 
 
 def test_bridge_environment_is_an_allowlist() -> None:
-    source = {"PATH": "/bin", "DAYTONA_API_URL": "u", "SECRET_TOKEN": "s", "LC_ALL": "C", "EXTRA": "1"}
-    assert bridge_environment(source=source) == {"PATH": "/bin", "DAYTONA_API_URL": "u", "LC_ALL": "C"}
+    source = {
+        "PATH": "/bin",
+        "DAYTONA_API_URL": "u",
+        "SECRET_TOKEN": "s",
+        "LC_ALL": "C",
+        "EXTRA": "1",
+    }
+    assert bridge_environment(source=source) == {
+        "PATH": "/bin",
+        "DAYTONA_API_URL": "u",
+        "LC_ALL": "C",
+    }
     assert bridge_environment(("EXTRA",), source=source)["EXTRA"] == "1"

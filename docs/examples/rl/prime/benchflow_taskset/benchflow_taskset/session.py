@@ -32,15 +32,35 @@ TERM_WAIT_SEC = 200.0
 BRIDGE_ENV_PREFIXES = ("DAYTONA_", "BENCHFLOW_", "DOCKER_", "LC_")
 BRIDGE_ENV_NAMES = frozenset(
     {
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR", "TERM",
-        "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
-        "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "TZ",
+        "TMPDIR",
+        "TERM",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
     }
 )
 
 
-def bridge_environment(extra: tuple[str, ...] = (), source: dict[str, str] | None = None) -> dict[str, str]:
+def bridge_environment(
+    extra: tuple[str, ...] = (), source: dict[str, str] | None = None
+) -> dict[str, str]:
     """The allowlisted environment the bridge process starts with."""
     source = dict(os.environ if source is None else source)
     keep = set(BRIDGE_ENV_NAMES) | set(extra)
@@ -90,7 +110,7 @@ class Bridge:
     async def open(self) -> None:
         if self.log_path is not None:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._log_handle = open(self.log_path, "ab")
+            self._log_handle = open(self.log_path, "ab")  # noqa: SIM115 - the child writes to it until close()
         try:
             self.process = await asyncio.create_subprocess_exec(
                 self.python,
@@ -101,7 +121,9 @@ class Bridge:
                 env=bridge_environment(self.env_passthrough),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=self._log_handle if self._log_handle is not None else asyncio.subprocess.DEVNULL,
+                stderr=self._log_handle
+                if self._log_handle is not None
+                else asyncio.subprocess.DEVNULL,
                 # Its own process group: a signal meant for the env worker does not
                 # reach it first, so it can close its sandbox in order.
                 start_new_session=True,
@@ -109,9 +131,13 @@ class Bridge:
             )
         except OSError as exc:
             self._close_log()
-            raise BridgeError(f"cannot start the BenchFlow bridge with {self.python!r}: {exc}") from exc
+            raise BridgeError(
+                f"cannot start the BenchFlow bridge with {self.python!r}: {exc}"
+            ) from exc
 
-    async def call(self, request: dict[str, Any], *, timeout_sec: float) -> dict[str, Any]:
+    async def call(
+        self, request: dict[str, Any], *, timeout_sec: float
+    ) -> dict[str, Any]:
         process = self.process
         if process is None or process.stdin is None or process.stdout is None:
             raise BridgeError("the bridge is not running")
@@ -119,19 +145,27 @@ class Bridge:
             if self.broken is not None:
                 raise BridgeError(f"the bridge is unusable: {self.broken}")
             if process.returncode is not None:
-                raise BridgeError(f"the bridge exited with code {process.returncode}{self._log_tail()}")
+                raise BridgeError(
+                    f"the bridge exited with code {process.returncode}{self._log_tail()}"
+                )
             try:
                 process.stdin.write((json.dumps(request) + "\n").encode())
                 await process.stdin.drain()
                 line = await asyncio.wait_for(process.stdout.readline(), timeout_sec)
-            except asyncio.TimeoutError as exc:
-                self.broken = f"no answer to {request.get('op')!r} within {timeout_sec:g}s"
-                raise BridgeError(f"the bridge did not answer {request.get('op')!r} within {timeout_sec:g}s") from exc
+            except TimeoutError as exc:
+                self.broken = (
+                    f"no answer to {request.get('op')!r} within {timeout_sec:g}s"
+                )
+                raise BridgeError(
+                    f"the bridge did not answer {request.get('op')!r} within {timeout_sec:g}s"
+                ) from exc
             except asyncio.CancelledError:
                 self.broken = f"the {request.get('op')!r} call was cancelled"
                 raise
             except (BrokenPipeError, ConnectionResetError) as exc:
-                raise BridgeError(f"the bridge pipe broke during {request.get('op')!r}{self._log_tail()}") from exc
+                raise BridgeError(
+                    f"the bridge pipe broke during {request.get('op')!r}{self._log_tail()}"
+                ) from exc
             if not line:
                 await asyncio.sleep(0.2)
                 raise BridgeError(
@@ -140,9 +174,13 @@ class Bridge:
             try:
                 reply = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise BridgeError(f"the bridge sent a line that is not JSON: {line[:200]!r}") from exc
+                raise BridgeError(
+                    f"the bridge sent a line that is not JSON: {line[:200]!r}"
+                ) from exc
             if not isinstance(reply, dict):
-                raise BridgeError(f"the bridge sent {type(reply).__name__}, not an object")
+                raise BridgeError(
+                    f"the bridge sent {type(reply).__name__}, not an object"
+                )
             return reply
 
     async def close(self) -> None:
@@ -163,12 +201,12 @@ class Bridge:
                     process.stdin.close()
             try:
                 await asyncio.wait_for(process.wait(), EXIT_WAIT_SEC)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(process.wait(), TERM_WAIT_SEC)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     with contextlib.suppress(ProcessLookupError):
                         os.killpg(process.pid, signal.SIGKILL)
                     await process.wait()
@@ -283,7 +321,9 @@ class BenchFlowSession:
             timeout_sec=self.sandbox_setup_timeout_sec + 900.0,
         )
         if not reply.get("ok"):
-            raise SandboxStartError(str(reply.get("error") or "sandbox start failed"), reply.get("decision"))
+            raise SandboxStartError(
+                str(reply.get("error") or "sandbox start failed"), reply.get("decision")
+            )
         self.started = True
         self.workspace = reply.get("workspace")
         self.rollout_dir = reply.get("rollout_dir")
@@ -301,7 +341,9 @@ class BenchFlowSession:
 
     # --- the tools ---------------------------------------------------------------------
 
-    async def _call(self, request: dict[str, Any], *, timeout_sec: float) -> dict[str, Any] | None:
+    async def _call(
+        self, request: dict[str, Any], *, timeout_sec: float
+    ) -> dict[str, Any] | None:
         """A tool's bridge call; a failed bridge ends the episode as infrastructure."""
         try:
             return await self.bridge.call(request, timeout_sec=timeout_sec)
@@ -338,7 +380,9 @@ class BenchFlowSession:
             return tool_error(str(reply.get("error")))
         if reply.get("timed_out"):
             self.stats["bash_timeouts"] += 1
-            return tool_error(f"Command timed out after {self.bash_timeout_sec} seconds")
+            return tool_error(
+                f"Command timed out after {self.bash_timeout_sec} seconds"
+            )
         if reply.get("return_code") not in (0, None):
             self.stats["bash_nonzero"] += 1
         output = str(reply.get("stdout") or "") + str(reply.get("stderr") or "")
@@ -350,7 +394,11 @@ class BenchFlowSession:
             return over
         self.policy_acted = True
         reply = await self._call(
-            {"op": "write", "path": self.submit_path, "text": "" if answer is None else str(answer)},
+            {
+                "op": "write",
+                "path": self.submit_path,
+                "text": "" if answer is None else str(answer),
+            },
             timeout_sec=30 + REPLY_SLACK_SEC,
         )
         if reply is None:

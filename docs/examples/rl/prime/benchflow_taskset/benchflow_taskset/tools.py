@@ -27,9 +27,13 @@ if TYPE_CHECKING:
 # The tool definitions of BenchFlow's TRL harness (benchflow.integrations.trl
 # .bash_tool_schemas()), which evaluate.py sends too: same names, descriptions and
 # parameters, so the policy trains and is evaluated on the same tools.
-RUN_BASH_DESCRIPTION = "Run a bash command in the task sandbox and return its output (stdout and stderr)."
+RUN_BASH_DESCRIPTION = (
+    "Run a bash command in the task sandbox and return its output (stdout and stderr)."
+)
 RUN_BASH_COMMAND = "The bash command to run in the task's working directory."
-SUBMIT_DESCRIPTION = "Submit the final answer. This ends the task, so call it once, when you are done."
+SUBMIT_DESCRIPTION = (
+    "Submit the final answer. This ends the task, so call it once, when you are done."
+)
 SUBMIT_ANSWER = "The final answer, written to the task's answer file."
 
 
@@ -39,7 +43,9 @@ def build_server(session: BenchFlowSession, token: str):
 
     server = MCPServer("benchflow")
 
-    async def run_bash(command: Annotated[str, Field(description=RUN_BASH_COMMAND)]) -> str:
+    async def run_bash(
+        command: Annotated[str, Field(description=RUN_BASH_COMMAND)],
+    ) -> str:
         return await session.run_bash(command)
 
     async def submit(answer: Annotated[str, Field(description=SUBMIT_ANSWER)]) -> str:
@@ -52,7 +58,9 @@ def build_server(session: BenchFlowSession, token: str):
         json_response=True,
         stateless_http=True,
         # Reached over loopback only, never from a browser.
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
     )
 
 
@@ -99,7 +107,7 @@ async def serve_tools(session: BenchFlowSession) -> AsyncIterator[str]:
         server.should_exit = True
         try:
             await asyncio.wait_for(asyncio.shield(task), 10)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task

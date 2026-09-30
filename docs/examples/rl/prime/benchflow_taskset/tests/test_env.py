@@ -13,18 +13,15 @@ import asyncio
 import json
 from pathlib import Path
 
+import benchflow_taskset.session as session_module
 import pytest
-
 import verifiers.v1 as vf
+from benchflow_taskset import BenchFlowEnv, BenchFlowInfraError, BenchFlowTask
+from benchflow_taskset.taskset import HARNESS_MESSAGE
+from conftest import env_config
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.harnesses.utils.mcp import mcp_client
 from verifiers.v1.utils.loaders import resolve_env_config
-
-import benchflow_taskset.session as session_module
-from benchflow_taskset import BenchFlowEnv, BenchFlowInfraError, BenchFlowTask
-from benchflow_taskset.taskset import HARNESS_MESSAGE
-
-from conftest import env_config
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +44,11 @@ def first_task(env: BenchFlowEnv) -> BenchFlowTask:
 
 def outcomes(world) -> list[dict]:
     path = world.tmp / "jobs" / "outcomes.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    return (
+        [json.loads(line) for line in path.read_text().splitlines()]
+        if path.exists()
+        else []
+    )
 
 
 class Agents:
@@ -71,7 +72,11 @@ class ToolAgent:
         async with mcp_client({"url": server.url}) as client:
             listed = await client.list_tools()
             self.tools_seen = [
-                {"name": tool.name, "description": tool.description, "schema": tool.input_schema}
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "schema": tool.input_schema,
+                }
                 for tool in listed.tools
             ]
             for name, arguments in self.calls:
@@ -86,7 +91,7 @@ class ToolAgent:
         try:
             async with boundary(TaskError, "scoring"):
                 await task.score(trace)
-        except Exception as exc:  # noqa: BLE001 - mirrors Rollout.fail
+        except Exception as exc:
             trace.record_error(exc)
         else:
             trace.ok = True
@@ -133,7 +138,17 @@ async def test_an_episode_serves_the_trl_tools_and_scores_the_verifier(world) ->
 
 
 async def test_a_drop_decision_fails_the_trace_and_still_closes(world) -> None:
-    world.set(verify={"ok": True, "decision": {"reward": None, "dropped": True, "reason": "verifier_crash_clean_run", "detail": "x"}})
+    world.set(
+        verify={
+            "ok": True,
+            "decision": {
+                "reward": None,
+                "dropped": True,
+                "reason": "verifier_crash_clean_run",
+                "detail": "x",
+            },
+        }
+    )
     env = load_env(world)
     agent = ToolAgent([])
     await env.run(first_task(env), Agents(agent))
@@ -163,8 +178,21 @@ async def test_a_cancelled_episode_still_closes_the_sandbox(world) -> None:
     assert world.closed() == ["close"]
 
 
-async def test_a_sandbox_that_never_starts_is_dropped_before_the_agent_runs(world) -> None:
-    world.set(start={"ok": False, "error": "quota", "decision": {"reward": None, "dropped": True, "reason": "sandbox_start", "detail": "quota"}})
+async def test_a_sandbox_that_never_starts_is_dropped_before_the_agent_runs(
+    world,
+) -> None:
+    world.set(
+        start={
+            "ok": False,
+            "error": "quota",
+            "decision": {
+                "reward": None,
+                "dropped": True,
+                "reason": "sandbox_start",
+                "detail": "quota",
+            },
+        }
+    )
     env = load_env(world)
     agent = ToolAgent([])
     with pytest.raises(BenchFlowInfraError, match="sandbox_start"):
@@ -178,7 +206,9 @@ async def test_a_sandbox_that_never_starts_is_dropped_before_the_agent_runs(worl
 async def test_a_bridge_that_cannot_start_is_dropped(world) -> None:
     env = load_env(world)
     task = first_task(env)
-    task.config = task.config.model_copy(update={"benchflow_python": str(world.tmp / "no-such-python")})
+    task.config = task.config.model_copy(
+        update={"benchflow_python": str(world.tmp / "no-such-python")}
+    )
     with pytest.raises(BenchFlowInfraError, match="sandbox_start"):
         await env.run(task, Agents(ToolAgent([])))
     (row,) = outcomes(world)

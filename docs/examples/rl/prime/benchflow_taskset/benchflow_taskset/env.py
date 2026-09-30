@@ -30,7 +30,12 @@ from verifiers.v1.configs.env import TimeoutConfig
 from verifiers.v1.harnesses.null import NullHarnessConfig
 from verifiers.v1.mcp import SharedToolServer
 
-from benchflow_taskset.session import Bridge, BenchFlowSession, BridgeError, SandboxStartError
+from benchflow_taskset.session import (
+    BenchFlowSession,
+    Bridge,
+    BridgeError,
+    SandboxStartError,
+)
 from benchflow_taskset.slots import sandbox_slot
 from benchflow_taskset.taskset import BenchFlowInfraError, BenchFlowTask
 from benchflow_taskset.tools import serve_tools
@@ -63,7 +68,9 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
                 "machine), not in the BenchFlow sandbox; use --env.agent.harness.id null"
             )
         if not harness.SUPPORTS_MCP:
-            raise ValueError(f"harness {harness_config.id!r} cannot use MCP tools; use null")
+            raise ValueError(
+                f"harness {harness_config.id!r} cannot use MCP tools; use null"
+            )
         if not isinstance(config.agent.runtime, vf.SubprocessConfig):
             raise ValueError(
                 "run the harness in the subprocess runtime (--env.agent.runtime.type "
@@ -78,7 +85,9 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         if not isinstance(task, BenchFlowTask):
-            raise TypeError(f"BenchFlowEnv runs BenchFlow tasks, got {type(task).__name__}")
+            raise TypeError(
+                f"BenchFlowEnv runs BenchFlow tasks, got {type(task).__name__}"
+            )
         cfg = task.config
         rollout_name = f"{task.data.name}-{uuid.uuid4().hex[:10]}"
         jobs_dir = Path(cfg.jobs_dir).expanduser().resolve()
@@ -89,7 +98,9 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
         }
         verify_timeout = cfg.verify_timeout_sec
         if task.data.verifier_timeout_sec:
-            verify_timeout = max(verify_timeout, float(task.data.verifier_timeout_sec) + 300.0)
+            verify_timeout = max(
+                verify_timeout, float(task.data.verifier_timeout_sec) + 300.0
+            )
         try:
             async with sandbox_slot(cfg.slots_dir, cfg.max_sandboxes):
                 session = BenchFlowSession(
@@ -121,7 +132,9 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
                             "reason": "sandbox_start",
                             "detail": str(exc)[:500],
                         }
-                        raise BenchFlowInfraError(f"benchflow drop (sandbox_start): {exc}") from exc
+                        raise BenchFlowInfraError(
+                            f"benchflow drop (sandbox_start): {exc}"
+                        ) from exc
                     except BridgeError as exc:
                         outcome["decision"] = {
                             "reward": None,
@@ -129,21 +142,29 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
                             "reason": "sandbox_start",
                             "detail": str(exc)[:500],
                         }
-                        raise BenchFlowInfraError(f"benchflow drop (sandbox_start): {exc}") from exc
+                        raise BenchFlowInfraError(
+                            f"benchflow drop (sandbox_start): {exc}"
+                        ) from exc
                     outcome["sandbox_ready_at"] = time.time()
                     async with serve_tools(session) as url:
                         bound = task.bind(session)
                         session.mark_agent_start()
                         trace = await agents.agent.run(
                             bound,
-                            tools={TOOL_SERVER_NAME: SharedToolServer(url=url, local=True, external=True)},
+                            tools={
+                                TOOL_SERVER_NAME: SharedToolServer(
+                                    url=url, local=True, external=True
+                                )
+                            },
                         )
                     outcome.update(
                         {
                             "decision": session.decision,
                             "stop": trace.stop_condition,
                             "ok": trace.ok,
-                            "error": trace.last_error.type if trace.last_error else None,
+                            "error": trace.last_error.type
+                            if trace.last_error
+                            else None,
                             "turns": trace.num_turns,
                             "stats": session.stats,
                             "submitted": session.submitted,
@@ -155,7 +176,9 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
                     if session.decision is None and trace.ok:
                         # Nothing scored the episode (it cannot happen through the task's
                         # own reward); never let it train as if it had.
-                        raise BenchFlowInfraError("the episode ended without a BenchFlow verdict")
+                        raise BenchFlowInfraError(
+                            "the episode ended without a BenchFlow verdict"
+                        )
                 finally:
                     await session.close()
         finally:
@@ -164,7 +187,11 @@ class BenchFlowEnv(vf.Env[BenchFlowEnvConfig]):
 
     @staticmethod
     def _log_outcome(cfg: Any, jobs_dir: Path, outcome: dict[str, Any]) -> None:
-        path = Path(cfg.outcomes_path).expanduser() if cfg.outcomes_path else jobs_dir / "outcomes.jsonl"
+        path = (
+            Path(cfg.outcomes_path).expanduser()
+            if cfg.outcomes_path
+            else jobs_dir / "outcomes.jsonl"
+        )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             line = (json.dumps(outcome, default=str) + "\n").encode()

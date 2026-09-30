@@ -16,9 +16,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import Field
-
 import verifiers.v1 as vf
+from pydantic import Field
 
 from benchflow_taskset.session import bridge_environment
 
@@ -52,7 +51,9 @@ class BenchFlowInfraError(vf.SandboxError):
 class BenchFlowTaskConfig(vf.TaskConfig):
     """How every BenchFlow task runs (``--env.taskset.task.*``)."""
 
-    benchflow_python: str = Field(default_factory=lambda: os.environ.get("BENCHFLOW_PYTHON", "python3"))
+    benchflow_python: str = Field(
+        default_factory=lambda: os.environ.get("BENCHFLOW_PYTHON", "python3")
+    )
     """Python of a BenchFlow venv (BenchFlow cannot share Verifiers' venv). Default:
     ``$BENCHFLOW_PYTHON``."""
     sandbox: str = "daytona"
@@ -93,7 +94,9 @@ class BenchFlowTaskConfig(vf.TaskConfig):
 class BenchFlowConfig(vf.TasksetConfig):
     """Which BenchFlow tasks to load (``--env.taskset.*``)."""
 
-    tasks_dir: str = Field(default_factory=lambda: os.environ.get("BENCHFLOW_TASKS_DIR", ""))
+    tasks_dir: str = Field(
+        default_factory=lambda: os.environ.get("BENCHFLOW_TASKS_DIR", "")
+    )
     """A folder of BenchFlow task folders, or one task folder."""
     include: list[str] = Field(default_factory=list)
     """Task folder names to keep (empty: all)."""
@@ -171,8 +174,12 @@ class BenchFlowTask(vf.Task[BenchFlowData, vf.State, BenchFlowTaskConfig]):
         trace.record_metric("benchflow_submitted", float(session.submitted))
         trace.record_metric("benchflow_policy_acted", float(session.policy_acted))
         trace.record_metric("benchflow_bash_calls", float(session.stats["bash_calls"]))
-        trace.record_metric("benchflow_bash_timeouts", float(session.stats["bash_timeouts"]))
-        trace.record_metric("benchflow_exec_errors", float(session.stats["exec_errors"]))
+        trace.record_metric(
+            "benchflow_bash_timeouts", float(session.stats["bash_timeouts"])
+        )
+        trace.record_metric(
+            "benchflow_exec_errors", float(session.stats["exec_errors"])
+        )
         if decision.get("dropped") or decision.get("reward") is None:
             raise BenchFlowInfraError(
                 f"benchflow drop ({decision.get('reason')}): {decision.get('detail')}"
@@ -183,8 +190,16 @@ class BenchFlowTask(vf.Task[BenchFlowData, vf.State, BenchFlowTaskConfig]):
 def list_tasks(config: BenchFlowConfig) -> list[dict[str, Any]]:
     """Ask the BenchFlow venv for the tasks under ``config.tasks_dir``."""
     if not config.tasks_dir:
-        raise ValueError("set --env.taskset.tasks-dir (or $BENCHFLOW_TASKS_DIR) to a folder of BenchFlow tasks")
-    command = [config.task.benchflow_python, str(BRIDGE_SCRIPT), "tasks", "--tasks-dir", config.tasks_dir]
+        raise ValueError(
+            "set --env.taskset.tasks-dir (or $BENCHFLOW_TASKS_DIR) to a folder of BenchFlow tasks"
+        )
+    command = [
+        config.task.benchflow_python,
+        str(BRIDGE_SCRIPT),
+        "tasks",
+        "--tasks-dir",
+        config.tasks_dir,
+    ]
     for name in config.include:
         command += ["--include", name]
     for name in config.exclude:
@@ -204,7 +219,9 @@ def list_tasks(config: BenchFlowConfig) -> list[dict[str, Any]]:
             "set --env.taskset.task.benchflow-python or $BENCHFLOW_PYTHON"
         ) from exc
     if result.returncode != 0:
-        raise RuntimeError(f"listing BenchFlow tasks failed: {result.stderr.strip()[-2000:]}")
+        raise RuntimeError(
+            f"listing BenchFlow tasks failed: {result.stderr.strip()[-2000:]}"
+        )
     rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     if not rows:
         raise ValueError(f"no BenchFlow tasks under {config.tasks_dir}")
