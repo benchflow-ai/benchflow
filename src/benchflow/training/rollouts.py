@@ -90,6 +90,7 @@ from benchflow._utils.scoring import (
     SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
     TIMED_OUT,
+    USAGE_LIMIT,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
@@ -140,7 +141,7 @@ INTEGRITY_VIOLATION = "integrity_violation"
 FAILURE_POLICY_ZERO = "failure_policy_zero"
 
 _MODEL_ENDPOINT_CATEGORIES = frozenset(
-    {API_ERROR, SUSPECTED_API_ERROR, PROVIDER_AUTH, PROVIDER_RATE_LIMIT, "usage_limit"}
+    {API_ERROR, SUSPECTED_API_ERROR, PROVIDER_AUTH, PROVIDER_RATE_LIMIT, USAGE_LIMIT}
 )
 _AGENT_SETUP_CATEGORIES = frozenset({INSTALL_FAILED, AGENT_INTEGRATION})
 _VERIFIER_INFRA_CATEGORIES = frozenset({VERIFIER_INFRA, VERIFIER_DEP_INSTALL})
@@ -645,24 +646,13 @@ def _read_result(rollout_dir: Path | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _read_integrity(rollout_dir: Path | None) -> dict[str, Any] | None:
+def _read_integrity(rollout_dir: Path | None) -> Any:
     """BenchShield's verdict for the rollout (``integrity/claim_verdict.json``), if any."""
     if rollout_dir is None:
         return None
-    try:
-        claim = json.loads(
-            (rollout_dir / "integrity" / "claim_verdict.json").read_text()
-        )
-    except (OSError, ValueError):
-        return None
-    if not isinstance(claim, dict):
-        return None
-    exploited = claim.get("exploited")
-    if not isinstance(exploited, bool):
-        core = claim.get("core") if isinstance(claim.get("core"), dict) else {}
-        verdict = claim.get("core_verdict") or core.get("core_verdict")
-        exploited = verdict == "AgentViolation"
-    return {"exploited": exploited, "reason": str(claim.get("reason") or "")}
+    from benchflow.integrity.verdict import read_verdict
+
+    return read_verdict(rollout_dir)
 
 
 def _verdict_dict(verdict: Any) -> dict[str, Any] | None:
@@ -989,7 +979,10 @@ class RolloutGroup:
                         await stack.enter_async_context(gate)
                     await stack.enter_async_context(self._gate)
                     rollout = await self._attempt(index, attempt)
-                if rollout.masked and attempt < self.attempts:
+                # A spent subscription fails every retry the same way until
+                # its reset (benchflow.errors.UsageLimitError): never retried.
+                retryable = rollout.error_category != USAGE_LIMIT
+                if rollout.masked and retryable and attempt < self.attempts:
                     failures.append(
                         FailedAttempt(
                             attempt=attempt,

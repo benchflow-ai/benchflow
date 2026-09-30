@@ -284,6 +284,22 @@ async def test_infrastructure_failure_is_retried_then_scored(config, policy):
     assert failed.rollout.endswith("-r00-a1") and member.rollout.endswith("-r00-a2")
 
 
+async def test_a_usage_limit_is_masked_and_never_retried(config, policy):
+    plans = {
+        "default": {
+            "error": "usage limit reached: You've hit your weekly limit",
+            "error_category": "usage_limit",
+            "calls": [],
+            "tool_calls": 0,
+        }
+    }
+    g = group(config, policy, plans, n=1, attempts=3)
+    [member] = (await g.wait()).rollouts
+    assert member.outcome == "masked" and member.reward is None
+    assert member.attribution_reason == "model_endpoint"
+    assert member.attempt == 1 and member.attempts == ()
+
+
 @pytest.mark.parametrize(
     ("on_failure", "reward", "outcome", "reason"),
     [
