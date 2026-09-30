@@ -55,11 +55,25 @@ class UsageExport(_Model):
     cost_status: Literal["priced", "subscription", "unpriced", "unavailable"] | None = (
         Field(
             None,
-            description="why cost_usd is or is not known (1.1): priced; subscription "
-            "(the agent counted its own tokens on a login, which has no price); "
+            description="why cost_usd is or is not known (1.1): priced (a USD "
+            "figure is known; price_source says who priced it); subscription (the "
+            "agent counted its own tokens on a login, which has no price); "
             "unpriced (tokens known, model not in the price table); unavailable "
             "(no usage recorded)",
         )
+    )
+    price_source: str | None = Field(
+        None,
+        description="who priced cost_usd (1.3): litellm (BenchFlow's gateway), "
+        "agent_session_log (an estimate from the agent's own session log, see "
+        "cost_estimate), agent_native_cli, or null",
+    )
+    cost_estimate: dict[str, Any] | None = Field(
+        None,
+        description="when cost_usd is the agent's own estimate (1.3): source "
+        "(claude-code-session-log), method (claude-code-cost: Claude Code's "
+        "totals; usage-at-list-price: its logged usage at list prices), path, "
+        "sessions, responses, models (USD per model), context_1m",
     )
 
 
@@ -695,6 +709,12 @@ def trial_export(
             cost_usd=r.cost_usd,
             usage_source=r.usage_source,
             cost_status=_cost_status(r.cost_usd, r.usage_source),
+            price_source=r.price_source,
+            cost_estimate=_safe(estimate)
+            if isinstance(
+                estimate := (r.usage_details or {}).get("cost_estimate"), dict
+            )
+            else None,
         ),
         started_at=record["started_at"],
         finished_at=record["finished_at"],

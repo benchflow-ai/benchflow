@@ -59,6 +59,7 @@ Every form (`bf.arun`/`bf.run`/`bf.run_sync` with a `RolloutConfig`, an agent na
 | `trajectory_source` | `"acp"` (captured over ACP), `"partial_acp"`, `"scraped"` (agent-writable, untrusted) or `"hosted_env"`. |
 | `n_tool_calls`, `n_prompts` | Counts from the run. |
 | `n_input_tokens`, `n_output_tokens`, `total_tokens`, `cost_usd`, `usage_source` | Provider usage; `None` when the provider reported none (`usage_source == "unavailable"`). |
+| `price_source` | Who priced `cost_usd`: `"litellm"` (BenchFlow's model gateway), or `"agent_session_log"`, an estimate: a Claude subscription run bypasses the gateway, so its USD is Claude Code's own figure from its session log (copied to `agent/claude-sessions/`), or the logged usage at list prices; `usage_details["cost_estimate"]` says which. `None` when nothing priced it. |
 | `task_name`, `rollout_name`, `agent`, `model` | Identity of the run. |
 | `started_at`, `finished_at` | Local wall-clock times (naive `datetime`). |
 | `rollout_dir` | The rollout's artifact directory, or `None` if the run failed before it was created. |

@@ -138,6 +138,7 @@ from benchflow.rollout._review import (
     prepare_terminal_review,
 )
 from benchflow.rollout._separate_verifier import run_separate_verifier
+from benchflow.rollout._session_log import price_from_session_log
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -2444,6 +2445,9 @@ class Rollout:
                 logger.warning(f"Egress denylist proxy stop failed: {e}")
 
         self._finalize_usage_metrics()
+        # Unpriced Claude Code usage (a subscription): estimate its USD from
+        # Claude Code's session log while the sandbox is still up.
+        await price_from_session_log(self)
         self._enforce_required_usage_tracking()
 
         if self._environment is not None:

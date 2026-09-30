@@ -1006,6 +1006,20 @@
     },
     "UsageExport": {
       "properties": {
+        "cost_estimate": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "when cost_usd is the agent's own estimate (1.3): source (claude-code-session-log), method (claude-code-cost: Claude Code's totals; usage-at-list-price: its logged usage at list prices), path, sessions, responses, models (USD per model), context_1m",
+          "title": "Cost Estimate"
+        },
         "cost_status": {
           "anyOf": [
             {
@@ -1022,7 +1036,7 @@
             }
           ],
           "default": null,
-          "description": "why cost_usd is or is not known (1.1): priced; subscription (the agent counted its own tokens on a login, which has no price); unpriced (tokens known, model not in the price table); unavailable (no usage recorded)",
+          "description": "why cost_usd is or is not known (1.1): priced (a USD figure is known; price_source says who priced it); subscription (the agent counted its own tokens on a login, which has no price); unpriced (tokens known, model not in the price table); unavailable (no usage recorded)",
           "title": "Cost Status"
         },
         "cost_usd": {
@@ -1084,6 +1098,19 @@
           ],
           "default": null,
           "title": "N Output Tokens"
+        },
+        "price_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "who priced cost_usd (1.3): litellm (BenchFlow's gateway), agent_session_log (an estimate from the agent's own session log, see cost_estimate), agent_native_cli, or null",
+          "title": "Price Source"
         },
         "total_tokens": {
           "anyOf": [
