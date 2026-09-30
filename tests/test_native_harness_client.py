@@ -213,6 +213,22 @@ async def test_codex_usage_is_the_difference_between_thread_totals(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_second_connect_in_the_same_rollout_goes_on_numbering_turns(tmp_path):
+    """User-loop rounds, scenes and branch children reconnect in one trial folder."""
+    sandbox = _LocalSandbox()
+    harness = _harness(CODEX, tmp_path)
+    await _client(tmp_path, sandbox, harness, CODEX_SAMPLES / "turn.jsonl").prompt(
+        "one"
+    )
+    second = _client(tmp_path, sandbox, harness, CODEX_SAMPLES / "turn.jsonl")
+    await second.prompt("two")
+    assert [t["turn"] for t in _turns(tmp_path)] == [1, 2]
+    # A fresh session (not a resume), with tool call ids the first one did not use.
+    assert _argvs(tmp_path)[1][:2] == ["exec", "--json"]
+    assert [c.tool_call_id for c in second.session.tool_calls] == ["turn2-item_1"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_kills_the_cli_group_and_its_detached_children(tmp_path):
     sandbox = _LocalSandbox()
     # The turn up to its tool call, then a hang with a detached child.

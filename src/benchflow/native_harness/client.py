@@ -183,6 +183,17 @@ def recorded_argv(argv: tuple[str, ...]) -> list[str]:
     return shown
 
 
+def _load_turns(path: Path) -> list[dict[str, Any]]:
+    """The turn records an earlier client of the same rollout wrote."""
+    try:
+        records = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(records, list):
+        return []
+    return [r for r in records if isinstance(r, dict)]
+
+
 def _consume(task: asyncio.Future[Any]) -> None:
     """Retrieve an abandoned read's outcome so asyncio does not report it."""
     if not task.cancelled():
@@ -252,7 +263,6 @@ class NativeCLIClient:
         self._session = ACPSession(
             resume_id or self._new_session_id or f"native-{uuid4().hex[:12]}"
         )
-        self._turn = 0
         self._silence_sec: float | None = None
         self._process: Any = None
         self._run_id: str | None = None
@@ -275,7 +285,15 @@ class NativeCLIClient:
         self._log_path = agent_dir / f"{agent.replace('-', '_')}.txt"
         self._turns_path = agent_dir / "native-turns.json"
         self._log_file: TextIO | None = None
-        self.turns: list[dict[str, Any]] = []
+        # One rollout can connect several times (user-loop rounds, scenes,
+        # branch children): the records share one file and the turn numbers
+        # go on, so Codex's tool call ids (turn<n>-item_<k>) stay unique in
+        # the rollout's trajectory.
+        self.turns: list[dict[str, Any]] = _load_turns(self._turns_path)
+        self._turn = max(
+            (t["turn"] for t in self.turns if isinstance(t.get("turn"), int)),
+            default=0,
+        )
 
     # -- the ACPClient surface the kernel uses --------------------------------
 
