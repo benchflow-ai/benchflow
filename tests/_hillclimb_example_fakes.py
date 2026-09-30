@@ -56,6 +56,36 @@ def skills_text(skills_dir) -> str:
     )
 
 
+def session_log(usd: float, model: str = "claude-haiku-4-5-20251001") -> str:
+    """A Claude Code session log: one response and a cost-state line counting it."""
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 200,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    state = {
+        model: {
+            "inputTokens": 1000,
+            "outputTokens": 200,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "costUSD": usd,
+        }
+    }
+    return "\n".join(
+        json.dumps(line)
+        for line in (
+            {
+                "type": "assistant",
+                "requestId": "req_1",
+                "message": {"id": "msg_1", "model": model, "usage": usage},
+            },
+            {"type": "cost-state", "totalCostUSD": usd, "modelUsage": state},
+        )
+    )
+
+
 @dataclass
 class FakeAgent:
     reward: Callable[

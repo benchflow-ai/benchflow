@@ -26,11 +26,13 @@ from tests._hillclimb_example_fakes import (
     instruction_of,
     make_tasks,
     read_tree,
+    session_log,
 )
 
 DEMO = Path(__file__).resolve().parents[1] / "docs" / "examples" / "hillclimb"
 sys.path.insert(0, str(DEMO))
 import hillclimb  # noqa: E402
+import hillclimb_cost  # noqa: E402
 import hillclimb_stats  # noqa: E402
 from hillclimb_proposer import ProposerSettings  # noqa: E402
 
@@ -252,6 +254,28 @@ def test_graders_and_infrastructure_errors(tmp_path, monkeypatch):
     train = doc["baseline"]["train"]
     assert train["infra_errors"] == 5 and train["score"]["value"] == 1.0
     assert doc["status"] == "stopped" and doc["stop"]["reason"] == "infra"
+
+
+def test_session_log_pricing_and_scrubbing(tmp_path, monkeypatch):
+    trial = tmp_path / "trial"
+    log = trial / "artifacts" / "claude-sessions" / "-app" / "s1.jsonl"
+    log.parent.mkdir(parents=True)
+    stale = [json.loads(line) for line in session_log(0.5).splitlines()]
+    stale[1]["modelUsage"]["claude-haiku-4-5-20251001"]["outputTokens"] = 0
+    log.write_text("\n".join(json.dumps(x) for x in stale) + "\n")
+    # The cost-state line predates the response: the response at list prices.
+    cost = hillclimb_cost.trial_cost(trial, None)
+    assert cost["source"] == "claude-code-usage-at-list-price"
+    assert cost["usd"] == pytest.approx((1000 * 1.0 + 200 * 5.0) / 1e6)
+    assert hillclimb_cost.trial_cost(trial, 0.3)["source"] == "benchflow"
+    assert hillclimb_cost.trial_cost(tmp_path / "none", None)["source"] == "unknown"
+    log.write_text(session_log(0.5, model="claude-opus-5-5[1m]") + "\n")
+    cost = hillclimb_cost.trial_cost(trial, None)
+    assert cost["usd"] == 0.5 and cost["context_1m"]
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-secret-value")
+    log.write_text('{"echo": "sk-ant-oat01-secret-value"}\n')
+    assert hillclimb_cost.scrub(trial) == 1
+    assert "secret-value" not in log.read_text()
 
 
 def test_the_demo_uses_only_public_benchflow_names():
