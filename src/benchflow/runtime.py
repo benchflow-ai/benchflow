@@ -552,28 +552,37 @@ def check_credentials(configs: Sequence[Any]) -> None:
 
     The same resolution each trial makes at setup (``resolve_agent_env``), made
     once before a job exists, so a missing login is one clear error rather
-    than a traceback in every trial. Only a missing credential is raised here;
-    anything else the resolution rejects still surfaces in the trial.
+    than a traceback in every trial. It checks exactly what the rollout will
+    use: with ``scenes``, each role's agent and model with the config's
+    ``agent_env`` plus the role's ``env`` (the legacy ``agent``/``model``
+    fields are then unused); otherwise ``agent``, ``model`` and ``agent_env``
+    as given. Only a missing credential is raised here; anything else the
+    resolution rejects still surfaces in the trial.
     """
     from benchflow.agents.env import resolve_agent_env
     from benchflow.errors import MissingCredentialError
-    from benchflow.evaluation import effective_model
 
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
     for config in configs:
-        pairs: list[tuple[str, str | None]] = [(config.agent, config.model)] + [
-            (role.agent, role.model)
-            for scene in getattr(config, "scenes", None) or []
-            for role in scene.roles
-        ]
-        for agent, model in pairs:
-            if not agent or agent in ("oracle", "nop") or (agent, model) in seen:
+        base_env = dict(getattr(config, "agent_env", None) or {})
+        scenes = getattr(config, "scenes", None) or []
+        if scenes:
+            targets = [
+                (role.agent, role.model, {**base_env, **(role.env or {})})
+                for scene in scenes
+                for role in scene.roles
+            ]
+        else:
+            targets = [(config.agent, config.model, base_env)]
+        for agent, model, env in targets:
+            if not agent or agent in ("oracle", "nop"):
                 continue
-            seen.add((agent, model))
+            key = (agent, model, tuple(sorted(env.items())))
+            if key in seen:
+                continue
+            seen.add(key)
             try:
-                resolve_agent_env(
-                    agent, effective_model(agent, model), dict(config.agent_env or {})
-                )
+                resolve_agent_env(agent, model, env)
             except MissingCredentialError:
                 raise
             except Exception:

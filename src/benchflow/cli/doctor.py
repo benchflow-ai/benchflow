@@ -186,11 +186,18 @@ def eval_preflight(
         from types import SimpleNamespace
 
         from benchflow.errors import MissingCredentialError, user_message
+        from benchflow.evaluation import effective_model
         from benchflow.runtime import check_credentials
 
         try:
+            # The model the job's trials will use (bench eval run resolves the
+            # agent's default the same way).
+            trial_model = effective_model(agent, model)
+        except ValueError:
+            trial_model = None
+        try:
             check_credentials(
-                [SimpleNamespace(agent=agent, model=model, agent_env=agent_env)]
+                [SimpleNamespace(agent=agent, model=trial_model, agent_env=agent_env)]
             )
         except MissingCredentialError as exc:
             print_error(f"{user_message(exc)}\nNo job was created.")

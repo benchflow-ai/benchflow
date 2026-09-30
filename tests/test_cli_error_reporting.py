@@ -246,3 +246,38 @@ def test_the_sdk_raises_a_missing_login_before_the_run(no_login, monkeypatch):
             )
         )
     assert created == []
+
+
+def test_the_credential_check_looks_only_at_what_the_rollout_uses(
+    no_login, monkeypatch
+):
+    """dx/errors review: check_credentials checked the legacy agent/model even
+    when scenes were set, ignored role.env, and resolved a default model the
+    rollout would not use, so a Gemini-only run was refused with
+    "ANTHROPIC_API_KEY required"."""
+    from benchflow._types import Role, Scene
+    from benchflow.rollout import RolloutConfig
+    from benchflow.runtime import check_credentials
+
+    for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    key = "AIza" + "g" * 35
+    gemini_role = Role(
+        name="solver",
+        agent="gemini",
+        model="gemini-2.5-flash",
+        env={"GEMINI_API_KEY": key},
+    )
+    # A Gemini scene on a machine with no Claude login: the legacy
+    # claude-agent-acp default is not what runs.
+    check_credentials(
+        [RolloutConfig(task_path=HELLO, scenes=[Scene(name="s", roles=[gemini_role])])]
+    )
+    # The role's own env is what counts; without it the role is refused.
+    bare = Role(name="solver", agent="gemini", model="gemini-2.5-flash")
+    with pytest.raises(MissingCredentialError, match="GEMINI_API_KEY"):
+        check_credentials(
+            [RolloutConfig(task_path=HELLO, scenes=[Scene(name="s", roles=[bare])])]
+        )
+    # No model: the rollout resolves without one, and so does the check.
+    check_credentials([RolloutConfig(task_path=HELLO, agent="claude-agent-acp")])
