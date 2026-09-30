@@ -38,6 +38,8 @@ from typing import Any
 
 import yaml
 
+from .spec import restore_boundary
+
 EMBODIED_DIR = Path(__file__).resolve().parent
 TEMPLATES = EMBODIED_DIR / "templates"
 SEED_SEP = "--seed-"
@@ -389,8 +391,13 @@ class EmbodiedTaskFormat:
             **(meta.get("metadata") or {}),
             self.block_key: block,
         }
-        if variant:
-            metadata["embodied"] = variant
+        # Every package is an embodied task: metadata.embodied carries the variant
+        # and the task's own restore declaration (mode, world_restore,
+        # action_replay), which is checked here rather than at branch time.
+        declared = metadata.get("embodied") or {}
+        if isinstance(declared, dict):
+            metadata["embodied"] = {**declared, **(variant or {})}
+        restore_boundary(metadata)
         verifier_timeout = max(
             self.min_verifier_timeout_s,
             int((meta.get("verifier") or {}).get("timeout_sec", 0) or 0),

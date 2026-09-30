@@ -2,7 +2,8 @@
 
 One schema covers single arms, bimanual rigs, dexterous hands, mobile manipulators, quadrupeds, humanoids,
 drones and skill-only robots. A backend keeps its native flat action vector; action groups name slices of it
-in declaration order. See docs/embodied.md.
+in declaration order. The restore boundary (``restore_boundary``) says what software may do to an embodied
+task's world: branching, checkpoint restores and replay. See docs/embodied.md.
 
 Standard library only: this module is vendored into simulator images.
 """
@@ -10,6 +11,7 @@ Standard library only: this module is vendored into simulator images.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -584,3 +586,126 @@ def grip_skill(gripper: str = "gripper", aliases: list[str] | None = None) -> Sk
         preconditions=["skills are enabled for the task"],
         doc="Hold the arm still and command the gripper for a number of steps.",
     )
+
+
+# ---- the restore boundary ---------------------------------------------------------------------------------
+#
+# BenchFlow rolls back only state it owns: a container snapshot, a workspace, declared environment state, or a
+# recorded LLM session replayed into a fresh sandbox. A simulator's state lives in a running process that no
+# container snapshot captures, and a real robot's arm and scene are not software state at all: restoring a
+# container cannot put a block back in a cup, and a replay re-sends recorded motion commands to real hardware. So
+# an embodied task (task metadata with an ``embodied`` block, which every EmbodiedTaskFormat package has) is
+# refused branching, checkpoint restores and action replay unless the block declares that software restores its
+# world:
+#
+#     metadata:
+#       embodied:
+#         mode: sim             # sim (the default) | real | hil-mock, the embodiment's sim/real axis
+#         world_restore: true   # restoring a checkpoint returns the simulator to the checkpointed state
+#         action_replay: true   # re-executing recorded actions affects only that restorable world
+#
+# Both default to false. A real embodiment, or a hardware-in-the-loop mock that stands in for one, cannot declare
+# either. A task without an ``embodied`` block is a software task and keeps both.
+
+PHYSICAL_MODES = ("real", "hil-mock")
+RESTORE_CAPABILITIES = ("world_restore", "action_replay")
+
+
+@dataclass(frozen=True)
+class RestoreBoundary:
+    """What software may do to a task's world; see :func:`restore_boundary`."""
+
+    embodied: bool = False
+    mode: str | None = None
+    world_restore: bool = True
+    action_replay: bool = True
+
+    @property
+    def physical(self) -> bool:
+        """A real robot, or a hardware-in-the-loop mock standing in for one."""
+        return self.mode in PHYSICAL_MODES
+
+    def require_world_restore(self, operation: str) -> None:
+        """Refuse an operation whose correctness depends on restoring the world."""
+        if not self.world_restore:
+            raise RestoreRefused(operation, self)
+
+    def require_action_replay(self, operation: str) -> None:
+        """Refuse an operation that re-executes recorded agent actions."""
+        if not self.action_replay:
+            raise RestoreRefused(operation, self)
+
+
+class RestoreRefused(RuntimeError):
+    """A branch, checkpoint restore or replay would have restored a world it cannot.
+
+    Raised before anything is quiesced, checkpointed, restored or replayed.
+    """
+
+    def __init__(self, operation: str, boundary: RestoreBoundary) -> None:
+        self.operation = operation
+        self.boundary = boundary
+        if boundary.physical:
+            reason = (
+                f"the task acts on a {boundary.mode} embodiment. Restoring software "
+                "state does not reset the arm or scene, and a replay would repeat "
+                "real motion. Start a new episode after an operator-qualified reset "
+                "instead"
+            )
+        else:
+            reason = (
+                "the task's simulator state is in no checkpoint BenchFlow takes "
+                "(metadata.embodied declares "
+                f"world_restore={str(boundary.world_restore).lower()} and "
+                f"action_replay={str(boundary.action_replay).lower()})"
+            )
+        super().__init__(f"{operation} refused: {reason}.")
+
+
+def restore_boundary(metadata: Any) -> RestoreBoundary:
+    """The restore boundary that task metadata declares under ``embodied``.
+
+    Raises SpecError for a block that is not a mapping, an unknown mode, a
+    capability that is not a boolean, a physical embodiment that claims one, and
+    the retired ``metadata.embodiment`` key: a declaration BenchFlow cannot read
+    never unlocks a restore.
+    """
+    if not isinstance(metadata, Mapping):
+        return RestoreBoundary()
+    if "embodiment" in metadata:
+        raise SpecError(
+            "metadata.embodiment is not read; declare an embodied task under "
+            "metadata.embodied (mode, world_restore, action_replay; see "
+            "docs/embodied.md)"
+        )
+    if "embodied" not in metadata:
+        return RestoreBoundary()
+    # An empty ``embodied:`` (YAML null) still marks an embodied task.
+    block = metadata["embodied"] or {}
+    if not isinstance(block, Mapping):
+        raise SpecError("metadata.embodied must be a mapping")
+    mode = block.get("mode", "sim")
+    if mode not in MODES:
+        raise SpecError(f"metadata.embodied.mode {mode!r} is not one of {MODES}")
+    flags: dict[str, bool] = {}
+    for name in RESTORE_CAPABILITIES:
+        value = block.get(name, False)
+        if not isinstance(value, bool):
+            raise SpecError(f"metadata.embodied.{name} must be true or false")
+        if value and mode in PHYSICAL_MODES:
+            raise SpecError(
+                f"a {mode} embodiment cannot declare {name}: software restore does "
+                "not reset a real arm or scene, and a replay would repeat real motion"
+            )
+        flags[name] = value
+    return RestoreBoundary(
+        embodied=True,
+        mode=mode,
+        world_restore=flags["world_restore"],
+        action_replay=flags["action_replay"],
+    )
+
+
+def task_restore_boundary(task: Any) -> RestoreBoundary:
+    """The restore boundary of a loaded task (``task.config.metadata``)."""
+    return restore_boundary(getattr(getattr(task, "config", None), "metadata", None))

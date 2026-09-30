@@ -678,6 +678,7 @@ async def run_branch_trial(
         except Exception:
             logger.warning("on_event callback failed for %s", event, exc_info=True)
 
+    from benchflow.embodied.spec import task_restore_boundary
     from benchflow.evaluation import _environment_manifest_from_task_document
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.rollout_branch import restore_sandbox_with_services
@@ -708,6 +709,12 @@ async def run_branch_trial(
     try:
         await rollout.setup()
         outcome.rollout_dir = str(rollout._rollout_dir)
+        # An embodied task whose world software cannot restore is refused
+        # before a sandbox starts, a checkpoint is restored or a parent prompt
+        # runs; rollout.branch() alone would refuse after the parent's prompts.
+        task_restore_boundary(getattr(rollout, "_task", None)).require_world_restore(
+            "branch"
+        )
         source_image = (
             SandboxImage(provider=plan.source.provider, ref=plan.source.ref)
             if plan.source is not None

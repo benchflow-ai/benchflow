@@ -112,6 +112,20 @@ Examples of backend skills: `base.navigate_to(obj)`, `grasp(obj)`, `place_on_top
             "estop": "latched file (robouse estop)", "attended": true, "operator_channel": "script", "temp_stop_c": 65}}
 ```
 
+### The restore boundary: branching, checkpoint restores and replay
+
+BenchFlow can roll back only state it owns: a container snapshot, a workspace, declared environment state, or a recorded LLM session replayed into a fresh sandbox. A simulator's state lives in the episode server's process, which no container snapshot captures, and a real robot's arm and scene are not software state at all: restoring a container cannot put a block back in a cup, and a replay re-sends recorded motion commands to real hardware. So every embodied task (task metadata with an `embodied` block, which every `EmbodiedTaskFormat` package has) is refused branching (`Rollout.branch()`, `bench eval branch`, `bf.branch`, `--from-checkpoint`), retries from checkpoints (`--retry-from-checkpoint`, recorded as `status: refused`) and replay (`benchflow continue`), before any sandbox starts or anything is checkpointed, restored or replayed. A task says otherwise only in `metadata.embodied`:
+
+```yaml
+metadata:
+  embodied:
+    mode: sim             # sim (the default) | real | hil-mock, as in the embodiment spec
+    world_restore: true   # restoring a checkpoint returns the simulator to the checkpointed state
+    action_replay: true   # re-executing recorded actions affects only that restorable world
+```
+
+Both capabilities default to false. A `real` embodiment, or a `hil-mock` that stands in for one, cannot declare either; the package is refused when it is written. The sidecar format keeps a source task's own `metadata.embodied` and adds its variant (`format`, `base_task`, `seed`, `noop`) to it. `metadata.embodiment`, an earlier key for the same rule, is not read: a task that still has it is refused rather than treated as restorable. Checked by `benchflow.embodied.spec.restore_boundary`.
+
 ## 2. The agent protocol and the `robo` command
 
 The agent container holds one file, `robo` (`benchflow/embodied/robo.py`, standard library only). It sends one JSON request per connection to the episode socket (`$ROBO_SOCKET`, or the legacy `$ROBOUSE_SOCKET`).
@@ -213,6 +227,6 @@ Role restrictions are a guard rail and an attribution record, not a security bou
 
 ## 6. Status and limits
 
-- **Snapshot / restore** of simulator state (for `Rollout.branch()`) is not implemented. The episode server has what it needs (a backend `get_state` / `set_state` pair on MuJoCo is small), but branching an embodied rollout also has to fork the video and trace.
+- **Snapshot / restore** of simulator state is not implemented, so embodied tasks refuse branching, checkpoint restores and replay (see [the restore boundary](#the-restore-boundary-branching-checkpoint-restores-and-replay)). The episode server has what it needs (a backend `get_state` / `set_state` pair on MuJoCo is small), but branching an embodied rollout also has to fork the video and trace.
 - The simulator runs on the Docker sandbox only (the verifier-in-sidecar needs `verifier.service`).
 - Simulators that need a GPU or a remote worker (BEHAVIOR on Isaac Sim) keep their worker outside the sidecar; the sidecar holds the thin client.

@@ -1,6 +1,7 @@
 """Embodied rollouts: the low-level layer for robot and simulator tasks. See docs/embodied.md.
 
-  spec        Embodiment: sensors, action groups, skills, budgets (one schema for every robot kind)
+  spec        Embodiment: sensors, action groups, skills, budgets (one schema for every robot kind);
+              the restore boundary (branching, checkpoint restores and replay of embodied tasks)
   backend     SimBackend: the contract a simulator implements
   protocol    the episode wire protocol (JSON over a Unix socket)
   robo        the agent-facing `robo` command (standard library only; copied into agent images)
@@ -22,11 +23,15 @@ from benchflow.embodied.spec import (
     Camera,
     Embodiment,
     Field,
+    RestoreBoundary,
+    RestoreRefused,
     RewardSpec,
     Sensors,
     Skill,
     SkillArg,
     SpecError,
+    restore_boundary,
+    task_restore_boundary,
 )
 
 __all__ = [
@@ -35,6 +40,8 @@ __all__ = [
     "Camera",
     "Embodiment",
     "Field",
+    "RestoreBoundary",
+    "RestoreRefused",
     "RewardSpec",
     "Sensors",
     "SimBackend",
@@ -42,4 +49,6 @@ __all__ = [
     "SkillArg",
     "SpecError",
     "StepResult",
+    "restore_boundary",
+    "task_restore_boundary",
 ]

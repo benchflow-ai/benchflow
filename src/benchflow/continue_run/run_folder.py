@@ -23,10 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.embodied.spec import RestoreBoundary, RestoreRefused, restore_boundary
 from benchflow.embodiment import (
-    Embodiment,
     PhysicalRestoreRefused,
-    embodiment_from_metadata,
     recorded_embodiment,
     require_action_replay,
 )
@@ -175,15 +174,12 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
     return exchanges
 
 
-def run_embodiment(path: Path, config: dict[str, Any]) -> Embodiment:
-    """What the original run acted on, from the strongest evidence available.
+def run_restore_boundary(config: dict[str, Any]) -> RestoreBoundary:
+    """What software may do to the original run's world, from its task metadata.
 
-    An enclosing trial record wins, then the task's own metadata when its
-    directory is available locally. Without either, the run is virtual.
+    Reads the task directory named by ``config.json`` when it is available
+    locally; without it the run is taken as a software task.
     """
-    recorded = recorded_embodiment(path)
-    if recorded is not None:
-        return recorded
     task_path = config.get("task_path")
     if isinstance(task_path, str) and task_path and Path(task_path).is_dir():
         from benchflow.task.task import Task
@@ -192,15 +188,16 @@ def run_embodiment(path: Path, config: dict[str, Any]) -> Embodiment:
             metadata = Task(task_path).config.metadata
         except (OSError, ValueError):
             metadata = None
-        return embodiment_from_metadata(metadata)
-    return Embodiment()
+        return restore_boundary(metadata)
+    return RestoreBoundary()
 
 
 def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> RunFolder:
     """Load + validate an original run folder.
 
-    Runs on an embodiment that forbids action replay (every physical
-    embodiment) are refused before any other artifact is read.
+    Runs of an embodied task that forbids action replay (every real robot, and
+    a simulator unless it declares ``action_replay``) are refused before any
+    other artifact is read.
 
     ``require_timeout`` rejects runs whose recorded status is not a
     timeout/idle-timeout. The default is permissive (warn only): a run with no
@@ -213,10 +210,15 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
 
     config = _read_json(path / "config.json", required=True)
     # Record-replay re-executes the agent's recorded actions for real. On a
-    # physical embodiment that would move hardware again from an unreset scene.
+    # real robot that would move hardware again from an unreset scene; on a
+    # simulator it would act on a world the replay never restored.
     try:
-        require_action_replay(run_embodiment(path, config), "benchflow continue")
-    except (PhysicalRestoreRefused, ValueError) as exc:
+        # A rollout nested in a robotics-runner trial (its trial record).
+        recorded = recorded_embodiment(path)
+        if recorded is not None:
+            require_action_replay(recorded, "benchflow continue")
+        run_restore_boundary(config).require_action_replay("benchflow continue")
+    except (PhysicalRestoreRefused, RestoreRefused, ValueError) as exc:
         raise RunFolderError(str(exc)) from exc
     result = _read_json(path / "result.json", required=False)
     prompts = _load_prompts(path / "prompts.json")

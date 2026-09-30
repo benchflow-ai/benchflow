@@ -62,7 +62,7 @@ from benchflow.branch_result import (
     scope_child_result_state,
     write_child_observation,
 )
-from benchflow.embodiment import require_world_restore, task_embodiment
+from benchflow.embodied.spec import task_restore_boundary
 from benchflow.models import TrajectorySource
 from benchflow.trajectories.tree import RolloutNode
 
@@ -279,12 +279,13 @@ async def branch(
     before: the tree gained ``n`` children at the cursor, nothing else moved,
     and the agent is disconnected.
 
-    A task whose embodiment cannot be restored by software (every physical
-    embodiment) raises :class:`~benchflow.embodiment.PhysicalRestoreRefused`
+    An embodied task whose world software cannot restore (every real robot,
+    and a simulator unless its ``metadata.embodied`` declares
+    ``world_restore``) raises :class:`~benchflow.embodied.spec.RestoreRefused`
     before the agent is quiesced or anything is checkpointed.
     """
     require_safe_branch_world(rollout)
-    require_world_restore(task_embodiment(rollout._task), "branch")
+    task_restore_boundary(rollout._task).require_world_restore("branch")
     # Layer selection adapted from JeremyJC67's PR #1046.
     layers = frozenset({"environment"} if snapshot_layers is None else snapshot_layers)
     unknown = layers - {"environment", "sandbox"}
