@@ -473,7 +473,9 @@ async def collect_unverified_rollout_artifacts(rollout: Any) -> None:
         return
     if rollout._env is None or getattr(rollout, "_rollout_paths", None) is None:
         return
-    transport = getattr(getattr(rollout, "_diagnostics", None), "transport_closed", None)
+    transport = getattr(
+        getattr(rollout, "_diagnostics", None), "transport_closed", None
+    )
     if transport is not None and getattr(transport, "sandbox_reachable", None) is False:
         return
     try:
