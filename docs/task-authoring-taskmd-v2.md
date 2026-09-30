@@ -90,7 +90,7 @@ A trial's `verifier/` holds what the spec asks the verifier to write: `ctrf.json
 | [agent] on_timeout | Partly | "grade" (BenchFlow grades what the agent left and records timed_out); "grade-flagged" and "fail" are refused |
 | [agent] budget, [agent.budget] tool_calls, tokens | Refused for agents | BenchFlow enforces no tool-call or token budget on an agent; a scripted seat never approaches one |
 | [agent] user | Partly | the oracle runs as it; an agent runs as the run's --sandbox-user, and a run whose agent user differs is refused |
-| [agent] network | Partly | equal to [sandbox] network, or a host list over an open sandbox (an agent allowlist); anything else is refused |
+| [agent] network | Partly | equal to [sandbox] network, or narrower than it: "none" runs the agent's phase offline in an online sandbox, a host list is an agent allowlist. A network wider than the sandbox's is refused, since the agent works inside the sandbox's container |
 | [agent] network_reason | Honored | reviewer documentation: nothing to do at run time |
 | [agent] system_prompt_append | Refused for agents | BenchFlow's harnesses take no system prompt addition |
 | [agent] timeout_basis | Partly | "wall" (BenchFlow counts wall time); "environment" is refused |
@@ -117,7 +117,7 @@ A trial's `verifier/` holds what the spec asks the verifier to write: `ctrf.json
 | [verifier] timeout | Honored | bounds test.sh; each judge session keeps its own timeout |
 | [verifier] user | Honored | verifier.user |
 | [verifier] env | Partly | literal values to verifier.env; ${VAR} values are refused |
-| [verifier] network | Partly | a shared verifier: "none" (taken offline with iptables) or "open" (over an open sandbox or an agent allowlist); a separate verifier: "none" or "open" for its own sandbox; a host list is refused, since BenchFlow holds only the agent's uid to one |
+| [verifier] network | Partly | a shared verifier: "none" (taken offline with iptables) or "open" (over an open sandbox or an agent allowlist); a separate verifier: "none" or "open" for its own sandbox. A host list written for the verifier is refused, since BenchFlow holds only the agent's uid to one; a host list the verifier only *inherited* from [sandbox] network is honored as binding the agent, with the shared verifier running as root outside it |
 | [verifier] isolation | Honored | "shared", or "separate" (verifier.sandbox_mode: separate) |
 | [verifier] sandbox, [verifier.sandbox] <key> | Partly | image, os, cpus, gpus, gpu_types, memory, disk, workdir, env, build_timeout, and empty mcp; the rest is refused. The image is found in the spec's order: [verifier.sandbox] image, verifier/Dockerfile, the task's image |
 | [verifier] snapshot, [[verifier.snapshot]] run, reads, service, timeout, user | Refused | snapshot commands are not run |
