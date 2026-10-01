@@ -1,7 +1,7 @@
 """Write the RL cookbook task family as native BenchFlow task packages.
 
-    python docs/examples/rl/tasks/generate.py --split train --out tasks/v1/train
-    python docs/examples/rl/tasks/generate.py --split test --out tasks/v1/test
+    python docs/examples/rl/tasks/generate.py --tier hard --split train --out tasks/v2/hard/train
+    python docs/examples/rl/tasks/generate.py --tier hard --split test --out tasks/v2/hard/test
 
 Train seeds start at 0 and test seeds at 900000, so the two sets never share a
 seed (see README.md). ``--count`` takes the first N seeds of the split; the
@@ -55,20 +55,21 @@ exec python3 /verifier/verify.py
 def task_name(instance: family.Instance, split: str) -> str:
     if split == "control":
         return "control-leaked-answer"
-    return f"{instance.kind}-{instance.seed:06d}"
+    return f"{instance.tier}-{instance.kind}-{instance.seed:06d}"
 
 
 def task_md(instance: family.Instance, split: str) -> str:
     name = task_name(instance, split)
     leak = " --leak-answer" if split == "control" else ""
     setup = (
-        f"python3 /opt/rltasks/family.py materialize {instance.kind} {instance.seed} "
-        f"/workdir{leak} && rm -rf /opt/rltasks"
+        f"python3 /opt/rltasks/family.py materialize {instance.tier} {instance.kind} "
+        f"{instance.seed} /workdir{leak} && rm -rf /opt/rltasks"
     )
     metadata = {
         "family": family.FAMILY,
         "family_version": family.FAMILY_VERSION,
         "split": split,
+        "tier": instance.tier,
         "kind": instance.kind,
         "seed": instance.seed,
         "level": instance.level,
@@ -144,6 +145,12 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="train, test, or control (the one deliberately hackable audit task)",
     )
+    parser.add_argument(
+        "--tier",
+        choices=family.TIERS,
+        default="medium",
+        help="easy: clean data; medium: mess by level; hard: all mess, hardest questions, two bugs",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--count", type=int, help="number of seeds (default: 200 train, 50 test)"
@@ -162,11 +169,12 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     rows = []
     for seed in range(first, first + count):
-        instance = family.build(seed)
+        instance = family.build(seed, args.tier)
         task = write_task(args.out, instance, args.split)
         rows.append(
             {
                 "task": task.name,
+                "tier": instance.tier,
                 "kind": instance.kind,
                 "level": instance.level,
                 "seed": seed,
@@ -179,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     kinds: dict[str, int] = {}
     for row in rows:
         kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
-    print(f"wrote {len(rows)} {args.split} tasks to {args.out}: {kinds}")
+    print(f"wrote {len(rows)} {args.tier} {args.split} tasks to {args.out}: {kinds}")
     return 0
 
 

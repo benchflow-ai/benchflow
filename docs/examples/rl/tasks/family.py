@@ -42,12 +42,18 @@ import random
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 FAMILY = "benchflow-rl-cookbook"
 FAMILY_VERSION = "2"
 KINDS = ("sql", "log", "csv", "bugfix")
+# easy: clean data, simpler questions. medium: mess that grows with the level.
+# hard: every kind of mess, the hardest questions, and two bugs to fix.
+# expert: hard plus locale-dependent dates, time zones, currencies, and a third
+# bug that the visible tests do not catch.
+TIERS = ("easy", "medium", "hard", "expert")
 QUESTION_STREAM = 7_777_777
 # Levels: 1 has one kind of mess (or one composite), 3 has several.
 LEVEL_WEIGHTS = {1: 3, 2: 4, 3: 3}
@@ -77,6 +83,7 @@ class Instance:
     tags: list[str] = field(default_factory=list)
     # The only files the verifier reads: everything else the policy leaves behind is ignored.
     outputs: list[str] = field(default_factory=lambda: [ANSWER_PATH])
+    tier: str = "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +123,15 @@ ORDER_STATUSES = ["completed"] * 6 + ["refunded", "cancelled", "pending"]
 
 def _level(rng: random.Random) -> int:
     return rng.choices(list(LEVEL_WEIGHTS), weights=list(LEVEL_WEIGHTS.values()))[0]
+
+
+def _tier_level(rng: random.Random, tier: str) -> int:
+    """The instance's level: drawn for medium, 1 for easy, 3 for hard."""
+
+    if tier not in TIERS:
+        raise ValueError(f"unknown tier {tier!r}; use one of {TIERS}")
+    drawn = _level(rng)
+    return {"easy": 1, "medium": drawn, "hard": 3, "expert": 3}[tier]
 
 
 def _people(rng: random.Random, count: int) -> list[str]:
@@ -171,6 +187,12 @@ def _money(value: float) -> str:
     return f"{value:.2f}"
 
 
+def _dollars(cents: float) -> str:
+    """Dollars from cents: rounded when exact, else the exact value (see ``_expected``)."""
+
+    return _money(cents / 100) if float(cents).is_integer() else repr(cents / 100)
+
+
 def _q(text: str) -> str:
     """Single-quote a string for a shell script."""
 
@@ -191,14 +213,17 @@ def _py_oracle(code: str) -> str:
 # prices, which are stored in cents.
 
 
-def sql_data(seed: int) -> dict[str, Any]:
+def sql_data(seed: int, tier: str = "medium") -> dict[str, Any]:
     rng = random.Random(seed)
-    level = _level(rng)
+    level = _tier_level(rng, tier)
+    messy = tier != "easy"
     names = _people(rng, rng.randint(25, 40))
     customers = []
     for i, name in enumerate(names):
         city = rng.choice(CITIES)
-        stored = _mess(rng, city) if level >= 2 and rng.random() < 0.3 else city
+        stored = (
+            _mess(rng, city) if messy and level >= 2 and rng.random() < 0.3 else city
+        )
         customers.append((i + 1, name, stored, _iso(_ymd(rng, 2024))))
     products = []
     used: set[str] = set()
@@ -211,16 +236,27 @@ def sql_data(seed: int) -> dict[str, Any]:
         used.add(name)
         products.append((len(products) + 1, name, category, rng.randint(300, 12_000)))
     orders = []
+    expert = tier == "expert"
     for i in range(rng.randint(160, 300)):
         status = rng.choice(ORDER_STATUSES)
-        stored_status = _mess(rng, status) if rng.random() < 0.35 else status
+        stored_status = _mess(rng, status) if messy and rng.random() < 0.35 else status
         ymd = _ymd(rng, 2025)
         stored_date = _iso(ymd)
-        if level >= 2 and rng.random() < 0.3:
+        locale: tuple[str, ...] = ()
+        if expert:
+            # Each order's date follows the convention of the locale it was entered in.
+            chosen = rng.choice(["ISO", "EU", "US"])
+            locale = (chosen,)
+            stored_date = {
+                "ISO": _iso(ymd),
+                "EU": f"{ymd[2]:02d}/{ymd[1]:02d}/{ymd[0]}",
+                "US": f"{ymd[1]:02d}/{ymd[2]:02d}/{ymd[0]}",
+            }[chosen]
+        elif messy and level >= 2 and rng.random() < 0.3:
             stored_date = f"{ymd[2]:02d}/{ymd[1]:02d}/{ymd[0]}"
         orders.append(
             (i + 1, rng.randint(1, len(customers)), rng.randint(1, len(products)),
-             rng.randint(1, 5), stored_date, stored_status)
+             rng.randint(1, 5), stored_date, stored_status, *locale)
         )  # fmt: skip
     return {
         "level": level,
@@ -230,8 +266,8 @@ def sql_data(seed: int) -> dict[str, Any]:
     }
 
 
-def sql_materialize(seed: int, out: Path) -> None:
-    data = sql_data(seed)
+def sql_materialize(seed: int, out: Path, tier: str = "medium") -> None:
+    data = sql_data(seed, tier)
     path = out / "shop.db"
     path.unlink(missing_ok=True)
     conn = sqlite3.connect(path)
@@ -241,25 +277,46 @@ def sql_materialize(seed: int, out: Path) -> None:
                                 city TEXT NOT NULL, signup_date TEXT NOT NULL);
         CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL,
                                category TEXT NOT NULL, price_cents INTEGER NOT NULL);
-        CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL,
-                             product_id INTEGER NOT NULL, quantity INTEGER NOT NULL,
-                             order_date TEXT NOT NULL, status TEXT NOT NULL);
         """
+    )
+    locale = ", locale TEXT NOT NULL" if tier == "expert" else ""
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, "
+        "product_id INTEGER NOT NULL, quantity INTEGER NOT NULL, order_date TEXT NOT NULL, "
+        f"status TEXT NOT NULL{locale})"
     )
     conn.executemany("INSERT INTO customers VALUES (?, ?, ?, ?)", data["customers"])
     conn.executemany("INSERT INTO products VALUES (?, ?, ?, ?)", data["products"])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?)", data["orders"])
+    columns = len(data["orders"][0])
+    conn.executemany(
+        f"INSERT INTO orders VALUES ({', '.join('?' * columns)})", data["orders"]
+    )
     conn.commit()
     conn.close()
 
 
-def _order_iso(stored: str) -> str:
+def _order_iso(stored: str, locale: str | None = None) -> str:
+    if locale == "US":
+        month, day, year = stored.split("/")
+        return f"{year}-{month}-{day}"
     if "/" in stored:
         day, month, year = stored.split("/")
         return f"{year}-{month}-{day}"
     return stored
 
 
+SQL_EXPERT_HINT = (
+    " Each order's date is written in the convention of the locale it was entered in "
+    "(the `locale` column)."
+)
+# The oracle's view of the orders in the expert tier: dates by their locale.
+SQL_CLEAN_ORDERS_EXPERT = (
+    "WITH o AS (SELECT id, customer_id, product_id, quantity, lower(trim(status)) AS status, "
+    "CASE locale WHEN 'US' THEN substr(order_date, 7, 4) || '-' || substr(order_date, 1, 2) "
+    "|| '-' || substr(order_date, 4, 2) WHEN 'EU' THEN substr(order_date, 7, 4) || '-' || "
+    "substr(order_date, 4, 2) || '-' || substr(order_date, 1, 2) ELSE order_date END AS d "
+    "FROM orders) "
+)
 # The oracle's view of the orders: ISO dates and normalized status, in SQL.
 SQL_CLEAN_ORDERS = (
     "WITH o AS (SELECT id, customer_id, product_id, quantity, lower(trim(status)) AS status, "
@@ -275,7 +332,15 @@ def _sql_questions(data: dict[str, Any], rng: random.Random) -> list[tuple]:
     customers = {c[0]: c for c in data["customers"]}
     products = {p[0]: p for p in data["products"]}
     orders = [
-        (o[0], o[1], o[2], o[3], _order_iso(o[4]), _norm(o[5])) for o in data["orders"]
+        (
+            o[0],
+            o[1],
+            o[2],
+            o[3],
+            _order_iso(o[4], o[6] if len(o) > 6 else None),
+            _norm(o[5]),
+        )
+        for o in data["orders"]
     ]
     completed = [o for o in orders if o[5] == "completed"]
 
@@ -370,25 +435,32 @@ def _sql_questions(data: dict[str, Any], rng: random.Random) -> list[tuple]:
     return out
 
 
-def sql_instance(seed: int) -> Instance:
-    data = sql_data(seed)
+def sql_instance(seed: int, tier: str = "medium") -> Instance:
+    data = sql_data(seed, tier)
     rng = random.Random(seed + QUESTION_STREAM)
-    questions = _pick_questions(_sql_questions(data, rng), rng, data["level"])
+    questions = _pick_questions(_sql_questions(data, rng), rng, data["level"], tier)
+    hint = SQL_EXPERT_HINT if tier == "expert" else ""
     prompt = (
         "The SQLite database `/workdir/shop.db` holds a small online shop's data in "
         "three tables: `customers`, `products`, and `orders`. The `sqlite3` command-line "
-        f"tool is installed. {MESSY_DATA_HINT}\n\n"
+        f"tool is installed. {MESSY_DATA_HINT}{hint}\n\n"
         f"{_questions_block(questions)}"
     )
+    clean = SQL_CLEAN_ORDERS_EXPERT if tier == "expert" else SQL_CLEAN_ORDERS
     lines = ["#!/bin/bash", "set -euo pipefail", f": > {ANSWER_PATH}"]
     for q in questions:
-        lines.append(
-            f"sqlite3 /workdir/shop.db {_q(SQL_CLEAN_ORDERS + q[4])} >> {ANSWER_PATH}"
-        )
+        lines.append(f"sqlite3 /workdir/shop.db {_q(clean + q[4])} >> {ANSWER_PATH}")
     oracle = "\n".join(lines) + "\n"
     tags = [q[5] for q in questions]
     return Instance(
-        "sql", seed, data["level"], prompt, _expected_many(questions), oracle, tags
+        "sql",
+        seed,
+        data["level"],
+        prompt,
+        _expected_many(questions),
+        oracle,
+        tags,
+        tier=tier,
     )
 
 
@@ -409,9 +481,10 @@ LOG_NOISE = ["# logrotate: reopened access.log", "-- MARK --", "# upstream healt
 # fmt: on
 
 
-def log_data(seed: int) -> dict[str, Any]:
+def log_data(seed: int, tier: str = "medium") -> dict[str, Any]:
     rng = random.Random(seed)
-    level = _level(rng)
+    level = _tier_level(rng, tier)
+    messy = tier != "easy"
     ips = sorted(
         {f"10.{rng.randint(0, 3)}.{rng.randint(0, 9)}.{rng.randint(2, 250)}" for _ in range(rng.randint(10, 20))}
     )  # fmt: skip
@@ -438,37 +511,67 @@ def log_data(seed: int) -> dict[str, Any]:
         )
         ip = rng.choices(ips, weights)[0]
         rows.append((stamp, ip, method, path, status, size, latency))
-        client = f"{ip}:{rng.randint(1024, 65535)}" if rng.random() < 0.25 else ip
+        client = (
+            f"{ip}:{rng.randint(1024, 65535)}" if messy and rng.random() < 0.25 else ip
+        )
         shown_path = path
-        if level >= 2 and path in ("/api/search", "/api/cart") and rng.random() < 0.6:
+        if (
+            messy
+            and level >= 2
+            and path in ("/api/search", "/api/cart")
+            and rng.random() < 0.6
+        ):
             shown_path = (
                 f"{path}?q={rng.choice(['shoes', 'lamp', 'red+kettle', 'gift'])}"
             )
-        elif level >= 2 and path.startswith("/api/products/") and rng.random() < 0.4:
+        elif (
+            messy
+            and level >= 2
+            and path.startswith("/api/products/")
+            and rng.random() < 0.4
+        ):
             shown_path = f"{path}?page={rng.randint(1, 5)}"
         shown_latency = f"{latency}ms"
-        if level >= 3 and latency >= 100 and rng.random() < 0.35:
+        if messy and level >= 3 and latency >= 100 and rng.random() < 0.35:
             shown_latency = f"{latency / 1000:.3f}s"
+        shown_stamp = stamp
+        if tier == "expert" and rng.random() < 0.35:
+            # Some servers log local time with its UTC offset.
+            hours, minutes = rng.choice([(2, 0), (-5, 0), (5, 30)])
+            offset = timezone(timedelta(hours=hours, minutes=minutes))
+            shown_stamp = (
+                datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                .astimezone(offset)
+                .isoformat()
+            )
         lines.append(
-            f"{stamp} {client} {method} {shown_path} {status} {size} {shown_latency}"
+            f"{shown_stamp} {client} {method} {shown_path} {status} {size} {shown_latency}"
         )
-        if rng.random() < 0.02:
+        if messy and rng.random() < 0.02:
             lines.append(rng.choice(LOG_NOISE))
-    return {"level": level, "rows": rows, "lines": lines}
+    return {
+        "level": level,
+        "rows": rows,
+        "lines": lines,
+        "time_zones": tier == "expert",
+    }
 
 
-def log_materialize(seed: int, out: Path) -> None:
-    (out / "access.log").write_text("\n".join(log_data(seed)["lines"]) + "\n")
+def log_materialize(seed: int, out: Path, tier: str = "medium") -> None:
+    (out / "access.log").write_text("\n".join(log_data(seed, tier)["lines"]) + "\n")
 
 
 # The oracle parses each request line into clean fields.
 LOG_PARSE = """
+from datetime import datetime, timezone
 rows = []
 for line in open("access.log"):
     parts = line.split()
     if len(parts) != 7 or parts[0].startswith(("#", "--")):
         continue
     stamp, client, method, path, status, size, latency = parts
+    stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+    stamp = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
     latency = float(latency[:-2]) if latency.endswith("ms") else float(latency[:-1]) * 1000
     rows.append((stamp, client.split(":")[0], method, path.split("?")[0], int(status), int(size), round(latency)))
 """
@@ -554,23 +657,51 @@ def _log_questions(data: dict[str, Any], rng: random.Random) -> list[tuple]:
              "for r in rows:\n    totals[r[1]] += r[6]\nprint(totals.most_common(1)[0][0])",
              "latency-argmax")
         )  # fmt: skip
+    if data.get("time_zones"):
+        window = sum(1 for r in rows if 9 <= int(r[0][11:13]) <= 11)
+        out.append(
+            (3, "How many requests were received from 09:00:00 to 11:59:59 UTC?",
+             str(window), "int",
+             "print(sum(1 for r in rows if 9 <= int(r[0][11:13]) <= 11))", "utc-window")
+        )  # fmt: skip
+        hours: dict[str, float] = {}
+        for r in rows:
+            if 500 <= r[4] <= 599:
+                hours[r[0][11:13]] = hours.get(r[0][11:13], 0) + 1
+        best = _unique_argmax(hours)
+        if best:
+            out.append(
+                (3, "In which hour of the day, in UTC, did the server return the most 5xx "
+                    "(server error) responses? Answer with the two-digit hour, such as 07.",
+                 best, "text",
+                 "from collections import Counter\n"
+                 "print(Counter(r[0][11:13] for r in rows if 500 <= r[4] <= 599).most_common(1)[0][0])",
+                 "utc-hour-argmax")
+            )  # fmt: skip
     return out
 
 
-def log_instance(seed: int) -> Instance:
-    data = log_data(seed)
+def log_instance(seed: int, tier: str = "medium") -> Instance:
+    data = log_data(seed, tier)
     rng = random.Random(seed + QUESTION_STREAM)
-    questions = _pick_questions(_log_questions(data, rng), rng, data["level"])
+    questions = _pick_questions(_log_questions(data, rng), rng, data["level"], tier)
     prompt = (
         "The file `/workdir/access.log` is a web server's access log. Each request is one "
         "line with seven space-separated fields: timestamp, client address, HTTP method, "
-        f"path, status code, response size in bytes, and latency. {MESSY_DATA_HINT}\n\n"
+        f"path, status code, response size in bytes, and latency. {MESSY_DATA_HINT}{' Timestamps carry their UTC offset.' if tier == 'expert' else ''}\n\n"
         f"{_questions_block(questions)}"
     )
     oracle = _py_oracle(LOG_PARSE + "\n".join(q[4] for q in questions))
     tags = [q[5] for q in questions]
     return Instance(
-        "log", seed, data["level"], prompt, _expected_many(questions), oracle, tags
+        "log",
+        seed,
+        data["level"],
+        prompt,
+        _expected_many(questions),
+        oracle,
+        tags,
+        tier=tier,
     )
 
 
@@ -583,50 +714,64 @@ def log_instance(seed: int) -> Instance:
 
 CSV_REGIONS = ["north", "south", "east", "west", "central"]
 CSV_PRODUCTS = ["anvil", "bolt, 10 mm", "clamp", "drill, cordless", "easel", "funnel", "gauge, digital", "hinge"]  # fmt: skip
+CSV_PRODUCTS_CLEAN = ["anvil", "bolt", "clamp", "drill", "easel", "funnel", "gauge", "hinge"]  # fmt: skip
 CSV_HEADER = ["date", "region", "rep", "product", "units", "unit_price"]
+# Expert tier: prices in the row's currency, converted at these fixed rates.
+CSV_RATES = {"USD": 1.0, "EUR": 1.10, "GBP": 1.25}
+CSV_EXPERT_HINT = (
+    " In this file unit_price is in the currency of the row's `currency` column; convert "
+    "at 1 EUR = 1.10 USD and 1 GBP = 1.25 USD, and give every amount in US dollars."
+)
 
 
-def csv_data(seed: int) -> dict[str, Any]:
+def csv_data(seed: int, tier: str = "medium") -> dict[str, Any]:
     rng = random.Random(seed)
-    level = _level(rng)
+    level = _tier_level(rng, tier)
+    messy = tier != "easy"
+    expert = tier == "expert"
+    products = CSV_PRODUCTS if messy else CSV_PRODUCTS_CLEAN
     reps = sorted({name.split()[0].lower() for name in _people(rng, 30)})[
         : rng.randint(6, 10)
     ]
-    prices = {p: rng.randint(200, 8_000) for p in CSV_PRODUCTS}  # cents
+    prices = {p: rng.randint(200, 8_000) for p in products}  # US cents
     rows, written = [], []
     for _ in range(rng.randint(150, 320)):
-        product = rng.choice(CSV_PRODUCTS)
+        product = rng.choice(products)
         region = rng.choice(CSV_REGIONS)
+        currency = (
+            rng.choices(list(CSV_RATES), weights=[5, 3, 2])[0] if expert else "USD"
+        )
+        local_cents = round(prices[product] / CSV_RATES[currency])
+        # The truth is in US cents: the local price at the fixed rate.
+        usd_cents = local_cents * CSV_RATES[currency] if expert else prices[product]
         row = (
-            _iso(_ymd(rng, 2025)),
-            region,
-            rng.choice(reps),
-            product,
-            rng.randint(1, 40),
-            prices[product],
-        )
+            _iso(_ymd(rng, 2025)), region, rng.choice(reps), product, rng.randint(1, 40), usd_cents
+        )  # fmt: skip
         rows.append(row)
-        shown_region = _mess(rng, region) if rng.random() < 0.3 else region
-        shown_price = f"{row[5] / 100:.2f}"
-        if level >= 2 and rng.random() < 0.3:
+        shown_region = _mess(rng, region) if messy and rng.random() < 0.3 else region
+        shown_price = f"{local_cents / 100:.2f}"
+        if messy and level >= 2 and currency == "USD" and rng.random() < 0.3:
             shown_price = f"${shown_price}"
-        written.append(
-            [row[0], shown_region, row[2], product, str(row[4]), shown_price]
-        )
+        record = [row[0], shown_region, row[2], product, str(row[4]), shown_price]
+        written.append([*record, currency] if expert else record)
     order = sorted(range(len(rows)), key=lambda i: rows[i][0])
     rows = [rows[i] for i in order]
     written = [written[i] for i in order]
-    if level >= 3:
+    header = [*CSV_HEADER, "currency"] if expert else list(CSV_HEADER)
+    if messy and level >= 3:
         for _ in range(rng.randint(1, 3)):
-            written.insert(rng.randint(1, len(written) - 1), list(CSV_HEADER))
-    return {"level": level, "rows": rows, "written": written}
+            written.insert(rng.randint(1, len(written) - 1), list(header))
+    return {
+        "level": level, "rows": rows, "written": written, "products": products, "header": header
+    }  # fmt: skip
 
 
-def csv_materialize(seed: int, out: Path) -> None:
+def csv_materialize(seed: int, out: Path, tier: str = "medium") -> None:
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(CSV_HEADER)
-    writer.writerows(csv_data(seed)["written"])
+    data = csv_data(seed, tier)
+    writer.writerow(data["header"])
+    writer.writerows(data["written"])
     (out / "sales.csv").write_text(buffer.getvalue())
 
 
@@ -636,7 +781,8 @@ rows = []
 for rec in csv.DictReader(open("sales.csv", newline="")):
     if rec["date"] == "date":
         continue
-    price = round(float(rec["unit_price"].lstrip("$")) * 100)
+    rate = {"USD": 1.0, "EUR": 1.10, "GBP": 1.25}[(rec.get("currency") or "USD").strip()]
+    price = round(float(rec["unit_price"].lstrip("$")) * 100) * rate
     rows.append((rec["date"], rec["region"].strip().lower(), rec["rep"], rec["product"], int(rec["units"]), price))
 """
 
@@ -650,7 +796,8 @@ def _csv_questions(data: dict[str, Any], rng: random.Random) -> list[tuple]:
          str(sum(1 for r in rows if r[1] == region)), "int",
          f"print(sum(1 for r in rows if r[1] == {region!r}))", "count")
     )  # fmt: skip
-    product = rng.choice([p for p in CSV_PRODUCTS if "," in p])
+    products = data["products"]
+    product = rng.choice([p for p in products if "," in p] or products)
     out.append(
         (1, f"What is the largest number of units in a single sale of the product `{product}`?",
          str(max((r[4] for r in rows if r[3] == product), default=0)), "int",
@@ -672,7 +819,7 @@ def _csv_questions(data: dict[str, Any], rng: random.Random) -> list[tuple]:
     cents = sum(r[4] * r[5] for r in rows if r[1] == region)
     out.append(
         (2, f"What is the total revenue (units times unit_price) of the {region} region? "
-            "Round to 2 decimal places.", _money(cents / 100), "money",
+            "Round to 2 decimal places.", _dollars(cents), "money",
          f"total = sum(r[4] * r[5] for r in rows if r[1] == {region!r})\n"
          "print(f'{total / 100:.2f}')", "sum")
     )  # fmt: skip
@@ -717,20 +864,32 @@ def _csv_questions(data: dict[str, Any], rng: random.Random) -> list[tuple]:
     return out
 
 
-def csv_instance(seed: int) -> Instance:
-    data = csv_data(seed)
+def csv_instance(seed: int, tier: str = "medium") -> Instance:
+    data = csv_data(seed, tier)
     rng = random.Random(seed + QUESTION_STREAM)
-    questions = _pick_questions(_csv_questions(data, rng), rng, data["level"])
+    questions = _pick_questions(_csv_questions(data, rng), rng, data["level"], tier)
+    if tier == "expert":
+        columns = (
+            "units, unit_price, and currency. " + MESSY_DATA_HINT + CSV_EXPERT_HINT
+        )
+    else:
+        columns = f"units, and unit_price (in dollars). {MESSY_DATA_HINT}"
     prompt = (
         "The file `/workdir/sales.csv` lists a hardware wholesaler's sales in 2025. It has a "
-        "header row and the columns date, region, rep, product, units, and unit_price (in "
-        f"dollars). {MESSY_DATA_HINT}\n\n"
+        f"header row and the columns date, region, rep, product, {columns}\n\n"
         f"{_questions_block(questions)}"
     )
     oracle = _py_oracle(CSV_PARSE + "\n".join(q[4] for q in questions))
     tags = [q[5] for q in questions]
     return Instance(
-        "csv", seed, data["level"], prompt, _expected_many(questions), oracle, tags
+        "csv",
+        seed,
+        data["level"],
+        prompt,
+        _expected_many(questions),
+        oracle,
+        tags,
+        tier=tier,
     )
 
 
@@ -1090,11 +1249,17 @@ def _render(blocks: list[list[str]]) -> str:
     return "\n\n\n".join("\n".join(block) for block in blocks) + "\n"
 
 
-def bugfix_data(seed: int) -> dict[str, Any]:
-    """Choose the composites, the helpers, the buggy helper, and its mutation."""
+def bugfix_data(seed: int, tier: str = "medium") -> dict[str, Any]:
+    """Choose the composites, the helpers, and the bugs.
+
+    One bug the tests reveal in easy and medium, two in hard, and in expert two
+    plus one more that the visible tests do not catch.
+    """
 
     rng = random.Random(seed)
-    level = _level(rng)
+    level = _tier_level(rng, tier)
+    visible_wanted = 2 if tier in ("hard", "expert") else 1
+    hidden_wanted = 1 if tier == "expert" else 0
     for _attempt in range(50):
         composites = rng.sample(sorted(COMPOSITES), 2 if level == 3 else 1)
         helpers = sorted({h for c in composites for h in COMPOSITES[c]["uses"]})
@@ -1110,7 +1275,11 @@ def bugfix_data(seed: int) -> dict[str, Any]:
         ]
         rng.shuffle(candidates)
         good = _namespace(_render(_module_lines(helpers, composites)))
+        visible: list[dict[str, Any]] = []
+        hidden: list[dict[str, Any]] = []
         for helper, line, replacement in candidates:
+            if any(bug["helper"] == helper for bug in visible + hidden):
+                continue
             blocks = _module_lines(helpers, composites)
             index = helpers.index(helper)
             blocks[index] = list(blocks[index])
@@ -1124,15 +1293,19 @@ def bugfix_data(seed: int) -> dict[str, Any]:
             hidden_breaks = _outputs(
                 good[helper], HELPERS[helper]["hidden"]
             ) != _outputs(bad[helper], HELPERS[helper]["hidden"])
-            if visible_breaks and hidden_breaks:
+            bug = {"helper": helper, "line": line, "replacement": replacement}
+            if visible_breaks and hidden_breaks and len(visible) < visible_wanted:
+                visible.append(bug)
+            elif not visible_breaks and hidden_breaks and len(hidden) < hidden_wanted:
+                hidden.append(bug)
+            if len(visible) == visible_wanted and len(hidden) == hidden_wanted:
                 return {
                     "level": level,
                     "module": rng.choice(MODULE_NAMES),
                     "helpers": helpers,
                     "composites": composites,
-                    "buggy": helper,
-                    "line": line,
-                    "replacement": replacement,
+                    "bugs": visible + hidden,
+                    "hidden_bugs": len(hidden),
                 }
     raise AssertionError(f"no detectable bug for seed {seed}")  # pragma: no cover
 
@@ -1140,9 +1313,10 @@ def bugfix_data(seed: int) -> dict[str, Any]:
 def _module_source(data: dict[str, Any], *, fixed: bool) -> str:
     blocks = _module_lines(data["helpers"], data["composites"])
     if not fixed:
-        index = data["helpers"].index(data["buggy"])
-        blocks[index] = list(blocks[index])
-        blocks[index][data["line"]] = data["replacement"]
+        for bug in data["bugs"]:
+            index = data["helpers"].index(bug["helper"])
+            blocks[index] = list(blocks[index])
+            blocks[index][bug["line"]] = bug["replacement"]
     return _render(blocks)
 
 
@@ -1172,14 +1346,25 @@ def _visible_tests(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def bugfix_materialize(seed: int, out: Path) -> None:
-    data = bugfix_data(seed)
+def bugfix_materialize(seed: int, out: Path, tier: str = "medium") -> None:
+    data = bugfix_data(seed, tier)
     (out / f"{data['module']}.py").write_text(_module_source(data, fixed=False))
     (out / f"test_{data['module']}.py").write_text(_visible_tests(data))
 
 
-def bugfix_instance(seed: int) -> Instance:
-    data = bugfix_data(seed)
+def _line_number(data: dict[str, Any], bug: dict[str, Any]) -> int:
+    """The bug's line in the rendered module: earlier helpers plus two blank lines each."""
+
+    offset = 0
+    for name in data["helpers"]:
+        if name == bug["helper"]:
+            break
+        offset += len(HELPERS[name]["code"]) + 2
+    return offset + bug["line"]
+
+
+def bugfix_instance(seed: int, tier: str = "medium") -> Instance:
+    data = bugfix_data(seed, tier)
     module = data["module"]
     good = _namespace(_module_source(data, fixed=True))
     bad = _namespace(_module_source(data, fixed=False))
@@ -1202,44 +1387,47 @@ def bugfix_instance(seed: int) -> Instance:
             for case, (w, g) in enumerate(zip(want, got, strict=True))
             if w != g
         ]
+    count = len(data["bugs"])
+    where = "a bug on one line" if count == 1 else f"bugs on {count} lines"
+    change = "that one line" if count == 1 else f"those {count} lines"
     prompt = (
-        f"The tests in `/workdir/test_{module}.py` fail because of a bug on one line of "
+        f"The tests in `/workdir/test_{module}.py` fail because of {where} of "
         f"`/workdir/{module}.py`. The tests call the module's top-level functions, which are "
         "built on its helper functions.\n\n"
-        f"Fix the bug so that `python3 test_{module}.py`, run from `/workdir`, prints "
-        f"`all tests passed`. Change only that one line of `{module}.py`, and do not edit the "
+        f"Fix the code so that `python3 test_{module}.py`, run from `/workdir`, prints "
+        f"`all tests passed`. Change only {change} of `{module}.py`, and do not edit the "
         "tests. Every function in the module must be correct for any input, not only for the "
-        "inputs in the tests.\n\n"
+        "inputs in the tests."
+        f"{' The tests do not catch every bug.' if data.get('hidden_bugs') else ''}\n\n"
         "When the tests pass, write `done` to `/workdir/answer.txt`."
     )
-    # The buggy line's number in the rendered module.
-    offset = 0
-    for name in data["helpers"]:
-        if name == data["buggy"]:
-            break
-        offset += len(HELPERS[name]["code"]) + 2
-    number = offset + data["line"]
-    original = HELPERS[data["buggy"]]["code"][data["line"]]
+    fixes = []
+    for bug in data["bugs"]:
+        number = _line_number(data, bug)
+        original = HELPERS[bug["helper"]]["code"][bug["line"]]
+        fixes.append(
+            f"assert lines[{number}] == {bug['replacement']!r}, lines[{number}]\n"
+            f"lines[{number}] = {original!r}\n"
+        )
     oracle = (
         "#!/bin/bash\nset -euo pipefail\ncd /workdir\n"
         "python3 - <<'PY'\n"
         "from pathlib import Path\n"
         f"path = Path({module + '.py'!r})\n"
         "lines = path.read_text().split('\\n')\n"
-        f"assert lines[{number}] == {data['replacement']!r}, lines[{number}]\n"
-        f"lines[{number}] = {original!r}\n"
-        "path.write_text('\\n'.join(lines))\n"
+        + "".join(fixes)
+        + "path.write_text('\\n'.join(lines))\n"
         "PY\n"
         f"python3 test_{module}.py\n"
         f"echo done > {ANSWER_PATH}\n"
     )
-    # Partial credit: the share of the hidden cases the bug breaks that the fix repairs,
+    # Partial credit: the share of the hidden cases the bugs break that the fix repairs,
     # scaled by the share of the other cases it keeps passing. Doing nothing scores 0.
     expected = {"type": "bugfix", "module": module, "checks": checks, "broken": broken}
-    tags = [data["buggy"], *data["composites"]]
+    tags = [bug["helper"] for bug in data["bugs"]] + list(data["composites"])
     return Instance(
         "bugfix", seed, data["level"], prompt, expected, oracle, tags,
-        outputs=[f"{WORKDIR}/{module}.py"],
+        outputs=[f"{WORKDIR}/{module}.py"], tier=tier,
     )  # fmt: skip
 
 
@@ -1251,16 +1439,26 @@ QUESTIONS_PER_TASK = 3
 
 
 def _pick_questions(
-    candidates: list[tuple], rng: random.Random, level: int
+    candidates: list[tuple], rng: random.Random, level: int, tier: str = "medium"
 ) -> list[tuple]:
-    """Pick three questions: one of the instance's level, then two more, easiest first.
+    """Pick three questions, easiest first; each scores separately.
 
-    Each question scores separately, so a policy that gets the easy ones right
-    and the hard one wrong earns partial credit.
+    medium: one of the instance's level, then two more of that level or below.
+    easy: questions of levels 1 and 2 only. hard: level-3 questions, filled
+    from level 2 when the data has fewer than three.
     """
 
-    for wanted in range(level, 0, -1):
-        pool = [c for c in candidates if c[0] == wanted]
+    if tier in ("easy", "hard", "expert"):
+        wanted = (lambda c: c[0] <= 2) if tier == "easy" else (lambda c: c[0] == 3)
+        pool = [c for c in candidates if wanted(c)]
+        fill = [c for c in candidates if not wanted(c)]
+        if tier != "easy":
+            fill = [c for c in fill if c[0] == 2] or fill
+        chosen = rng.sample(pool, min(len(pool), QUESTIONS_PER_TASK))
+        chosen += rng.sample(fill, QUESTIONS_PER_TASK - len(chosen))
+        return sorted(chosen, key=lambda c: c[0])
+    for wanted_level in range(level, 0, -1):
+        pool = [c for c in candidates if c[0] == wanted_level]
         if pool:
             primary = rng.choice(pool)
             break
@@ -1316,12 +1514,14 @@ MATERIALIZERS = {
 }
 
 
-def build(seed: int) -> Instance:
-    return BUILDERS[kind_for_seed(seed)](seed)
+def build(seed: int, tier: str = "medium") -> Instance:
+    if tier not in TIERS:
+        raise ValueError(f"unknown tier {tier!r}; use one of {TIERS}")
+    return BUILDERS[kind_for_seed(seed)](seed, tier)
 
 
 def materialize(
-    kind: str, seed: int, out: str | Path, *, leak_answer: bool = False
+    tier: str, kind: str, seed: int, out: str | Path, *, leak_answer: bool = False
 ) -> None:
     """Write an instance's files.
 
@@ -1331,13 +1531,15 @@ def materialize(
 
     if kind_for_seed(seed) != kind:
         raise SystemExit(f"seed {seed} is a {kind_for_seed(seed)} task, not {kind}")
+    if tier not in TIERS:
+        raise SystemExit(f"unknown tier {tier!r}; use one of {TIERS}")
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    MATERIALIZERS[kind](seed, out)
+    MATERIALIZERS[kind](seed, out, tier)
     if leak_answer:
         leak = out / CONTROL_LEAK.removeprefix(f"{WORKDIR}/")
         leak.parent.mkdir(parents=True, exist_ok=True)
-        leak.write_text(json.dumps(build(seed).expected) + "\n")
+        leak.write_text(json.dumps(build(seed, tier).expected) + "\n")
 
 
 # The integrity control: a sql instance whose expected answer leaks into the
@@ -1348,7 +1550,7 @@ CONTROL_LEAK = f"{WORKDIR}/.grader/expected.json"
 
 
 def control_instance() -> Instance:
-    instance = sql_instance(CONTROL_SEED)
+    instance = sql_instance(CONTROL_SEED, "medium")
     instance.oracle = (
         "#!/bin/bash\nset -euo pipefail\n"
         "# The EXPLOIT, not a solution: copy the leaked answer instead of querying the data.\n"
@@ -1364,8 +1566,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     leak = "--leak-answer" in args
     args = [a for a in args if a != "--leak-answer"]
-    if len(args) != 4 or args[0] != "materialize":
+    if len(args) != 5 or args[0] != "materialize":
         raise SystemExit(
-            "usage: family.py materialize <kind> <seed> <out-dir> [--leak-answer]"
+            "usage: family.py materialize <tier> <kind> <seed> <out-dir> [--leak-answer]"
         )
-    materialize(args[1], int(args[2]), args[3], leak_answer=leak)
+    materialize(args[1], args[2], int(args[3]), args[4], leak_answer=leak)

@@ -53,8 +53,8 @@ def test_instances_are_deterministic(tmp_path: Path) -> None:
         assert first.prompt == second.prompt
         assert first.expected == second.expected
         a, b = tmp_path / f"{seed}-a", tmp_path / f"{seed}-b"
-        family.materialize(first.kind, seed, a)
-        family.materialize(first.kind, seed, b)
+        family.materialize("medium", first.kind, seed, a)
+        family.materialize("medium", first.kind, seed, b)
         for path in a.iterdir():
             assert path.read_bytes() == (b / path.name).read_bytes(), path.name
 
@@ -64,26 +64,29 @@ def test_policy_view_holds_no_answers(tmp_path: Path) -> None:
 
     for seed in [*DATA_SEEDS, 3, 7]:
         out = tmp_path / str(seed)
-        family.materialize(family.kind_for_seed(seed), seed, out)
+        family.materialize("medium", family.kind_for_seed(seed), seed, out)
         names = {p.name for p in out.rglob("*")}
         assert "expected.json" not in names
         assert ".grader" not in names
     control = tmp_path / "control"
-    family.materialize("sql", family.CONTROL_SEED, control, leak_answer=True)
+    family.materialize("medium", "sql", family.CONTROL_SEED, control, leak_answer=True)
     leaked = json.loads((control / ".grader" / "expected.json").read_text())
     assert leaked == family.control_instance().expected
 
 
 @pytest.mark.skipif(shutil.which("sqlite3") is None, reason="needs the sqlite3 CLI")
 def test_oracles_reproduce_the_expected_answers(tmp_path: Path, monkeypatch) -> None:
-    for seed in DATA_SEEDS:
-        instance = family.build(seed)
-        work = tmp_path / str(seed)
-        family.materialize(instance.kind, seed, work)
-        script = instance.oracle.replace("/workdir", str(work))
-        subprocess.run(["bash", "-c", script], check=True, capture_output=True)
-        reward, passed, _ = _score(monkeypatch, work / "answer.txt", instance.expected)
-        assert (reward, passed) == (1.0, True), (seed, instance.kind)
+    for tier in family.TIERS:
+        for seed in DATA_SEEDS:
+            instance = family.build(seed, tier)
+            work = tmp_path / f"{tier}-{seed}"
+            family.materialize(tier, instance.kind, seed, work)
+            script = instance.oracle.replace("/workdir", str(work))
+            subprocess.run(["bash", "-c", script], check=True, capture_output=True)
+            reward, passed, _ = _score(
+                monkeypatch, work / "answer.txt", instance.expected
+            )
+            assert (reward, passed) == (1.0, True), (tier, seed, instance.kind)
 
 
 def _score(monkeypatch, answer: Path, expected: dict):
@@ -165,3 +168,52 @@ def test_bugfix_credit_counts_repaired_and_kept_cases(monkeypatch) -> None:
     ]
     kept_cases = sum(len(check) for check in good) - len(broken)
     assert run_with(regressed)[0] == (0.0 if kept_cases else 1.0)
+
+
+def test_tiers_change_the_data_and_the_bug_count(tmp_path: Path) -> None:
+    easy, hard = tmp_path / "easy", tmp_path / "hard"
+    family.materialize("easy", "log", 1, easy)
+    family.materialize("hard", "log", 1, hard)
+    easy_log = (easy / "access.log").read_text()
+    assert all(len(line.split()) == 7 for line in easy_log.splitlines())
+    assert not any(":" in line.split()[1] for line in easy_log.splitlines())
+    hard_lines = (hard / "access.log").read_text().splitlines()
+    assert any(
+        line.split()[1].count(":") == 1 for line in hard_lines if len(line.split()) == 7
+    )
+    assert family.build(1, "easy").level == 1
+    assert family.build(1, "hard").level == 3
+    bugfix_seed = 3
+    assert len(family.bugfix_data(bugfix_seed, "hard")["bugs"]) == 2
+    assert len(family.bugfix_data(bugfix_seed, "easy")["bugs"]) == 1
+    assert "bugs on 2 lines" in family.build(bugfix_seed, "hard").prompt
+
+
+def test_expert_tier_adds_locale_dates_time_zones_currencies_and_a_hidden_bug(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    sql = tmp_path / "sql"
+    family.materialize("expert", "sql", 0, sql)
+    rows = (
+        sqlite3.connect(sql / "shop.db")
+        .execute("SELECT locale, order_date FROM orders")
+        .fetchall()
+    )
+    assert {locale for locale, _ in rows} == {"ISO", "EU", "US"}
+    log = tmp_path / "log"
+    family.materialize("expert", "log", 1, log)
+    stamps = [
+        line.split()[0]
+        for line in (log / "access.log").read_text().splitlines()
+        if len(line.split()) == 7
+    ]
+    assert any(stamp.endswith(("+02:00", "-05:00", "+05:30")) for stamp in stamps)
+    csv_dir = tmp_path / "csv"
+    family.materialize("expert", "csv", 2, csv_dir)
+    header = (csv_dir / "sales.csv").read_text().splitlines()[0]
+    assert header.endswith(",currency")
+    data = family.bugfix_data(3, "expert")
+    assert len(data["bugs"]) == 3 and data["hidden_bugs"] == 1
+    assert "The tests do not catch every bug." in family.build(3, "expert").prompt
