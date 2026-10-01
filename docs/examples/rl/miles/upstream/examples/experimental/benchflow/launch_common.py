@@ -20,8 +20,15 @@ def agentic_train_args(
     session_server_workers: int,
     session_server_port: int = 30000,
     drop_constant_reward_groups: bool = True,
+    reasoning_parser: str | None = None,
+    tool_call_parser: str | None = None,
 ) -> str:
     """The agentic wiring the BenchFlow launchers pass to train.py.
+
+    ``reasoning_parser`` and ``tool_call_parser`` are SGLang's, for the TITO
+    family (``miles.utils.chat_template_utils.resolve_reasoning_and_tool_call_parser``).
+    Without a tool-call parser the session server returns the model's tool calls
+    as plain text, and every episode ends at its first reply (``NoToolCall``).
 
     Groups whose episodes all got the same reward carry no GRPO signal. With
     ``drop_constant_reward_groups`` Miles drops them and samples replacements
@@ -44,7 +51,9 @@ def agentic_train_args(
         "--rollout-function-path benchflow_rollout.RolloutFn "
         f"{filter_args}"
         f"--tito-model {tito_model} "
-        "--use-session-server "
+        + (f"--sglang-reasoning-parser {reasoning_parser} " if reasoning_parser else "")
+        + (f"--sglang-tool-call-parser {tool_call_parser} " if tool_call_parser else "")
+        + "--use-session-server "
         f"--session-server-port {session_server_port} "
         f"--session-server-workers {session_server_workers} "
     )

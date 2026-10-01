@@ -233,6 +233,16 @@ def test_train_args_wire_the_agent_function_reward_and_filters():
     assert "dynamic-sampling-filter" not in plain
 
 
+def test_train_args_pass_the_tito_familys_sglang_parsers():
+    # Without a tool-call parser the session server answers tool calls as plain text.
+    args = launch_common.agentic_train_args(
+        tito_model="qwen3", session_server_workers=4, reasoning_parser="qwen3", tool_call_parser="qwen25"
+    )
+    assert "--sglang-reasoning-parser qwen3 " in args and "--sglang-tool-call-parser qwen25 " in args
+    bare = launch_common.agentic_train_args(tito_model="qwen3", session_server_workers=4)
+    assert "--sglang-tool-call-parser" not in bare and "--sglang-reasoning-parser" not in bare
+
+
 def test_worker_env_forwards_the_token_path_not_the_token(tmp_path):
     token = tmp_path / "token"
     token.write_text("s3cret")

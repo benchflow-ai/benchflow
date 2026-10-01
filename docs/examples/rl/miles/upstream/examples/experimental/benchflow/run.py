@@ -19,6 +19,7 @@ from typing import Literal
 import typer
 from launch_common import agentic_pythonpath_dirs, agentic_train_args, benchflow_env_vars, preflight
 
+from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
 from miles.utils.external_utils import command_utils
 
 
@@ -115,10 +116,14 @@ def execute(args: ScriptArgs):
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction} "
         "--sglang-decode-log-interval 1000 "
     )
+    # The TITO family's SGLang parsers: without the tool-call parser, tool calls come back as text.
+    reasoning_parser, tool_call_parser = resolve_reasoning_and_tool_call_parser(args.tito_model)
     template_kwargs = json.dumps({"enable_thinking": args.enable_thinking})
     agent_args = (
         agentic_train_args(
             tito_model=args.tito_model,
+            reasoning_parser=reasoning_parser,
+            tool_call_parser=tool_call_parser,
             session_server_workers=args.session_server_workers,
             drop_constant_reward_groups=args.drop_constant_reward_groups,
         )
