@@ -142,6 +142,46 @@ class Arm:
             self.endpoints.append(ev.Endpoint(ns, key))
 
 
+class Gate:
+    """At most ``limit`` episodes run at once; the limit can change during the run.
+
+    It is read from ``<out>/concurrency`` (an integer) when that file exists, at most
+    every 15 seconds, else ``--concurrency``. Lowering it lets running episodes finish.
+    """
+
+    def __init__(self, path: Path, default: int) -> None:
+        self.path, self.default = path, default
+        self.active = 0
+        self.cond = threading.Condition()
+        self._limit, self._read = default, 0.0
+
+    def limit(self) -> int:
+        now = time.monotonic()
+        if now - self._read > 15:
+            self._read = now
+            try:
+                self._limit = max(1, int(self.path.read_text().strip()))
+            except (OSError, ValueError):
+                self._limit = self.default
+        return self._limit
+
+    def acquire(self) -> bool:
+        with self.cond:
+            while self.active >= self.limit():
+                if CUTOFF.is_set():
+                    return False
+                self.cond.wait(timeout=5)
+            if CUTOFF.is_set():
+                return False
+            self.active += 1
+            return True
+
+    def release(self) -> None:
+        with self.cond:
+            self.active -= 1
+            self.cond.notify_all()
+
+
 class Servers:
     """Send each episode to the server with the fewest episodes in flight."""
 
@@ -281,7 +321,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--sandbox", choices=["daytona", "docker"], default="daytona")
     p.add_argument("--owner", required=True, help="Daytona owner label")
-    p.add_argument("--concurrency", type=int, default=64)
+    p.add_argument("--concurrency", type=int, default=64, help="episodes at once (see Gate)")
+    p.add_argument("--max-workers", type=int, default=64, help="upper bound on --concurrency")
     p.add_argument("--samples", type=int, default=1)
     p.add_argument("--include", action="append", default=[])
     p.add_argument("--exclude", action="append", default=[])
@@ -350,11 +391,18 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     balance = Servers(len(servers))
+    gate = Gate(args.out / "concurrency", args.concurrency)
 
     def one(item: tuple[int, str, Arm]) -> dict[str, Any] | None:
         sample, tid, arm = item
-        if CUTOFF.is_set():
+        if CUTOFF.is_set() or not gate.acquire():
             return None
+        try:
+            return _one(sample, tid, arm)
+        finally:
+            gate.release()
+
+    def _one(sample: int, tid: str, arm: Arm) -> dict[str, Any] | None:
         server = balance.take()
         try:
             out = run_episode(rows[tid], sample, arm, server, settings[tid], args)
@@ -389,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
                     return
                 time.sleep(5)
         threading.Thread(target=watch, daemon=True).start()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as pool:
         list(pool.map(one, work))
     if args.sandbox == "daytona":
         print(f"swept {args.owner}: {sweep_daytona(args.owner)}", flush=True)
