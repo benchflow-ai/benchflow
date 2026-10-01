@@ -63,10 +63,6 @@ Common optional fields
                        the key: ``"x-api-key"`` (default, Anthropic's own
                        header) or ``"bearer"`` (``Authorization: Bearer``,
                        for compatible endpoints that reject ``x-api-key``).
-- ``responses_bridge`` True when Responses-API clients (Codex) must reach
-                       this provider through LiteLLM's Responses-to-chat-
-                       completions bridge instead of the provider's own
-                       Responses endpoint.
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
@@ -121,10 +117,6 @@ class ProviderConfig:
     # own) or "bearer" (Authorization: Bearer, for compatible endpoints that
     # reject x-api-key).
     anthropic_auth_header: str = "x-api-key"
-    # Responses-API clients (Codex) reach this provider through LiteLLM's
-    # Responses-to-chat-completions bridge (litellm_proxy_config's
-    # "<alias>-responses-bridge"), not the provider's own Responses endpoint.
-    responses_bridge: bool = False
 
     @property
     def all_endpoints(self) -> dict[str, str]:
@@ -249,9 +241,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
     ),
     # Baseten Model APIs. One key serves all three protocols. Both models read
     # images on every protocol; the Anthropic endpoint rejects more than 8
-    # images per request and needs a Bearer token. Baseten's Responses endpoint
-    # rejects an image inside a tool result (function_call_output), which is
-    # where Codex puts one, so Codex goes through the chat-completions bridge.
+    # images per request and needs a Bearer token.
     # Cost: USD per 1M tokens (baseten.co/pricing, 2026-09-29); no cached-input
     # discount is published, so cached tokens are priced as input.
     "baseten": ProviderConfig(
@@ -267,7 +257,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
         },
         prefer_agent_protocol=True,
         anthropic_auth_header="bearer",
-        responses_bridge=True,
         models=[
             {
                 "id": "zai-org/GLM-5.3",

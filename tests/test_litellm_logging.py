@@ -33,55 +33,6 @@ def test_pre_call_hook_drops_non_function_tools_for_chat_backend():
     assert [t["type"] for t in data["tools"]] == ["function", "namespace"]
 
 
-def test_pre_call_hook_flattens_namespace_tools_on_responses_bridge():
-    """Codex sends a namespace (multi_agent_v1) and a web_search tool. Chat
-    completions takes only function tools, so on the bridge the namespace's
-    function tools go in flat and web_search is dropped."""
-    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
-    shell = {"type": "function", "name": "shell"}
-    spawn = {"type": "function", "name": "spawn_agent"}
-    wait = {"type": "function", "name": "wait_agent"}
-    data = {
-        "model": "benchflow-baseten-zai-org-GLM-5.3-responses-bridge",
-        "input": "hi",
-        "tools": [
-            shell,
-            {"type": "namespace", "name": "multi_agent_v1", "tools": [spawn, wait]},
-            {"type": "web_search", "external_web_access": False},
-        ],
-    }
-
-    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "aresponses"))
-
-    assert cleaned is not None
-    assert cleaned["tools"] == [shell, spawn, wait]
-    assert len(data["tools"]) == 3  # no in-place mutation
-
-
-def test_pre_call_hook_drops_namespace_off_the_bridge():
-    """Other models keep the drop: a native Responses upstream is untouched
-    apart from tools chat completions cannot carry."""
-    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
-    shell = {"type": "function", "name": "shell"}
-    data = {
-        "model": "gpt-6-astra",
-        "input": "hi",
-        "tools": [
-            shell,
-            {
-                "type": "namespace",
-                "name": "multi_agent_v1",
-                "tools": [{"type": "function", "name": "spawn_agent"}],
-            },
-        ],
-    }
-
-    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "aresponses"))
-
-    assert cleaned is not None
-    assert cleaned["tools"] == [shell]
-
-
 def test_pre_call_hook_strips_responses_input_mirror_when_messages_present():
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     data = {"messages": [{"role": "user", "content": "hi"}], "input": "hi"}

@@ -81,7 +81,6 @@ class TestFindProvider:
         assert name == "baseten"
         assert cfg.api_protocol == "openai-completions"
         assert cfg.anthropic_auth_header == "bearer"
-        assert cfg.responses_bridge is True
         assert resolve_auth_env("baseten/zai-org/GLM-5.3") == "BASETEN_API_KEY"
         assert strip_provider_prefix("baseten/zai-org/GLM-5.3") == "zai-org/GLM-5.3"
 

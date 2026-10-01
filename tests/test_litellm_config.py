@@ -321,24 +321,22 @@ def test_baseten_claude_agent_reaches_messages_endpoint_with_bearer():
     )
 
 
-def test_baseten_codex_goes_through_responses_bridge():
+def test_baseten_codex_uses_native_responses_route():
+    """Codex reaches Baseten's own Responses endpoint, not the chat bridge."""
     route = resolve_litellm_route(
         "baseten/moonshotai/Kimi-K3", BASETEN_ENV, protocol="openai-responses"
     )
 
     assert route.upstream_model == "openai/moonshotai/Kimi-K3"
     assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
-    assert (
-        route.responses_model == "benchflow-baseten-moonshotai-Kimi-K3-responses-bridge"
-    )
+    assert "extra_headers" not in route.litellm_params
     by_name = {
         e["model_name"]: e
         for e in litellm_proxy_config(route, master_key="sk-local")["model_list"]
     }
-    assert by_name[route.responses_model]["litellm_params"]["model"] == (
-        "openai/chat_completions/moonshotai/Kimi-K3"
-    )
-    assert "extra_headers" not in route.litellm_params
+    # The bare slug Codex is handed (#1145) and the alias: native, no bridge.
+    for name in ("moonshotai/Kimi-K3", route.model_alias):
+        assert by_name[name]["litellm_params"]["model"] == "openai/moonshotai/Kimi-K3"
 
 
 def test_baseten_chat_route_is_plain_openai_compatible():
@@ -492,50 +490,6 @@ def test_proxy_config_registers_responses_bridge_for_openai_upstream():
     )
     # never slashed (would break codex's model parsing)
     assert "/" not in bridge_name
-
-
-def test_responses_model_is_bare_slug_by_default():
-    route = resolve_litellm_route("zai/glm-5.1", {"ZAI_API_KEY": "k"})
-
-    assert route.responses_bridge is False
-    assert route.responses_model == "glm-5.1"
-
-
-def test_responses_model_uses_bridge_when_provider_asks(monkeypatch):
-    monkeypatch.setitem(
-        PROVIDERS,
-        "bridge-test",
-        ProviderConfig(
-            name="bridge-test",
-            base_url="https://llm.example.test/v1",
-            api_protocol="openai-completions",
-            auth_type="api_key",
-            auth_env="BRIDGE_TEST_API_KEY",
-            endpoints={
-                "openai-responses": "https://llm.example.test/v1",
-                "anthropic-messages": "https://llm.example.test",
-            },
-            prefer_agent_protocol=True,
-            responses_bridge=True,
-        ),
-    )
-    env = {"BRIDGE_TEST_API_KEY": "k"}
-    route = resolve_litellm_route(
-        "bridge-test/org/m-1", env, protocol="openai-responses"
-    )
-
-    assert route.responses_bridge is True
-    assert route.responses_model == f"{route.model_alias}-responses-bridge"
-    names = {
-        e["model_name"]
-        for e in litellm_proxy_config(route, master_key="sk-local")["model_list"]
-    }
-    assert route.responses_model in names
-    # An anthropic/ upstream has no bridge entries, so no bridge name either.
-    messages_route = resolve_litellm_route(
-        "bridge-test/org/m-1", env, protocol="anthropic-messages"
-    )
-    assert messages_route.responses_bridge is False
 
 
 def test_proxy_config_no_responses_bridge_for_non_openai_upstream():

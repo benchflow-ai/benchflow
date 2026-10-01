@@ -422,7 +422,6 @@ def test_provider_field_shapes(name, cfg):
         f"{sorted(VALID_ANTHROPIC_AUTH_HEADERS)}"
     )
     assert isinstance(cfg.prefer_agent_protocol, bool)
-    assert isinstance(cfg.responses_bridge, bool)
     if cfg.anthropic_auth_header == "bearer":
         assert "anthropic-messages" in cfg.all_endpoints, (
             f"{name!r}: bearer auth needs an anthropic-messages endpoint"

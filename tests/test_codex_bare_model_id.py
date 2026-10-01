@@ -93,25 +93,6 @@ def test_launch_owns_model_with_the_alias_too():
     assert owns is True
 
 
-def test_launch_owns_model_with_the_responses_bridge():
-    """Providers served through the chat bridge hand Codex the bridge name."""
-    agent_env = {
-        CODEX_CONFIG_ENV: json.dumps(
-            {
-                "model": f"{ALIAS}-responses-bridge",
-                "model_provider": "benchflow-litellm",
-            }
-        ),
-        "BENCHFLOW_PROVIDER_MODEL": ALIAS,
-        "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
-    }
-    updated, owns = codex_config.apply_codex_launch_config(
-        "codex-acp", agent_env, model=MODEL, reasoning_effort="xhigh"
-    )
-    assert owns is True
-    assert json.loads(updated[CODEX_CONFIG_ENV])["model_reasoning_effort"] == "xhigh"
-
-
 def test_launch_does_not_own_a_foreign_model():
     """A CODEX_CONFIG naming some other model is left alone."""
     agent_env = {

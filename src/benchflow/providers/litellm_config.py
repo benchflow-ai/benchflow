@@ -27,9 +27,6 @@ LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
 #: Anthropic-compatible endpoint takes the key as ``Authorization: Bearer``.
 #: The config references it by name; ``litellm_proxy_auth_env`` derives it.
 LITELLM_BEARER_AUTH_ENV = "BENCHFLOW_LITELLM_BEARER_AUTH"
-#: Suffix of the proxy model names that bridge /v1/responses to chat
-#: completions (see ``litellm_proxy_config``).
-RESPONSES_BRIDGE_SUFFIX = "-responses-bridge"
 _PROVIDER_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -130,16 +127,6 @@ class LiteLLMRoute:
     # Env var holding the key the proxy sends as ``Authorization: Bearer``
     # (provider ``anthropic_auth_header="bearer"``); see litellm_proxy_auth_env.
     bearer_key_env: str | None = None
-    # Responses-API clients must use ``responses_model`` (the chat bridge),
-    # not the provider's Responses endpoint (provider ``responses_bridge``).
-    responses_bridge: bool = False
-
-    @property
-    def responses_model(self) -> str:
-        """The proxy model name a Responses-API client (Codex) should send."""
-        if self.responses_bridge:
-            return f"{self.model_alias}{RESPONSES_BRIDGE_SUFFIX}"
-        return strip_provider_prefix(self.requested_model)
 
     @property
     def config_key(self) -> str:
@@ -409,9 +396,6 @@ def _route_registered_provider(
         litellm_params=params,
         required_env=tuple(required_env),
         bearer_key_env=bearer_key_env,
-        # The bridge entries exist only for openai/ upstreams.
-        responses_bridge=provider_cfg.responses_bridge
-        and upstream.startswith("openai/"),
     )
 
 
@@ -541,7 +525,7 @@ def litellm_proxy_config(
         # id and then sends no request); the prefix that triggers the bridge lives
         # on the UPSTREAM (bridge_params["model"]), not the client-facing name.
         for name in (route.model_alias, bare_requested):
-            bridge_name = f"{name}{RESPONSES_BRIDGE_SUFFIX}"
+            bridge_name = f"{name}-responses-bridge"
             if bridge_name not in existing:
                 existing.add(bridge_name)
                 model_list.append(
