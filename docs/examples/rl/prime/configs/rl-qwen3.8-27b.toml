@@ -1,0 +1,111 @@
+# prime-rl on BenchFlow tasks: GRPO with LoRA on Qwen/Qwen3.8-27B, on TWO GPUs.
+#
+#   CUDA_VISIBLE_DEVICES=0,1 VLLM_USE_FLASHINFER_SAMPLER=0 \
+#     uv run rl @ rl-qwen3.8-27b.toml --output-dir /root/bf-rl/outputs --run.name <name>
+#
+# vLLM serves the policy on GPU 0 and the LoRA trainer runs on GPU 1, prime-rl's
+# normal layout. One 141 GB GPU cannot hold both: vLLM needs about 77 GB (55.6 GB of
+# bf16 weights, the KV cache of the 16 full-attention layers at about 64 KB a token,
+# and about 150 MB of Gated DeltaNet state per running sequence), and the trainer
+# about 67 GB (the frozen bf16 weights plus checkpointed activations).
+#
+# Values marked "sized for H200" are for 2x H200 141GB. On 2x H100 or 2x A100 80GB,
+# lower max_num_seqs and the in-flight episodes to 32, and the LM-head chunk to 2048.
+# seq_len, the per-call token cap, and thinking are set from a calibration run of the
+# base model through evaluate.py (README, "Qwen3.8-27B"); a run may override them on
+# the command line, and its resolved config is saved under <output-dir>/<name>/configs.
+#
+# Every path assumes the pod layout of setup_pod.sh (/root/bf-rl). The Daytona key
+# comes from the launch environment (run_on_pod.sh), never from here.
+
+max_steps = 20
+# Training samples are whole episodes (prompt, every turn, every tool output). Longer
+# ones are cut at seq_len. Thinking off, the calibration's longest expert episodes
+# stay well under it.
+seq_len = 16384
+# Every component: the plain CUDA image has no nvcc for FlashInfer's JIT sampler.
+env_vars = { VLLM_USE_FLASHINFER_SAMPLER = "0" }
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[rollout_transport]
+type = "zmq"
+port = 16555
+
+[model]
+name = "Qwen/Qwen3.8-27B"
+
+[trainer.model]
+# A VLM checkpoint (model_type qwen3_5) trained on text: prime-rl's custom Qwen3.5
+# class loads it and freezes the vision tower. The frozen weights must stay bf16 (the
+# float32 default would need about 110 GB on one GPU).
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+# Full-vocabulary (248,320) logits are 1 MB a token in fp32; 4096 tokens a chunk is
+# 4 GB. Sized for H200.
+fused_lm_head_token_chunk_size = 4096
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+dropout = 0.0
+# The 16 full-attention layers and all 64 MLPs. The 48 Gated DeltaNet layers'
+# projections (in_proj_qkv, in_proj_z, out_proj) are left out.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.optim]
+lr = 2e-5
+weight_decay = 0.0
+
+[orchestrator]
+# 8 tasks x 8 rollouts per step.
+batch_size = 64
+max_off_policy_steps = 4
+
+[orchestrator.renderer]
+# The renderer turns messages into tokens for training. Thinking off: evaluate.py
+# drops reasoning from the history it sends back, so with thinking on, training
+# (which keeps it) and evaluation would see different prompts.
+name = "qwen3.8"
+enable_thinking = false
+
+[orchestrator.concurrency]
+# One full batch of episodes, so 64 Daytona sandboxes at most (the env caps them
+# too). Sized for H200; the controller lowers it if vLLM's cache runs short.
+max_inflight = 64
+initial_inflight = 64
+min_inflight = 16
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.sampling]
+# evaluate.py's per-call cap, so a policy trains and is evaluated on the same budget.
+max_completion_tokens = 4096
+temperature = 1.0
+
+[[orchestrator.train.source]]
+name = "benchflow"
+# Train only on groups whose rewards differ: an all-0 or all-1 group has no advantage.
+curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
+env.taskset.id = "benchflow-taskset"
+env.taskset.tasks_dir = "/root/bf-rl/tasks-expert/train"
+env.taskset.task.benchflow_python = "/root/bf-rl/benchflow/.venv/bin/python"
+env.taskset.task.jobs_dir = "/root/bf-rl/jobs/train"
+env.taskset.task.max_sandboxes = 64
+# The shared harness's turn limit (docs/examples/rl/common/harness.py).
+env.agent.max_turns = 16
+
+[ckpt]
+interval = 5
+
+[inference.vllm]
+# Text only: the vision tower is not loaded and images are refused.
+language_model_only = true
+# Gated DeltaNet state is allocated per sequence slot, so cap the slots near the
+# episodes in flight. Sized for H200.
+max_num_seqs = 64
+max_model_len = 32768
+gpu_memory_utilization = 0.92
