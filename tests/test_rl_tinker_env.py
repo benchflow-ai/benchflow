@@ -218,7 +218,8 @@ def test_the_turn_limit_ends_with_a_verifier_run(tmp_path):
         return results
 
     results = run(go())
-    assert [r.episode_done for r in results] == [False] * 9 + [True]
+    turns = env.config.max_turns
+    assert [r.episode_done for r in results] == [False] * (turns - 1) + [True]
     assert results[-1].reward == 0.0 and runtimes[0].verified == 1
     assert (env.episode.decision.reward, env.episode.decision.reason) == (0.0, "scored")
 
@@ -305,6 +306,107 @@ def test_decision_metrics_carry_every_key():
     assert metrics["bf/reason/verifier_error"] == 1.0
     assert sum(ended.values()) == 1.0 and metrics["bf/ended/submitted"] == 1.0
     assert "bf/ended/timeout" in ended
+
+
+# -- tokens -------------------------------------------------------------------------------
+
+
+def test_the_token_tally_builds_the_datums_the_cookbook_trains_on():
+    from tinker_cookbook.completers import TokensWithLogprobs
+    from tinker_cookbook.rl.data_processing import trajectory_to_data
+
+    turns = [
+        ([1, 2, 3], [4, 5]),
+        ([1, 2, 3, 4, 5, 6], [7]),  # extends the previous prompt and reply
+        ([1, 2, 9, 9], [8]),  # rewrites the history: a new datum
+    ]
+    tally = te.TokenTally()
+    for ob, ac in turns:
+        tally.prompt(ob)
+        tally.reply(ac)
+    tally.finish()
+    tally.finish()  # idempotent
+    assert tally.as_dict() == {
+        "calls": 3,
+        "prefill": 13,
+        "reusable": 5 + 2,
+        "sampled": 4,
+        "train": 7 + 5,
+        "datums": 2,
+    }
+    trajectory = types.Trajectory(
+        transitions=[
+            types.Transition(
+                ob=tinker.ModelInput.from_ints(ob),
+                ac=TokensWithLogprobs(tokens=ac, maybe_logprobs=[0.0] * len(ac)),
+                reward=0.0,
+                episode_done=i == len(turns) - 1,
+            )
+            for i, (ob, ac) in enumerate(turns)
+        ],
+        final_ob=tinker.ModelInput.empty(),
+    )
+    data = trajectory_to_data(trajectory, 1.0)
+    assert len(data) == tally.datums
+    # A datum's input drops its last token (the targets are shifted by one).
+    assert sum(d.model_input.length + 1 for d in data) == tally.train
+
+
+def test_an_episode_records_its_token_tally(tmp_path):
+    env, runtimes = make_env(tmp_path, verify=1.0)
+    results = iter(
+        [
+            types.StepResult(
+                reward=0.0,
+                episode_done=False,
+                next_observation=tinker.ModelInput.from_ints([1, 1, 7, 8, 9]),
+                next_stop_condition=[],
+            ),
+            types.StepResult(
+                reward=0.0,
+                episode_done=True,
+                next_observation=tinker.ModelInput.empty(),
+                next_stop_condition=[],
+                metrics={"stop/max_tokens": 1.0},
+            ),
+        ]
+    )
+
+    async def inner_step(action, *, extra=None):
+        return next(results)
+
+    env.inner.step = inner_step
+
+    async def go():
+        await env.initial_observation()  # the fake renders [1, 1]
+        await env.step([7, 8])
+        return await env.step([4])
+
+    run(go())
+    record = json.loads(
+        (runtimes[0].rollout_dir / "policy" / "messages.json").read_text()
+    )
+    assert record["tokens"] == {
+        "calls": 2,
+        "prefill": 2 + 5,
+        "reusable": 4,
+        "sampled": 3,
+        "train": 6,
+        "datums": 1,
+    }
+
+
+def test_qwen3_8_renderers_get_the_wrapper_and_their_template_arguments():
+    for name in (
+        "qwen3_8_xhigh_reasoning",
+        "qwen3_8_medium_reasoning",
+        "qwen3_8_low_reasoning",
+        "qwen3_8_disable_thinking",
+    ):
+        assert name in te.WRAPPED_TOOL_SPEC_RENDERERS
+        assert name in te.TEMPLATE_KWARGS
+    assert te.TEMPLATE_KWARGS["qwen3_8_disable_thinking"] == {"enable_thinking": False}
+    assert te.ENDPOINT_BODY["qwen3_8_disable_thinking"] == {"reasoning_effort": False}
 
 
 # -- groups and the rollout strategy ---------------------------------------------------------

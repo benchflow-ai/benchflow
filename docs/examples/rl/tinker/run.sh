@@ -60,6 +60,14 @@ family() {
   fi
 }
 
+# The endpoint's request fields for the renderer's thinking setting, so the
+# evaluation samples the way training did (tinker_env.ENDPOINT_BODY).
+EXTRA_BODY=$("${PY[@]}" -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from tinker_env import ENDPOINT_BODY
+print(json.dumps(ENDPOINT_BODY.get(sys.argv[2], {})))' "$HERE" "$RENDERER")
+
 # One held-out evaluation with the shared evaluator, through Tinker's
 # OpenAI-compatible endpoint: evaluate LABEL MODEL_OR_CHECKPOINT
 evaluate() {
@@ -67,7 +75,7 @@ evaluate() {
     --tasks-dir "$FAMILY/test" --base-url "$TINKER_OAI_URL" --model "$2" \
     --api-key-env TINKER_API_KEY --sandbox "$SANDBOX" --concurrency "$MAX_SANDBOXES" \
     --samples "$SAMPLES" --max-tokens "$MAX_TOKENS" \
-    --temperature "$EVAL_TEMPERATURE" --top-p "$EVAL_TOP_P" \
+    --temperature "$EVAL_TEMPERATURE" --top-p "$EVAL_TOP_P" --extra-body "$EXTRA_BODY" \
     ${BENCHFLOW_DAYTONA_OWNER:+--owner "$BENCHFLOW_DAYTONA_OWNER"} \
     --out "$OUT/eval-$1"
 }

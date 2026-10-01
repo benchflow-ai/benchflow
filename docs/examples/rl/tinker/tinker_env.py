@@ -77,7 +77,41 @@ RUN_BASH_SPEC, SUBMIT_SPEC = (schema["function"] for schema in bash_tool_schemas
 # Renderers that print each tool spec as they get it, whose Hugging Face chat
 # template (the one Tinker's OpenAI-compatible endpoint applies) prints the
 # OpenAI wrapper {"type": "function", "function": ...}: they get the wrapper.
-WRAPPED_TOOL_SPEC_RENDERERS = frozenset({"qwen3_5", "qwen3_5_disable_thinking"})
+WRAPPED_TOOL_SPEC_RENDERERS = frozenset(
+    {
+        "qwen3_5",
+        "qwen3_5_disable_thinking",
+        "qwen3_8_xhigh_reasoning",
+        "qwen3_8_medium_reasoning",
+        "qwen3_8_low_reasoning",
+        "qwen3_8_disable_thinking",
+    }
+)
+
+# The Hugging Face chat-template arguments that render a prompt the way each
+# renderer does (thinking on or off, reasoning effort). The held-out evaluator
+# sends them to Tinker's OpenAI-compatible endpoint as `chat_template_kwargs`,
+# so a policy is evaluated with the thinking setting it trained with.
+TEMPLATE_KWARGS: dict[str, dict[str, Any]] = {
+    "qwen3_5": {},
+    "qwen3_5_disable_thinking": {"enable_thinking": False},
+    "qwen3_8_xhigh_reasoning": {"reasoning_effort": "xhigh"},
+    "qwen3_8_medium_reasoning": {"reasoning_effort": "medium"},
+    "qwen3_8_low_reasoning": {"reasoning_effort": "low"},
+    "qwen3_8_disable_thinking": {"enable_thinking": False},
+}
+
+# The request fields that make Tinker's OpenAI-compatible endpoint render like
+# each renderer, for the held-out evaluator's --extra-body. The endpoint
+# ignores `chat_template_kwargs`; for Qwen3.8 it takes `reasoning_effort`
+# ("xhigh", "medium", "low", or false for thinking off). Checked on 2026-10-01:
+# the prompt token counts it reports match each renderer's first prompt.
+ENDPOINT_BODY: dict[str, dict[str, Any]] = {
+    "qwen3_8_xhigh_reasoning": {"reasoning_effort": "xhigh"},
+    "qwen3_8_medium_reasoning": {"reasoning_effort": "medium"},
+    "qwen3_8_low_reasoning": {"reasoning_effort": "low"},
+    "qwen3_8_disable_thinking": {"reasoning_effort": False},
+}
 
 # What the model sees after a tool call that does not parse ({details}: why).
 PARSE_ERROR_MESSAGE = '{{"error": "the tool call could not be parsed: {details}"}}'
@@ -235,6 +269,7 @@ def chat_template_parity(task: TaskSpec, config: EnvConfig) -> str:
             ],
             add_generation_prompt=True,
             tokenize=True,
+            **TEMPLATE_KWARGS.get(config.renderer_name, {}),
         )
     except Exception as exc:  # no chat template, or one without tools
         return f"not checked ({type(exc).__name__}: {exc})"
@@ -248,6 +283,76 @@ def chat_template_parity(task: TaskSpec, config: EnvConfig) -> str:
     )
     at = min(len(ours), len(theirs)) if at is None else at
     return f"differs at token {at} ({len(ours)} vs {len(theirs)} tokens)"
+
+
+# -- tokens ------------------------------------------------------------------------
+
+
+@dataclass
+class TokenTally:
+    """What one episode costs on Tinker, in tokens (see tinker_cost.py for prices).
+
+    `prefill` counts the prompt tokens of every sampling call, and `reusable`
+    the part of them that repeats the previous call's prompt and reply: what a
+    prefix cache can serve at the cached-prefill price. `sampled` counts the
+    generated tokens. `train` counts the tokens of the datums tinker-cookbook
+    builds from the trajectory when its group is trained: one datum while each
+    prompt extends the previous prompt and reply, a new one whenever it does
+    not (a renderer that rewrites history, such as one that strips earlier
+    thinking, starts a datum every turn).
+    """
+
+    calls: int = 0
+    prefill: int = 0
+    reusable: int = 0
+    sampled: int = 0
+    train: int = 0
+    datums: int = 0
+    _sequence: list[int] = field(default_factory=list, repr=False)
+
+    def prompt(self, tokens: Sequence[int]) -> None:
+        """A prompt the policy samples from."""
+        tokens = list(tokens)
+        self.calls += 1
+        self.prefill += len(tokens)
+        shared = _shared_prefix(self._sequence, tokens)
+        self.reusable += shared
+        if self._sequence and shared < len(self._sequence):
+            self._end_datum()
+        self._sequence = tokens
+
+    def reply(self, tokens: Sequence[int]) -> None:
+        """The tokens the policy sampled."""
+        self.sampled += len(tokens)
+        self._sequence.extend(tokens)
+
+    def finish(self) -> None:
+        """The episode ended: close the datum being built (idempotent)."""
+        if self._sequence:
+            self._end_datum()
+
+    def _end_datum(self) -> None:
+        self.train += len(self._sequence)
+        self.datums += 1
+        self._sequence = []
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "calls": self.calls,
+            "prefill": self.prefill,
+            "reusable": self.reusable,
+            "sampled": self.sampled,
+            "train": self.train,
+            "datums": self.datums,
+        }
+
+
+def _shared_prefix(a: Sequence[int], b: Sequence[int]) -> int:
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
 
 
 # -- tools -------------------------------------------------------------------------
@@ -375,6 +480,7 @@ class BenchFlowEnv(types.Env):
         self.rollout_limits = RolloutLimits(
             sampling_turn_timeout_seconds=config.sampling_timeout_sec
         )
+        self.tokens = TokenTally()
         self._recorded = False
 
     async def initial_observation(
@@ -390,13 +496,16 @@ class BenchFlowEnv(types.Env):
                 f"{self.config.max_trajectory_tokens} with max_tokens={self.config.max_tokens}"
             )
         await self.episode.start()  # InfrastructureError: dropped by the strategy
+        self.tokens.prompt(first[0].to_ints())
         return first
 
     async def step(
         self, action: types.Action, *, extra: types.ActionExtra | None = None
     ) -> types.StepResult:
+        self.tokens.reply(action)
         result = await self.inner.step(action, extra=extra)
         if result.episode_done:
+            self.tokens.finish()
             reason = stop_reason_of(result.metrics)
             self.episode.ended = ENDED.get(reason or "", reason or "ended")
             if self.episode.decision is None:
@@ -410,6 +519,7 @@ class BenchFlowEnv(types.Env):
             self._record()
             return result
         if self.episode.past_deadline():
+            self.tokens.finish()
             await self.episode.time_out()
             self.episode.ended = "timeout"
             self._record()
@@ -425,6 +535,7 @@ class BenchFlowEnv(types.Env):
                 },
                 logs=result.logs,
             )
+        self.tokens.prompt(result.next_observation.to_ints())
         return result
 
     async def _grade(self, history: list[Message]) -> tuple[float, dict[str, float]]:
@@ -454,6 +565,7 @@ class BenchFlowEnv(types.Env):
         if not self.episode.closed:
             self.episode.ended = self.episode.ended or "cut_off"
             await self.episode.close()
+        self.tokens.finish()
         self._record()
 
     def _record(self) -> None:
@@ -465,6 +577,7 @@ class BenchFlowEnv(types.Env):
                 [openai_message(m) for m in self.messages.history],
                 model=self.config.model_name,
                 renderer=self.config.renderer_name,
+                tokens=self.tokens.as_dict(),
             )
         )
 

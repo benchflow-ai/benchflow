@@ -29,6 +29,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import tinker  # noqa: E402
+import tinker_cost  # noqa: E402
 import tinker_env as te  # noqa: E402
 import tinker_stats  # noqa: E402
 from tinker_cookbook.completers import TinkerTokenCompleter  # noqa: E402
@@ -127,6 +128,9 @@ async def evaluate_policy(
                 "reason": env.episode.decision.reason,
                 "ended": env.episode.ended,
                 "reward": env.episode.decision.reward,
+                "passed": env.episode.decision.passed,
+                "commands": env.episode.commands_run,
+                "tokens": env.tokens.as_dict(),
                 "rollout_dir": str(env.episode.rollout_dir)
                 if env.episode.rollout_dir
                 else None,
@@ -139,8 +143,14 @@ async def evaluate_policy(
     done = await asyncio.gather(*(one(task) for task in tasks))
     results = {name: rewards for name, rewards, _, _ in done}
     exits: Counter[str] = Counter()
-    for _, _, counts, _ in done:
+    ended: Counter[str] = Counter()
+    tokens: Counter[str] = Counter()
+    for _, _, counts, episodes in done:
         exits.update(counts)
+        for episode in episodes:
+            if episode["reward"] is not None:
+                ended[episode["ended"]] += 1
+            tokens.update(episode["tokens"])
     summary = tinker_stats.summarize(results, seed=args.seed)
     log.info(
         "%s: solve rate %.3f [%.3f, %.3f] over %d tasks, %d episodes",
@@ -151,15 +161,50 @@ async def evaluate_policy(
         summary["tasks"],
         summary["episodes"],
     )
+    priced = args.model in tinker_cost.PRICES and not args.base_url
     return {
         "policy": ref,
         "label": label,
         "summary": summary,
+        "by_kind": by_kind(results, kinds_of(args.tasks_dir)),
         "rewards": results,
         "reasons": dict(exits),
+        "ended": dict(ended),
+        "tokens": dict(tokens),
+        # An evaluation samples only: its episodes' training tokens are not spent.
+        "cost": tinker_cost.usd(args.model, {**tokens, "train": 0}) if priced else None,
         "infrastructure_drops": dict(Counter(te.DROPS.counts) - drops_before),
         "episodes": {name: eps for name, _, _, eps in done},
     }
+
+
+def kinds_of(tasks_dir: Path) -> dict[str, str]:
+    """Task name to kind, from the family's manifest.jsonl when there is one."""
+    manifest = Path(tasks_dir) / "manifest.jsonl"
+    if not manifest.is_file():
+        return {}
+    rows = [
+        json.loads(line) for line in manifest.read_text().splitlines() if line.strip()
+    ]
+    return {row["task"]: row.get("kind", "") for row in rows if "task" in row}
+
+
+def by_kind(results: dict[str, list[float]], kinds: dict[str, str]) -> dict[str, Any]:
+    """Solve rate and mean reward per task kind, with Wilson intervals over episodes."""
+    groups: dict[str, list[float]] = {}
+    for task, rewards in results.items():
+        groups.setdefault(kinds.get(task, "unknown"), []).extend(rewards)
+    out = {}
+    for kind, rewards in sorted(groups.items()):
+        wins = sum(tinker_stats.solved(r) for r in rewards)
+        out[kind] = {
+            "episodes": len(rewards),
+            "solved": wins,
+            "solve_rate": wins / len(rewards) if rewards else None,
+            "wilson95": tinker_stats.wilson_interval(wins, len(rewards)),
+            "mean_reward": sum(rewards) / len(rewards) if rewards else None,
+        }
+    return out
 
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -234,10 +279,19 @@ def main(argv: list[str] | None = None) -> int:
     args.out.write_text(json.dumps(doc, indent=1, default=str))
     for ev in doc["evaluations"]:
         s = ev["summary"]
+        cost = ev["cost"]
         print(
             f"{ev['label']}: solve rate {s['solve_rate']:.3f} "
-            f"(95% CI {s['ci95_low']:.3f}-{s['ci95_high']:.3f}), "
-            f"{s['solved']}/{s['episodes']} episodes over {s['tasks']} tasks; reasons {ev['reasons']}"
+            f"(95% CI {s['ci95_low']:.3f}-{s['ci95_high']:.3f}; Wilson "
+            f"{s['wilson95_low']:.3f}-{s['wilson95_high']:.3f}), mean reward "
+            f"{s['mean_reward']:.3f}, {s['solved']}/{s['episodes']} episodes over "
+            f"{s['tasks']} tasks; ended {ev['ended']}; reasons {ev['reasons']}"
+            + (
+                f"; ~{cost['usd']:.2f} USD at list price (no-cache bound "
+                f"{cost['usd_no_cache']:.2f})"
+                if cost
+                else ""
+            )
         )
     for c in doc["comparisons"]:
         for name in tinker_stats.MEASURES:

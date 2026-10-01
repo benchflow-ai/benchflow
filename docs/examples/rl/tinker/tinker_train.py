@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+import tinker_cost  # noqa: E402
 import tinker_env as te  # noqa: E402
 from tinker_cookbook import model_info  # noqa: E402
 from tinker_cookbook.rl import train as rl_train  # noqa: E402
@@ -41,16 +42,6 @@ from tinker_episode import (  # noqa: E402
 )
 
 log = logging.getLogger("tinker_train")
-
-# USD per million tokens (prefill, sample, train), from
-# https://tinker-docs.thinkingmachines.ai/tinker/models/ on 2026-09-30.
-PRICES = {
-    "Qwen/Qwen3.6-35B-A3B": (0.54, 1.335, 1.177),
-    "Qwen/Qwen3.5-9B-Base": (0.66, 1.995, 1.463),
-    "openai/gpt-oss-20b": (0.18, 0.45, 0.396),
-    "openai/gpt-oss-120b": (0.33, 0.84, 0.737),
-    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": (0.39, 0.99, 0.88),
-}
 
 
 def add_env_args(parser: argparse.ArgumentParser) -> None:
@@ -163,6 +154,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     t = parser.add_argument_group("training")
     t.add_argument("--steps", type=int, default=20)
     t.add_argument(
+        "--stop-after",
+        type=int,
+        default=None,
+        help="end after this many steps with a full checkpoint (the data order is "
+        "still that of --steps); rerun with the same --log-path to go on, for "
+        "example after costing the first step (tinker_cost.py gate)",
+    )
+    t.add_argument(
         "--group-size", type=int, default=4, help="episodes per task per step"
     )
     t.add_argument("--groups-per-batch", type=int, default=4, help="tasks per step")
@@ -220,7 +219,7 @@ def build_config(args: argparse.Namespace) -> rl_train.Config:
             max_retries=args.max_retries, drop_constant_groups=True
         ),
         num_groups_to_log=2,
-        max_steps=args.steps,
+        max_steps=min(args.steps, args.stop_after or args.steps),
     )
 
 
@@ -301,26 +300,22 @@ def curve_from_records(log_path: Path) -> list[dict]:
 
 
 def summarize(args: argparse.Namespace) -> dict:
-    """The reward curve, drops, group counts, a cost bound and the checkpoints."""
-    metrics = read_jsonl(args.log_path / "metrics.jsonl")
-    prefill = sum(m.get("env/all/total_ob_tokens", 0) for m in metrics)
-    sampled = sum(m.get("env/all/total_ac_tokens", 0) for m in metrics)
-    price = PRICES.get(args.model)
-    # Training tokens are at most prefill + sampled (every sampled prompt is a
-    # prefix of a trained sequence), so this bound overstates the cost. Token
-    # counts cover the trained groups only (the cookbook's metrics); dropped
-    # groups were sampled too, so scale by episodes sampled over trained.
+    """The reward curve, drops, group counts, the cost and the checkpoints."""
     curve = curve_from_records(args.log_path)
-    trained = sum(m.get("env/all/total_episodes", 0) for m in metrics)
-    sampled_episodes = sum(point["episodes"] for point in curve)
-    scale = sampled_episodes / trained if trained else 1.0
-    cost = (
-        None
-        if price is None or args.base_url
-        else scale
-        * (prefill * price[0] + sampled * price[1] + (prefill + sampled) * price[2])
-        / 1e6
-    )
+    # From each episode's token tally at list price (tinker_cost.py): every
+    # sampled episode pays prefill and sampling, trained groups pay training.
+    steps = tinker_cost.training_steps(args.log_path)
+    priced = args.model in tinker_cost.PRICES and not args.base_url
+    cost = [
+        {
+            "step": s["step"],
+            "episodes": s["episodes"],
+            "trained": s["trained"],
+            **{k: s.get(k, 0) for k in tinker_cost.TOKEN_KEYS},
+            **(tinker_cost.usd(args.model, s) if priced else {}),
+        }
+        for s in steps
+    ]
     records = read_jsonl(args.log_path / "trials" / "rollouts.jsonl")
     sandbox_hours = (
         sum(r.get("timings", {}).get("sandbox_sec", 0) for r in records) / 3600
@@ -335,8 +330,9 @@ def summarize(args: argparse.Namespace) -> dict:
             read_jsonl(args.log_path / "infrastructure_drops.jsonl"), "reason"
         ),
         "sandbox_peak": te.sandbox_slots().peak,
-        "tokens_trained_groups": {"prefill": prefill, "sampled": sampled},
-        "cost_upper_bound_usd": cost,
+        "cost_by_step": cost,
+        "cost_usd": sum(c["usd"] for c in cost) if priced else None,
+        "cost_usd_no_cache": sum(c["usd_no_cache"] for c in cost) if priced else None,
         "checkpoints": read_jsonl(args.log_path / "checkpoints.jsonl"),
         "args": {
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -390,12 +386,14 @@ def main(argv: list[str] | None = None) -> int:
         summary = summarize(args)
         (args.log_path / "summary.json").write_text(json.dumps(summary, indent=1))
         log.info(
-            "steps %d, groups %s, drops %s, sandbox peak %d, cost upper bound %s USD",
+            "steps %d, groups %s, drops %s, sandbox peak %d, cost %s USD "
+            "(no-cache bound %s) at list price",
             summary["steps"],
             summary["groups"],
             summary["infrastructure_drops"],
             summary["sandbox_peak"],
-            summary["cost_upper_bound_usd"],
+            summary["cost_usd"],
+            summary["cost_usd_no_cache"],
         )
     return code
 
