@@ -10,6 +10,8 @@ from benchflow.agents.providers import (
     PROVIDERS,
     ProviderConfig,
     find_provider,
+    max_images,
+    model_metadata,
     resolve_auth_env,
     resolve_base_url,
     strip_provider_prefix,
@@ -72,6 +74,37 @@ class TestFindProvider:
             strip_provider_prefix("github-models/openai/gpt-4.1-mini")
             == "openai/gpt-4.1-mini"
         )
+
+    def test_baseten_prefix(self):
+        name, cfg = find_provider("baseten/zai-org/GLM-5.3")
+
+        assert name == "baseten"
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.anthropic_auth_header == "bearer"
+        assert cfg.responses_tool_images_in_user_message is True
+        assert resolve_auth_env("baseten/zai-org/GLM-5.3") == "BASETEN_API_KEY"
+        assert strip_provider_prefix("baseten/zai-org/GLM-5.3") == "zai-org/GLM-5.3"
+
+    @pytest.mark.parametrize(
+        ("protocol", "expected"),
+        [
+            ("openai-completions", "https://inference.baseten.co/v1"),
+            ("openai-responses", "https://inference.baseten.co/v1"),
+            ("anthropic-messages", "https://inference.baseten.co"),
+        ],
+    )
+    def test_baseten_endpoints(self, protocol, expected):
+        _, cfg = find_provider("baseten/zai-org/GLM-5.3")
+        assert resolve_base_url(cfg, {}, protocol=protocol) == expected
+
+    @pytest.mark.parametrize("model", ["zai-org/GLM-5.3", "moonshotai/Kimi-K3"])
+    def test_baseten_models_read_images(self, model):
+        meta = model_metadata(f"baseten/{model}")
+
+        assert meta is not None
+        assert meta["input"] == ["text", "image"]
+        assert meta["reasoning"] is True
+        assert max_images(f"baseten/{model}") == 8
 
     def test_openrouter_prefix(self):
         name, cfg = find_provider("openrouter/qwen/qwen3.5-397b-a17b")
@@ -348,6 +381,16 @@ class TestProviderModels:
         for cfg in PROVIDERS.values():
             assert all("id" in m and "name" in m for m in cfg.models)
 
+    def test_model_metadata_looks_up_provider_prefixed_id(self):
+        meta = model_metadata("zai/glm-5.1")
+        assert meta is not None and meta["name"] == "GLM-5.1"
+        assert model_metadata("zai/not-a-declared-model") is None
+        assert model_metadata("anthropic/claude-sonnet-4-6") is None
+
+    def test_max_images_is_none_when_undeclared(self):
+        assert max_images("zai/glm-5.1") is None
+        assert max_images("openrouter/some/model") is None
+
 
 # strip_provider_prefix
 
@@ -552,3 +595,25 @@ class TestShimModelParams:
             "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
             "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
         }
+
+
+def test_openclaw_provider_config_omits_benchflow_only_model_keys(
+    tmp_path, monkeypatch
+):
+    """maxImages is BenchFlow metadata; openclaw's model schema has no such key."""
+    import json
+
+    from benchflow.agents.openclaw_acp_shim import setup_custom_provider
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    models = PROVIDERS["baseten"].models
+    setup_custom_provider(
+        "baseten", "https://inference.baseten.co/v1", "k", "openai-completions", models
+    )
+
+    config = json.loads((tmp_path / ".openclaw" / "openclaw.json").read_text())
+    written = config["models"]["providers"]["baseten"]["models"]
+    assert [m["id"] for m in written] == ["zai-org/GLM-5.3", "moonshotai/Kimi-K3"]
+    assert all("maxImages" not in m for m in written)
+    assert all(m["input"] == ["text", "image"] for m in written)
+    assert all("maxImages" in m for m in models)  # registry left intact
