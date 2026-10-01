@@ -189,7 +189,14 @@ async def test_group_failures_are_masked_retried_and_reported(
     assert rollout.outcome == "masked" and rollout.reward is None, rollout.to_dict()
     assert rollout.attribution_reason == "agent_setup"
     assert rollout.failure == "infrastructure"
-    assert rollout.error_category == "acp_error"
+    # The handshake timeout is a typed transport failure (acp/runtime.py
+    # _wait_for_acp_handshake): category pipe_closed, with the phase in its
+    # structured diagnosis.
+    assert rollout.error_category == "pipe_closed"
+    raw = json.loads((rollout.rollout_dir / "result.json").read_text())
+    assert raw["transport_error_info"]["transport_diagnosis"] == (
+        "acp_initialize_timeout"
+    )
     assert rollout.startup["failed_phase"] == "acp_initialize"
     assert rollout.startup["timeouts"]["acp_handshake_sec"] == 0.05
     assert rollout.attempt == 2 and len(rollout.attempts) == 1
