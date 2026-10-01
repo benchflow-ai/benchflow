@@ -17,7 +17,7 @@ import benchflow_taskset.session as session_module
 import pytest
 import verifiers.v1 as vf
 from benchflow_taskset import BenchFlowEnv, BenchFlowInfraError, BenchFlowTask
-from benchflow_taskset.taskset import HARNESS_MESSAGE
+from benchflow_taskset.taskset import HARNESS_MESSAGE, MAX_TURNS
 from conftest import env_config
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.harnesses.utils.mcp import mcp_client
@@ -244,5 +244,5 @@ def test_the_taskset_id_selects_this_env_with_a_safe_default_seat(world) -> None
     config = resolve_env_config(env_config(world))
     assert config.agent.harness.id == "null"
     assert config.agent.runtime.type == "subprocess"
-    assert config.agent.max_turns == 10
+    assert config.agent.max_turns == MAX_TURNS == 16
     assert Path(config.taskset.task.benchflow_python).name == "fake-benchflow-python"

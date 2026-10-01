@@ -29,4 +29,4 @@ uv run vf-eval benchflow-taskset \
   --model Qwen/Qwen3-4B-Instruct-2507 --client.base-url http://localhost:8000/v1
 ```
 
-Knobs live under `--env.taskset.*` (which tasks) and `--env.taskset.task.*` (how they run): `sandbox`, `sandbox_user`, `bash_timeout_sec` (60), `max_output_chars` (4096), `submit_path`, `agent_budget_sec` (900), `max_sandboxes` (16, across every env-server worker on the machine), `jobs_dir`, `outcomes_path`. The seat's `max_turns` defaults to 30 (`--env.agent.max-turns`).
+Knobs live under `--env.taskset.*` (which tasks) and `--env.taskset.task.*` (how they run): `sandbox`, `sandbox_user`, `bash_timeout_sec` (30), `max_output_chars` (2000), `submit_path`, `agent_budget_sec` (900), `max_sandboxes` (16, across every env-server worker on the machine), `jobs_dir`, `outcomes_path`. The seat's `max_turns` defaults to 16 (`--env.agent.max-turns`). The defaults are the RL cookbooks' shared harness (`docs/examples/rl/common/harness.py`), so `evaluate.py` scores a policy on the limits it trained with.

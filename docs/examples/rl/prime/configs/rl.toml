@@ -64,6 +64,8 @@ env.taskset.tasks_dir = "/root/bf-rl/tasks-v1/train"
 env.taskset.task.benchflow_python = "/root/bf-rl/benchflow/.venv/bin/python"
 env.taskset.task.jobs_dir = "/root/bf-rl/jobs/train"
 env.taskset.task.max_sandboxes = 32
+# 10 turns: the shared harness's limit when this run was made (2026-10-01). It is 16 since
+# cookbook/rl-core eb51b59a; configs/rl-qwen3.8-27b.toml uses 16.
 env.agent.max_turns = 10
 
 [ckpt]

@@ -37,7 +37,7 @@ from benchflow_taskset.session import (
     SandboxStartError,
 )
 from benchflow_taskset.slots import sandbox_slot
-from benchflow_taskset.taskset import BenchFlowInfraError, BenchFlowTask
+from benchflow_taskset.taskset import MAX_TURNS, BenchFlowInfraError, BenchFlowTask
 from benchflow_taskset.tools import serve_tools
 
 # Tools are advertised under their bare names (`run_bash`, `submit`), the shape of
@@ -49,7 +49,7 @@ class BenchFlowEnvConfig(vf.EnvConfig):
     agent: vf.AgentConfig = vf.AgentConfig(
         harness=NullHarnessConfig(id="null"),
         runtime=vf.SubprocessConfig(),
-        max_turns=10,
+        max_turns=MAX_TURNS,
     )
     """The policy's seat: its chat loop runs locally; its commands run in the sandbox."""
     timeout: TimeoutConfig = TimeoutConfig(episode=3600.0)
