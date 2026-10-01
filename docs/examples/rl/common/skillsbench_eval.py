@@ -12,8 +12,8 @@ TRL adapter's verification and attribution rule. The episode loop below is
 1. Per-task budgets from the task's own ``agent.timeout_sec`` (T): a turn cap
    of round(T / 30) clamped to [--min-turns, --max-turns], and a per-command
    timeout of round(T / 10) clamped to [60, 300] seconds. An episode that runs
-   longer than min(2 T, --episode-cap) seconds of wall clock ends
-   ("episode_timeout") and is verified as left.
+   longer than --episode-cap seconds of wall clock ends ("episode_timeout") and
+   is verified as left (a guard against hangs; the turn cap is the budget).
 2. The task's skills: the sandbox gets ``environment/skills`` the way BenchFlow
    gives them to an agent (``skill_mode="with-skill"``: copied to /skills and
    linked into the agents' skill-discovery paths), and the harness message
@@ -99,7 +99,9 @@ def task_settings(task_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         "agent_timeout_sec": timeout,
         "max_turns": max(args.min_turns, min(args.max_turns, round(timeout / 30))),
         "bash_timeout_sec": max(60, min(300, round(timeout / 10))),
-        "wall_budget_sec": min(2 * timeout, args.episode_cap),
+        # A guard against hangs, not a budget: the turn cap carries the task's time
+        # budget in steps, so a slow server does not cut episodes short.
+        "wall_budget_sec": args.episode_cap,
         "skills_dir": str(sandbox.get("skills_dir") or "/skills").rstrip("/"),
         "skills": skills,
         "category": (fm.get("metadata") or {}).get("category"),
@@ -143,42 +145,64 @@ class Arm:
 
 
 class Gate:
-    """At most ``limit`` episodes run at once; the limit can change during the run.
+    """At most ``limit`` episodes run at once, and at most ``caps[arm]`` of one arm.
 
-    It is read from ``<out>/concurrency`` (an integer) when that file exists, at most
-    every 15 seconds, else ``--concurrency``. Lowering it lets running episodes finish.
+    Both can change during the run: ``<out>/concurrency`` (an integer) and
+    ``<out>/arm_caps.json`` (for example {"base-on": 6}) are read at most every 15
+    seconds. Slots go out in queue (ticket) order, skipping waiters whose arm is at
+    its cap, so a slow arm cannot take every slot or hold up the others.
     """
 
-    def __init__(self, path: Path, default: int) -> None:
-        self.path, self.default = path, default
+    def __init__(self, path: Path, caps_path: Path, default: int) -> None:
+        self.path, self.caps_path, self.default = path, caps_path, default
         self.active = 0
+        self.arm_active: dict[str, int] = {}
+        self.waiting: dict[int, str] = {}
         self.cond = threading.Condition()
-        self._limit, self._read = default, 0.0
+        self._limit, self._caps, self._read = default, {}, 0.0
 
-    def limit(self) -> int:
+    def _refresh(self) -> None:
         now = time.monotonic()
-        if now - self._read > 15:
-            self._read = now
-            try:
-                self._limit = max(1, int(self.path.read_text().strip()))
-            except (OSError, ValueError):
-                self._limit = self.default
-        return self._limit
+        if now - self._read <= 15:
+            return
+        self._read = now
+        try:
+            self._limit = max(1, int(self.path.read_text().strip()))
+        except (OSError, ValueError):
+            self._limit = self.default
+        try:
+            self._caps = {k: int(v) for k, v in json.loads(self.caps_path.read_text()).items()}
+        except (OSError, ValueError):
+            self._caps = {}
 
-    def acquire(self) -> bool:
+    def _open(self, arm: str) -> bool:
+        return self.arm_active.get(arm, 0) < self._caps.get(arm, 1 << 30)
+
+    def acquire(self, ticket: int, arm: str) -> bool:
         with self.cond:
-            while self.active >= self.limit():
+            self.waiting[ticket] = arm
+            while True:
                 if CUTOFF.is_set():
+                    del self.waiting[ticket]
+                    self.cond.notify_all()
                     return False
+                self._refresh()
+                if (
+                    self.active < self._limit
+                    and self._open(arm)
+                    and not any(t < ticket and self._open(a) for t, a in self.waiting.items())
+                ):
+                    del self.waiting[ticket]
+                    self.active += 1
+                    self.arm_active[arm] = self.arm_active.get(arm, 0) + 1
+                    self.cond.notify_all()
+                    return True
                 self.cond.wait(timeout=5)
-            if CUTOFF.is_set():
-                return False
-            self.active += 1
-            return True
 
-    def release(self) -> None:
+    def release(self, arm: str) -> None:
         with self.cond:
             self.active -= 1
+            self.arm_active[arm] -= 1
             self.cond.notify_all()
 
 
@@ -330,7 +354,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--sandbox", choices=["daytona", "docker"], default="daytona")
     p.add_argument("--owner", required=True, help="Daytona owner label")
     p.add_argument("--concurrency", type=int, default=64, help="episodes at once (see Gate)")
-    p.add_argument("--max-workers", type=int, default=64, help="upper bound on --concurrency")
+    p.add_argument("--max-workers", type=int, default=256,
+                   help="threads; episodes waiting on a per-arm cap hold a thread, not a slot")
     p.add_argument("--samples", type=int, default=1)
     p.add_argument("--include", action="append", default=[])
     p.add_argument("--exclude", action="append", default=[])
@@ -400,16 +425,16 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     balance = Servers(len(servers))
-    gate = Gate(args.out / "concurrency", args.concurrency)
+    gate = Gate(args.out / "concurrency", args.out / "arm_caps.json", args.concurrency)
 
-    def one(item: tuple[int, str, Arm]) -> dict[str, Any] | None:
-        sample, tid, arm = item
-        if CUTOFF.is_set() or not gate.acquire():
+    def one(item: tuple[int, tuple[int, str, Arm]]) -> dict[str, Any] | None:
+        ticket, (sample, tid, arm) = item
+        if CUTOFF.is_set() or not gate.acquire(ticket, arm.name):
             return None
         try:
             return _one(sample, tid, arm)
         finally:
-            gate.release()
+            gate.release(arm.name)
 
     def _one(sample: int, tid: str, arm: Arm) -> dict[str, Any] | None:
         server = balance.take()
@@ -447,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(5)
         threading.Thread(target=watch, daemon=True).start()
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as pool:
-        list(pool.map(one, work))
+        list(pool.map(one, enumerate(work)))
     if args.sandbox == "daytona":
         print(f"swept {args.owner}: {sweep_daytona(args.owner)}", flush=True)
     print("ALL DONE", flush=True)
