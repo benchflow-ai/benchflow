@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **`robo` waits for a long skill (embodied).** Requests that step the simulator (`act`, `move-to`, `grip`, `skill`, `done`, `give-up`) wait up to 3600 s for the episode server's answer, as long as an episode can run, instead of giving up after 120 s; `info`, `status` and `observe` keep 120 s, and `ROBO_TIMEOUT_S`, when set, still applies to every request. A walking skill of about 1000 steps, with a video frame rendered every few steps in software OpenGL, took longer than 120 s on a busy CPU: the client gave up while the server went on stepping. Exported tasks no longer need `ROBO_TIMEOUT_S=3600`. A timeout now reads "no answer from the episode server within N s".
+
 - **Codex gets its real model id, and a codex that knows it (#1145).** Under
   a BenchFlow provider (LiteLLM proxy) the `codex-acp` thread was started with
   the proxy alias as the model (`benchflow-azure-foundry-openai-gpt-5.6-luna`).

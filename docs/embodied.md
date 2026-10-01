@@ -132,7 +132,7 @@ robo move-to X Y Z [--grip G] [--max-steps N] [--tol M]
 robo grip G [--steps N]                     alias of `robo skill gripper.set`
 ```
 
-Every command takes `--json` for the raw response. Environment: `ROBO_SOCKET` (or `ROBOUSE_SOCKET`), `ROBO_ROLE`, `ROBO_ORACLE_TOKEN` (reference solutions only), `ROBO_TIMEOUT_S` (client timeout, default 120), `ROBOUSE_TEXT_ONLY` (a harness whose model cannot read images: `--image` is ignored).
+Every command takes `--json` for the raw response. Environment: `ROBO_SOCKET` (or `ROBOUSE_SOCKET`), `ROBO_ROLE`, `ROBO_ORACLE_TOKEN` (reference solutions only), `ROBO_TIMEOUT_S` (client timeout for every request; unset, requests that step the simulator (`act`, `move-to`, `grip`, `skill`, `done`, `give-up`) wait up to 3600 s, as long as an episode can run, and the others 120 s), `ROBOUSE_TEXT_ONLY` (a harness whose model cannot read images: `--image` is ignored).
 
 Examples: `robo act arm.ee_delta=0.2,0,-0.1 gripper=1 --repeat 5`, `robo act left.ee_delta=0,0.3,0 right.gripper=-1`, `robo act hand.joints=0,0.2,0.2,0.2,0,0.2,0.2,0.2,0,0.2,0.2,0.2,0.5,0,0,0`, `robo skill base.navigate_to fridge_1`, `robo skill arm.move_to 0.1 0.6 0.2 grip=1`.
 

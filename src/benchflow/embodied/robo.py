@@ -30,6 +30,25 @@ import sys
 
 PROTOCOL = 2
 
+# How long the client waits for an answer. A request that steps the simulator waits as long as an episode can run: one
+# long skill steps hundreds of times, and the server renders a video frame every few steps (software OpenGL on a busy
+# CPU takes most of a second per frame). The episode server bounds those requests itself (skill step caps, the
+# episode's wall-clock budget), and an agent that gave up waiting would not stop the skill anyway. The other requests
+# (info, status, observe) answer at once and keep a short timeout. ROBO_TIMEOUT_S, when set, applies to every request.
+STEPPING_OPS = frozenset({"act", "move_to", "grip", "skill", "done", "give_up"})
+STEPPING_TIMEOUT_S = 3600.0
+TIMEOUT_S = 120.0
+
+
+def _timeout(op: object) -> float:
+    env = os.environ.get("ROBO_TIMEOUT_S")
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            pass
+    return STEPPING_TIMEOUT_S if op in STEPPING_OPS else TIMEOUT_S
+
 
 def _socket_path() -> str | None:
     for var in ("ROBO_SOCKET", "ROBOUSE_SOCKET"):
@@ -55,7 +74,8 @@ def _send(req: dict) -> dict:
     if role and "role" not in req:
         req = {**req, "role": role}
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(float(os.environ.get("ROBO_TIMEOUT_S", "120")))
+    timeout = _timeout(req.get("op"))
+    s.settimeout(timeout)
     try:
         s.connect(path)
         s.sendall((json.dumps(req) + "\n").encode())
@@ -71,7 +91,13 @@ def _send(req: dict) -> dict:
             "ok": False,
             "error": "episode server is not running (episode may have finished)",
         }
-    except OSError as e:  # timeout, permission, ...
+    # a socket timeout (before Python 3.10 it is not a TimeoutError, and the OSError branch catches it)
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": f"no answer from the episode server within {timeout:g} s",
+        }
+    except OSError as e:  # permission, ...
         return {"ok": False, "error": f"episode server unreachable: {e}"}
     except ValueError:
         return {"ok": False, "error": "bad response from the episode server"}

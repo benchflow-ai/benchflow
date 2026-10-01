@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -535,6 +536,49 @@ def test_robo_cli_standalone_over_the_socket(tmp_path) -> None:
         for x in (tmp_path / "ep" / "trace.jsonl").read_text().splitlines()
     ]
     assert all(x.get("role") == "operator" for x in lines)
+
+
+def test_robo_waits_for_stepping_requests_only(tmp_path, monkeypatch) -> None:
+    """A long skill can take minutes: requests that step the simulator wait as long as an episode can run, the others
+    keep a short timeout, and ROBO_TIMEOUT_S, when set, applies to all of them."""
+    import tempfile
+
+    from benchflow.embodied import robo as client
+
+    monkeypatch.delenv("ROBO_TIMEOUT_S", raising=False)
+    for op in ("act", "move_to", "grip", "skill", "done", "give_up"):
+        assert client._timeout(op) == client.STEPPING_TIMEOUT_S == 3600
+    for op in ("info", "status", "observe"):
+        assert client._timeout(op) == client.TIMEOUT_S == 120
+    monkeypatch.setenv("ROBO_TIMEOUT_S", "7")
+    assert client._timeout("skill") == client._timeout("info") == 7
+    monkeypatch.delenv("ROBO_TIMEOUT_S")
+
+    # an episode server that never answers: the client waits its timeout, then reports it (no traceback)
+    sock = os.path.join(tempfile.mkdtemp(prefix="bfemb"), "s.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(sock)
+    srv.listen(4)
+    monkeypatch.setenv("ROBO_SOCKET", sock)
+    monkeypatch.setattr(client, "STEPPING_TIMEOUT_S", 0.6)
+    monkeypatch.setattr(client, "TIMEOUT_S", 0.1)
+    try:
+        t0 = time.time()
+        r = client._send({"op": "skill", "name": "arm.move_to", "args": []})
+        assert time.time() - t0 >= 0.55
+        assert r == {
+            "ok": False,
+            "error": "no answer from the episode server within 0.6 s",
+        }
+        t0 = time.time()
+        r = client._send({"op": "info"})
+        assert time.time() - t0 < 0.5
+        assert r == {
+            "ok": False,
+            "error": "no answer from the episode server within 0.1 s",
+        }
+    finally:
+        srv.close()
 
 
 # ---- the physical verifier -----------------------------------------------------------------------------------
