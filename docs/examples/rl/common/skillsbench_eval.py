@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import evaluate as ev  # noqa: E402  rl-core's shared evaluator
 from harness import harness_config, shorten_daytona_lifetimes, sweep_daytona  # noqa: E402
 
-from benchflow.integrations.rewards import dropped, model_endpoint_failure  # noqa: E402
+from benchflow.integrations.rewards import model_endpoint_failure  # noqa: E402
 from benchflow.integrations.trl import (  # noqa: E402
     BenchFlowRuntimeEnvironment,
     BenchFlowSpec,
@@ -239,7 +239,6 @@ def run_episode(
                 break
             if CUTOFF.is_set():
                 episode.ended = "cutoff"
-                drop = dropped("cutoff", "stopped by the evaluation deadline")
                 break
             if time.monotonic() - started > settings["wall_budget_sec"]:
                 episode.ended = "episode_timeout"
@@ -296,9 +295,18 @@ def run_episode(
     except ev.EndpointError as exc:
         episode.ended = "model_endpoint"
         drop = model_endpoint_failure(exc)
-    episode.decision = finish_rollout(env, messages, drop=drop)
-    episode.elapsed_sec = time.monotonic() - started
-    row_out = episode.row()
+    if episode.ended == "cutoff":
+        # Stopped by our deadline, not by the task or the policy: no score. The
+        # sandbox is closed without verification and the episode is re-queued
+        # on resume. (RewardDecision only allows infrastructure drop reasons.)
+        env._close()
+        episode.elapsed_sec = time.monotonic() - started
+        row_out = episode.row()
+        row_out.update(reward=None, dropped=True, reason="cutoff")
+    else:
+        episode.decision = finish_rollout(env, messages, drop=drop)
+        episode.elapsed_sec = time.monotonic() - started
+        row_out = episode.row()
     row_out.update(
         arm=arm.name,
         server=server,
@@ -373,7 +381,8 @@ def main(argv: list[str] | None = None) -> int:
                     r = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if r.get("ended") != "cutoff":
+                # Re-run what our own stop or a harness error cut short.
+                if r.get("ended") not in ("cutoff", "harness_error"):
                     done.add((arm.name, r["task_id"], int(r["sample"])))
     work = [
         (sample, tid, arm)
