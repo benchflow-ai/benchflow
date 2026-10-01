@@ -16,7 +16,8 @@ Sets of units (a unit is one task and sample):
   outcome; the prefix cannot. Shown as a sensitivity check.
 Paired differences: per task, the mean over that task's units in the set, then
 the mean over tasks; 95% interval by bootstrap over tasks (10,000 resamples,
-seed 0). Per-arm rates: Wilson interval over units, and a bootstrap over tasks
+seed 0; units are taken in sorted order, so the intervals are the same on every
+run). Per-arm rates: Wilson interval over units, and a bootstrap over tasks
 (the two samples of a task are correlated, so Wilson is too narrow then).
 If a unit has more than one scored row, the earliest (finished_at) is kept.
 """
@@ -133,10 +134,10 @@ def main():
         L.append("|---|---|---|---|---|---|")
         res = {}
         for arm in arms:
-            rows = [units[arm][u] for u in unitset]
+            rows = [units[arm][u] for u in sorted(unitset)]
             k = sum(1 for r in rows if r["reward"] >= 1.0)
             per_task = defaultdict(list)
-            for (t, _s) in unitset:
+            for (t, _s) in sorted(unitset):
                 per_task[t].append(units[arm][(t, _s)]["reward"] >= 1.0)
             tvals = [sum(v) / len(v) for v in per_task.values()]
             mr = sum(r["reward"] for r in rows) / len(rows) if rows else float("nan")
@@ -148,6 +149,10 @@ def main():
         return res
 
     out["arms_common"] = rate_table("common set (headline)", common)
+    no_to = {u for u in common if all(units[arm][u].get("ended") != "episode_timeout" for arm in arms)}
+    out["common_without_timeouts"] = len(no_to)
+    out["arms_no_timeouts"] = rate_table(
+        f"common set without the {len(common) - len(no_to)} units where any arm hit the wall-clock guard (sensitivity)", no_to)
     if prefix:
         out["arms_prefix"] = rate_table("complete prefix of the queue (sensitivity)", prefix)
     L.append("## Per arm, all scored units (each arm on its own units)\n")
@@ -174,13 +179,15 @@ def main():
             if x not in units or y not in units:
                 continue
             per_task = defaultdict(lambda: [[], []])
-            for (t, s) in unitset:
+            for (t, s) in sorted(unitset):
                 rx, ry = units[x][(t, s)], units[y][(t, s)]
                 per_task[t][0].append((rx["reward"] >= 1.0) - (ry["reward"] >= 1.0))
                 per_task[t][1].append(rx["reward"] - ry["reward"])
             d = [sum(v[0]) / len(v[0]) for v in per_task.values()]
             dr = [sum(v[1]) / len(v[1]) for v in per_task.values()]
-            better = sum(1 for v in d if v > 0); worse = sum(1 for v in d if v < 0); same = len(d) - better - worse
+            better = sum(1 for v in d if v > 0)
+            worse = sum(1 for v in d if v < 0)
+            same = len(d) - better - worse
             res[f"{x} - {y}"] = {"tasks": len(d), "diff": sum(d) / len(d) if d else None, "ci": boot(d),
                                  "reward_diff": sum(dr) / len(dr) if dr else None, "reward_ci": boot(dr),
                                  "better": better, "worse": worse, "same": same}
@@ -198,6 +205,8 @@ def main():
 
     out["pairs"] = paired(common)
     paired_table("common set (headline)", out["pairs"])
+    out["pairs_no_timeouts"] = paired(no_to)
+    paired_table("common set without wall-clock-guard units (sensitivity)", out["pairs_no_timeouts"])
     if prefix:
         out["pairs_prefix"] = paired(prefix)
         paired_table("complete prefix (sensitivity)", out["pairs_prefix"])
