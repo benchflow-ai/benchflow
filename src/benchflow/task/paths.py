@@ -167,6 +167,12 @@ class TaskPaths:
             )
         if strategy.type == "ors-episode":
             return bool(strategy.inputs)
+        if strategy.type == "taskmd":
+            # A task.md draft 2 package (benchflow.taskmd): test.sh when it has
+            # one, and otherwise only model judges grade its rubric.
+            if strategy.command is None:
+                return strategy.config.get("grading") == "rubric"
+            return (self.tests_dir / strategy.command).is_file()
         return strategy.type == "agent-judge"
 
     def _has_legacy_llm_judge_entrypoint(self) -> bool:

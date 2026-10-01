@@ -1372,6 +1372,31 @@ def describe_installed_marker(text: str) -> str:
     return first + (f" and {more} more file{'s' if more > 1 else ''}" if more else "")
 
 
+_DIST_INFO_RE = re.compile(
+    r"/([A-Za-z0-9][A-Za-z0-9_.]*?)-([0-9][^/-]*)\.dist-info(?:/|$)"
+)
+_SITE_PACKAGES_RE = re.compile(r"^(.*?)/lib(?:64)?/python[0-9.]+/site-packages(?:/|$)")
+
+
+def installed_marker_plugins(text: str) -> tuple[list[str], list[str]]:
+    """What an ``installed`` marker says in words a task author acts on.
+
+    Returns the distributions the refused files belong to (``pytest-json-ctrf
+    0.3.5``, from their ``.dist-info``) and the Python environments they were
+    installed into (``/root/.venv``).
+    """
+    plugins: list[str] = []
+    environments: list[str] = []
+    for line in text.splitlines():
+        path = line.partition("\t")[0]
+        if (dist := _DIST_INFO_RE.search(path)) is not None:
+            name = dist.group(1).replace("_", "-").lower()
+            plugins.append(f"{name} {dist.group(2)}")
+        if (site := _SITE_PACKAGES_RE.match(path)) is not None:
+            environments.append(site.group(1) or "/")
+    return list(dict.fromkeys(plugins)), list(dict.fromkeys(environments))
+
+
 def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:
     """Infer safe pytest plugins required by common task test.sh patterns."""
     task_dir = getattr(task, "task_dir", None)

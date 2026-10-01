@@ -126,6 +126,7 @@ def _config_payload(
         "agent": config.agent,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
+        "harness": config.harness,
         "environment": config.environment,
         "concurrency": shard.concurrency,
         "prompts": config.prompts,
@@ -141,6 +142,7 @@ def _config_payload(
         "checkpoints": config.checkpoints,
         "checkpoint_keep": config.checkpoint_keep,
         "freeze_workspace": config.freeze_workspace,
+        "integrity": config.integrity,
         "retry_from_checkpoint": config.retry_from_checkpoint,
         "retry_prompt": config.retry_prompt,
         "retry_resume_session": config.retry_resume_session,
@@ -364,6 +366,11 @@ async def run_sharded_evaluation(
     worker_start_stagger_sec: float,
 ) -> EvaluationResult:
     """Run a batch as isolated worker subprocesses and aggregate their summaries."""
+    if config.pre_agent_hooks:
+        raise ValueError(
+            "pre_agent_hooks are Python callables and cannot reach worker "
+            "processes; run without worker_concurrency (--worker-concurrency)"
+        )
     discovery = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config)
     task_dirs = discovery._get_task_dirs()
     task_names = [task_dir.name for task_dir in task_dirs]
@@ -437,10 +444,27 @@ async def run_sharded_evaluation(
 
     elapsed = (datetime.now(UTC) - started).total_seconds()
     shard_results = [result for result in results_or_errors if isinstance(result, dict)]
-    return _aggregate_result(
+    aggregate = _aggregate_result(
         jobs_dir=jobs_dir,
         config=config,
         plan=plan,
         shard_results=shard_results,
         elapsed_sec=elapsed,
     )
+    stopped = [r["usage_limit"] for r in shard_results if r.get("usage_limit")]
+    if stopped:
+        # Every shard runs on the same login: raise the first shard's limit,
+        # as an unsharded Evaluation does.
+        from benchflow.agents.errors import UsageLimitError
+
+        first = stopped[0]
+        resets = first.get("resets_at")
+        error = UsageLimitError(
+            str(first.get("detail") or "usage limit reached"),
+            login=first.get("login"),
+            window=first.get("window"),
+            resets_at=datetime.fromisoformat(resets) if resets else None,
+        )
+        error.result = aggregate
+        raise error
+    return aggregate

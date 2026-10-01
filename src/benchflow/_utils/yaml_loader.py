@@ -128,6 +128,7 @@ def rollout_config_from_dict(
         agent_idle_timeout=raw.get(
             "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
         ),
+        harness=raw.get("harness", "acp"),
         context_root=raw.get("context_root"),
         base_image_override=raw.get("base_image_override"),
         agent=raw.get("agent", "claude-agent-acp"),
@@ -160,6 +161,7 @@ def _optional_fields(raw: dict[str, Any]) -> dict[str, Any]:
         "uploads",
         "skip_verify",
         "freeze_workspace",
+        "integrity",
         "skip_agent_install",
         "source_provenance",
     ):
@@ -266,6 +268,7 @@ def rollout_config_to_dict(
             "jobs_dir": str(config.jobs_dir),
             "concurrency": config.concurrency,
             "agent_idle_timeout_sec": config.agent_idle_timeout,
+            "harness": config.harness,
             "timeout": config.timeout,
             "prompt_suffix": config.prompt_suffix,
             "context_root": str(config.context_root) if config.context_root else None,
@@ -290,6 +293,7 @@ def rollout_config_to_dict(
             "uploads": dict(config.uploads) or None,
             "skip_verify": config.skip_verify,
             "freeze_workspace": config.freeze_workspace,
+            "integrity": config.integrity,
             "skip_agent_install": config.skip_agent_install,
             "environment_manifest": config.environment_manifest.model_dump(mode="json")
             if config.environment_manifest is not None

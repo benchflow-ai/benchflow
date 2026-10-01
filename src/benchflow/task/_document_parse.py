@@ -129,11 +129,13 @@ class TaskDocument:
 
     @classmethod
     def from_path(cls, path: str | Path) -> TaskDocument:
+        """Read a ``task.md`` file."""
         doc_path = Path(path)
         return cls.from_text(doc_path.read_text(), path=doc_path)
 
     @classmethod
     def from_text(cls, text: str, *, path: str | Path | None = None) -> TaskDocument:
+        """Parse ``task.md`` text (``path`` resolves relative references)."""
         frontmatter, body = _split_frontmatter(text)
         doc_path = Path(path) if path is not None else None
         frontmatter = normalize_task_document_frontmatter(

@@ -95,15 +95,20 @@ def allowlist_model_transport(
 
 
 async def validate_native_oauth_transport(
-    env: Any, sandbox_user: str | None, agent_launch: str
+    env: Any, sandbox_user: str | None, agent_launch: str, *, harness: str = "acp"
 ) -> dict[str, Any]:
     """Check actual UID and installed native version before admitting transport.
 
     ACP must be the registry pin and its SDK the exact version that ACP pins.
     Native Claude is the separately pinned Claude Code CLI: its package and
     its binary's ``--version`` must both be the pin, and the managed launcher
-    must be the one that hands exactly that binary to the adapter.
+    must be the one that hands exactly that binary to the adapter. With
+    ``harness="native"`` BenchFlow launches that CLI itself, so the adapter
+    and launcher checks give way to the CLI's own (package, ``--version``,
+    and the executable resolving into the pinned package).
     """
+    if harness == "native":
+        return await _validate_native_cli_transport(env, sandbox_user)
     if not sandbox_user or agent_launch != _LAUNCHER:
         raise ValueError(
             "Native Claude no-web transport requires a managed launcher and nonroot sandbox user"
@@ -172,6 +177,80 @@ console.log(JSON.stringify({acp:a.version,acp_sdk:(a.dependencies||{})[sdkName],
         "mechanism": "root_owned_tls_model_only_proxy",
         "versions": {key: found[key] for key in ("acp", "sdk", "native")},
         "sandbox_uid": int(value),
+        "origin": "https://api.anthropic.com",
+        "method": "POST",
+        "paths": ["/v1/messages", "/v1/messages?beta=true"],
+    }
+
+
+async def _sandbox_uid(env: Any, sandbox_user: str | None) -> int:
+    if not sandbox_user:
+        raise ValueError(
+            "Native Claude no-web transport requires a nonroot sandbox user"
+        )
+    uid = await env.exec(
+        f"id -u {shlex.quote(sandbox_user)}", user="root", timeout_sec=30
+    )
+    value = (uid.stdout or "").strip()
+    if uid.return_code != 0 or not value.isdecimal() or int(value) == 0:
+        raise ValueError(
+            "Native Claude no-web transport requires a verified nonzero sandbox UID"
+        )
+    return int(value)
+
+
+async def _validate_native_cli_transport(
+    env: Any, sandbox_user: str | None
+) -> dict[str, Any]:
+    """Admission for the native harness: BenchFlow runs the pinned CLI directly."""
+    uid = await _sandbox_uid(env, sandbox_user)
+    cli_package, cli_pinned = pinned_npm_package("claude-code")
+    modules = "/opt/benchflow/js-agents/lib/node_modules"
+    script = (
+        "const conflict="
+        + json.dumps((*_ROUTING_CONFLICTS, "ANTHROPIC_API_KEY"))
+        + ";const switches="
+        + json.dumps(_ROUTING_SWITCHES)
+        + ";"
+        'if(conflict.some(k=>process.env[k])||switches.some(k=>!["","0","false"].includes((process.env[k]||"").toLowerCase()))||'
+        '(process.env.ANTHROPIC_BASE_URL && process.env.ANTHROPIC_BASE_URL.replace(/\\/$/,"")!=="https://api.anthropic.com"))process.exit(2);'
+        + "const cli="
+        + json.dumps(f"{modules}/{cli_package}")
+        + ",exe="
+        + json.dumps(CLAUDE_CODE_EXECUTABLE_PATH)
+        + ";"
+        + """const fs=require('fs'),p=require('path'),cp=require('child_process');
+const r=cp.spawnSync(exe,['--version'],{encoding:'utf8',timeout:10000});
+if(r.status!==0)process.exit(1);
+const real=fs.realpathSync(exe),root=fs.realpathSync(cli);
+const c=JSON.parse(fs.readFileSync(p.join(cli,'package.json')));
+console.log(JSON.stringify({cli:c.version,native:r.stdout.trim(),inside:real.startsWith(root+p.sep)}));"""
+    )
+    result = await env.exec(
+        'test -z "${NODE_OPTIONS-}" && test -z "${NODE_PATH-}" && env -u NODE_OPTIONS -u NODE_PATH /opt/benchflow/node/bin/node -e '
+        + shlex.quote(script),
+        user="root",
+        timeout_sec=30,
+    )
+    try:
+        found = json.loads(result.stdout or "")
+    except ValueError:
+        found = None
+    if (
+        result.return_code != 0
+        or not isinstance(found, dict)
+        or found.get("cli") != cli_pinned
+        or found.get("native") != f"{cli_pinned} (Claude Code)"
+        or found.get("inside") is not True
+    ):
+        raise ValueError(
+            "Native Claude no-web transport client version is not verified"
+        )
+    return {
+        "mechanism": "root_owned_tls_model_only_proxy",
+        "harness": "native",
+        "versions": {"native": found["native"]},
+        "sandbox_uid": uid,
         "origin": "https://api.anthropic.com",
         "method": "POST",
         "paths": ["/v1/messages", "/v1/messages?beta=true"],

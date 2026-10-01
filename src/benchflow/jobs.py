@@ -116,6 +116,7 @@ class VerifierOutput:
 
     @classmethod
     def read(cls, verifier_dir: Path) -> VerifierOutput:
+        """Read ``verifier/`` (reward, stdout, stderr, test report); missing files are None."""
         reward = _read_text(verifier_dir / "reward.txt")
         return cls(
             reward_text=reward.strip() if reward is not None else None,
@@ -220,9 +221,25 @@ class Trial:
     # a results.jsonl row (then ``path`` is that file and ``row`` its index).
     source: Literal["result.json", "results.jsonl"] = "result.json"
     row: int | None = None
+    # The attempts of this trial's task in its Evaluation job (set by load_job).
+    _attempts: list[Trial] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def attempts(self) -> list[Trial]:
+        """Every rollout of this trial, oldest first, this one included.
+
+        An Evaluation job retries a task in its own folder (and a resume
+        re-runs it there), so a trial can take several rollouts: this lists
+        them, for counting what a job ran or spent
+        (``sum(len(t.attempts) for t in job.trials)``). One element when the
+        task ran once, in a folder of independent rollouts (``bf.run_batch``),
+        or when the trial was read on its own with :func:`load_trial`.
+        """
+        return list(self._attempts) if self._attempts else [self]
 
     @property
     def task_name(self) -> str:
+        """The task this trial ran."""
         return self.result.task_name
 
     @property
@@ -232,6 +249,7 @@ class Trial:
 
     @property
     def model(self) -> str | None:
+        """The model the agent used, or None."""
         return self.result.model
 
     @property
@@ -244,6 +262,7 @@ class Trial:
 
     @property
     def reward(self) -> float | None:
+        """The reward when the trial is scored; None when unscored (never 0 for a failure to score)."""
         if self.integration_failure is not None:
             return None
         reward = self.result.reward
@@ -285,6 +304,7 @@ class Trial:
 
     @property
     def passed(self) -> bool:
+        """Whether the trial passed (and its agent integration did not break)."""
         return self.result.passed and self.integration_failure is None
 
     def __repr__(self) -> str:
@@ -297,14 +317,17 @@ class Trial:
 
     @property
     def cost_usd(self) -> float | None:
+        """USD of this rollout, or None (see ``result.price_source``)."""
         return self.result.cost_usd
 
     @property
     def total_tokens(self) -> int | None:
+        """Tokens of this rollout, or None when unknown."""
         return self.result.total_tokens
 
     @property
     def control(self) -> Control | None:
+        """``oracle`` or ``empty`` for a control run, None for an agent run."""
         variant = str(
             self.config.get("task_variant") or self.raw.get("task_variant") or ""
         )
@@ -327,6 +350,7 @@ class Trial:
 
     @property
     def execution(self) -> Execution:
+        """How the run ended: completed, errored, timed_out or integration_failed."""
         if self.integration_failure is not None:
             return "integration_failed"
         if not self.result.error:
@@ -335,6 +359,7 @@ class Trial:
 
     @property
     def assessment(self) -> Assessment:
+        """Whether it got a score: scored, error (the verifier failed) or unscored."""
         from benchflow._utils.scoring import assessment_withholds_score
 
         if self.reward is not None and not assessment_withholds_score(self.raw):
@@ -379,6 +404,21 @@ class Trial:
         """The automatic reviewer's gate verdict (``ScoringResult``), or None."""
         return self.result.scoring
 
+    @cached_property
+    def integrity(self) -> Any:
+        """The trial's reward-integrity verdict, or None when it was not audited.
+
+        An :class:`~benchflow.integrity.IntegrityVerdict` read from
+        ``integrity/claim_verdict.json`` (``--integrity audit|strict``, or
+        ``benchflow.integrity.audit_trial``). ``exploited`` is True for
+        ``AgentViolation``. It never changes :attr:`reward`.
+        """
+        if self.source != "result.json":
+            return None
+        from benchflow.integrity import read_verdict
+
+        return read_verdict(self.path)
+
     def settings(self) -> dict[str, Any]:
         """The run settings ``bf.compare`` checks between two sides."""
         import hashlib
@@ -399,6 +439,10 @@ class Trial:
             "dataset_name": self.raw.get("dataset_name"),
             "dataset_version": self.raw.get("dataset_version"),
             "reasoning_effort": self.config.get("reasoning_effort"),
+            # acp or native (older trials predate the option: acp).
+            "harness_mode": self.config.get("harness_mode", "acp")
+            if self.config
+            else None,
             "environment": self.config.get("environment"),
             "sandbox_user": self.config.get("sandbox_user"),
             "timeout_sec": self.config.get("timeout_sec"),
@@ -464,6 +508,7 @@ class Trial:
             "control": self.control,
             "execution": self.execution,
             "assessment": self.assessment,
+            "attempts": len(self.attempts),
             "forks": len(self.forks),
             "review_valid": self.review.review_valid if self.review else None,
             "source": self.source,
@@ -537,7 +582,9 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
 
     For jobs that have no trial folders (a copied-out results file, or a
     Verifiers-style export). Rows carry less than a trial folder: no
-    trajectory, verifier output, lineage or review.
+    trajectory, verifier output, lineage or review. A BenchFlow row written
+    before ``info.schema_version`` 2 held reward 0.0 for an unscored rollout;
+    it is read as unscored (its ``metrics`` has no ``reward``), never as 0.
     """
     path = Path(path)
     trials = []
@@ -562,6 +609,15 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
         )
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
         reward = row.get("reward")
+        if (
+            info.get("source") == "benchflow"
+            and "schema_version" not in info
+            and reward == 0.0
+            and "reward" not in metrics
+        ):
+            # A version-1 BenchFlow row wrote 0.0 for an unscored rollout; a
+            # scored one also has its reward in metrics. Unscored is never 0.
+            reward = None
         error, verifier_error = _row_error(row.get("error"))
 
         def _int(value: Any) -> int | None:
@@ -662,18 +718,22 @@ class Denominators:
 
     @property
     def pass_rate_scored(self) -> float | None:
+        """Passed over scored trials; None when none was scored."""
         return self.passed / self.scored if self.scored else None
 
     @property
     def pass_rate_attempted(self) -> float | None:
+        """Passed over attempted trials; None when none was attempted."""
         return self.passed / self.attempted if self.attempted else None
 
     @property
     def pass_rate_clean(self) -> float | None:
+        """Passed over scored trials whose execution completed; None when none."""
         return self.clean_passed / self.clean_scored if self.clean_scored else None
 
     @classmethod
     def of(cls, trials: Iterable[Trial], *, controls_excluded: int = 0) -> Denominators:
+        """Count ``trials`` (see the class docstring for each count)."""
         items = list(trials)
         scored = [t for t in items if t.assessment == "scored"]
         rewards = [t.reward for t in scored if t.reward is not None]
@@ -713,8 +773,83 @@ class Job:
     def __repr__(self) -> str:
         return f"Job(path={str(self.path)!r}, trials={len(self.trials)}, kind={self.kind!r})"
 
+    def __str__(self) -> str:
+        return self.to_markdown()
+
+    def _repr_markdown_(self) -> str:
+        return self.to_markdown()
+
+    def to_markdown(self) -> str:
+        """A short report of the job, also what ``print(job)`` shows.
+
+        What ran (trials, tasks, agents and models), the solve rate with its
+        95% interval and pass@k, the trials that got no score grouped by
+        reason, the control runs left out, and what the rollouts cost (retried
+        attempts included; estimates from an agent's session log counted and
+        marked).
+        """
+        agents = self.agents()
+        only_controls = not agents and bool(self.trials)
+        if only_controls:  # an oracle or nop job: count what it holds
+            agents = self.trials
+        tasks = {t.task_name for t in agents}
+        pairs = sorted({f"{t.agent} · {t.model or 'no model'}" for t in agents})
+        shown = ", ".join(pairs[:3]) + (
+            f" and {len(pairs) - 3} more" if len(pairs) > 3 else ""
+        )
+        lines = [
+            f"**{self.path}** ({self.kind}): {len(agents)} trial(s) of "
+            f"{len(tasks)} task(s)"
+            + (f"; {shown}" if shown else "")
+            + (" (only control runs, so they are counted)" if only_controls else "")
+        ]
+        rates = self.solve_rates(ks=[1], include_controls=only_controls)
+        if rates.solve_rate is None:
+            lines.append("- Solve rate: n/a (no scored trial)")
+        else:
+            interval = ""
+            if rates.interval is not None:
+                low, high = rates.interval
+                interval = (
+                    f", 95% interval {low:.1%} to {high:.1%} ({rates.interval_method})"
+                )
+            solved = round(rates.solve_rate * rates.trials)
+            lines.append(
+                f"- Solve rate: {rates.solve_rate:.1%} ({solved} of {rates.trials} "
+                f"scored trials, {rates.success_rule}){interval}"
+            )
+            if rates.max_trials_per_task > 1:
+                many = self.solve_rates(include_controls=only_controls)
+                lines += [f"- {line}" for line in many.lines()]
+        unscored = [t for t in agents if t.assessment != "scored"]
+        if unscored:
+            reasons: dict[str, list[str]] = {}
+            for t in unscored:
+                reasons.setdefault(_unscored_reason(t), []).append(t.task_name)
+            parts = []
+            for reason, names in sorted(reasons.items(), key=lambda kv: -len(kv[1])):
+                listed = ", ".join(sorted(set(names))[:3])
+                more = len(set(names)) - 3
+                parts.append(
+                    f"{reason} x{len(names)} ({listed}{f', +{more}' if more > 0 else ''})"
+                )
+            lines.append(
+                f"- Unscored: {len(unscored)} of {len(agents)} trial(s): "
+                + "; ".join(parts)
+            )
+        controls = [] if only_controls else self.controls()
+        if controls:
+            kinds = ", ".join(sorted({t.control or "" for t in controls}))
+            lines.append(
+                f"- Control runs left out: {len(controls)} ({kinds}); they check "
+                "the task, not an agent"
+            )
+        lines.append("- " + _cost_line([a for t in self.trials for a in t.attempts]))
+        return "\n".join(lines) + "\n"
+
     @property
     def kind(self) -> Literal["evaluation", "branch", "directory"]:
+        """evaluation (an Evaluation job), branch (a branch job) or directory."""
         if (self.summary or {}).get("kind") == "benchflow-branch-job":
             return "branch"
         if self.evaluation is not None or self.summary is not None:
@@ -725,11 +860,25 @@ class Job:
         """Agent runs (control runs left out)."""
         return [t for t in self.trials if t.control is None]
 
+    def integrity(self) -> Any:
+        """Integrity verdicts for every trial (an ``IntegrityReport``).
+
+        ``counts()`` gives trials per verdict (``not_audited`` for trials run
+        without ``--integrity``); ``exploited()`` the trials with
+        agent-attributed evidence of a forbidden crossing.
+        """
+        from benchflow.integrity import IntegrityReport
+
+        return IntegrityReport.of(
+            t.path for t in self.trials if t.source == "result.json"
+        )
+
     def controls(self) -> list[Trial]:
         """Control runs (oracle, empty/nop)."""
         return [t for t in self.trials if t.control is not None]
 
     def by_task(self, *, include_controls: bool = False) -> dict[str, list[Trial]]:
+        """Trials grouped by task (control runs left out unless ``include_controls``)."""
         out: dict[str, list[Trial]] = {}
         for t in self.trials if include_controls else self.agents():
             out.setdefault(t.task_name, []).append(t)
@@ -759,6 +908,7 @@ class Job:
         ]
 
     def denominators(self, *, include_controls: bool = False) -> Denominators:
+        """Attempted, scored, errors and pass rates (control runs left out unless ``include_controls``)."""
         if include_controls:
             return Denominators.of(self.trials)
         return Denominators.of(self.agents(), controls_excluded=len(self.controls()))
@@ -774,7 +924,8 @@ class Job:
 
         A task's samples are its scored trials; trials of the same task in
         different job folders (``--matrix --trials`` writes one per trial)
-        are separate samples, retries inside one folder are one (the
+        and repeated rollouts in one ``bf.run_batch`` folder are separate
+        samples, retries inside one Evaluation job are one (the
         ``attempts="best"`` rule of :func:`load_job`). Unscored trials are
         left out of ``n``, not counted as failures; control runs are left out
         unless ``include_controls=True``. ``ks`` defaults to 1, powers of two
@@ -796,6 +947,7 @@ class Job:
 
     @property
     def cost_usd(self) -> float | None:
+        """USD over the job's trials that reported one (one attempt each; ``trial.attempts`` has the rest); None when none did."""
         costs = [t.cost_usd for t in self.trials if t.cost_usd is not None]
         return math.fsum(costs) if costs else None
 
@@ -865,18 +1017,94 @@ class Job:
         return path
 
     def to_jsonl(self, path: str | Path) -> Path:
+        """Write :meth:`to_records` as JSON Lines and return the path."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(r) + "\n" for r in self.to_records()))
         return path
 
 
+def _unscored_reason(trial: Trial) -> str:
+    """Why a trial got no score, for a summary line."""
+    failure = trial.integration_failure
+    if failure is not None:
+        return f"agent integration ({failure.get('cause') or 'unknown'})"
+    r = trial.result
+    if r.error:
+        return r.error_category or "agent error"
+    if r.verifier_error:
+        return f"verifier: {r.verifier_error_category or 'error'}"
+    return "no reward"
+
+
+def _cost_line(rollouts: list[Trial]) -> str:
+    """What ``rollouts`` cost: known USD, how much of it is estimated, and
+    how many reported none."""
+    priced = [t for t in rollouts if t.cost_usd is not None]
+    estimated = [t for t in priced if t.result.price_source == "agent_session_log"]
+    unknown = len(rollouts) - len(priced)
+    if not priced:
+        if rollouts and all(t.control is not None for t in rollouts):
+            return "Cost: none (control runs call no model)"
+        return f"Cost: unknown (none of {len(rollouts)} rollout(s) reported USD)"
+    usd = math.fsum(t.cost_usd or 0.0 for t in priced)
+    line = f"Cost: ${usd:.4f} over {len(priced)} rollout(s)"
+    if estimated:
+        line += f" ({len(estimated)} estimated from the agent's session log)"
+    if unknown:
+        line += f"; {unknown} rollout(s) reported no USD, so the total is a floor"
+    return line
+
+
 def _rank(trial: Trial) -> tuple[bool, float, str]:
-    try:
-        mtime = (trial.path / "result.json").stat().st_mtime
-    except OSError:
-        mtime = 0.0
-    return (trial.assessment == "scored", mtime, str(trial.path))
+    from benchflow._utils.result_paths import attempt_rank
+
+    return attempt_rank(trial.path / "result.json", scored=trial.assessment == "scored")
+
+
+def _final_attempts(trials: list[Trial]) -> list[Trial]:
+    """One trial per retried task of an Evaluation job; every other rollout.
+
+    Attempts of one task, agent and model in an Evaluation job folder are one
+    trial, whose result is the best attempt (:func:`_rank`). Rollouts in any
+    other folder (``bf.run_batch``, ``bf.run`` calls sharing a job name) are
+    independent samples and all kept.
+    """
+    from benchflow._utils.result_paths import holds_attempts
+
+    folders: dict[Path, bool] = {}
+    kept: list[Trial] = []
+    chains: dict[tuple[str, Path, str, str | None], list[Trial]] = {}
+    for t in trials:
+        folder = t.path.parent
+        if folder not in folders:
+            folders[folder] = holds_attempts(folder)
+        if not folders[folder]:
+            kept.append(t)
+            continue
+        chains.setdefault((t.task_name, folder, t.agent, t.model), []).append(t)
+    for chain in chains.values():
+        chain.sort(key=_started)
+        best = chain[0]
+        for t in chain:
+            t._attempts = chain
+            if _rank(t) >= _rank(best):  # ties go to the newer attempt
+                best = t
+        kept.append(best)
+    return kept
+
+
+def _started(trial: Trial) -> tuple[str, float, str, int]:
+    """Chronological order of attempts: start time, then when result.json was
+    written (an attempt starts after the one before it ended), then the row
+    of a results.jsonl file."""
+    started = trial.result.started_at
+    return (
+        started.isoformat() if started is not None else "",
+        _rank(trial)[1],
+        str(trial.path),
+        trial.row or 0,
+    )
 
 
 def load_job(
@@ -889,11 +1117,18 @@ def load_job(
     ``path`` is a job directory, a folder of job directories, one trial
     directory, or a list of any of these (merged into one Job, e.g. one arm
     of a paired run kept in per-task folders). Branch children are read as the parent trial's ``forks``, not
-    as extra trials, and reviewer runs are skipped. With ``attempts="best"``
-    (the default) a task that was retried keeps one trial per agent and model,
-    the scored one first, then the newest, the rule resume and ``summary.json``
-    use;
-    ``attempts="all"`` keeps every attempt.
+    as extra trials, and reviewer runs are skipped.
+
+    Retries: an Evaluation job (a folder with ``evaluation.json`` or
+    ``summary.json``) runs each task once and retries it in the same folder,
+    so there the attempts of one task, agent and model are one trial. With
+    ``attempts="best"`` (the default) that trial is its best attempt: the
+    scored one first, then the newest, the rule resume and ``summary.json``
+    use; its :attr:`Trial.attempts` lists every attempt, oldest first.
+    ``attempts="all"`` keeps every attempt as a trial. Rollouts in any other folder
+    (``bf.run_batch``, ``bf.run`` calls sharing a job name) are independent
+    samples and are always all kept, so repeated rollouts of one task count
+    as repeated trials in :meth:`Job.solve_rates`.
     """
     import os
 
@@ -936,15 +1171,11 @@ def load_job(
             f"no trial (a folder with result.json) under {path}; pass a job "
             "directory such as jobs/<job_name>"
         )
+    if attempts not in ("best", "all"):
+        raise ValueError(f"attempts is 'best' or 'all', got {attempts!r}")
+    kept = _final_attempts(trials)
     if attempts == "best":
-        # One trial per task, folder, agent and model: a batch that ran several
-        # agents on one task into one folder keeps each agent's row.
-        best: dict[tuple[str, Path, str, str | None], Trial] = {}
-        for t in trials:
-            key = (t.task_name, t.path.parent, t.agent, t.model)
-            if key not in best or _rank(t) >= _rank(best[key]):
-                best[key] = t
-        trials = list(best.values())
+        trials = kept
     trials.sort(key=lambda t: (t.task_name, str(t.path)))
     return Job(
         path=path,
@@ -988,6 +1219,7 @@ SETTINGS = (
     "dataset_name",
     "dataset_version",
     "reasoning_effort",
+    "harness_mode",
     "environment",
     "sandbox_user",
     "timeout_sec",
@@ -1085,6 +1317,7 @@ class ComparisonRow:
 
     @property
     def delta(self) -> float | None:
+        """reward_b - reward_a, or None unless both sides were scored."""
         if self.reward_a is None or self.reward_b is None:
             return None
         return self.reward_b - self.reward_a
@@ -1145,6 +1378,7 @@ class Comparison:
         return _write_json(self.to_json_dict(), path, indent)
 
     def to_records(self) -> list[dict[str, Any]]:
+        """One flat dict per row, with its delta and the settings that differ."""
         out = []
         for r in self.rows:
             record = {k: v for k, v in r.__dict__.items() if k != "checks"}

@@ -72,5 +72,27 @@
     {
       "text": "Still here."
     }
+  ],
+  "codex-crash": [
+    {
+      "text": "Stopping the agent process.",
+      "tool": "Bash",
+      "input": {
+        "command": "pid=$$; while [ \"$pid\" -gt 1 ]; do pid=$(cut -d' ' -f4 /proc/$pid/stat); if [ \"$(cat /proc/$pid/comm 2>/dev/null)\" = codex ]; then kill -9 \"$pid\"; break; fi; done; sleep 30",
+        "description": "Kill the Codex CLI"
+      }
+    },
+    {
+      "text": "Still here."
+    }
+  ],
+  "slow-model": [
+    {
+      "text": "Thinking it over.",
+      "delay_sec": 590
+    },
+    {
+      "text": "Done."
+    }
   ]
 }

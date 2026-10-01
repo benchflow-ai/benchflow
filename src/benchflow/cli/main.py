@@ -29,12 +29,18 @@ from rich.table import Table
 from benchflow import __version__
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli._errors import install_recent_log
 from benchflow.cli._live_progress import (
     LiveEvalProgress,
     live_session,
     progress_enabled,
 )
-from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
+from benchflow.cli._options import (
+    AgentOption,
+    HarnessOption,
+    ModelOption,
+    SkillModeOption,
+)
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     _parse_agent_env,
@@ -42,6 +48,7 @@ from benchflow.cli._shared import (
     console,
     err_console,
     print_error,
+    stopped_run_result,
 )
 from benchflow.cli._termination import run_until_terminated
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
@@ -117,6 +124,8 @@ def _log_settings(environ: Mapping[str, str]) -> tuple[int, str]:
 
 _level, _format = _log_settings(os.environ)
 logging.basicConfig(level=_level, format=_format)
+# The last log lines, for the crash log of an unexpected error (cli/_errors.py).
+install_recent_log()
 
 _TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
 
@@ -126,6 +135,10 @@ _TAGLINE = "The universal environment framework — run, author, and adopt agent
 app = typer.Typer(
     name="benchflow",
     help=_TAGLINE,
+    epilog=(
+        "New here? Run bench doctor, then follow "
+        "https://github.com/benchflow-ai/benchflow/blob/main/docs/getting-started.md"
+    ),
     no_args_is_help=True,
 )
 
@@ -277,7 +290,9 @@ def _cleanup_daytona_snapshots(client, *, dry_run: bool, max_age_minutes: int) -
 # Evaluation execution
 
 
-eval_app = typer.Typer(help="Evaluation commands.")
+eval_app = typer.Typer(
+    help="Run agents on tasks (smoke, run) and read the results (metrics, view, inspect, compare)."
+)
 app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # `bench eval --help` lists commands in registration order: smoke, then run,
 # the order the README and getting-started use (doctor, smoke, run).
@@ -338,16 +353,24 @@ def eval_run(
         str | None,
         typer.Option(
             "--source-repo",
-            help="Remote repo as org/repo (e.g. benchflow-ai/skillsbench)",
+            help="GitHub repo of the tasks as org/repo (e.g. benchflow-ai/skillsbench)",
         ),
     ] = None,
     source_path: Annotated[
         str | None,
-        typer.Option("--source-path", help="Subpath within the repo (e.g. tasks)"),
+        typer.Option(
+            "--source-path",
+            help=(
+                "Folder in the repo: one task (tasks/citation-check) or a folder "
+                "of tasks (tasks). Only this folder is downloaded"
+            ),
+        ),
     ] = None,
     source_ref: Annotated[
         str | None,
-        typer.Option("--source-ref", help="Branch or tag to clone (e.g. main)"),
+        typer.Option(
+            "--source-ref", help="Branch, tag or full commit SHA to fetch (e.g. main)"
+        ),
     ] = None,
     source_env: Annotated[
         str | None,
@@ -422,7 +445,13 @@ def eval_run(
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Agent name"),
+        typer.Option(
+            "--agent",
+            help=(
+                "Agent: claude, codex, gemini, ... (bench agent list), oracle (the "
+                "task's reference solution) or nop (does nothing)"
+            ),
+        ),
     ] = None,
     model: ModelOption = None,
     reasoning_effort: Annotated[
@@ -432,6 +461,7 @@ def eval_run(
             help="Agent reasoning/thinking effort when the agent exposes one (e.g. max)",
         ),
     ] = None,
+    harness: HarnessOption = None,
     environment: Annotated[
         str | None,
         typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}"),
@@ -576,6 +606,20 @@ def eval_run(
             ),
         ),
     ] = False,
+    integrity: Annotated[
+        str | None,
+        typer.Option(
+            "--integrity",
+            help=(
+                "Reward integrity: off, audit or strict. audit records what the "
+                "agent did and checks it against the task's contract (every "
+                "sandbox); strict also runs the verifier in a separate verifier "
+                "sandbox. Each trial gets integrity/claim_verdict.json: Checked, "
+                "VectorExposed, AgentViolation or Rejected. Rewards are never "
+                "changed."
+            ),
+        ),
+    ] = None,
     retry_from_checkpoint: Annotated[
         str | None,
         typer.Option(
@@ -605,9 +649,12 @@ def eval_run(
         typer.Option(
             "--max-cost-usd",
             help=(
-                "Hard job budget in USD, over trials that report a cost: when "
-                "reached, no new trials start and running ones are cancelled "
-                "(recorded in summary.json budget, not as failures)"
+                "Job budget in USD over rollouts that report a cost (retries "
+                "included). USD is known when a rollout finishes, so it is "
+                "checked between starts: a rollout waits while the running ones "
+                "would reach the cap at the mean so far, and the job can pass "
+                "it by about one rollout's cost. At the cap no rollout starts "
+                "and running ones are cancelled (summary.json budget, not failures)"
             ),
         ),
     ] = None,
@@ -616,8 +663,9 @@ def eval_run(
         typer.Option(
             "--max-sandbox-seconds",
             help=(
-                "Hard job budget in trial wall-clock seconds, running trials "
-                "included; same stop/cancel behaviour as --max-cost-usd"
+                "Job budget in trial wall-clock seconds, running trials "
+                "included and re-checked as they run; same stop/cancel "
+                "behaviour as --max-cost-usd"
             ),
         ),
     ] = None,
@@ -626,8 +674,18 @@ def eval_run(
         typer.Option(
             "--max-tokens",
             help=(
-                "Hard job budget in total tokens over finished trials; same "
-                "stop/cancel behaviour as --max-cost-usd"
+                "Job budget in total tokens over finished rollouts (retries "
+                "included); checked between starts, like --max-cost-usd"
+            ),
+        ),
+    ] = None,
+    max_rollouts: Annotated[
+        int | None,
+        typer.Option(
+            "--max-rollouts",
+            help=(
+                "Job budget in rollouts started, retries included: at the cap "
+                "no rollout starts and running ones finish"
             ),
         ),
     ] = None,
@@ -655,7 +713,10 @@ def eval_run(
     ] = False,
     jobs_dir: Annotated[
         str | None,
-        typer.Option("--jobs-dir", help="Output directory"),
+        typer.Option(
+            "--jobs-dir",
+            help="Output directory (default jobs); a plain run resumes its latest job",
+        ),
     ] = None,
     fresh: Annotated[
         bool,
@@ -994,6 +1055,7 @@ def eval_run(
         agent=agent,
         model=model,
         reasoning_effort=reasoning_effort,
+        harness=harness,
         environment=environment,
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
@@ -1009,12 +1071,14 @@ def eval_run(
         checkpoints=checkpoints,
         checkpoint_keep=checkpoint_keep,
         freeze_workspace=freeze_workspace,
+        integrity=integrity,
         retry_from_checkpoint=retry_from_checkpoint,
         retry_prompt=retry_prompt,
         retry_resume_session=retry_resume_session,
         max_cost_usd=max_cost_usd,
         max_sandbox_seconds=max_sandbox_seconds,
         max_tokens=max_tokens,
+        max_rollouts=max_rollouts,
         jobs_dir=jobs_dir,
         fresh=fresh,
         job_name=job_name,
@@ -1083,6 +1147,14 @@ def eval_run(
     if (source_path or source_ref) and not source_repo:
         print_error("--source-path/--source-ref require --source-repo")
         raise typer.Exit(1)
+    if integrity is not None:
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        try:
+            normalize_integrity_mode(integrity)
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
     if checkpoints or retry_from_checkpoint:
         from benchflow.checkpoint_retry import parse_retry_policy
         from benchflow.checkpoints import parse_checkpoint_policy
@@ -1306,6 +1378,7 @@ def run_batch_eval(
     Promoted from the ``eval_run`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
+    from benchflow.agents.errors import UsageLimitError
     from benchflow.eval_sharding import ShardWorkerError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
     from benchflow.task.discovery import resolve_task_collection_root
@@ -1364,6 +1437,10 @@ def run_batch_eval(
                     worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
                 )
             )
+    except UsageLimitError as e:
+        # The job stopped on its login's usage limit: report what finished;
+        # the summary names the login, the window and the reset.
+        result = stopped_run_result(e)
     except EmptyTaskSelectionError as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None
@@ -1385,6 +1462,7 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
 
     import yaml
 
+    from benchflow.agents.errors import UsageLimitError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
 
     req = plan.request
@@ -1410,6 +1488,11 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             j._config.model = effective_model(j._config.agent, j._config.model)
         if req.reasoning_effort is not None:
             j._config.reasoning_effort = plan.eval_reasoning_effort
+        if req.harness is not None:
+            from benchflow.native_harness.harnesses import check_harness
+
+            check_harness(plan.eval_harness, [j._config.agent])
+            j._config.harness = plan.eval_harness
         if req.environment is not None:
             j._config.environment = plan.eval_environment
         if req.codex_apps_policy is not None:
@@ -1436,7 +1519,9 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             # YAML's: from_yaml already picked a name under the YAML's jobs dir.
             if req.jobs_dir is not None:
                 j._jobs_dir = Path(req.jobs_dir)
-            j._job_name = plan.job_name or Evaluation._resolve_job_name(j._jobs_dir)
+            j._job_name = plan.job_name or Evaluation._resolve_job_name(
+                j._jobs_dir, j._config, j._tasks_dir
+            )
             if j._config.job_mode == "sequential-shared":
                 j.learner_store = j._load_or_init_learner_store()
         if req.concurrency is not None:
@@ -1468,6 +1553,15 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # run-config file was a no-op.
         if plan.eval_config_override is not None:
             j._config.config_override = plan.eval_config_override
+        # --integrity likewise wins over the YAML. It is a safety flag, so a
+        # silent drop fails in the unsafe direction: the operator believes the
+        # trials are audited and they are not. (--checkpoints,
+        # --freeze-workspace and --retry-* share this file-config gap; they
+        # are left as they are, see docs/integrity.md.)
+        if req.integrity is not None:
+            from benchflow.integrity.trial import normalize_integrity_mode
+
+            j._config.integrity = normalize_integrity_mode(req.integrity)
         if plan.eval_budget is not None:
             j._config.budget = plan.eval_budget
     except subprocess.CalledProcessError as e:
@@ -1498,6 +1592,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     )
     try:
         result = run_until_terminated(j.run())
+    except UsageLimitError as e:
+        result = stopped_run_result(e)
     except (EmptyTaskSelectionError, ValueError) as e:
         print_error(f"{e}")
         raise typer.Exit(1) from None
@@ -1753,9 +1849,11 @@ def eval_metrics(
 ) -> None:
     """Collect and display metrics from a jobs directory.
 
-    pass@k / pass^k pool a task's trials across every job folder under the
-    directory (e.g. the trial-NN folders of --matrix --trials); unscored
-    trials and control runs are left out.
+    One row per trial, as bf.load_job counts them: a retried task of an
+    Evaluation job counts once, and repeated rollouts (a bf.run_batch
+    folder, the trial-NN folders of --matrix --trials) count as separate
+    trials. pass@k / pass^k pool a task's trials across every job folder
+    under the directory; unscored trials and control runs are left out.
     """
     import benchflow as bf
     from benchflow.metrics import collect_metrics
@@ -1918,5 +2016,12 @@ register_environment(app)
 register_monitor(app)
 
 
+def main() -> None:
+    """The ``bench`` / ``benchflow`` console script (see ``benchflow.cli._errors``)."""
+    from benchflow.cli._errors import run_cli
+
+    run_cli(app)
+
+
 if __name__ == "__main__":
-    app()
+    main()

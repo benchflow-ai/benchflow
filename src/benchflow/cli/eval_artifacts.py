@@ -28,6 +28,7 @@ def _redacted_eval_config(eval_config: EvaluationConfig) -> dict:
         "agent": eval_config.agent,
         "model": eval_config.model,
         "reasoning_effort": eval_config.reasoning_effort,
+        "harness": eval_config.harness,
         "codex_apps_policy": eval_config.codex_apps_policy,
         "environment": eval_config.environment,
         "concurrency": eval_config.concurrency,

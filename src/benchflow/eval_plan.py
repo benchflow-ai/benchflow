@@ -31,6 +31,7 @@ from benchflow._utils.config import (
 )
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.budget import Budget
+from benchflow.errors import UserError
 from benchflow.evaluation import DEFAULT_AGENT, EvaluationConfig, effective_model
 from benchflow.loop_strategies import (
     SINGLE_SHOT,
@@ -63,7 +64,7 @@ __all__ = [
 ]
 
 
-class EvalPlanError(ValueError):
+class EvalPlanError(ValueError, UserError):
     """A ``bench eval run`` validation failure.
 
     Carries the operator-facing ``message`` exactly as the CLI used to print it
@@ -89,6 +90,7 @@ class EvalCreateRequest:
     agent: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    harness: str | None = None
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
@@ -97,12 +99,14 @@ class EvalCreateRequest:
     checkpoints: str | None = None
     checkpoint_keep: int = 3
     freeze_workspace: bool = False
+    integrity: str | None = None
     retry_from_checkpoint: str | None = None
     retry_prompt: str | None = None
     retry_resume_session: bool = False
     max_cost_usd: float | None = None
     max_sandbox_seconds: float | None = None
     max_tokens: int | None = None
+    max_rollouts: int | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
@@ -194,18 +198,26 @@ class EvalPlan:
     include_tasks: set[str]
     exclude_tasks: set[str]
     eval_seeds: list[int] | None = None
+    # "acp" (default) or "native"; checked against the agent at planning.
+    eval_harness: str = "acp"
 
     @property
     def eval_budget(self) -> Budget | None:
-        """The hard per-job cap from --max-cost-usd/-sandbox-seconds/-tokens."""
+        """The per-job cap from --max-cost-usd/-sandbox-seconds/-tokens/-rollouts."""
         req = self.request
-        caps = (req.max_cost_usd, req.max_sandbox_seconds, req.max_tokens)
+        caps = (
+            req.max_cost_usd,
+            req.max_sandbox_seconds,
+            req.max_tokens,
+            req.max_rollouts,
+        )
         if all(c is None for c in caps):
             return None
         return Budget(
             max_cost_usd=req.max_cost_usd,
             max_sandbox_seconds=req.max_sandbox_seconds,
             max_tokens=req.max_tokens,
+            max_rollouts=req.max_rollouts,
         )
 
     def make_eval_config(
@@ -232,6 +244,7 @@ class EvalPlan:
             agent=self.eval_agent,
             model=effective_model(self.eval_agent, req.model),
             reasoning_effort=self.eval_reasoning_effort,
+            harness=self.eval_harness,
             environment=self.eval_environment,
             concurrency=self.eval_concurrency,
             build_concurrency=req.build_concurrency,
@@ -240,6 +253,7 @@ class EvalPlan:
             checkpoints=req.checkpoints,
             checkpoint_keep=req.checkpoint_keep,
             freeze_workspace=req.freeze_workspace,
+            integrity=req.integrity or "off",
             retry_from_checkpoint=req.retry_from_checkpoint,
             retry_prompt=req.retry_prompt,
             retry_resume_session=req.retry_resume_session,
@@ -461,23 +475,29 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         ("--max-cost-usd", request.max_cost_usd),
         ("--max-sandbox-seconds", request.max_sandbox_seconds),
         ("--max-tokens", request.max_tokens),
+        ("--max-rollouts", request.max_rollouts),
     ):
         if value is not None and not value > 0:
             raise EvalPlanError(f"{flag} must be > 0")
     has_budget = any(
         v is not None
-        for v in (request.max_cost_usd, request.max_sandbox_seconds, request.max_tokens)
+        for v in (
+            request.max_cost_usd,
+            request.max_sandbox_seconds,
+            request.max_tokens,
+            request.max_rollouts,
+        )
     )
     if has_budget and request.worker_concurrency is not None:
         raise EvalPlanError(
-            "--max-cost-usd/--max-sandbox-seconds/--max-tokens cap one job and are "
-            "not supported with --worker-concurrency (each worker would get the "
-            "whole budget)"
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts cap "
+            "one job and are not supported with --worker-concurrency (each worker "
+            "would get the whole budget)"
         )
     if has_budget and request.source_env:
         raise EvalPlanError(
-            "--max-cost-usd/--max-sandbox-seconds/--max-tokens are not supported "
-            "with --source-env (vf-eval runs the rollouts)"
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts are "
+            "not supported with --source-env (vf-eval runs the rollouts)"
         )
     if request.worker_retries < 0:
         raise EvalPlanError("--worker-retries must be >= 0")
@@ -608,6 +628,18 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
+    from benchflow.native_harness.harnesses import check_harness, normalize_harness
+
+    try:
+        eval_harness = normalize_harness(request.harness)
+        if request.harness is not None and request.config_file is None:
+            check_harness(eval_harness, [eval_agent])
+    except ValueError as exc:
+        raise EvalPlanError(f"Invalid --harness {request.harness!r}: {exc}") from None
+    if eval_harness != "acp" and request.source_env:
+        raise EvalPlanError(
+            "--harness is for BenchFlow agent rollouts; --source-env runs its own harness"
+        )
     output_jobs_dir = request.jobs_dir or "jobs"
     if request.fresh and request.job_name:
         raise EvalPlanError("give --fresh or --job-name, not both")
@@ -617,6 +649,25 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         )
     if request.fail_under is not None and not 0.0 <= request.fail_under <= 1.0:
         raise EvalPlanError("--fail-under is a pass rate between 0 and 1")
+    if request.source_env:
+        # vf-eval scores a hosted run as one mean reward, with no trials to
+        # count, so these would be ignored; refuse them instead of passing CI.
+        ignored = [
+            flag
+            for flag, value in (
+                ("--fail-under", request.fail_under),
+                ("--fail-on", request.fail_on),
+                ("--summary-out", request.summary_out),
+            )
+            if value is not None and value != []
+        ]
+        if ignored:
+            raise EvalPlanError(
+                f"{', '.join(ignored)} {'is' if len(ignored) == 1 else 'are'} not "
+                "supported with --source-env: vf-eval scores the run as one mean "
+                "reward, with no trials to count. The run exits 1 when it "
+                "errors; its reward is in <jobs-dir>/hosted-env/<run>/result.json."
+            )
     unknown_gates = sorted(set(split_fail_on(request.fail_on)) - set(FAIL_ON_CHOICES))
     if unknown_gates:
         raise EvalPlanError(
@@ -683,4 +734,5 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,
         eval_seeds=eval_seeds,
+        eval_harness=eval_harness,
     )

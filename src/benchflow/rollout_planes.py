@@ -256,6 +256,11 @@ class DefaultRolloutPlanes:
     async def connect_acp(self, *args: Any, **kwargs: Any) -> Any:
         return await connect_acp(*args, **kwargs)
 
+    async def connect_native(self, *args: Any, **kwargs: Any) -> Any:
+        from benchflow.native_harness.runtime import connect_native
+
+        return await connect_native(*args, **kwargs)
+
     async def execute_prompts(self, *args: Any, **kwargs: Any) -> Any:
         return await execute_prompts(*args, **kwargs)
 

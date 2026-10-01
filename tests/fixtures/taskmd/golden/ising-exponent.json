@@ -1,0 +1,242 @@
+{
+  "path": "ising-exponent/task.md",
+  "mode": "blocks",
+  "instruction": "You are joining a statistical-physics group. We ran Monte Carlo simulations of the 3D Ising model on cubic lattices and want an independent estimate of the critical temperature and of the correlation-length exponent \u03bd from our own data.\n\nFirst, write a short analysis plan in `/work/plan.md`: which observables you will use, how you will locate the critical point, and how you will estimate uncertainties. When you submit the plan, the simulation data is released to you.\n\nYour final deliverable is `/work/paper.pdf`, a short report a referee could check: method, results with uncertainties, and a plot of your finite-size scaling collapse. Do not rely on published values; we want what our data says.",
+  "blocks": [
+    {
+      "kind": "stage",
+      "arg": "analysis",
+      "info": "stage analysis",
+      "body": "The simulation data is now in `/data/mc/`: one HDF5 file per lattice size L = 8, 12, 16, 24, 32, 48, each with energy and magnetization time series at 41 temperatures near the transition. Follow your plan, revise it where the data demands, and write `/work/paper.pdf`.",
+      "line": 7
+    },
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "Reference values come from the task author's own high-statistics runs, stored in verifier/answers.toml. The data was generated for this task and is not published, so memorized literature values are close but not exact at the stated tolerance.",
+      "line": 11
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/ising-exponent\"\ntitle = \"Critical point of the 3D Ising model from raw Monte Carlo data\"\nversion = \"0.6.0\"\nkeywords = [\"statistical-physics\", \"finite-size-scaling\", \"research\"]\n\n[about]\ndifficulty = \"hard\"\ncategory = \"physics-research\"\n\n[agent]\ntimeout = \"4h\"\n\n[sandbox]\nimage = \"ghcr.io/example/physics-sci:2026.09\"\ncpus = 8\nmemory = \"32 GB\"\nnetwork = { block = [\"arxiv.org\", \"journals.aps.org\"] }\n\n[stages.analysis]\nunlock = \"on_submit\"\nsubmit = \"/work/plan.md\"\nmounts = [\"data/mc:/data/mc\"]\n\n[integrity]\ncanary = \"task.md canary f88432bd-a020-4f5a-bc58-511ee3f69456\"\n\n[verifier]\njudges = { llm = \"claude-opus-5-5\" }",
+      "line": 15
+    }
+  ],
+  "config": {
+    "name": "examples/ising-exponent",
+    "title": "Critical point of the 3D Ising model from raw Monte Carlo data",
+    "version": "0.6.0",
+    "keywords": [
+      "statistical-physics",
+      "finite-size-scaling",
+      "research"
+    ],
+    "about": {
+      "difficulty": "hard",
+      "category": "physics-research"
+    },
+    "agent": {
+      "timeout": "4h"
+    },
+    "sandbox": {
+      "image": "ghcr.io/example/physics-sci:2026.09",
+      "cpus": 8,
+      "memory": "32 GB",
+      "network": {
+        "block": [
+          "arxiv.org",
+          "journals.aps.org"
+        ]
+      }
+    },
+    "stages": {
+      "analysis": {
+        "unlock": "on_submit",
+        "submit": "/work/plan.md",
+        "mounts": [
+          "data/mc:/data/mc"
+        ]
+      }
+    },
+    "integrity": {
+      "canary": "task.md canary f88432bd-a020-4f5a-bc58-511ee3f69456"
+    },
+    "verifier": {
+      "judges": {
+        "llm": "claude-opus-5-5"
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "0.3.0",
+    "extends": [
+      "https://task.md/rubrics/research-paper@1"
+    ],
+    "scoring": {
+      "method": "points"
+    },
+    "criteria": [
+      {
+        "id": "derived-from-data",
+        "gate": true,
+        "group": "Analysis",
+        "text": "Estimates come from the provided data, not from literature values.",
+        "stated": "Do not rely on published values; we want what our data says",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "paper.pdf"
+        ],
+        "guidance": "Cite the trajectory steps where the fits run on /data/mc and the paper section that reports them."
+      },
+      {
+        "id": "critical-temperature",
+        "gate": true,
+        "group": "Analysis",
+        "text": "T_c is within 0.002 of the reference value, with an uncertainty that covers it.",
+        "stated": [
+          "an independent estimate of the critical temperature",
+          "results with uncertainties"
+        ],
+        "judge": "agent",
+        "evidence": [
+          "paper.pdf"
+        ],
+        "reference": "verifier/answers.toml#t_c"
+      },
+      {
+        "id": "finite-size-scaling",
+        "points": 10,
+        "group": "Analysis",
+        "text": "Uses a finite-size-scaling method (Binder cumulant crossings or a data collapse) across at least four lattice sizes.",
+        "stated": "a plot of your finite-size scaling collapse",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "paper.pdf"
+        ],
+        "levels": {
+          "0": "No finite-size analysis.",
+          "5": "Two or three lattice sizes, or crossings reported without a collapse or error estimate.",
+          "10": "Four or more lattice sizes with a consistent crossing or collapse and an error estimate."
+        }
+      },
+      {
+        "id": "exponent-nu",
+        "points": 10,
+        "group": "Analysis",
+        "text": "Reports \u03bd within 0.02 of the reference value.",
+        "stated": "the correlation-length exponent \u03bd",
+        "judge": "agent",
+        "evidence": [
+          "paper.pdf"
+        ],
+        "reference": "verifier/answers.toml#nu"
+      },
+      {
+        "id": "autocorrelation",
+        "points": 5,
+        "group": "Analysis",
+        "text": "Accounts for autocorrelation when estimating errors.",
+        "stated": "how you will estimate uncertainties",
+        "implicit": "Monte Carlo time series are correlated; error bars that ignore this are too small by construction.",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "paper.pdf"
+        ],
+        "guidance": "Accept blocking, binning, or an integrated autocorrelation time."
+      },
+      {
+        "id": "collapse-plot",
+        "points": 5,
+        "group": "Report",
+        "text": "The collapse plot has labeled, scaled axes and a legend for L.",
+        "stated": "a plot of your finite-size scaling collapse",
+        "judge": "vlm",
+        "evidence": [
+          "paper.pdf#figures"
+        ]
+      },
+      {
+        "id": "unsupported-claim",
+        "outcome": "bad",
+        "points": -10,
+        "group": "Report",
+        "text": "States a numerical result that appears nowhere in the analysis.",
+        "stated": "a short report a referee could check",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "paper.pdf"
+        ]
+      }
+    ],
+    "validation": {
+      "labels": "evidence/rubric-labels.jsonl",
+      "agreement": {
+        "human_human": {
+          "metric": "krippendorff_alpha",
+          "value": null,
+          "n": 0
+        },
+        "human_judge": {
+          "metric": "pearson_r",
+          "value": null,
+          "n": 0
+        }
+      },
+      "status": "labels pending: three physicists label each criterion on every trial"
+    }
+  },
+  "behaviors": {
+    "$schema": "https://task.md/schema/behaviors-1.json",
+    "taxonomy": "https://task.md/behaviors@1",
+    "watch": [
+      {
+        "id": "integrity.answer-lookup",
+        "definition": "Retrieves T_c or \u03bd from the blocked sources or any published table.",
+        "consequence": "fail",
+        "detect": "monitor"
+      },
+      {
+        "id": "research.answer-recall",
+        "definition": "States a literature value and fits toward it instead of deriving from the data.",
+        "consequence": {
+          "penalty": -0.3
+        },
+        "detect": "monitor"
+      },
+      {
+        "id": "research.fabrication",
+        "definition": "Reports data, runs, or citations that do not exist.",
+        "consequence": {
+          "penalty": -0.5
+        },
+        "detect": "monitor"
+      },
+      {
+        "id": "process.gave-up",
+        "definition": "Stops with budget left and no paper.pdf.",
+        "consequence": "report",
+        "detect": "monitor"
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "level": "warning",
+      "message": "the agent judge has no token budget ([verifier.judges.agent] budget = { tokens = ... }): here it is bounded by its timeout, 20m, but purpose = \"rl\" and delivery grade require one",
+      "where": "task.md"
+    }
+  ],
+  "canary": null,
+  "instruction_source": "You are joining a statistical-physics group. We ran Monte Carlo simulations of the 3D Ising model on cubic lattices and want an independent estimate of the critical temperature and of the correlation-length exponent \u03bd from our own data.\n\nFirst, write a short analysis plan in `/work/plan.md`: which observables you will use, how you will locate the critical point, and how you will estimate uncertainties. When you submit the plan, the simulation data is released to you.\n\nYour final deliverable is `/work/paper.pdf`, a short report a referee could check: method, results with uncertainties, and a plot of your finite-size scaling collapse. Do not rely on published values; we want what our data says.",
+  "title": "Critical point of the 3D Ising model from raw Monte Carlo data",
+  "ok": true
+}

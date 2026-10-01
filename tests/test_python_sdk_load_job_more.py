@@ -219,3 +219,63 @@ def test_varying_the_harness_or_model_covers_its_agent_variables(
     assert cmp.mismatches == []
     with pytest.warns(UserWarning, match="agent_variable_names"):
         bf.compare(a, b, vary=("timeout_sec",), include_controls=True)
+
+
+def test_results_jsonl_rows_say_how_an_unscored_reward_is_written(
+    tmp_path: Path,
+) -> None:
+    """A row carries ``info.schema_version``; version-1 rows read correctly.
+
+    Guards the dx/sdk fix of the unmarked format change in bf6e8412 (SDK
+    update): an unscored rollout's ``results.jsonl`` row went from reward 0.0
+    to null with no version marker, so a reader could not tell the formats
+    apart, and ``bf.load_job`` counted an unscored version-1 row as a scored
+    failure.
+    """
+    from benchflow.trajectories.results import write_rollout_results_jsonl
+
+    rollout = tmp_path / "now" / "t__1"
+    write_rollout_results_jsonl(
+        rollout,
+        task_name="t",
+        rollout_name="t__1",
+        agent="codex-acp",
+        agent_name="codex-acp",
+        model="gpt-5.5",
+        n_tool_calls=0,
+        prompts=[],
+        trajectory=[],
+        partial_trajectory=False,
+        rewards=None,
+        error="Agent timed out",
+        verifier_error=None,
+    )
+    row = json.loads((rollout / "results.jsonl").read_text())
+    assert row["info"]["schema_version"] == 2
+    assert row["reward"] is None and row["score"] is None
+
+    # Version 1 (no schema_version): unscored rows held 0.0 and no metrics.reward.
+    old = tmp_path / "old"
+    old.mkdir()
+    info = {"source": "benchflow", "agent": "codex-acp", "model": "gpt-5.5"}
+    rows = [
+        {
+            "reward": 0.0,
+            "info": {**info, "task_name": "unscored"},
+            "metrics": {"n_tool_calls": 0, "n_prompts": 1},
+            "error": {"error": "agent_error", "error_chain_str": "Agent timed out"},
+        },
+        {
+            "reward": 0.0,
+            "info": {**info, "task_name": "failed"},
+            "metrics": {"n_tool_calls": 2, "n_prompts": 1, "reward": 0.0},
+            "error": None,
+        },
+    ]
+    (old / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    trials = {t.task_name: t for t in bf.load_job(old).trials}
+    assert (trials["unscored"].reward, trials["unscored"].assessment) == (
+        None,
+        "unscored",
+    )
+    assert (trials["failed"].reward, trials["failed"].assessment) == (0.0, "scored")

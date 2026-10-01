@@ -1,0 +1,1 @@
+Prepare the September release packet in `/work`: the report as `report.pdf`, its revenue chart as `chart.png`, a screen recording of the demo as `demo.mp4`, release notes in `notes.txt`, the changelog in `CHANGES.md`, the service logs under `logs/`, an appendix in `appendix.md`, and the raw export as `data.bin`.

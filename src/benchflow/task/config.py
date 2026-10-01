@@ -1129,6 +1129,7 @@ class TaskConfig(TaskConfigModel):
     @model_validator(mode="before")
     @classmethod
     def handle_version_rename(cls, data: Any) -> Any:
+        """Refuse the removed ``environment`` spelling and conflicting solution keys."""
         if isinstance(data, dict):
             if "environment" in data:
                 raise ValueError(_ENVIRONMENT_RENAMED_ERROR)
@@ -1173,6 +1174,7 @@ class TaskConfig(TaskConfigModel):
         # validation. This is deliberate format translation, not an alias:
         # the native schema (task.md frontmatter, direct model_validate)
         # accepts only 'sandbox'.
+        """Read a ``task.toml`` (the legacy and Harbor format)."""
         toml_dict = convert_legacy_environment_keys(tomllib.loads(toml_data))
         return cls.model_validate(toml_dict)
 
@@ -1199,6 +1201,7 @@ class TaskConfig(TaskConfigModel):
         return None if expected is None else list(expected)
 
     def model_dump_toml(self) -> str:
+        """Write the config as ``task.toml`` text."""
         import tomli_w
 
         public = self.model_dump(

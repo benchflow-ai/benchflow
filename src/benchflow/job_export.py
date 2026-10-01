@@ -10,7 +10,9 @@ stale (regenerate with ``python -m benchflow.job_export docs/reference/schemas``
 
 Versioning: a new optional field keeps the version; removing or renaming a
 field, or changing its meaning or type, bumps ``schema_version`` and the
-schema file name (``benchflow-job.v2.schema.json``).
+schema file name (``benchflow-job.v2.schema.json``). The published schemas
+are open (no ``additionalProperties: false``), so a document with a field
+added later still validates against the schema a reader already has.
 
 >>> from benchflow.job_export import SCHEMA_VERSION, json_schema
 >>> SCHEMA_VERSION, json_schema("job")["properties"]["kind"]["const"]
@@ -32,7 +34,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 1
 #: Bumped when optional fields are added within a schema_version; the
 #: changelog is in docs/reference/json-export.md.
-SCHEMA_MINOR: dict[str, int] = {"trial": 2, "job": 2, "comparison": 2, "run-summary": 0}
+SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 3, "comparison": 3, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -53,11 +55,25 @@ class UsageExport(_Model):
     cost_status: Literal["priced", "subscription", "unpriced", "unavailable"] | None = (
         Field(
             None,
-            description="why cost_usd is or is not known (1.1): priced; subscription "
-            "(the agent counted its own tokens on a login, which has no price); "
+            description="why cost_usd is or is not known (1.1): priced (a USD "
+            "figure is known; price_source says who priced it); subscription (the "
+            "agent counted its own tokens on a login, which has no price); "
             "unpriced (tokens known, model not in the price table); unavailable "
             "(no usage recorded)",
         )
+    )
+    price_source: str | None = Field(
+        None,
+        description="who priced cost_usd (1.3): litellm (BenchFlow's gateway), "
+        "agent_session_log (an estimate from the agent's own session log, see "
+        "cost_estimate), agent_native_cli, or null",
+    )
+    cost_estimate: dict[str, Any] | None = Field(
+        None,
+        description="when cost_usd is the agent's own estimate (1.3): source "
+        "(claude-code-session-log), method (claude-code-cost: Claude Code's "
+        "totals; usage-at-list-price: its logged usage at list prices), path, "
+        "sessions, responses, models (USD per model), context_1m",
     )
 
 
@@ -265,6 +281,11 @@ class TrialExport(_Model):
     control: Literal["oracle", "empty"] | None = Field(
         description="control runs check the task, not an agent"
     )
+    attempts: int = Field(
+        1,
+        description="rollouts this trial took: 1, plus each retry (or resume "
+        "re-run) of its task in an Evaluation job (1.3)",
+    )
     error: str | None
     error_category: str | None
     verifier_error: str | None
@@ -339,6 +360,16 @@ class SolveRatesExport(_Model):
     min_trials_per_task: int
     max_trials_per_task: int
     solve_rate: float | None
+    solve_rate_interval: list[float] | None = Field(
+        None,
+        description="95% interval of solve_rate, [low, high] (1.3); see "
+        "solve_rate_interval_method",
+    )
+    solve_rate_interval_method: str | None = Field(
+        None,
+        description="wilson (one scored trial per task) or wilson-clustered "
+        "(Wilson on the design-effect sample size, for repeated trials) (1.3)",
+    )
     nonbinary_rewards: int
     ks: list[int]
     pass_at_k: dict[str, float | None]
@@ -529,13 +560,33 @@ _MODELS: dict[str, type[_Model]] = {
 
 
 def json_schema(kind: DocumentKind) -> dict[str, Any]:
-    """The JSON Schema (draft 2020-12) of one document kind."""
-    schema = _MODELS[kind].model_json_schema(mode="serialization")
+    """The JSON Schema (draft 2020-12) of one document kind.
+
+    The schema is open: it does not refuse properties it does not list, so a
+    reader validating with it keeps working when a later release adds an
+    optional field within the same ``schema_version`` (the versioning rule in
+    the module docstring). The models that build the documents stay strict
+    (``extra="forbid"``), so BenchFlow itself cannot write an undeclared field.
+    """
+    schema = _open(_MODELS[kind].model_json_schema(mode="serialization"))
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": f"{SCHEMA_ID_BASE}/benchflow-{kind}.v{SCHEMA_VERSION}.schema.json",
         **schema,
     }
+
+
+def _open(schema: Any) -> Any:
+    """``schema`` without ``additionalProperties: false`` at any level."""
+    if isinstance(schema, dict):
+        return {
+            key: _open(value)
+            for key, value in schema.items()
+            if not (key == "additionalProperties" and value is False)
+        }
+    if isinstance(schema, list):
+        return [_open(value) for value in schema]
+    return schema
 
 
 def schema_filename(kind: str) -> str:
@@ -652,6 +703,7 @@ def trial_export(
         execution=trial.execution,
         assessment=trial.assessment,
         control=trial.control,
+        attempts=len(trial.attempts),
         error=r.error,
         error_category=r.error_category,
         verifier_error=r.verifier_error,
@@ -667,6 +719,12 @@ def trial_export(
             cost_usd=r.cost_usd,
             usage_source=r.usage_source,
             cost_status=_cost_status(r.cost_usd, r.usage_source),
+            price_source=r.price_source,
+            cost_estimate=_safe(estimate)
+            if isinstance(
+                estimate := (r.usage_details or {}).get("cost_estimate"), dict
+            )
+            else None,
         ),
         started_at=record["started_at"],
         finished_at=record["finished_at"],

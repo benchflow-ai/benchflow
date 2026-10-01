@@ -28,7 +28,7 @@ This page ties the pieces together. Mechanics, guarantees and edge cases are in 
 
 ```bash
 bench eval branch --tasks-dir tests/examples/hello-world-task \
-  --agent claude-agent-acp --model claude-sonnet-4-6 --sandbox daytona \
+  --agent claude-agent-acp --model claude-sonnet-5 --sandbox daytona \
   --prompt "Create draft.txt containing: Hello world" --prompt @instruction \
   --checkpoint-after-prompt 1 --concurrency 2 \
   --child label=baseline \

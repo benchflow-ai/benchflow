@@ -123,6 +123,7 @@ class PathReward:
         self.source = source or type(func).__name__
 
     async def score(self, node: RolloutNode) -> VerifyResult:
+        """Adapt a path-based RewardFunc: score the rollout folder the node records."""
         rollout_dir = node.state.get(PATH_STATE_KEY)
         if rollout_dir is None:
             return VerifyResult(

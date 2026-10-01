@@ -132,6 +132,9 @@ class RolloutResult:
         retry:        The ``--retry-from-checkpoint`` outcome (status, reason,
                       checkpoint, reward, original_reward), or None. The
                       retry's reward never replaces ``rewards``.
+        integrity:    The reward-integrity verdict (``integrity`` audit or
+                      strict), as ``IntegrityVerdict.as_dict()``, or None when
+                      the run was not audited. It never changes ``rewards``.
 
     Convenience properties: ``reward`` (the canonical ``rewards["reward"]``),
     ``passed`` (the scoring outcome is a pass), ``success`` (no agent, verifier
@@ -177,6 +180,7 @@ class RolloutResult:
         parent_rollout: str | None = None,
         rollout_dir: Path | None = None,
         retry: dict[str, Any] | None = None,
+        integrity: dict[str, Any] | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
@@ -216,6 +220,9 @@ class RolloutResult:
         # A retry from the trial's last checkpoint (benchflow.checkpoint_retry),
         # reported next to ``rewards``, never merged into them.
         self.retry = retry
+        # The integrity verdict (benchflow.integrity), reported next to
+        # ``rewards``, never merged into them.
+        self.integrity = integrity
 
     @property
     def reward(self) -> float | None:

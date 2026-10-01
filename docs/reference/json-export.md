@@ -19,7 +19,7 @@ Size: trajectories are left out of job documents unless `include_trajectories=Tr
 
 ## Versioning
 
-A new optional field keeps `schema_version` 1 and bumps `schema_minor` (so trial documents written today say 1.1: `schema_version` 1, `schema_minor` 1). Removing or renaming a field, or changing its type or meaning, bumps the version and the schema file name (`benchflow-job.v2.schema.json`), and the previous files stay. Readers should check `kind` and `schema_version` and ignore fields they do not know.
+A new optional field keeps `schema_version` 1 and bumps `schema_minor` (so trial documents written today say 1.1: `schema_version` 1, `schema_minor` 1). Removing or renaming a field, or changing its type or meaning, bumps the version and the schema file name (`benchflow-job.v2.schema.json`), and the previous files stay. Readers should check `kind` and `schema_version` and ignore fields they do not know. The committed schemas are open (they set no `additionalProperties: false`), so a document with a field added in a later minor still validates against the schema file a reader already has; BenchFlow's own writer stays strict and cannot emit an undeclared field.
 
 ## Rubric reviews
 
@@ -31,6 +31,8 @@ Each entry has the rubric definition (`rubric.criteria[]`: name, `kind` blocker/
 
 | Version | Document | Change |
 |---|---|---|
+| 1.3 | `benchflow.job`, `benchflow.comparison` | `solve_rates.solve_rate_interval` (95%, `[low, high]`) and `solve_rate_interval_method` (`wilson` or `wilson-clustered`; see [pass@k](./pass-at-k.md)). |
+| 1.3 | `benchflow.trial`, `benchflow.job` | `attempts` per trial: the rollouts it took, 1 plus each retry (or resume re-run) of its task in an Evaluation job. `usage.price_source` (who priced `cost_usd`) and `usage.cost_estimate` (set when `cost_usd` is the agent's own estimate from its session log: source, method, path, sessions, responses, USD per model, `context_1m`). |
 | 1.2 | `benchflow.trial` | `execution` may be `integration_failed`; `integration_failure` (cause, evidence, evidence source, activity counts, `reward_withheld`; `detected: "on read"` for results written before 1.2). See [Agent integration failures](./integration-failures.md). |
 | 1.2 | `benchflow.job`, `benchflow.comparison` | `denominators.integration_failures` (runs whose agent integration broke; also in `unscored` and `execution_errors`). |
 | 1.1 | `benchflow.job` | `schema_minor`; `groups` (agent-run denominators per agent and model), `interrupted` (attempt folders that never wrote `result.json`, with the sandbox id when one was created), `error_categories` (agent runs that errored, by category), `timing_totals` (seconds per phase over agent runs). |

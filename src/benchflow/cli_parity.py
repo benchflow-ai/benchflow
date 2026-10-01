@@ -79,6 +79,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--agent": _sdk(f"{_EC}.agent"),
     "--model": _sdk(f"{_EC}.model"),
     "--reasoning-effort": _sdk(f"{_EC}.reasoning_effort"),
+    "--harness": _sdk(f"{_EC}.harness", "acp (default) or native"),
     "--sandbox": _sdk(f"{_EC}.environment"),
     "--usage-tracking": _sdk(f"{_EC}.usage_tracking"),
     "--environment-manifest": _sdk(
@@ -99,6 +100,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--checkpoints": _sdk(f"{_EC}.checkpoints"),
     "--checkpoint-keep": _sdk(f"{_EC}.checkpoint_keep"),
     "--freeze-workspace": _sdk(f"{_EC}.freeze_workspace"),
+    "--integrity": _sdk(f"{_EC}.integrity"),
     "--quiet": _cli("console output only; Python reports through the logging module"),
     "--jobs-dir": _sdk(f"{_EV}.__init__(jobs_dir)"),
     "--fresh": _sdk(f"{_EV}.__init__(job_name)", "pass a new job_name"),
@@ -164,6 +166,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     ),
     "--max-sandbox-seconds": _sdk("benchflow.Budget.max_sandbox_seconds"),
     "--max-tokens": _sdk("benchflow.Budget.max_tokens"),
+    "--max-rollouts": _sdk("benchflow.Budget.max_rollouts"),
     "--retry-policy": _cli("reserved: only recorded in the --run-config-out file"),
     "--retry-attempts": _sdk(
         "benchflow.RetryConfig.max_retries", "EvaluationConfig.retry"
@@ -200,6 +203,7 @@ EVAL_BRANCH: dict[str, Equivalent] = {
     "--agent": _sdk(f"{_BR}(agent)"),
     "--model": _sdk(f"{_BR}(model)"),
     "--reasoning-effort": _sdk(f"{_BR}(reasoning_effort)"),
+    "--harness": _sdk(f"{_BR}(harness)"),
     "--sandbox": _sdk(f"{_BR}(sandbox)"),
     "--prompt": _sdk(f"{_BR}(prompts)"),
     "--checkpoint-after-prompt": _sdk(f"{_BR}(checkpoint_after)"),

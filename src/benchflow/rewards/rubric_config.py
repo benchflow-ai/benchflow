@@ -69,6 +69,7 @@ class Criterion:
 
     @property
     def id(self) -> str:
+        """The criterion's name, or the start of its description."""
         return self.name or self.description[:40]
 
     def normalize(self, raw: float) -> float:

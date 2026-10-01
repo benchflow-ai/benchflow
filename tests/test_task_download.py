@@ -19,6 +19,18 @@ from benchflow._utils.benchmark_repos import (
 from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
 
 
+@pytest.fixture(autouse=True)
+def _modern_git(monkeypatch):
+    """Pin git's sparse support: the clone commands below are exact.
+
+    Autouse, and module-wide: it also keeps `_git_can_sparse`'s
+    `functools.cache` from making these tests depend on what ran first. A
+    test of the old-git full-clone path therefore cannot live in this module
+    without overriding this — put it in tests/test_source_sparse_clone.py.
+    """
+    monkeypatch.setattr(task_download, "_git_can_sparse", lambda: True)
+
+
 def _fake_worktree(cmd):
     repo_root = Path(cmd[2])
     snapshot = Path(cmd[-2])
@@ -27,7 +39,11 @@ def _fake_worktree(cmd):
 
 
 def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
-    """Guards PR #226: SkillsBench downloads must track GitHub main explicitly."""
+    """Guards PR #226: SkillsBench downloads must track GitHub main explicitly.
+
+    The alias names a path (``tasks``), so the clone is the blob-less sparse
+    one that dx/first-run introduced (see tests/test_source_sparse_clone.py).
+    """
     monkeypatch.chdir(tmp_path)
     calls = []
 
@@ -54,6 +70,9 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
             "--quiet",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
+            "--no-checkout",
             "--branch",
             "main",
             "https://github.com/benchflow-ai/skillsbench.git",
@@ -130,7 +149,7 @@ def test_resolve_source_with_metadata_records_sha_and_task_hashes(
     """Guards v0.5-integration@cb8759e against unauditable source artifacts."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -195,7 +214,7 @@ def test_resolve_source_with_metadata_records_task_md_hashes(tmp_path, monkeypat
     """Guards commit 67378ddd's 2026-06-04 task.md spike source hashes."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -241,7 +260,7 @@ def test_resolve_source_with_metadata_uses_snapshot_sha_for_provenance(
     mutated_sha = "b" * 40
     rev_parse_calls = 0
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         nonlocal rev_parse_calls
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
@@ -284,7 +303,7 @@ def test_resolve_source_with_metadata_snapshots_under_cache_lock(tmp_path, monke
     monkeypatch.chdir(tmp_path)
     lock_path = tmp_path / ".cache" / "datasets" / "acme-org" / ".benchmarks.lock"
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -497,7 +516,7 @@ def test_resolve_source_with_metadata_records_canonical_source_path(
     """Guards v0.5-integration@cb8759e against non-canonical source evidence."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -562,7 +581,7 @@ def test_resolve_source_with_metadata_fails_without_git_sha(tmp_path, monkeypatc
     """Guards v0.5-integration@cb8759e against unauditable source metadata."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -586,7 +605,7 @@ def test_resolve_source_with_metadata_rejects_path_escape(tmp_path, monkeypatch)
     """Guards v0.5-integration@cb8759e against source path escape evidence."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -616,7 +635,7 @@ def _clone_with(tmp_path, monkeypatch, *, populate):
     """Install a fake ``git`` whose clone is populated by ``populate(clone_dir)``."""
     monkeypatch.chdir(tmp_path)
 
-    def fake_run(cmd, check=False, capture_output=False, text=False):
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         del capture_output, text
         if cmd[:2] == ["git", "clone"]:
             assert check is True
@@ -717,14 +736,17 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
     sha_ref = "c65af83ae2c76fda3f1fd4d2fcf56563975e283e"
     clone_tmp = tmp_path / ".cache" / "datasets" / "org" / "_repo_clone"
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check=False, **kwargs):
+        # The clone checks its exit code; the ref's fetch and checkout run
+        # through _git_quiet, which reads returncode (dx/first-run).
         calls.append(cmd)
-        assert check is True
         if cmd[:2] == ["git", "clone"]:
+            assert check is True
             clone_dir = Path(cmd[-1])
             clone_dir.mkdir(parents=True)
             (clone_dir / ".git").mkdir()
             (clone_dir / "tasks").mkdir()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 
@@ -737,6 +759,9 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
             "--quiet",
             "--depth",
             "1",
+            "--filter=blob:none",
+            "--sparse",
+            "--no-checkout",
             "https://github.com/org/repo.git",
             str(clone_tmp),
         ],
@@ -763,9 +788,9 @@ def test_resolve_source_with_ref_refreshes_cached_checkout(tmp_path, monkeypatch
     (cache / "tasks").mkdir()
     calls = []
 
-    def fake_run(cmd, check):
+    def fake_run(cmd, check=False, **kwargs):
         calls.append(cmd)
-        assert check is True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(task_download.subprocess, "run", fake_run)
 

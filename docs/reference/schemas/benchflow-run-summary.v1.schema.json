@@ -1,7 +1,6 @@
 {
   "$defs": {
     "GateExport": {
-      "additionalProperties": false,
       "properties": {
         "fail_on": {
           "description": "--fail-on kinds",
@@ -39,7 +38,6 @@
   },
   "$id": "https://benchflow.ai/schemas/benchflow-run-summary.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "The result of one ``bench eval run`` (``--summary-out``), for CI.",
   "properties": {
     "budget": {

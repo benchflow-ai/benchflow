@@ -18,6 +18,7 @@ verifier score it as the solution's result.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -431,6 +432,7 @@ async def collect_rollout_artifacts(rollout: Any) -> None:
     """Collect a finished rollout's artifacts before verifier hardening."""
     if getattr(rollout, "_branch_child_active", False) or rollout._env is None:
         return
+    rollout._artifacts_collected = True
     from benchflow.agents.credentials import credential_evidence_overrides
 
     cfg = rollout._config
@@ -452,3 +454,37 @@ async def collect_rollout_artifacts(rollout: Any) -> None:
         )
     except Exception:
         logger.exception("Artifact collection failed")
+
+
+# How long cleanup may spend collecting an unverified rollout's artifacts.
+UNVERIFIED_COLLECTION_TIMEOUT_SEC = 180.0
+
+
+async def collect_unverified_rollout_artifacts(rollout: Any) -> None:
+    """Collect the artifacts of a rollout that never reached its verifier.
+
+    The verifier phase collects artifacts; an agent error (or any failure
+    before verification) skipped it, so the trial kept nothing the agent
+    left, such as its session log or partial outputs. Cleanup calls this
+    before the sandbox stops. It is bounded, and skipped when the sandbox is
+    known to be unreachable.
+    """
+    if getattr(rollout, "_artifacts_collected", False):
+        return
+    if rollout._env is None or getattr(rollout, "_rollout_paths", None) is None:
+        return
+    transport = getattr(
+        getattr(rollout, "_diagnostics", None), "transport_closed", None
+    )
+    if transport is not None and getattr(transport, "sandbox_reachable", None) is False:
+        return
+    try:
+        await asyncio.wait_for(
+            collect_rollout_artifacts(rollout),
+            timeout=UNVERIFIED_COLLECTION_TIMEOUT_SEC,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Collecting the artifacts of an unverified rollout timed out after %.0f s",
+            UNVERIFIED_COLLECTION_TIMEOUT_SEC,
+        )

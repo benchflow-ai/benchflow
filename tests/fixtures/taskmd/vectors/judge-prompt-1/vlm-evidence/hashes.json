@@ -1,0 +1,87 @@
+{
+  "format": "judge-prompt@1",
+  "role": "vlm",
+  "unit": "criterion:packet-consistent",
+  "criteria": [
+    "packet-consistent"
+  ],
+  "behaviors": [],
+  "brief": null,
+  "shared": {},
+  "fixed_text_sha256": "48319d0879fed0881dfa67f401106d0dd7e1859141b9f7cb6c220a80279a7f94",
+  "prompt_bytes": 3344,
+  "prompt_sha256": "d080e23e903003d9dfe28b0056534ec6bf51bed7e712e2b47bef5b45cc58eceb",
+  "hmac_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "published_prompt_sha256": "d080e23e903003d9dfe28b0056534ec6bf51bed7e712e2b47bef5b45cc58eceb",
+  "message_bytes": 266967,
+  "message_sha256": "2214fc0fe84d45f149a5b8582b9dd7ecfca5a56ba16e63161ff4583d68db6712",
+  "evidence_sha256": "4751da5d56457ac99087cc5f6d4595825a565ef5a67a961300398d7b8d2d9c4e",
+  "submission_tree": "sha256:70a8070f27b6e121345835f0892548b1415a667bde63efd44641bcfe161dfecd",
+  "seeds": [
+    {
+      "sample": 1,
+      "attempt": 1,
+      "text": "sha256:70a8070f27b6e121345835f0892548b1415a667bde63efd44641bcfe161dfecd//vlm/criterion:packet-consistent/1/1",
+      "seed": 568413151
+    },
+    {
+      "sample": 2,
+      "attempt": 1,
+      "text": "sha256:70a8070f27b6e121345835f0892548b1415a667bde63efd44641bcfe161dfecd//vlm/criterion:packet-consistent/2/1",
+      "seed": 664230710
+    },
+    {
+      "sample": 1,
+      "attempt": 2,
+      "text": "sha256:70a8070f27b6e121345835f0892548b1415a667bde63efd44641bcfe161dfecd//vlm/criterion:packet-consistent/1/2",
+      "seed": 1317036718
+    }
+  ],
+  "judge_setup": {
+    "format": "judge-setup@1",
+    "judges": {
+      "vlm": {
+        "model": "claude-sonnet-5",
+        "effort": "high",
+        "samples": 2,
+        "aggregate": "median",
+        "min_samples": 2,
+        "per": "criterion",
+        "brief": null,
+        "timeout": 90,
+        "budget": {
+          "tokens": 500000,
+          "tool_calls": null
+        }
+      }
+    },
+    "lazy": true,
+    "briefs": {
+      "vlm": null
+    },
+    "harness": {
+      "vlm": "judge-loop@1"
+    },
+    "tools": "judge-tools@1",
+    "sampling": {
+      "vlm": {
+        "max_tokens": 32000,
+        "seed": "judge-seed@1"
+      }
+    }
+  },
+  "judge_setup_sha256": "915431d306658e9ffe7aecda84b68cae5d22255e50eb6fde386849ee8b436493",
+  "reward_fn": {
+    "format": "reward-fn@1",
+    "verifier": "sha256:23a087f9e1bf32337cdc4202edbb8c86c94171332c7a7812daf56895171fd046",
+    "stages": {},
+    "shared_rubrics": {},
+    "judge_setup": {
+      "": "sha256:915431d306658e9ffe7aecda84b68cae5d22255e50eb6fde386849ee8b436493"
+    },
+    "images": {
+      "python:3.12-slim": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "reward_fn_sha256": "70002750b0fb71a27e9e8575c4a8c003e832d82460a3db3e2fe3457dd5d52229"
+}

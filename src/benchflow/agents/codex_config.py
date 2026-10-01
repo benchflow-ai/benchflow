@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from benchflow.providers.litellm_config import safe_model_alias, strip_provider_prefix
@@ -168,6 +169,42 @@ def codex_home_config(config: dict[str, Any] | None) -> str | None:
         if isinstance(key, str) and rendered is not None:
             lines.append(f"{_toml_scalar(key)} = {rendered}")
     return "\n".join(lines) + "\n"
+
+
+def codex_config_overrides(config: dict[str, Any] | None) -> list[str]:
+    """CODEX_CONFIG as ``codex -c key=value`` overrides, dotted paths for tables.
+
+    The native harness runs ``codex exec --ignore-user-config`` with these, so
+    every setting it runs with comes from the run's CODEX_CONFIG and none from
+    a config.toml already in the sandbox (the image's, or one another role's
+    ACP launch left). Values are TOML, as ``-c`` parses them. A key that is
+    not a valid bare TOML key, or a value this renderer cannot write, is
+    refused rather than dropped: a missing ``model_provider`` would send the
+    model call to Codex's default provider.
+    """
+    if not isinstance(config, dict):
+        return []
+    out: list[str] = []
+
+    def walk(prefix: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if not isinstance(key, str) or not _BARE_TOML_KEY.fullmatch(key):
+                    raise ValueError(
+                        f"{CODEX_CONFIG_ENV} key {key!r} is not a bare key"
+                    )
+                walk(f"{prefix}.{key}" if prefix else key, item)
+            return
+        rendered = _toml_value(value)
+        if rendered is None:
+            raise ValueError(f"{CODEX_CONFIG_ENV}.{prefix} has no TOML rendering")
+        out.append(f"{prefix}={rendered}")
+
+    walk("", config)
+    return out
+
+
+_BARE_TOML_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def apply_codex_launch_config(

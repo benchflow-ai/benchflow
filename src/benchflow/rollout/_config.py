@@ -52,13 +52,38 @@ def _task_document_scenes(
     *,
     prompts: list[str | None] | None,
     skill_mode: str,
+    agent: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[Scene]:
-    """Load scene declarations from ``task.md`` when it is the task entrypoint."""
+    """Load scene declarations from ``task.md`` when it is the task entrypoint.
+
+    A materialized task.md draft 2 package declares no scenes. Its stages that
+    unlock one after another become turns of the run's own agent, in one
+    session: the instruction, then each stage's prompt after the agent ends its
+    previous turn (``benchflow.taskmd``). A scripted seat (oracle, nop) runs
+    its script instead.
+    """
     if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
         return []
     document_path = task_path / "task.md"
     if not document_path.exists():
         return []
+    from benchflow.taskmd.materialize import taskmd_metadata
+
+    taskmd = taskmd_metadata(task_path)
+    if taskmd is not None:
+        turns = [str(t.get("prompt", "")) for t in taskmd.get("turns") or []]
+        if not turns or agent is None or agent in ("oracle", "nop"):
+            return []
+        return [
+            Scene.single(
+                agent=agent,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                prompts=[None, *turns],
+            )
+        ]
 
     from benchflow.task.document import TaskDocument
     from benchflow.task.prompts import materialize_prompt_plan_scenes
@@ -134,6 +159,11 @@ class RolloutConfig:
     # prompt ablations without editing tasks. Recorded in the rollout config.
     prompt_suffix: str | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
+    # How the agent runs: "acp" (default) through its ACP adapter, or "native"
+    # through its own CLI in headless JSON mode (benchflow.native_harness;
+    # Claude Code and Codex). One option for the whole run: every role's agent
+    # must have a native harness when it is "native".
+    harness: str = "acp"
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None
@@ -176,6 +206,11 @@ class RolloutConfig:
     # regrade`` can re-run a changed verifier later. Rubric review and
     # verifier recovery freeze it anyway; this makes any trial regradable.
     freeze_workspace: bool = False
+    # Reward integrity (benchflow.integrity): "audit" records host-side
+    # evidence of what the agent did and writes integrity/claim_verdict.json;
+    # "strict" also runs the verifier in the separate verifier sandbox. Never
+    # changes a reward.
+    integrity: str = "off"
     codex_apps_policy: Literal["disabled", "inherit"] | None = field(
         default=None, kw_only=True
     )
@@ -262,6 +297,9 @@ class RolloutConfig:
                 self.task_path,
                 prompts=self.prompts,
                 skill_mode=self.skill_mode,
+                agent=self.agent,
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
             )
         if self.allow_document_user is None:
             self.allow_document_user = not explicit_scenes
@@ -298,12 +336,27 @@ class RolloutConfig:
             raise ValueError("codex_apps_policy must be disabled, inherit, or None")
         if self.purpose not in {"task", "reviewer"}:
             raise ValueError("purpose must be task or reviewer")
+        from benchflow.integrity.trial import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
                 role.reasoning_effort = normalize_reasoning_effort(
                     role.reasoning_effort
                 )
+        from benchflow.native_harness.harnesses import (
+            check_harness,
+            normalize_harness,
+        )
+
+        self.harness = normalize_harness(self.harness)
+        check_harness(
+            self.harness,
+            [role.agent for scene in self.effective_scenes for role in scene.roles]
+            if self.skill_mode != SKILL_MODE_SELF_GEN
+            else [self.agent],
+        )
 
     def _resolve_user(self) -> None:
         """The single user-materialization point for every construction path.
@@ -388,11 +441,18 @@ class RolloutConfig:
         **kwargs: Any,
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
+        from benchflow.task.formats import materialize_task_dir
+
+        # A task-format folder reads as its native package from here on.
+        task_path = materialize_task_dir(Path(task_path))
         mode = normalize_skill_mode(skill_mode)
         document_scenes = _task_document_scenes(
             Path(task_path),
             prompts=prompts,
             skill_mode=mode,
+            agent=agent,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         if mode == SKILL_MODE_SELF_GEN:
             scenes = []
@@ -464,6 +524,7 @@ class RolloutConfig:
 
     @property
     def recorded_skill_mode(self) -> str:
+        """The skill mode written to the rollout's records."""
         return self.artifact_skill_mode or self.skill_mode
 
     @property

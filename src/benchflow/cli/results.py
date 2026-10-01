@@ -238,7 +238,13 @@ def register_eval_results(eval_app: typer.Typer) -> None:
                 escape(trial.result.model or ""),
             ]
             if priced:
-                cells.append("" if trial.cost_usd is None else f"${trial.cost_usd:.4f}")
+                # "~": an estimate from the agent's own session log.
+                estimate = trial.result.price_source == "agent_session_log"
+                cells.append(
+                    ""
+                    if trial.cost_usd is None
+                    else f"{'~' if estimate else ''}${trial.cost_usd:.4f}"
+                )
             if broken:
                 failure = trial.integration_failure
                 cells.append(escape(str(failure.get("cause"))) if failure else "")
@@ -390,10 +396,12 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         runs the tasks with no finished result. A job that is still running is
         refused. Exit codes as for bench eval run; 2 when the folder is not a job.
         """
+        from benchflow.agents.errors import UsageLimitError
         from benchflow.cli._shared import (
             _exit_if_evaluation_had_errors,
             _parse_agent_env,
             _report_eval_result,
+            stopped_run_result,
         )
         from benchflow.evaluation import Evaluation
 
@@ -409,6 +417,8 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
             raise typer.Exit(2) from None
         try:
             result = run_until_terminated(evaluation.run())
+        except UsageLimitError as exc:
+            result = stopped_run_result(exc)
         except (RuntimeError, ValueError) as exc:
             print_error(str(exc))
             raise typer.Exit(1) from None

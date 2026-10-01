@@ -84,6 +84,7 @@ class Task:
 
     @property
     def task_dir(self) -> Path:
+        """The task's folder."""
         return self._task_dir
 
     def __repr__(self) -> str:

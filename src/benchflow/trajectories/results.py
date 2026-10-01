@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_FILENAME = "results.jsonl"
+#: ``info.schema_version`` of a BenchFlow row. Rows without it are version 1,
+#: where an unscored rollout had ``reward`` and ``score`` 0.0 (its ``metrics``
+#: then has no ``reward`` key). From version 2 both are null when unscored.
+RESULTS_ROW_VERSION = 2
 JOB_RESULTS_ERRORS_FILENAME = "results.errors.json"
 
 logger = logging.getLogger(__name__)
@@ -630,6 +634,7 @@ def build_rollout_results_record(
         "prompt": prompt,
         "completion": completion,
         "info": {
+            "schema_version": RESULTS_ROW_VERSION,
             "task_id": task_name,
             "task_name": task_name,
             "rollout_name": rollout_name,

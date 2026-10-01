@@ -13,6 +13,7 @@ from typing import Any, Literal, get_args
 
 from pydantic import AliasChoices, BaseModel, ValidationError
 
+from benchflow.errors import UserError
 from benchflow.task.config import TaskConfig, convert_legacy_environment_keys
 
 logger = logging.getLogger(__name__)
@@ -286,8 +287,10 @@ def import_task_config_toml(
     )
 
 
-class TaskConfigKeyError(ValueError):
+class TaskConfigKeyError(ValueError, UserError):
     """A task.toml carries an unknown key the run refuses (typo/decision table)."""
+
+    fault = "task"
 
 
 def load_task_config_toml(toml_data: str, *, source: str) -> TaskConfig:

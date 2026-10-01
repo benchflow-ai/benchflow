@@ -167,6 +167,11 @@ def plan_smoke(
         seen: set[str] = set()
         for spec in requested:
             agent, model = parse_agent_request(spec)
+            if agent in ("oracle", "nop"):
+                raise ValueError(
+                    f"bench eval smoke runs model agents; {agent} needs no smoke "
+                    f"test: run `bench eval run --agent {agent} --tasks-dir <task>`"
+                )
             if agent not in AGENTS:
                 raise ValueError(f"unknown agent {agent!r} (see `bench agent list`)")
             if agent in seen:

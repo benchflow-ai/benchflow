@@ -93,12 +93,33 @@ def _load_entry_points() -> list[TaskFormat]:
     return loaded
 
 
+_builtin_formats: list[TaskFormat] | None = None
+
+
+def _load_builtin_formats() -> list[TaskFormat]:
+    """Formats BenchFlow ships: ``taskmd``, task.md draft 2 (``benchflow.taskmd``)."""
+    global _builtin_formats
+    if _builtin_formats is None:
+        from benchflow.taskmd import TaskMdFormat
+
+        _builtin_formats = [TaskMdFormat()]
+    return _builtin_formats
+
+
 def task_formats() -> list[TaskFormat]:
-    """All known task formats: in-process registrations first, then entry points."""
+    """All known task formats: in-process registrations, entry points, then built-ins.
+
+    A registration or an entry point of the same name replaces a built-in.
+    """
     names = {fmt.name for fmt in _registered}
-    return [
+    external = [
         *_registered,
         *(fmt for fmt in _load_entry_points() if fmt.name not in names),
+    ]
+    taken = {fmt.name for fmt in external}
+    return [
+        *external,
+        *(fmt for fmt in _load_builtin_formats() if fmt.name not in taken),
     ]
 
 
