@@ -6,8 +6,9 @@
 # With --daytona the Daytona key is read from $DAYTONA_ENV_FILE (default
 # ~/.config/benchflow/daytona.env), streamed over ssh's stdin and exported into the
 # job's process tree only: never on a command line, never printed, never written to
-# a file on the pod. Without it the job gets no key. Output: /work/logs/<job-name>.log
-# on the pod; exit code: /work/logs/<job-name>.rc.
+# a file on the pod. Without it the job gets no key. The job's output goes to
+# /work/logs/<job-name>.job.log on the pod and its exit code to /work/logs/<job-name>.rc;
+# each step also writes its own log there (see job.sh).
 set -euo pipefail
 with_key=0
 [ "${1:-}" = --daytona ] && { with_key=1; shift; }
@@ -23,7 +24,7 @@ remote="set -euo pipefail
 if [ $with_key = 1 ]; then read -r DAYTONA_API_KEY; export DAYTONA_API_KEY; fi
 export BENCHFLOW_DAYTONA_OWNER=$(printf '%q' "$owner")
 mkdir -p /work/logs; rm -f /work/logs/$name.rc
-setsid nohup bash -c $(printf '%q' "$job; echo \$? > /work/logs/$name.rc") > /work/logs/$name.log 2>&1 < /dev/null &
+setsid nohup bash -c $(printf '%q' "$job; echo \$? > /work/logs/$name.rc") > /work/logs/$name.job.log 2>&1 < /dev/null &
 echo \"started $name (pid \$!)\""
 
 if [ "$with_key" = 1 ]; then
