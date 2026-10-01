@@ -52,6 +52,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     enable_thinking: bool = False
     drop_constant_reward_groups: bool = True
     sglang_mem_fraction: float = 0.6
+    # FlashAttention 3 needs Hopper (H100, H200); use flash_attention_2 on an A100.
+    attn_implementation: str = "flash_attention_3"
     session_server_workers: int = 4
     tensorboard_dir: str = ""
 
@@ -126,7 +128,7 @@ def execute(args: ScriptArgs):
         "--train-backend fsdp "
         "--update-weight-buffer-size 536870912 "
         "--gradient-checkpointing "
-        "--attn-implementation flash_attention_3 "
+        f"--attn-implementation {args.attn_implementation} "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
     )
     perf_args = f"--use-dynamic-batch-size --max-tokens-per-gpu {args.max_seq_len} "
