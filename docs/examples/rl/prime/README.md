@@ -89,29 +89,32 @@ bash pods/run_watchdog.sh start                   # status | stop
 python3 pods/prime_pods.py wallet                 # balance and runway: check before renting
 ```
 
-**2. Rent a pod, with the run's lifetime.** One H200 with Prime's `prime_rl` image took 6.5 minutes to be reachable.
+**2. Rent a pod, with the run's lifetime.** One H200 with Prime's `prime_rl` image took 6.5 minutes to be reachable. Prefer the plain `ubuntu_22_cuda_12` image: `setup_pod.sh` installs everything it needs, and on 2026-10-01 a lambdalabs pod with `prime_rl` came up with Prime's own install failed ("Failed to install Docker packages") and no SSH address, so it had to be deleted. A massedcompute H100 with `ubuntu_22_cuda_12` was reachable in 3 minutes.
 
 ```bash
 python3 pods/prime_pods.py offers --gpu-count 2   # prefer two GPUs when offered
-python3 pods/prime_pods.py create --owner rl-prime --gpu-type H200_141GB --gpu-count 1 \
-  --image prime_rl --name rl-prime-h200-1 --max-hours 3
-python3 pods/prime_pods.py wait <pod-id>          # prints root@host:port
+python3 pods/prime_pods.py create --owner rl-prime --gpu-type H100_80GB --gpu-count 1 \
+  --image ubuntu_22_cuda_12 --name rl-prime-h100-2 --max-hours 3
+python3 pods/prime_pods.py wait <pod-id>          # prints user@host:port
 ```
 
-**3. Install.** prime-rl pins CUDA 13 wheels (torch 2.13+cu130); the pod's driver was branch 550, so install NVIDIA's forward-compatibility libraries first. Then ship this checkout and the tasks from the VM, and run `setup_pod.sh` (4 minutes: prime-rl at commit d5f29c07 with `uv sync --all-extras`, a BenchFlow venv, `benchflow-taskset` into prime-rl's venv, and checks).
+**3. Install.** prime-rl pins CUDA 13 wheels (torch 2.13+cu130). A driver older than 580 needs NVIDIA's forward-compatibility libraries first (the H200 pod had branch 550; the H100 pod had 580 and needed nothing). Then ship this checkout and the tasks from the VM, without the tasks' `oracle/` folders, and run `setup_pod.sh` (2 to 4 minutes: prime-rl at commit d5f29c07 with `uv sync --all-extras`, a BenchFlow venv, `benchflow-taskset` into prime-rl's venv, and checks). The pod's user may be `ubuntu` rather than `root`; `configs/rl.toml` uses `/root/bf-rl`, so rewrite its paths to the user's home.
 
 ```bash
-ssh -p <port> root@<host> 'apt-get update -qq && apt-get install -y -qq cuda-compat-13-0 &&
-  f=$(grep -l cuda-12.8/compat /etc/ld.so.conf.d/* | head -1) && sed -i "1i /usr/local/cuda-13.0/compat" "$f" && ldconfig'
-tar -C <benchflow-checkout> --exclude=.venv --exclude=.git -cf - . | ssh -p <port> root@<host> 'mkdir -p ~/bf-rl/benchflow && tar -xf - -C ~/bf-rl/benchflow'
-tar -C <tasks-dir>/v1 -cf - train test | ssh -p <port> root@<host> 'mkdir -p ~/bf-rl/tasks-v1 && tar -xf - -C ~/bf-rl/tasks-v1'
-ssh -p <port> root@<host> 'bash ~/bf-rl/benchflow/docs/examples/rl/prime/pod/setup_pod.sh'
+ssh -p <port> <user>@<host> 'nvidia-smi --query-gpu=driver_version --format=csv,noheader'   # below 580? then:
+ssh -p <port> <user>@<host> 'sudo apt-get update -qq && sudo apt-get install -y -qq cuda-compat-13-0 &&
+  echo /usr/local/cuda-13.0/compat | sudo tee /etc/ld.so.conf.d/000-cuda-13-compat.conf && sudo ldconfig'
+git -C <benchflow-checkout> archive --format=tar HEAD | ssh -p <port> <user>@<host> 'mkdir -p ~/bf-rl/benchflow && tar -xf - -C ~/bf-rl/benchflow'
+tar -C <tasks-dir>/v1 --exclude='*/oracle' -cf - train test | ssh -p <port> <user>@<host> 'mkdir -p ~/bf-rl/tasks-v1 && tar -xf - -C ~/bf-rl/tasks-v1 && ln -sfn ~/bf-rl/tasks-v1 ~/bf-rl/tasks'
+ssh -p <port> <user>@<host> 'bash ~/bf-rl/benchflow/docs/examples/rl/prime/pod/setup_pod.sh &&
+  sed "s#/root/bf-rl#$HOME/bf-rl#g" ~/bf-rl/benchflow/docs/examples/rl/prime/configs/rl.toml > ~/bf-rl/rl.toml'
 ```
 
-**4. Serve the base model.**
+**4. Serve the base model.** Background only the server command, as here: backgrounding a whole `cd ... && server` chain leaves a shell holding the SSH session open until the server exits. `VLLM_USE_FLASHINFER_SAMPLER=0` makes vLLM sample with PyTorch: FlashInfer's sampler compiles a kernel on the first top-p request, and an image without `nvcc` (the plain `ubuntu_22_cuda_12` one) kills the engine there.
 
 ```bash
-ssh -p <port> root@<host> 'cd ~/bf-rl/prime-rl && CUDA_VISIBLE_DEVICES=0 setsid nohup uv run --no-sync inference \
+ssh -p <port> <user>@<host> 'mkdir -p ~/bf-rl/logs; cd ~/bf-rl/prime-rl; export PATH=$HOME/.local/bin:$PATH;
+  CUDA_VISIBLE_DEVICES=0 VLLM_USE_FLASHINFER_SAMPLER=0 setsid nohup uv run --no-sync inference \
   --vllm.model Qwen/Qwen3-4B-Instruct-2507 --vllm.tool-call-parser hermes --vllm.max-model-len 32768 \
   --vllm.gpu-memory-utilization 0.85 --server.port 8000 > ~/bf-rl/logs/vllm-base.log 2>&1 < /dev/null &'
 ```
@@ -131,12 +134,13 @@ BENCHFLOW_DAYTONA_OWNER=rl-prime-eval-base bash pod/run_on_pod.sh root@<host>:<p
   --out /root/bf-rl/evals/base-v1-test
 ```
 
-**6. Train.** Stop the base server first (`pkill -f "inference --vllm.model"`), then launch. `configs/rl.toml` runs 20 steps of 8 tasks x 8 rollouts, at most 32 episodes (and sandboxes) at once, checkpoints every 5 steps; step 1 took 2 minutes.
+**6. Train.** Stop the base server first, then launch. Stop it by process group: `setsid` made the server its group's leader, and killing only the processes whose command line matches can leave vLLM's engine holding the GPU's memory. `configs/rl.toml` runs 20 steps of 8 tasks x 8 rollouts, at most 32 episodes (and sandboxes) at once, checkpoints every 5 steps; step 1 took 2 minutes.
 
 ```bash
-BENCHFLOW_DAYTONA_OWNER=rl-prime-train bash pod/run_on_pod.sh root@<host>:<port> train bash -c \
-  "cd /root/bf-rl/prime-rl && export PATH=/root/.local/bin:\$PATH CUDA_VISIBLE_DEVICES=0,0 && exec uv run --no-sync rl \
-   @ /root/bf-rl/benchflow/docs/examples/rl/prime/configs/rl.toml --output-dir /root/bf-rl/outputs --run.name rl-v1-qwen3-4b"
+ssh -p <port> <user>@<host> 'for p in $(pgrep -f "[u]v run --no-sync inference"); do kill -- -$(ps -o pgid= -p $p | tr -d " "); done'
+BENCHFLOW_DAYTONA_OWNER=rl-prime-train bash pod/run_on_pod.sh <user>@<host>:<port> train bash -c \
+  "cd \$HOME/bf-rl/prime-rl && export PATH=\$HOME/.local/bin:\$PATH CUDA_VISIBLE_DEVICES=0,0 VLLM_USE_FLASHINFER_SAMPLER=0 && exec uv run --no-sync rl \
+   @ \$HOME/bf-rl/rl.toml --output-dir \$HOME/bf-rl/outputs --run.name rl-v1-qwen3-4b"
 ssh -p <port> root@<host> 'grep -E "Step [0-9]+" /root/bf-rl/outputs/rl-v1-qwen3-4b/logs/latest/orchestrator.log'
 ```
 
@@ -199,6 +203,9 @@ Two caveats. The id cannot be `benchflow`: Verifiers imports a plugin by its nam
 | `ModuleNotFoundError: benchflow` from the bridge | `$BENCHFLOW_PYTHON` was the resolved symlink of the venv's `python`; use the venv's own path (`.venv/bin/python`, not `.resolve()`d) |
 | taskset id `benchflow` fails to load | use `benchflow-taskset` |
 | `torch.cuda.is_available()` false on the pod | CUDA 13 wheels on an older driver: install `cuda-compat-13-0` and put its folder first in the loader path (step 3) |
+| vLLM dies on the first request: `RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist`, then every episode drops as `model_endpoint` | FlashInfer's sampler needs `nvcc` to compile its kernel; set `VLLM_USE_FLASHINFER_SAMPLER=0` for every server and for training (steps 4, 6, 8) |
+| `setup_pod.sh` stops after "installing uv" with `mkdir: cannot create directory '~/.config/fish'` | the image's `~/.config` belongs to root; the script now installs uv with `UV_NO_MODIFY_PATH=1`, or `sudo chown -R $USER ~/.config` |
+| an `ssh ... '... &'` that starts a server never returns | the whole `cd ... && server &` chain ran in a background subshell that still holds the session; background only the server command (step 4) |
 | orchestrator: `ZMQError: Address already in use (tcp://localhost:5555)` | set `[rollout_transport] port` (the config uses 16555) |
 | `UserWarning: CUDA initialization ... invalid device ordinal` in the launcher or orchestrator | harmless with `CUDA_VISIBLE_DEVICES=0,0`: they use no GPU; inference and the trainer each get `0` |
 | episodes end with a plain-text answer and reward 0 | the model answered in text instead of calling `submit`; the shared harness message asks for `submit`, and training teaches it (32 of the first 44 base episodes ended this way before the env used the shared harness) |

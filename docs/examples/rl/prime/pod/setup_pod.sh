@@ -21,11 +21,13 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0="url.https://github.com/.insteadOf"
 export GIT_CONFIG_VALUE_0="git@github.com:"
 
+export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
   log "installing uv"
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # Leave shell profiles alone: some images ship a root-owned ~/.config, and the
+  # installer's profile edit then fails the whole setup.
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
 fi
-export PATH="$HOME/.local/bin:$PATH"
 
 log "prime-rl at $PRIME_RL_REF"
 if [ ! -d prime-rl/.git ]; then
