@@ -223,7 +223,9 @@ def test_train_args_wire_the_agent_function_reward_and_filters():
     assert "--custom-agent-function-path benchflow_agent_function.run" in args
     assert "--custom-rm-path benchflow_agent_function.reward_func" in args
     assert "--rollout-function-path benchflow_rollout.RolloutFn" in args
-    assert "apply_reward_nonzero_std_filter" in args and "--over-sampling-batch-size 1" in args
+    assert "apply_reward_nonzero_std_filter" in args
+    # Miles requires --over-sampling-batch-size >= --rollout-batch-size; its default is that.
+    assert "--over-sampling-batch-size" not in args
     assert "--tito-model qwen3" in args and "--use-session-server" in args
     plain = launch_common.agentic_train_args(
         tito_model="qwen3", session_server_workers=4, drop_constant_reward_groups=False

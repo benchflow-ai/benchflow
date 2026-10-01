@@ -81,9 +81,9 @@ The agentic wiring is `launch_common.agentic_train_args`:
 | `--custom-agent-function-path` | `benchflow_agent_function.run` (with `abort` as the oversampling hook) |
 | `--custom-rm-path` | `benchflow_agent_function.reward_func` |
 | `--rollout-function-path` | `benchflow_rollout.RolloutFn` (adds `benchflow/*` metrics) |
-| `--dynamic-sampling-filter-path` | `apply_reward_nonzero_std_filter`, with `--over-sampling-batch-size 1` |
+| `--dynamic-sampling-filter-path` | `apply_reward_nonzero_std_filter` |
 
-Groups whose episodes all got the same reward carry no GRPO signal: they are dropped and replaced, and counted in `rollout/dynamic_filter/drop_zero_std_*`.
+Groups whose episodes all got the same reward carry no GRPO signal: they are dropped and replaced, and counted in `rollout/dynamic_filter/drop_zero_std_*`. Replacements come a batch at a time (`--over-sampling-batch-size` defaults to `--rollout-batch-size`, its minimum); the groups still running when the batch is full are aborted through the `abort` hook and discarded (`Aborted`).
 
 ## Failure semantics
 

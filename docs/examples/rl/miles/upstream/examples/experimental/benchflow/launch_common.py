@@ -25,14 +25,15 @@ def agentic_train_args(
 
     Groups whose episodes all got the same reward carry no GRPO signal. With
     ``drop_constant_reward_groups`` Miles drops them and samples replacements
-    (counted in ``rollout/dynamic_filter/drop_zero_std_*``); prompt groups are
-    submitted one at a time so the replacements do not overshoot the batch.
-    Groups holding a discarded episode are always dropped
+    (counted in ``rollout/dynamic_filter/drop_zero_std_*``). Replacements come a
+    batch at a time (Miles requires ``--over-sampling-batch-size`` of at least
+    ``--rollout-batch-size``, its default); the groups still running when the
+    batch is full are aborted through the agent function's ``abort`` hook and
+    discarded. Groups holding a discarded episode are always dropped
     (``rollout/aborted/drop_<exit_status>``).
     """
     filter_args = (
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
-        "--over-sampling-batch-size 1 "
         if drop_constant_reward_groups
         else ""
     )
