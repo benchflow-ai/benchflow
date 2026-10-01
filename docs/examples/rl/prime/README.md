@@ -6,22 +6,23 @@ It has three parts: `benchflow_taskset/`, a Verifiers v1 package (taskset plus e
 
 ## Status and results
 
-The environment, its tests, and the config work, and every step up to training was run on a real pod. The training run reached step 1 and then was lost: the pod reached its 8-hour limit and was terminated by the watchdog before its outputs were copied off, so there is no trained checkpoint and no after-training evaluation. All numbers below are real; they are the ones read from the pod while it ran (the files themselves are gone).
+Run end to end on 2026-10-01 on one H100: the base model's evaluation, 20 GRPO steps with LoRA, and the trained adapter's evaluation, both on the held-out test split. **The trained model solves 0.760 of the test tasks, against 0.365 for the base model.** The whole run billed $3.13.
 
 | What | Result |
 |---|---|
-| Model | `Qwen/Qwen3-4B-Instruct-2507`, served by vLLM 0.30.0 through prime-rl on 1x H200 141GB |
-| Task family | rl-core's RL cookbook family, v1 (`<tasks-dir>/v1`, 200 train and 50 test tasks) |
-| Tier choice (train split, evaluate.py) | v2: bugfix 6/32 (0.19), sql+csv+log 0/24, about 5% overall; v1: 11/32 = 0.34 (95% CI 0.20-0.52; bugfix 0.62, log 0.38, sql 0.38, csv 0.00). v1 is in the 20-60% band, so the run used v1 |
-| Base model on v1 test | **0.335** solve rate (95% CI 0.273-0.403): 50 tasks x 4 samples, 200 kept, 0 dropped |
-| Training, step 1 | batch reward 0.594, 64/64 samples trainable, 6.4 turns per episode, 26.6% truncated, 0% errors, 1 min 58 s for the step |
-| Training, later steps | lost with the pod |
-| Trained model on v1 test | not measured |
-| Prime spend | $43.52: the H200 billed $43.47 for 8.04 hours ($5.48/h; the offer said $4.50), a CPU pod $0.01, Prime Inference $0.04 |
+| Model | `Qwen/Qwen3-4B-Instruct-2507` with a rank-16 LoRA adapter, served by vLLM 0.30.0 through prime-rl (`d5f29c07`) on 1x H100 80GB PCIe (massedcompute, $2.35/h) |
+| Task family | rl-core's RL cookbook family, v1: 200 train and 50 held-out test tasks, shipped without their `oracle/` folders |
+| Base model on v1 test | **0.365** solve rate (73/200, 95% CI 0.301-0.434), 0 dropped |
+| Training | 20 steps of 8 tasks x 8 rollouts in 40 minutes (about 2 minutes a step); all 64 samples trainable at every step; at most 1.2% of episodes dropped as infrastructure failures (a Daytona 502 at sandbox start) |
+| Trained adapter on v1 test | **0.760** solve rate (152/200, 95% CI 0.696-0.814), 0 dropped, 0 flagged |
+| By kind, base to trained | sql 0.19 to 0.98, csv 0.15 to 0.60, log 0.63 to 0.85, bugfix 0.48 to 0.58 |
+| Where the gain comes from | Ending episodes properly, and accuracy. Submissions rose from 98 to 179 of 200: answers given as plain text with no tool call fell from 80 to 11, and turn-limit endings from 22 to 10. Of the submitted answers, the share correct rose from 0.735 to 0.849 |
+| GPU utilization, sampled once a minute | 85% during training (98% in a 30-second sample once a second); 26% over the trained evaluation and copy-off, which include restarting vLLM with LoRA (about 2.5 minutes) |
+| Prime spend | $3.13: the H100 for 1.38 hours, from creation to deletion. A first pod whose Prime-side install failed was deleted and billed $0.00 |
 
-The step-1 reward is not an improvement over the base rate: it is measured at temperature 1.0 on training tasks that passed the zero-advantage gate, while the base rates use evaluate.py's temperature 0.7 on all tasks.
+The base number agrees with the first attempt's (0.335 on an H200 on 2026-09-30, 95% CI 0.273-0.403). That attempt reached step 1 and was then lost: its pod was created with the watchdog's maximum lifetime (8 hours) instead of the run's length, the session that drove it ended right after training started, nobody copied the outputs off, and the pod idled until the watchdog terminated it ($43.52). The 2026-10-01 run gave the pod a 3-hour lifetime, copied results to the VM every 3 minutes, and ran everything after training from a script on the VM, so no phase waited on a person or a session.
 
-What went wrong, so it does not happen again: the pod was created with the watchdog's maximum lifetime (8 hours) instead of the run's expected length, and the session that drove it ended right after training started. Nobody copied the outputs off, and the pod idled until the limit. Give a pod the lifetime of the planned run (about 2 to 3 hours here), and copy each step's outputs to the VM as soon as it finishes (step 7 below).
+Read the trained model's episodes before trusting the number: after step 6 its training episodes fell from about 7 turns to 2 or 3. The sampled two- and three-turn successes are honest: one `awk` over the log, or one `sqlite3` count, then `submit`, each answer computed from the task's data. This was a sample, not an audit: this branch predates BenchShield in 0.8 (`feat/benchshield`), so no integrity check ran on these episodes. The Miles cookbook's server runs with `--integrity audit`.
 
 ## The training rule
 
@@ -147,16 +148,20 @@ ssh -p <port> root@<host> 'grep -E "Step [0-9]+" /root/bf-rl/outputs/rl-v1-qwen3
 **7. Copy each result off as soon as it exists.** Pull from the pod through the VM; a pod never gets GCP credentials. Stream to your bucket from a machine that can write to it.
 
 ```bash
-ssh -p <port> root@<host> 'tar -C /root/bf-rl -czf - evals outputs/rl-v1-qwen3-4b/logs jobs/train/outcomes.jsonl' > results-$(date +%H%M).tar.gz   # on the VM
+ssh -p <port> <user>@<host> 'tar -C ~/bf-rl -czf - evals outputs/rl-v1-qwen3-4b/logs jobs/train/outcomes.jsonl' > results-$(date +%H%M).tar.gz   # on the VM
 ```
 
-**8. Evaluate the trained adapter (not yet run).** With LoRA, the trainer writes a PEFT adapter directory (`adapter_config.json` and weights) for each weight broadcast at `<run output>/broadcasts/step_<n>`, removing older ones, so the last step's stays. Stop the training processes, serve the base model with LoRA enabled, load the adapter through prime-rl's admin route on the engine's port (the server port plus 100; the router on the server port serves no admin routes), and run step 5's test command with `--model trained` and its own owner label.
+The 2026-10-01 run did this with an `rsync` loop every 3 minutes, and pulled every training episode's folder (176 MB for 1,266 episodes) before the pod was deleted.
+
+**8. Evaluate the trained adapter.** With LoRA, the trainer writes a PEFT adapter directory (`adapter_config.json` and `adapter_model.safetensors`) for each weight broadcast at `<run output>/broadcasts/step_<n>`, keeping the last two. Copy the last one somewhere nothing cleans up, stop the training processes, serve the base model with LoRA enabled, load the adapter through the engine's port (the server port plus 100; the router on the server port serves no admin routes; prime-rl's server turns on vLLM's runtime LoRA loading), check one request through the router, and run step 5's test command with `--model trained` and its own owner label.
 
 ```bash
-uv run --no-sync inference --vllm.model Qwen/Qwen3-4B-Instruct-2507 --vllm.tool-call-parser hermes \
-  --vllm.enable-lora --vllm.max-lora-rank 16 --vllm.max-model-len 32768 --server.port 8000
+cp -r ~/bf-rl/outputs/rl-v1-qwen3-4b/broadcasts/step_20 ~/bf-rl/final-adapter-step_20
+CUDA_VISIBLE_DEVICES=0 VLLM_USE_FLASHINFER_SAMPLER=0 uv run --no-sync inference --vllm.model Qwen/Qwen3-4B-Instruct-2507 \
+  --vllm.tool-call-parser hermes --vllm.enable-lora --vllm.max-lora-rank 16 --vllm.max-model-len 32768 \
+  --vllm.gpu-memory-utilization 0.85 --server.port 8000
 curl -s localhost:8100/v1/load_lora_adapter -H 'Content-Type: application/json' \
-  -d '{"lora_name": "trained", "lora_path": "/root/bf-rl/outputs/rl-v1-qwen3-4b/broadcasts/step_20"}'
+  -d '{"lora_name": "trained", "lora_path": "'$HOME'/bf-rl/final-adapter-step_20"}'   # "LoRA adapter 'trained' added successfully"
 ```
 
 **9. Clean up.** Terminate the pod and confirm it is gone, check that no sandbox is left under any of the run's owner labels, and stop the watchdog last.
@@ -170,9 +175,27 @@ bash pods/run_watchdog.sh stop
 
 ## Time and cost
 
-Measured on 1x H200 at $5.48/h: pod reachable in 6.5 minutes, install 4 minutes, a 32-episode calibration about 4 minutes, the 200-episode base evaluation about 5 minutes, one training step 2 minutes. A complete run (install, base and trained evaluations, 20 training steps, copying off) should take about 1.5 to 2 hours, roughly $8 to $11 of pod time; the steps after step 1 were not measured. This run cost $43.52 because the pod idled until its 8-hour limit.
+Measured on 1x H100 80GB PCIe at $2.35/h on 2026-10-01, from creation to deletion in 1.38 hours for $3.13:
 
-Prime allows an account more than two instances only after its top-ups reach $100, so no second run was attempted.
+| Phase | Time |
+|---|---|
+| Pod reachable | 3 minutes |
+| Install (`setup_pod.sh`) | 2 minutes |
+| vLLM start | about 2.5 minutes (model load, CUDA graphs) |
+| Base evaluation, 200 episodes at 32 sandboxes | 3.5 minutes |
+| Training, 20 steps | 40 minutes, 1 minute 14 seconds to 2 minutes 27 seconds a step |
+| Trained evaluation, including the LoRA server's start | 6.5 minutes |
+| Copy-off, Daytona sweep, deletion | 1.5 minutes |
+
+The rest was mine: a failed first evaluation (no `nvcc`, step 4), and almost 9 minutes when the GPU sat idle between the base evaluation and training, waiting on a session. The first attempt, on 1x H200 at $5.48/h on 2026-09-30, measured a 6.5-minute start and a 4-minute install, and cost $43.52 because the pod idled until its 8-hour limit.
+
+**Keep the GPU busy.** It is rented by the hour whether it works or not. What this run showed:
+- **Training is GPU-bound most of the time** (85% per-minute mean). The dips come at step boundaries, when the batch's slowest episodes leave vLLM short of work; `max_inflight = 64` (one full batch) should fill them.
+- **Evaluation is bound by the sandboxes.** A trained episode takes the model about a second but takes about 8 seconds to start and 15 to verify, so at 32 sandboxes the GPU idles much of the time. Evaluate at 64 sandboxes or more if Daytona has room.
+- **Restarting vLLM for the trained adapter costs 2.5 idle minutes.** prime-rl's own evaluation hooks, run on the training inference server, would avoid the restart.
+- **Chain every phase in a script on the VM** (the run used one: evaluation, training, the trained evaluation, copy-off, sweep, and deletion), so no phase waits on a person or a session.
+
+**Billing.** Prime bills the personal wallet unless the pod names a team (see "Which wallet pays" above). A personal wallet with less than $100 of top-ups is capped at two instances. The 2026-10-01 run billed a team wallet.
 
 ## Tests
 
