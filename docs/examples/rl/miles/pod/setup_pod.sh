@@ -35,8 +35,12 @@ log "pulling $image"
 docker pull -q "$image"
 docker image inspect "$image" --format '{{index .RepoDigests 0}}'
 docker rm -f miles >/dev/null 2>&1 || true
+# SYS_PTRACE: colocated FSDP hands its weights to SGLang as CUDA IPC tensors, which
+# PyTorch shares through pidfd_getfd under expandable_segments; Docker's default seccomp
+# profile allows that call only with this capability ("pidfd_getfd: Operation not
+# permitted" at the first weight update otherwise).
 docker run -d --name miles --gpus all --ipc=host --shm-size=32g --ulimit memlock=-1 --ulimit stack=67108864 \
-  --network=host -v /work:/work "$image" sleep infinity >/dev/null
+  --cap-add SYS_PTRACE --network=host -v /work:/work "$image" sleep infinity >/dev/null
 
 log "Miles at ${MILES_COMMIT:-the commit the image cloned}; BenchFlow venv, example and prompt data"
 docker exec -e MILES_COMMIT="${MILES_COMMIT:-}" miles bash -lc '
