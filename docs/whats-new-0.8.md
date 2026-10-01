@@ -25,16 +25,22 @@ bench doctor
 ## New in 0.8
 
 - **First run:** `bench doctor` checks the machine and each agent's login and prints a fix per problem; `bench eval smoke` runs a bundled hello-world task once per logged-in agent; `bench --help` and `bench tasks init` end by naming the command that comes next. See [Getting started](./getting-started.md).
+- **Errors:** the end-of-run summary says why trials have no score, whose problem it is and what to do next. See [When a run fails](./when-a-run-fails.md).
 - **Controls:** `--agent nop` runs nothing, so a sound verifier scores the untouched workspace 0; with `--agent oracle` it brackets a task before any model sees it.
 - **CI:** `--fresh`, `--job-name`, `--fail-under`, `--fail-on` and `--summary-out` on `bench eval run`, and `bench eval resume JOB_DIR`. SIGTERM cancels a run, deletes its sandboxes and exits 143.
 - **Budgets:** `--max-cost-usd`, `--max-sandbox-seconds` and `--max-tokens` (`bf.Budget` in Python) stop a job at a cap. See [Budgets](./reference/budget.md).
 - **Reading results:** `bf.load_job` and `bf.load_trial`, `bench eval inspect` and `bench eval compare`, pass@k and pass^k, and versioned JSON exports. See [Analysing runs](./analysing-runs.md).
 - **Python:** `bf.run_sync`, `bf.arun`, `bf.run_batch`, `Evaluation.stream()` and `Evaluation.resume(job_dir)`. See the [examples gallery](./examples/python-sdk/README.md).
 - **Branching:** `bench eval branch` and `bf.branch` fork a run at a checkpoint into verifier-scored children, in parallel or nested, with cost per child. See [Branching](./branching.md).
+- **Regrade:** `bench eval regrade` re-scores a run made with `--freeze-workspace` after a verifier fix, without running the agent again, and writes the new score beside the original. See [Regrade](./regrade.md).
 - **Sandboxes:** `--sandbox remote-docker` runs tasks on a Docker host you control ([Remote Docker](./remote-docker.md)), and tasks can score in a separate verifier sandbox that shares nothing with the agent's ([Separate verifier sandboxes](./separate-verifier.md)).
+- **Reward integrity:** `--integrity audit` writes a verdict next to each reward (`Checked`, `VectorExposed`, `AgentViolation` or `Rejected`) from what the agent did to the things the reward depends on, and never changes the reward; `--integrity strict` also runs the verifier in the separate verifier sandbox. This is BenchShield; see [Reward integrity](./integrity.md).
+- **Native harness:** `--harness native` runs Claude Code and Codex through their own CLIs (`claude -p`, `codex exec`) instead of their ACP adapters; ACP stays the default. See [Native harness](./native-harness.md).
 - **Training:** `bench train stream` emits rollouts to a trainer while a job runs, `bench train token-coverage` checks gateway token capture, and `sglang/...` models capture token ids and logprobs.
 - **Agents:** the Google Antigravity CLI (`antigravity`, alias `agy`).
 - **Authoring:** `bench tasks init` writes a canary GUID into each new task, and `bench tasks check` warns when a task has none.
+- **Task formats:** task.md draft 2 packages run natively, and a package can register a format so its own task folders run with no export step. See [task.md draft 2 packages](./task-authoring-taskmd-v2.md) and [Task formats](./task-formats.md).
+- **Robots and simulators:** `benchflow.embodied` gives robot and simulator tasks an embodiment spec, the `robo` protocol, seeded rollouts and training export. See [Embodied rollouts](./embodied.md).
 - **Concurrent jobs** on one Docker daemon no longer delete each other's containers and networks.
 
 ## Deprecated
