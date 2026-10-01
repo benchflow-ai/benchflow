@@ -335,7 +335,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--top-p", type=float, default=0.8)
     p.add_argument("--retries", type=int, default=5)
-    p.add_argument("--request-timeout", type=float, default=900.0)
+    p.add_argument("--request-timeout", type=float, default=1800.0)
     p.add_argument("--seed", type=int, default=20261001)
     p.add_argument("--stop-at", type=float, default=0.0, help="UNIX time to stop")
     p.add_argument("--cleanup-only", action="store_true")
