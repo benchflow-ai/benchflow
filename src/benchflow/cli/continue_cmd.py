@@ -212,10 +212,12 @@ def register_continue(
         import json
 
         from benchflow.continue_run.batch import (
+            BatchContinueResult,
             continue_batch,
             discover_timeout_run_folders,
             summarize_batch,
         )
+        from benchflow.continue_run.run_folder import ContinueUnsupportedError
 
         _apply_dotenv_to_process_env()
         # Fail fast on a bad ROOT instead of treating a typo'd/nonexistent path as
@@ -236,9 +238,26 @@ def register_continue(
                 err=True,
             )
             raise typer.Exit(1)
-        folders = discover_timeout_run_folders(root, limit=limit)
+        # Timeout runs `continue` cannot resume are skipped, not fatal — but they
+        # must still be reported, or a sweep silently leaves part of itself
+        # behind and the operator never learns why.
+        skips: list[BatchContinueResult] = []
+
+        def _record_skip(folder: Path, exc: ContinueUnsupportedError) -> None:
+            skips.append(BatchContinueResult.skip(folder, exc))
+
+        folders = discover_timeout_run_folders(root, limit=limit, on_skip=_record_skip)
+        if skips:
+            typer.secho(
+                f"Skipping {len(skips)} timeout run(s) benchflow continue cannot "
+                'resume; see "skips" below for the reason.',
+                fg=typer.colors.YELLOW,
+            )
         if not folders:
-            typer.secho("No timeout run folders found.", fg=typer.colors.YELLOW)
+            if not skips:
+                typer.secho("No timeout run folders found.", fg=typer.colors.YELLOW)
+                return
+            typer.echo(json.dumps(summarize_batch(skips), indent=2))
             return
 
         typer.echo(
@@ -257,8 +276,10 @@ def register_continue(
                 proxy_mode=proxy_mode,
             )
         )
-        summary = summarize_batch(results)
+        summary = summarize_batch([*results, *skips])
         typer.echo(json.dumps(summary, indent=2))
+        # Skips are deliberately not failures: exit status still reflects only
+        # continuations that were attempted and went wrong.
         if summary["failed"]:
             raise typer.Exit(1)
 
