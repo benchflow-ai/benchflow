@@ -21,7 +21,9 @@ It is an estimate, not the bill: ``history`` shows what Prime billed, and
 ``wallet`` the account's balance.
 
 The API key comes from ``PRIME_API_KEY`` or ``~/.config/benchflow/primeintellect.env``
-(``PRIME_ENV_FILE``) and is never printed. State lives in ``--dir`` (default
+(``PRIME_ENV_FILE``) and is never printed. ``PRIME_TEAM_ID``, from the same places,
+bills new pods to that team's wallet and makes ``wallet`` and the watchdog read it;
+without it, Prime bills the key owner's personal wallet. State lives in ``--dir`` (default
 ``$PRIME_POD_DIR`` or ``~/prime-pods``): ``ledger.jsonl``, ``policy.json``,
 ``watchdog.log``, ``watchdog_state.json``, ``ssh_key_id``. ``policy.json`` is read
 on every pass, so a new cap takes effect without a restart. Touch ``STOP_ALL``
@@ -105,33 +107,64 @@ def hours_between(start: datetime, end: datetime) -> float:
 # --- the API -------------------------------------------------------------------
 
 
+def env_file() -> Path:
+    return Path(
+        os.environ.get("PRIME_ENV_FILE", "~/.config/benchflow/primeintellect.env")
+    ).expanduser()
+
+
+def env_file_value(name: str, lines: list[str]) -> str | None:
+    for line in lines:
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if line.startswith(name + "="):
+            value = line.split("=", 1)[1].strip().strip("'\"")
+            if value:
+                return value
+    return None
+
+
 def load_key() -> str:
     key = os.environ.get("PRIME_API_KEY", "").strip()
     if key:
         return key
-    path = Path(
-        os.environ.get("PRIME_ENV_FILE", "~/.config/benchflow/primeintellect.env")
-    ).expanduser()
+    path = env_file()
     try:
         lines = path.read_text().splitlines()
     except OSError as exc:
         raise SystemExit(
             f"PRIME_API_KEY is not set and {path} is unreadable: {exc}"
         ) from None
-    for line in lines:
-        line = line.strip()
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        if line.startswith("PRIME_API_KEY="):
-            value = line.split("=", 1)[1].strip().strip("'\"")
-            if value:
-                return value
+    value = env_file_value("PRIME_API_KEY", lines)
+    if value:
+        return value
     raise SystemExit(f"PRIME_API_KEY is not set and not found in {path}")
 
 
+def load_team_id() -> str | None:
+    """The team whose wallet pays, or None for the key owner's personal wallet."""
+    team = os.environ.get("PRIME_TEAM_ID", "").strip()
+    if team:
+        return team
+    try:
+        lines = env_file().read_text().splitlines()
+    except OSError:
+        return None
+    return env_file_value("PRIME_TEAM_ID", lines)
+
+
 class Prime:
-    def __init__(self, key: str, *, base: str = API, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        key: str,
+        *,
+        team_id: str | None = None,
+        base: str = API,
+        timeout: float = 60.0,
+    ) -> None:
         self._key = key
+        self.team_id = team_id
         self.base = base.rstrip("/")
         self.timeout = timeout
 
@@ -207,7 +240,8 @@ class Prime:
         return self.request("DELETE", f"/pods/{pod_id}")
 
     def wallet(self) -> dict:
-        return self.request("GET", "/billing/wallet") or {}
+        params = {"teamId": self.team_id} if self.team_id else None
+        return self.request("GET", "/billing/wallet", params=params) or {}
 
     def offers(self, gpu_type: str | None = None) -> list[dict]:
         params = {"gpu_type": gpu_type} if gpu_type else None
@@ -629,6 +663,10 @@ def offer_price(offer: dict) -> float:
     return float(value or 0.0)
 
 
+def wallet_label(prime: Prime) -> str:
+    return f"team {prime.team_id}" if prime.team_id else "the personal wallet"
+
+
 def require_owner(args: argparse.Namespace) -> str:
     owner = (args.owner or os.environ.get("PRIME_POD_OWNER", "")).strip()
     if not owner:
@@ -666,15 +704,19 @@ def cmd_create(prime: Prime, args: argparse.Namespace) -> int:
         "autoRestart": False,
         "sshKeyId": ssh_key_id,
     }
-    body = {
+    body: dict[str, Any] = {
         "pod": {key: value for key, value in pod.items() if value is not None},
         "provider": {"type": offer["provider"]} if offer.get("provider") else {},
     }
+    # Without a team, Prime bills the key owner's personal wallet.
+    if prime.team_id:
+        body["team"] = {"teamId": prime.team_id}
     price = offer_price(offer)
     print(
         f"creating {offer['gpuCount']}x {offer['gpuType']} ({offer['cloudId']}, "
         f"{offer.get('provider')}/{offer.get('dataCenter')}) at ${price:.3f}/h, "
-        f"max {args.max_hours:g}h, image {args.image}, owner {owner}",
+        f"max {args.max_hours:g}h, image {args.image}, owner {owner}, "
+        f"billed to {wallet_label(prime)}",
         flush=True,
     )
     requested = utcnow()
@@ -699,12 +741,13 @@ def cmd_create(prime: Prime, args: argparse.Namespace) -> int:
             "gpu_count": offer["gpuCount"],
             "cloud_id": offer["cloudId"],
             "provider": offer.get("provider"),
+            "team_id": prime.team_id,
         },
     )
     log(
         directory,
         f"created {pod_id} {args.name} [{owner}] {offer['gpuCount']}x{offer['gpuType']}"
-        f" ${price:.3f}/h max {args.max_hours:g}h",
+        f" ${price:.3f}/h max {args.max_hours:g}h, billed to {wallet_label(prime)}",
     )
     print(pod_id)
     return 0
@@ -872,7 +915,8 @@ def cmd_wallet(prime: Prime, args: argparse.Namespace) -> int:
     )
     runway = f"{balance / burn:.1f}h" if burn > 0 else "no pod running"
     print(
-        f"balance ${balance:.2f}; running pods ${burn:.2f}/h (ours ${ours:.2f}/h); runway {runway}"
+        f"{wallet_label(prime)}: balance ${balance:.2f}; running pods ${burn:.2f}/h"
+        f" (ours ${ours:.2f}/h); runway {runway}"
     )
     return 0
 
@@ -1014,7 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     args.dir.mkdir(parents=True, exist_ok=True)
-    prime = Prime(load_key())
+    prime = Prime(load_key(), team_id=load_team_id())
     handler = {
         "watch": cmd_watch,
         "create": cmd_create,

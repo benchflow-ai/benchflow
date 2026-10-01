@@ -77,6 +77,8 @@ The seat is Verifiers' `null` harness (a chat loop whose only tools are the MCP 
 
 Everything runs from a VM that holds the keys (`~/.config/benchflow/primeintellect.env` with `PRIME_API_KEY`, `daytona.env` with `DAYTONA_API_KEY`, both mode 600). Pods never get the Prime key or GCP credentials, and get the Daytona key only as the environment of the job that needs it. These are the commands that were run, with the paths used.
 
+**Which wallet pays.** Prime bills a pod to the key owner's personal wallet unless the create request names a team. To use a team's wallet, put `PRIME_TEAM_ID=<team id>` in the same env file (or the environment); `prime_pods.py` then sends it on every pod it creates, and `wallet` and the watchdog read that team's balance. `GET /user/teams` lists the teams a key can use.
+
 **1. Watchdog and SSH key (once).** The watchdog passes every 5 minutes and acts only on pods it knows are ours (in the ledger under an owner in `policy.json`'s `owners`, or named with one of its `name_prefixes`). It terminates a pod past its lifetime (the one given at creation, never more than 8 hours), an owner's pods at the owner's cap, and all of ours at the spend cap ($1,400), and it logs the wallet balance and runway. `create` refuses to run while the watchdog is stopped.
 
 ```bash

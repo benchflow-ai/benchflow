@@ -7,6 +7,7 @@ decision functions and its ledger with fixed clocks; no request reaches Prime.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -372,3 +373,90 @@ def test_owner_column_and_legacy_records(tmp_path: Path) -> None:
     pods = prime_pods.ledger_read(tmp_path)
     assert pods["old"].owner == prime_pods.LEGACY_OWNER
     assert pods["new"].owner == "miles"
+
+
+H200_OFFER = {
+    "cloudId": "h200-1",
+    "gpuType": "H200_141GB",
+    "gpuCount": 1,
+    "socket": "SXM5",
+    "provider": "nebius",
+    "dataCenter": "us-central1",
+    "images": ["prime_rl"],
+    "prices": {"onDemand": 4.5},
+    "stockStatus": "Available",
+}
+
+
+class RecordingPrime(prime_pods.Prime):
+    """A Prime client whose requests are recorded and answered offline."""
+
+    def __init__(self, team_id: str | None) -> None:
+        super().__init__("not-a-key", team_id=team_id)
+        self.calls: list[tuple[str, str, object, object]] = []
+
+    def request(self, method, path, *, body=None, params=None, retries=3):
+        self.calls.append((method, path, body, params))
+        if path == "/availability/":
+            return {"h200": [H200_OFFER]}
+        if method == "POST" and path == "/pods/":
+            return {"id": "pod-1", "priceHr": 5.48}
+        return {"balance_usd": 100.0}
+
+
+def create_args(tmp_path: Path):
+    return prime_pods.main.__globals__["argparse"].Namespace(
+        dir=tmp_path,
+        max_hours=3.0,
+        no_watchdog_check=True,
+        owner="rl-prime",
+        gpu_type="H200_141GB",
+        gpu_count=1,
+        image="prime_rl",
+        name="rl-prime-h200-1",
+        provider=None,
+        cloud_id=None,
+        data_center=None,
+        disk=None,
+        ssh_key_id=None,
+        allow_spot=False,
+    )
+
+
+@pytest.mark.parametrize("team_id", ["team-1", None])
+def test_create_bills_the_team_only_when_one_is_set(tmp_path: Path, team_id) -> None:
+    prime = RecordingPrime(team_id)
+    assert prime_pods.cmd_create(prime, create_args(tmp_path)) == 0
+    [body] = [body for method, _, body, _ in prime.calls if method == "POST"]
+    if team_id:
+        assert body["team"] == {"teamId": team_id}
+    else:
+        assert "team" not in body
+    [record] = (tmp_path / "ledger.jsonl").read_text().splitlines()
+    assert json.loads(record)["team_id"] == team_id
+
+
+@pytest.mark.parametrize(
+    ("team_id", "params"), [("team-1", {"teamId": "team-1"}), (None, None)]
+)
+def test_wallet_reads_the_team_wallet_when_one_is_set(team_id, params) -> None:
+    prime = RecordingPrime(team_id)
+    assert prime.wallet() == {"balance_usd": 100.0}
+    assert prime.calls == [("GET", "/billing/wallet", None, params)]
+
+
+def test_team_id_comes_from_the_environment_before_the_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = tmp_path / "primeintellect.env"
+    env.write_text("export PRIME_API_KEY='k'\nPRIME_TEAM_ID=\"from-file\"\n")
+    monkeypatch.setenv("PRIME_ENV_FILE", str(env))
+    monkeypatch.delenv("PRIME_TEAM_ID", raising=False)
+    assert prime_pods.load_team_id() == "from-file"
+    monkeypatch.setenv("PRIME_TEAM_ID", "from-env")
+    assert prime_pods.load_team_id() == "from-env"
+    monkeypatch.delenv("PRIME_TEAM_ID")
+    env.write_text("PRIME_API_KEY=k\n")
+    assert prime_pods.load_team_id() is None
+    monkeypatch.setenv("PRIME_ENV_FILE", str(tmp_path / "missing.env"))
+    assert prime_pods.load_team_id() is None
