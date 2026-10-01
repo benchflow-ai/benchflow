@@ -36,6 +36,7 @@ import json
 import math
 import os
 import random
+import re
 import signal
 import sys
 import threading
@@ -85,6 +86,76 @@ CONTEXT_MARKERS = (
 )
 
 
+TOOL_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.S)
+XML_FUNCTION = re.compile(r"<function=([\w.-]+)>(.*?)</function>", re.S)
+XML_PARAMETER = re.compile(r"<parameter=([\w.-]+)>\n?(.*?)\n?</parameter>", re.S)
+TOOL_BY_ARGUMENT = {"command": "run_bash", "answer": "submit"}
+
+
+def recover_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """A tool call the server left in the text or reasoning channel.
+
+    Some OpenAI-compatible servers do not convert a model's native tool-call
+    syntax: Qwen3.5 and later write ``<tool_call><function=NAME><parameter=KEY>``
+    blocks, Qwen3 writes ``<tool_call>{json}</tool_call>``, and a gpt-oss call
+    can arrive as its bare JSON arguments in the reasoning channel. TRL parses
+    these formats from the raw output during training, so the evaluator
+    recovers them too; only from a reply with no parsed tool call, and it
+    counts every recovery. The last complete block wins.
+    """
+
+    texts = [
+        str(message.get("content") or ""),
+        str(message.get("reasoning_content") or message.get("reasoning") or ""),
+    ]
+    for text in texts:
+        for block in reversed(TOOL_BLOCK.findall(text)):
+            call = _parse_block(block)
+            if call is not None:
+                return [call]
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                arguments = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(arguments, dict) and len(arguments) == 1:
+                name = TOOL_BY_ARGUMENT.get(next(iter(arguments)))
+                if name:
+                    return [_call(name, arguments)]
+    return []
+
+
+def _parse_block(block: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(block)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("name"), str):
+        arguments = payload.get("arguments") or {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return None
+        return (
+            _call(payload["name"], arguments) if isinstance(arguments, dict) else None
+        )
+    function = XML_FUNCTION.search(block)
+    if function is None:
+        return None
+    arguments = {key: value for key, value in XML_PARAMETER.findall(function.group(2))}
+    return _call(function.group(1), arguments)
+
+
+def _call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": f"recovered-{random.getrandbits(32):08x}",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
+
+
 class EndpointError(Exception):
     """The model endpoint failed in a way the policy could not have caused."""
 
@@ -113,6 +184,8 @@ class Episode:
     tool_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    truncated_calls: int = 0
+    recovered_calls: int = 0
     ended: str = ""
     elapsed_sec: float = 0.0
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -129,6 +202,8 @@ class Episode:
             "tool_calls": self.tool_calls,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "truncated_calls": self.truncated_calls,
+            "recovered_calls": self.recovered_calls,
             "ended": self.ended,
             "elapsed_sec": round(self.elapsed_sec, 2),
         }
@@ -247,15 +322,26 @@ def run_episode(
             usage = reply.get("usage") or {}
             episode.prompt_tokens += int(usage.get("prompt_tokens") or 0)
             episode.completion_tokens += int(usage.get("completion_tokens") or 0)
-            message = (reply.get("choices") or [{}])[0].get("message") or {}
+            choice = (reply.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            # A reply cut at --max-tokens is the policy's budget running out, but a
+            # cap set too low deflates every score: count it, so it shows in the summary.
+            episode.truncated_calls += choice.get("finish_reason") == "length"
             calls = message.get("tool_calls") or []
+            if not calls:
+                calls = recover_tool_calls(message)
+                episode.recovered_calls += bool(calls)
             assistant = {"role": "assistant", "content": message.get("content") or ""}
             if calls:
                 assistant["tool_calls"] = calls
             messages.append(assistant)
             episode.turns += 1
             if not calls:
-                episode.ended = "no_tool_call"
+                episode.ended = (
+                    "cut_at_max_tokens"
+                    if choice.get("finish_reason") == "length"
+                    else "no_tool_call"
+                )
                 break
             if turn == args.max_turns:
                 episode.ended = "turn_limit"
@@ -341,6 +427,8 @@ def summarise(episodes: list[Episode], args: argparse.Namespace) -> dict[str, An
         "mean_turns": (sum(e.turns for e in episodes) / len(episodes))
         if episodes
         else None,
+        "truncated_calls": sum(e.truncated_calls for e in episodes),
+        "recovered_calls": sum(e.recovered_calls for e in episodes),
         "sampling": {
             "temperature": args.temperature,
             "top_p": args.top_p,
@@ -383,7 +471,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--include", action="append", default=[], help="task id to include"
     )
     parser.add_argument("--max-turns", type=int, default=MAX_TURNS)
-    parser.add_argument("--max-tokens", type=int, default=1024, help="per model call")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help="per model call; give reasoning models room (a cut reply ends its episode)",
+    )
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--extra-body", help="JSON merged into each request body")
