@@ -44,6 +44,14 @@ docker exec -e MILES_COMMIT="${MILES_COMMIT:-}" miles bash -lc '
   if [ -n "$MILES_COMMIT" ]; then
     git -C /root/miles fetch -q origin && git -C /root/miles checkout -q "$MILES_COMMIT"
   fi
+  # dev-202609302131 pairs opentelemetry-api 1.45.0 with the 1.44 SDK; the Ray dashboard
+  # agent then fails to import, the raylet exits with it, and `ray start` times out.
+  sdk=$(pip show opentelemetry-sdk 2>/dev/null | sed -n "s/^Version: //p")
+  api=$(pip show opentelemetry-api 2>/dev/null | sed -n "s/^Version: //p")
+  if [ -n "$sdk" ] && [ "$sdk" != "$api" ]; then
+    echo "aligning opentelemetry-api $api with opentelemetry-sdk $sdk"
+    pip install -q "opentelemetry-api==$sdk"
+  fi
   command -v uv >/dev/null || pip install -q uv
   cd /work/benchflow
   uv venv -q --allow-existing .venv --python 3.12 && uv sync -q --locked --extra sandbox-daytona
