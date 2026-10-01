@@ -224,9 +224,18 @@ def build_config(args: argparse.Namespace) -> rl_train.Config:
 
 
 def read_jsonl(path: Path) -> list[dict]:
+    """JSON lines; a line cut short by a killed writer is skipped."""
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
 
 
 def _step_index(name: object) -> int:
@@ -239,16 +248,21 @@ def _step_index(name: object) -> int:
 def prune_for_resume(log_path: Path) -> int:
     """Set aside the records of steps a resumed run will run again.
 
-    The cookbook resumes after its last checkpoint; episodes and groups of the
-    steps after it (an interrupted step included) move to *.discarded.jsonl,
-    so the curve counts every step once.
+    The cookbook resumes after its last checkpoint; episodes, groups and drops
+    of the steps after it (an interrupted step included) move to
+    *.discarded.jsonl, so the curve counts every step once (tinker_cost.py
+    still counts them as spent).
     """
     from tinker_cookbook import checkpoint_utils
 
     last = checkpoint_utils.get_last_checkpoint(str(log_path))
     resume = last.batch if last is not None else 0
     moved = 0
-    for relative, key in (("trials/rollouts.jsonl", "step"), ("groups.jsonl", "where")):
+    for relative, key in (
+        ("trials/rollouts.jsonl", "step"),
+        ("groups.jsonl", "where"),
+        ("infrastructure_drops.jsonl", "where"),
+    ):
         path = log_path / relative
         rows = read_jsonl(path)
         gone = [r for r in rows if _step_index(r.get(key)) >= resume]

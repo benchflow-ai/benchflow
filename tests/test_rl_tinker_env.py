@@ -644,7 +644,14 @@ def test_a_resumed_run_sets_aside_the_steps_it_runs_again(tmp_path):
     (tmp_path / "groups.jsonl").write_text(
         "".join(json.dumps(g) + "\n" for g in groups)
     )
-    assert tinker_train.prune_for_resume(tmp_path) == 4
+    drops = [{"where": "train-0001", "reason": "sandbox_start"}]
+    drops.append({"where": "train-0003", "reason": "sandbox_start"})
+    (tmp_path / "infrastructure_drops.jsonl").write_text(
+        "".join(json.dumps(d) + "\n" for d in drops)
+    )
+    assert tinker_train.prune_for_resume(tmp_path) == 5
+    kept_drops = (tmp_path / "infrastructure_drops.jsonl").read_text().splitlines()
+    assert [json.loads(x)["where"] for x in kept_drops] == ["train-0001"]
     kept = [
         json.loads(x)["step"]
         for x in (tmp_path / "trials" / "rollouts.jsonl").read_text().splitlines()

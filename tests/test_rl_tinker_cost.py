@@ -207,3 +207,43 @@ def test_the_gate_projects_from_the_measured_steps_and_stops_past_the_budget(tmp
     assert tc.main(gate_args(tmp_path, log, budget=1000, cap=0.01)) == tc.STOP
     assert "cap" in json.loads((tmp_path / "gate.json").read_text())["reasons"][0]
     assert tc.main(gate_args(tmp_path, log, budget=0.01)) == tc.STOP
+
+
+def test_set_aside_steps_count_as_spent_and_a_cut_line_is_skipped(tmp_path):
+    log = make_training_log(tmp_path)
+    write_jsonl(
+        log / "trials" / "rollouts.discarded.jsonl",
+        [
+            {
+                "step": "train-0001",
+                "task_id": "c",
+                "reward": 0.5,
+                "tokens": tokens(1000, 0, 100, 1100),
+            }
+        ],
+    )
+    write_jsonl(
+        log / "groups.discarded.jsonl",
+        [{"where": "train-0001", "task": "c", "kind": "mixed", "dropped": False}],
+    )
+    with (log / "trials" / "rollouts.jsonl").open("a") as f:
+        f.write(
+            '{"step": "train-0001", "task_id": "c", "rew'
+        )  # a writer killed mid-line
+    cost = tc.cost_of(log, model=MODEL)
+    assert cost["tokens"] == {
+        "prefill": 1470,
+        "reusable": 270,
+        "sampled": 147,
+        "train": 1540,
+    }
+    assert cost["set_aside_tokens"] == tokens(1000, 0, 100, 1100)
+    # The gate's mean step leaves them out; its spend does not.
+    assert [s["step"] for s in tc.training_steps(log)] == [0, 1]
+    assert tc.main(gate_args(tmp_path, log, budget=1000)) == 0
+    doc = json.loads((tmp_path / "gate.json").read_text())
+    aside = tc.usd(MODEL, tokens(1000, 0, 100, 1100))
+    assert doc["set_aside"]["usd"] == pytest.approx(aside["usd"])
+    mean = sum(tc.usd(MODEL, s)["usd"] for s in tc.training_steps(log)) / 2
+    spent = sum(c["usd"] for c in doc["spent"]) + sum(c["usd"] for c in doc["reserve"])
+    assert doc["projected"]["usd"] == pytest.approx(spent + aside["usd"] + 20 * mean)

@@ -68,9 +68,18 @@ def usd(model: str, tokens: dict[str, float]) -> dict[str, float]:
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
+    """JSON lines; a line cut short by a killed writer is skipped."""
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
 
 
 def _add(total: dict[str, float], tokens: dict[str, Any], keys: Iterable[str]) -> None:
@@ -78,16 +87,23 @@ def _add(total: dict[str, float], tokens: dict[str, Any], keys: Iterable[str]) -
         total[key] = total.get(key, 0) + int(tokens.get(key) or 0)
 
 
-def training_steps(log_path: Path | str) -> list[dict[str, Any]]:
-    """Tokens per training step: every sampled episode, training for trained groups."""
+def training_steps(
+    log_path: Path | str, *, set_aside: bool = False
+) -> list[dict[str, Any]]:
+    """Tokens per training step: every sampled episode, training for trained groups.
+
+    With `set_aside`, the records a resumed run set aside (*.discarded.jsonl:
+    steps it ran again). They were paid for, but are not part of the run.
+    """
     log_path = Path(log_path)
+    suffix = ".discarded.jsonl" if set_aside else ".jsonl"
     trained = {
         (g["where"], g["task"])
-        for g in _rows(log_path / "groups.jsonl")
+        for g in _rows(log_path / f"groups{suffix}")
         if not g.get("dropped")
     }
     steps: dict[str, dict[str, Any]] = {}
-    for row in _rows(log_path / "trials" / "rollouts.jsonl"):
+    for row in _rows(log_path / "trials" / f"rollouts{suffix}"):
         where = str(row.get("step", ""))
         if not where.startswith("train-"):
             continue
@@ -116,6 +132,7 @@ def cost_of(
     """Tokens and USD of a training log path, a tinker_eval.py JSON or an evaluate.py folder."""
     path = Path(path)
     tokens: dict[str, float] = dict.fromkeys(TOKEN_KEYS, 0)
+    aside: dict[str, float] = dict.fromkeys(TOKEN_KEYS, 0)
     kind = ""
     if (path / "trials" / "rollouts.jsonl").is_file() or (
         path / "groups.jsonl"
@@ -123,6 +140,10 @@ def cost_of(
         kind = "training"
         for step in training_steps(path):
             _add(tokens, step, TOKEN_KEYS)
+        # Steps a resumed run ran again were paid for twice.
+        for step in training_steps(path, set_aside=True):
+            _add(tokens, step, TOKEN_KEYS)
+            _add(aside, step, TOKEN_KEYS)
     elif path.is_file():
         kind = "tinker_eval"
         doc = json.loads(path.read_text())
@@ -145,6 +166,8 @@ def cost_of(
             f"no training log, tinker_eval.py result or evaluate.py folder: {path}"
         )
     out: dict[str, Any] = {"path": str(path), "kind": kind, "tokens": tokens}
+    if kind == "training":
+        out["set_aside_tokens"] = aside
     if model is not None:
         out.update(usd(model, tokens))
     return out
@@ -170,11 +193,16 @@ def gate(args: argparse.Namespace) -> dict[str, Any]:
         k: sum(s[k] for s in per_step) / len(per_step) for k in ("usd", "usd_no_cache")
     }
     spent = [cost_of(p, model=args.model, reusable_fraction=share) for p in args.spent]
+    # Steps a resumed run ran again: paid for, outside the mean step.
+    aside = usd(args.model, cost_of(args.train, model=None)["set_aside_tokens"])
     reserve = [
         cost_of(p, model=args.model, reusable_fraction=share) for p in args.reserve
     ]
     projected = {
-        k: sum(c[k] for c in spent) + mean[k] * args.steps + sum(c[k] for c in reserve)
+        k: sum(c[k] for c in spent)
+        + aside[k]
+        + mean[k] * args.steps
+        + sum(c[k] for c in reserve)
         for k in ("usd", "usd_no_cache")
     }
     reasons = []
@@ -193,6 +221,7 @@ def gate(args: argparse.Namespace) -> dict[str, Any]:
         "mean_step": mean,
         "reusable_share": share,
         "spent": spent,
+        "set_aside": aside,
         "reserve": reserve,
         "projected": projected,
         "budget": args.budget,
