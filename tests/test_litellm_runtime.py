@@ -192,6 +192,37 @@ async def test_codex_on_baseten_uses_native_responses(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent", "moves"), [("codex-acp", True), ("claude-agent-acp", False)]
+)
+async def test_tool_image_move_reaches_proxy_env_only(monkeypatch, agent, moves):
+    """The switch that moves Responses tool-result images into a user message
+    reaches the proxy for Baseten's Responses route only, never the agent."""
+    from benchflow.providers.litellm_config import LITELLM_RESPONSES_TOOL_IMAGES_ENV
+
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, _runtime = await ensure_litellm_runtime(
+        agent=agent,
+        agent_env={"BASETEN_API_KEY": "sk-baseten"},
+        model="baseten/zai-org/GLM-5.3",
+        runtime=None,
+        environment="local",
+        session_id="run-1",
+    )
+
+    proxy_env = starts[0]["agent_env"]
+    assert (proxy_env.get(LITELLM_RESPONSES_TOOL_IMAGES_ENV) == "1") is moves
+    assert LITELLM_RESPONSES_TOOL_IMAGES_ENV not in updated
+
+
+@pytest.mark.asyncio
 async def test_bearer_value_reaches_proxy_env_only(monkeypatch):
     from benchflow.agents.providers import PROVIDERS, ProviderConfig
     from benchflow.providers.litellm_config import LITELLM_BEARER_AUTH_ENV

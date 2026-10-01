@@ -7,7 +7,9 @@ from benchflow.agents.env import resolve_agent_env, resolve_provider_env
 from benchflow.agents.providers import PROVIDERS, ProviderConfig
 from benchflow.providers.litellm_config import (
     LITELLM_BEARER_AUTH_ENV,
+    LITELLM_RESPONSES_TOOL_IMAGES_ENV,
     litellm_proxy_auth_env,
+    litellm_proxy_callback_env,
     litellm_proxy_config,
     resolve_litellm_route,
 )
@@ -322,7 +324,8 @@ def test_baseten_claude_agent_reaches_messages_endpoint_with_bearer():
 
 
 def test_baseten_codex_uses_native_responses_route():
-    """Codex reaches Baseten's own Responses endpoint, not the chat bridge."""
+    """Codex reaches Baseten's own Responses endpoint, and the proxy callback
+    gets the switch that moves tool-result images into a user message."""
     route = resolve_litellm_route(
         "baseten/moonshotai/Kimi-K3", BASETEN_ENV, protocol="openai-responses"
     )
@@ -330,6 +333,8 @@ def test_baseten_codex_uses_native_responses_route():
     assert route.upstream_model == "openai/moonshotai/Kimi-K3"
     assert route.litellm_params["api_base"] == "https://inference.baseten.co/v1"
     assert "extra_headers" not in route.litellm_params
+    assert route.responses_tool_images_in_user_message is True
+    assert litellm_proxy_callback_env(route) == {LITELLM_RESPONSES_TOOL_IMAGES_ENV: "1"}
     by_name = {
         e["model_name"]: e
         for e in litellm_proxy_config(route, master_key="sk-local")["model_list"]
@@ -337,6 +342,21 @@ def test_baseten_codex_uses_native_responses_route():
     # The bare slug Codex is handed (#1145) and the alias: native, no bridge.
     for name in ("moonshotai/Kimi-K3", route.model_alias):
         assert by_name[name]["litellm_params"]["model"] == "openai/moonshotai/Kimi-K3"
+
+
+def test_tool_image_move_needs_capability_and_a_responses_upstream():
+    """Baseten's Anthropic upstream never receives a Responses body, and a
+    provider without the capability keeps its requests as sent."""
+    messages_route = resolve_litellm_route(
+        "baseten/zai-org/GLM-5.3", BASETEN_ENV, protocol="anthropic-messages"
+    )
+    zai_route = resolve_litellm_route(
+        "zai/glm-5.1", {"ZAI_API_KEY": "k"}, protocol="openai-responses"
+    )
+
+    for route in (messages_route, zai_route):
+        assert route.responses_tool_images_in_user_message is False
+        assert litellm_proxy_callback_env(route) == {}
 
 
 def test_baseten_chat_route_is_plain_openai_compatible():

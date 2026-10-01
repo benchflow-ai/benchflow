@@ -422,6 +422,12 @@ def test_provider_field_shapes(name, cfg):
         f"{sorted(VALID_ANTHROPIC_AUTH_HEADERS)}"
     )
     assert isinstance(cfg.prefer_agent_protocol, bool)
+    assert isinstance(cfg.responses_tool_images_in_user_message, bool)
+    if cfg.responses_tool_images_in_user_message:
+        assert "openai-responses" in cfg.all_endpoints, (
+            f"{name!r}: responses_tool_images_in_user_message needs an "
+            "openai-responses endpoint"
+        )
     if cfg.anthropic_auth_header == "bearer":
         assert "anthropic-messages" in cfg.all_endpoints, (
             f"{name!r}: bearer auth needs an anthropic-messages endpoint"

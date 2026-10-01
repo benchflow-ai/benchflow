@@ -27,6 +27,13 @@ LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
 #: Anthropic-compatible endpoint takes the key as ``Authorization: Bearer``.
 #: The config references it by name; ``litellm_proxy_auth_env`` derives it.
 LITELLM_BEARER_AUTH_ENV = "BENCHFLOW_LITELLM_BEARER_AUTH"
+#: Proxy-process env var set to ``1`` when the route's provider takes a
+#: Responses tool-result image only in a user message (provider
+#: ``responses_tool_images_in_user_message``). The proxy callback then moves
+#: each such image; ``litellm_proxy_callback_env`` sets it.
+LITELLM_RESPONSES_TOOL_IMAGES_ENV = (
+    "BENCHFLOW_LITELLM_RESPONSES_TOOL_IMAGES_IN_USER_MESSAGE"
+)
 _PROVIDER_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -127,6 +134,10 @@ class LiteLLMRoute:
     # Env var holding the key the proxy sends as ``Authorization: Bearer``
     # (provider ``anthropic_auth_header="bearer"``); see litellm_proxy_auth_env.
     bearer_key_env: str | None = None
+    # Responses requests reach the provider's own Responses endpoint, which
+    # takes a tool-result image only in a user message (provider
+    # ``responses_tool_images_in_user_message``); see litellm_proxy_callback_env.
+    responses_tool_images_in_user_message: bool = False
 
     @property
     def config_key(self) -> str:
@@ -396,6 +407,12 @@ def _route_registered_provider(
         litellm_params=params,
         required_env=tuple(required_env),
         bearer_key_env=bearer_key_env,
+        # LiteLLM sends /v1/responses to the provider's own Responses endpoint
+        # only for an openai/ upstream; other upstreams translate it.
+        responses_tool_images_in_user_message=(
+            provider_cfg.responses_tool_images_in_user_message
+            and upstream.startswith("openai/")
+        ),
     )
 
 
@@ -480,6 +497,18 @@ def litellm_proxy_auth_env(route: LiteLLMRoute, env: dict[str, str]) -> dict[str
         return {}
     key = (env.get(route.bearer_key_env) or "").strip()
     return {LITELLM_BEARER_AUTH_ENV: f"Bearer {key}"} if key else {}
+
+
+def litellm_proxy_callback_env(route: LiteLLMRoute) -> dict[str, str]:
+    """Env that turns on the proxy callback's request fixes for *route*.
+
+    ``LITELLM_RESPONSES_TOOL_IMAGES_ENV`` = ``1`` when the route's provider
+    takes a Responses tool-result image only in a user message. Pass it to the
+    proxy process only; the agent has no use for it.
+    """
+    if route.responses_tool_images_in_user_message:
+        return {LITELLM_RESPONSES_TOOL_IMAGES_ENV: "1"}
+    return {}
 
 
 def litellm_proxy_config(

@@ -63,6 +63,12 @@ Common optional fields
                        the key: ``"x-api-key"`` (default, Anthropic's own
                        header) or ``"bearer"`` (``Authorization: Bearer``,
                        for compatible endpoints that reject ``x-api-key``).
+- ``responses_tool_images_in_user_message`` True when the provider's
+                       Responses endpoint rejects an image inside a tool
+                       result (``function_call_output``) but takes it in a
+                       user message. The LiteLLM proxy callback then moves
+                       each such image into a user message right after the
+                       tool result.
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
@@ -117,6 +123,10 @@ class ProviderConfig:
     # own) or "bearer" (Authorization: Bearer, for compatible endpoints that
     # reject x-api-key).
     anthropic_auth_header: str = "x-api-key"
+    # The provider's Responses endpoint rejects an input_image inside a
+    # function_call_output but takes it in a user message, so the LiteLLM proxy
+    # callback moves such images into a user message after the tool result.
+    responses_tool_images_in_user_message: bool = False
 
     @property
     def all_endpoints(self) -> dict[str, str]:
@@ -241,7 +251,10 @@ PROVIDERS: dict[str, ProviderConfig] = {
     ),
     # Baseten Model APIs. One key serves all three protocols. Both models read
     # images on every protocol; the Anthropic endpoint rejects more than 8
-    # images per request and needs a Bearer token.
+    # images per request and needs a Bearer token. Codex uses the native
+    # Responses endpoint, which rejects an image inside a tool result
+    # (function_call_output) but takes it in a user message, so the proxy moves
+    # it there.
     # Cost: USD per 1M tokens (baseten.co/pricing, 2026-09-29); no cached-input
     # discount is published, so cached tokens are priced as input.
     "baseten": ProviderConfig(
@@ -257,6 +270,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         },
         prefer_agent_protocol=True,
         anthropic_auth_header="bearer",
+        responses_tool_images_in_user_message=True,
         models=[
             {
                 "id": "zai-org/GLM-5.3",

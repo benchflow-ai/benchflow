@@ -160,6 +160,54 @@ def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
     _skill_catalog_gate_passed = True
 
 
+_RESPONSES_TOOL_IMAGES_ENV = "BENCHFLOW_LITELLM_RESPONSES_TOOL_IMAGES_IN_USER_MESSAGE"
+_TOOL_IMAGE_MOVED_NOTE = "[the image this tool returned follows in the next message]"
+
+
+def _is_input_image(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") == "input_image"
+
+
+def _move_tool_images_to_user_message(data: dict[str, Any]) -> int:
+    # Some providers' Responses endpoints (Baseten) reject an input_image
+    # inside a function_call_output but take the same image in a user message.
+    # Each such tool result keeps its other parts plus a note, and a user
+    # message holding its images is inserted right after it. The input list
+    # and the tool results are changed in place, so every holder of the list
+    # sees the move. Returns the number of images moved.
+    items = data.get("input")
+    if not isinstance(items, list):
+        return 0
+    out: list[Any] = []
+    moved = 0
+    for item in items:
+        out.append(item)
+        if not (
+            isinstance(item, dict)
+            and item.get("type") == "function_call_output"
+            and isinstance(item.get("output"), list)
+        ):
+            continue
+        images = [part for part in item["output"] if _is_input_image(part)]
+        if not images:
+            continue
+        item["output"] = [
+            part for part in item["output"] if not _is_input_image(part)
+        ] + [{"type": "input_text", "text": _TOOL_IMAGE_MOVED_NOTE}]
+        intro = f"The image returned by tool call {item.get('call_id', '')}:"
+        out.append(
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": intro}, *images],
+            }
+        )
+        moved += len(images)
+    if moved:
+        items[:] = out
+    return moved
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -294,6 +342,13 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         if data.get("messages") is not None and data.get("input") is not None:
             cleaned = dict(cleaned)
             cleaned.pop("input", None)
+
+        # The route's provider (responses_tool_images_in_user_message) rejects
+        # an image inside a Responses tool result: move it into a user message.
+        # In place, unlike the copies here; chat and Messages bodies carry no
+        # Responses input list and are left alone.
+        if os.environ.get(_RESPONSES_TOOL_IMAGES_ENV) == "1":
+            _move_tool_images_to_user_message(cleaned)
 
         # Drop non-"function" tools before they reach a chat-only backend. A
         # responses-API client (codex) sends tools the Responses wire allows but
