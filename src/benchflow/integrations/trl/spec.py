@@ -98,6 +98,10 @@ class BashHarnessConfig:
     # background_start, reset() returns at once and the sandbox starts while
     # the model generates; the first tool call waits for it.
     background_start: bool = False
+    # "with-skill" deploys the task's environment/skills the way BenchFlow does
+    # for agents (into sandbox.skills_dir, default /skills, linked into the
+    # agent skill-discovery paths). The default leaves them out of the sandbox.
+    skill_mode: str = "no-skill"
 
     def normalized(self) -> BashHarnessConfig:
         if self.bash_timeout_sec < 1:
@@ -116,6 +120,7 @@ class BashHarnessConfig:
             reset_message=self.reset_message,
             planes=self.planes,
             background_start=self.background_start,
+            skill_mode=self.skill_mode,
         )
 
 
@@ -208,6 +213,7 @@ class BenchFlowRuntimeEnvironment:
             sandbox_user=self._harness.sandbox_user,
             jobs_dir=self._harness.jobs_dir,
             planes=self._harness.planes,
+            skill_mode=self._harness.skill_mode,
         )
         self.reward = None
         self.decision = None
