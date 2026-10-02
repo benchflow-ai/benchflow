@@ -244,7 +244,7 @@ def apply_codex_launch_config(
     )
     if config is not None and (disable_search or (owns_model and reasoning_effort)):
         if disable_search:
-            # codex-acp (1.6.0 through 1.13.1) ignores CLI -c flags; its CODEX_CONFIG
+            # codex-acp (1.6.0 through 2.0.1) ignores CLI -c flags; its CODEX_CONFIG
             # is forwarded to the Codex app-server's thread configuration.
             config["web_search"] = "disabled"
         if owns_model and reasoning_effort:

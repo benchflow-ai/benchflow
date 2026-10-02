@@ -54,7 +54,9 @@ _FLAGS = (
 #   api.github.com and chatgpt.com (twice) for its plugin marketplace (gone
 #   with features.plugins=false) and ab.chatgpt.com for analytics (gone with
 #   analytics.enabled=false). Neither changes the model request. Feedback and
-#   the update check are off for the same reason.
+#   the update check are off for the same reason. The deterministic tier's
+#   allowlist scenario re-checks the pinned release (0.159.3 reached nothing
+#   but the gateway on 2026-10-02).
 # - Reasoning summaries on, as codex-acp asks for them on every turn
 #   (CodexAcpClient.sendPrompt, summary "auto"), so both harnesses send the
 #   same request and the summaries reach the trajectory as thoughts.

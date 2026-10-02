@@ -1146,10 +1146,10 @@ _CODEX_OUTCOMES = {
     "codex-slow-model": ("integration_failed", "unscored", None),
 }
 # The one written outcome difference. When the Codex process dies mid-turn
-# (its own tool call kills it here), codex-acp 1.13.1 does not report it: the
-# prompt runs to the agent timeout and the verifier scores the untouched
-# workspace. The native harness reports the CLI's death at once as an agent
-# error, as both harnesses do for Claude Code (the agent-crash golden).
+# (its own tool call kills it here), codex-acp (1.13.1, 2.0.1) does not report
+# it: the prompt runs to the agent timeout and the verifier scores the
+# untouched workspace. The native harness reports the CLI's death at once as
+# an agent error, as both harnesses do for Claude Code (the agent-crash golden).
 _CODEX_CRASH = {
     "acp": ("timed_out", "scored", 0.0),
     "native": ("errored", "unscored", None),

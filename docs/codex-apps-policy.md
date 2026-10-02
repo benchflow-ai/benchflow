@@ -51,7 +51,7 @@ conformance test. It does not establish general account, network, or
 cross-harness isolation.
 
 Sources: [adapter 2.0.1 CLI and CODEX_PATH handling](https://github.com/agentclientprotocol/codex-acp/blob/7a8e00fe46b299264f5ebe9f250288636f1485cc/src/index.ts) (unchanged since 1.13.1),
-[Codex managed requirements](https://github.com/openai/codex/tree/rust-v0.156.1/codex-rs/config).
+[Codex managed requirements](https://github.com/openai/codex/tree/rust-v0.159.3/codex-rs/config) (the release 2.0.1 resolves to; the deterministic tier's receipts show the override probe holding Apps off on it).
 
 The credential-free adapter fixture (last run against adapter 1.6.0) exercised the actual managed launcher,
 non-root agent context, user/CLI enable overrides, repeated application,

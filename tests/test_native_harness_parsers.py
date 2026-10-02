@@ -501,8 +501,9 @@ def test_codex_turn_maps_items_to_tool_calls_and_messages():
     call = trajectory[1]
     assert call["tool_call_id"] == "turn1-item_1"
     assert call["kind"] == "execute" and call["status"] == "completed"
-    # codex-acp 1.13.1's shape: the model's command (exec reports it wrapped
-    # in /bin/bash -lc), a terminal reference, {formatted_output, exit_code}.
+    # codex-acp's shape (1.13.1's; 2.0.1's once ToolCallRecord folds its
+    # terminal chunks): the model's command (exec reports it wrapped in
+    # /bin/bash -lc), a terminal reference, {formatted_output, exit_code}.
     assert call["title"] == "printf 'Hello, world!\\n' > hello.txt && echo wrote"
     assert call["raw_input"] == {"command": call["title"], "cwd": "/work"}
     assert call["raw_output"] == {"formatted_output": "wrote\n", "exit_code": 0}
