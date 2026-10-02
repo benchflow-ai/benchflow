@@ -46,6 +46,15 @@ AIR_SESSION_FAILURE_META: dict[str, Any] = {
     "jetbrains": {"air": {"version": 1, "capabilities": ["sessionFailure"]}}
 }
 
+# ``clientCapabilities.session``: the client takes ``notice`` updates
+# (``severity``, ``title``, optional ``description``), recorded as their own
+# trajectory events (see ``ACPSession.handle_update``). Advertised to every
+# agent; an adapter without notice support ignores it. Without it, codex-acp
+# writes a Codex warning into the agent's reply ("Warning: Model metadata for
+# `gpt-5.4` not found ..."), so a provider that never answers looked like an
+# agent that spoke, then timed out, and its untouched workspace was scored.
+SESSION_NOTICES: dict[str, Any] = {"notices": {}}
+
 
 def session_failure(meta: Any) -> dict[str, Any] | None:
     """The ``_meta.jetbrains.air.sessionFailure`` record in ``meta``, if any."""
@@ -445,9 +454,14 @@ class ACPClient:
             ),
             client_info=ClientInfo(name="benchflow", version="2.0.0"),
         )
-        result = await self._send_request(
-            "initialize", params.model_dump(by_alias=True, exclude_none=True)
-        )
+        wire = params.model_dump(by_alias=True, exclude_none=True)
+        # ACP session notices (claude-agent-acp 0.81+, codex-acp 2.x): an
+        # adapter sends what it composes itself (a Codex warning, a model
+        # fallback or reroute) as a ``notice`` update instead of text in the
+        # agent's reply. The SDK's ClientCapabilities (0.10) has no ``session``
+        # field, so it is added to the wire payload.
+        wire["clientCapabilities"]["session"] = dict(SESSION_NOTICES)
+        result = await self._send_request("initialize", wire)
         self._initialize_result = InitializeResult.model_validate(result)
         negotiated = self._initialize_result.protocol_version
         if negotiated != ACP_PROTOCOL_VERSION:
@@ -604,15 +618,17 @@ class ACPClient:
 
 
 def _session_notice(update: Any) -> Any:
-    """Log a typed-failure notice; keep an advisory in the transcript.
+    """Log a typed-failure notice; keep an advisory in the trajectory.
 
     With the typed-failure capability, claude-agent-acp sends as
     ``session_info_update`` what it otherwise writes into the transcript or
     drops: provider retries ("Retrying Claude, attempt 2 of 10."), a failure
     outside any turn, and advisories such as a model fallback ("<model>
-    declined this request; retried with <other model>"). Retries and
-    failures are logged. An advisory stays evidence in the trajectory: it
-    becomes the agent message it was before the opt-in (``**Notice:** ...``).
+    declined this request; retried with <other model>"; 0.81+ sends that one
+    as a session notice when the client takes them, as BenchFlow does).
+    Retries and failures are logged. An advisory stays evidence in the
+    trajectory as a ``notice`` update, recorded like the adapter's own
+    notices: not as agent text, which would count as the agent's work.
     Any other update is returned unchanged.
     """
     if not isinstance(update, dict) or update.get("sessionUpdate") != (
@@ -628,11 +644,12 @@ def _session_notice(update: Any) -> Any:
         return update
     if failure.get("category") == "unknown":
         details = str(failure.get("details") or "").strip()
-        text = f"**Notice:** {title}" + (f"\n\n{details}" if details else "")
         logger.warning("Agent notice: %s", title)
         return {
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": f"{text}\n\n"},
+            "sessionUpdate": "notice",
+            "severity": "warning",
+            "title": title,
+            **({"description": details} if details else {}),
         }
     logger.info("Agent notice: %s", title)
     return update

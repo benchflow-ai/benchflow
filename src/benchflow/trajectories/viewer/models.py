@@ -238,6 +238,27 @@ class TimeoutStep:
 
 
 @dataclass(frozen=True)
+class NoticeStep:
+    """An ACP session notice: what the adapter composed (a Codex warning, a
+    model fallback), shown apart from what the agent said."""
+
+    i: int
+    severity: str
+    title: str
+    description: str | None = None
+    t: float | None = None
+    kind: Literal["notice"] = field(default="notice", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload.update(severity=self.severity, title=self.title)
+        payload["text"] = (
+            f"{self.title}\n\n{self.description}" if self.description else self.title
+        )
+        return payload
+
+
+@dataclass(frozen=True)
 class UnknownStep:
     i: int
     type: str
@@ -285,6 +306,7 @@ type Step = (
     | ThoughtStep
     | ToolStep
     | TimeoutStep
+    | NoticeStep
     | UnknownStep
     | SubagentGroupStep
 )

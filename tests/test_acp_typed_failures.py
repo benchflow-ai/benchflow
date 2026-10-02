@@ -292,7 +292,7 @@ def test_codex_usage_limit_data_is_typed():
     assert str(other) == "ACP error -32603: Internal error"
 
 
-async def test_a_retry_notice_is_logged_and_an_advisory_stays_in_the_transcript(caplog):
+async def test_a_retry_notice_is_logged_and_an_advisory_is_kept_as_a_notice(caplog):
     client = await _client_with_session([])
     session = client.session
     assert session is not None
@@ -335,7 +335,13 @@ async def test_a_retry_notice_is_logged_and_an_advisory_stays_in_the_transcript(
             )
         )
     assert "Agent notice: Retrying Claude, attempt 2 of 10." in caplog.text
-    assert session.full_message == (
-        "**Notice:** claude-opus-5-5 declined this request; retried with "
-        "claude-sonnet-4-6.\n\n"
-    )
+    # The advisory is evidence in the trajectory, not the agent's words.
+    assert session.full_message == ""
+    assert [
+        (e["severity"], e["title"]) for e in session.events if e["type"] == "notice"
+    ] == [
+        (
+            "warning",
+            "claude-opus-5-5 declined this request; retried with claude-sonnet-4-6.",
+        )
+    ]

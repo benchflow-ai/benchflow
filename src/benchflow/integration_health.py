@@ -3,10 +3,12 @@
 A trial "did nothing useful" when, after the prompt, the agent made no tool
 call, sent no message with text, produced no genuine thought (a harness shim's
 diagnostic such as ``[openclaw stderr] …`` does not count) and reported no
-output tokens. When that happens the reward the verifier gave the untouched
-workspace says nothing about the agent: the trial is an execution failure of
-the harness (``error_category = "agent_integration"``), unscored, with a named
-cause:
+output tokens. An adapter's session notice (``notice`` events: a Codex
+warning, a model fallback) is not the agent's activity either; its text is
+evidence for the cause. When that happens the reward the verifier gave the
+untouched workspace says nothing about the agent: the trial is an execution
+failure of the harness (``error_category = "agent_integration"``), unscored,
+with a named cause:
 
 - ``agent_auth``: an auth or billing failure in a diagnostic thought or an
   agent log (credit balance too low, invalid API key, 401, not logged in).
@@ -142,6 +144,12 @@ def _is_prompt(event: Mapping[str, Any]) -> bool:
     return event.get("type") in ("user_message", "user_message_chunk")
 
 
+def _notice_text(event: Mapping[str, Any]) -> str:
+    """A session notice's title and description, as one line of evidence."""
+    parts = (event.get("title"), event.get("description"))
+    return " ".join(str(part).strip() for part in parts if str(part or "").strip())
+
+
 def _marker_line(text: str, pattern: re.Pattern[str]) -> str | None:
     match = pattern.search(text)
     if match is None:
@@ -223,9 +231,15 @@ def diagnose(
             agent_seconds=agent_seconds,
         )
 
+    notices = [
+        _notice_text(e)
+        for e in after_prompt
+        if e.get("type") == "notice" and _notice_text(e)
+    ]
     sources: list[tuple[str, str]] = [
         ("trajectory agent_thought", _text(t)) for t in thoughts
     ]
+    sources += [("trajectory notice", text) for text in notices]
     sources += [(name, text[-_LOG_LIMIT:]) for name, text in logs.items()]
     for cause, pattern in (
         ("agent_auth", _AUTH_MARKERS),
@@ -241,6 +255,8 @@ def diagnose(
         f"{', 0 output tokens' if output_tokens == 0 else ''} after the prompt "
         f"in {seconds}"
     )
+    if notices:
+        nothing += f"; the adapter's notice: {notices[0][:_EVIDENCE_LIMIT]}"
     if truncated:
         return found(
             "truncated_trajectory",

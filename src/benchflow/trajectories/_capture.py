@@ -77,7 +77,7 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     discipline.
 
     Events with a host receipt also get the GH #1033 timing fields the
-    viewer reads: ``ts`` (first observation) on text and timeout events;
+    viewer reads: ``ts`` (first observation) on text, notice and timeout events;
     ``started_at`` (first observation) and, once terminal, ``finished_at``
     (observation of the terminal status) on tool calls.
     """
@@ -109,6 +109,15 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
             record = {"type": event["type"], "text": event["text"]}
             if "parent_tool_call_id" in event:
                 record["parent_tool_call_id"] = event["parent_tool_call_id"]
+            out.append(record)
+        elif event["type"] == "notice":
+            record = {
+                "type": "notice",
+                "severity": event["severity"],
+                "title": event["title"],
+            }
+            if "description" in event:
+                record["description"] = event["description"]
             out.append(record)
         elif event["type"] == "agent_timeout":
             out.append(

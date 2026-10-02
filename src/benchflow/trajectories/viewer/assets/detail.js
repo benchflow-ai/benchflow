@@ -19,7 +19,7 @@ BF.detail = (() => {
     ["rubric", "view-rubric"],
     ["lineage", "view-lineage"],
   ]);
-  const STEP_KINDS = new Set(["prompt", "message", "thought", "tool", "timeout", "unknown", "subagent"]);
+  const STEP_KINDS = new Set(["prompt", "message", "thought", "tool", "timeout", "notice", "unknown", "subagent"]);
   const GROUP_REASONS = new Map([
     ["parent_not_captured", "The tool call these events name as their parent is not in the capture."],
     ["too_deep", "These events are nested deeper than the subagent depth limit shared with the ATIF export."],
@@ -386,7 +386,7 @@ BF.detail = (() => {
     // An unattributed-subagent group is a container: under a filter it shows
     // only through the events inside it.
     if (kind === "subagent") return !state.kinds.size && !state.failedOnly;
-    const filterKind = kind === "timeout" || kind === "unknown" ? "tool" : kind;
+    const filterKind = kind === "timeout" || kind === "notice" || kind === "unknown" ? "tool" : kind;
     if (state.kinds.size && !state.kinds.has(filterKind)) return false;
     if (state.focus && kind === "thought") return false;
     if (state.failedOnly && kind !== "timeout" && !card.classList.contains("failed")) return false;
@@ -537,6 +537,12 @@ BF.detail = (() => {
     else if (kind === "message") head.appendChild(el("span", "klabel", "agent"));
     else if (kind === "thought") head.appendChild(el("span", "klabel", "thought"));
     else if (kind === "timeout") head.appendChild(el("span", "klabel", "agent timeout"));
+    else if (kind === "notice") {
+      // An ACP session notice: the adapter composed it; the agent did not say it.
+      const severity = typeof record.severity === "string" && record.severity ? record.severity : "info";
+      card.classList.add("sev-" + (severity === "warning" || severity === "error" ? severity : "info"));
+      head.appendChild(el("span", "klabel", "adapter notice \u00b7 " + severity));
+    }
     else if (kind === "unknown") head.appendChild(el("span", "klabel", record.type || record.kind || "unknown"));
 
     let toolHue = null;

@@ -743,6 +743,19 @@ def codex_acp_job(det_root, fake_url) -> h.CliRun:
 
 
 @pytest.fixture(scope="session")
+def codex_uncatalogued_job(det_root, fake_url) -> h.CliRun:
+    return _run(
+        det_root,
+        "codex-uncatalogued",
+        ["eval", "run"],
+        [CODEX_VARIANTS["codex-slow-model"]],
+        fake_url,
+        route="codex-uncatalogued",
+        extra=_concurrency(),
+    )
+
+
+@pytest.fixture(scope="session")
 def codex_native_job(det_root, fake_url) -> h.CliRun:
     return _run(
         det_root,
@@ -1234,6 +1247,35 @@ def test_codex_native_matches_codex_acp(codex_acp_job, codex_native_job, variant
     source = "unavailable" if variant == "codex-slow-model" else "provider_response"
     assert native["usage"]["usage_source"] == source
     assert h.trial_document_problems(native_trial) == []
+
+
+@needs_sandbox
+def test_codex_warning_is_a_notice_not_a_reply(codex_uncatalogued_job):
+    """On a model its catalog lacks, Codex warns as soon as the turn starts.
+
+    codex-acp sends that warning as a session notice, recorded apart from the
+    agent's words: with no model reply before the agent timeout the trial is
+    an integration failure, as on a catalogued model, never a scored 0 (the
+    warning used to arrive as agent text and read as the agent's work).
+    """
+    trial = codex_uncatalogued_job.trial("codex-slow-model")
+    facts = _trial_facts(trial)
+    assert facts["outcome"] == {
+        "execution": "integration_failed",
+        "assessment": "unscored",
+        "reward": None,
+    }
+    events = facts["acp_trajectory"]
+    assert [e["type"] for e in events if e["type"] != "notice"] == [
+        "user_message",
+        "agent_timeout",
+    ]
+    notices = [e for e in events if e["type"] == "notice"]
+    assert any(
+        n["severity"] == "warning"
+        and f"Model metadata for `{h.CODEX_UNCATALOGUED_MODEL}` not found" in n["title"]
+        for n in notices
+    ), notices
 
 
 # ----- Codex under the egress allowlist ------------------------------------

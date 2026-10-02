@@ -73,7 +73,7 @@ Every form (`bf.arun`/`bf.run`/`bf.run_sync` with a `RolloutConfig`, an agent na
 | `success` | `True` when there was no agent, verifier or export error (a scored 0 is still a success). |
 | `error`, `error_category` | Agent-side error text and a stable category (`provider_auth`, `timeout`, `sandbox_setup`, ...), or `None`. |
 | `verifier_error`, `verifier_error_category` | Verifier-side error, kept separate from agent errors. |
-| `trajectory` | The ACP events as a list of dicts with a `type` key: `user_message`, `agent_message`, `agent_thought`, `tool_call` (with `title`, `kind`, `status`, `raw_input`, `raw_output`). |
+| `trajectory` | The ACP events as a list of dicts with a `type` key: `user_message`, `agent_message`, `agent_thought`, `tool_call` (with `title`, `kind`, `status`, `raw_input`, `raw_output`), and `notice` (what the agent's adapter composed, such as a Codex warning: `severity`, `title`, `description`). |
 | `trajectory_source` | `"acp"` (captured over ACP), `"partial_acp"`, `"scraped"` (agent-writable, untrusted) or `"hosted_env"`. |
 | `n_tool_calls`, `n_prompts` | Counts from the run. |
 | `n_input_tokens`, `n_output_tokens`, `total_tokens`, `cost_usd`, `usage_source` | Provider usage; `None` when the provider reported none (`usage_source == "unavailable"`). |

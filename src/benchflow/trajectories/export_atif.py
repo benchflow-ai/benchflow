@@ -33,7 +33,11 @@ Mapping from BenchFlow ACP trajectory events (see
   in the tool call's ``extra`` (added in ATIF-v1.7) rather than being passed
   off as arguments. Captured output text becomes the step's ``observation``;
 - ``oracle`` → an ``agent`` step rendering the command, mirroring
-  :func:`benchflow.trajectories.export.acp_events_to_messages`.
+  :func:`benchflow.trajectories.export.acp_events_to_messages`;
+- ``notice`` (an ACP session notice: a Codex warning, a model fallback) → a
+  ``system`` step whose message is the notice's title and description, with
+  its severity in ``extra.notice``. The adapter composed it; the agent did
+  not say it.
 
 Subagents (ATIF-v1.7 ``subagent_trajectories``): events the capture attributed
 to a child via ``parent_tool_call_id`` never enter the parent's steps. Each
@@ -179,6 +183,17 @@ def _scope_events_to_steps(
         elif etype == "oracle":
             cmd = str(event.get("command") or "oracle")
             append_step("agent", {"message": f"[oracle: {cmd}]"})
+        elif etype == "notice":
+            title = str(event.get("title") or "").strip()
+            if title:
+                flush_thoughts()
+                description = str(event.get("description") or "").strip()
+                message = f"{title}\n\n{description}" if description else title
+                severity = str(event.get("severity") or "info")
+                append_step(
+                    "system",
+                    {"message": message, "extra": {"notice": {"severity": severity}}},
+                )
 
     flush_thoughts()
     return steps

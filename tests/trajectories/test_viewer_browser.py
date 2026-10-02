@@ -800,6 +800,47 @@ def test_tool_status_class_uses_a_closed_whitelist(page, server):
     assert "2m 0s" in page.locator(".card .tstamp").inner_text()
 
 
+def test_a_notice_renders_as_its_own_card(page, server):
+    """An adapter's session notice is a card of its own, labelled with its
+    severity; the severity picks the card's style from a closed set."""
+    warning = "Model metadata for `gpt-5.4` not found."
+    payload = {
+        "rollout_name": "notices",
+        "meta": {"task_name": "notice task"},
+        "steps": [
+            {
+                "i": 1,
+                "kind": "notice",
+                "severity": "warning",
+                "title": warning,
+                "text": warning,
+            },
+            {
+                "i": 2,
+                "kind": "notice",
+                "severity": "warning injected-class",
+                "title": "odd",
+                "text": "odd",
+            },
+        ],
+    }
+    page.route(
+        "**/api/rollout?*",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)
+        ),
+    )
+    page.goto(server + "/?run=job-1/alpha__aaaa0001")
+    cards = page.locator(".card.k-notice")
+    cards.first.wait_for(state="visible")
+    assert cards.count() == 2
+    assert "sev-warning" in cards.nth(0).get_attribute("class").split()
+    assert cards.nth(0).locator(".klabel").text_content() == "adapter notice · warning"
+    assert warning in cards.nth(0).locator(".body").text_content()
+    odd = cards.nth(1).get_attribute("class").split()
+    assert "sev-info" in odd and "injected-class" not in odd
+
+
 def test_tabs_and_disclosures_are_keyboard_complete(page, server, edge_server):
     """Guards PR #1034 keyboard semantics, labels, and disclosure focus."""
     page.goto(server + "/?run=job-2/beta__bbbb0002")

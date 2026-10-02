@@ -61,6 +61,9 @@ MODEL = "claude-haiku-4-5"
 # dropped it from the catalog; Codex then falls back to plain function tools.)
 CODEX_AGENT = "codex-acp"
 CODEX_MODEL = "gpt-5.5"
+# A model the pinned Codex catalog lacks: Codex runs it on fallback metadata
+# and warns as the turn starts, which codex-acp sends as a session notice.
+CODEX_UNCATALOGUED_MODEL = "gpt-5.4"
 # Not a credential: the fake provider accepts any key. The LiteLLM route needs
 # one to be present, and it never leaves the sandbox/host proxy.
 DUMMY_KEY = "fake-deterministic-key"
@@ -284,11 +287,13 @@ POLICY_ROUTES = {
 
 # Codex routes: through the proxy wherever the backend runs it, or with the
 # proxy inside the sandbox (a network policy moves it there on every backend).
-CODEX_ROUTES = ("codex", "codex-in-sandbox")
+CODEX_ROUTES = ("codex", "codex-in-sandbox", "codex-uncatalogued")
 
 
 def route_model(route: str) -> str:
     """The ``--model`` a route runs with."""
+    if route == "codex-uncatalogued":
+        return CODEX_UNCATALOGUED_MODEL
     if route in CODEX_ROUTES:
         return CODEX_MODEL
     return POLICY_ROUTES[route][0] if route in POLICY_ROUTES else MODEL

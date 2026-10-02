@@ -31,6 +31,7 @@ from .models import (
     Lineage,
     MessageStep,
     Meta,
+    NoticeStep,
     PromptStep,
     RecoveryAttempt,
     RolloutMetadata,
@@ -450,6 +451,16 @@ def _normalize_steps(
                             event.get("terminal_trajectory_complete")
                         ),
                     ),
+                    t=event_time,
+                )
+            )
+        elif event_type == "notice":
+            steps.append(
+                NoticeStep(
+                    i=next_index(),
+                    severity=_optional_text(event.get("severity")) or "info",
+                    title=_display_text(event.get("title")),
+                    description=_optional_text(event.get("description")),
                     t=event_time,
                 )
             )

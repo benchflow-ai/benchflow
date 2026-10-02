@@ -591,6 +591,33 @@ class ACPSession:
         chunks.append(text)
         self._pending_text.append(event)
 
+    def _record_notice(self, update: dict, receipt: dict[str, str]) -> None:
+        """Record an ACP session notice as its own event.
+
+        A notice is what the adapter composed (a Codex warning, a model
+        fallback or reroute), not what the agent said: it never joins the
+        message or thought chunks, so it is not the agent's answer, not
+        activity for the idle watchdog, and not work for the integration
+        check (:mod:`benchflow.integration_health`).
+        """
+        title = str(update.get("title") or "").strip()
+        if not title:
+            return
+        severity = str(update.get("severity") or "info").strip() or "info"
+        description = str(update.get("description") or "").strip()
+        log = logger.info if severity == "info" else logger.warning
+        log("Agent notice (%s): %s", severity, title)
+        self._flush_agent_text()
+        event: dict = {
+            "type": "notice",
+            "severity": severity,
+            "title": title,
+            "receipt": receipt,
+        }
+        if description:
+            event["description"] = description
+        self.events.append(event)
+
     _RECOGNIZED_UPDATE_TYPES = frozenset(
         {
             "tool_call",
@@ -599,6 +626,7 @@ class ACPSession:
             "text_update",
             "agent_thought",
             "agent_thought_chunk",
+            "notice",
         }
     )
 
@@ -729,6 +757,9 @@ class ACPSession:
             if content.get("type") == "text":
                 text = content.get("text", "")
                 self._record_text(text, "agent_thought", update, receipt)
+
+        elif update_type == "notice":
+            self._record_notice(update, receipt)
 
         self._notify_change()
 
