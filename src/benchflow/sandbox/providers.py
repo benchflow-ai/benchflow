@@ -65,6 +65,11 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         enforces_denylist=True,
     ),
     SandboxProvider(
+        "apptainer",
+        extra=None,
+        model_proxy=ModelProxyLocation.HOST,
+    ),
+    SandboxProvider(
         "daytona",
         extra="sandbox-daytona",
         model_proxy=ModelProxyLocation.SANDBOX,
