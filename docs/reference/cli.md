@@ -246,6 +246,10 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--state` | — | S-axis environment binding; inline JSON, registry `name@version`, or manifest path. Takes precedence over `--environment-manifest` |
 | `--prompt` | task prompt | Prompt to send to the agent; repeatable for multi-prompt runs |
 | `--config-override` | — | C-axis task config overlay; inline JSON/YAML/TOML or `@file`, deep-merged into each task's resolved config |
+
+The built-in native ACP harness IDs include `openscience` for OpenScience CLI
+and `deepseek-harness` for the official DeepSeek Harness. `dsh` is an alias for
+`deepseek-harness`. Use `bench agent list` for the complete installed registry.
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
 | `--build-concurrency` | `--concurrency` | Max concurrent docker image builds; set lower (e.g. `8`) when `--concurrency` is high to avoid overwhelming the docker daemon |
 | `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |

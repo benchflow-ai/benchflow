@@ -26,6 +26,17 @@ class TestFindProvider:
         assert name == "zai"
         assert cfg.auth_env == "ZAI_API_KEY"
 
+    def test_explicit_anthropic_direct_route_preserves_legacy_prefix(self):
+        name, cfg = find_provider("anthropic-direct/claude-sonnet-4-6")
+        assert name == "anthropic-direct"
+        assert cfg.api_protocol == "anthropic-messages"
+        assert cfg.base_url == "https://api.anthropic.com"
+        assert cfg.auth_env == "ANTHROPIC_API_KEY"
+        assert find_provider("anthropic/claude-sonnet-4-6") is None
+        assert strip_provider_prefix("anthropic-direct/claude-sonnet-4-6") == (
+            "claude-sonnet-4-6"
+        )
+
     def test_case_insensitive(self):
         name, _ = find_provider("ZAI/glm-5")
         assert name == "zai"
