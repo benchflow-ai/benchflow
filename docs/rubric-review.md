@@ -70,11 +70,16 @@ scientific zeros. Intermediate test feedback does not run the reviewer.
 
 Evidence never silently drops a path. Credential files, sandbox-provider runtime
 state (Daytona's `~/.daytona` session tree, which sits inside a `/root`
-workspace), and sockets, FIFOs or device nodes are left out of the bundle, and
-each is listed in the manifest's `exclusions` with its reason (`credential`,
-`sandbox_runtime`, `special_file`, or a task's own `task_exclude`). Capture
-limits, symlinks that escape the workspace, and files that change during capture
-still fail it.
+workspace), sockets, FIFOs or device nodes, and symlinks the bundle cannot keep
+are left out of the bundle, and each is listed in the manifest's `exclusions`
+with its reason (`credential`, `sandbox_runtime`, `special_file`,
+`symlink_escape`, or a task's own `task_exclude`). A symlink is kept only when
+both its resolved path and its target text stay inside the workspace. Any other
+link, such as an agent CLI's helper linked from outside the workspace or a link
+loop, becomes a `symlink_escape` exclusion that records its `link_target`, and
+no outside file is ever copied. The host check and the reviewer's admission
+check reject a manifest that both captures and excludes a path. Capture limits
+and files that change during capture still fail it.
 
 Artifacts retain `solver.json`, the workspace bundle under `evidence/`, every
 reviewer child under `reviews/`, and immutable reports under `scoring/`. Final

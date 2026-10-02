@@ -356,6 +356,55 @@ async def test_daytona_session_fifos_keep_terminal_evidence_scorable(tmp_path):
     ).read_bytes() == b"%PDF-1.7 solver paper"
 
 
+@pytest.mark.asyncio
+async def test_agent_helper_link_outside_workspace_keeps_terminal_evidence_scorable(
+    tmp_path,
+):
+    """Guards terminal capture after PR #1126 against the escaping-link abort.
+
+    On FrontierPhysics PR #192 codex-acp left /app/apply_patch linked to its
+    helper outside /app. Capture raised "workspace symlink escapes evidence",
+    which set _export_error, and finish_review then ended the trial in a
+    scoring error with rewards null although the verifier had run.
+    """
+    helper = tmp_path / "codex-home" / "apply_patch"
+    helper.parent.mkdir()
+    helper.write_text("#!/bin/sh\n")
+    workspace = tmp_path / "app"
+    workspace.mkdir()
+    (workspace / "apply_patch").symlink_to(helper)
+    (workspace / "paper.pdf").write_bytes(b"%PDF-1.7 solver paper")
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+
+    async def idle(*_args):
+        return None
+
+    rollout = SimpleNamespace(
+        _review_plan=object(),
+        _config=SimpleNamespace(purpose="task", sandbox_user=None),
+        _env=LocalTransport(),
+        _agent_env={},
+        _planes=SimpleNamespace(quiesce_agent=idle),
+        _task=SimpleNamespace(config=SimpleNamespace(artifacts=[])),
+        _agent_cwd=str(workspace),
+        disconnect=idle,
+        _require_rollout_dir=lambda: rollout_dir,
+    )
+
+    await _review.capture_terminal_workspace(rollout)
+
+    assert getattr(rollout, "_export_error", None) is None
+    manifest = EvidenceManifest.model_validate_json(
+        (rollout_dir / "evidence" / "manifest.json").read_text()
+    )
+    assert [
+        (exclusion.original_path, exclusion.reason, exclusion.link_target)
+        for exclusion in manifest.exclusions
+    ] == [(str(workspace / "apply_patch"), "symlink_escape", str(helper))]
+    assert [entry.path for entry in manifest.entries] == ["paper.pdf"]
+
+
 def test_reviewer_child_never_recursively_preflights(monkeypatch):
     """Guards child execution recursion after PR #1126."""
     prepare = Mock(side_effect=AssertionError("reviewer cannot review itself"))

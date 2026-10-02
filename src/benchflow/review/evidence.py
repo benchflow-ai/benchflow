@@ -51,7 +51,21 @@ class EvidenceExclusion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     original_path: str
-    reason: Literal["credential", "sandbox_runtime", "special_file", "task_exclude"]
+    reason: Literal[
+        "credential",
+        "sandbox_runtime",
+        "special_file",
+        "symlink_escape",
+        "task_exclude",
+    ]
+    # The link's own text, recorded for a symlink the bundle cannot keep.
+    link_target: str | None = None
+
+    @model_validator(mode="after")
+    def _link_target_names_escaping_links(self) -> Self:
+        if (self.reason == "symlink_escape") != (self.link_target is not None):
+            raise ValueError("Only a symlink_escape exclusion records a link target")
+        return self
 
 
 class ArtifactEvidence(BaseModel):
@@ -95,11 +109,16 @@ class _CaptureReceipt(BaseModel):
 
 # Runs in both Docker and Daytona without requiring BenchFlow in the image.
 # Enumeration is explicit so nothing is silently omitted by a tar command.
-# Sockets, devices and FIFOs hold no bytes to preserve, and provider runtime
-# state is harness-owned, so both are recorded as manifest exclusions; quota
-# overflows, escaping links and concurrent changes still fail the capture.
+# Sockets, devices and FIFOs hold no bytes to preserve, provider runtime state
+# is harness-owned, and a symlink leaving the workspace (an agent CLI's helper
+# link, say) would import another VM file, so each is recorded as a manifest
+# exclusion, a link with its target text. A link is kept only when both its
+# resolution and its text stay inside the root, the rule the host extraction,
+# validate_workspace and the reviewer's admission check apply to it; a link
+# loop has no target to keep. Quota overflows and concurrent changes still
+# fail the capture.
 _CAPTURE_SCRIPT = r"""
-import fnmatch, hashlib, json, os, pathlib, stat, sys, tarfile, tempfile
+import fnmatch, hashlib, json, os, pathlib, posixpath, stat, sys, tarfile, tempfile
 source = pathlib.Path(sys.argv[1]).resolve()
 system_roots = {pathlib.Path(path).resolve() for path in ("/", "/proc", "/sys", "/dev", "/etc", "/run", "/home")}
 if source in system_roots:
@@ -109,10 +128,26 @@ root = source if source.is_dir() else source.parent
 max_bytes, max_entries = map(int, sys.argv[2:4])
 rules = json.loads(sys.argv[4])
 paths, exclusions, total = [], [], 0
-def record(path, reason):
-    exclusions.append({"original_path": path.as_posix(), "reason": reason})
+def record(path, reason, **details):
+    exclusions.append({"original_path": path.as_posix(), "reason": reason, **details})
     if len(paths) + len(exclusions) > max_entries:
         raise ValueError("workspace evidence exceeds configured capture limits")
+def kept_link(path, target):
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return False
+    if not path.resolve().is_relative_to(root):
+        return False
+    if target.startswith("/"):
+        try:
+            return ".." not in pathlib.PurePosixPath(target).relative_to(root).parts
+        except ValueError:
+            return False
+    parent = posixpath.dirname(path.relative_to(root).as_posix())
+    return ".." not in posixpath.normpath(posixpath.join(parent, target)).split("/")
 def component(path, rule):
     return path.endswith("/" + rule) or "/" + rule + "/" in path
 def excluded(path):
@@ -144,12 +179,14 @@ for directory, dirs, files in walk:
                 dirs.remove(name)
             continue
         info = path.lstat()
-        if not any(check(info.st_mode) for check in
-                   (stat.S_ISREG, stat.S_ISDIR, stat.S_ISLNK)):
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(path)
+            if not kept_link(path, target):
+                record(path, "symlink_escape", link_target=target)
+                continue
+        elif not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
             record(path, "special_file")
             continue
-        if path.is_symlink() and not path.resolve().is_relative_to(root):
-            raise ValueError("workspace symlink escapes evidence: " + str(path))
         total += info.st_size if stat.S_ISREG(info.st_mode) else 0
         paths.append((path, info))
         if total > max_bytes or len(paths) + len(exclusions) > max_entries:
@@ -300,6 +337,9 @@ def _extract_archive(
 
 def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
     """Verify exact inventory, file bytes and links against a trusted manifest."""
+    excluded = {exclusion.original_path for exclusion in manifest.exclusions}
+    if any(entry.original_path in excluded for entry in manifest.entries):
+        raise EvidenceError("Evidence manifest both captures and excludes a path")
     root = workspace.resolve(strict=True)
     actual = {path.relative_to(root).as_posix(): path for path in root.rglob("*")}
     expected = {entry.path for entry in manifest.entries}
@@ -441,12 +481,20 @@ async def capture_workspace(
 
 # The receiving sandbox may not have BenchFlow/Pydantic. This stdlib-only
 # admission check verifies the same public manifest after upload, before any
-# reviewer sees evidence. It intentionally does not inspect solver paths.
+# reviewer sees evidence, with validate_workspace's rules: excluded paths
+# (special files, runtime state, escaping links) are never manifest entries,
+# and every kept link resolves inside the snapshot. It intentionally does not
+# inspect solver paths.
 _ADMISSION_SCRIPT = r"""
 import hashlib, json, os, pathlib, stat, sys
 root = pathlib.Path(sys.argv[1]).resolve(strict=True)
 manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())
 entries = manifest["entries"]
+exclusions = manifest.get("exclusions", [])
+if any((e["reason"] == "symlink_escape") != (e.get("link_target") is not None) for e in exclusions):
+    raise ValueError("only a symlink_escape exclusion records a link target")
+if {e["original_path"] for e in entries} & {e["original_path"] for e in exclusions}:
+    raise ValueError("manifest both captures and excludes a path")
 actual = {p.relative_to(root).as_posix(): p for p in root.rglob("*")}
 expected = {e["path"] for e in entries}
 if len(expected) != len(entries) or actual.keys() != expected:
