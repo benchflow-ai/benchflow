@@ -54,11 +54,13 @@ IN_SANDBOX_FAKE_URL = "http://127.0.0.1:8911"
 
 AGENT = "claude-agent-acp"
 MODEL = "claude-haiku-4-5"
-# Codex runs against the fake's Responses API route through the proxy. gpt-5.4
-# is in the model catalog of the Codex release both harnesses pin (0.156.1),
-# so Codex offers its full tool surface.
+# Codex runs against the fake's Responses API route through the proxy. gpt-5.5
+# is in the model catalog of the Codex release both harnesses pin (0.159.3)
+# and is not code-mode-only, so Codex offers its full tool surface with a
+# shell tool the fake drives. (gpt-5.4 was the model until codex 0.158
+# dropped it from the catalog; Codex then falls back to plain function tools.)
 CODEX_AGENT = "codex-acp"
-CODEX_MODEL = "gpt-5.4"
+CODEX_MODEL = "gpt-5.5"
 # Not a credential: the fake provider accepts any key. The LiteLLM route needs
 # one to be present, and it never leaves the sandbox/host proxy.
 DUMMY_KEY = "fake-deterministic-key"

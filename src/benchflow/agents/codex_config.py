@@ -129,7 +129,7 @@ def codex_home_config(config: dict[str, Any] | None) -> str | None:
     """Codex's user config.toml pinning every thread to the session's provider.
 
     codex-acp hands CODEX_CONFIG only to the threads it opens for the ACP
-    session. Its title generator (codex-acp 1.13.1 through 2.0.0,
+    session. Its title generator (codex-acp 1.13.1 through 2.0.1,
     TitleGenerator.ts) starts an ephemeral thread without it and runs a turn
     on the hard-wired ``gpt-5.6-luna`` with the user's first message, which is
     the task prompt. Such a thread takes its provider from the user

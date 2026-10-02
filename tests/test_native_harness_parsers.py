@@ -45,8 +45,12 @@ def _events(path: Path) -> list[dict]:
 
 
 def _replay(parser, path: Path) -> tuple[list[dict], object]:
+    return _replay_events(parser, _events(path))
+
+
+def _replay_events(parser, events: list[dict]) -> tuple[list[dict], object]:
     session = ACPSession("s")
-    for event in _events(path):
+    for event in events:
         for update in parser.feed(event):
             session.handle_update(update)
     session.mark_prompt_end()
@@ -529,7 +533,21 @@ def test_codex_failed_command_is_a_failed_call():
 
 
 def test_codex_interrupted_turn_has_no_outcome_and_a_pending_call():
-    trajectory, outcome = _replay(CodexExecParser("/work"), CODEX / "cancelled.jsonl")
+    """The stream the client applies: everything before the cancel, which came
+    while ``sleep 300`` ran. Codex 0.159.3 does not stop on SIGINT: the running
+    command gets no completion event, and the sample goes on with a second
+    model reply and ``turn.completed``. The client drops those (it applies
+    nothing after a cancel) and kills the CLI after CANCEL_GRACE_SEC."""
+    events = _events(CODEX / "cancelled.jsonl")
+    running = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("type") == "item.started"
+        and "sleep 300" in str((e.get("item") or {}).get("command"))
+    )
+    trajectory, outcome = _replay_events(
+        CodexExecParser("/work"), events[: running + 1]
+    )
     assert not outcome.completed and outcome.error is None
     assert trajectory[-1]["status"] == "in_progress"
 
@@ -567,7 +585,7 @@ def test_codex_file_changes_arrive_completed():
 
 _CONFIG = {
     "model_provider": "benchflow-litellm",
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "model_providers": {
         "benchflow-litellm": {
             "name": "litellm",

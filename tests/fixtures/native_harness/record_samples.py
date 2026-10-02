@@ -8,11 +8,12 @@ deterministic fake model (``tests/integration/deterministic``) on the host,
 launches each CLI exactly as the harness does (its command builder), and
 writes four samples per CLI into ``<cli>-<version>/``: a first turn, a resumed
 second turn, a failing tool call, and a turn cancelled with SIGINT while its
-tool runs (40 s in, so Claude Code's tool heartbeat is in it). Claude Code
-gets a fifth, ``usage-limit``: a subscription login whose usage is spent, from
-a server that answers the API's HTTP 429 with the
-``anthropic-ratelimit-unified-*`` headers of a rejected claim. Paths and ids
-that change per run are replaced with placeholders;
+tool runs (40 s in, so Claude Code's tool heartbeat is in it; Codex 0.159.3
+does not stop on SIGINT, so its sample runs on to the end of the turn, past
+what the harness applies). Claude Code gets a fifth, ``usage-limit``: a
+subscription login whose usage is spent, from a server that answers the API's
+HTTP 429 with the ``anthropic-ratelimit-unified-*`` headers of a rejected
+claim. Paths and ids that change per run are replaced with placeholders;
 ``tests/test_native_harness_parsers.py`` reads the result.
 
 No model credentials are involved: the fake answers every request.
@@ -166,7 +167,7 @@ def record(cli: str, prefix: Path, out_root: Path) -> None:
         env["OPENAI_API_KEY"] = "sk-benchflow-fake"
         config = {
             "model_provider": "benchflow-litellm",
-            "model": "gpt-5.4",
+            "model": "gpt-5.5",
             "model_providers": {
                 "benchflow-litellm": {
                     "name": "litellm",

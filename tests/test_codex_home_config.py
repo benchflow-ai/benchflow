@@ -1,6 +1,6 @@
 """Every Codex thread uses the run's provider, the title thread included.
 
-codex-acp 1.13.1 (and 2.0.0) names a session after its first turn with an
+codex-acp 1.13.1 through 2.0.1 names a session after its first turn with an
 ephemeral thread it starts without the session's CODEX_CONFIG, on the
 hard-wired ``gpt-5.6-luna``, with the task prompt as input
 (TitleGenerator.ts). Codex 0.156.1 picks such a thread's provider as

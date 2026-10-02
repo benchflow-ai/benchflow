@@ -155,12 +155,12 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.2"
 _CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.280"
 _CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@2.0.1"
 # The Codex CLI the native harness runs (``harness="native"`` on codex-acp),
-# pinned exactly. 0.156.1 is the release codex-acp 1.13.1 resolves its
-# ``@openai/codex ^0.156.1`` dependency to (npm had no later 0.156.x on
-# 2026-09-30), so both harnesses run the same Codex core. codex-acp still
+# pinned exactly. 0.159.3 is the release codex-acp 2.0.1 resolves its
+# ``@openai/codex ^0.159.1`` dependency to (npm had no later 0.159.x on
+# 2026-10-02), so both harnesses run the same Codex core. codex-acp still
 # runs its own nested copy; pinning the ACP path to this CLI too (as
 # CLAUDE_CODE_EXECUTABLE does for Claude) is a follow-up.
-_CODEX_CLI_PACKAGE = "@openai/codex@0.156.1"
+_CODEX_CLI_PACKAGE = "@openai/codex@0.159.3"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"

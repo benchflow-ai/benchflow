@@ -24,6 +24,7 @@ import pytest
 from benchflow._utils.scoring import classify_error
 from benchflow.acp.runtime import execute_prompts
 from benchflow.agents.errors import UsageLimitError
+from benchflow.agents.registry import pinned_npm_package
 from benchflow.diagnostics import AgentPromptTimeoutError, TransportClosedError
 from benchflow.native_harness import client as client_module
 from benchflow.native_harness.client import (
@@ -43,8 +44,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "native_harness"
-CLAUDE_SAMPLES = FIXTURES / "claude-code-2.1.280"
-CODEX_SAMPLES = FIXTURES / "codex-0.156.1"
+CLAUDE_SAMPLES = FIXTURES / f"claude-code-{pinned_npm_package('claude-code')[1]}"
+CODEX_SAMPLES = FIXTURES / f"codex-{pinned_npm_package('codex')[1]}"
 
 
 class _LocalProcess(SubprocessLiveProcess):

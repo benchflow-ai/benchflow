@@ -13,8 +13,8 @@ refuses others with 400, as BenchFlow's gateway does; ``HTTPS_PROXY`` points at
 a recorder that refuses and logs every attempt to reach anything else. With
 the home config (the fix), the title thread's ``gpt-5.6-luna`` request, task
 prompt included, reaches only the gateway; without it (the control run),
-codex-acp 1.13.1 tries api.openai.com, which proves the recorder sees the
-leak. Re-run when bumping the codex-acp pin.
+the pinned codex-acp (1.13.1, and 2.0.1 since) tries api.openai.com, which
+proves the recorder sees the leak. Re-run when bumping the codex-acp pin.
 """
 
 import asyncio

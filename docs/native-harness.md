@@ -75,7 +75,7 @@ How the CLI reports it depends on the login, which matters for anything matching
 | CLI | Pin | Where |
 |---|---|---|
 | Claude Code | `@anthropic-ai/claude-code@2.1.280` | `_CLAUDE_CODE_PACKAGE`: the same binary `claude-agent-acp` runs (`CLAUDE_CODE_EXECUTABLE`), so the two harnesses cannot drift apart on the CLI |
-| Codex | `@openai/codex@0.156.1` | `_CODEX_CLI_PACKAGE`: the release `codex-acp` 1.13.1 resolves its `^0.156.1` dependency to, so both harnesses run one Codex core. Installed next to `codex-acp` for native runs only; `codex-acp` still runs its own nested copy |
+| Codex | `@openai/codex@0.159.3` | `_CODEX_CLI_PACKAGE`: the release `codex-acp` 2.0.1 resolves its `^0.159.1` dependency to, so both harnesses run one Codex core. Installed next to `codex-acp` for native runs only; `codex-acp` still runs its own nested copy |
 
 Each native connect checks the CLI's `--version` against the pin and refuses another build. The Codex Apps policy checks and probes the native CLI when the harness is native.
 

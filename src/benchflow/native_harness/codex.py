@@ -293,10 +293,11 @@ class CodexExecParser:
     ) -> tuple[str, str, Any, Any, list[dict[str, Any]], str] | None:
         """(title, kind, raw input, raw output, content, terminal status).
 
-        Commands take codex-acp 1.13.1's shape: the title and raw input are
-        the command the model asked for (exec reports it wrapped in the shell
-        that ran it), the content a terminal reference, and the raw output
-        ``{formatted_output, exit_code}``.
+        Commands take codex-acp's shape (1.13.1's, which 2.0.1 keeps once
+        ``ToolCallRecord`` rebuilds its raw output from the terminal chunks):
+        the title and raw input are the command the model asked for (exec
+        reports it wrapped in the shell that ran it), the content a terminal
+        reference, and the raw output ``{formatted_output, exit_code}``.
         """
         if kind == "command_execution":
             command = unwrap_shell(str(item.get("command") or ""))
