@@ -20,7 +20,7 @@ _ADAPTER = "/opt/benchflow/bin/codex-acp"
 _NODE = "/opt/benchflow/node/bin/node"
 _NODE_MODULES = "/opt/benchflow/js-agents/lib/node_modules"
 # The adapter must be the registry pin. Native Codex is whatever that adapter
-# resolves within its declared `@openai/codex` range (^0.156.1 for 1.13.1); the
+# resolves within its declared `@openai/codex` range (^0.159.1 for 2.0.1); the
 # `features list` probe below is the behavioral check for every admitted build.
 _MANIFEST = """const m=JSON.parse(require('fs').readFileSync(%s,'utf8'));
 console.log(JSON.stringify({name:m.name,version:m.version,codex:(m.dependencies||{})['@openai/codex']}));"""

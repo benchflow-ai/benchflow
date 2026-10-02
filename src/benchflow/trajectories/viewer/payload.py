@@ -236,6 +236,11 @@ def _tool_content_texts(content: Any) -> list[str]:
     for item in content:
         if not isinstance(item, dict):
             text = _display_text(item)
+        elif item.get("type") == "terminal":
+            # A reference to a client-side terminal (codex-acp sends one per
+            # shell command); it carries no text, so leave the call to the
+            # rawInput / rawOutput fallback instead of rendering the id.
+            continue
         else:
             inner = item.get("content")
             if isinstance(inner, dict) and "text" in inner:

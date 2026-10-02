@@ -175,3 +175,172 @@ def test_payload_falls_back_to_raw_io_when_content_is_empty(tmp_path: Path) -> N
     tools = [s["tool"] for s in steps if s["kind"] == "tool"]
     assert tools[0]["content"] == ["ls /root", "a.py\n"]
     assert tools[1]["content"] == ["x"]
+
+
+# codex-acp 2.0.1 reports, recorded verbatim from BenchFlow's ACP client driving
+# the adapter (cwd shortened). Its tool call contract sends a client without
+# terminal capabilities the command output only in ``_meta``.
+_CODEX_2_SHELL = [
+    {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call_shell",
+        "name": "exec_command",
+        "kind": "execute",
+        "title": "echo hello-from-mock; echo second-line; exit 3",
+        "status": "in_progress",
+        "content": [{"type": "terminal", "terminalId": "call_shell"}],
+        "rawInput": {
+            "command": "echo hello-from-mock; echo second-line; exit 3",
+            "cwd": "/app",
+        },
+        "_meta": {"terminal_info": {"cwd": "/app", "terminal_id": "call_shell"}},
+    },
+    {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_shell",
+        "status": "failed",
+        "_meta": {
+            "terminal_output_delta": {
+                "data": "hello-from-mock\nsecond-line\n",
+                "terminal_id": "call_shell",
+            },
+            "terminal_exit": {
+                "exit_code": 3,
+                "signal": None,
+                "terminal_id": "call_shell",
+            },
+        },
+    },
+]
+_CODEX_2_READ = [
+    {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call_read",
+        "name": "exec_command",
+        "kind": "read",
+        "title": "Read file '/app/probe.txt'",
+        "status": "in_progress",
+        "locations": [{"path": "/app/probe.txt"}],
+    },
+    {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_read",
+        "status": "completed",
+        "rawOutput": {"exit_code": 0},
+        "_meta": {
+            "terminal_output_delta": {
+                "data": "probe-file-line-1\nprobe-file-line-2\n",
+                "terminal_id": "call_read",
+            }
+        },
+    },
+]
+
+
+def _session_from(updates: list[dict]) -> ACPSession:
+    session = ACPSession("s")
+    for update in updates:
+        session.handle_update(update)
+    return session
+
+
+def test_codex_2_shell_output_and_exit_code_survive_from_meta() -> None:
+    """codex-acp 2.0.1 ends a shell command with no rawOutput; the output and
+    exit code arrive only as terminal chunks. The record keeps the 1.x shape."""
+    session = _session_from(_CODEX_2_SHELL)
+    record = session.tool_calls[0]
+    assert record.status.value == "failed"
+    assert record.raw_output == {
+        "formatted_output": "hello-from-mock\nsecond-line\n",
+        "exit_code": 3,
+    }
+    traj = _events_to_trajectory(session.events)[0]
+    assert traj["raw_output"]["formatted_output"] == "hello-from-mock\nsecond-line\n"
+    texts = _raw_io_texts("execute", traj["raw_input"], traj["raw_output"])
+    assert texts[-1] == "hello-from-mock\nsecond-line\n[exit code 3]"
+
+
+def test_codex_2_read_command_keeps_its_output() -> None:
+    """A read / search / list command ends with rawOutput {"exit_code": 0} and
+    its output in a terminal chunk; both end up in raw_output."""
+    record = _session_from(_CODEX_2_READ).tool_calls[0]
+    assert record.raw_output == {
+        "formatted_output": "probe-file-line-1\nprobe-file-line-2\n",
+        "exit_code": 0,
+    }
+
+
+def test_streamed_chunks_join_in_order() -> None:
+    """Output streamed across updates is joined; the completion then carries
+    only the exit (the adapter does not resend streamed output)."""
+    start, _ = _CODEX_2_SHELL
+    chunks = [
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_shell",
+            "_meta": {
+                "terminal_output_delta": {"data": part, "terminal_id": "call_shell"}
+            },
+        }
+        for part in ("a", "b\n", "c\n")
+    ]
+    end = {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_shell",
+        "status": "completed",
+        "_meta": {
+            "terminal_exit": {
+                "exit_code": 0,
+                "signal": None,
+                "terminal_id": "call_shell",
+            }
+        },
+    }
+    record = _session_from([start, *chunks, end]).tool_calls[0]
+    assert record.raw_output == {"formatted_output": "ab\nc\n", "exit_code": 0}
+
+
+def test_agent_formatted_output_wins_over_terminal_chunks() -> None:
+    """codex-acp 1.x streamed the same chunks and then sent formatted_output;
+    the agent's own value is kept, not a second copy."""
+    start, _ = _CODEX_2_SHELL
+    chunk = {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_shell",
+        "_meta": {
+            "terminal_output_delta": {"data": "x\n", "terminal_id": "call_shell"}
+        },
+    }
+    end = {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_shell",
+        "status": "completed",
+        "rawOutput": {"formatted_output": "x\n", "exit_code": 0},
+        "_meta": {
+            "terminal_exit": {
+                "exit_code": 0,
+                "signal": None,
+                "terminal_id": "call_shell",
+            }
+        },
+    }
+    record = _session_from([start, chunk, end]).tool_calls[0]
+    assert record.raw_output == {"formatted_output": "x\n", "exit_code": 0}
+
+
+def test_payload_renders_codex_2_shell_output_behind_a_terminal_block(
+    tmp_path: Path,
+) -> None:
+    """A codex shell call's only content block is a terminal reference; the
+    viewer shows the command and the output rebuilt from _meta, not the id."""
+    traj = tmp_path / "trajectory"
+    traj.mkdir()
+    events = _events_to_trajectory(_session_from(_CODEX_2_SHELL).events)
+    (traj / "acp_trajectory.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    (tmp_path / "result.json").write_text("{}")
+    steps = _build_acp_payload(tmp_path, None).to_payload()["steps"]
+    tool = next(s["tool"] for s in steps if s["kind"] == "tool")
+    assert tool["content"] == [
+        "echo hello-from-mock; echo second-line; exit 3",
+        "hello-from-mock\nsecond-line\n[exit code 3]",
+    ]

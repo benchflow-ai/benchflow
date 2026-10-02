@@ -153,7 +153,7 @@ _CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.2"
 # the native no-web gate verifies the launcher. 2.1.280 is the release the
 # adapter's SDK (0.3.280) was built against.
 _CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.280"
-_CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.13.1"
+_CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@2.0.1"
 # The Codex CLI the native harness runs (``harness="native"`` on codex-acp),
 # pinned exactly. 0.156.1 is the release codex-acp 1.13.1 resolves its
 # ``@openai/codex ^0.156.1`` dependency to (npm had no later 0.156.x on
@@ -851,10 +851,15 @@ AGENTS: dict[str, AgentConfig] = {
         # (-32602), so runtime.py keeps codex on session/set_model — verified
         # live 2026-08-19 against gpt-5.6-sol via an Azure provider. 1.13.1
         # keeps both behaviours (session/set_model still parses
-        # ``model[effort]``; the "model" option still takes bare ids only).
-        # 1.13.1 bundles codex 0.156.1: 0.148 (bundled by 1.6.0) has no model
-        # metadata for gpt-6-astra, so even with the bare slug it offers the
-        # fallback tool surface (#1145).
+        # ``model[effort]``; the "model" option still takes bare ids only),
+        # and 2.0.1 leaves session/set_model and its ``model[effort]`` ids
+        # unchanged (#1147).
+        # The pin decides which models Codex knows: codex resolves a model's
+        # tool surface from the catalog bundled with the @openai/codex it
+        # depends on, and a model missing from it gets the fallback surface
+        # (plain function tools, no code mode / apply_patch / spawn_agent, #1145).
+        # 1.6.0 (codex 0.148) lacked gpt-6-astra; 1.13.1 (codex 0.156.1) lacks
+        # gpt-6.1-sol; 2.0.1 (@openai/codex ^0.159.1) lists it.
         install_cmd=_js_agent_install("codex-acp", _CODEX_ACP_PACKAGE),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),

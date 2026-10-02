@@ -92,12 +92,12 @@ INSTALLED = response(json.dumps({"requirements_sha256": "a" * 64}))
 APPS_OFF = response("apps stable false\n")
 
 
-# The pinned adapter's own npm metadata: codex-acp 1.13.1 declares
-# ``"@openai/codex": "^0.156.1"`` (``npm view @agentclientprotocol/codex-acp@1.13.1
-# dependencies``), and npm resolves that range to codex-cli 0.156.1.
-PINNED_DECLARED = "^0.156.1"
-PINNED_NATIVE = "0.156.1"
-# The previous pin, used where a test needs an adapter the registry does not pin.
+# The pinned adapter's own npm metadata: codex-acp 2.0.1 declares
+# ``"@openai/codex": "^0.159.1"`` (``npm view @agentclientprotocol/codex-acp@2.0.1
+# dependencies``), and npm resolves that range to codex-cli 0.159.3 (2026-10-02).
+PINNED_DECLARED = "^0.159.1"
+PINNED_NATIVE = "0.159.3"
+# An older pin, used where a test needs an adapter the registry does not pin.
 OLD_ADAPTER, OLD_DECLARED, OLD_NATIVE = "1.6.0", "^0.148.0", "0.148.0"
 
 
