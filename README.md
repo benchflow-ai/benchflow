@@ -4,8 +4,11 @@
   <a href="https://pypi.org/project/benchflow/" target="_blank">
     <img src="https://img.shields.io/badge/PyPI-benchflow-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI package">
   </a>
+  <a href="https://github.com/benchflow-ai/benchflow" target="_blank">
+    <img src="https://img.shields.io/github/stars/benchflow-ai/benchflow?style=for-the-badge&logo=github&logoColor=white&label=Stars&color=181717" alt="GitHub stars">
+  </a>
   <a href="https://discord.gg/mZ9Rc8q8W3" target="_blank">
-    <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
+    <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FmZ9Rc8q8W3%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=Discord&suffix=%20members&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Discord members">
   </a>
 </div>
 
