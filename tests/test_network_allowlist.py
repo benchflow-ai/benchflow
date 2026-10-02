@@ -1,12 +1,11 @@
 """network_mode='allowlist': config, capability gate, proxy allow mode, DNS filter, firewall.
 
 The allowlist reuses the denylist egress proxy (``_egress_denylist_proxy``) in an
-allow mode. The battery covers the failure modes in Harbor's allowlist bug tail:
-harbor-framework/harbor#2146 (allowlisted agent gets ConnectionRefused / model API
-unreachable), #2527 (kernel lacks the filtering feature and the run proceeds
-anyway), #583 (install and verifier phases need the network; hostname allowlists
-resolved once go stale), plus blocked IP literals, DNS rebinding, IPv6 and
-redirects to a blocked host.
+allow mode. The battery covers the known allowlist failure modes: an
+allowlisted agent gets ConnectionRefused (its model API unreachable); the kernel
+lacks the filtering feature and the run proceeds anyway; install and verifier
+phases need the network, and hostname allowlists resolved once go stale; plus
+blocked IP literals, DNS rebinding, IPv6 and redirects to a blocked host.
 """
 
 from __future__ import annotations

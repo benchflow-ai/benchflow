@@ -105,9 +105,9 @@ def _allowlist_firewall_cmd(allow_networks: tuple[str, ...]) -> str:
     DNS from the agent uid (UDP and TCP port 53, any destination) is
     redirected to the proxy's DNS filter, which answers only listed names.
     A kernel without the nat table fails closed (exit 86) instead of leaving
-    DNS open (the Harbor #2527 failure mode). Docker's embedded resolver
-    (127.0.0.11, reached on a rewritten port) is refused outright. Listed IP
-    and CIDR entries are reachable directly, for any protocol, as in Harbor.
+    DNS open unnoticed. Docker's embedded resolver (127.0.0.11, reached on a
+    rewritten port) is refused outright. Listed IP and CIDR entries are
+    reachable directly, for any protocol, as in Harbor.
     """
     parsed = [ipaddress.ip_network(n, strict=False) for n in allow_networks]
     uid = '-m owner --uid-owner "$agent_uid"'

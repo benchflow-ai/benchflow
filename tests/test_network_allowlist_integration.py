@@ -163,7 +163,7 @@ RESOLVE = dedent("""\
 @pytest.mark.parametrize("compose", [False, True], ids=["single", "compose"])
 @pytest.mark.parametrize("backend", ["docker", "daytona"])
 async def test_allowlist_sandbox_canary(tmp_path: Path, backend: str, compose: bool):
-    """Guards the allowlist against Harbor's allowlist bug tail (#2146, #2527, #583).
+    """Guards the allowlist against the known allowlist failure modes.
 
     The compose variant runs Docker's engine semantics (embedded DNS at
     127.0.0.11, the NET_ADMIN overlay); on Daytona it uses the DinD strategy.

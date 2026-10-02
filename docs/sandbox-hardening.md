@@ -226,7 +226,7 @@ Hosted search is switched off per harness, as for the denylist (provider-side fe
 
 - `daytona`, direct sandbox: live canary `tests/test_network_allowlist_integration.py` (`single` lane).
 - `daytona`, DinD compose (Docker engine inside the sandbox, Docker's embedded DNS, the `NET_ADMIN` overlay): the same canary's `compose` lane, including a sibling service reached by name through the proxy and directly.
-- `docker` on the host: same code path and compose overlay as the DinD lane; the host lane of the canary has not been run. It needs the `nat` table and the `owner` match in the Docker VM's kernel; when either is missing the firewall setup exits 86 and the rollout fails before the agent starts ([harbor#2527](https://github.com/harbor-framework/harbor/issues/2527) was the opposite: a missing kernel feature went unnoticed).
+- `docker` on the host: same code path and compose overlay as the DinD lane; the host lane of the canary has not been run. It needs the `nat` table and the `owner` match in the Docker VM's kernel; when either is missing the firewall setup exits 86 and the rollout fails before the agent starts, so a missing kernel feature never goes unnoticed.
 - `modal`, `apple-container`, `agentcore`: refused at preflight.
 
 ### Requirements
