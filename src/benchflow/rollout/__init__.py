@@ -838,6 +838,10 @@ class Rollout:
         # Detail-less agent-phase timeout, eligible for zero-activity
         # reclassification (#1071). One-shot: cleared once a verdict lands.
         self._bare_timeout: bool = False
+        # The agent's wall-clock budget ran out with a timeout message. It
+        # keeps its error for the API verdicts, but an agent that did nothing
+        # before it is an integration failure. One-shot, like _bare_timeout.
+        self._judge_timed_out_agent: bool = False
         # Set by mark_solver_complete(); later failures keep the solver result.
         self._solver_execution_complete: bool = False
         # The running agent phase, so the host deadline can stop the agent
@@ -2652,7 +2656,7 @@ class Rollout:
         self._bare_timeout = not detail and agent_phase
         # The agent's wall-clock budget ran out (an idle-watchdog abort is not
         # running out of time); a task.md draft 2 reward.json records it.
-        if (
+        ran_out_of_time = (
             agent_phase
             and not isinstance(e, IdleTimeoutError)
             and (
@@ -2660,8 +2664,12 @@ class Rollout:
                 or "exceeded wall-clock budget" in detail
                 or not detail
             )
-        ):
+        )
+        if ran_out_of_time:
             self._agent_ran_out_of_time = True
+        # Judged on what the agent did, like a bare timeout. An idle timeout
+        # is left out: it is retried, an integration failure is not.
+        self._judge_timed_out_agent = ran_out_of_time and bool(detail)
         if not detail and self._started_at is not None:
             elapsed = (datetime.now() - self._started_at).total_seconds()
             detail = (
@@ -3429,6 +3437,15 @@ class Rollout:
             # the provider's last captured request failed (PR #1131).
             return
         if not bare_timeout and (self._error is not None or not self._executed_prompts):
+            # A wall-clock timeout with a message keeps it for the API
+            # verdicts, but an agent that did nothing before it (no tool call,
+            # message, thought or output token) is an integration failure, as
+            # bf.load_job reads the result: a model that never answered is
+            # not a 0. Judged once.
+            if getattr(self, "_judge_timed_out_agent", False):
+                self._judge_timed_out_agent = False
+                if self._n_tool_calls == 0:
+                    _classify_integration_failure(self)
             return
         # Native-subscription runs have NO usage channel: the LiteLLM proxy is
         # deliberately skipped (Harbor-style split) and the CLI authenticates

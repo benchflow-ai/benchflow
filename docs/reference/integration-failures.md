@@ -4,7 +4,7 @@ An agent integration can break without an error: the agent's install is missing 
 
 ## When a trial is judged
 
-After the prompt, the agent made no tool call, sent no message with text, produced no genuine thought and reported no output tokens. A thought that is a harness shim's diagnostic (`[openclaw stderr] …`, `[openclaw-acp-shim] …`) is not genuine. Any activity leaves the trial alone: a model that thought for an hour and timed out, or answered with a refusal, keeps its 0. Control runs (`oracle`, `nop`), session-factory agents and runs that captured no events at all are never judged.
+After the prompt, the agent made no tool call, sent no message with text, produced no genuine thought and reported no output tokens. A thought that is a harness shim's diagnostic (`[openclaw stderr] …`, `[openclaw-acp-shim] …`) is not genuine. Any activity leaves the trial alone: a model that thought for an hour and timed out, or answered with a refusal, keeps its 0. Control runs (`oracle`, `nop`), session-factory agents and runs that captured no events at all are never judged. An adapter's notice (a `notice` event, such as Codex's warning that a model is missing from its catalog) is what the adapter said, not the agent, so it is not activity. A run that hit the agent's wall-clock budget is judged like any other and keeps its `agent_timeout_info`. An idle-watchdog timeout keeps its own category while the job runs, because it is retried; its final attempt is judged when it is read.
 
 ## Causes
 

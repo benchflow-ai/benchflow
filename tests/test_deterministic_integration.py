@@ -1276,6 +1276,14 @@ def test_codex_warning_is_a_notice_not_a_reply(codex_uncatalogued_job):
         and f"Model metadata for `{h.CODEX_UNCATALOGUED_MODEL}` not found" in n["title"]
         for n in notices
     ), notices
+    # The run's own records say the same as bf.load_trial: the job summary
+    # counts an integration failure, not a scored 0.
+    result = h.read_json(trial / "result.json")
+    assert result["error_category"] == "agent_integration"
+    assert result["integration_failure_info"]["cause"] == "no_activity"
+    assert result["agent_timeout_info"]["reason"] == "wall_clock_timeout"
+    summary = h.read_json(trial.parent / "summary.json")
+    assert summary["integration_failures"]["total"] == 1, summary
 
 
 # ----- Codex under the egress allowlist ------------------------------------

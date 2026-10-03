@@ -562,6 +562,27 @@ def test_codex_turn_failed_and_stream_errors_are_errors():
     assert outcome.completed and outcome.error == "unexpected status 401"
 
 
+def test_codex_warning_items_are_notices_not_the_agents_words():
+    """exec 0.159.3 reports a warning (here the catalog one) as an error item
+    (event_processor_with_jsonl_output.rs, collect_warning); codex-acp sends the
+    same text as a session notice. It is neither a message nor the turn's
+    failure."""
+    parser = CodexExecParser("/work")
+    warning = (
+        "Model metadata for `gpt-5.4` not found. Defaulting to fallback "
+        "metadata; this can degrade performance and cause issues."
+    )
+    event = {
+        "type": "item.completed",
+        "item": {"id": "item_0", "type": "error", "message": warning},
+    }
+    assert parser.feed(event) == [
+        {"sessionUpdate": "notice", "severity": "warning", "title": warning}
+    ]
+    assert parser.warnings == [warning]
+    assert parser.outcome().error is None
+
+
 def test_codex_file_changes_arrive_completed():
     updates = CodexExecParser(turn=3).feed(
         {

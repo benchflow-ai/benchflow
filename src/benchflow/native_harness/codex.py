@@ -244,8 +244,21 @@ class CodexExecParser:
                 else []
             )
         if kind == "error":
-            if done and isinstance(item.get("message"), str):
-                self.warnings.append(item["message"])
+            # Not the turn's failure (a top-level error event is): exec reports
+            # a warning, a config warning, a deprecation notice or a model
+            # reroute as an error item. codex-acp sends the same as an ACP
+            # session notice, so it is recorded as one, apart from the
+            # agent's words.
+            message = item.get("message")
+            if done and isinstance(message, str) and message.strip():
+                self.warnings.append(message)
+                return [
+                    {
+                        "sessionUpdate": "notice",
+                        "severity": "warning",
+                        "title": message.strip(),
+                    }
+                ]
             return []
         if kind == "todo_list":
             # codex-acp sends the to-do list as an ACP plan, which BenchFlow's

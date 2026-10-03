@@ -627,9 +627,13 @@ class UsageLimitDiagnostic(Diagnostic):
         return f"{task_name}: usage limit reached{where}{window}{resets} — unscored"
 
 
-# Public registry — every diagnostic kind goes here exactly once.
+# Public registry — every diagnostic kind goes here exactly once. The order is
+# precedence: a channel's category is the first one set (category_for_channel).
+# A usage limit outranks everything; an integration failure replaces the error
+# it was judged from, such as a wall-clock timeout the agent did nothing before.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     UsageLimitDiagnostic,
+    IntegrationFailureDiagnostic,
     IdleTimeoutDiagnostic,
     AgentPromptTimeoutDiagnostic,
     SandboxStartupDiagnostic,
@@ -637,7 +641,6 @@ DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     VerifierTimeoutDiagnostic,
     ProviderApiErrorDiagnostic,
     SuspectedApiErrorDiagnostic,
-    IntegrationFailureDiagnostic,
 )
 
 # field_name → Diagnostic class, for check_results lookup.
