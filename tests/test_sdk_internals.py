@@ -382,6 +382,27 @@ class TestInitTrial:
         )
         assert rollout_name == "custom-trial"
 
+    def test_reused_rollout_drops_previous_llm_trajectory(self, task_dir, tmp_path):
+        """Drops a prior provider trajectory when a reused rollout has no new one."""
+        jobs_dir = tmp_path / "jobs"
+        _, rollout_dir, _, _, _, _ = self._init(
+            task_dir,
+            job_name="job",
+            rollout_name="rollout",
+            jobs_dir=jobs_dir,
+        )
+        trajectory = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+        trajectory.write_text('{"completion":"stale"}\n')
+
+        self._init(
+            task_dir,
+            job_name="job",
+            rollout_name="rollout",
+            jobs_dir=jobs_dir,
+        )
+
+        assert not trajectory.exists()
+
     def test_started_at_is_datetime(self, task_dir, tmp_path):
         _, _, _, started_at, _, _ = self._init(task_dir, jobs_dir=tmp_path / "jobs")
         assert isinstance(started_at, datetime)
