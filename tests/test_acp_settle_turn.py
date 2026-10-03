@@ -1,7 +1,6 @@
 """The settle rule: a turn the agent finished but never closed ends as end_turn.
 
-Guards the BENCHFLOW_ACP_SETTLE_TIMEOUT fix (branch fix/acp-settle-after-final-message)
-against the OpenCode-on-Daytona stall: the agent sends its final message, and
+Guards PR #1150 (BENCHFLOW_ACP_SETTLE_TIMEOUT) against the OpenCode-on-Daytona stall: the agent sends its final message, and
 the ``session/prompt`` answer never arrives (OpenCode's own log shows its loop
 exiting in the stalled attempts examined), so the attempt waited out the wall
 clock and was recorded as a timeout.
