@@ -742,6 +742,9 @@ class Rollout:
         # with no pending tool calls) fired — its captured trajectory is a
         # complete terminal one, not a rerunnable partial (#640).
         self._terminal_timeout: bool = False
+        # Detail-less agent-phase timeout, eligible for zero-activity
+        # reclassification (#1071). One-shot: cleared once a verdict lands.
+        self._bare_timeout: bool = False
         # Every prompt actually sent to the agent across all execute() calls —
         # this is what `n_prompts` and `prompts.json` should reflect for Scene
         # rollouts where each turn issues its own prompt. The original
@@ -2131,7 +2134,7 @@ class Rollout:
 
     # Full run
 
-    def _record_agent_timeout(self, e: TimeoutError) -> None:
+    def _record_agent_timeout(self, e: TimeoutError, *, agent_phase: bool) -> None:
         """Record a timed-out agent run on the rollout's error state.
 
         Shared by run()'s inner per-scene handler and the outer wall-clock
@@ -2143,9 +2146,25 @@ class Rollout:
         that fired with no pending tool calls is a *clean terminal* timeout:
         the trajectory is complete, not a rerunnable partial. Record that so
         the partial-capture path leaves ``_partial_trajectory`` False (#640).
+
+        A detail-less timeout reports measured elapsed time, not the configured
+        budget, and — only when it came from the agent phase — is flagged for
+        zero-activity reclassification (#1071). Setup/install/verify timeouts
+        reach the outer handler with ``agent_phase=False`` and never reclassify.
         """
         detail = str(e).strip()
-        self._error = detail or f"Agent timed out after {self._timeout}s"
+        self._bare_timeout = not detail and agent_phase
+        if not detail:
+            started = getattr(self, "_started_at", None)
+            if started is not None:
+                elapsed = (datetime.now() - started).total_seconds()
+                detail = (
+                    f"Agent timed out after {elapsed:.0f}s "
+                    f"(budget {self._timeout}s)"
+                )
+            else:
+                detail = f"Agent timed out after {self._timeout}s"
+        self._error = detail
         self._diagnostics.capture_idle(e)
         if isinstance(e, AgentPromptTimeoutError) and getattr(
             e, "terminal_trajectory_complete", False
@@ -2240,7 +2259,7 @@ class Rollout:
                             )
                     except TimeoutError as e:
                         agent_timed_out = True
-                        self._record_agent_timeout(e)
+                        self._record_agent_timeout(e, agent_phase=True)
                 finally:
                     if cfg.oracle_access:
                         await self._env.exec(
@@ -2261,7 +2280,7 @@ class Rollout:
                     self._verifier_error = None
 
         except TimeoutError as e:
-            self._record_agent_timeout(e)
+            self._record_agent_timeout(e, agent_phase=False)
         except ConnectionError as e:
             self._error = str(e)
             self._diagnostics.capture_transport(e)
@@ -2667,14 +2686,15 @@ class Rollout:
         polluting them as a fake healthy fail; the slot stays rerun-able and
         the batch is never interrupted.
         """
-        if self._error is not None:
-            return
-        # Only judge rollouts where the agent actually ran: when no execute()
-        # recorded a prompt, this is a setup/export failure path that owns its
-        # own error channels (#389) — zero activity there is expected, not a
-        # silent API failure.
-        if not getattr(self, "_executed_prompts", None):
-            return
+        # A bare agent-phase timeout is judged despite both gates: with zero
+        # activity it is the same zero-signal shape (#1071). Otherwise skip
+        # already-errored rollouts and setup/export failure paths, which own
+        # their error channels (#389).
+        if not getattr(self, "_bare_timeout", False):
+            if self._error is not None:
+                return
+            if not getattr(self, "_executed_prompts", None):
+                return
         # Native-subscription runs have NO usage channel: the LiteLLM proxy is
         # deliberately skipped (Harbor-style split) and the CLI authenticates
         # itself, so zero tokens + zero tool calls is the expected shape of a
@@ -2702,6 +2722,7 @@ class Rollout:
         )
         if verdict is None:
             return
+        self._bare_timeout = False
         if verdict == "api_error":
             subcategory = info.get("subcategory") or "provider_error"
             kind = "transient" if info.get("transient") else "permanent"

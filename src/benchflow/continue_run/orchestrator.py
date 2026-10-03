@@ -684,10 +684,7 @@ async def _continue_run_with_sandbox_proxy(
                 )
         except TimeoutError as exc:
             agent_timed_out = True
-            detail = str(exc).strip()
-            rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
-            rollout._diagnostics.capture_idle(exc)
-            logger.error(rollout._error)
+            rollout._record_agent_timeout(exc, agent_phase=True)
 
         if not config.skip_verify:
             await rollout.verify()
@@ -700,10 +697,7 @@ async def _continue_run_with_sandbox_proxy(
                 rollout._verifier_error = None
 
     except TimeoutError as exc:
-        detail = str(exc).strip()
-        rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
-        rollout._diagnostics.capture_idle(exc)
-        logger.error(rollout._error)
+        rollout._record_agent_timeout(exc, agent_phase=False)
     except ConnectionError as exc:
         rollout._error = str(exc)
         rollout._diagnostics.capture_transport(exc)
