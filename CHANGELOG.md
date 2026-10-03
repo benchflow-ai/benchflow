@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **A turn the agent finished but never closed can end as `end_turn`
+  (`BENCHFLOW_ACP_SETTLE_TIMEOUT`, off by default).** OpenCode on Daytona
+  sometimes never answers `session/prompt` after its final message: in an
+  Oct 2, 2026 SkillsBench run, 55 of the 255 attempts that ended with a final
+  message (22%) sat silent until the wall clock ran out, a median 244 s each,
+  and were recorded as timeouts, although in the stalled attempts examined
+  OpenCode's own log shows its loop exiting (the run used the ssh Daytona ACP
+  transport, so this is not the PTY stream). With the
+  variable set to a number of seconds, a turn whose last update is message
+  text, with no tool call pending, ends after that many quiet seconds:
+  BenchFlow sends `session/cancel`, the turn counts as `end_turn`, and the
+  trajectory records an `agent_turn_end_inferred` event with the quiet time.
+  Both prompt waits (wall clock only, and with the idle watchdog) apply it.
+  In the same run, 99% of the 2,672 model calls that wrote text before a tool
+  call finished within 104 s and 18 took longer than 120 s in all; a call's
+  duration is an upper bound on how long OpenCode stays quiet between that
+  text and the tool call, so 120 is a reasonable setting for OpenCode.
 - **Codex knows `gpt-6.1-sol`: the `codex-acp` pin moves from 1.13.1 to
   2.0.1.** Codex takes a model's tool surface from the model catalog bundled
   with its `@openai/codex` dependency. codex 0.156.1 (behind 1.13.1) has no

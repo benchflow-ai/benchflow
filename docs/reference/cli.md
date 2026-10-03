@@ -340,6 +340,19 @@ give slow-starting agents more time to answer the pre-prompt ACP handshake
 (`initialize`/`session_new`) — heavyweight task images can push agent startup
 past the default.
 
+Set `BENCHFLOW_ACP_SETTLE_TIMEOUT` to a number of seconds (off by default) to
+end a turn the agent finished but never closed: when the agent's last update is
+message text, no tool call is pending, and it stays quiet that long, BenchFlow
+sends `session/cancel`, counts the turn as `end_turn`, and the trajectory
+records `agent_turn_end_inferred`. OpenCode on Daytona sometimes never answers
+`session/prompt` after its final message, so the attempt waits out the
+wall-clock budget and is recorded as a timeout. For OpenCode, 120 is a
+reasonable value: in one SkillsBench run, 99% of the model calls that wrote
+text before a tool call finished within 104 s, an upper bound on how long the
+agent stays quiet between that text and the tool call. Keep it below
+`agent_idle_timeout`, and leave it off for agents that run long commands
+without reporting them as tool calls.
+
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
 should fail the rollout, or `--usage-tracking off` for recovery runs that should
