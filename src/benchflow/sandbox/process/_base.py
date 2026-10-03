@@ -268,11 +268,16 @@ class SubprocessLiveProcess(LiveProcess):
                 with contextlib.suppress(OSError):  # already closed
                     self._process.stdin.close()
             if self._process.returncode is None:
-                self._process.terminate()
+                with contextlib.suppress(ProcessLookupError):
+                    self._process.terminate()
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=5)
                 except TimeoutError:
-                    self._process.kill()
+                    # The returncode check above cannot cover this branch: the
+                    # grace period is an await, so the child may exit and be
+                    # reaped before the escalation lands (#1065).
+                    with contextlib.suppress(ProcessLookupError):
+                        self._process.kill()
                     await self._process.wait()
             await self._finish_stderr_drain(cancel_on_timeout=True)
             logger.info("Process terminated")

@@ -1962,7 +1962,9 @@ class Rollout:
                 user="root",
             )
         except Exception as e:
-            verifier_error = f"soft verifier crashed: {e}"
+            # describe_exception for the same reason as the funnel below: an
+            # argument-less exception stringifies to nothing (#1065).
+            verifier_error = f"soft verifier crashed: {describe_exception(e)}"
             logger.error(verifier_error)
             return None, None, verifier_error
 
@@ -1997,7 +1999,7 @@ class Rollout:
             )
             logger.error(verifier_error)
         except Exception as e:
-            verifier_error = f"soft verifier crashed: {e}"
+            verifier_error = f"soft verifier crashed: {describe_exception(e)}"
             logger.error(verifier_error)
         return rewards, verifier_output, verifier_error
 
