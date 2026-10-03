@@ -9,6 +9,7 @@ Covers three tiers of reward-forge mitigations:
 import json
 import logging
 import shlex
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1825,3 +1826,276 @@ class TestSandboxFailureModes:
         path = await _trusted_verifier_path(env, sandbox_user=None, workspace=None)
         # Malformed JSON ⇒ extras treated as empty ⇒ result equals safe PATH
         assert path == _SAFE_VERIFIER_PATH
+
+
+# Verbatim from #1078, so the acceptance command in the report runs unchanged.
+@pytest.mark.asyncio
+async def test_process_kill_failure_is_not_accepted() -> None:
+    from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
+
+    env = MagicMock()
+    env.exec = AsyncMock(
+        side_effect=[
+            # Initial TERM/KILL command reported success.
+            MagicMock(stdout="", stderr="", return_code=0),
+            # Follow-up command could not establish the claimed state.
+            MagicMock(stdout="1234\n", stderr="pgrep/kill failed", return_code=1),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="process"):
+        await _kill_sandbox_user_procs(env, "agent")
+
+
+class TestSandboxUserQuiescenceShell:
+    """What the quiescence command reports to a real shell.
+
+    A mocked ``env.exec`` can show that a return code goes unchecked, but not
+    where the return code comes from — and the older form of this command
+    produced a successful status *itself*, from the ``sleep 1`` it ended on. So
+    these run the actual command string through ``/bin/sh``.
+
+    ``pgrep``/``pkill``/``sleep`` are stubbed on PATH rather than signalling
+    anything: the subject here is exit-status propagation, and a test that
+    really killed processes by uid could not run in CI. The stubs keep the
+    property that matters — ``sleep`` always succeeds, exactly as the real one
+    does — which is the whole reason the old form could not fail.
+    """
+
+    # The form replaced by _ASSERT_SANDBOX_USER_QUIESCENT_CMD_TEMPLATE, kept so
+    # the contrast below is asserted rather than described.
+    OLD_CMD = (
+        "! pgrep -u agent > /dev/null 2>&1 || (sleep 1 && pkill -9 -u agent; sleep 1)"
+    )
+
+    @staticmethod
+    def _stub_path(
+        tmp_path,
+        *,
+        alive_before: bool,
+        alive_after: bool,
+        kill_rc: int,
+        defunct: bool = False,
+        state: str | None = None,
+    ):
+        """A PATH whose pgrep answers differently on its first and last call.
+
+        ``sed`` is stubbed alongside it because the state lookup reads /proc,
+        which does not exist on every machine that runs this suite and would
+        otherwise answer for whatever real process holds the stub's pid. What a
+        real /proc reports is covered against live containers instead.
+
+        ``state`` is what that lookup finds: a letter for a process that is
+        still there, or empty for one whose /proc entry has already gone.
+        """
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        counter = tmp_path / "pgrep.calls"
+
+        def write(name: str, body: str) -> None:
+            p = bindir / name
+            p.write_text("#!/bin/sh\n" + body)
+            p.chmod(0o755)
+
+        write(
+            "pgrep",
+            f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); "
+            f'echo "$n" > {counter}; '
+            f'if [ "$n" -eq 1 ]; then '
+            f"  {'echo 1234; exit 0' if alive_before else 'exit 1'}; "
+            f"else "
+            f"  {'echo 1234; exit 0' if alive_after else 'exit 1'}; "
+            f"fi\n",
+        )
+        write("pkill", f"exit {kill_rc}\n")
+        write("sleep", "exit 0\n")  # real sleep also always succeeds
+        # Stands in for the `sed` that reads State: out of /proc/<pid>/status.
+        if state is None:
+            state = "Z" if defunct else "S"
+        write("sed", f"printf '%s' '{state}'\n")
+        return bindir
+
+    def _run(self, cmd: str, bindir) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["/bin/sh", "-c", cmd],
+            env={"PATH": f"{bindir}:/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+        )
+
+    @pytest.fixture
+    def new_cmd(self) -> str:
+        """The command under test — skipped on a tree that predates it.
+
+        These specify the replacement rather than detect the defect, so on the
+        unfixed tree they should say "not applicable", not fail; the mocked
+        tests below are the ones that have to go red there.
+        """
+        from benchflow.sandbox import lockdown
+
+        template = getattr(
+            lockdown, "_ASSERT_SANDBOX_USER_QUIESCENT_CMD_TEMPLATE", None
+        )
+        if template is None:
+            pytest.skip("tree predates the quiescence command")
+        return template.replace("__USER__", "agent")
+
+    def test_old_form_reported_success_while_a_process_survived(self, tmp_path):
+        """The defect itself: kill fails, process lives, status says fine."""
+        bindir = self._stub_path(
+            tmp_path, alive_before=True, alive_after=True, kill_rc=1
+        )
+
+        result = self._run(self.OLD_CMD, bindir)
+
+        # Nothing was killed and a process is still there, yet rc is 0 — the
+        # trailing `sleep 1` supplied it. This is what made the missing check
+        # invisible even to a caller that looked.
+        assert result.returncode == 0
+
+    def test_a_surviving_process_now_fails(self, tmp_path, new_cmd):
+        bindir = self._stub_path(
+            tmp_path, alive_before=True, alive_after=True, kill_rc=1
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert result.returncode == 1
+
+    def test_a_surviving_process_is_named(self, tmp_path, new_cmd):
+        """Report the pid: 'still running' is not actionable on its own."""
+        bindir = self._stub_path(
+            tmp_path, alive_before=True, alive_after=True, kill_rc=1
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert "1234" in result.stdout
+
+    def test_a_quiet_sandbox_passes(self, tmp_path, new_cmd):
+        """The normal path: nothing was running to begin with."""
+        bindir = self._stub_path(
+            tmp_path, alive_before=False, alive_after=False, kill_rc=0
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert result.returncode == 0
+
+    def test_a_process_the_second_pass_kills_passes(self, tmp_path, new_cmd):
+        """Also normal: something lingered, the kill worked, so it's quiet."""
+        bindir = self._stub_path(
+            tmp_path, alive_before=True, alive_after=False, kill_rc=0
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert result.returncode == 0
+
+    def test_a_defunct_process_is_not_a_survivor(self, tmp_path, new_cmd):
+        """A defunct child is not what this step guards against.
+
+        Killing the agent's shell can leave its ``sleep`` child defunct for a
+        moment, and pgrep lists it like a live process. A zombie holds no
+        descriptors, so excluding it by state costs nothing and keeps the
+        verdict from depending on whether PID 1 reaps orphans.
+        """
+        bindir = self._stub_path(
+            tmp_path,
+            alive_before=True,
+            alive_after=True,
+            kill_rc=0,
+            defunct=True,
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert result.returncode == 0, "a zombie was counted as a live process"
+
+    def test_a_process_that_exits_mid_scan_is_not_a_survivor(self, tmp_path, new_cmd):
+        """An empty /proc read means the process is gone, not that it survived.
+
+        `pgrep` lists a pid, and by the time its state is read the process has
+        exited and the entry is gone. That happens most readily right where
+        this runs — the second scan follows a kill, with processes dropping —
+        and reading absence as survival would abort scoring over a pid that no
+        longer exists.
+        """
+        bindir = self._stub_path(
+            tmp_path,
+            alive_before=True,
+            alive_after=True,
+            kill_rc=0,
+            state="",
+        )
+
+        result = self._run(new_cmd, bindir)
+
+        assert result.returncode == 0, "a departed process was counted as alive"
+
+
+class TestSandboxUserQuiescenceContract:
+    """What ``harden_before_verify`` does with that status."""
+
+    @pytest.mark.asyncio
+    async def test_survivors_stop_the_verifier_from_starting(self):
+        """The contract: assert dead, or do not proceed.
+
+        ``_verify_rollout`` runs the verifier on the line after hardening
+        returns, so returning normally here is what lets an agent process write
+        during scoring.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env(
+            side_effect=[
+                MagicMock(stdout="", stderr="", return_code=0),
+                MagicMock(stdout="1234\n", stderr="", return_code=1),
+            ]
+        )
+
+        with pytest.raises(RuntimeError, match="process"):
+            await harden_before_verify(env, _make_task(), "agent", workspace=None)
+
+    @pytest.mark.asyncio
+    async def test_the_failure_names_the_surviving_pid(self):
+        from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
+
+        env = _make_env(
+            side_effect=[
+                MagicMock(stdout="", stderr="", return_code=0),
+                MagicMock(stdout="4242\n", stderr="", return_code=1),
+            ]
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            await _kill_sandbox_user_procs(env, "agent")
+
+        assert "4242" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_a_quiet_sandbox_still_reaches_the_verifier(self):
+        """Guard against the fix erroring out runs that were always fine."""
+        from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
+
+        env = _make_env()
+
+        await _kill_sandbox_user_procs(env, "agent")
+
+    @pytest.mark.asyncio
+    async def test_the_first_pass_stays_best_effort(self):
+        """pkill exits non-zero when there was simply nothing to kill.
+
+        Only the second command carries the verdict; checking the first would
+        fail every rollout whose agent had already exited on its own.
+        """
+        from benchflow.sandbox.lockdown import _kill_sandbox_user_procs
+
+        env = _make_env(
+            side_effect=[
+                MagicMock(stdout="", stderr="", return_code=1),
+                MagicMock(stdout="", stderr="", return_code=0),
+            ]
+        )
+
+        await _kill_sandbox_user_procs(env, "agent")
