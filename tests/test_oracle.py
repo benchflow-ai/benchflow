@@ -1,6 +1,49 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_launch", "cleanup_command"),
+    [
+        ("oracle", None),
+        ("opencode", "pkill -f '(^|[ /])opencode( |$)' || true"),
+        (
+            "oracle-agent-acp",
+            "pkill -f '(^|[ /])oracle\\-agent\\-acp( |$)' || true",
+        ),
+    ],
+)
+async def test_disconnect_skips_process_cleanup_only_for_oracle(
+    agent_launch: str, cleanup_command: str | None
+):
+    """Guards the Oracle fix against PR #274's unconditional label cleanup."""
+    from benchflow.rollout import Rollout
+
+    env = SimpleNamespace(exec=AsyncMock())
+    rollout = SimpleNamespace(
+        _phase="verified",
+        _is_session_factory=False,
+        _capture_partial_acp_trajectory=lambda: None,
+        _acp_client=None,
+        _session=None,
+        _session_adapter=None,
+        _agent_launch=agent_launch,
+        _env=env,
+        _active_role=None,
+        _session_tool_count=0,
+        _session_traj_count=0,
+    )
+
+    await Rollout.disconnect(rollout)
+
+    if cleanup_command:
+        env.exec.assert_awaited_once_with(cleanup_command, timeout_sec=10)
+    else:
+        env.exec.assert_not_awaited()
+    assert rollout._phase == "verified"
 
 
 def _oracle_env():
