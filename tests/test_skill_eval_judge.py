@@ -1,9 +1,10 @@
 """Run the generated skill-eval judge.py end to end against stub provider SDKs.
 
-Guards the fix for issue #1154: the judge must score with the configured
-``judge_model`` or not at all. Before it, a reply that opened with a thinking
-block made ``response.content[0].text`` raise, and the judge then took its
-score from Gemini or ``gpt-4o-mini``, whichever key happened to be set.
+Guards the fix from PR #1156 for issue #1154: the judge must score with the
+configured ``judge_model`` or not at all. Before it, a reply that opened with
+a thinking block made ``response.content[0].text`` raise, and the judge then
+took its score from Gemini or ``gpt-4o-mini``, whichever key happened to be
+set.
 """
 
 import json
@@ -334,6 +335,10 @@ def test_fenced_json_reply_is_scored_with_provenance(tmp_path):
         pytest.param('{"items": [], "score": true}', id="bool"),
         pytest.param('{"items": [], "score": "0.9"}', id="string"),
         pytest.param("[0.3]", id="not-an-object"),
+        pytest.param(
+            '{"items": [{"criterion": "c", "score": 1.0}], "score": null}',
+            id="null-score-with-a-nested-score",
+        ),
     ],
 )
 def test_a_score_outside_0_to_1_is_a_verifier_error_not_clamped(tmp_path, reply):
