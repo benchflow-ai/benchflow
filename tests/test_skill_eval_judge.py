@@ -74,7 +74,11 @@ _STUBS = {
             def generate_content(self, model, contents):
                 with open(os.environ["STUB_LOG"], "a") as log:
                     log.write(json.dumps(["gemini", model]) + "\\n")
-                return SimpleNamespace(text='{"score": 0.5}')
+                finish = SimpleNamespace(name=os.environ.get("STUB_GEMINI_FINISH", "STOP"))
+                return SimpleNamespace(
+                    text=os.environ.get("STUB_GEMINI_TEXT", '{"score": 0.5}'),
+                    candidates=[SimpleNamespace(finish_reason=finish)],
+                )
     """,
 }
 
@@ -287,7 +291,7 @@ def test_judge_model_env_override_picks_the_provider(tmp_path):
                     [{"type": "text", "text": "I cannot grade this trajectory."}]
                 )
             },
-            "judge reply has no score",
+            "judge reply has no JSON verdict",
             id="no-score",
         ),
     ],
@@ -313,8 +317,57 @@ def test_fenced_json_reply_is_scored_with_provenance(tmp_path):
     assert calls == [["anthropic", "claude-sonnet-5-5"]]
     assert (verifier / "reward.txt").read_text() == "0.75"
     result = json.loads((verifier / "judge_result.json").read_text())
-    assert result["score"] == 0.75 and result["raw_response"] == fenced
+    assert result["score"] == 0.75
     assert (result["judge_provider"], result["judge_model"]) == (
         "anthropic",
         "claude-sonnet-5-5",
     )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param('{"items": [], "score": NaN}', id="nan"),
+        pytest.param('{"items": [], "score": Infinity}', id="infinity"),
+        pytest.param('{"items": [], "score": 85}', id="out-of-range"),
+        pytest.param('{"items": [], "score": -0.5}', id="negative"),
+        pytest.param('{"items": [], "score": true}', id="bool"),
+        pytest.param('{"items": [], "score": "0.9"}', id="string"),
+        pytest.param("[0.3]", id="not-an-object"),
+    ],
+)
+def test_a_score_outside_0_to_1_is_a_verifier_error_not_clamped(tmp_path, reply):
+    proc, _, verifier = _run_judge(
+        tmp_path,
+        "claude-sonnet-5-5",
+        ALL_KEYS,
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": reply}]),
+    )
+    assert proc.returncode == 1
+    assert "judge could not run" in proc.stderr
+    assert not (verifier / "reward.txt").exists()
+
+
+def test_the_fenced_verdict_wins_over_a_score_mentioned_in_prose(tmp_path):
+    reply = 'Each "score": 0 means fail.\n```json\n{"items": [], "score": 0.8}\n```'
+    proc, _, verifier = _run_judge(
+        tmp_path,
+        "claude-sonnet-5-5",
+        ALL_KEYS,
+        STUB_ANTHROPIC_CONTENT=json.dumps([{"type": "text", "text": reply}]),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (verifier / "reward.txt").read_text() == "0.8"
+
+
+def test_gemini_reply_cut_off_at_the_token_limit_is_a_verifier_error(tmp_path):
+    proc, _, verifier = _run_judge(
+        tmp_path,
+        "gemini-3.1-flash-lite",
+        ALL_KEYS,
+        STUB_GEMINI_FINISH="MAX_TOKENS",
+        STUB_GEMINI_TEXT='{"items": [], "score": 0.85, "reasoning": "trunc',
+    )
+    assert proc.returncode == 1
+    assert "hit the token limit" in proc.stderr
+    assert not (verifier / "reward.txt").exists()

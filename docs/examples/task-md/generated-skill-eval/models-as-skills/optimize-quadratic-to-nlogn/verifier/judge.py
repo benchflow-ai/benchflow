@@ -125,6 +125,12 @@ def _call_gemini(model: str, prompt: str) -> str:
     # its HTTP client when the Client object is garbage-collected.
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(model=model, contents=prompt)
+    candidates = getattr(response, "candidates", None) or []
+    finish = getattr(candidates[0], "finish_reason", None) if candidates else None
+    if getattr(finish, "name", finish) == "MAX_TOKENS":
+        raise JudgeUnavailableError(
+            f"gemini judge {model} hit the token limit before finishing"
+        )
     return response.text
 
 
@@ -154,8 +160,9 @@ def _call_openai(model: str, prompt: str) -> str:
 
     response = openai.OpenAI().chat.completions.create(
         model=model,
-        # Reasoning models (o-series, gpt-5) reject max_tokens.
-        max_completion_tokens=2048,
+        # Reasoning models (o-series, gpt-5) reject max_tokens, and their
+        # reasoning tokens count against this budget.
+        max_completion_tokens=16384,
         messages=[{"role": "user", "content": prompt}],
     )
     choice = response.choices[0]
@@ -195,26 +202,65 @@ def call_llm(prompt: str) -> str:
     return text
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant {value}")
+
+
+def _loads_verdict(text: str) -> dict:
+    parsed = json.loads(text, parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("judge verdict must be a JSON object")
+    return parsed
+
+
+def parse_verdict(text: str) -> dict:
+    """Return the judge's JSON verdict object.
+
+    Tries the whole reply, then a fenced code block, then the first balanced
+    ``{...}`` (the same order as ``benchflow.rewards.llm.parse_verdict``).
+    NaN and Infinity are rejected.
+    """
+    candidates = [text.strip()]
+    fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        for end in range(start, len(text)):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : end + 1])
+                    break
+    for candidate in candidates:
+        try:
+            return _loads_verdict(candidate)
+        except ValueError:
+            continue
+    raise JudgeUnavailableError(f"judge reply has no JSON verdict: {text[:200]!r}")
+
+
 def judge_with_llm(trajectory_text: str) -> float:
     """Call LLM to judge trajectory against rubric."""
     text = call_llm(build_judge_prompt(trajectory_text, CASE))
-
-    try:
-        result = json.loads(text)
-        score = float(result["score"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        # Fenced or otherwise wrapped JSON: take the score field if there is one.
-        match = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', text)
-        if not match:
-            # No score is a judge failure, not a 0.0 verdict.
-            raise JudgeUnavailableError(f"judge reply has no score: {text[:200]!r}")
-        score = float(match.group(1))
-        result = {"score": score, "raw_response": text}
+    result = parse_verdict(text)
+    score = result.get("score")
+    # A missing, non-numeric or out-of-range score is a judge failure, not a
+    # verdict to clamp.
+    if (
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not 0 <= score <= 1
+    ):
+        raise JudgeUnavailableError(f"judge verdict has no score in [0, 1]: {score!r}")
     # Write detailed results for analysis, naming the judge that answered.
     result["judge_provider"] = judge_provider(JUDGE_MODEL)
     result["judge_model"] = JUDGE_MODEL
     (VERIFIER_DIR / "judge_result.json").write_text(json.dumps(result, indent=2))
-    return max(0.0, min(1.0, score))
+    return float(score)
 
 
 def judge_exact_match() -> float:

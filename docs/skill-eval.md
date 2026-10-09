@@ -142,8 +142,9 @@ the model id, using the same prefixes as `benchflow.rewards`:
 | `gemini*`, `google/...`, `gemini/...` | Google | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 
 Any other id is rejected. If that provider's key or SDK is missing, its call
-fails, or its reply carries no score (no text, cut off at the token limit, or no
-`score` field), the case records a verifier error rather than a 0.0. No other
+fails, or its reply carries no verdict (no text, cut off at the token limit, no
+JSON object, or a `score` that is not a number from 0 to 1), the case records a
+verifier error rather than a 0.0. No other
 provider or model is tried. `verifier/judge_result.json` names the
 `judge_provider` and `judge_model` that produced each score.
 
