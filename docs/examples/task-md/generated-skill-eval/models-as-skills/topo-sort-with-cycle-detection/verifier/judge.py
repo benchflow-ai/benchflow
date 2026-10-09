@@ -127,9 +127,10 @@ def _call_gemini(model: str, prompt: str) -> str:
     response = client.models.generate_content(model=model, contents=prompt)
     candidates = getattr(response, "candidates", None) or []
     finish = getattr(candidates[0], "finish_reason", None) if candidates else None
-    if getattr(finish, "name", finish) == "MAX_TOKENS":
+    finish = getattr(finish, "name", finish)
+    if finish != "STOP":
         raise JudgeUnavailableError(
-            f"gemini judge {model} hit the token limit before finishing"
+            f"gemini judge {model} did not finish normally: {finish}"
         )
     return response.text
 
@@ -142,9 +143,12 @@ def _call_anthropic(model: str, prompt: str) -> str:
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
-    if getattr(response, "stop_reason", None) == "max_tokens":
+    # max_tokens, model_context_window_exceeded, refusal, pause_turn and
+    # tool_use all mean the reply is not a finished verdict.
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason not in ("end_turn", "stop_sequence"):
         raise JudgeUnavailableError(
-            f"anthropic judge {model} hit max_tokens before finishing"
+            f"anthropic judge {model} did not finish normally: {stop_reason}"
         )
     # A reply can open with a thinking block even when the request asks for
     # none, so read every text block instead of content[0].
@@ -166,9 +170,10 @@ def _call_openai(model: str, prompt: str) -> str:
         messages=[{"role": "user", "content": prompt}],
     )
     choice = response.choices[0]
-    if choice.finish_reason == "length":
+    # length, content_filter and tool_calls mean the reply is not a finished verdict.
+    if choice.finish_reason != "stop":
         raise JudgeUnavailableError(
-            f"openai judge {model} hit the token limit before finishing"
+            f"openai judge {model} did not finish normally: {choice.finish_reason}"
         )
     return choice.message.content
 
@@ -213,34 +218,63 @@ def _loads_verdict(text: str) -> dict:
     return parsed
 
 
-def parse_verdict(text: str) -> dict:
-    """Return the judge's JSON verdict object.
+_FENCE_RE = re.compile(r"```([A-Za-z]*)[ \t]*\n?(.*?)\n?```", re.DOTALL)
 
-    Tries the whole reply, then a fenced code block, then the first balanced
-    ``{...}`` (the same order as ``benchflow.rewards.llm.parse_verdict``).
-    NaN and Infinity are rejected.
+
+def _no_verdict(why: str, text: str) -> JudgeUnavailableError:
+    return JudgeUnavailableError(f"judge reply {why}: {text[:200]!r}")
+
+
+def parse_verdict(text: str) -> dict:
+    """Return the judge's single JSON verdict object, or raise.
+
+    The prompt asks for JSON only, so anything that is not one clear verdict
+    is a judge failure rather than a score to guess at:
+
+    1. The whole reply, when it is a JSON object.
+    2. Otherwise the one JSON code fence (```json, or an untagged fence
+       holding an object). A malformed fence, or more than one, raises.
+    3. Otherwise the reply's top-level JSON objects, found with a JSON
+       decoder so braces inside strings are handled. Exactly one is allowed,
+       and a ``{`` that does not start a valid object raises: an example
+       object before the real verdict, or a truncated verdict whose nested
+       items still parse, must never become the score.
+
+    A reply that starts as JSON but does not parse is truncated and raises.
+    NaN and Infinity are rejected everywhere.
     """
-    candidates = [text.strip()]
-    fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if fenced:
-        candidates.append(fenced.group(1).strip())
-    start = text.find("{")
-    if start != -1:
-        depth = 0
-        for end in range(start, len(text)):
-            if text[end] == "{":
-                depth += 1
-            elif text[end] == "}":
-                depth -= 1
-                if depth == 0:
-                    candidates.append(text[start : end + 1])
-                    break
-    for candidate in candidates:
+    stripped = text.strip()
+    try:
+        return _loads_verdict(stripped)
+    except ValueError:
+        pass
+    fences = [
+        body
+        for lang, body in _FENCE_RE.findall(text)
+        if lang.lower() == "json" or (not lang and body.lstrip().startswith("{"))
+    ]
+    if len(fences) > 1:
+        raise _no_verdict("has more than one JSON code fence", text)
+    if fences:
         try:
-            return _loads_verdict(candidate)
+            return _loads_verdict(fences[0].strip())
         except ValueError:
-            continue
-    raise JudgeUnavailableError(f"judge reply has no JSON verdict: {text[:200]!r}")
+            raise _no_verdict("has a malformed JSON code fence", text) from None
+    if stripped.startswith(("{", "[")):
+        raise _no_verdict("is malformed or truncated JSON", text)
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
+    objects = []
+    start = text.find("{")
+    while start != -1:
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except ValueError:
+            raise _no_verdict("has a malformed JSON object", text) from None
+        objects.append(obj)
+        start = text.find("{", end)
+    if len(objects) != 1:
+        raise _no_verdict(f"has {len(objects)} JSON objects, not one verdict", text)
+    return objects[0]
 
 
 def judge_with_llm(trajectory_text: str) -> float:
