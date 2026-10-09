@@ -86,96 +86,135 @@ def read_trajectory() -> str:
     return text
 
 
-def call_llm(prompt: str) -> str:
-    """Call LLM judge, trying Gemini, Anthropic, or OpenAI based on model name and available keys."""
-    model = JUDGE_MODEL
-    is_openai_model = model.startswith(("gpt-", "o1", "o3"))
-    is_gemini_model = model.startswith("gemini")
+# Same routing as benchflow.rewards.llm: a model id names exactly one provider.
+_PROVIDER_PREFIXES = (
+    ("anthropic", ("claude-", "anthropic/")),
+    ("openai", ("gpt-", "o1", "o3", "o4", "openai/")),
+    ("gemini", ("gemini", "google/")),
+)
+_STRIPPED_PREFIXES = ("anthropic/", "openai/", "google/", "gemini/")
 
-    # Try Gemini first (if model is gemini or GOOGLE_API_KEY/GEMINI_API_KEY is set)
-    if (
-        is_gemini_model
-        or os.environ.get("GOOGLE_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-    ):
-        try:
-            from google import genai
 
-            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get(
-                "GEMINI_API_KEY"
-            )
-            if api_key:
-                client = genai.Client(api_key=api_key)
-                response = client.models.generate_content(
-                    model=model if is_gemini_model else "gemini-3.1-flash-lite",
-                    contents=prompt,
-                )
-                return response.text
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"WARNING: Gemini API error: {e}", file=sys.stderr)
-
-    # Try Anthropic
-    if not is_openai_model and not is_gemini_model:
-        try:
-            import anthropic
-
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model=model,
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return response.content[0].text
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"WARNING: Anthropic API error: {e}", file=sys.stderr)
-
-    # Try OpenAI
-    try:
-        import openai
-
-        client = openai.OpenAI()
-        response = client.chat.completions.create(
-            model=model if is_openai_model else "gpt-4o-mini",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content
-    except ImportError:
-        pass
-    except Exception as e:
-        print(f"WARNING: OpenAI API error: {e}", file=sys.stderr)
-
-    print(
-        "ERROR: No LLM SDK available (tried google-genai, anthropic, openai)",
-        file=sys.stderr,
-    )
+def judge_provider(model: str) -> str:
+    """Return the provider that serves *model*: ``anthropic``, ``openai`` or ``gemini``."""
+    for provider, prefixes in _PROVIDER_PREFIXES:
+        if model.startswith(prefixes):
+            return provider
     raise JudgeUnavailableError(
-        "No LLM judge available (tried google-genai, anthropic, openai)"
+        f"judge_model {model!r} names no supported provider: use a claude-*, "
+        "gpt-*/o1/o3/o4 or gemini-* id, optionally prefixed with "
+        "anthropic/, openai/, google/ or gemini/"
     )
+
+
+def _api_model(model: str) -> str:
+    """Strip a ``provider/`` prefix the SDKs do not accept."""
+    for prefix in _STRIPPED_PREFIXES:
+        if model.startswith(prefix):
+            return model[len(prefix) :]
+    return model
+
+
+def _call_gemini(model: str, prompt: str) -> str:
+    from google import genai
+
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise JudgeUnavailableError("GOOGLE_API_KEY or GEMINI_API_KEY is not set")
+    # Keep the client referenced until the call returns: google-genai closes
+    # its HTTP client when the Client object is garbage-collected.
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(model=model, contents=prompt)
+    return response.text
+
+
+def _call_anthropic(model: str, prompt: str) -> str:
+    import anthropic
+
+    response = anthropic.Anthropic().messages.create(
+        model=model,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise JudgeUnavailableError(
+            f"anthropic judge {model} hit max_tokens before finishing"
+        )
+    # A reply can open with a thinking block even when the request asks for
+    # none, so read every text block instead of content[0].
+    return "".join(
+        block.text
+        for block in response.content
+        if getattr(block, "type", None) == "text"
+    )
+
+
+def _call_openai(model: str, prompt: str) -> str:
+    import openai
+
+    response = openai.OpenAI().chat.completions.create(
+        model=model,
+        # Reasoning models (o-series, gpt-5) reject max_tokens.
+        max_completion_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        raise JudgeUnavailableError(
+            f"openai judge {model} hit the token limit before finishing"
+        )
+    return choice.message.content
+
+
+_PROVIDER_CALLS = {
+    "gemini": _call_gemini,
+    "anthropic": _call_anthropic,
+    "openai": _call_openai,
+}
+
+
+def call_llm(prompt: str) -> str:
+    """Ask JUDGE_MODEL, and only JUDGE_MODEL, to grade *prompt*.
+
+    There is no fallback to another provider or model: a score must come from
+    the judge the run names. Any failure raises JudgeUnavailableError, so the
+    rollout is recorded as a verifier error rather than a 0.0 or a score from
+    a different model.
+    """
+    provider = judge_provider(JUDGE_MODEL)
+    try:
+        text = _PROVIDER_CALLS[provider](_api_model(JUDGE_MODEL), prompt)
+    except JudgeUnavailableError:
+        raise
+    except Exception as exc:
+        raise JudgeUnavailableError(
+            f"{provider} judge {JUDGE_MODEL} failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not text or not text.strip():
+        raise JudgeUnavailableError(f"{provider} judge {JUDGE_MODEL} returned no text")
+    return text
 
 
 def judge_with_llm(trajectory_text: str) -> float:
     """Call LLM to judge trajectory against rubric."""
     text = call_llm(build_judge_prompt(trajectory_text, CASE))
 
-    # Parse score from JSON response
     try:
         result = json.loads(text)
         score = float(result["score"])
-        # Write detailed results for analysis
-        (VERIFIER_DIR / "judge_result.json").write_text(json.dumps(result, indent=2))
-        return max(0.0, min(1.0, score))
-    except (json.JSONDecodeError, KeyError, ValueError):
-        # Try to extract score from partial JSON
-        match = re.search(r'"score"\s*:\s*([\d.]+)', text)
-        if match:
-            return max(0.0, min(1.0, float(match.group(1))))
-        print(f"WARNING: Could not parse judge response: {text[:200]}", file=sys.stderr)
-        return 0.0
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        # Fenced or otherwise wrapped JSON: take the score field if there is one.
+        match = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', text)
+        if not match:
+            # No score is a judge failure, not a 0.0 verdict.
+            raise JudgeUnavailableError(f"judge reply has no score: {text[:200]!r}")
+        score = float(match.group(1))
+        result = {"score": score, "raw_response": text}
+    # Write detailed results for analysis, naming the judge that answered.
+    result["judge_provider"] = judge_provider(JUDGE_MODEL)
+    result["judge_model"] = JUDGE_MODEL
+    (VERIFIER_DIR / "judge_result.json").write_text(json.dumps(result, indent=2))
+    return max(0.0, min(1.0, score))
 
 
 def judge_exact_match() -> float:
@@ -212,7 +251,7 @@ def main():
         else:
             score = judge_exact_match()
     except JudgeUnavailableError as exc:
-        # No LLM judge could run (missing SDK/key or API failure). Exit non-zero
+        # The configured judge could not run (missing SDK/key or API failure). Exit non-zero
         # so the harness records a verifier-infra error rather than a real 0.0.
         print(f"ERROR: judge could not run: {exc}", file=sys.stderr)
         sys.exit(1)
