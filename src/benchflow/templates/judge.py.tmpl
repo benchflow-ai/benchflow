@@ -83,8 +83,20 @@ def read_trajectory() -> str:
     return text
 
 
+PROVIDER_PREFIXES = {"anthropic": "anthropic", "openai": "openai", "google": "gemini", "gemini": "gemini"}
+
+
+def bare_model(model: str) -> str:
+    """Drop a ``provider/`` prefix, as ``rewards.llm._strip_provider_prefix`` does."""
+    prefix, sep, rest = model.partition("/")
+    return rest if sep and prefix in PROVIDER_PREFIXES else model
+
+
 def judge_provider(model: str) -> str:
     """Return the only provider allowed to score with ``model``."""
+    prefix, sep, _ = model.partition("/")
+    if sep and prefix in PROVIDER_PREFIXES:
+        return PROVIDER_PREFIXES[prefix]
     if model.startswith("gemini"):
         return "gemini"
     if model.startswith(("gpt-", "o1", "o3", "o4")):
@@ -99,8 +111,8 @@ def call_llm(prompt: str) -> str:
     by a different model than the configured judge is worse than an unjudged
     one, so any failure raises JudgeUnavailableError.
     """
-    model = JUDGE_MODEL
-    provider = judge_provider(model)
+    provider = judge_provider(JUDGE_MODEL)
+    model = bare_model(JUDGE_MODEL)
     try:
         if provider == "gemini":
             from google import genai

@@ -94,6 +94,10 @@ def fake_gemini(monkeypatch):
         ("gpt-4o-mini", "openai"),
         ("o3-mini", "openai"),
         ("gemini-3.1-flash-lite", "gemini"),
+        ("anthropic/claude-sonnet-5", "anthropic"),
+        ("openai/gpt-4o", "openai"),
+        ("google/gemini-3.1-flash-lite", "gemini"),
+        ("gemini/gemini-3.1-flash-lite", "gemini"),
     ],
 )
 def test_provider_follows_judge_model(tmp_path, monkeypatch, model, provider):
@@ -154,3 +158,26 @@ def test_judge_result_records_provider_and_model(tmp_path, monkeypatch):
     result = json.loads((tmp_path / "judge_result.json").read_text())
     assert result["judge_provider"] == "anthropic"
     assert result["judge_model"] == "claude-sonnet-5"
+
+
+@pytest.mark.parametrize(
+    ("judge_model", "fake", "sent_model"),
+    [
+        ("anthropic/claude-sonnet-5", "anthropic", "claude-sonnet-5"),
+        ("openai/gpt-4o", "openai", "gpt-4o"),
+        ("google/gemini-3.1-flash-lite", "gemini", "gemini-3.1-flash-lite"),
+        ("gemini/gemini-3.1-flash-lite", "gemini", "gemini-3.1-flash-lite"),
+    ],
+)
+def test_prefixed_judge_model_reaches_its_provider_bare(tmp_path, monkeypatch, judge_model, fake, sent_model):
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    calls = {
+        "anthropic": fake_anthropic(monkeypatch, content=[block("text", '{"score": 0.0}')]),
+        "openai": fake_openai(monkeypatch),
+        "gemini": fake_gemini(monkeypatch),
+    }
+    judge = load_judge(tmp_path, monkeypatch, judge_model)
+
+    judge.call_llm("p")
+    assert calls[fake] == [sent_model]
+    assert all(c == [] for name, c in calls.items() if name != fake)
