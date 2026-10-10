@@ -171,6 +171,12 @@ pub struct ResultFile {
     /// needs (its `[resources]`), above what the task asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources_raised: Option<ResourcesRaised>,
+    /// Signs in the verifier's output or the agent's log that the task's
+    /// environment failed (a package gone upstream, git refusing the
+    /// repository), on a trial that scored without passing. The score
+    /// stands; these say it may measure the task rather than the agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_warnings: Vec<String>,
 }
 
 /// What an agent's resource floor changed: for each resource it raised,
@@ -299,6 +305,8 @@ pub struct TrialRecord {
     pub agent_session: Option<AgentSession>,
     /// What the agent's resource floor raised.
     pub resources_raised: Option<ResourcesRaised>,
+    /// Signs that the task's environment failed (see [`crate::envcheck`]).
+    pub environment_warnings: Vec<String>,
 }
 
 fn ts(t: &DateTime<Local>) -> String {
@@ -378,6 +386,7 @@ impl TrialRecord {
             step_results: self.step_results.clone(),
             agent_session: self.agent_session.clone(),
             resources_raised: self.resources_raised.clone(),
+            environment_warnings: self.environment_warnings.clone(),
         }
     }
 

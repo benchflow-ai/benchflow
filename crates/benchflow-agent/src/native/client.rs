@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::chat::{ChatRequest, ChatResponse, TokenUsage};
 use super::endpoint::{Api, Endpoint};
-use super::error::{ModelError, ModelErrorKind, backoff, classify, provider_message};
+use super::error::{ModelError, ModelErrorKind, backoff, classify, plan_message, provider_message};
 use super::{anthropic, openai};
 use crate::trajectory::{Redactor, iso_from_ns, to_python_json};
 
@@ -209,11 +209,8 @@ impl ModelClient {
                         }
                     } else {
                         let (kind, retry) = classify(status, &text);
-                        let message = format!(
-                            "{} answered {status}: {}",
-                            self.endpoint.provider,
-                            provider_message(&text)
-                        );
+                        let message =
+                            plan_message(&self.endpoint.provider, status, &provider_message(&text));
                         self.record(
                             seq,
                             attempt,

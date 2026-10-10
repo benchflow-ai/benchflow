@@ -62,8 +62,20 @@ impl ModelError {
         matches!(self.kind, ModelErrorKind::Unavailable)
     }
 
+    /// A 403 that says the account's plan or tier does not include the
+    /// model: the key works, so checking it is the wrong advice.
+    pub fn plan_lacks_model(&self) -> bool {
+        self.status == Some(403) && plan_restricted(&self.message)
+    }
+
     /// What to do next.
     pub fn next_step(&self, provider: &str, key_label: &str) -> String {
+        if self.plan_lacks_model() {
+            return format!(
+                "the {provider} key from {key_label} works, but its plan does not include this model: \
+                 upgrade the plan, use a key on a plan that has it, or pick another model with -m"
+            );
+        }
         match self.kind {
             ModelErrorKind::LoginRejected => format!(
                 "the {provider} key from {key_label} was rejected: check that it is current and allowed to use this model"
@@ -126,6 +138,25 @@ const MODEL_PHRASES: &[&str] = &[
     "no endpoints found",
 ];
 
+/// Phrases providers use when a working key's plan or tier lacks the model.
+const PLAN_PHRASES: &[&str] = &[
+    "free tier",
+    "upgrade to",
+    "your plan",
+    "your current plan",
+    "subscription tier",
+    "do not have access to this model",
+    "does not have access to this model",
+    "not included in your",
+    "not available on your",
+];
+
+/// Whether a provider's words say the plan, not the key, is the problem.
+pub fn plan_restricted(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    PLAN_PHRASES.iter().any(|p| lower.contains(p))
+}
+
 /// Classify a non-success HTTP answer. `retryable` says whether the caller
 /// should try again (rate limits and server errors).
 pub fn classify(status: u16, body: &str) -> (ModelErrorKind, bool) {
@@ -149,6 +180,17 @@ pub fn classify(status: u16, body: &str) -> (ModelErrorKind, bool) {
         404 => (ModelErrorKind::ModelNotOffered, false),
         400 | 422 if has(MODEL_PHRASES) => (ModelErrorKind::ModelNotOffered, false),
         _ => (ModelErrorKind::Failed, false),
+    }
+}
+
+/// The one-line message for a refused model call: the provider and its
+/// words, led by what a 403 plan restriction means.
+pub fn plan_message(provider: &str, status: u16, words: &str) -> String {
+    let message = format!("{provider} answered {status}: {words}");
+    if status == 403 && plan_restricted(words) {
+        format!("the login works, but its plan does not include this model: {message}")
+    } else {
+        message
     }
 }
 
@@ -218,6 +260,46 @@ mod tests {
         assert_eq!(code(400, "The model `x` does not exist"), "R215");
         assert_eq!(code(500, "boom"), "R214");
         assert_eq!(code(400, "something else"), "R214");
+    }
+
+    #[test]
+    fn a_plan_that_lacks_the_model_is_not_a_bad_key() {
+        // computer-1 on the Vercel gateway's free tier, today.
+        let body = r#"{"error":{"message":"Free tier users do not have access to this model. Upgrade to paid credits at https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%3Fmodal%3Dtop-up for unrestricted access.","type":"forbidden"}}"#;
+        let (kind, retry) = classify(403, body);
+        assert_eq!((kind, retry), (ModelErrorKind::LoginRejected, false));
+        let e = ModelError::new(
+            kind,
+            Some(403),
+            plan_message("vercel", 403, &provider_message(body)),
+        );
+        assert_eq!(e.code(), "R212");
+        assert!(e.plan_lacks_model());
+        assert!(
+            e.message.starts_with(
+                "the login works, but its plan does not include this model: vercel answered 403: \
+                 Free tier users"
+            ),
+            "{}",
+            e.message
+        );
+        let next = e.next_step("vercel", "AI_GATEWAY_API_KEY");
+        assert!(
+            next.contains("works, but its plan does not include this model"),
+            "{next}"
+        );
+        assert!(!next.contains("check that it is current"), "{next}");
+        // A plain bad key keeps the old advice.
+        let bad = ModelError::new(
+            ModelErrorKind::LoginRejected,
+            Some(403),
+            plan_message("vercel", 403, "Invalid API key"),
+        );
+        assert!(!bad.plan_lacks_model());
+        assert!(
+            bad.next_step("vercel", "K")
+                .contains("check that it is current")
+        );
     }
 
     #[test]

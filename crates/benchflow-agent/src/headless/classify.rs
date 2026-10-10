@@ -81,8 +81,10 @@ static PATTERNS: LazyLock<Vec<(Regex, Signal)>> = LazyLock::new(|| {
         (
             re(concat!(
                 r"(?i)Cannot use this model|\blitellm\.NotFoundError\b|\bmodel_not_found\b|",
-                r"model .{1,80} (?:does not exist|is not supported|not found)|",
-                r"does not have access to model|Unknown model\b|invalid model\b",
+                r"model .{1,80} (?:does not exist|is not supported|not found|has reached its end of life)|",
+                r"does not have access to model|Unknown model\b|invalid model\b|",
+                // A model the provider retired (NVIDIA's API for NeMo Agent Toolkit).
+                r"\[410\] Gone|\bHTTP 410\b|unexpected status 410\b",
             )),
             Signal::Model,
         ),
@@ -222,6 +224,12 @@ mod tests {
                 Some("login"),
             ),
             ("Cannot use this model with your plan", Some("model")),
+            // Seen live: NeMo Agent Toolkit on a retired NVIDIA model.
+            ("Exception: [410] Gone", Some("model")),
+            (
+                "Exception: [410] Gone\nThe model 'meta/llama-3.3-70b-instruct' has reached its end of life on 2026-08-26T09:00:00Z and is no longer available.",
+                Some("model"),
+            ),
             (
                 "litellm.NotFoundError: model gpt-0 not found",
                 Some("model"),

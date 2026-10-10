@@ -125,6 +125,10 @@ enum Act {
     Error(&'static str),
     /// Answers the prompt with codex-acp's usage-limit error.
     Spent,
+    /// Ends its turn with this as its only message, and no tool call.
+    Reply(&'static str),
+    /// Refuses `session/new` until signed in with the vendor's account.
+    NeedsSignIn,
 }
 
 #[derive(Default)]
@@ -392,6 +396,10 @@ fn fake_acp_agent(act: Act, world: Arc<Mutex<World>>) -> Process {
                 "initialize" => out.push(reply(json!({"protocolVersion": 1,
                     "agentCapabilities": {}, "authMethods": [],
                     "agentInfo": {"name": "fake", "version": "1.0"}}))),
+                "session/new" if matches!(act, Act::NeedsSignIn) => {
+                    out.push(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000,
+                        "message": "Authentication required: Call authenticate before starting a session"}}));
+                }
                 "session/new" => out.push(reply(json!({"sessionId": "s1",
                     "models": {"currentModelId": "fake-model",
                         "availableModels": [{"modelId": "fake-model", "name": "Fake"}]},
@@ -427,7 +435,12 @@ fn fake_acp_agent(act: Act, world: Arc<Mutex<World>>) -> Process {
                         "error": {"code": -32603, "message": "Internal error",
                             "data": {"codexErrorInfo": "usageLimitExceeded",
                                 "message": "You've hit your usage limit. Upgrade to Pro or try again at Oct 3rd, 2026 5:05 PM."}}})),
-                    Act::Silent | Act::ExitAtStart => pending = id.clone(),
+                    Act::Reply(text) => {
+                        out.push(update(json!({"sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": text}})));
+                        out.push(reply(json!({"stopReason": "end_turn"})));
+                    }
+                    Act::Silent | Act::ExitAtStart | Act::NeedsSignIn => pending = id.clone(),
                 },
                 "session/cancel" => {
                     if let Some(pid) = pending.take() {
@@ -1335,6 +1348,29 @@ async fn failures_record_the_right_status_owner_and_phase() {
             Case::new("R212", Model, "the provider answers 401").act(Act::Error(
                 "API Error: 401 {\"error\":{\"message\":\"Invalid API key\"}}",
             )),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            // hermes-acp today: a dead key's 401 returned as its reply.
+            Case::new("R212", Model, "the provider's 401 is the agent's only reply").act(
+                Act::Reply(
+                    "HTTP 401: login fail: Please carry the API secret key in the 'X-Api-Key' field of the request header",
+                ),
+            ),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            // cline-acp and kimi-acp today.
+            Case::new("R211", You, "the ACP server needs the vendor's sign-in")
+                .act(Act::NeedsSignIn),
+            Status::Errored,
+            Phase::Agent,
+        ),
+        (
+            Case::new("R215", You, "the provider retired the model")
+                .act(Act::Error("Internal error: Exception: [410] Gone")),
             Status::Errored,
             Phase::Agent,
         ),

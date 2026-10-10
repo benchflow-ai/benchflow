@@ -313,13 +313,13 @@ pub static EXPLANATIONS: &[Explanation] = &[
         code: "R211",
         title: "no login for this agent",
         owner: Owner::You,
-        body: "The agent needs credentials for its model provider and none were found on this machine.\n\n`bench agents <name>` lists what it accepts, in order. For Claude Code: `claude setup-token`, then `export CLAUDE_CODE_OAUTH_TOKEN=<token>`. For Codex: `codex login`.",
+        body: "The agent needs credentials for its model provider and none were found on this machine, or its ACP server refused to start a session until it is signed in with its vendor's own account (`Authentication required`), which no key BenchFlow passes can satisfy; run such an agent headless, or pick another.\n\n`bench agents <name>` lists what it accepts, in order. For Claude Code: `claude setup-token`, then `export CLAUDE_CODE_OAUTH_TOKEN=<token>`. For Codex: `codex login`.",
     },
     Explanation {
         code: "R212",
         title: "the model provider rejected the login",
         owner: Owner::Model,
-        body: "The provider answered with an authentication error: the key is wrong, revoked, or for another provider.\n\nCheck the key with a direct request to the provider before running again.",
+        body: "The provider answered with an authentication error: the key is wrong, revoked, or for another provider.\n\nCheck the key with a direct request to the provider before running again.\n\nA 403 whose words say the plan or tier lacks the model (\"Free tier users do not have access to this model\") is different: the login works, and the message says so. Upgrade the plan, use a key on a plan that has the model, or pick another model.",
     },
     Explanation {
         code: "R213",

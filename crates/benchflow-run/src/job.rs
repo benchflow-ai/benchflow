@@ -714,6 +714,12 @@ pub(crate) fn summary_json(
     let cache_write: u64 = records.iter().map(|r| r.usage.cache_write_tokens).sum();
     let costs: Vec<f64> = records.iter().filter_map(|r| r.usage.cost_usd).collect();
     let stats = task_stats(records);
+    // Scored trials whose logs show the environment failing.
+    let environment_warnings: Vec<Value> = records
+        .iter()
+        .filter(|r| !r.environment_warnings.is_empty())
+        .map(|r| json!({"trial": r.rollout_name, "task": r.task_name, "warnings": r.environment_warnings}))
+        .collect();
     json!({
         "job_name": name,
         "agent": labels.agent,
@@ -745,6 +751,7 @@ pub(crate) fn summary_json(
         "total_cost_usd": (!costs.is_empty()).then(|| costs.iter().sum::<f64>()),
         "pass_at_k": pass_at_k_table(&stats),
         "failures_by_cause": by_cause.into_values().collect::<Vec<_>>(),
+        "environment_warnings": environment_warnings,
         "engine": { "name": "benchflow-rs", "version": env!("CARGO_PKG_VERSION") },
     })
 }

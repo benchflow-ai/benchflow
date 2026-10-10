@@ -484,6 +484,44 @@ pub fn report(outcome: &JobOutcome) {
             )
         );
     }
+    // Zeros that may measure a broken task rather than the agent.
+    let suspect: Vec<&TrialRecord> = recs
+        .iter()
+        .filter(|r| !r.environment_warnings.is_empty())
+        .collect();
+    if let Some(first) = suspect.first() {
+        say!(
+            "  {} {} scored, but the logs show the environment failing {}",
+            warn_mark(),
+            plural(suspect.len(), "trial"),
+            dim("· the score stands")
+        );
+        say!(
+            "{}",
+            ui::wrap("      ", &first.environment_warnings[0], 6, ui::width())
+        );
+        let names: Vec<&str> = suspect
+            .iter()
+            .take(3)
+            .map(|r| r.rollout_name.as_str())
+            .collect();
+        let more = if suspect.len() > 3 {
+            format!(" and {} more", suspect.len() - 3)
+        } else {
+            String::new()
+        };
+        say!("      {} {}{}", dim("trials:"), names.join(", "), more);
+        say!(
+            "{}",
+            ui::wrap(
+                &format!("      {} ", dim("next:")),
+                "check the task with `bench test`: if its oracle fails too, the task is broken, \
+                 not the agent; environment_warnings in each result.json lists what was seen",
+                12,
+                ui::width()
+            )
+        );
+    }
     if outcome.not_started > 0 {
         say!(
             "  {} {} not started (a login ran out of quota, or the run stopped); rerun to resume",

@@ -194,7 +194,13 @@ impl Sandbox for FakeSandbox {
             std::fs::create_dir_all(local).unwrap();
             let solved = self.world.lock().unwrap().solved;
             std::fs::write(local.join("reward.txt"), if solved { "1\n" } else { "0\n" }).unwrap();
-            std::fs::write(local.join("test-stdout.txt"), "1 passed\n").unwrap();
+            let stdout = if self.id.contains("apt-gone") && !solved {
+                // chess-best-move's oracle today: the package lists were gone.
+                "E: Unable to locate package stockfish\n0 passed\n"
+            } else {
+                "1 passed\n"
+            };
+            std::fs::write(local.join("test-stdout.txt"), stdout).unwrap();
         }
         Ok(())
     }
@@ -1033,6 +1039,67 @@ async fn relative_oracle_and_verifier_folders_upload_from_the_task() {
         assert_eq!(r.status, Status::Scored, "{} {:?}", r.agent, r.problem);
         assert_eq!(r.passed, Some(r.agent == "oracle"));
     }
+}
+
+/// A 0 whose verifier output shows the environment failing keeps its score
+/// and carries a warning in result.json and summary.json; `bench test` says
+/// a failing oracle means the task is broken, not the agent.
+#[tokio::test]
+async fn a_broken_environment_is_flagged_but_keeps_its_score() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = Arc::new(task(&tmp.path().join("apt-gone"), "apt-gone"));
+    let provider = Arc::new(FakeProvider {
+        worlds: Mutex::new(Vec::new()),
+        writable_path: None,
+    });
+    let spec = JobSpec {
+        carry: Vec::new(),
+        units: vec![(t.clone(), vec![Attempt::Oracle, Attempt::Nop])],
+        trials: 1,
+        jobs_dir: tmp.path().join("jobs"),
+        job_name: None,
+        fresh: true,
+        concurrency: 2,
+        source: serde_json::json!({}),
+    };
+    let out = job::run(spec, runtime(provider)).await.unwrap();
+    let nop = out.records.iter().find(|r| r.agent == "nop").unwrap();
+    assert_eq!((nop.status, nop.reward), (Status::Scored, Some(0.0)));
+    assert_eq!(
+        nop.environment_warnings.len(),
+        1,
+        "{:?}",
+        nop.environment_warnings
+    );
+    assert!(nop.environment_warnings[0].contains("Unable to locate package stockfish"));
+    let oracle = out.records.iter().find(|r| r.agent == "oracle").unwrap();
+    assert!(
+        oracle.environment_warnings.is_empty(),
+        "a pass is not flagged"
+    );
+    let warned = out.summary["environment_warnings"].as_array().unwrap();
+    assert_eq!(warned.len(), 1);
+    assert_eq!(warned[0]["trial"], serde_json::json!(nop.rollout_name));
+    // result.json keeps it, and reading the job back finds it.
+    let back = benchflow_run::read::trial_dirs(&out.dir)
+        .filter_map(|d| benchflow_run::read::read_trial(&d))
+        .find(|r| r.agent == "nop")
+        .unwrap();
+    assert_eq!(back.environment_warnings, nop.environment_warnings);
+
+    // An oracle that fails the same way: the task is broken, not the agent.
+    let mut failed = nop.clone();
+    failed.agent = "oracle".into();
+    let records = vec![&failed, nop];
+    let v = benchflow_run::testplan::judge(&t, &records);
+    let check = v.checks.iter().find(|c| c.attempt == "oracle").unwrap();
+    assert!(!check.ok);
+    assert!(
+        check.says.contains("the task is broken, not the agent"),
+        "{}",
+        check.says
+    );
+    assert!(check.says.contains("stockfish"), "{}", check.says);
 }
 
 /// `bench test` names what a weak defense noted, not only its name, so a

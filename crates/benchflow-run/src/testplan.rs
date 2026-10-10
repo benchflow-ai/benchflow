@@ -90,14 +90,22 @@ pub fn judge(task: &Arc<TaskPackage>, records: &[&TrialRecord]) -> TaskVerdict {
         if let Some(r) = by("oracle") {
             checks.push(match (r.status, r.passed) {
                 (Status::Scored, Some(true)) => ok(r, "the reference solution passes"),
-                (Status::Scored, _) => bad(
-                    r,
-                    format!(
-                        "the reference solution scores {}, not a pass",
+                (Status::Scored, _) => {
+                    let mut says = format!(
+                        "the reference solution scores {}, not a pass: the task is broken, \
+                         not the agent, and an agent's 0 on it measures the task",
                         reward_text(r)
-                    ),
-                    "fix oracle/solve.sh or the verifier: a correct answer must pass",
-                ),
+                    );
+                    if let Some(w) = r.environment_warnings.first() {
+                        says.push_str(&format!(" ({w})"));
+                    }
+                    bad(
+                        r,
+                        says,
+                        "fix oracle/solve.sh, the verifier, or the image (a package gone \
+                         upstream, a missing command): a correct answer must pass",
+                    )
+                }
                 _ => broken(r, "the oracle"),
             });
         }

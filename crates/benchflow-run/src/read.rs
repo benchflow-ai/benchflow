@@ -289,5 +289,9 @@ pub fn record_from_json(v: &Value, dir: &Path) -> Option<TrialRecord> {
         resources_raised: v
             .get("resources_raised")
             .and_then(|s| serde_json::from_value(s.clone()).ok()),
+        environment_warnings: v
+            .get("environment_warnings")
+            .and_then(|s| serde_json::from_value(s.clone()).ok())
+            .unwrap_or_default(),
     })
 }

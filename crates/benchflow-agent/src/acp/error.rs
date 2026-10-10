@@ -223,9 +223,98 @@ enum ProviderSignal {
     RateLimit,
     Unavailable,
     Rejected,
+    /// The provider does not serve the model (retired: `[410] Gone`).
+    Model,
 }
 
+/// The provider failure a piece of the agent's text shows: whose problem it
+/// is and the line that says so.
+fn provider_failure_in(text: &str) -> Option<(Owner, String)> {
+    use crate::headless::classify::{Signal, classify};
+    let (signal, line) = classify(text, Utc::now())?;
+    let owner = match signal {
+        Signal::Login => Owner::Login,
+        // A spent subscription needs its reset time, which a log line
+        // seldom has; leave it to the agent's own report.
+        Signal::UsageLimit(_) => return None,
+        Signal::Model => Owner::User,
+        Signal::RateLimit | Signal::Unavailable | Signal::Rejected => Owner::ModelProvider,
+    };
+    Some((owner, line))
+}
+
+/// Longest reply read as a provider's error: a real answer that mentions a
+/// rate limit is longer.
+const REPLY_ERROR_MAX: usize = 600;
+
+/// A turn that made no tool call and whose whole reply is a provider's
+/// error (Hermes returns a 401 as an ordinary message and ends its turn):
+/// whose problem it is and the line that says so. Pass the reply only when
+/// the turn made no tool call.
+pub fn provider_failure_in_reply(reply: &str) -> Option<(Owner, String)> {
+    let reply = reply.trim();
+    if reply.is_empty() || reply.chars().count() > REPLY_ERROR_MAX || !opens_like_an_error(reply) {
+        return None;
+    }
+    provider_failure_in(reply)
+}
+
+/// Whether a reply opens the way a provider's error does ("API Error: 529
+/// Overloaded", "Error: ...", "HTTP 401: ...", "[503] ...", "429 Too Many
+/// Requests"), so a short answer that only mentions a rate limit or a
+/// refused connection is graded as the answer it is.
+fn opens_like_an_error(reply: &str) -> bool {
+    // A 4xx or 5xx status code, then the end, a colon, a bracket, or a
+    // capitalized word (not "500 requests a minute").
+    let status = |s: &str| {
+        let b = s.as_bytes();
+        b.len() >= 3
+            && matches!(b[0], b'4' | b'5')
+            && b[1].is_ascii_digit()
+            && b[2].is_ascii_digit()
+            && match b.get(3) {
+                None | Some(b':') | Some(b']') => true,
+                Some(b' ') => b.get(4).is_none_or(|c| c.is_ascii_uppercase()),
+                _ => false,
+            }
+    };
+    let lower = reply.to_ascii_lowercase();
+    lower.starts_with("api error")
+        || lower.starts_with("error:")
+        || (lower.starts_with("http ") && status(&reply[5..]))
+        || reply.strip_prefix('[').is_some_and(status)
+        || status(reply)
+}
+
+/// ACP's `auth_required` error code.
+const AUTH_REQUIRED: i64 = -32000;
+
 impl AcpError {
+    /// The agent's ACP server refused to start a session until it is signed
+    /// in with its vendor's own account (Cline's and Kimi's `Authentication
+    /// required`), which a key BenchFlow passes cannot satisfy.
+    pub fn needs_sign_in(&self) -> bool {
+        match self {
+            Self::Agent { code, message, .. } => {
+                *code == AUTH_REQUIRED && message.to_lowercase().contains("authentication required")
+            }
+            _ => false,
+        }
+    }
+
+    /// When the agent's error names no cause (OpenHands' bare `Internal
+    /// error`), the provider failure its own log shows, if any: whose problem
+    /// it is and the log line that says so.
+    pub fn provider_failure_in_log(&self, log: &str) -> Option<(Owner, String)> {
+        if !matches!(self, Self::Agent { .. })
+            || self.needs_sign_in()
+            || self.provider_signal().is_some()
+        {
+            return None;
+        }
+        provider_failure_in(log)
+    }
+
     /// The model-provider failure an agent error carries: 0.8's markers, read
     /// in the message and (beyond 0.8) in `data.details`, where the ACP
     /// TypeScript SDK puts the thrown error's text.
@@ -260,7 +349,8 @@ impl AcpError {
                 Signal::RateLimit => Some(ProviderSignal::RateLimit),
                 Signal::Unavailable => Some(ProviderSignal::Unavailable),
                 Signal::Rejected => Some(ProviderSignal::Rejected),
-                Signal::UsageLimit(_) | Signal::Model => None,
+                Signal::Model => Some(ProviderSignal::Model),
+                Signal::UsageLimit(_) => None,
             }
         }
     }
@@ -278,8 +368,10 @@ impl AcpError {
             Self::ModelNotOffered { .. } => "agent_integration",
             Self::Unsupported { .. } => "other",
             Self::Protocol { .. } => "acp_error",
+            Self::Agent { .. } if self.needs_sign_in() => "provider_auth",
             Self::Agent { .. } => match self.provider_signal() {
                 Some(ProviderSignal::Auth) => "provider_auth",
+                Some(ProviderSignal::Model) => "agent_integration",
                 Some(ProviderSignal::RateLimit) => "provider_rate_limit",
                 Some(ProviderSignal::Unavailable) => "infra_failure",
                 Some(ProviderSignal::Rejected) => "provider_rejected",
@@ -294,8 +386,10 @@ impl AcpError {
             Self::UsageLimit { .. } => Owner::Login,
             Self::ModelNotOffered { .. } | Self::Unsupported { .. } => Owner::User,
             Self::Io { .. } => Owner::Sandbox,
+            Self::Agent { .. } if self.needs_sign_in() => Owner::User,
             Self::Agent { .. } => match self.provider_signal() {
                 Some(ProviderSignal::Auth) => Owner::Login,
+                Some(ProviderSignal::Model) => Owner::User,
                 Some(_) => Owner::ModelProvider,
                 None => Owner::Agent,
             },
@@ -324,7 +418,15 @@ impl AcpError {
             Self::Unsupported { .. } => "drop the setting, or pick an agent that supports it".into(),
             Self::Io { .. } => "the connection to the agent broke; check the sandbox and retry".into(),
             Self::Protocol { .. } => "the agent broke the ACP protocol; check its version pin".into(),
+            Self::Agent { .. } if self.needs_sign_in() => {
+                "this agent's ACP server takes only its vendor's own sign-in, which BenchFlow \
+                 cannot pass into a sandbox; run the agent headless, or pick another agent"
+                    .into()
+            }
             Self::Agent { .. } => match self.provider_signal() {
+                Some(ProviderSignal::Model) => {
+                    "the provider no longer serves this model; pick another with -m".into()
+                }
                 Some(ProviderSignal::Auth) => {
                     "the model provider rejected the login; `bench doctor` shows which credential the agent used"
                         .into()
@@ -346,10 +448,18 @@ impl AcpError {
             Self::UsageLimit { .. } | Self::ModelNotOffered { .. } | Self::Unsupported { .. } => {
                 false
             }
-            Self::Agent { .. } => !matches!(
-                self.provider_signal(),
-                Some(ProviderSignal::Auth | ProviderSignal::RateLimit | ProviderSignal::Rejected)
-            ),
+            Self::Agent { .. } => {
+                !self.needs_sign_in()
+                    && !matches!(
+                        self.provider_signal(),
+                        Some(
+                            ProviderSignal::Auth
+                                | ProviderSignal::RateLimit
+                                | ProviderSignal::Rejected
+                                | ProviderSignal::Model
+                        )
+                    )
+            }
             _ => true,
         }
     }
@@ -451,6 +561,82 @@ mod tests {
         assert_eq!(err.category(), "provider_auth");
         assert!(!err.is_retryable());
         assert_eq!(err.to_string(), "ACP error -32603: Internal error");
+    }
+
+    #[test]
+    fn todays_login_and_model_failures_are_not_the_agents() {
+        // Seen live: cline-acp and kimi-acp take only their vendor's sign-in.
+        for message in [
+            "Authentication required: Call authenticate before starting a session",
+            "Authentication required",
+        ] {
+            let err = AcpError::Agent {
+                code: -32000,
+                message: message.into(),
+                data: None,
+                method: "session/new".into(),
+            };
+            assert!(err.needs_sign_in(), "{message}");
+            assert_eq!(err.owner(), Owner::User);
+            assert!(!err.is_retryable());
+            assert!(err.next_step().contains("vendor's own sign-in"));
+        }
+        // A retired model.
+        let err = agent_error("Internal error: Exception: [410] Gone", None);
+        assert_eq!(
+            (err.category(), err.owner()),
+            ("agent_integration", Owner::User)
+        );
+        assert!(!err.is_retryable());
+        // OpenHands: a bare -32603 whose log names the cause (today's
+        // stderr, trimmed; the rich panel wraps the provider's own words).
+        let log = "                             litellm.AuthenticationError:                       \n\
+                   \x20                            GeminiException - {                                \n\
+                   \x20                              \"message\": \"API key not                     \n\
+                   \x20                            valid. Please pass a valid API                     \n\
+                   \x20Conversation logs are stored at:\n";
+        let err = agent_error("Internal error", None);
+        let (owner, line) = err.provider_failure_in_log(log).unwrap();
+        assert_eq!(owner, Owner::Login);
+        assert_eq!(line, "litellm.AuthenticationError:");
+        assert_eq!(err.provider_failure_in_log("all quiet\n"), None);
+        // An error that says why itself is read from its own words.
+        let err = agent_error("API Error: 429 rate limit exceeded", None);
+        assert_eq!(err.provider_failure_in_log(log), None);
+    }
+
+    #[test]
+    fn a_provider_error_as_the_only_reply_is_the_providers() {
+        // hermes-acp with a dead MiniMax key (routes evidence, today).
+        let reply = "HTTP 401: login fail: Please carry the API secret key in the 'X-Api-Key' field of the request header";
+        let (owner, line) = provider_failure_in_reply(reply).unwrap();
+        assert_eq!((owner, line.as_str()), (Owner::Login, reply));
+        assert_eq!(
+            provider_failure_in_reply("API Error: 529 Overloaded").map(|f| f.0),
+            Some(Owner::ModelProvider)
+        );
+        // An answer is not an error, even one that mentions a rate limit.
+        assert_eq!(
+            provider_failure_in_reply("Done: I created /app/hello.txt."),
+            None
+        );
+        let long = format!(
+            "{} The API's rate limit is 5 requests a minute.",
+            "Here is the plan. ".repeat(40)
+        );
+        assert_eq!(provider_failure_in_reply(&long), None);
+        assert_eq!(provider_failure_in_reply("  "), None);
+        // Short answers that only mention a provider's words are answers.
+        for answer in [
+            "The API's rate limit is 100 requests a minute.",
+            "500 requests a minute is the rate limit.",
+            "Connection refused was the bug: the service listened on 8081. Fixed.",
+            "It returns 429 Too Many Requests when you exceed the rate limit.",
+        ] {
+            assert_eq!(provider_failure_in_reply(answer), None, "{answer}");
+        }
+        assert!(provider_failure_in_reply("429 Too Many Requests: rate limit exceeded").is_some());
+        assert!(provider_failure_in_reply("Error: rate limit exceeded, retry in 20s").is_some());
     }
 
     #[test]

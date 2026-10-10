@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use benchflow_agent::AgentManifest;
 use benchflow_agent::acp::{
     AcpClient, AcpError, AcpEvent, ClientOptions, McpServer, OutputStream, Owner as AcpOwner,
-    PromptLimits, StopReason,
+    PromptLimits, StopReason, provider_failure_in_reply,
 };
 use benchflow_agent::credentials::{HostEnv, Login};
 use benchflow_agent::manifest::InstallMethod;
@@ -53,6 +53,9 @@ use crate::trial::sandbox_problem;
 pub(crate) const TRAJECTORY_EVERY: Duration = Duration::from_secs(2);
 /// Characters of stderr kept as a failure's evidence.
 pub(crate) const STDERR_TAIL: usize = 4000;
+/// How much of the agent's stderr is read for the cause of an error that
+/// names none (OpenHands' panels push the cause far up).
+const STDERR_READ: usize = 64 * 1024;
 
 /// An agent from a manifest, on the login found for it.
 pub struct AcpAgent {
@@ -310,7 +313,28 @@ impl ModelAgent for AcpAgent {
             out.usage = engine_usage(usage);
         }
         match result {
-            Ok(()) => {}
+            Ok(()) => {
+                // A provider's error returned as the agent's whole reply
+                // (Hermes ends its turn with a 401 as an ordinary message):
+                // the provider failed, and the trial is not graded.
+                let reply = handle.with(|t| t.final_text());
+                if out.tool_calls == 0
+                    && let Some((owner, line)) = provider_failure_in_reply(&reply)
+                {
+                    let message = format!(
+                        "{} ended its turn with no tool call, replying only with a provider error: {line}",
+                        self.manifest.name
+                    );
+                    let log_hint = format!(
+                        "agent/{}.txt and agent/stderr.txt in the trial folder",
+                        self.manifest.name
+                    );
+                    out.problem = Some(with_detail(
+                        provider_problem(owner, message, &log_hint),
+                        client.stderr_tail(STDERR_TAIL),
+                    ));
+                }
+            }
             Err(AcpError::Timeout { .. }) => {
                 out.timed_out = true;
                 // BenchFlow 0.8 (3842ed22): an agent that did nothing before
@@ -344,11 +368,12 @@ impl ModelAgent for AcpAgent {
             }
             Err(e) => {
                 let started_prompt = !out.prompts.is_empty();
-                out.problem = Some(acp_problem(
+                out.problem = Some(acp_problem_reading(
                     &e,
                     &self.manifest.name,
                     started_prompt,
                     client.stderr_tail(STDERR_TAIL),
+                    &client.stderr_tail(STDERR_READ),
                 ));
             }
         }
@@ -645,9 +670,27 @@ fn engine_usage(u: AcpUsage) -> Usage {
 /// do. `prompting` says whether a prompt had been sent (a crash before that
 /// means the agent never started).
 pub fn acp_problem(e: &AcpError, agent: &str, prompting: bool, stderr_tail: String) -> Problem {
+    let log = stderr_tail.clone();
+    acp_problem_reading(e, agent, prompting, stderr_tail, &log)
+}
+
+/// [`acp_problem`], reading `log` (more of the agent's stderr than the
+/// detail keeps) for the cause of an error that names none.
+pub fn acp_problem_reading(
+    e: &AcpError,
+    agent: &str,
+    prompting: bool,
+    stderr_tail: String,
+    log: &str,
+) -> Problem {
     let message = e.to_string();
     let next = e.next_step();
     let log_hint = format!("agent/{agent}.txt and agent/stderr.txt in the trial folder");
+    if let Some((owner, line)) = e.provider_failure_in_log(log) {
+        let message = format!("{message}; the agent's log says: {line}");
+        let p = provider_problem(owner, message, &log_hint);
+        return with_detail(p, stderr_tail);
+    }
     let p = match e {
         AcpError::HandshakeTimeout { .. } => Problem::new(
             "R202",
@@ -685,8 +728,12 @@ pub fn acp_problem(e: &AcpError, agent: &str, prompting: bool, stderr_tail: Stri
         AcpError::ModelNotOffered { .. } | AcpError::Unsupported { .. } => {
             Problem::new("R215", Owner::You, Phase::Agent, message, next)
         }
+        AcpError::Agent { .. } if e.needs_sign_in() => {
+            Problem::new("R211", Owner::You, Phase::Agent, message, next)
+        }
         AcpError::Agent { .. } => match e.owner() {
             AcpOwner::Login => Problem::new("R212", Owner::Model, Phase::Agent, message, next),
+            AcpOwner::User => Problem::new("R215", Owner::You, Phase::Agent, message, next),
             AcpOwner::ModelProvider => {
                 Problem::new("R214", Owner::Model, Phase::Agent, message, next).transient()
             }
@@ -696,6 +743,38 @@ pub fn acp_problem(e: &AcpError, agent: &str, prompting: bool, stderr_tail: Stri
             Problem::new("R205", Owner::Agent, Phase::Agent, message, next)
         }
     };
+    with_detail(p, stderr_tail)
+}
+
+/// A provider failure found in the agent's log or reply, as a trial problem.
+fn provider_problem(owner: AcpOwner, message: String, log_hint: &str) -> Problem {
+    match owner {
+        AcpOwner::Login => Problem::new(
+            "R212",
+            Owner::Model,
+            Phase::Agent,
+            message,
+            format!("the model provider rejected the login; check the key, and see {log_hint}"),
+        ),
+        AcpOwner::User => Problem::new(
+            "R215",
+            Owner::You,
+            Phase::Agent,
+            message,
+            "the provider does not serve this model; pick another with -m",
+        ),
+        _ => Problem::new(
+            "R214",
+            Owner::Model,
+            Phase::Agent,
+            message,
+            format!("the model provider failed; retry later, and see {log_hint}"),
+        )
+        .transient(),
+    }
+}
+
+fn with_detail(p: Problem, stderr_tail: String) -> Problem {
     if stderr_tail.trim().is_empty() {
         p
     } else {
@@ -764,5 +843,38 @@ mod tests {
         );
         assert_eq!(p.code, "R205");
         assert_eq!(p.detail.as_deref(), Some("tail"));
+    }
+
+    #[test]
+    fn todays_sign_in_and_log_only_failures() {
+        // cline-acp in today's gateway sweep.
+        let sign_in = AcpError::Agent {
+            code: -32000,
+            message: "Authentication required: Call authenticate before starting a session".into(),
+            data: None,
+            method: "session/new".into(),
+        };
+        let p = acp_problem(&sign_in, "cline", false, String::new());
+        assert_eq!((p.code.as_str(), p.owner), ("R211", Owner::You));
+        // openhands-acp: a bare -32603, the cause far up its stderr.
+        let opaque = AcpError::Agent {
+            code: -32603,
+            message: "Internal error".into(),
+            data: None,
+            method: "session/prompt".into(),
+        };
+        let log = format!(
+            "litellm.AuthenticationError:\n{}",
+            "  │ /opt/benchflow/agents/openhands │\n".repeat(50)
+        );
+        let p = acp_problem_reading(&opaque, "openhands", true, "tail".into(), &log);
+        assert_eq!((p.code.as_str(), p.owner), ("R212", Owner::Model));
+        assert!(
+            p.message.ends_with("litellm.AuthenticationError:"),
+            "{}",
+            p.message
+        );
+        let p = acp_problem(&opaque, "openhands", true, "nothing useful".into());
+        assert_eq!((p.code.as_str(), p.owner), ("R205", Owner::Agent));
     }
 }

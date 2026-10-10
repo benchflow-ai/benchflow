@@ -288,6 +288,7 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
         step_results: None,
         agent_session: None,
         resources_raised: None,
+        environment_warnings: Vec::new(),
         dataset: rt
             .options
             .dataset
@@ -361,6 +362,14 @@ async fn run_trial(spec: &TrialSpec, rt: &Runtime, regrade: Option<Regrade>) -> 
     rec.defenses = t.defenses.clone();
     rec.custody = t.custody.clone();
     rec.verifier_exit = t.verifier_exit;
+    // A 0 from a broken environment reads like the agent's failure: say so.
+    if rec.status == Status::Scored && rec.passed == Some(false) {
+        rec.environment_warnings = crate::envcheck::warnings(&spec.dir);
+        for w in &rec.environment_warnings {
+            rt.events
+                .log(&spec.name, format!("the environment may have failed: {w}"));
+        }
+    }
     rec.finished_at = Local::now();
     let mut config = trial_config(spec, rt, &t, &started);
     config["agent"] = json!(label);

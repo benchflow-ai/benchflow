@@ -17,6 +17,7 @@ pub mod credentials;
 pub mod custody;
 pub mod diff;
 pub mod dspy_agent;
+pub mod envcheck;
 pub mod events;
 pub mod external_agent;
 pub mod features;
